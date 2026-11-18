@@ -1,0 +1,86 @@
+# ==============================================================================
+# Rust & Cargo Build Artifacts
+# ==============================================================================
+/target/
+**/*.rs.bk
+*.pdb
+
+# ==============================================================================
+# IDEs & Code Editors
+# ==============================================================================
+# JetBrains IDEs (RustRover, CLion, IntelliJ IDEA)
+.idea/
+/*.iml
+crates/**/*.iml
+*.iws
+*.ipr
+out/
+
+# Visual Studio Code
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+*.code-workspace
+
+# Vim / Emacs / Sublime
+*.swp
+*.swo
+*~
+.#*
+#*#
+*.sublime-project
+*.sublime-workspace
+
+# ==============================================================================
+# Operating System & Environment
+# ==============================================================================
+# Windows
+Thumbs.db
+ehthumbs.db
+[Dd]esktop.ini
+$RECYCLE.BIN/
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# Linux
+.directory
+
+# ==============================================================================
+# Logs, Profiling & Diagnostics
+# ==============================================================================
+*.log
+perf.data
+perf.data.old
+*.profraw
+callgrind.out.*
+coverage/
+cobertura.xml
+
+# ==============================================================================
+# Secrets & Local Configurations
+# ==============================================================================
+.env
+.env.*
+!.env.example
+*.local
+
+# ==============================================================================
+# Temporary & Backup Files
+# ==============================================================================
+*.tmp
+*.temp
+*.bak
+*.orig
+*.rej
+
+# ==============================================================================
+# Upstream Reference Sources (IntelliJ IDEA VCS & Git4Idea)
+# ==============================================================================
+reference/
+
