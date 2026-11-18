@@ -269,6 +269,7 @@ mod tests {
 
     fn render(mode: GlyphMode) -> ratatui::buffer::Buffer {
         let theme = ThemePalette::darcula(true);
+        let branch_colors = theme.branch_color_manager();
         let mut terminal = Terminal::new(TestBackend::new(110, 40)).unwrap();
         let mut hits = HitTestRegistry::new();
         terminal
@@ -276,6 +277,7 @@ mod tests {
                 let ctx = RenderContext {
                     theme: &theme,
                     glyph_mode: mode,
+                    branch_colors: &branch_colors,
                     hit_registry: &mut hits,
                     focused_pane: jgit_core::PaneId::LogCommitTable,
                     hover_target: None,

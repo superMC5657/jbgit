@@ -7,7 +7,7 @@ use crate::app::{
     Action, AppState, ClickRecord, ContextMenuAction, ContextMenuEntryKind, ContextMenuItem,
     DragState, ModalLayer, PopupKind,
 };
-use crate::hit_test::HitTarget;
+use crate::hit_test::{GraphHitKind, HitTarget};
 use crate::views::log::ordered_branch_refs;
 use crate::views::overlays::context_menu_rect;
 
@@ -153,6 +153,9 @@ fn route_key(key: KeyEvent, state: &mut AppState) -> Vec<Action> {
             KeyCode::PageDown => vec![Action::ScrollLog(10)],
             KeyCode::PageUp => vec![Action::ScrollLog(-10)],
             KeyCode::Home => vec![Action::SelectLogRow(0)],
+            KeyCode::Left if key.modifiers.contains(KeyModifiers::ALT) => {
+                vec![Action::NavLogBack]
+            }
             KeyCode::Char('c') => vec![Action::ToggleCompactRefs],
             KeyCode::Char('t') => vec![Action::ToggleTagNames],
             _ => Vec::new(),
@@ -360,6 +363,7 @@ fn route_mouse(mouse: MouseEvent, state: &mut AppState) -> Vec<Action> {
                         return vec![Action::ScrollBranches(delta / 3)];
                     }
                     HitTarget::CommitTableRow { .. }
+                    | HitTarget::GraphPrintElement { .. }
                     | HitTarget::CommitRefPill { .. }
                     | HitTarget::CommitRefOverflow { .. }
                     | HitTarget::Pane(PaneId::LogCommitTable) => {
@@ -496,6 +500,34 @@ fn route_mouse(mouse: MouseEvent, state: &mut AppState) -> Vec<Action> {
                     Action::FocusPane(PaneId::LogCommitTable),
                     Action::SelectLogRow(visible_row),
                 ],
+                HitTarget::GraphPrintElement {
+                    visible_row,
+                    commit_oid,
+                    kind,
+                    ..
+                } => match kind {
+                    GraphHitKind::Arrow { target_row, .. } => vec![
+                        Action::FocusPane(PaneId::LogCommitTable),
+                        Action::JumpToLogRow {
+                            row: target_row,
+                            center: true,
+                        },
+                    ],
+                    GraphHitKind::Node { .. } | GraphHitKind::Edge { .. } => {
+                        let mut actions = vec![
+                            Action::FocusPane(PaneId::LogCommitTable),
+                            Action::SelectLogRow(visible_row),
+                        ];
+                        if is_double {
+                            actions.push(Action::RunCliProbe(vec![
+                                "show".into(),
+                                "--stat".into(),
+                                commit_oid.to_string(),
+                            ]));
+                        }
+                        actions
+                    }
+                },
                 HitTarget::CommitTableRow {
                     visible_row,
                     commit_oid,
@@ -564,8 +596,13 @@ fn route_mouse(mouse: MouseEvent, state: &mut AppState) -> Vec<Action> {
                 HitTarget::CommitTableRow {
                     visible_row,
                     commit_oid,
+                }
+                | HitTarget::GraphPrintElement {
+                    visible_row,
+                    commit_oid,
+                    ..
                 } => {
-                    if state.log_selected_idx != *visible_row {
+                    if state.log_graph.selected_idx != *visible_row {
                         actions.push(Action::FocusPane(PaneId::LogCommitTable));
                         actions.push(Action::SelectLogRow(*visible_row));
                     }
@@ -602,7 +639,7 @@ fn route_mouse(mouse: MouseEvent, state: &mut AppState) -> Vec<Action> {
                     ref_name,
                     ..
                 } => {
-                    if state.log_selected_idx != *visible_row {
+                    if state.log_graph.selected_idx != *visible_row {
                         actions.push(Action::FocusPane(PaneId::LogCommitTable));
                         actions.push(Action::SelectLogRow(*visible_row));
                     }
@@ -614,7 +651,7 @@ fn route_mouse(mouse: MouseEvent, state: &mut AppState) -> Vec<Action> {
                     visible_row,
                     hidden_refs,
                 } => {
-                    if state.log_selected_idx != *visible_row {
+                    if state.log_graph.selected_idx != *visible_row {
                         actions.push(Action::FocusPane(PaneId::LogCommitTable));
                         actions.push(Action::SelectLogRow(*visible_row));
                     }

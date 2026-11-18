@@ -108,11 +108,8 @@ impl EngineHandle {
     }
 }
 
-fn spawn_epoch_task<Fut, T, M>(
-    event_tx: &UnboundedSender<EngineEvent>,
-    fut: Fut,
-    map_ok: M,
-) where
+fn spawn_epoch_task<Fut, T, M>(event_tx: &UnboundedSender<EngineEvent>, fut: Fut, map_ok: M)
+where
     Fut: std::future::Future<Output = Result<T, EngineError>> + Send + 'static,
     M: FnOnce(T) -> EngineEvent + Send + 'static,
 {
@@ -212,9 +209,7 @@ impl EngineSupervisor {
                         let token = EpochToken::new(sup_epochs.stage_status.clone(), epoch);
                         spawn_epoch_task(
                             &event_tx,
-                            async move {
-                                pool.load_stage_status(loc, include_ignored, token).await
-                            },
+                            async move { pool.load_stage_status(loc, include_ignored, token).await },
                             move |status| EngineEvent::StageStatusLoaded { status, epoch },
                         );
                     }
@@ -226,9 +221,8 @@ impl EngineSupervisor {
                         refresh_after,
                     } => {
                         let Some(cli_exec) = sup_cli.as_ref().map(Arc::clone) else {
-                            let _ = event_tx.send(EngineEvent::Error(
-                                EngineError::GitNotFound.to_string(),
-                            ));
+                            let _ = event_tx
+                                .send(EngineEvent::Error(EngineError::GitNotFound.to_string()));
                             continue;
                         };
                         let loc = sup_location.clone();

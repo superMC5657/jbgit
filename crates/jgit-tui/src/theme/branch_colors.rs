@@ -82,6 +82,7 @@ impl BranchColorManager {
 
     /// Direct palette color for a branch name (`origin/x` and `x` share a color;
     /// `main` / `master` pin to slot 0).
+    #[allow(dead_code)]
     pub fn track_color_for_branch(&self, ref_name: &str) -> Color {
         self.get_track_color(branch_color_id(ref_name))
     }
@@ -205,11 +206,7 @@ mod tests {
     fn visible_assignment_shifts_collisions_then_falls_back() {
         let m = manager();
         // 0 and 14 both hash to slot 0 → the second shifts to slot 1.
-        let colors = m.assign_visible(&[
-            BranchColorId(0),
-            BranchColorId(14),
-            BranchColorId(0),
-        ]);
+        let colors = m.assign_visible(&[BranchColorId(0), BranchColorId(14), BranchColorId(0)]);
         assert_eq!(colors[0], m.track(0).fg);
         assert_eq!(colors[1], m.track(1).fg);
         assert_eq!(colors[2], colors[0], "same id keeps its color");

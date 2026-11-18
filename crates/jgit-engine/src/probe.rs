@@ -172,7 +172,10 @@ fn detect_repository_state(
 
     if matches!(
         repo.state(),
-        Git2State::Rebase | Git2State::RebaseInteractive | Git2State::RebaseMerge | Git2State::ApplyMailboxOrRebase
+        Git2State::Rebase
+            | Git2State::RebaseInteractive
+            | Git2State::RebaseMerge
+            | Git2State::ApplyMailboxOrRebase
     ) {
         return RepositoryState::Rebase {
             progress: None,
@@ -207,7 +210,11 @@ fn detect_repository_state(
 }
 
 fn read_progress_pair(cur_path: &Path, total_path: &Path) -> Option<(usize, usize)> {
-    let cur = fs::read_to_string(cur_path).ok()?.trim().parse::<usize>().ok()?;
+    let cur = fs::read_to_string(cur_path)
+        .ok()?
+        .trim()
+        .parse::<usize>()
+        .ok()?;
     let total = fs::read_to_string(total_path)
         .ok()?
         .trim()

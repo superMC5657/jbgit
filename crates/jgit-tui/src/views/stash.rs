@@ -46,8 +46,7 @@ pub fn render_stash_tab(
             ctx,
         );
 
-        let diff_body =
-            render_pane_frame(frame, split.second, PaneId::StashDiffPreview, "", ctx);
+        let diff_body = render_pane_frame(frame, split.second, PaneId::StashDiffPreview, "", ctx);
         frame.render_widget(
             Paragraph::new(Line::from(Span::styled(
                 " Stash diff preview (Spec 05)",

@@ -49,8 +49,16 @@ impl WorkspaceTab {
 
     pub fn focus_ring(self) -> &'static [PaneId] {
         match self {
-            Self::Commit => &[PaneId::CommitChangesTree, PaneId::CommitMessageEditor, PaneId::CommitDiffPreview],
-            Self::Log => &[PaneId::LogBranchesTree, PaneId::LogCommitTable, PaneId::LogDetailsDiff],
+            Self::Commit => &[
+                PaneId::CommitChangesTree,
+                PaneId::CommitMessageEditor,
+                PaneId::CommitDiffPreview,
+            ],
+            Self::Log => &[
+                PaneId::LogBranchesTree,
+                PaneId::LogCommitTable,
+                PaneId::LogDetailsDiff,
+            ],
             Self::Stash => &[PaneId::StashList, PaneId::StashDiffPreview],
             Self::Console => &[PaneId::ConsoleCommandList, PaneId::ConsoleOutputDetail],
         }

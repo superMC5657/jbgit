@@ -1,4 +1,5 @@
 mod app;
+mod graph;
 mod hit_test;
 mod input;
 mod terminal;
@@ -330,7 +331,7 @@ mod tests {
         // In Log tab, right-clicking row 1 pre-selects row 1 AND opens ContextMenu
         state.dispatch(Action::SwitchTab(WorkspaceTab::Log));
         terminal.draw(|f| render_app(f, &mut state)).unwrap();
-        assert_eq!(state.log_selected_idx, 0);
+        assert_eq!(state.log_graph.selected_idx, 0);
 
         // Row 0 is at y=3 (header=0, tabs=1, pane_header=2, row0=3, row1=4)
         let actions = route_terminal_event(
@@ -345,7 +346,7 @@ mod tests {
         for a in actions {
             state.dispatch(a);
         }
-        assert_eq!(state.log_selected_idx, 1);
+        assert_eq!(state.log_graph.selected_idx, 1);
         assert_eq!(state.modal_stack.len(), 1);
 
         // Re-render with ContextMenu open and verify clicking outside closes menu without selecting row 0
@@ -363,12 +364,14 @@ mod tests {
             state.dispatch(a);
         }
         assert!(state.modal_stack.is_empty());
-        assert_eq!(state.log_selected_idx, 1);
+        assert_eq!(state.log_graph.selected_idx, 1);
     }
 
     #[test]
     fn stale_epoch_events_are_silently_dropped_on_ui_arrival() {
-        use jgit_core::{Oid, RepoSnapshot, RepositoryState, StageEntry, FileStatusKind, StageStatusSnapshot};
+        use jgit_core::{
+            FileStatusKind, Oid, RepoSnapshot, RepositoryState, StageEntry, StageStatusSnapshot,
+        };
         use jgit_engine::EngineEvent;
         use std::sync::Arc;
 
@@ -585,7 +588,10 @@ mod tests {
                 is_read_only,
                 refresh_after,
             } => {
-                assert_eq!(args, &vec!["add".to_string(), "--pathspec-from-file=-".to_string()]);
+                assert_eq!(
+                    args,
+                    &vec!["add".to_string(), "--pathspec-from-file=-".to_string()]
+                );
                 assert_eq!(stdin_payload.as_deref(), Some(b"src/lib.rs\0".as_slice()));
                 assert!(!is_read_only);
                 assert_eq!(*refresh_after, RefreshScope::StageStatus);
@@ -746,5 +752,115 @@ mod tests {
             state.dispatch(a);
         }
         assert_eq!(state.modal_stack.len(), 1);
+    }
+
+    #[test]
+    fn long_edge_arrow_hover_click_jump_center_and_alt_left_return() {
+        use jgit_core::{CommitSummary, Oid, RefInfo, RefKind, RepoSnapshot, RepositoryState};
+        use std::sync::Arc;
+
+        let oid_n = |n: u64| {
+            let mut bytes = [0u8; 20];
+            bytes[..8].copy_from_slice(&n.to_le_bytes());
+            Oid::from_bytes(bytes)
+        };
+
+        // 42 commits: commit 0 merges [1, 41], forming a 41-row long edge (0 -> 41)
+        let mut commits = Vec::new();
+        for i in 0..=41u64 {
+            let parents = if i == 0 {
+                vec![oid_n(1), oid_n(41)]
+            } else if i < 41 {
+                vec![oid_n(i + 1)]
+            } else {
+                vec![]
+            };
+            commits.push(CommitSummary {
+                oid: oid_n(i),
+                parents,
+                author_name: "Alice".into(),
+                author_email: "a@b.c".into(),
+                timestamp: (1000 - i) as i64,
+                subject: format!("commit {i}"),
+            });
+        }
+
+        let mut state = AppState::new(std::path::PathBuf::from("."), None);
+        state.repo_snapshot = Some(Arc::new(RepoSnapshot {
+            repo_name: "demo".into(),
+            workdir: ".".into(),
+            git_dir: ".git".into(),
+            common_dir: ".git".into(),
+            state: RepositoryState::Clean,
+            is_unborn_head: false,
+            head_branch: Some("main".into()),
+            head_oid: Some(oid_n(0)),
+            refs: vec![RefInfo {
+                name: "main".into(),
+                full_name: "refs/heads/main".into(),
+                target_oid: oid_n(0),
+                kind: RefKind::LocalBranch,
+                upstream: None,
+                ahead_behind: None,
+                is_head: true,
+            }],
+            commits,
+        }));
+
+        let backend = TestBackend::new(120, 20);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| render_app(f, &mut state)).unwrap();
+
+        let row_text = |buf: &ratatui::buffer::Buffer, y: u16| -> String {
+            (0..buf.area.width).map(|x| buf[(x, y)].symbol()).collect()
+        };
+        use unicode_width::UnicodeWidthStr;
+        // Row 1 of commit table is y=4 (header=0, tabs=1, pane_header=2, row0=3, row1=4)
+        let row1 = row_text(terminal.backend().buffer(), 4);
+        let arrow_byte = row1
+            .find('▾')
+            .expect("expected long-edge down arrow on row 1");
+        let arrow_x = row1[..arrow_byte].width() as u16;
+
+        // Hover over ▾ arrow -> shows target short hash & subject in footer status bar
+        route_terminal_event(
+            Event::Mouse(MouseEvent {
+                kind: MouseEventKind::Moved,
+                column: arrow_x,
+                row: 4,
+                modifiers: KeyModifiers::NONE,
+            }),
+            &mut state,
+        );
+        terminal.draw(|f| render_app(f, &mut state)).unwrap();
+        let status_line = row_text(terminal.backend().buffer(), 19);
+        assert!(status_line.contains(&oid_n(41).short()), "{status_line}");
+        assert!(status_line.contains("commit 41"), "{status_line}");
+
+        // Left-click ▾ arrow -> jumps to row 41 (target parent commit)
+        let acts = route_terminal_event(
+            Event::Mouse(MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column: arrow_x,
+                row: 4,
+                modifiers: KeyModifiers::NONE,
+            }),
+            &mut state,
+        );
+        for a in acts {
+            state.dispatch(a);
+        }
+        assert_eq!(state.log_graph.selected_idx, 41);
+        assert!(state.log_graph.scroll_offset > 0);
+
+        // Alt+Left returns back to row 0
+        let back_acts = route_terminal_event(
+            Event::Key(KeyEvent::new(KeyCode::Left, KeyModifiers::ALT)),
+            &mut state,
+        );
+        for a in back_acts {
+            state.dispatch(a);
+        }
+        assert_eq!(state.log_graph.selected_idx, 0);
     }
 }

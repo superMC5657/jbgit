@@ -203,9 +203,7 @@ impl ThemePalette {
                 [Some((glyphs.detached_head, self.ref_detached.icon)), None]
             }
             RefBadgeKind::CurrentHead => [Some((glyphs.head, self.ref_head.icon)), None],
-            RefBadgeKind::LocalBranch => {
-                [Some((glyphs.local_branch, self.ref_local.icon)), None]
-            }
+            RefBadgeKind::LocalBranch => [Some((glyphs.local_branch, self.ref_local.icon)), None],
             RefBadgeKind::TrackedPair => [
                 Some((glyphs.local_branch, self.ref_local.icon)),
                 Some((glyphs.tracked_remote, self.ref_remote.icon)),
@@ -250,15 +248,24 @@ mod tests {
             display: LabelDisplay::Full,
         };
         assert_eq!(
-            t.ref_style(RefBadgeKind::from_group(&mk(RefGroupKind::TrackedPair, true))),
+            t.ref_style(RefBadgeKind::from_group(&mk(
+                RefGroupKind::TrackedPair,
+                true
+            ))),
             t.ref_head
         );
         assert_eq!(
-            t.ref_style(RefBadgeKind::from_group(&mk(RefGroupKind::TrackedPair, false))),
+            t.ref_style(RefBadgeKind::from_group(&mk(
+                RefGroupKind::TrackedPair,
+                false
+            ))),
             t.ref_tracked
         );
         assert_eq!(
-            t.ref_style(RefBadgeKind::from_group(&mk(RefGroupKind::DetachedHead, true))),
+            t.ref_style(RefBadgeKind::from_group(&mk(
+                RefGroupKind::DetachedHead,
+                true
+            ))),
             t.ref_detached
         );
     }

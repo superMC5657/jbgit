@@ -221,8 +221,16 @@ impl GitCliExecutor {
 #[derive(Debug, Clone)]
 pub enum CliStreamEvent {
     Started(GitConsoleEntry),
-    Output { id: u64, is_stderr: bool, line: String },
-    Finished { id: u64, exit_code: i32, duration_ms: u64 },
+    Output {
+        id: u64,
+        is_stderr: bool,
+        line: String,
+    },
+    Finished {
+        id: u64,
+        exit_code: i32,
+        duration_ms: u64,
+    },
 }
 
 async fn next_line<R: tokio::io::AsyncBufRead + Unpin>(
@@ -247,7 +255,10 @@ fn format_args_for_display(args: &[String]) -> String {
         .join(" ")
 }
 
-fn detect_index_lock_conflict(stderr_lines: &[String], git_dir: &Path) -> Option<(PathBuf, String)> {
+fn detect_index_lock_conflict(
+    stderr_lines: &[String],
+    git_dir: &Path,
+) -> Option<(PathBuf, String)> {
     let joined = stderr_lines.join("\n");
     if joined.contains("index.lock")
         && (joined.contains("File exists") || joined.contains("Unable to create"))

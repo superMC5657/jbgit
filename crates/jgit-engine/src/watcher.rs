@@ -101,7 +101,10 @@ impl RepoWatcher {
                 if let Ok(events) = res {
                     let mut combined = RefreshScope::None;
                     for ev in events {
-                        if matches!(ev.kind, DebouncedEventKind::Any | DebouncedEventKind::AnyContinuous) {
+                        if matches!(
+                            ev.kind,
+                            DebouncedEventKind::Any | DebouncedEventKind::AnyContinuous
+                        ) {
                             combined = combined.merge(classify_git_meta_path(&ev.path));
                         }
                     }
@@ -138,7 +141,8 @@ impl RepoWatcher {
                     if let Ok(events) = res {
                         let mut changed = false;
                         for ev in events {
-                            if is_relevant_worktree_path(&ev.path, &workdir, &git_dir_for_wt, &pool) {
+                            if is_relevant_worktree_path(&ev.path, &workdir, &git_dir_for_wt, &pool)
+                            {
                                 changed = true;
                                 break;
                             }

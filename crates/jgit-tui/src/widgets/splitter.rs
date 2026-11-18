@@ -126,7 +126,10 @@ impl SplitterState {
         if total <= 1 {
             return;
         }
-        let min_total = spec.min_first.saturating_add(1).saturating_add(spec.min_second);
+        let min_total = spec
+            .min_first
+            .saturating_add(1)
+            .saturating_add(spec.min_second);
         if total < min_total {
             return;
         }

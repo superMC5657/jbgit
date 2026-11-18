@@ -10,6 +10,7 @@ use jgit_engine::{EngineEvent, EngineHandle, TaskRequest};
 use ratatui::layout::Rect;
 use rustc_hash::FxHashMap;
 
+use crate::graph::LogGraphState;
 use crate::hit_test::{HitTarget, HitTestRegistry};
 use crate::theme::{BranchColorManager, GlyphMode, ThemePalette};
 use crate::widgets::SplitterState;
@@ -17,6 +18,7 @@ use crate::widgets::SplitterState;
 pub struct RenderContext<'a> {
     pub theme: &'a ThemePalette,
     pub glyph_mode: GlyphMode,
+    pub branch_colors: &'a BranchColorManager,
     pub hit_registry: &'a mut HitTestRegistry,
     pub focused_pane: PaneId,
     pub hover_target: Option<&'a HitTarget>,
@@ -187,6 +189,11 @@ pub enum Action {
     ScrollBranches(isize),
     SelectLogRow(usize),
     ScrollLog(isize),
+    JumpToLogRow {
+        row: usize,
+        center: bool,
+    },
+    NavLogBack,
     SelectConsoleRow(usize),
     ScrollConsoleList(isize),
     ScrollConsoleOutput(isize),
@@ -205,6 +212,7 @@ pub struct AppState {
     pub compact_refs: bool,
     /// `Show Tag Names`: when off, tags collapse to icons.
     pub show_tag_names: bool,
+    pub log_graph: LogGraphState,
     pub active_tab: WorkspaceTab,
     pub focused_pane: PaneId,
     pub splitters: SplitterState,
@@ -228,7 +236,6 @@ pub struct AppState {
     pub latest_commit_details_epoch: u64,
 
     pub branches_selected_idx: usize,
-    pub log_selected_idx: usize,
     pub commit_stage_selected_idx: usize,
 
     pub console_entries: Vec<GitConsoleEntry>,
@@ -253,6 +260,7 @@ impl AppState {
             branch_colors,
             compact_refs: false,
             show_tag_names: true,
+            log_graph: LogGraphState::default(),
             active_tab: WorkspaceTab::Log,
             focused_pane: WorkspaceTab::Log.default_pane(),
             splitters: SplitterState::default(),
@@ -273,7 +281,6 @@ impl AppState {
             latest_stage_epoch: 0,
             latest_commit_details_epoch: 0,
             branches_selected_idx: 0,
-            log_selected_idx: 0,
             commit_stage_selected_idx: 0,
             console_entries: Vec::new(),
             console_selected_idx: 0,
@@ -285,6 +292,16 @@ impl AppState {
             needs_redraw: true,
             should_quit: false,
         }
+    }
+
+    pub fn ensure_graph_cache(&mut self) {
+        self.log_graph
+            .ensure_cache(self.repo_snapshot.as_ref(), &self.branch_colors);
+    }
+
+    pub fn log_commit_at(&self, visible_row: usize) -> Option<&CommitSummary> {
+        self.log_graph
+            .commit_at(self.repo_snapshot.as_ref(), visible_row)
     }
 
     pub fn has_active_tasks(&self) -> bool {
@@ -431,30 +448,38 @@ impl AppState {
                 }
             }
             Action::SelectLogRow(idx) => {
-                if let Some(snap) = &self.repo_snapshot
-                    && !snap.commits.is_empty()
+                if let Some(oid) =
+                    self.log_graph
+                        .select_row(self.repo_snapshot.as_ref(), &self.branch_colors, idx)
                 {
-                    self.log_selected_idx = idx.min(snap.commits.len() - 1);
-                    if let Some(commit) = snap.commits.get(self.log_selected_idx) {
-                        effects.push(Effect::RequestCommitDetails(vec![commit.oid]));
-                    }
+                    effects.push(Effect::RequestCommitDetails(vec![oid]));
                 }
             }
             Action::ScrollLog(delta) => {
-                let len = self.repo_snapshot.as_ref().map_or(0, |s| s.commits.len());
-                if len > 0 {
-                    let cur = self.log_selected_idx as isize;
-                    let next = (cur + delta).clamp(0, (len - 1) as isize) as usize;
-                    if next != self.log_selected_idx {
-                        self.log_selected_idx = next;
-                        if let Some(commit) = self
-                            .repo_snapshot
-                            .as_ref()
-                            .and_then(|s| s.commits.get(next))
-                        {
-                            effects.push(Effect::RequestCommitDetails(vec![commit.oid]));
-                        }
-                    }
+                if let Some(oid) = self.log_graph.scroll_by(
+                    self.repo_snapshot.as_ref(),
+                    &self.branch_colors,
+                    delta,
+                ) {
+                    effects.push(Effect::RequestCommitDetails(vec![oid]));
+                }
+            }
+            Action::JumpToLogRow { row, center } => {
+                if let Some(oid) = self.log_graph.jump_to(
+                    self.repo_snapshot.as_ref(),
+                    &self.branch_colors,
+                    row,
+                    center,
+                ) {
+                    effects.push(Effect::RequestCommitDetails(vec![oid]));
+                }
+            }
+            Action::NavLogBack => {
+                if let Some(oid) = self
+                    .log_graph
+                    .nav_back(self.repo_snapshot.as_ref(), &self.branch_colors)
+                {
+                    effects.push(Effect::RequestCommitDetails(vec![oid]));
                 }
             }
             Action::SelectConsoleRow(idx) => {
@@ -522,14 +547,12 @@ impl AppState {
                 self.latest_repo_epoch = epoch;
                 self.loading_snapshot = false;
 
-                let commits_len = snapshot.commits.len();
-                if self.log_selected_idx >= commits_len {
-                    self.log_selected_idx = commits_len.saturating_sub(1);
-                }
                 let refs_len = snapshot.refs.len();
                 if self.branches_selected_idx >= refs_len {
                     self.branches_selected_idx = refs_len.saturating_sub(1);
                 }
+                self.log_graph
+                    .on_snapshot_loaded(&snapshot, &self.branch_colors);
                 self.repo_snapshot = Some(snapshot);
             }
             EngineEvent::CommitDetailsLoaded { commits, epoch } => {

@@ -63,7 +63,7 @@ pub fn render_hover_tooltip(
             let g = ctx.glyph_mode.symbols();
             let mut ref_lines = Vec::new();
             if let Some(snap) = &state.repo_snapshot
-                && let Some(commit) = snap.commits.get(*visible_row)
+                && let Some(commit) = state.log_commit_at(*visible_row)
             {
                 let is_head = snap.head_oid == Some(commit.oid);
                 let head_marker = is_head.then(|| RefInfo::head_marker(commit.oid));
@@ -100,7 +100,11 @@ pub fn render_hover_tooltip(
                 " Right-click +N for actions",
                 Style::default().fg(ctx.theme.fg_muted),
             )));
-            (" All Commit References ", ctx.theme.border_focused, ref_lines)
+            (
+                " All Commit References ",
+                ctx.theme.border_focused,
+                ref_lines,
+            )
         }
         _ => return,
     };

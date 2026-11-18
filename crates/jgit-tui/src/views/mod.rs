@@ -24,6 +24,7 @@ pub fn render_app(frame: &mut Frame<'_>, state: &mut AppState) {
     state.terminal_area = area;
     state.hit_registry.clear();
     state.splitter_containers.clear();
+    state.ensure_graph_cache();
 
     // Paint canvas background
     frame.render_widget(
@@ -82,10 +83,14 @@ pub fn render_app(frame: &mut Frame<'_>, state: &mut AppState) {
     );
 
     let theme = state.theme.clone();
+    let branch_colors = state.branch_colors.clone();
     let glyph_mode = state.glyph_mode;
     let focused_pane = state.focused_pane;
     let hover_target = state.hover_target.clone();
     let dragging_splitter = state.drag_state.map(|d| d.splitter_id);
+    if state.active_tab == WorkspaceTab::Log {
+        state.log_graph.last_viewport_h = body_h.saturating_sub(1) as usize;
+    }
 
     // Register splitter containers separately after collecting them from layout helpers
     let mut splitter_containers = Vec::new();
@@ -95,6 +100,7 @@ pub fn render_app(frame: &mut Frame<'_>, state: &mut AppState) {
         let mut ctx = RenderContext {
             theme: &theme,
             glyph_mode,
+            branch_colors: &branch_colors,
             hit_registry: &mut hit_registry,
             focused_pane,
             hover_target: hover_target.as_ref(),

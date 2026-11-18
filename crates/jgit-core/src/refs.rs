@@ -674,7 +674,11 @@ mod tests {
     #[test]
     fn shorten_tracked_pair_preserves_remote_prefix() {
         let refs = [
-            local("feature/user-authentication-oauth2", Some("origin/feature/user-authentication-oauth2"), false),
+            local(
+                "feature/user-authentication-oauth2",
+                Some("origin/feature/user-authentication-oauth2"),
+                false,
+            ),
             remote("origin/feature/user-authentication-oauth2"),
         ];
         let groups = group_refs_for_table(&refs, GroupOptions::default());

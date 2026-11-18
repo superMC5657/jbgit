@@ -1,5 +1,6 @@
 pub mod console;
 pub mod epoch;
+pub mod graph;
 pub mod oid;
 pub mod refs;
 pub mod repo;

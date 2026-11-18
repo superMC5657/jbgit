@@ -163,7 +163,11 @@ pub fn load_repo_snapshot_sync(
         }
 
         let probe = probe_repo_state(repo);
-        let refs = collect_refs(repo, &probe.head_branch, probe.state == jgit_core::RepositoryState::Detached)?;
+        let refs = collect_refs(
+            repo,
+            &probe.head_branch,
+            probe.state == jgit_core::RepositoryState::Detached,
+        )?;
 
         if token.is_stale() {
             return Err(EngineError::Cancelled);
@@ -200,12 +204,7 @@ fn collect_refs(
     if let Ok(branches) = repo.branches(None) {
         for item in branches.flatten() {
             let (branch, branch_type) = item;
-            let full_name = branch
-                .get()
-                .name()
-                .ok()
-                .unwrap_or_default()
-                .to_string();
+            let full_name = branch.get().name().ok().unwrap_or_default().to_string();
             let Some(name) = branch.name().ok().flatten().map(ToString::to_string) else {
                 continue;
             };
@@ -224,13 +223,9 @@ fn collect_refs(
                     let (upstream_name, ab) = match branch.upstream() {
                         Ok(up) => {
                             let up_name = up.name().ok().flatten().map(ToString::to_string);
-                            let ab = up
-                                .get()
-                                .peel_to_commit()
-                                .ok()
-                                .and_then(|up_commit| {
-                                    repo.graph_ahead_behind(commit.id(), up_commit.id()).ok()
-                                });
+                            let ab = up.get().peel_to_commit().ok().and_then(|up_commit| {
+                                repo.graph_ahead_behind(commit.id(), up_commit.id()).ok()
+                            });
                             (up_name, ab)
                         }
                         Err(_) => (None, None),

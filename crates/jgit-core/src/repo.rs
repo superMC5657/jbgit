@@ -38,7 +38,9 @@ impl RepositoryState {
             Self::CherryPick => Some("CHERRY-PICKING".to_string()),
             Self::Revert => Some("REVERTING".to_string()),
             Self::Bisect => Some("BISECTING".to_string()),
-            Self::Rebase { progress, branch } => Some(format_rebase("REBASING", *progress, branch.as_deref())),
+            Self::Rebase { progress, branch } => {
+                Some(format_rebase("REBASING", *progress, branch.as_deref()))
+            }
             Self::RebaseInteractive { progress, branch } => {
                 Some(format_rebase("REBASING -i", *progress, branch.as_deref()))
             }

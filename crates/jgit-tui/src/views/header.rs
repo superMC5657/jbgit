@@ -7,7 +7,8 @@ use ratatui::widgets::Paragraph;
 use unicode_width::UnicodeWidthStr;
 
 use crate::app::{AppState, RenderContext};
-use crate::hit_test::HitTarget;
+use crate::hit_test::{GraphHitKind, HitTarget};
+use crate::views::truncate_to_width;
 
 pub fn render_top_header(
     frame: &mut Frame<'_>,
@@ -279,6 +280,45 @@ pub fn render_footer_bar(
     ctx: &RenderContext<'_>,
 ) {
     if area.height == 0 || area.width == 0 {
+        return;
+    }
+
+    if let Some(HitTarget::GraphPrintElement {
+        kind:
+            GraphHitKind::Arrow {
+                target_row,
+                target_oid,
+                is_down,
+                ..
+            },
+        ..
+    }) = ctx.hover_target
+    {
+        let g = &ctx.glyph_mode.symbols().graph;
+        let arrow = if *is_down { g.arrow_down } else { g.arrow_up };
+        let dir_label = if *is_down { "parent" } else { "child" };
+        let target_subj = state
+            .log_commit_at(*target_row)
+            .map(|c| c.subject.as_str())
+            .unwrap_or("");
+        let prefix = format!(" {arrow} Jump to {dir_label} ");
+        let short = target_oid.short();
+        let suffix = " (Click to jump, Alt+Left to return)";
+        let subj_budget = (area.width as usize)
+            .saturating_sub(prefix.width() + short.width() + 2 + suffix.width());
+        let line = Line::from(vec![
+            Span::styled(prefix, Style::default().fg(ctx.theme.fg_muted)),
+            Span::styled(short, Style::default().fg(ctx.theme.fg_accent_link)),
+            Span::styled(
+                format!("  {}", truncate_to_width(target_subj, subj_budget)),
+                Style::default().fg(ctx.theme.fg_bright),
+            ),
+            Span::styled(suffix, Style::default().fg(ctx.theme.fg_muted)),
+        ]);
+        frame.render_widget(
+            Paragraph::new(line).style(Style::default().bg(ctx.theme.bg_panel)),
+            area,
+        );
         return;
     }
 

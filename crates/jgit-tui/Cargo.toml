@@ -21,3 +21,6 @@ rustc-hash.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 unicode-width.workspace = true
+
+[dev-dependencies]
+insta.workspace = true

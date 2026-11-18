@@ -22,18 +22,18 @@ Milestone: M2 — 非交叉 DAG 图与 Pill 徽标
 
 ## 2. 核心实现任务清单
 
-- [ ] **可见图控制器 (`VisibleGraphController`)**：
+- [x] **可见图控制器 (`VisibleGraphController`)**：
   - 实现 `BaseController(SortType::Topo)` 与 `BekSorter(SortType::IntelliSort)`（在满足拓扑偏序前提下按提交时间戳交错排布并发分支）。
   - 实现 `FirstParentController`（仅保留第一父路径）与 `BranchFilter / MatchingCommits FilteredController`（对分支过滤或搜索命中集构建压缩可见子图并维护 `VisibleRowIdx <-> PermNodeId` 双向映射）。
-- [ ] **双向分块缓存活跃边扫描器 (`EdgesInRowGenerator`)**：
+- [x] **双向分块缓存活跃边扫描器 (`EdgesInRowGenerator`)**：
   - 完整移植 `EdgesInRowGenerator.java`：`BLOCK_SIZE = 40`，`WALK_SIZE = 1000`，维护上下双向 LRU 块快照缓存 `cache_nu` 与 `cache_nd`，实现 `one_down_step` 与 `one_up_step`，确保在 10 万行任意位置随机拖动滚动条时单行活跃边查询耗时 < 50μs。
-- [ ] **非交叉行元素比较器 (`GraphElementComparatorByLayoutIndex`)**：
+- [x] **非交叉行元素比较器 (`GraphElementComparatorByLayoutIndex`)**：
   - 逐分支精确移植 `GraphElementComparatorByLayoutIndex.java`，通过 `max(layout_index(up), layout_index(down))` 与 `up - node_row` 平局决胜规则，保证其满足 Rust `Ord` 所需的严格弱序（反对称性、传递性、自反性）。
-- [ ] **`PrintElementGenerator` 与长边折叠**：
+- [x] **`PrintElementGenerator` 与长边折叠**：
   - 实现 `show_long_edges: bool` 切换：关闭时 `LONG_EDGE_SIZE = 30, VISIBLE_PART_SIZE = 1`；开启时 `VERY_LONG_EDGE_SIZE = 1000, VERY_LONG_EDGE_PART_SIZE = 250`。
   - 对被截断的长边在上下保留端生成带 `has_arrow = true` 的 `EdgePrintElement` / `TerminalEdgePrintElement`（记录对端目标 `PermNodeId` 以备点击跳转）。
   - 实现 `recommended_width()` 加权方差算法（`SAMPLE_SIZE = 20000, K = 0.1`），为提交表格提供稳定不抖动的推荐轨道列宽。
-- [ ] **边颜色归属计算 (`PrintElementPresentationManager`)**：
+- [x] **边颜色归属计算 (`PrintElementPresentationManager`)**：
   - 严格实现 `if up_layout_idx >= down_layout_idx { color(up) } else { color(down) }`，确保所有分叉与合入斜线恒归属子分支颜色。
 
 ---
@@ -47,10 +47,19 @@ Milestone: M2 — 非交叉 DAG 图与 Pill 徽标
 
 ## 4. 验收标准 (Acceptance Criteria)
 
-- [ ] 单元测试覆盖：经典分叉合流、双分支交错合流（Criss-cross Merge）、章鱼合并、跨 50 行长边截断箭头生成（第 `up+1` 行生成 `DOWN` 箭头，第 `down-1` 行生成 `UP` 箭头，中间行隐藏该边释放列槽位）。
-- [ ] 属性测试验证：对任意随机 DAG 的全部可见行，验证比较器满足全序传递律 `a < b && b < c => a < c`。
-- [ ] 颜色断言：验证特性分支从 `main` 分出再合回 `main` 的上下两条连接边，`color_id` 均等于特性分支而非 `main`。
+- [x] 单元测试覆盖：经典分叉合流、双分支交错合流（Criss-cross Merge）、章鱼合并、跨 50 行长边截断箭头生成（第 `up+1` 行生成 `DOWN` 箭头，第 `down-1` 行生成 `UP` 箭头，中间行隐藏该边释放列槽位）。
+- [x] 属性测试验证：对任意随机 DAG 的全部可见行，验证比较器满足全序传递律 `a < b && b < c => a < c`。
+- [x] 颜色断言：验证特性分支从 `main` 分出再合回 `main` 的上下两条连接边，`color_id` 均等于特性分支而非 `main`。
 
 ---
 
 ## Comments
+
+### 2026-11-18 — implemented
+
+- 代码实现位于 `crates/jgit-core/src/graph/{edges_in_row, visible, print_elements}.rs`。
+- `EdgesInRowGenerator` 实现块大小 40 与 1000 步行进的双向 LRU 快照缓存。
+- `VisibleGraphController` 支持 Topo、Bek (IntelliSort)、First-Parent 过滤与分支/可达过滤。
+- `GraphElementComparatorByLayoutIndex` 实现严格弱序并通过了随机 DAG 穷举三元组全序传递性验证测试。
+- 长边折叠在 30 行截断并生成带对端 PermNodeId 的跳转箭头元素，支持 recommended_width 算法。
+- 边颜色严格遵循子分支优先着色规则。

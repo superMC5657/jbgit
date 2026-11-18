@@ -1,19 +1,21 @@
+use jgit_core::graph::{GraphPrintElement, PrintElementGenerator, ReachableNodes, VisibleRowIdx};
 use jgit_core::{
-    BranchTreeNodeId, GroupOptions, PaneId, RefGroupKind, RefInfo, RefKind, RepoSnapshot,
-    SplitAxis, SplitterId, group_refs_for_table,
+    BranchTreeNodeId, GroupOptions, Oid, PaneId, RefInfo, RefKind, RepoSnapshot, SplitAxis,
+    SplitterId, group_refs_for_table,
 };
 use ratatui::Frame;
 use ratatui::layout::Rect;
-use ratatui::style::{Modifier, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use unicode_width::UnicodeWidthStr;
 
 use crate::app::{AppState, RenderContext};
-use crate::hit_test::HitTarget;
-use crate::views::{
-    list_viewport, render_pane_frame, render_splitter_divider, row_background, truncate_to_width,
+use crate::graph::{
+    CellGridGraphBackend, GraphRenderBackend, GraphViewportSlice, RenderGraphElement, RowGraphSlice,
 };
+use crate::hit_test::{GraphHitKind, HitTarget};
+use crate::views::{render_pane_frame, render_splitter_divider, row_background, truncate_to_width};
 use crate::widgets::PillBadgeBar;
 
 pub fn ordered_branch_refs(snap: &RepoSnapshot) -> Vec<&RefInfo> {
@@ -285,7 +287,11 @@ fn render_commits_table(
         return;
     };
 
-    if snap.commits.is_empty() {
+    let Some(cached) = &state.log_graph.cached else {
+        return;
+    };
+
+    if snap.commits.is_empty() || cached.visible_count() == 0 {
         let msg = if snap.is_unborn_head {
             " Empty repository (unborn HEAD — no commits yet)"
         } else {
@@ -299,28 +305,137 @@ fn render_commits_table(
     }
 
     let visible_h = area.height as usize;
-    let (selected, offset) = list_viewport(snap.commits.len(), state.log_selected_idx, visible_h);
+    let total = cached.visible_count();
+    let selected = state.log_graph.selected_idx.min(total.saturating_sub(1));
+    let max_off = total.saturating_sub(visible_h);
+    let mut offset = state.log_graph.scroll_offset.min(max_off);
+    if selected < offset {
+        offset = selected;
+    } else if visible_h > 0 && selected >= offset + visible_h {
+        offset = selected + 1 - visible_h;
+    }
+
+    let end = (offset + visible_h).min(total);
+    let rows_len = end - offset;
 
     let focused = ctx.focused_pane == PaneId::LogCommitTable;
-    for (vis_idx, commit) in snap.commits.iter().skip(offset).take(visible_h).enumerate() {
-        let row_idx = offset + vis_idx;
-        let row_rect = Rect::new(area.x, area.y.saturating_add(vis_idx as u16), area.width, 1);
-        let is_sel = row_idx == selected;
-        let is_head = snap.head_oid == Some(commit.oid);
+    let mut elem_gen =
+        PrintElementGenerator::new(&cached.permanent, &cached.visible, snap.head_oid);
 
+    struct PreparedLogRow {
+        visible_row: VisibleRowIdx,
+        commit_oid: Oid,
+        row_bg: Color,
+        elements: Vec<RenderGraphElement>,
+    }
+
+    let mut prepared_rows: Vec<PreparedLogRow> = Vec::with_capacity(rows_len);
+    let mut max_track_pos = 0usize;
+
+    for row_idx in offset..end {
+        let vis_row = row_idx as VisibleRowIdx;
+        let perm_id = cached.visible.linear.perm_id(vis_row);
+        let commit = cached
+            .commit_at_visible_row(snap, row_idx)
+            .expect("visible row maps to valid commit");
+        let is_sel = row_idx == selected;
+        let is_in_current_branch = cached.current_branch_reachable.contains(perm_id as usize);
         let is_hovered = matches!(
             ctx.hover_target,
-            Some(HitTarget::CommitTableRow { visible_row, .. }) if *visible_row == row_idx
+            Some(HitTarget::CommitTableRow { visible_row, .. })
+            | Some(HitTarget::GraphPrintElement { visible_row, .. })
+            | Some(HitTarget::CommitRefPill { visible_row, .. })
+            | Some(HitTarget::CommitRefOverflow { visible_row, .. })
+                if *visible_row == row_idx
         );
-        let default_bg = if is_head {
+        let default_bg = if is_in_current_branch {
             ctx.theme.bg_current_branch_row
         } else {
             ctx.theme.bg_canvas
         };
         let bg = row_background(is_sel, focused, is_hovered, default_bg, ctx.theme);
 
-        // Refs at this commit, plus a synthetic HEAD marker on the HEAD commit
-        // (merged into the current branch pill, or a detached-HEAD warning pill).
+        let raw_elems = elem_gen.print_elements(vis_row);
+        let mut rendered = Vec::with_capacity(raw_elems.len());
+        for el in raw_elems {
+            max_track_pos = max_track_pos.max(el.max_pos());
+            let target_oid = match &el {
+                GraphPrintElement::TerminalEdge { target_perm_id, .. } => {
+                    Some(cached.permanent.linear.commit(*target_perm_id).oid)
+                }
+                _ => None,
+            };
+            let is_elem_selected = is_element_highlighted(&el, row_idx, ctx.hover_target);
+            rendered.push(RenderGraphElement {
+                element: el,
+                target_oid,
+                is_selected: is_elem_selected,
+            });
+        }
+        prepared_rows.push(PreparedLogRow {
+            visible_row: vis_row,
+            commit_oid: commit.oid,
+            row_bg: bg,
+            elements: rendered,
+        });
+    }
+
+    let max_graph_cols = ((area.width as usize * 45) / 100)
+        .max(2)
+        .min(area.width as usize);
+    let graph_tracks = cached.recommended_tracks.max(max_track_pos + 1).max(1);
+    let graph_cols = ((graph_tracks * 2).min(max_graph_cols) as u16).min(area.width);
+    let graph_area = Rect::new(area.x, area.y, graph_cols, rows_len as u16);
+
+    // Register row-level hit regions first (z=1) before graph elements & pills (z=2)
+    for (vis_idx, row) in prepared_rows.iter().enumerate() {
+        let row_idx = offset + vis_idx;
+        let row_rect = Rect::new(area.x, area.y.saturating_add(vis_idx as u16), area.width, 1);
+        ctx.hit_registry.register(
+            row_rect,
+            1,
+            HitTarget::CommitTableRow {
+                visible_row: row_idx,
+                commit_oid: row.commit_oid,
+            },
+        );
+    }
+
+    let row_slices: Vec<RowGraphSlice<'_>> = prepared_rows
+        .iter()
+        .map(|row| RowGraphSlice {
+            visible_row: row.visible_row,
+            commit_oid: row.commit_oid,
+            row_bg: row.row_bg,
+            elements: &row.elements,
+        })
+        .collect();
+
+    let mut graph_backend = CellGridGraphBackend::new();
+    let viewport_slice = GraphViewportSlice {
+        rows: &row_slices,
+        area: graph_area,
+        occluding_rects: &[],
+        color_map: &cached.color_map,
+    };
+    graph_backend.render_viewport(&viewport_slice, frame.buffer_mut(), ctx);
+
+    for (vis_idx, row) in prepared_rows.iter().enumerate() {
+        let bg = row.row_bg;
+        let row_idx = offset + vis_idx;
+        let commit = cached
+            .commit_at_visible_row(snap, row_idx)
+            .expect("visible row maps to valid commit");
+        let row_y = area.y.saturating_add(vis_idx as u16);
+        let text_x = area.x.saturating_add(graph_cols);
+        let text_w = area.right().saturating_sub(text_x);
+        if text_w == 0 {
+            continue;
+        }
+        let text_rect = Rect::new(text_x, row_y, text_w, 1);
+        let is_sel = row_idx == selected;
+        let is_head = snap.head_oid == Some(commit.oid);
+
         let head_marker = is_head.then(|| RefInfo::head_marker(commit.oid));
         let groups = group_refs_for_table(
             snap.refs
@@ -333,43 +448,18 @@ fn render_commits_table(
             },
         );
 
-        let graph = &ctx.glyph_mode.symbols().graph;
-        let dot = if is_head { graph.node_head } else { graph.node };
-        let dot_color = groups
-            .iter()
-            .find(|g| g.kind != RefGroupKind::Tag && g.kind != RefGroupKind::DetachedHead)
-            .map(|g| state.branch_colors.track_color_for_branch(g.primary_ref()))
-            .unwrap_or(ctx.theme.track_palette[0].fg);
-
-        let prefix = Line::from(vec![
-            Span::styled(format!(" {dot} "), Style::default().fg(dot_color)),
-            Span::styled(
-                format!("{} ", commit.oid.short()),
-                Style::default().fg(ctx.theme.fg_muted),
-            ),
-        ]);
-        let prefix_w = (prefix.width() as u16).min(row_rect.width);
+        let hash_prefix = Line::from(vec![Span::styled(
+            format!(" {} ", commit.oid.short()),
+            Style::default().fg(ctx.theme.fg_muted),
+        )]);
+        let hash_w = (hash_prefix.width() as u16).min(text_rect.width);
         frame.render_widget(
-            Paragraph::new(prefix).style(Style::default().bg(bg)),
-            row_rect,
+            Paragraph::new(hash_prefix).style(Style::default().bg(bg)),
+            text_rect,
         );
 
-        ctx.hit_registry.register(
-            row_rect,
-            1,
-            HitTarget::CommitTableRow {
-                visible_row: row_idx,
-                commit_oid: commit.oid,
-            },
-        );
-
-        let pills_x = row_rect.x.saturating_add(prefix_w);
-        let pills_area = Rect::new(
-            pills_x,
-            row_rect.y,
-            row_rect.right().saturating_sub(pills_x),
-            1,
-        );
+        let pills_x = text_rect.x.saturating_add(hash_w);
+        let pills_area = Rect::new(pills_x, row_y, text_rect.right().saturating_sub(pills_x), 1);
         let pills_w = PillBadgeBar {
             groups: &groups,
             glyphs: ctx.glyph_mode.symbols(),
@@ -382,8 +472,8 @@ fn render_commits_table(
         let subject_x = pills_x.saturating_add(pills_w);
         let subject_area = Rect::new(
             subject_x,
-            row_rect.y,
-            row_rect.right().saturating_sub(subject_x),
+            row_y,
+            text_rect.right().saturating_sub(subject_x),
             1,
         );
         let avail_subj = subject_area.width as usize;
@@ -413,6 +503,75 @@ fn render_commits_table(
     }
 }
 
+fn is_element_highlighted(
+    el: &GraphPrintElement,
+    row_idx: usize,
+    hover_target: Option<&HitTarget>,
+) -> bool {
+    let Some(HitTarget::GraphPrintElement {
+        visible_row: hover_row,
+        kind,
+        ..
+    }) = hover_target
+    else {
+        return false;
+    };
+
+    match (el, kind) {
+        (GraphPrintElement::Node { .. }, GraphHitKind::Node { .. }) => *hover_row == row_idx,
+        (
+            GraphPrintElement::Edge {
+                up_row, down_row, ..
+            },
+            GraphHitKind::Edge {
+                up_row: h_up,
+                down_row: h_dn,
+            },
+        )
+        | (
+            GraphPrintElement::Edge {
+                up_row, down_row, ..
+            },
+            GraphHitKind::Arrow {
+                up_row: h_up,
+                down_row: h_dn,
+                ..
+            },
+        )
+        | (
+            GraphPrintElement::TerminalEdge {
+                up_row, down_row, ..
+            },
+            GraphHitKind::Edge {
+                up_row: h_up,
+                down_row: h_dn,
+            },
+        ) => (*up_row as usize, *down_row as usize) == (*h_up, *h_dn),
+        (
+            GraphPrintElement::TerminalEdge {
+                up_row,
+                down_row,
+                target_row,
+                direction,
+                ..
+            },
+            GraphHitKind::Arrow {
+                up_row: h_up,
+                down_row: h_dn,
+                target_row: h_target,
+                is_down,
+                ..
+            },
+        ) => {
+            *hover_row == row_idx
+                && (*up_row as usize, *down_row as usize) == (*h_up, *h_dn)
+                && *target_row as usize == *h_target
+                && (*direction == jgit_core::graph::EdgeDirection::Down) == *is_down
+        }
+        _ => false,
+    }
+}
+
 fn render_commit_details(
     frame: &mut Frame<'_>,
     area: Rect,
@@ -426,7 +585,7 @@ fn render_commit_details(
     let Some(snap) = &state.repo_snapshot else {
         return;
     };
-    let Some(base_commit) = snap.commits.get(state.log_selected_idx) else {
+    let Some(base_commit) = state.log_commit_at(state.log_graph.selected_idx) else {
         frame.render_widget(
             Paragraph::new(Span::styled(
                 " No commit selected",
@@ -441,6 +600,17 @@ fn render_commit_details(
         .get(&base_commit.oid)
         .unwrap_or(base_commit);
 
+    let containing = state
+        .log_graph
+        .cached
+        .as_ref()
+        .and_then(|c| {
+            c.permanent.linear.node_of_oid(&commit.oid).map(|node| {
+                ReachableNodes::containing_branches(&c.permanent.linear, node, &snap.refs)
+            })
+        })
+        .unwrap_or_default();
+
     let parents_str = if commit.parents.is_empty() {
         "(root)".to_string()
     } else {
@@ -452,7 +622,7 @@ fn render_commit_details(
             .join(", ")
     };
 
-    let lines = vec![
+    let mut lines = vec![
         Line::from(vec![
             Span::styled(" Commit: ", Style::default().fg(ctx.theme.fg_muted)),
             Span::styled(
@@ -471,14 +641,31 @@ fn render_commit_details(
             Span::styled(" Parents: ", Style::default().fg(ctx.theme.fg_muted)),
             Span::styled(parents_str, Style::default().fg(ctx.theme.fg_primary)),
         ]),
-        Line::from(""),
-        Line::from(Span::styled(
-            format!(" {}", commit.subject),
-            Style::default()
-                .fg(ctx.theme.fg_bright)
-                .add_modifier(Modifier::BOLD),
-        )),
     ];
+
+    if !containing.is_empty() {
+        let branch_names: Vec<&str> = containing.iter().take(6).map(|r| r.name.as_str()).collect();
+        let suffix = if containing.len() > 6 {
+            format!(" (+{})", containing.len() - 6)
+        } else {
+            String::new()
+        };
+        lines.push(Line::from(vec![
+            Span::styled(" Branches: ", Style::default().fg(ctx.theme.fg_muted)),
+            Span::styled(
+                format!("{}{suffix}", branch_names.join(", ")),
+                Style::default().fg(ctx.theme.fg_primary),
+            ),
+        ]));
+    }
+
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        format!(" {}", commit.subject),
+        Style::default()
+            .fg(ctx.theme.fg_bright)
+            .add_modifier(Modifier::BOLD),
+    )));
 
     frame.render_widget(Paragraph::new(lines), area);
 }

@@ -23,16 +23,21 @@ pub fn render_console_tab(
         return;
     }
 
-    let split = state
-        .splitters
-        .split(area, SplitterId::ConsoleMainHorizontal, SplitAxis::Horizontal);
+    let split = state.splitters.split(
+        area,
+        SplitterId::ConsoleMainHorizontal,
+        SplitAxis::Horizontal,
+    );
     splitter_containers.push((
         SplitterId::ConsoleMainHorizontal,
         SplitAxis::Horizontal,
         split.container,
     ));
 
-    let list_sub = format!("{} entries (press 'p' to probe)", state.console_entries.len());
+    let list_sub = format!(
+        "{} entries (press 'p' to probe)",
+        state.console_entries.len()
+    );
     let list_body = render_pane_frame(
         frame,
         split.first,
@@ -115,7 +120,10 @@ fn render_command_list(
         let bg = row_background(is_sel, focused, is_hovered, ctx.theme.bg_canvas, ctx.theme);
 
         let (badge_txt, badge_fg) = match entry.exit_code {
-            None => (format!(" {} ", state.spinner_char()), ctx.theme.border_focused),
+            None => (
+                format!(" {} ", state.spinner_char()),
+                ctx.theme.border_focused,
+            ),
             Some(0) => (" ✓ ".to_string(), ctx.theme.status_added),
             Some(code) => (format!(" ✗{code}"), ctx.theme.status_conflicted),
         };
@@ -133,7 +141,10 @@ fn render_command_list(
                 format!(" [{}]", entry.timestamp_label()),
                 Style::default().fg(ctx.theme.fg_muted),
             ),
-            Span::styled(badge_txt, Style::default().fg(badge_fg).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                badge_txt,
+                Style::default().fg(badge_fg).add_modifier(Modifier::BOLD),
+            ),
             Span::styled(
                 truncate_to_width(&entry.command_line, max_cmd),
                 Style::default().fg(if is_sel {
@@ -145,7 +156,10 @@ fn render_command_list(
             Span::styled(dur, Style::default().fg(ctx.theme.fg_muted)),
         ]);
 
-        frame.render_widget(Paragraph::new(line).style(Style::default().bg(bg)), row_rect);
+        frame.render_widget(
+            Paragraph::new(line).style(Style::default().bg(bg)),
+            row_rect,
+        );
         ctx.hit_registry
             .register(row_rect, 1, HitTarget::ConsoleCommandRow { idx });
     }
@@ -182,19 +196,13 @@ fn render_command_output(
             Style::default().fg(ctx.theme.border_focused),
         ),
         Some(0) => Span::styled(
-            format!(
-                "EXIT 0 ({} ms)",
-                entry.duration_ms.unwrap_or_default()
-            ),
+            format!("EXIT 0 ({} ms)", entry.duration_ms.unwrap_or_default()),
             Style::default()
                 .fg(ctx.theme.status_added)
                 .add_modifier(Modifier::BOLD),
         ),
         Some(code) => Span::styled(
-            format!(
-                "EXIT {code} ({} ms)",
-                entry.duration_ms.unwrap_or_default()
-            ),
+            format!("EXIT {code} ({} ms)", entry.duration_ms.unwrap_or_default()),
             Style::default()
                 .fg(ctx.theme.status_conflicted)
                 .add_modifier(Modifier::BOLD),

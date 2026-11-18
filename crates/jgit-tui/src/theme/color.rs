@@ -240,6 +240,10 @@ mod tests {
         assert!(truecolor_from_env(None, true, None));
         assert!(truecolor_from_env(None, false, Some("WezTerm")));
         assert!(!truecolor_from_env(None, false, None));
-        assert!(!truecolor_from_env(Some("xterm-256color"), false, Some("Apple_Terminal")));
+        assert!(!truecolor_from_env(
+            Some("xterm-256color"),
+            false,
+            Some("Apple_Terminal")
+        ));
     }
 }

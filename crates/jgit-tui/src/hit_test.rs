@@ -4,6 +4,24 @@ use jgit_core::{
 };
 use ratatui::layout::Rect;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GraphHitKind {
+    Node {
+        commit_oid: Oid,
+    },
+    Arrow {
+        up_row: usize,
+        down_row: usize,
+        target_row: usize,
+        target_oid: Oid,
+        is_down: bool,
+    },
+    Edge {
+        up_row: usize,
+        down_row: usize,
+    },
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HitTarget {
     ToolTab(WorkspaceTab),
@@ -19,6 +37,12 @@ pub enum HitTarget {
     BranchTreeNode {
         pane: PaneId,
         node_id: BranchTreeNodeId,
+    },
+    GraphPrintElement {
+        visible_row: usize,
+        element_idx: usize,
+        commit_oid: Oid,
+        kind: GraphHitKind,
     },
     CommitRefPill {
         visible_row: usize,
