@@ -59,4 +59,5 @@ Milestone: M6 — 配置体系与国际化
     - `mod.rs`: `AppConfig::load`、`print_default_config`、`init_config`。
   - `crates/jgit-tui/src/main.rs`: 支持 `--help`、`--print-default-config [NAME]` 及 `--init-config` 参数分发。
   - `crates/jgit-tui/src/app.rs`: `AppState` 接入 `config: AppConfig` 并根据配置项动态初始化默认 tab、glyph 模式等。
-  - 单元测试与端到端运行验收全部通过（116+ 单元测试 pass）。
+  - 支持类似 Yazi 的 `[layout]` 布局比例控制：`log_ratio` (如 `[1, 3, 2]`)、`commit_ratio` (`[1, 2]`)、`stash_ratio` (`[2, 3]`)、`console_ratio` (`[2, 3]`)，并无缝集成到 `SplitterState`。
+  - 单元测试与端到端运行验收全部通过（133+ 单元测试 pass）。
