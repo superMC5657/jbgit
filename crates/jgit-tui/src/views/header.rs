@@ -26,12 +26,7 @@ pub fn render_top_header(
         .repo_snapshot
         .as_ref()
         .map(|s| s.repo_name.as_str())
-        .or_else(|| {
-            state
-                .repo_path_display
-                .file_name()
-                .and_then(|s| s.to_str())
-        })
+        .or_else(|| state.repo_path_display.file_name().and_then(|s| s.to_str()))
         .unwrap_or("jGit");
 
     spans.push(Span::styled(
@@ -45,24 +40,28 @@ pub fn render_top_header(
     // Branch widget pill
     let branch_start_x = area.x.saturating_add(span_width(&spans));
     let (pill_text, pill_fg, pill_bg) = if let Some(snap) = &state.repo_snapshot {
-        let mut ab_suffix = String::new();
-        if let Some(ref head_branch) = snap.head_branch
-            && let Some(r) = snap.refs.iter().find(|r| r.is_head && &r.name == head_branch)
-            && let Some((ahead, behind)) = r.ahead_behind
-        {
-            if ahead > 0 {
-                ab_suffix.push_str(&format!(" ↑{ahead}"));
-            }
-            if behind > 0 {
-                ab_suffix.push_str(&format!(" ↓{behind}"));
-            }
-        }
+        let ab_suffix = snap
+            .head_branch
+            .as_ref()
+            .and_then(|head_branch| {
+                snap.refs
+                    .iter()
+                    .find(|r| r.is_head && &r.name == head_branch)
+            })
+            .map(|r| ctx.glyph_mode.symbols().format_ahead_behind(r.ahead_behind))
+            .unwrap_or_default();
         if let Some(branch) = &snap.head_branch {
             let unborn = if snap.is_unborn_head { " (unborn)" } else { "" };
             (
-                format!(" {} {}{}{} ", ctx.glyph_mode.head_icon(), branch, unborn, ab_suffix),
-                ctx.theme.ref_head_fg,
-                ctx.theme.ref_head_bg,
+                format!(
+                    " {} {}{}{} ",
+                    ctx.glyph_mode.symbols().head,
+                    branch,
+                    unborn,
+                    ab_suffix
+                ),
+                ctx.theme.ref_head.pill_fg,
+                ctx.theme.ref_head.pill_bg,
             )
         } else {
             let short = snap
@@ -70,9 +69,9 @@ pub fn render_top_header(
                 .map(|o| o.short())
                 .unwrap_or_else(|| "detached".to_string());
             (
-                format!(" {} {} ", ctx.glyph_mode.warn_icon(), short),
-                ctx.theme.status_conflicted,
-                ctx.theme.bg_elevated,
+                format!(" {} {} ", ctx.glyph_mode.symbols().detached_head, short),
+                ctx.theme.ref_detached.pill_fg,
+                ctx.theme.ref_detached.pill_bg,
             )
         }
     } else if state.repo_error.is_some() {
@@ -98,7 +97,11 @@ pub fn render_top_header(
             .add_modifier(Modifier::BOLD),
     ));
     if branch_start_x < area.x.saturating_add(area.width) {
-        let w = pill_w.min(area.x.saturating_add(area.width).saturating_sub(branch_start_x));
+        let w = pill_w.min(
+            area.x
+                .saturating_add(area.width)
+                .saturating_sub(branch_start_x),
+        );
         ctx.hit_registry.register(
             Rect::new(branch_start_x, area.y, w, 1),
             5,
@@ -143,13 +146,15 @@ pub fn render_top_header(
     let help_btn = " ? ";
 
     let spinner_w = spinner.width() as u16;
-    let right_w =
-        spinner_w + (refresh_btn.width() + glyph_btn.width() + help_btn.width()) as u16;
+    let right_w = spinner_w + (refresh_btn.width() + glyph_btn.width() + help_btn.width()) as u16;
     let left_w = span_width(&spans);
 
     if area.width > left_w.saturating_add(right_w) {
         let pad = area.width.saturating_sub(left_w).saturating_sub(right_w);
-        spans.push(Span::styled(" ".repeat(pad as usize), Style::default().bg(bg)));
+        spans.push(Span::styled(
+            " ".repeat(pad as usize),
+            Style::default().bg(bg),
+        ));
 
         if !spinner.is_empty() {
             spans.push(Span::styled(
@@ -170,7 +175,9 @@ pub fn render_top_header(
         );
         spans.push(Span::styled(
             refresh_btn,
-            Style::default().fg(ctx.theme.fg_primary).bg(ctx.theme.bg_elevated),
+            Style::default()
+                .fg(ctx.theme.fg_primary)
+                .bg(ctx.theme.bg_elevated),
         ));
 
         let gx = rx.saturating_add(refresh_btn.width() as u16);
@@ -192,7 +199,9 @@ pub fn render_top_header(
         );
         spans.push(Span::styled(
             help_btn,
-            Style::default().fg(ctx.theme.fg_accent_link).bg(ctx.theme.bg_elevated),
+            Style::default()
+                .fg(ctx.theme.fg_accent_link)
+                .bg(ctx.theme.bg_elevated),
         ));
     }
 

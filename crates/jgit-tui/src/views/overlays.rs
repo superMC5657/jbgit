@@ -1,4 +1,4 @@
-use jgit_core::{ModalButton, RefKind};
+use jgit_core::{GroupOptions, ModalButton, RefInfo, RefKind, group_refs_for_table};
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
@@ -10,7 +10,134 @@ use crate::app::{
     AppState, ContextMenuEntryKind, ContextMenuItem, ModalLayer, PopupKind, RenderContext,
 };
 use crate::hit_test::HitTarget;
+use crate::theme::RefBadgeKind;
+use crate::views::palette_preview::render_palette_preview;
 use crate::views::truncate_to_width;
+
+/// Renders a hover tooltip when the pointer rests over a Detached HEAD pill or
+/// a `+N` overflow pill and no modal layer is open.
+pub fn render_hover_tooltip(
+    frame: &mut Frame<'_>,
+    screen: Rect,
+    state: &AppState,
+    ctx: &RenderContext<'_>,
+) {
+    if !state.modal_stack.is_empty() || screen.width < 16 || screen.height < 5 {
+        return;
+    }
+    let (Some(target), Some((hx, hy))) = (ctx.hover_target, state.hover_pos) else {
+        return;
+    };
+
+    let (title, border_color, lines): (&str, _, Vec<Line<'_>>) = match target {
+        HitTarget::CommitRefPill {
+            is_detached_head: true,
+            ..
+        } => {
+            let g = ctx.glyph_mode.symbols();
+            (
+                " Detached HEAD ",
+                ctx.theme.ref_detached.icon,
+                vec![
+                    Line::from(vec![
+                        Span::styled(
+                            format!(" {} ", g.detached_head),
+                            Style::default().fg(ctx.theme.ref_detached.icon),
+                        ),
+                        Span::styled(
+                            "HEAD points directly to a commit (not a branch).",
+                            Style::default().fg(ctx.theme.ref_detached.pill_fg),
+                        ),
+                    ]),
+                    Line::from(Span::styled(
+                        " New commits will not belong to any branch until checked out.",
+                        Style::default().fg(ctx.theme.fg_muted),
+                    )),
+                ],
+            )
+        }
+        HitTarget::CommitRefOverflow {
+            visible_row,
+            hidden_refs,
+        } => {
+            let g = ctx.glyph_mode.symbols();
+            let mut ref_lines = Vec::new();
+            if let Some(snap) = &state.repo_snapshot
+                && let Some(commit) = snap.commits.get(*visible_row)
+            {
+                let is_head = snap.head_oid == Some(commit.oid);
+                let head_marker = is_head.then(|| RefInfo::head_marker(commit.oid));
+                let groups = group_refs_for_table(
+                    snap.refs
+                        .iter()
+                        .filter(|r| r.target_oid == commit.oid)
+                        .chain(head_marker.as_ref()),
+                    GroupOptions::default(),
+                );
+                for grp in &groups {
+                    let badge = RefBadgeKind::from_group(grp);
+                    let style = ctx.theme.ref_style(badge);
+                    let mut spans = vec![Span::raw(" ")];
+                    for (icon, color) in ctx.theme.badge_icons(g, badge).into_iter().flatten() {
+                        spans.push(Span::styled(icon, Style::default().fg(color)));
+                    }
+                    spans.push(Span::styled(
+                        format!(" {}", grp.label),
+                        Style::default().fg(style.pill_fg),
+                    ));
+                    ref_lines.push(Line::from(spans));
+                }
+            }
+            if ref_lines.is_empty() {
+                for name in hidden_refs {
+                    ref_lines.push(Line::from(Span::styled(
+                        format!(" {} {name}", g.local_branch),
+                        Style::default().fg(ctx.theme.fg_primary),
+                    )));
+                }
+            }
+            ref_lines.push(Line::from(Span::styled(
+                " Right-click +N for actions",
+                Style::default().fg(ctx.theme.fg_muted),
+            )));
+            (" All Commit References ", ctx.theme.border_focused, ref_lines)
+        }
+        _ => return,
+    };
+
+    let content_w = lines
+        .iter()
+        .map(Line::width)
+        .max()
+        .unwrap_or(20)
+        .max(title.width() + 2);
+    let width = (content_w as u16 + 2).clamp(20, screen.width.saturating_sub(2).max(20));
+    let height = (lines.len() as u16 + 2).min(screen.height.saturating_sub(1).max(3));
+
+    let x = hx.min(screen.right().saturating_sub(width));
+    let below_y = hy.saturating_add(1);
+    let y = if below_y.saturating_add(height) <= screen.bottom() {
+        below_y
+    } else {
+        hy.saturating_sub(height)
+    };
+    let rect = Rect::new(x, y, width, height);
+
+    frame.render_widget(Clear, rect);
+    let block = Block::default()
+        .title(Span::styled(
+            title,
+            Style::default()
+                .fg(ctx.theme.fg_bright)
+                .add_modifier(Modifier::BOLD),
+        ))
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(border_color))
+        .style(Style::default().bg(ctx.theme.bg_elevated));
+    let inner = block.inner(rect);
+    frame.render_widget(block, rect);
+    frame.render_widget(Paragraph::new(lines), inner);
+}
 
 pub fn context_menu_rect(screen: Rect, anchor: (u16, u16), items: &[ContextMenuItem]) -> Rect {
     let max_label = items
@@ -18,9 +145,7 @@ pub fn context_menu_rect(screen: Rect, anchor: (u16, u16), items: &[ContextMenuI
         .map(|i| {
             let suffix_w = match &i.kind {
                 ContextMenuEntryKind::Submenu(_) => 3,
-                ContextMenuEntryKind::Action(_) => {
-                    i.shortcut.as_ref().map_or(0, |s| s.width() + 3)
-                }
+                ContextMenuEntryKind::Action(_) => i.shortcut.as_ref().map_or(0, |s| s.width() + 3),
             };
             i.label.width() + suffix_w + 4
         })
@@ -33,9 +158,12 @@ pub fn context_menu_rect(screen: Rect, anchor: (u16, u16), items: &[ContextMenuI
     let x = anchor
         .0
         .min(screen.x.saturating_add(screen.width).saturating_sub(width));
-    let y = anchor
-        .1
-        .min(screen.y.saturating_add(screen.height).saturating_sub(height));
+    let y = anchor.1.min(
+        screen
+            .y
+            .saturating_add(screen.height)
+            .saturating_sub(height),
+    );
     Rect::new(x, y, width, height)
 }
 
@@ -96,10 +224,18 @@ fn render_floating_popup(
     selected: usize,
     z: u8,
 ) {
-    let width = screen.width.clamp(screen.width.min(24), 64);
-    let height = screen.height.clamp(screen.height.min(8), 18);
-    let x = screen.x.saturating_add(screen.width.saturating_sub(width) / 2);
-    let y = screen.y.saturating_add(screen.height.saturating_sub(height) / 2);
+    let (max_w, max_h) = match kind {
+        PopupKind::PalettePreview => (100, 38),
+        _ => (64, 18),
+    };
+    let width = screen.width.clamp(screen.width.min(24), max_w);
+    let height = screen.height.clamp(screen.height.min(8), max_h);
+    let x = screen
+        .x
+        .saturating_add(screen.width.saturating_sub(width) / 2);
+    let y = screen
+        .y
+        .saturating_add(screen.height.saturating_sub(height) / 2);
     let rect = Rect::new(x, y, width, height);
 
     frame.render_widget(Clear, rect);
@@ -107,6 +243,7 @@ fn render_floating_popup(
     let title = match kind {
         PopupKind::ShortcutsHelp => " Keyboard & Mouse Shortcuts (Esc to close) ",
         PopupKind::BranchesQuickView => " Git Branches (Type to filter, Esc to close) ",
+        PopupKind::PalettePreview => " Darcula Palette Preview ",
     };
 
     let block = Block::default()
@@ -127,6 +264,9 @@ fn render_floating_popup(
         .register(rect, z + 1, HitTarget::ModalBackdrop { layer_z: z });
 
     match kind {
+        PopupKind::PalettePreview => {
+            render_palette_preview(frame, inner, ctx);
+        }
         PopupKind::ShortcutsHelp => {
             let lines = vec![
                 Line::from(Span::styled(
@@ -158,7 +298,15 @@ fn render_floating_popup(
                     Style::default().fg(ctx.theme.fg_primary),
                 )),
                 Line::from(Span::styled(
-                    " Ctrl+G            Toggle Unicode / NerdFont glyphs",
+                    " F12 / Ctrl+G      Toggle Unicode / NerdFont glyphs",
+                    Style::default().fg(ctx.theme.fg_primary),
+                )),
+                Line::from(Span::styled(
+                    " c / t (Log)       Compact references / Show tag names",
+                    Style::default().fg(ctx.theme.fg_primary),
+                )),
+                Line::from(Span::styled(
+                    " F9                Darcula palette & glyph preview",
                     Style::default().fg(ctx.theme.fg_primary),
                 )),
                 Line::from(Span::styled(
@@ -208,9 +356,9 @@ fn render_floating_popup(
                         ctx.theme.bg_elevated
                     };
                     let tag = match r.kind {
-                        RefKind::LocalBranch if r.is_head => ctx.glyph_mode.head_icon(),
-                        RefKind::LocalBranch => ctx.glyph_mode.branch_icon(),
-                        _ => ctx.glyph_mode.remote_icon(),
+                        RefKind::LocalBranch if r.is_head => ctx.glyph_mode.symbols().head,
+                        RefKind::LocalBranch => ctx.glyph_mode.symbols().local_branch,
+                        _ => ctx.glyph_mode.symbols().remote_branch,
                     };
                     let prefix = format!(" {tag} ");
                     let max_name = (inner.width as usize).saturating_sub(prefix.width());
@@ -286,7 +434,10 @@ fn render_context_menu(
             ),
         ]);
 
-        frame.render_widget(Paragraph::new(line).style(Style::default().bg(bg)), row_rect);
+        frame.render_widget(
+            Paragraph::new(line).style(Style::default().bg(bg)),
+            row_rect,
+        );
         ctx.hit_registry.register(
             row_rect,
             z + 1,
@@ -312,8 +463,12 @@ fn render_critical_dialog(
 ) {
     let width = screen.width.clamp(screen.width.min(28), 60);
     let height = screen.height.clamp(screen.height.min(7), 12);
-    let x = screen.x.saturating_add(screen.width.saturating_sub(width) / 2);
-    let y = screen.y.saturating_add(screen.height.saturating_sub(height) / 2);
+    let x = screen
+        .x
+        .saturating_add(screen.width.saturating_sub(width) / 2);
+    let y = screen
+        .y
+        .saturating_add(screen.height.saturating_sub(height) / 2);
     let rect = Rect::new(x, y, width, height);
 
     frame.render_widget(Clear, rect);
@@ -347,7 +502,10 @@ fn render_critical_dialog(
         let btn1 = format!(" [{cancel_label}] ");
         let btn0_rect = Rect::new(inner.x.saturating_add(1), btn_y, btn0.width() as u16, 1);
         let btn1_rect = Rect::new(
-            btn0_rect.x.saturating_add(btn0_rect.width).saturating_add(2),
+            btn0_rect
+                .x
+                .saturating_add(btn0_rect.width)
+                .saturating_add(2),
             btn_y,
             btn1.width() as u16,
             1,
@@ -359,7 +517,9 @@ fn render_critical_dialog(
                 .bg(ctx.theme.border_focused)
                 .add_modifier(Modifier::BOLD)
         } else {
-            Style::default().fg(ctx.theme.fg_primary).bg(ctx.theme.bg_panel)
+            Style::default()
+                .fg(ctx.theme.fg_primary)
+                .bg(ctx.theme.bg_panel)
         };
         let s1 = if selected_button == ModalButton::Cancel {
             Style::default()
@@ -367,14 +527,22 @@ fn render_critical_dialog(
                 .bg(ctx.theme.border_focused)
                 .add_modifier(Modifier::BOLD)
         } else {
-            Style::default().fg(ctx.theme.fg_primary).bg(ctx.theme.bg_panel)
+            Style::default()
+                .fg(ctx.theme.fg_primary)
+                .bg(ctx.theme.bg_panel)
         };
 
         frame.render_widget(Paragraph::new(Span::styled(btn0, s0)), btn0_rect);
         frame.render_widget(Paragraph::new(Span::styled(btn1, s1)), btn1_rect);
-        ctx.hit_registry
-            .register(btn0_rect, z + 1, HitTarget::ModalButton(ModalButton::Confirm));
-        ctx.hit_registry
-            .register(btn1_rect, z + 1, HitTarget::ModalButton(ModalButton::Cancel));
+        ctx.hit_registry.register(
+            btn0_rect,
+            z + 1,
+            HitTarget::ModalButton(ModalButton::Confirm),
+        );
+        ctx.hit_registry.register(
+            btn1_rect,
+            z + 1,
+            HitTarget::ModalButton(ModalButton::Cancel),
+        );
     }
 }

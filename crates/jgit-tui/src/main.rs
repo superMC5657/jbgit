@@ -593,4 +593,158 @@ mod tests {
             other => panic!("expected RunCli retry effect, got {other:?}"),
         }
     }
+
+    #[test]
+    fn detached_head_and_overflow_hover_tooltips_and_overflow_clicks() {
+        use jgit_core::{CommitSummary, Oid, RefInfo, RefKind, RepoSnapshot, RepositoryState};
+        use std::sync::Arc;
+
+        let mut state = AppState::new(std::path::PathBuf::from("."), None);
+        let oid = Oid::from_bytes([7u8; 20]);
+        state.repo_snapshot = Some(Arc::new(RepoSnapshot {
+            repo_name: "demo".into(),
+            workdir: ".".into(),
+            git_dir: ".git".into(),
+            common_dir: ".git".into(),
+            state: RepositoryState::Clean,
+            is_unborn_head: false,
+            head_branch: None,
+            head_oid: Some(oid),
+            refs: vec![
+                RefInfo {
+                    name: "alpha".into(),
+                    full_name: "refs/heads/alpha".into(),
+                    target_oid: oid,
+                    kind: RefKind::LocalBranch,
+                    upstream: None,
+                    ahead_behind: None,
+                    is_head: false,
+                },
+                RefInfo {
+                    name: "beta".into(),
+                    full_name: "refs/heads/beta".into(),
+                    target_oid: oid,
+                    kind: RefKind::LocalBranch,
+                    upstream: None,
+                    ahead_behind: None,
+                    is_head: false,
+                },
+                RefInfo {
+                    name: "gamma".into(),
+                    full_name: "refs/heads/gamma".into(),
+                    target_oid: oid,
+                    kind: RefKind::LocalBranch,
+                    upstream: None,
+                    ahead_behind: None,
+                    is_head: false,
+                },
+                RefInfo {
+                    name: "v1.0.0".into(),
+                    full_name: "refs/tags/v1.0.0".into(),
+                    target_oid: oid,
+                    kind: RefKind::Tag,
+                    upstream: None,
+                    ahead_behind: None,
+                    is_head: false,
+                },
+                RefInfo {
+                    name: "v1.0.1".into(),
+                    full_name: "refs/tags/v1.0.1".into(),
+                    target_oid: oid,
+                    kind: RefKind::Tag,
+                    upstream: None,
+                    ahead_behind: None,
+                    is_head: false,
+                },
+            ],
+            commits: vec![CommitSummary {
+                oid,
+                parents: vec![],
+                author_name: "Alice".into(),
+                author_email: "a@b.c".into(),
+                timestamp: 0,
+                subject: "detached commit with many refs".into(),
+            }],
+        }));
+
+        let backend = TestBackend::new(100, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| render_app(f, &mut state)).unwrap();
+
+        let row0_text = |buf: &ratatui::buffer::Buffer, y: u16| -> String {
+            (0..buf.area.width).map(|x| buf[(x, y)].symbol()).collect()
+        };
+        use unicode_width::UnicodeWidthStr;
+        let row_line = row0_text(terminal.backend().buffer(), 3);
+        let col_of = |needle: &str| {
+            let byte_idx = row_line.find(needle).unwrap();
+            row_line[..byte_idx].width() as u16
+        };
+        let head_x = col_of("HEAD");
+        let plus_x = col_of("+");
+
+        // Hover Detached HEAD pill -> shows Detached HEAD tooltip
+        route_terminal_event(
+            Event::Mouse(MouseEvent {
+                kind: MouseEventKind::Moved,
+                column: head_x,
+                row: 3,
+                modifiers: KeyModifiers::NONE,
+            }),
+            &mut state,
+        );
+        terminal.draw(|f| render_app(f, &mut state)).unwrap();
+        let full_text: String = (0..24)
+            .map(|y| row0_text(terminal.backend().buffer(), y))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(full_text.contains("Detached HEAD"), "{full_text}");
+
+        // Hover +N overflow pill -> lists all refs on commit
+        route_terminal_event(
+            Event::Mouse(MouseEvent {
+                kind: MouseEventKind::Moved,
+                column: plus_x,
+                row: 3,
+                modifiers: KeyModifiers::NONE,
+            }),
+            &mut state,
+        );
+        terminal.draw(|f| render_app(f, &mut state)).unwrap();
+        let full_text: String = (0..24)
+            .map(|y| row0_text(terminal.backend().buffer(), y))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(full_text.contains("All Commit References"), "{full_text}");
+        assert!(full_text.contains("v1.0.1"), "{full_text}");
+
+        // Left-click +N does NOT open context menu; right-click DOES open it.
+        let left_acts = route_terminal_event(
+            Event::Mouse(MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column: plus_x,
+                row: 3,
+                modifiers: KeyModifiers::NONE,
+            }),
+            &mut state,
+        );
+        for a in left_acts {
+            state.dispatch(a);
+        }
+        assert!(state.modal_stack.is_empty());
+
+        let right_acts = route_terminal_event(
+            Event::Mouse(MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Right),
+                column: plus_x,
+                row: 3,
+                modifiers: KeyModifiers::NONE,
+            }),
+            &mut state,
+        );
+        for a in right_acts {
+            state.dispatch(a);
+        }
+        assert_eq!(state.modal_stack.len(), 1);
+    }
 }

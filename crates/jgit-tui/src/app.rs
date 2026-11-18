@@ -11,7 +11,7 @@ use ratatui::layout::Rect;
 use rustc_hash::FxHashMap;
 
 use crate::hit_test::{HitTarget, HitTestRegistry};
-use crate::theme::{GlyphMode, ThemePalette};
+use crate::theme::{BranchColorManager, GlyphMode, ThemePalette};
 use crate::widgets::SplitterState;
 
 pub struct RenderContext<'a> {
@@ -29,7 +29,10 @@ pub enum ContextMenuAction {
     RefreshRepo,
     RunReadOnlyProbe(Vec<String>),
     ToggleGlyphMode,
+    ToggleCompactRefs,
+    ToggleTagNames,
     OpenHelp,
+    OpenPalettePreview,
 }
 
 #[derive(Debug, Clone)]
@@ -79,6 +82,8 @@ impl ContextMenuItem {
 pub enum PopupKind {
     ShortcutsHelp,
     BranchesQuickView,
+    /// Debug view of the Darcula palette, 14 track colors and glyph widths.
+    PalettePreview,
 }
 
 #[derive(Debug, Clone)]
@@ -157,9 +162,13 @@ pub enum Effect {
 pub enum Action {
     Quit,
     SwitchTab(WorkspaceTab),
-    CycleFocus { reverse: bool },
+    CycleFocus {
+        reverse: bool,
+    },
     FocusPane(PaneId),
     ToggleGlyphMode,
+    ToggleCompactRefs,
+    ToggleTagNames,
     RefreshAll,
     OpenPopup {
         kind: PopupKind,
@@ -191,6 +200,11 @@ pub enum Action {
 pub struct AppState {
     pub theme: ThemePalette,
     pub glyph_mode: GlyphMode,
+    pub branch_colors: BranchColorManager,
+    /// Compact References View: only the first ref keeps its text.
+    pub compact_refs: bool,
+    /// `Show Tag Names`: when off, tags collapse to icons.
+    pub show_tag_names: bool,
     pub active_tab: WorkspaceTab,
     pub focused_pane: PaneId,
     pub splitters: SplitterState,
@@ -231,9 +245,14 @@ pub struct AppState {
 
 impl AppState {
     pub fn new(repo_path_display: PathBuf, repo_error: Option<String>) -> Self {
+        let theme = ThemePalette::detect();
+        let branch_colors = theme.branch_color_manager();
         Self {
-            theme: ThemePalette::detect(),
+            theme,
             glyph_mode: GlyphMode::Unicode,
+            branch_colors,
+            compact_refs: false,
+            show_tag_names: true,
             active_tab: WorkspaceTab::Log,
             focused_pane: WorkspaceTab::Log.default_pane(),
             splitters: SplitterState::default(),
@@ -329,6 +348,20 @@ impl AppState {
                 self.glyph_mode = self.glyph_mode.toggle();
                 self.status_notice = Some(format!("GlyphMode: {}", self.glyph_mode.label()));
             }
+            Action::ToggleCompactRefs => {
+                self.compact_refs = !self.compact_refs;
+                self.status_notice = Some(format!(
+                    "Compact References View: {}",
+                    if self.compact_refs { "on" } else { "off" }
+                ));
+            }
+            Action::ToggleTagNames => {
+                self.show_tag_names = !self.show_tag_names;
+                self.status_notice = Some(format!(
+                    "Show Tag Names: {}",
+                    if self.show_tag_names { "on" } else { "off" }
+                ));
+            }
             Action::RefreshAll => {
                 self.loading_snapshot = true;
                 effects.push(Effect::RefreshRepoAndStage);
@@ -361,7 +394,10 @@ impl AppState {
                 self.modal_stack.pop();
             }
             Action::PopContextMenus => {
-                while matches!(self.modal_stack.last(), Some(ModalLayer::ContextMenu { .. })) {
+                while matches!(
+                    self.modal_stack.last(),
+                    Some(ModalLayer::ContextMenu { .. })
+                ) {
                     self.modal_stack.pop();
                 }
             }
@@ -405,10 +441,7 @@ impl AppState {
                 }
             }
             Action::ScrollLog(delta) => {
-                let len = self
-                    .repo_snapshot
-                    .as_ref()
-                    .map_or(0, |s| s.commits.len());
+                let len = self.repo_snapshot.as_ref().map_or(0, |s| s.commits.len());
                 if len > 0 {
                     let cur = self.log_selected_idx as isize;
                     let next = (cur + delta).clamp(0, (len - 1) as isize) as usize;
@@ -587,11 +620,7 @@ impl AppState {
     }
 }
 
-pub fn execute_effects(
-    effects: Vec<Effect>,
-    state: &mut AppState,
-    engine: Option<&EngineHandle>,
-) {
+pub fn execute_effects(effects: Vec<Effect>, state: &mut AppState, engine: Option<&EngineHandle>) {
     let Some(handle) = engine else {
         return;
     };
@@ -599,18 +628,16 @@ pub fn execute_effects(
     for effect in effects {
         match effect {
             Effect::RefreshRepoAndStage => {
-                state.latest_repo_epoch = state
-                    .latest_repo_epoch
-                    .max(handle.request_repo_snapshot());
+                state.latest_repo_epoch =
+                    state.latest_repo_epoch.max(handle.request_repo_snapshot());
                 state.latest_stage_epoch = state
                     .latest_stage_epoch
                     .max(handle.request_stage_status(false));
             }
             Effect::RefreshScope(scope) => {
                 if scope.needs_graph_refresh() {
-                    state.latest_repo_epoch = state
-                        .latest_repo_epoch
-                        .max(handle.request_repo_snapshot());
+                    state.latest_repo_epoch =
+                        state.latest_repo_epoch.max(handle.request_repo_snapshot());
                 }
                 if scope.needs_stage_refresh() {
                     state.latest_stage_epoch = state

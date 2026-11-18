@@ -3,6 +3,7 @@ pub mod console;
 pub mod header;
 pub mod log;
 pub mod overlays;
+pub mod palette_preview;
 pub mod stash;
 
 use jgit_core::{PaneId, SplitAxis, SplitterId, WorkspaceTab};
@@ -105,20 +106,39 @@ pub fn render_app(frame: &mut Frame<'_>, state: &mut AppState) {
 
         match state.active_tab {
             WorkspaceTab::Commit => {
-                commit::render_commit_tab(frame, body_rect, state, &mut ctx, &mut splitter_containers);
+                commit::render_commit_tab(
+                    frame,
+                    body_rect,
+                    state,
+                    &mut ctx,
+                    &mut splitter_containers,
+                );
             }
             WorkspaceTab::Log => {
                 log::render_log_tab(frame, body_rect, state, &mut ctx, &mut splitter_containers);
             }
             WorkspaceTab::Stash => {
-                stash::render_stash_tab(frame, body_rect, state, &mut ctx, &mut splitter_containers);
+                stash::render_stash_tab(
+                    frame,
+                    body_rect,
+                    state,
+                    &mut ctx,
+                    &mut splitter_containers,
+                );
             }
             WorkspaceTab::Console => {
-                console::render_console_tab(frame, body_rect, state, &mut ctx, &mut splitter_containers);
+                console::render_console_tab(
+                    frame,
+                    body_rect,
+                    state,
+                    &mut ctx,
+                    &mut splitter_containers,
+                );
             }
         }
 
         header::render_footer_bar(frame, footer_rect, state, &ctx);
+        overlays::render_hover_tooltip(frame, area, state, &ctx);
         overlays::render_modals(frame, area, state, &mut ctx);
     }
 
@@ -163,7 +183,10 @@ pub fn render_pane_frame(
     };
 
     let mut spans = vec![
-        Span::styled(if is_focused { "▌" } else { " " }, Style::default().fg(bar_fg)),
+        Span::styled(
+            if is_focused { "▌" } else { " " },
+            Style::default().fg(bar_fg),
+        ),
         Span::styled(
             pane.label(),
             Style::default().fg(title_fg).add_modifier(if is_focused {

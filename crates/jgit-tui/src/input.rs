@@ -29,6 +29,9 @@ fn route_key(key: KeyEvent, state: &mut AppState) -> Vec<Action> {
     if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
         return vec![Action::Quit];
     }
+    if key.code == KeyCode::F(12) {
+        return vec![Action::ToggleGlyphMode];
+    }
 
     // Top-down Z-order interception: check topmost modal layer first
     if let Some(top) = state.modal_stack.last_mut() {
@@ -113,6 +116,12 @@ fn route_key(key: KeyEvent, state: &mut AppState) -> Vec<Action> {
         KeyCode::Char('g') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             return vec![Action::ToggleGlyphMode];
         }
+        KeyCode::F(9) => {
+            return vec![Action::OpenPopup {
+                kind: PopupKind::PalettePreview,
+                initial_query: String::new(),
+            }];
+        }
         KeyCode::Char(d @ ('1' | '2' | '3' | '4')) => {
             if let Some(tab) = WorkspaceTab::from_digit(d) {
                 return vec![Action::SwitchTab(tab)];
@@ -144,6 +153,8 @@ fn route_key(key: KeyEvent, state: &mut AppState) -> Vec<Action> {
             KeyCode::PageDown => vec![Action::ScrollLog(10)],
             KeyCode::PageUp => vec![Action::ScrollLog(-10)],
             KeyCode::Home => vec![Action::SelectLogRow(0)],
+            KeyCode::Char('c') => vec![Action::ToggleCompactRefs],
+            KeyCode::Char('t') => vec![Action::ToggleTagNames],
             _ => Vec::new(),
         },
         PaneId::ConsoleCommandList => match key.code {
@@ -240,10 +251,10 @@ fn route_context_menu_key(key: KeyEvent, state: &mut AppState) -> Vec<Action> {
             else {
                 return Vec::new();
             };
-            if let Some(idx) = items.iter().position(|i| {
-                i.mnemonic
-                    .is_some_and(|m| m.to_ascii_lowercase() == target)
-            }) {
+            if let Some(idx) = items
+                .iter()
+                .position(|i| i.mnemonic.is_some_and(|m| m.to_ascii_lowercase() == target))
+            {
                 return activate_menu_item(*anchor, items, idx, *depth, state.terminal_area);
             }
             Vec::new()
@@ -309,7 +320,10 @@ fn route_mouse(mouse: MouseEvent, state: &mut AppState) -> Vec<Action> {
         }
         MouseEventKind::Moved => {
             state.hover_pos = Some((col, row));
-            let next_target = state.hit_registry.hit_test(col, row).map(|r| r.target.clone());
+            let next_target = state
+                .hit_registry
+                .hit_test(col, row)
+                .map(|r| r.target.clone());
             if let Some(HitTarget::MenuItem {
                 menu_depth,
                 item_idx,
@@ -347,6 +361,7 @@ fn route_mouse(mouse: MouseEvent, state: &mut AppState) -> Vec<Action> {
                     }
                     HitTarget::CommitTableRow { .. }
                     | HitTarget::CommitRefPill { .. }
+                    | HitTarget::CommitRefOverflow { .. }
                     | HitTarget::Pane(PaneId::LogCommitTable) => {
                         return vec![Action::ScrollLog(delta / 3)];
                     }
@@ -354,8 +369,7 @@ fn route_mouse(mouse: MouseEvent, state: &mut AppState) -> Vec<Action> {
                     | HitTarget::Pane(PaneId::ConsoleCommandList) => {
                         return vec![Action::ScrollConsoleList(delta / 3)];
                     }
-                    HitTarget::ConsoleOutputArea
-                    | HitTarget::Pane(PaneId::ConsoleOutputDetail) => {
+                    HitTarget::ConsoleOutputArea | HitTarget::Pane(PaneId::ConsoleOutputDetail) => {
                         return vec![Action::ScrollConsoleOutput(delta)];
                     }
                     HitTarget::ChangesTreeNode { .. }
@@ -464,6 +478,7 @@ fn route_mouse(mouse: MouseEvent, state: &mut AppState) -> Vec<Action> {
                 HitTarget::CommitRefPill {
                     visible_row,
                     ref_name,
+                    ..
                 } => {
                     let mut actions = vec![
                         Action::FocusPane(PaneId::LogCommitTable),
@@ -477,6 +492,10 @@ fn route_mouse(mouse: MouseEvent, state: &mut AppState) -> Vec<Action> {
                     }
                     actions
                 }
+                HitTarget::CommitRefOverflow { visible_row, .. } => vec![
+                    Action::FocusPane(PaneId::LogCommitTable),
+                    Action::SelectLogRow(visible_row),
+                ],
                 HitTarget::CommitTableRow {
                     visible_row,
                     commit_oid,
@@ -534,7 +553,10 @@ fn route_mouse(mouse: MouseEvent, state: &mut AppState) -> Vec<Action> {
             }
 
             let mut actions = Vec::new();
-            if matches!(state.modal_stack.last(), Some(ModalLayer::ContextMenu { .. })) {
+            if matches!(
+                state.modal_stack.last(),
+                Some(ModalLayer::ContextMenu { .. })
+            ) {
                 actions.push(Action::PopContextMenus);
             }
 
@@ -565,47 +587,38 @@ fn route_mouse(mouse: MouseEvent, state: &mut AppState) -> Vec<Action> {
                             Some("r"),
                             ContextMenuAction::RefreshRepo,
                         ),
-                        ContextMenuItem::submenu(
-                            "Git Probes",
-                            Some('p'),
-                            probe_submenu_items(),
-                        ),
+                        ContextMenuItem::submenu("Git Probes", Some('p'), probe_submenu_items()),
                         ContextMenuItem::action(
                             "Open Console Tab",
                             Some('c'),
                             Some("4"),
                             ContextMenuAction::SwitchTab(WorkspaceTab::Console),
                         ),
+                        ref_view_options_submenu(state),
                     ]
                 }
                 HitTarget::CommitRefPill {
                     visible_row,
                     ref_name,
+                    ..
                 } => {
                     if state.log_selected_idx != *visible_row {
                         actions.push(Action::FocusPane(PaneId::LogCommitTable));
                         actions.push(Action::SelectLogRow(*visible_row));
                     }
-                    vec![
-                        ContextMenuItem::action(
-                            format!("Show log for {ref_name}"),
-                            Some('l'),
-                            None,
-                            ContextMenuAction::RunReadOnlyProbe(vec![
-                                "log".into(),
-                                "-n".into(),
-                                "10".into(),
-                                "--oneline".into(),
-                                ref_name.clone(),
-                            ]),
-                        ),
-                        ContextMenuItem::action(
-                            "Refresh Log & Refs",
-                            Some('r'),
-                            Some("r"),
-                            ContextMenuAction::RefreshRepo,
-                        ),
-                    ]
+                    let mut items = ref_pill_menu_items(ref_name);
+                    items.push(ref_view_options_submenu(state));
+                    items
+                }
+                HitTarget::CommitRefOverflow {
+                    visible_row,
+                    hidden_refs,
+                } => {
+                    if state.log_selected_idx != *visible_row {
+                        actions.push(Action::FocusPane(PaneId::LogCommitTable));
+                        actions.push(Action::SelectLogRow(*visible_row));
+                    }
+                    overflow_menu_items(hidden_refs)
                 }
                 HitTarget::BranchTreeNode { node_id, .. } => {
                     let idx = node_id.0 as usize;
@@ -631,11 +644,7 @@ fn route_mouse(mouse: MouseEvent, state: &mut AppState) -> Vec<Action> {
                                 branch_name,
                             ]),
                         ),
-                        ContextMenuItem::submenu(
-                            "Git Probes",
-                            Some('p'),
-                            probe_submenu_items(),
-                        ),
+                        ContextMenuItem::submenu("Git Probes", Some('p'), probe_submenu_items()),
                         ContextMenuItem::action(
                             "Refresh Repository",
                             Some('r'),
@@ -698,8 +707,14 @@ fn route_mouse(mouse: MouseEvent, state: &mut AppState) -> Vec<Action> {
                     ContextMenuItem::action(
                         "Toggle Unicode / NerdFont",
                         Some('g'),
-                        Some("Ctrl+G"),
+                        Some("F12"),
                         ContextMenuAction::ToggleGlyphMode,
+                    ),
+                    ContextMenuItem::action(
+                        "Palette Preview",
+                        Some('v'),
+                        Some("F9"),
+                        ContextMenuAction::OpenPalettePreview,
                     ),
                     ContextMenuItem::action(
                         "Keyboard Shortcuts",
@@ -759,9 +774,68 @@ fn resolve_menu_action(act: ContextMenuAction) -> Vec<Action> {
         ContextMenuAction::RefreshRepo => vec![Action::RefreshAll],
         ContextMenuAction::RunReadOnlyProbe(args) => vec![Action::RunCliProbe(args)],
         ContextMenuAction::ToggleGlyphMode => vec![Action::ToggleGlyphMode],
+        ContextMenuAction::ToggleCompactRefs => vec![Action::ToggleCompactRefs],
+        ContextMenuAction::ToggleTagNames => vec![Action::ToggleTagNames],
+        ContextMenuAction::OpenPalettePreview => vec![Action::OpenPopup {
+            kind: PopupKind::PalettePreview,
+            initial_query: String::new(),
+        }],
         ContextMenuAction::OpenHelp => vec![Action::OpenPopup {
             kind: PopupKind::ShortcutsHelp,
             initial_query: String::new(),
         }],
     }
+}
+
+fn ref_pill_menu_items(ref_name: &str) -> Vec<ContextMenuItem> {
+    vec![
+        ContextMenuItem::action(
+            format!("Show log for {ref_name}"),
+            Some('l'),
+            None,
+            ContextMenuAction::RunReadOnlyProbe(vec![
+                "log".into(),
+                "-n".into(),
+                "10".into(),
+                "--oneline".into(),
+                ref_name.to_string(),
+            ]),
+        ),
+        ContextMenuItem::action(
+            "Refresh Log & Refs",
+            Some('r'),
+            Some("r"),
+            ContextMenuAction::RefreshRepo,
+        ),
+    ]
+}
+
+/// Menu behind a `+N` overflow pill: one submenu per hidden ref.
+fn overflow_menu_items(hidden_refs: &[String]) -> Vec<ContextMenuItem> {
+    hidden_refs
+        .iter()
+        .map(|name| ContextMenuItem::submenu(name.clone(), None, ref_pill_menu_items(name)))
+        .collect()
+}
+
+fn ref_view_options_submenu(state: &AppState) -> ContextMenuItem {
+    let check = |on: bool| if on { "✓" } else { " " };
+    ContextMenuItem::submenu(
+        "Reference View Options",
+        Some('o'),
+        vec![
+            ContextMenuItem::action(
+                format!("{} Compact References View", check(state.compact_refs)),
+                Some('c'),
+                Some("c"),
+                ContextMenuAction::ToggleCompactRefs,
+            ),
+            ContextMenuItem::action(
+                format!("{} Show Tag Names", check(state.show_tag_names)),
+                Some('t'),
+                Some("t"),
+                ContextMenuAction::ToggleTagNames,
+            ),
+        ],
+    )
 }

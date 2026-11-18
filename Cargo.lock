@@ -692,6 +692,7 @@ dependencies = [
  "chrono",
  "rustc-hash",
  "thiserror 2.0.21",
+ "unicode-width",
 ]
 
 [[package]]

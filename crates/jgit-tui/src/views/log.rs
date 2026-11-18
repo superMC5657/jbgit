@@ -1,4 +1,7 @@
-use jgit_core::{BranchTreeNodeId, PaneId, RefInfo, RefKind, RepoSnapshot, SplitAxis, SplitterId};
+use jgit_core::{
+    BranchTreeNodeId, GroupOptions, PaneId, RefGroupKind, RefInfo, RefKind, RepoSnapshot,
+    SplitAxis, SplitterId, group_refs_for_table,
+};
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
@@ -11,6 +14,7 @@ use crate::hit_test::HitTarget;
 use crate::views::{
     list_viewport, render_pane_frame, render_splitter_divider, row_background, truncate_to_width,
 };
+use crate::widgets::PillBadgeBar;
 
 pub fn ordered_branch_refs(snap: &RepoSnapshot) -> Vec<&RefInfo> {
     let mut out = Vec::with_capacity(snap.refs.len());
@@ -31,9 +35,10 @@ pub fn render_log_tab(
         return;
     }
 
-    let left_split = state
-        .splitters
-        .split(area, SplitterId::LogLeftHorizontal, SplitAxis::Horizontal);
+    let left_split =
+        state
+            .splitters
+            .split(area, SplitterId::LogLeftHorizontal, SplitAxis::Horizontal);
     splitter_containers.push((
         SplitterId::LogLeftHorizontal,
         SplitAxis::Horizontal,
@@ -110,13 +115,8 @@ pub fn render_log_tab(
             ctx,
         );
 
-        let details_body = render_pane_frame(
-            frame,
-            right_split.second,
-            PaneId::LogDetailsDiff,
-            "",
-            ctx,
-        );
+        let details_body =
+            render_pane_frame(frame, right_split.second, PaneId::LogDetailsDiff, "", ctx);
         render_commit_details(frame, details_body, state, ctx);
     }
 }
@@ -159,20 +159,27 @@ fn render_branches_pane(
     let mut rows: Vec<BranchRow<'_>> = Vec::new();
     let mut node_idx = 0usize;
 
-    rows.push(BranchRow::Header(format!(" Local ({})", locals.len())));
+    let open = ctx.glyph_mode.symbols().tree_expanded;
+    rows.push(BranchRow::Header(format!(
+        " {open} Local ({})",
+        locals.len()
+    )));
     for r in &locals {
         rows.push(BranchRow::Ref { node_idx, info: r });
         node_idx += 1;
     }
     if !remotes.is_empty() {
-        rows.push(BranchRow::Header(format!(" Remote ({})", remotes.len())));
+        rows.push(BranchRow::Header(format!(
+            " {open} Remote ({})",
+            remotes.len()
+        )));
         for r in &remotes {
             rows.push(BranchRow::Ref { node_idx, info: r });
             node_idx += 1;
         }
     }
     if !tags.is_empty() {
-        rows.push(BranchRow::Header(format!(" Tags ({})", tags.len())));
+        rows.push(BranchRow::Header(format!(" {open} Tags ({})", tags.len())));
         for r in &tags {
             rows.push(BranchRow::Ref { node_idx, info: r });
             node_idx += 1;
@@ -207,38 +214,30 @@ fn render_branches_pane(
                     ctx.hover_target,
                     Some(HitTarget::BranchTreeNode { node_id, .. }) if node_id.0 as usize == node_idx
                 );
-                let bg = row_background(is_sel, focused, is_hovered, ctx.theme.bg_canvas, ctx.theme);
+                let bg =
+                    row_background(is_sel, focused, is_hovered, ctx.theme.bg_canvas, ctx.theme);
 
+                let glyphs = ctx.glyph_mode.symbols();
                 let (icon, fg, text_fg) = match info.kind {
-                    RefKind::LocalBranch => {
-                        let icon = if info.is_head {
-                            ctx.glyph_mode.head_icon()
-                        } else {
-                            ctx.glyph_mode.branch_icon()
-                        };
-                        let fg = if info.is_head {
-                            ctx.theme.ref_head_fg
-                        } else {
-                            ctx.theme.ref_local_fg
-                        };
-                        (icon, fg, ctx.theme.fg_primary)
+                    RefKind::LocalBranch if info.is_head => {
+                        (glyphs.head, ctx.theme.ref_head.icon, ctx.theme.fg_primary)
                     }
-                    RefKind::RemoteBranch => (
-                        ctx.glyph_mode.remote_icon(),
-                        ctx.theme.ref_remote_fg,
+                    RefKind::LocalBranch => (
+                        glyphs.local_branch,
+                        ctx.theme.ref_local.icon,
                         ctx.theme.fg_primary,
                     ),
-                    RefKind::Tag | RefKind::Head => (
-                        ctx.glyph_mode.tag_icon(),
-                        ctx.theme.ref_tag_fg,
-                        ctx.theme.fg_muted,
+                    RefKind::RemoteBranch => (
+                        glyphs.remote_branch,
+                        ctx.theme.ref_remote.icon,
+                        ctx.theme.fg_primary,
                     ),
+                    RefKind::Tag | RefKind::Head => {
+                        (glyphs.tag, ctx.theme.ref_tag.icon, ctx.theme.fg_muted)
+                    }
                 };
 
-                let ab = match info.ahead_behind {
-                    Some((a, b)) if a > 0 || b > 0 => format!(" ↑{a}↓{b}"),
-                    _ => String::new(),
-                };
+                let ab = glyphs.format_ahead_behind(info.ahead_behind);
                 let prefix = format!("  {icon} ");
                 let max_name = (area.width as usize).saturating_sub(prefix.width());
                 let line = Line::from(vec![
@@ -303,13 +302,7 @@ fn render_commits_table(
     let (selected, offset) = list_viewport(snap.commits.len(), state.log_selected_idx, visible_h);
 
     let focused = ctx.focused_pane == PaneId::LogCommitTable;
-    for (vis_idx, commit) in snap
-        .commits
-        .iter()
-        .skip(offset)
-        .take(visible_h)
-        .enumerate()
-    {
+    for (vis_idx, commit) in snap.commits.iter().skip(offset).take(visible_h).enumerate() {
         let row_idx = offset + vis_idx;
         let row_rect = Rect::new(area.x, area.y.saturating_add(vis_idx as u16), area.width, 1);
         let is_sel = row_idx == selected;
@@ -326,16 +319,40 @@ fn render_commits_table(
         };
         let bg = row_background(is_sel, focused, is_hovered, default_bg, ctx.theme);
 
-        let dot = if is_head { "◉" } else { "●" };
-        let dot_color = ctx.theme.track_colors[0];
+        // Refs at this commit, plus a synthetic HEAD marker on the HEAD commit
+        // (merged into the current branch pill, or a detached-HEAD warning pill).
+        let head_marker = is_head.then(|| RefInfo::head_marker(commit.oid));
+        let groups = group_refs_for_table(
+            snap.refs
+                .iter()
+                .filter(|r| r.target_oid == commit.oid)
+                .chain(head_marker.as_ref()),
+            GroupOptions {
+                compact: state.compact_refs,
+                show_tag_names: state.show_tag_names,
+            },
+        );
 
-        let mut spans = vec![
+        let graph = &ctx.glyph_mode.symbols().graph;
+        let dot = if is_head { graph.node_head } else { graph.node };
+        let dot_color = groups
+            .iter()
+            .find(|g| g.kind != RefGroupKind::Tag && g.kind != RefGroupKind::DetachedHead)
+            .map(|g| state.branch_colors.track_color_for_branch(g.primary_ref()))
+            .unwrap_or(ctx.theme.track_palette[0].fg);
+
+        let prefix = Line::from(vec![
             Span::styled(format!(" {dot} "), Style::default().fg(dot_color)),
             Span::styled(
                 format!("{} ", commit.oid.short()),
                 Style::default().fg(ctx.theme.fg_muted),
             ),
-        ];
+        ]);
+        let prefix_w = (prefix.width() as u16).min(row_rect.width);
+        frame.render_widget(
+            Paragraph::new(prefix).style(Style::default().bg(bg)),
+            row_rect,
+        );
 
         ctx.hit_registry.register(
             row_rect,
@@ -346,45 +363,39 @@ fn render_commits_table(
             },
         );
 
-        // Attach inline ref labels and register CommitRefPill regions
-        for r in snap.refs.iter().filter(|r| r.target_oid == commit.oid).take(2) {
-            let (fg, rbg) = match r.kind {
-                RefKind::LocalBranch if r.is_head => (ctx.theme.ref_head_fg, ctx.theme.ref_head_bg),
-                RefKind::LocalBranch => (ctx.theme.ref_local_fg, ctx.theme.ref_local_bg),
-                RefKind::RemoteBranch => (ctx.theme.ref_remote_fg, ctx.theme.ref_remote_bg),
-                RefKind::Tag => (ctx.theme.ref_tag_fg, ctx.theme.ref_tag_bg),
-                RefKind::Head => (ctx.theme.ref_head_fg, ctx.theme.ref_head_bg),
-            };
-            let used_w: u16 = spans.iter().map(|s| s.content.width() as u16).sum();
-            let pill_label = format!(" {} ", r.name);
-            let pill_w = pill_label.width() as u16;
-            let pill_x = area.x.saturating_add(used_w);
-            if pill_x < area.x.saturating_add(area.width) {
-                let clamped_w = pill_w.min(area.x.saturating_add(area.width).saturating_sub(pill_x));
-                ctx.hit_registry.register(
-                    Rect::new(pill_x, row_rect.y, clamped_w, 1),
-                    2,
-                    HitTarget::CommitRefPill {
-                        visible_row: row_idx,
-                        ref_name: r.name.clone(),
-                    },
-                );
-            }
-            spans.push(Span::styled(pill_label, Style::default().fg(fg).bg(rbg)));
-            spans.push(Span::raw(" "));
+        let pills_x = row_rect.x.saturating_add(prefix_w);
+        let pills_area = Rect::new(
+            pills_x,
+            row_rect.y,
+            row_rect.right().saturating_sub(pills_x),
+            1,
+        );
+        let pills_w = PillBadgeBar {
+            groups: &groups,
+            glyphs: ctx.glyph_mode.symbols(),
+            theme: ctx.theme,
+            row_bg: bg,
+            visible_row: row_idx,
         }
+        .render(pills_area, frame.buffer_mut(), ctx.hit_registry);
 
-        let used_cols: usize = spans.iter().map(|s| s.content.width()).sum();
-        let author_tag = format!("  {}", commit.author_name);
-        let avail_subj = (area.width as usize)
-            .saturating_sub(used_cols)
-            .saturating_sub(author_tag.width().min(16));
+        let subject_x = pills_x.saturating_add(pills_w);
+        let subject_area = Rect::new(
+            subject_x,
+            row_rect.y,
+            row_rect.right().saturating_sub(subject_x),
+            1,
+        );
+        let avail_subj = subject_area.width as usize;
 
-        spans.push(Span::styled(
+        let subject = Span::styled(
             truncate_to_width(&commit.subject, avail_subj),
             Style::default()
                 .fg(if is_sel || is_head {
                     ctx.theme.fg_bright
+                } else if commit.parents.len() > 1 {
+                    // MergeCommitsHighlighter
+                    ctx.theme.fg_muted
                 } else {
                     ctx.theme.fg_primary
                 })
@@ -393,11 +404,11 @@ fn render_commits_table(
                 } else {
                     Modifier::empty()
                 }),
-        ));
+        );
 
         frame.render_widget(
-            Paragraph::new(Line::from(spans)).style(Style::default().bg(bg)),
-            row_rect,
+            Paragraph::new(Line::from(subject)).style(Style::default().bg(bg)),
+            subject_area,
         );
     }
 }
@@ -425,7 +436,10 @@ fn render_commit_details(
         );
         return;
     };
-    let commit = state.commit_details.get(&base_commit.oid).unwrap_or(base_commit);
+    let commit = state
+        .commit_details
+        .get(&base_commit.oid)
+        .unwrap_or(base_commit);
 
     let parents_str = if commit.parents.is_empty() {
         "(root)".to_string()

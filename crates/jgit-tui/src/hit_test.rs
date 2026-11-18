@@ -23,6 +23,12 @@ pub enum HitTarget {
     CommitRefPill {
         visible_row: usize,
         ref_name: String,
+        is_detached_head: bool,
+    },
+    /// Trailing `+N` pill summarising refs that did not fit the row.
+    CommitRefOverflow {
+        visible_row: usize,
+        hidden_refs: Vec<String>,
     },
     CommitTableRow {
         visible_row: usize,
@@ -186,6 +192,9 @@ mod tests {
         );
 
         let backdrop_hit = reg.hit_test(10, 5).unwrap();
-        assert_eq!(backdrop_hit.target, HitTarget::ModalBackdrop { layer_z: 30 });
+        assert_eq!(
+            backdrop_hit.target,
+            HitTarget::ModalBackdrop { layer_z: 30 }
+        );
     }
 }

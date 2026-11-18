@@ -22,9 +22,11 @@ pub fn render_commit_tab(
         return;
     }
 
-    let main_split = state
-        .splitters
-        .split(area, SplitterId::CommitMainHorizontal, SplitAxis::Horizontal);
+    let main_split = state.splitters.split(
+        area,
+        SplitterId::CommitMainHorizontal,
+        SplitAxis::Horizontal,
+    );
     splitter_containers.push((
         SplitterId::CommitMainHorizontal,
         SplitAxis::Horizontal,
@@ -156,15 +158,7 @@ fn render_stage_list(
         let row_rect = Rect::new(area.x, area.y.saturating_add(vis_idx as u16), area.width, 1);
         let is_sel = row_idx == selected;
 
-        let fg_kind = match kind {
-            FileStatusKind::Added => ctx.theme.status_added,
-            FileStatusKind::Modified => ctx.theme.status_modified,
-            FileStatusKind::Deleted => ctx.theme.status_deleted,
-            FileStatusKind::Renamed | FileStatusKind::Copied => ctx.theme.status_renamed,
-            FileStatusKind::Untracked => ctx.theme.status_untracked,
-            FileStatusKind::Conflicted => ctx.theme.status_conflicted,
-            _ => ctx.theme.fg_muted,
-        };
+        let fg_kind = ctx.theme.status_color(*kind);
 
         let is_hovered = matches!(
             ctx.hover_target,
@@ -172,13 +166,18 @@ fn render_stage_list(
         );
         let bg = row_background(is_sel, focused, is_hovered, ctx.theme.bg_canvas, ctx.theme);
 
-        let max_path = (area.width as usize).saturating_sub(15);
+        let file_icon = ctx.glyph_mode.symbols().file_icon(path);
+        let max_path = (area.width as usize).saturating_sub(17);
         let line = Line::from(vec![
-            Span::styled(format!(" [{}] ", kind.badge_char()), Style::default().fg(fg_kind)),
+            Span::styled(
+                format!(" [{}] ", kind.badge_char()),
+                Style::default().fg(fg_kind),
+            ),
             Span::styled(
                 format!("{group:<9} "),
                 Style::default().fg(ctx.theme.fg_muted),
             ),
+            Span::styled(format!("{file_icon} "), Style::default().fg(fg_kind)),
             Span::styled(
                 truncate_to_width(path, max_path),
                 Style::default().fg(if is_sel {
@@ -188,7 +187,10 @@ fn render_stage_list(
                 }),
             ),
         ]);
-        frame.render_widget(Paragraph::new(line).style(Style::default().bg(bg)), row_rect);
+        frame.render_widget(
+            Paragraph::new(line).style(Style::default().bg(bg)),
+            row_rect,
+        );
         ctx.hit_registry.register(
             row_rect,
             1,
