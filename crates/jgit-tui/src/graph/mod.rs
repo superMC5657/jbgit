@@ -1,5 +1,8 @@
 pub mod cell_grid;
+pub mod renderer;
 pub mod state;
+#[cfg(feature = "graphics-protocol")]
+pub mod vector;
 
 use jgit_core::graph::{GraphPrintElement, VisibleRowIdx};
 use jgit_core::{BranchColorId, Oid};
@@ -11,10 +14,11 @@ use rustc_hash::FxHashMap;
 use crate::app::RenderContext;
 
 pub use cell_grid::CellGridGraphBackend;
+pub use renderer::{GraphRenderer, GraphRendererMode, GraphicsCapabilities};
 pub use state::LogGraphState;
 
 /// One renderable graph primitive in a visible row, paired with resolved metadata.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct RenderGraphElement {
     pub element: GraphPrintElement,
     pub target_oid: Option<Oid>,
@@ -38,7 +42,8 @@ pub struct GraphViewportSlice<'a> {
 }
 
 /// Pluggable DAG track rendering backend (default: [`CellGridGraphBackend`];
-/// optional high-DPI vector extension: `PixelVectorGraphBackend`).
+/// optional high-DPI vector extension: `vector::PixelVectorGraphBackend`, selected
+/// per frame by [`GraphRenderer`]).
 pub trait GraphRenderBackend {
     fn render_viewport(
         &mut self,

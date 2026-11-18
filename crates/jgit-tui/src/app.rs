@@ -37,6 +37,8 @@ pub struct RenderContext<'a> {
     pub focused_pane: PaneId,
     pub hover_target: Option<&'a HitTarget>,
     pub dragging_splitter: Option<SplitterId>,
+    /// Graph backend selector; `None` renders with a plain [`crate::graph::CellGridGraphBackend`].
+    pub graph_renderer: Option<&'a mut crate::graph::GraphRenderer>,
 }
 
 #[derive(Debug, Clone)]
@@ -44,6 +46,7 @@ pub enum ContextMenuAction {
     RefreshRepo,
     RunReadOnlyProbe(Vec<String>),
     TogglePresentation(PresentationToggle),
+    SetGraphRenderer(crate::graph::GraphRendererMode),
     BranchesApplyFilter,
     BranchesNavigate,
     BranchesToggleFavorite,
@@ -403,6 +406,8 @@ pub enum Action {
     #[cfg_attr(not(test), allow(dead_code))]
     ClearAllFilters,
     TogglePresentation(PresentationToggle),
+    SetGraphRenderer(crate::graph::GraphRendererMode),
+    CycleGraphRenderer,
 
     // ── Commit table (center pane) ──
     SelectLogRow(usize),
@@ -588,6 +593,8 @@ pub struct AppState {
     pub branches: BranchesPaneState,
     pub log_filter: FilterBarState,
     pub presentation: LogPresentation,
+    /// `Graph Renderer: Auto | Vector | Character Grid` + terminal graphics capabilities.
+    pub graph_renderer: crate::graph::GraphRenderer,
     pub details: DetailsPaneState,
     pub active_tab: WorkspaceTab,
     pub focused_pane: PaneId,
@@ -652,6 +659,7 @@ impl AppState {
             branches: BranchesPaneState::default(),
             log_filter: FilterBarState::default(),
             presentation: LogPresentation::default(),
+            graph_renderer: crate::graph::GraphRenderer::default(),
             details: DetailsPaneState::default(),
             active_tab: WorkspaceTab::Log,
             focused_pane: WorkspaceTab::Log.default_pane(),
@@ -1133,6 +1141,13 @@ impl AppState {
             Action::ClearAllFilters => {
                 self.log_filter.spec = Default::default();
                 self.on_filter_changed();
+            }
+            Action::SetGraphRenderer(mode) => {
+                self.graph_renderer.set_mode(mode);
+            }
+            Action::CycleGraphRenderer => {
+                let next = self.graph_renderer.mode().next();
+                return self.dispatch(Action::SetGraphRenderer(next));
             }
             Action::TogglePresentation(t) => {
                 let p = &mut self.presentation;

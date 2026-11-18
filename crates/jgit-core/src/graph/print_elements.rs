@@ -80,7 +80,7 @@ pub enum NodeKind {
     Merge,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum GraphPrintElement {
     Node {
         row: VisibleRowIdx,

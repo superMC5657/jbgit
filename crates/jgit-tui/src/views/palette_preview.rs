@@ -282,6 +282,7 @@ mod tests {
                     focused_pane: jgit_core::PaneId::LogCommitTable,
                     hover_target: None,
                     dragging_splitter: None,
+                    graph_renderer: None,
                 };
                 render_palette_preview(f, f.area(), &ctx);
             })

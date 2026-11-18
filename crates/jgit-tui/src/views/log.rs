@@ -550,14 +550,21 @@ fn render_commits_table(
         })
         .collect();
 
-    let mut graph_backend = CellGridGraphBackend::new();
     let viewport_slice = GraphViewportSlice {
         rows: &row_slices,
         area: graph_area,
         occluding_rects: &[],
         color_map: &cached.color_map,
     };
-    graph_backend.render_viewport(&viewport_slice, frame.buffer_mut(), ctx);
+    match ctx.graph_renderer.take() {
+        Some(renderer) => {
+            renderer.render_viewport(&viewport_slice, frame.buffer_mut(), ctx);
+            ctx.graph_renderer = Some(renderer);
+        }
+        None => {
+            CellGridGraphBackend::new().render_viewport(&viewport_slice, frame.buffer_mut(), ctx)
+        }
+    }
 
     for (vis_idx, row) in prepared_rows.iter().enumerate() {
         let bg = row.row_bg;

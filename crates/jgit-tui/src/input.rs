@@ -7,6 +7,7 @@ use crate::app::{
     Action, AppState, ClickRecord, ContextMenuAction, ContextMenuItem,
     DragState, ModalLayer, PopupKind,
 };
+use crate::graph::GraphRendererMode;
 use crate::hit_test::{
     BranchesToolbarButton, ChangesToolbarButton, DiffToolbarButton, GraphHitKind, HitTarget,
 };
@@ -70,6 +71,9 @@ fn route_key(key: KeyEvent, state: &mut AppState) -> Vec<Action> {
     }
     if key.code == KeyCode::F(12) {
         return vec![Action::ToggleGlyphMode];
+    }
+    if key.code == KeyCode::F(8) {
+        return vec![Action::CycleGraphRenderer];
     }
     if state.modal_stack.is_empty() && key.modifiers.contains(KeyModifiers::ALT) {
         match key.code {
@@ -1198,6 +1202,7 @@ pub(crate) fn resolve_menu_action(act: ContextMenuAction) -> Vec<Action> {
         ContextMenuAction::RefreshRepo => vec![Action::RefreshAll],
         ContextMenuAction::RunReadOnlyProbe(args) => vec![Action::RunCliProbe(args)],
         ContextMenuAction::TogglePresentation(t) => vec![Action::TogglePresentation(t)],
+        ContextMenuAction::SetGraphRenderer(mode) => vec![Action::SetGraphRenderer(mode)],
         ContextMenuAction::BranchesApplyFilter => vec![Action::BranchesApplyFilter],
         ContextMenuAction::BranchesNavigate => vec![Action::BranchesNavigate],
         ContextMenuAction::BranchesToggleFavorite => vec![Action::BranchesToggleFavorite],
@@ -1308,6 +1313,23 @@ pub fn presentation_menu_items(state: &AppState) -> Vec<ContextMenuItem> {
             'u',
             None,
             PresentationToggle::UseAuthorDate,
+        ),
+        ContextMenuItem::separator(),
+        ContextMenuItem::submenu(
+            format!("Graph Renderer: {}", state.graph_renderer.mode().label()),
+            Some('g'),
+            GraphRendererMode::ALL
+                .into_iter()
+                .map(|mode| {
+                    let on = state.graph_renderer.mode() == mode;
+                    ContextMenuItem::action(
+                        format!("{} {}", if on { "●" } else { "○" }, mode.label()),
+                        mode.label().chars().next().map(|c| c.to_ascii_lowercase()),
+                        (mode == state.graph_renderer.mode().next()).then_some("F8"),
+                        ContextMenuAction::SetGraphRenderer(mode),
+                    )
+                })
+                .collect(),
         ),
     ]
 }

@@ -133,7 +133,7 @@ impl CellGridGraphBackend {
         }
     }
 
-    fn resolve_color(
+    pub(crate) fn resolve_color(
         color_map: &FxHashMap<BranchColorId, Color>,
         color_id: BranchColorId,
         ctx: &RenderContext<'_>,
@@ -432,7 +432,7 @@ impl CellGridGraphBackend {
 }
 
 #[inline]
-fn is_occluded(col: u16, row: u16, occluding_rects: &[Rect]) -> bool {
+pub(crate) fn is_occluded(col: u16, row: u16, occluding_rects: &[Rect]) -> bool {
     occluding_rects.iter().any(|r| {
         r.width > 0
             && r.height > 0
@@ -567,6 +567,7 @@ mod tests {
                     focused_pane: PaneId::LogCommitTable,
                     hover_target: None,
                     dragging_splitter: None,
+                    graph_renderer: None,
                 };
                 let slice = GraphViewportSlice {
                     rows: &slices,

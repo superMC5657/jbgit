@@ -118,6 +118,8 @@ pub fn render_app(frame: &mut Frame<'_>, state: &mut AppState) {
     // Register splitter containers separately after collecting them from layout helpers
     let mut splitter_containers = Vec::new();
     let mut hit_registry = std::mem::take(&mut state.hit_registry);
+    let mut graph_renderer = std::mem::take(&mut state.graph_renderer);
+    graph_renderer.begin_frame();
 
     {
         let mut ctx = RenderContext {
@@ -128,6 +130,7 @@ pub fn render_app(frame: &mut Frame<'_>, state: &mut AppState) {
             focused_pane,
             hover_target: hover_target.as_ref(),
             dragging_splitter,
+            graph_renderer: Some(&mut graph_renderer),
         };
 
         header::render_top_header(frame, header_rect, state, &mut ctx);
@@ -170,9 +173,15 @@ pub fn render_app(frame: &mut Frame<'_>, state: &mut AppState) {
         header::render_footer_bar(frame, footer_rect, state, &mut ctx);
         overlays::render_hover_tooltip(frame, area, state, &ctx);
         overlays::render_modals(frame, area, state, &mut ctx);
+
+        // Vector graph images go out only after every overlay is known.
+        if let Some(renderer) = ctx.graph_renderer.take() {
+            renderer.finish_frame(frame.buffer_mut(), area, &ctx);
+        }
     }
 
     state.hit_registry = hit_registry;
+    state.graph_renderer = graph_renderer;
     for (id, axis, rect) in splitter_containers {
         state.splitter_containers.insert(id, (axis, rect));
     }

@@ -22,15 +22,17 @@ mod theme;
 mod views;
 mod widgets;
 
+use std::io::Write;
 use std::path::PathBuf;
 use std::time::Duration;
 
 use anyhow::Result;
-use crossterm::event::EventStream;
+use crossterm::event::{Event, EventStream};
 use futures::StreamExt;
 use jgit_engine::{EngineSupervisor, RepoLocation};
 
 use crate::app::{Action, AppState, Effect, execute_effects};
+use crate::graph::GraphicsCapabilities;
 use crate::input::route_terminal_event;
 use crate::terminal::TerminalGuard;
 use crate::views::render_app;
@@ -74,6 +76,9 @@ async fn main() -> Result<()> {
 
     let mut term_guard = Some(TerminalGuard::enter()?);
     let mut event_stream = EventStream::new();
+    state
+        .graph_renderer
+        .set_capabilities(GraphicsCapabilities::detect());
 
     while !state.should_quit {
         if state.needs_redraw {
@@ -81,6 +86,8 @@ async fn main() -> Result<()> {
                 guard.terminal_mut().draw(|frame| {
                     render_app(frame, &mut state);
                 })?;
+                // Vector graph images (Kitty / Sixel / iTerm2) follow ratatui's flush.
+                let _ = state.graph_renderer.write_emission(&mut std::io::stdout());
             }
             state.needs_redraw = false;
         }
@@ -107,6 +114,12 @@ async fn main() -> Result<()> {
             maybe_term = event_stream.next() => {
                 match maybe_term {
                     Some(Ok(ev)) => {
+                        if matches!(ev, Event::Resize(..)) {
+                            // Font zoom (Ctrl +/-) arrives as a resize: re-calibrate cell pixels.
+                            state
+                                .graph_renderer
+                                .set_capabilities(GraphicsCapabilities::detect());
+                        }
                         let actions = route_terminal_event(ev, &mut state);
                         for action in actions {
                             let effects = state.dispatch(action);
@@ -153,8 +166,20 @@ async fn main() -> Result<()> {
         }
     }
 
+    let release = state.graph_renderer.shutdown_sequence();
+    if !release.is_empty() {
+        let _ = std::io::stdout().write_all(&release);
+    }
     drop(term_guard);
     Ok(())
+}
+
+fn resume_terminal_after_external_cmd(
+    term_guard: &mut Option<TerminalGuard>,
+    state: &mut AppState,
+) {
+    *term_guard = TerminalGuard::enter().ok();
+    state.graph_renderer.invalidate();
 }
 
 fn handle_external_editor_effects(
@@ -187,7 +212,7 @@ fn handle_external_editor_effects(
                 drop(term_guard.take());
                 let cmd = editor_bin();
                 let status = std::process::Command::new(&cmd).arg(&tmp_path).status();
-                *term_guard = TerminalGuard::enter().ok();
+                resume_terminal_after_external_cmd(term_guard, state);
                 if status.is_ok_and(|s| s.success())
                     && let Ok(updated) = std::fs::read_to_string(&tmp_path)
                 {
@@ -210,7 +235,7 @@ fn handle_external_editor_effects(
                 drop(term_guard.take());
                 let cmd = editor_bin();
                 let _ = std::process::Command::new(&cmd).arg(&full).status();
-                *term_guard = TerminalGuard::enter().ok();
+                resume_terminal_after_external_cmd(term_guard, state);
                 state.needs_redraw = true;
             }
             Effect::OpenExternalMergetool(rel) => {
@@ -219,7 +244,7 @@ fn handle_external_editor_effects(
                     .args(["mergetool", "-y", "--", rel])
                     .current_dir(&state.repo_path_display)
                     .status();
-                *term_guard = TerminalGuard::enter().ok();
+                resume_terminal_after_external_cmd(term_guard, state);
                 state.needs_redraw = true;
                 refresh_stage = true;
             }

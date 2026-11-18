@@ -22,6 +22,13 @@ syntect.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 unicode-width.workspace = true
+tiny-skia = { workspace = true, optional = true }
+png = { workspace = true, optional = true }
+
+[features]
+default = ["graphics-protocol"]
+# Optional pixel-level anti-aliased vector graph backend (tiny-skia + Kitty / Sixel / iTerm2 image protocols).
+graphics-protocol = ["dep:tiny-skia", "dep:png"]
 
 [dev-dependencies]
 insta.workspace = true
