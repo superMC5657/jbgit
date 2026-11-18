@@ -131,6 +131,8 @@ pub fn render_app(frame: &mut Frame<'_>, state: &mut AppState) {
             hover_target: hover_target.as_ref(),
             dragging_splitter,
             graph_renderer: Some(&mut graph_renderer),
+            i18n: Some(&state.i18n),
+            config: Some(&state.config),
         };
 
         header::render_top_header(frame, header_rect, state, &mut ctx);

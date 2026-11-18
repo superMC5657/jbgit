@@ -64,7 +64,8 @@ pub fn render_commit_tab(
 
     // Left-top: GitStageTree
     let total_changes = state.stage_status.as_ref().map_or(0, |s| s.total_changes());
-    let changes_sub = format!("{total_changes} files");
+    let total_s = total_changes.to_string();
+    let changes_sub = state.i18n.t_fmt("view.commit.files_count", &[("count", &total_s)]);
     let changes_body = render_pane_frame(
         frame,
         left_split.first,
@@ -88,12 +89,11 @@ pub fn render_commit_tab(
             .stage_status
             .as_ref()
             .map_or(0, |s| s.staged.len());
+        let staged_s = staged_count.to_string();
         let commit_sub = if state.stage_workbench.amend {
-            "Amend HEAD".to_string()
-        } else if staged_count > 0 {
-            format!("{staged_count} staged")
+            state.i18n.t("view.commit.amend_head").to_string()
         } else {
-            "0 staged".to_string()
+            state.i18n.t_fmt("view.commit.staged_count", &[("count", &staged_s)])
         };
         let msg_body = render_pane_frame(
             frame,
@@ -144,7 +144,7 @@ fn render_stage_tree_pane(
     let Some(status) = &state.stage_status else {
         frame.render_widget(
             Paragraph::new(Span::styled(
-                " Loading stage status…",
+                state.i18n.t("view.commit.loading_stage"),
                 Style::default().fg(ctx.theme.fg_muted),
             )),
             list_area,
@@ -156,7 +156,7 @@ fn render_stage_tree_pane(
     if rows.is_empty() {
         frame.render_widget(
             Paragraph::new(Span::styled(
-                " Working tree clean",
+                state.i18n.t("view.commit.working_clean"),
                 Style::default().fg(ctx.theme.fg_muted),
             )),
             list_area,
@@ -213,7 +213,7 @@ fn render_stage_tree_pane(
                     Style::default().fg(title_fg).add_modifier(Modifier::BOLD),
                 ));
                 if *kind == StageNodeKind::Conflicted {
-                    let pill = " [Resolve…] ";
+                    let pill = state.i18n.t("view.commit.resolve_pill").to_string();
                     resolve_pill_w = pill.width() as u16;
                     right.push(Span::styled(
                         pill,
@@ -451,10 +451,10 @@ fn render_commit_panel(
     // Optional Author override row
     if sw.show_author_input && y < bottom {
         let auth_rect = Rect::new(area.x, y, area.width, 1);
-        let prefix = " Author: ";
+        let prefix = format!(" {}: ", state.i18n.t("view.commit.author"));
         let cursor = if sw.editing_author { "▏" } else { "" };
         let val = if sw.author_input.is_empty() && !sw.editing_author {
-            "<Name <email>>"
+            state.i18n.t("view.commit.author_placeholder")
         } else {
             &sw.author_input
         };
@@ -509,8 +509,9 @@ fn render_commit_panel(
     if reserve_banner > 0 && y < bottom {
         let banner_rect = Rect::new(area.x, y, area.width, 1);
         if sw.commit_in_progress {
+            let spinner_s = state.spinner_char().to_string();
             let line = Line::from(Span::styled(
-                format!(" {} Running commit / Git hooks…", state.spinner_char()),
+                state.i18n.t_fmt("view.commit.running_hooks", &[("spinner", &spinner_s)]),
                 Style::default().fg(ctx.theme.border_focused),
             ));
             frame.render_widget(
@@ -522,10 +523,10 @@ fn render_commit_panel(
                 format!(" ✓ {}", banner.summary),
                 Style::default().fg(ctx.theme.status_added),
             )];
-            let undo_label = " [Undo Commit] ";
+            let undo_label = state.i18n.t("view.commit.undo_commit_btn").to_string();
             let right = if banner.can_undo {
                 vec![Span::styled(
-                    undo_label,
+                    undo_label.clone(),
                     Style::default()
                         .fg(ctx.theme.fg_accent_link)
                         .bg(ctx.theme.bg_elevated)
@@ -564,22 +565,22 @@ fn render_commit_options_row(
     let chk = |on: bool| if on { "x" } else { " " };
     let items = [
         (
-            format!(" [{}] Amend ", chk(sw.amend)),
+            format!(" [{}] {} ", chk(sw.amend), ctx.t("view.commit.amend_checkbox")),
             sw.amend,
             CommitOptionKind::Amend,
         ),
         (
-            format!(" [{}] Sign-off ", chk(sw.signoff)),
+            format!(" [{}] {} ", chk(sw.signoff), ctx.t("view.commit.sign_off")),
             sw.signoff,
             CommitOptionKind::Signoff,
         ),
         (
-            format!(" [{}] Hooks ", chk(sw.run_hooks)),
+            format!(" [{}] {} ", chk(sw.run_hooks), ctx.t("view.commit.hooks")),
             sw.run_hooks,
             CommitOptionKind::RunHooks,
         ),
         (
-            " Author ".to_string(),
+            format!(" {} ", ctx.t("view.commit.author")),
             sw.show_author_input,
             CommitOptionKind::AuthorToggle,
         ),
@@ -654,16 +655,16 @@ fn render_commit_message_editor(
             ctx.theme.fg_muted
         };
         let hint_text = if sw.empty_message_error {
-            " Enter a commit message"
+            state.i18n.t("view.commit.msg_err_empty")
         } else if sw.editor.needs_blank_second_line_hint() {
-            " Tip: leave a blank line after subject"
+            state.i18n.t("view.commit.msg_hint_blank")
         } else if sw.editor.is_empty() {
-            " Commit message (Ctrl+Enter commit, Ctrl+M history)"
+            state.i18n.t("view.commit.msg_hint_empty")
         } else {
-            " Subject / Body"
+            state.i18n.t("view.commit.msg_hint_body")
         };
         let left = vec![Span::styled(
-            hint_text,
+            hint_text.to_string(),
             Style::default().fg(if sw.empty_message_error {
                 ctx.theme.status_conflicted
             } else {
@@ -760,11 +761,11 @@ fn render_commit_buttons_row(
     );
     let sw = &state.stage_workbench;
     let commit_label = if sw.amend {
-        " Amend Commit (Ctrl+Enter) "
+        state.i18n.t("view.commit.amend_commit_btn")
     } else {
-        " Commit (Ctrl+Enter) "
+        state.i18n.t("view.commit.commit_btn")
     };
-    let push_label = " Commit & Push… ";
+    let push_label = state.i18n.t("view.commit.commit_push_btn");
 
     let mut x = area.x.saturating_add(1);
     let cw = commit_label.width() as u16;

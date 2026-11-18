@@ -127,7 +127,7 @@ pub fn build_popup_rows(state: &AppState, query: &str) -> Vec<PopupRow> {
         .filter_map(|r| branch_row(state, r, q, 1).map(|(_, b)| b))
         .collect();
     if !recent.is_empty() {
-        rows.push(PopupRow::Header("Recent".into()));
+        rows.push(PopupRow::Header(state.i18n.t("view.branches_popup.recent").into()));
         rows.extend(recent.into_iter().map(PopupRow::Branch));
     }
 
@@ -177,10 +177,13 @@ pub fn build_popup_rows(state: &AppState, query: &str) -> Vec<PopupRow> {
             }
         }
     };
-    push_section("Local Branches", RefKind::LocalBranch, true, &mut rows);
-    push_section("Remote Branches", RefKind::RemoteBranch, true, &mut rows);
+    let local_hdr = state.i18n.t("view.branches_popup.local");
+    let remote_hdr = state.i18n.t("view.branches_popup.remote");
+    let tags_hdr = state.i18n.t("view.branches_popup.tags");
+    push_section(local_hdr, RefKind::LocalBranch, true, &mut rows);
+    push_section(remote_hdr, RefKind::RemoteBranch, true, &mut rows);
     if !q.is_empty() {
-        push_section("Tags", RefKind::Tag, false, &mut rows);
+        push_section(tags_hdr, RefKind::Tag, false, &mut rows);
     }
     rows
 }
@@ -291,13 +294,13 @@ pub fn activate_row(state: &AppState, query: &str, idx: usize) -> Vec<Action> {
         }],
         PopupRow::NewBranch => vec![
             Action::PopModal,
-            Action::OpenDialog(Box::new(new_branch_from_head_dialog(snap))),
+            Action::OpenDialog(Box::new(new_branch_from_head_dialog(snap, &state.i18n))),
         ],
         PopupRow::CheckoutRevision => vec![
             Action::PopModal,
             Action::OpenDialog(Box::new(Dialog::Input(InputDialog::new(
-                "Checkout Tag or Revision",
-                "Tag, branch, SHA or expression (HEAD~2, v1.0^):",
+                state.i18n.t("dialog.checkout_revision.title"),
+                state.i18n.t("dialog.checkout_revision.prompt"),
                 "",
                 InputValidation::NonEmpty,
                 InputIntent::CheckoutRevision,
@@ -404,7 +407,7 @@ pub fn render_branches_popup(
         .map_or("jGit", |s| s.repo_name.as_str());
     let block = Block::default()
         .title(Span::styled(
-            format!(" Git Branches ({repo}) "),
+            format!(" {} ({repo}) ", state.i18n.t("view.branches_popup.title")),
             Style::default()
                 .fg(ctx.theme.fg_bright)
                 .add_modifier(Modifier::BOLD),
@@ -418,7 +421,7 @@ pub fn render_branches_popup(
         .register(rect, z + 1, HitTarget::DialogBody);
 
     // Title-bar buttons: [↻ Fetch] [⚙]
-    let fetch = " ↻ Fetch ";
+    let fetch = state.i18n.t("view.branches_popup.fetch_btn");
     let gear = " ⚙ ";
     let gx = rect.right().saturating_sub(gear.width() as u16 + 2);
     let fx = gx.saturating_sub(fetch.width() as u16 + 1);
@@ -452,7 +455,7 @@ pub fn render_branches_popup(
         Span::styled(" 🔍 ", Style::default().fg(ctx.theme.fg_muted)),
         Span::styled(
             if query.is_empty() {
-                "type to search branches".to_string()
+                state.i18n.t("view.branches_popup.search_placeholder").to_string()
             } else {
                 format!("{query}▏")
             },
@@ -487,7 +490,7 @@ pub fn render_branches_popup(
     if rows.is_empty() {
         frame.render_widget(
             Paragraph::new(Span::styled(
-                " No matching branches",
+                state.i18n.t("view.branches_popup.empty"),
                 Style::default().fg(ctx.theme.fg_muted),
             )),
             list,
@@ -542,7 +545,10 @@ pub fn render_branches_popup(
                 vec![Span::styled("▸ ", Style::default().fg(ctx.theme.fg_muted))],
             ),
             PopupRow::NewBranch => (
-                vec![Span::styled(" + New Branch…", Style::default().fg(fg))],
+                vec![Span::styled(
+                    state.i18n.t("view.branches_popup.new_branch_btn").to_string(),
+                    Style::default().fg(fg),
+                )],
                 vec![Span::styled(
                     "Ctrl+Alt+N ",
                     Style::default().fg(ctx.theme.fg_muted),
@@ -550,7 +556,7 @@ pub fn render_branches_popup(
             ),
             PopupRow::CheckoutRevision => (
                 vec![Span::styled(
-                    " ⌖ Checkout Tag or Revision…",
+                    state.i18n.t("view.branches_popup.checkout_rev_btn").to_string(),
                     Style::default().fg(fg),
                 )],
                 Vec::new(),

@@ -18,13 +18,15 @@ pub fn log_commit_menu_items(state: &AppState) -> Vec<ContextMenuItem> {
     };
     let oids = state.selected_commits_oldest_first();
     let n = oids.len().max(1);
+    let n_str = n.to_string();
     let single = n == 1;
     let short = primary.oid.short();
     let head = snap.head_oid;
     let branch = snap.head_branch.clone();
     let cur = branch.clone().unwrap_or_else(|| "HEAD".into());
     let no_ongoing = state.require_no_ongoing();
-    let need_single = |what: &str| format!("{what} works on a single commit");
+    let i18n = &state.i18n;
+    let need_single = |what: &str| i18n.t_fmt("menu.log.need_single", &[("what", what)]);
     let mut items = Vec::new();
 
     // ── Checkout & compare ──
@@ -34,7 +36,7 @@ pub fn log_commit_menu_items(state: &AppState) -> Vec<ContextMenuItem> {
         .filter(|r| r.kind == RefKind::LocalBranch && r.target_oid == primary.oid)
         .map(|r| r.name.clone())
         .collect();
-    let checkout_label = format!("Checkout Revision '{short}'");
+    let checkout_label = i18n.t_fmt("menu.log.checkout_revision", &[("short", &short)]);
     let checkout = if locals.is_empty() || !single {
         run(
             checkout_label,
@@ -50,7 +52,7 @@ pub fn log_commit_menu_items(state: &AppState) -> Vec<ContextMenuItem> {
             .iter()
             .map(|b| {
                 run(
-                    format!("Checkout '{b}'"),
+                    i18n.t_fmt("menu.log.checkout_branch", &[("name", b)]),
                     None,
                     None,
                     op(GitOp::Checkout {
@@ -62,7 +64,7 @@ pub fn log_commit_menu_items(state: &AppState) -> Vec<ContextMenuItem> {
             })
             .collect();
         sub.push(run(
-            format!("Checkout Revision '{short}' (Detached HEAD)"),
+            i18n.t_fmt("menu.log.checkout_detached", &[("short", &short)]),
             Some('d'),
             None,
             op(GitOp::Checkout {
@@ -75,19 +77,20 @@ pub fn log_commit_menu_items(state: &AppState) -> Vec<ContextMenuItem> {
     items.push(
         checkout
             .icon("⎇")
-            .enabled_if(single, need_single("Checkout"))
+            .enabled_if(single, need_single(i18n.t("menu.branch.checkout")))
             .require(no_ongoing.clone()),
     );
+    let compare_local_lbl = i18n.t("menu.log.compare_with_local");
     items.push(
         run(
-            "Compare with Local",
+            compare_local_lbl,
             Some('d'),
             Some("d"),
             vec![Action::CompareWithLocal {
                 target: primary.oid,
             }],
         )
-        .enabled_if(single, need_single("Compare with Local")),
+        .enabled_if(single, need_single(compare_local_lbl)),
     );
     let compare_versions = match oids.as_slice() {
         [base, target] => vec![Action::CompareVersions {
@@ -97,8 +100,8 @@ pub fn log_commit_menu_items(state: &AppState) -> Vec<ContextMenuItem> {
         _ => Vec::new(),
     };
     items.push(
-        run("Compare Versions", None, Some("Ctrl+D"), compare_versions)
-            .enabled_if(n == 2, "Select exactly 2 commits to compare"),
+        run(i18n.t("menu.log.compare_versions"), None, Some("Ctrl+D"), compare_versions)
+            .enabled_if(n == 2, i18n.t("menu.log.compare_need_two")),
     );
     items.push(ContextMenuItem::separator());
 
@@ -107,9 +110,9 @@ pub fn log_commit_menu_items(state: &AppState) -> Vec<ContextMenuItem> {
     items.push(
         run(
             if single {
-                "Cherry-Pick".to_string()
+                i18n.t("menu.log.cherry_pick").to_string()
             } else {
-                format!("Cherry-Pick {n} Commits")
+                i18n.t_fmt("menu.log.cherry_pick_many", &[("count", &n_str)])
             },
             Some('p'),
             Some("p"),
@@ -118,9 +121,9 @@ pub fn log_commit_menu_items(state: &AppState) -> Vec<ContextMenuItem> {
         .icon("🍒")
         .enabled_if(
             !in_head.iter().any(|b| *b),
-            "Cannot cherry-pick: commit is already in the current branch",
+            i18n.t("menu.log.cherry_pick_in_head"),
         )
-        .enabled_if(head.is_some(), "No current branch")
+        .enabled_if(head.is_some(), i18n.t("menu.log.no_current_branch"))
         .require(no_ongoing.clone()),
     );
     let mut newest_first = oids.clone();
@@ -128,9 +131,9 @@ pub fn log_commit_menu_items(state: &AppState) -> Vec<ContextMenuItem> {
     items.push(
         run(
             if single {
-                "Revert Commit".to_string()
+                i18n.t("menu.log.revert_commit").to_string()
             } else {
-                format!("Revert {n} Commits")
+                i18n.t_fmt("menu.log.revert_many", &[("count", &n_str)])
             },
             Some('v'),
             Some("v"),
@@ -138,43 +141,46 @@ pub fn log_commit_menu_items(state: &AppState) -> Vec<ContextMenuItem> {
         )
         .enabled_if(
             in_head.iter().all(|b| *b),
-            "Cannot revert: commit is not in the current branch",
+            i18n.t("menu.log.revert_not_in_head"),
         )
         .require(no_ongoing.clone()),
     );
+    let reset_lbl = i18n.t("menu.log.reset_current_branch");
     items.push(
         run(
-            "Reset Current Branch to Here…",
+            reset_lbl,
             Some('r'),
             Some("r"),
-            dialog(reset_dialog(primary.oid, &primary.subject, &cur)),
+            dialog(reset_dialog(primary.oid, &primary.subject, &cur, i18n)),
         )
-        .enabled_if(single, need_single("Reset"))
+        .enabled_if(single, need_single(reset_lbl))
         .require(no_ongoing.clone()),
     );
     let is_head = single && head == Some(primary.oid);
     items.push(
-        run("Uncommit", Some('u'), Some("u"), vec![Action::UncommitHead])
-            .enabled_if(is_head, "Uncommit is only available for the HEAD commit")
+        run(i18n.t("menu.log.uncommit"), Some('u'), Some("u"), vec![Action::UncommitHead])
+            .enabled_if(is_head, i18n.t("menu.log.uncommit_only_head"))
             .enabled_if(
                 !primary.parents.is_empty(),
-                "Cannot uncommit the root commit",
+                i18n.t("menu.log.uncommit_root"),
             )
             .require(no_ongoing.clone()),
     );
     items.push(ContextMenuItem::separator());
 
     // ── History rewriting ──
+    let reword_lbl = i18n.t("menu.log.reword");
+    let reword_title = i18n.t_fmt("menu.log.reword_title", &[("short", &short)]);
     let reword = if !single {
-        run("Reword Commit…", Some('w'), Some("F2"), Vec::new())
-            .enabled_if(false, need_single("Reword"))
+        run(reword_lbl, Some('w'), Some("F2"), Vec::new())
+            .enabled_if(false, need_single(reword_lbl))
     } else if is_head {
         run(
-            "Reword Commit…",
+            reword_lbl,
             Some('w'),
             Some("F2"),
             dialog(Dialog::Message(MessageDialog::new(
-                format!("Reword {short}"),
+                reword_title,
                 primary.full_message(),
                 MessageIntent::RewordHead,
             ))),
@@ -186,11 +192,11 @@ pub fn log_commit_menu_items(state: &AppState) -> Vec<ContextMenuItem> {
                 let mut todo = plan.entries.clone();
                 todo[0].action = TodoAction::Reword;
                 run(
-                    "Reword Commit…",
+                    reword_lbl,
                     Some('w'),
                     Some("F2"),
                     dialog(Dialog::Message(MessageDialog::new(
-                        format!("Reword {short}"),
+                        reword_title,
                         plan.messages[0].clone(),
                         MessageIntent::Rewrite {
                             base: plan.base,
@@ -200,14 +206,15 @@ pub fn log_commit_menu_items(state: &AppState) -> Vec<ContextMenuItem> {
                     ))),
                 )
             }
-            Err(e) => run("Reword Commit…", Some('w'), Some("F2"), Vec::new()).enabled_if(false, e),
+            Err(e) => run(reword_lbl, Some('w'), Some("F2"), Vec::new()).enabled_if(false, e),
         }
     };
     items.push(reword.icon("✎"));
     items.push(squash_item(state, &oids));
+    let fixup_lbl = i18n.t("menu.log.fixup");
     let fixup = if single {
         run(
-            "Fixup…",
+            fixup_lbl,
             Some('f'),
             Some("f"),
             op(GitOp::FixupCommit {
@@ -218,17 +225,18 @@ pub fn log_commit_menu_items(state: &AppState) -> Vec<ContextMenuItem> {
         )
         .enabled_if(
             state.has_staged_changes(),
-            "Fixup needs staged changes to fold into the commit",
+            i18n.t("menu.log.fixup_need_staged"),
         )
         .require(state.rewrite_plan(primary.oid, "fixup").map(|_| ()))
     } else {
-        run("Fixup…", Some('f'), Some("f"), Vec::new()).enabled_if(false, need_single("Fixup"))
+        run(fixup_lbl, Some('f'), Some("f"), Vec::new()).enabled_if(false, need_single(fixup_lbl))
     };
     items.push(fixup);
     items.push(drop_item(state, &oids));
+    let rebase_lbl = i18n.t("menu.log.interactive_rebase");
     let interactive = match state.rewrite_plan(primary.oid, "rebase") {
         Ok(plan) if single => run(
-            "Interactive Rebase from Here…",
+            rebase_lbl,
             Some('i'),
             Some("i"),
             dialog(Dialog::RebaseTodo(RebaseTodoDialog {
@@ -238,25 +246,15 @@ pub fn log_commit_menu_items(state: &AppState) -> Vec<ContextMenuItem> {
                 messages: plan.messages,
             })),
         ),
-        Ok(_) => run(
-            "Interactive Rebase from Here…",
-            Some('i'),
-            Some("i"),
-            Vec::new(),
-        )
-        .enabled_if(false, need_single("Interactive rebase")),
-        Err(e) => run(
-            "Interactive Rebase from Here…",
-            Some('i'),
-            Some("i"),
-            Vec::new(),
-        )
-        .enabled_if(false, e),
+        Ok(_) => run(rebase_lbl, Some('i'), Some("i"), Vec::new())
+            .enabled_if(false, need_single(rebase_lbl)),
+        Err(e) => run(rebase_lbl, Some('i'), Some("i"), Vec::new()).enabled_if(false, e),
     };
     items.push(interactive);
+    let push_up_lbl = i18n.t("menu.log.push_up_to");
     let push_up_to = match &branch {
         Some(b) => run(
-            "Push All up to Here…",
+            push_up_lbl,
             None,
             None,
             vec![Action::PromptPush {
@@ -266,12 +264,12 @@ pub fn log_commit_menu_items(state: &AppState) -> Vec<ContextMenuItem> {
         )
         .enabled_if(
             state.is_ancestor_of_head(primary.oid),
-            "Commit is not in the current branch",
+            i18n.t("menu.log.push_not_in_head"),
         ),
-        None => run("Push All up to Here…", None, None, Vec::new())
-            .enabled_if(false, "Detached HEAD: no branch to push"),
+        None => run(push_up_lbl, None, None, Vec::new())
+            .enabled_if(false, i18n.t("menu.log.detached_no_branch")),
     };
-    items.push(push_up_to.enabled_if(single, need_single("Push up to here")));
+    items.push(push_up_to.enabled_if(single, need_single(push_up_lbl)));
     items.push(ContextMenuItem::separator());
 
     // ── Branches & tags ──
@@ -284,7 +282,7 @@ pub fn log_commit_menu_items(state: &AppState) -> Vec<ContextMenuItem> {
     for (i, (name, kind)) in pill_refs.iter().take(4).enumerate() {
         items.push(
             ContextMenuItem::submenu(
-                format!("Branch '{}'", ellipsize(name, 28)),
+                i18n.t_fmt("menu.log.branch_sub", &[("name", &ellipsize(name, 28))]),
                 (i == 0).then_some('b'),
                 branch_menu_items(state, name, *kind),
             )
@@ -295,9 +293,10 @@ pub fn log_commit_menu_items(state: &AppState) -> Vec<ContextMenuItem> {
             }),
         );
     }
+    let new_branch_lbl = i18n.t("menu.log.new_branch_here");
     items.push(
         run(
-            "New Branch…",
+            new_branch_lbl,
             Some('n'),
             Some("Ctrl+Alt+N"),
             dialog(new_branch_dialog(
@@ -305,21 +304,23 @@ pub fn log_commit_menu_items(state: &AppState) -> Vec<ContextMenuItem> {
                 &short,
                 local_names(state),
                 "",
+                i18n,
             )),
         )
         .icon("+")
-        .enabled_if(single, need_single("New Branch")),
+        .enabled_if(single, need_single(new_branch_lbl)),
     );
     let tags: Vec<String> = snap.tag_names().iter().map(|t| t.to_string()).collect();
+    let new_tag_lbl = i18n.t("menu.log.new_tag_here");
     items.push(
         run(
-            "New Tag…",
+            new_tag_lbl,
             Some('t'),
             Some("t"),
             dialog(Dialog::Input(
                 InputDialog::new(
-                    format!("New Tag on {short}"),
-                    "Tag name:",
+                    i18n.t_fmt("menu.log.new_tag_title", &[("short", &short)]),
+                    i18n.t("dialog.new_tag.name_prompt"),
                     "",
                     InputValidation::RefName {
                         what: "Tag",
@@ -329,17 +330,17 @@ pub fn log_commit_menu_items(state: &AppState) -> Vec<ContextMenuItem> {
                         target: primary.oid,
                     },
                 )
-                .with_checkbox("Annotated (edit message next)", false),
+                .with_checkbox(i18n.t("dialog.new_tag.annotated_checkbox"), false),
             )),
         )
         .icon("🏷")
-        .enabled_if(single, need_single("New Tag")),
+        .enabled_if(single, need_single(new_tag_lbl)),
     );
     items.push(ContextMenuItem::separator());
 
     // ── Utilities & navigation ──
     items.push(run(
-        "Copy Revision Number",
+        i18n.t("menu.log.copy_revision"),
         Some('y'),
         Some("y"),
         vec![Action::CopyText(
@@ -377,11 +378,11 @@ pub fn log_commit_menu_items(state: &AppState) -> Vec<ContextMenuItem> {
         [] => Vec::new(),
     };
     items.push(ContextMenuItem::submenu(
-        "Create Patch…",
+        i18n.t("menu.log.create_patch"),
         Some('a'),
         vec![
             run(
-                "Save as .patch File(s) in Repository Root",
+                i18n.t("menu.log.save_patch_files"),
                 Some('s'),
                 None,
                 op(GitOp::CreatePatchFiles {
@@ -390,7 +391,7 @@ pub fn log_commit_menu_items(state: &AppState) -> Vec<ContextMenuItem> {
                 }),
             ),
             run(
-                "Copy Patch to Clipboard",
+                i18n.t("menu.log.copy_patch_clipboard"),
                 Some('c'),
                 None,
                 op(GitOp::PatchToClipboard { args: patch_args }),
@@ -398,20 +399,20 @@ pub fn log_commit_menu_items(state: &AppState) -> Vec<ContextMenuItem> {
         ],
     ));
     items.push(ContextMenuItem::action(
-        "Go to Hash / Branch / Tag…",
+        i18n.t("menu.log.goto_revision"),
         Some('g'),
         Some("Ctrl+G"),
         ContextMenuAction::OpenGoTo,
     ));
-    items.push(run("Go to Child", None, Some("←"), vec![Action::GoToChild]));
+    items.push(run(i18n.t("menu.log.go_to_child"), None, Some("←"), vec![Action::GoToChild]));
     items.push(run(
-        "Go to Parent",
+        i18n.t("menu.log.go_to_parent"),
         None,
         Some("→"),
         vec![Action::GoToParent(0)],
     ));
     items.push(ContextMenuItem::submenu(
-        "Presentation",
+        i18n.t("menu.log.presentation"),
         Some('o'),
         crate::input::presentation_menu_items(state),
     ));
@@ -419,14 +420,16 @@ pub fn log_commit_menu_items(state: &AppState) -> Vec<ContextMenuItem> {
 }
 
 fn squash_item(state: &AppState, oids: &[Oid]) -> ContextMenuItem {
+    let i18n = &state.i18n;
+    let count_s = oids.len().to_string();
     let label = if oids.len() >= 2 {
-        format!("Squash {} Commits…", oids.len())
+        i18n.t_fmt("menu.log.squash_many", &[("count", &count_s)])
     } else {
-        "Squash Commits…".to_string()
+        i18n.t("menu.log.squash_commits").to_string()
     };
     let base = run(label.clone(), Some('s'), Some("s"), Vec::new());
     if oids.len() < 2 {
-        return base.enabled_if(false, "Select 2 or more commits to squash");
+        return base.enabled_if(false, i18n.t("menu.log.squash_need_two"));
     }
     let plan = match state.rewrite_plan(oids[0], "squash") {
         Ok(p) => p,
@@ -440,18 +443,12 @@ fn squash_item(state: &AppState, oids: &[Oid]) -> ContextMenuItem {
         .map(|(i, _)| i)
         .collect();
     if positions.len() != oids.len() {
-        return base.enabled_if(
-            false,
-            "Cannot squash: commits are not all reachable from HEAD",
-        );
+        return base.enabled_if(false, i18n.t("menu.log.squash_not_reachable"));
     }
     let first = positions[0];
     let last = *positions.last().unwrap();
     if last - first + 1 != positions.len() {
-        return base.enabled_if(
-            false,
-            "Cannot squash: selected commits must be contiguous on the same branch",
-        );
+        return base.enabled_if(false, i18n.t("menu.log.squash_non_contiguous"));
     }
     let combined = plan.messages[first..=last].join("\n\n");
     let mut todo = plan.entries;
@@ -463,7 +460,7 @@ fn squash_item(state: &AppState, oids: &[Oid]) -> ContextMenuItem {
         Some('s'),
         Some("s"),
         dialog(Dialog::Message(MessageDialog::new(
-            format!("Squash {} Commits", oids.len()),
+            i18n.t_fmt("menu.log.squash_title", &[("count", &count_s)]),
             combined,
             MessageIntent::Rewrite {
                 base: plan.base,
@@ -475,14 +472,16 @@ fn squash_item(state: &AppState, oids: &[Oid]) -> ContextMenuItem {
 }
 
 fn drop_item(state: &AppState, oids: &[Oid]) -> ContextMenuItem {
+    let i18n = &state.i18n;
+    let count_s = oids.len().to_string();
     let label = if oids.len() > 1 {
-        format!("Drop {} Commits", oids.len())
+        i18n.t_fmt("menu.log.drop_many", &[("count", &count_s)])
     } else {
-        "Drop Commit".to_string()
+        i18n.t("menu.log.drop_commit").to_string()
     };
     let Some(&oldest) = oids.first() else {
         return run(label, Some('x'), Some("Del"), Vec::new())
-            .enabled_if(false, "No commit selected");
+            .enabled_if(false, i18n.t("menu.log.drop_no_selection"));
     };
     match state.rewrite_plan(oldest, "drop") {
         Ok(plan) => {
@@ -499,24 +498,20 @@ fn drop_item(state: &AppState, oids: &[Oid]) -> ContextMenuItem {
                 }
             }
             if subjects.len() != oids.len() {
-                return run(label, Some('x'), Some("Del"), Vec::new()).enabled_if(
-                    false,
-                    "Cannot drop: commits are not all reachable from HEAD",
-                );
+                return run(label, Some('x'), Some("Del"), Vec::new())
+                    .enabled_if(false, i18n.t("menu.log.drop_not_reachable"));
             }
-            let mut body = vec![format!(
-                "Remove {} commit(s) from the current branch?",
-                oids.len()
-            )];
+            let mut body = vec![i18n.t_fmt("menu.log.drop_confirm_body", &[("count", &count_s)])];
             body.extend(subjects);
             run(
                 label,
                 Some('x'),
                 Some("Del"),
                 dialog(Dialog::Choice(ChoiceDialog::confirm(
-                    "Drop Commits",
+                    i18n.t("menu.log.drop_confirm_title"),
                     body,
-                    "Drop",
+                    i18n.t("menu.log.drop_confirm_btn"),
+                    i18n.cancel(),
                     op(GitOp::RewriteHistory {
                         base: plan.base,
                         todo,
@@ -531,6 +526,7 @@ fn drop_item(state: &AppState, oids: &[Oid]) -> ContextMenuItem {
 
 /// Right-click on the Log diff preview.
 pub fn log_diff_menu_items(state: &AppState) -> Vec<ContextMenuItem> {
+    let i18n = &state.i18n;
     let change = state.details.selected_change().map(|c| c.path.clone());
     let oids = state
         .details
@@ -551,28 +547,28 @@ pub fn log_diff_menu_items(state: &AppState) -> Vec<ContextMenuItem> {
     };
     vec![
         run(
-            "Toggle Unified / Side-by-Side",
+            i18n.t("menu.log.toggle_side_by_side"),
             Some('s'),
             Some("s"),
             vec![Action::DiffToggleSideBySide],
         ),
         run(
-            "Cycle Context Lines",
+            i18n.t("menu.log.cycle_context"),
             Some('c'),
             Some("c"),
             vec![Action::DiffCycleContext],
         ),
         run(
-            "Copy Patch of File",
+            i18n.t("menu.log.copy_patch_file"),
             Some('p'),
             None,
             op(GitOp::PatchToClipboard {
                 args: patch.clone(),
             }),
         )
-        .enabled_if(!patch.is_empty(), "Select a single commit and a file"),
+        .enabled_if(!patch.is_empty(), i18n.t("menu.log.copy_patch_need_file")),
         run(
-            "Full-Screen Diff",
+            i18n.t("menu.log.fullscreen_diff"),
             Some('z'),
             Some("F4"),
             vec![Action::ZoomDiff(!state.details.diff_zoomed)],

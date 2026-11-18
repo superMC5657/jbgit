@@ -32,25 +32,107 @@ pub fn route_terminal_event(event: Event, state: &mut AppState) -> Vec<Action> {
         }
         Event::Mouse(mouse) => route_mouse(mouse, state),
         Event::Resize(_, _) => vec![Action::Resize],
-        Event::Paste(text) => {
-            if state.modal_stack.is_empty()
-                && state.active_tab == WorkspaceTab::Commit
-                && state.focused_pane == PaneId::CommitMessageEditor
-            {
-                if state.stage_workbench.editing_author {
-                    text.chars()
-                        .filter(|c| *c != '\n' && *c != '\r')
-                        .map(Action::CommitAuthorChar)
-                        .collect()
-                } else {
-                    vec![Action::CommitEditorPaste(text)]
-                }
-            } else {
-                Vec::new()
-            }
-        }
+        Event::Paste(text) => route_paste(text, state),
         Event::FocusGained | Event::FocusLost => Vec::new(),
     }
+}
+
+fn route_paste(text: String, state: &mut AppState) -> Vec<Action> {
+    if let Some(top) = state.modal_stack.last_mut() {
+        match top {
+            ModalLayer::Dialog(d) => match d.as_mut() {
+                crate::dialogs::Dialog::Input(inp) => {
+                    let clean: String = text.chars().filter(|c| *c != '\n' && *c != '\r').collect();
+                    if !clean.is_empty() {
+                        inp.value.push_str(&clean);
+                        state.needs_redraw = true;
+                    }
+                }
+                crate::dialogs::Dialog::Message(msg) => {
+                    let norm = text.replace("\r\n", "\n").replace('\r', "\n");
+                    if !norm.is_empty() {
+                        msg.text.push_str(&norm);
+                        state.needs_redraw = true;
+                    }
+                }
+                _ => {}
+            },
+            ModalLayer::FloatingPopup {
+                kind,
+                query,
+                selected,
+            } => {
+                let kind = *kind;
+                match kind {
+                    PopupKind::BranchesQuickView => {
+                        let clean: String = text
+                            .chars()
+                            .filter(|c| *c != '\n' && *c != '\r')
+                            .collect();
+                        if !clean.is_empty() {
+                            let mut next_q = query.clone();
+                            next_q.push_str(&clean);
+                            let next_sel = crate::branches_popup::first_selectable_row(state, &next_q);
+                            if let Some(ModalLayer::FloatingPopup { query, selected, .. }) =
+                                state.modal_stack.last_mut()
+                            {
+                                *query = next_q;
+                                *selected = next_sel;
+                            }
+                            state.needs_redraw = true;
+                        }
+                    }
+                    PopupKind::FilterEditor(_)
+                    | PopupKind::GoToRevision
+                    | PopupKind::CommitHistory => {
+                        let clean: String = text
+                            .chars()
+                            .filter(|c| *c != '\n' && *c != '\r')
+                            .collect();
+                        if !clean.is_empty() {
+                            query.push_str(&clean);
+                            *selected = 0;
+                            state.needs_redraw = true;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            _ => {}
+        }
+        return Vec::new();
+    }
+
+    if state.active_tab == WorkspaceTab::Commit
+        && state.focused_pane == PaneId::CommitMessageEditor
+    {
+        if state.stage_workbench.editing_author {
+            return text
+                .chars()
+                .filter(|c| *c != '\n' && *c != '\r')
+                .map(Action::CommitAuthorChar)
+                .collect();
+        }
+        return vec![Action::CommitEditorPaste(text)];
+    }
+
+    if state.active_tab == WorkspaceTab::Log && state.log_filter.editing_text {
+        return text
+            .chars()
+            .filter(|c| *c != '\n' && *c != '\r')
+            .map(Action::FilterTextInput)
+            .collect();
+    }
+
+    if state.active_tab == WorkspaceTab::Log && state.focused_pane == PaneId::LogBranchesTree {
+        return text
+            .chars()
+            .filter(|c| !c.is_control() && *c != ' ')
+            .map(Action::BranchesSearchInput)
+            .collect();
+    }
+
+    Vec::new()
 }
 
 fn plain_char(key: &KeyEvent) -> Option<char> {
@@ -276,19 +358,20 @@ fn route_key(key: KeyEvent, state: &mut AppState) -> Vec<Action> {
     }
     if ctrl && alt && matches!(key.code, KeyCode::Char('n' | 'N')) {
         return vec![Action::OpenDialog(Box::new(
-            crate::dialogs::new_branch_from_head_dialog(state.repo_snapshot.as_deref()),
+            crate::dialogs::new_branch_from_head_dialog(
+                state.repo_snapshot.as_deref(),
+                &state.i18n,
+            ),
         ))];
     }
 
-    // Layer 1: Workspace global shortcuts
+    // Layer 0: Dynamic Keymap (from keymap.toml)
+    if let Some(actions) = crate::keymap::route_dynamic_key(&key, state) {
+        return actions;
+    }
+
+    // Layer 1: Workspace global shortcuts fallback
     match key.code {
-        KeyCode::Char('q') if !ctrl && !alt => return vec![Action::Quit],
-        KeyCode::Char('?') => {
-            return vec![Action::OpenPopup {
-                kind: PopupKind::ShortcutsHelp,
-                initial_query: String::new(),
-            }];
-        }
         KeyCode::Char('g') if ctrl => {
             return if in_log {
                 vec![Action::OpenPopup {
@@ -315,7 +398,6 @@ fn route_key(key: KeyEvent, state: &mut AppState) -> Vec<Action> {
         }
         KeyCode::Tab => return vec![Action::CycleFocus { reverse: false }],
         KeyCode::BackTab => return vec![Action::CycleFocus { reverse: true }],
-        KeyCode::Char('r') if !ctrl && !alt => return vec![Action::RefreshAll],
         KeyCode::Char('p') if !ctrl && !alt => {
             return vec![Action::RunCliProbe(vec![
                 "status".into(),

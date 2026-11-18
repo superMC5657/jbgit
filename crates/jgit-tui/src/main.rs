@@ -2,12 +2,15 @@ mod app;
 mod app_git;
 mod app_stage;
 mod branches_popup;
+pub mod config;
 mod dialogs;
 mod graph;
 mod hit_test;
+pub mod i18n;
 mod input;
 mod input_menus;
 mod input_stage;
+pub mod keymap;
 #[cfg(test)]
 mod log_tests;
 #[cfg(test)]
@@ -45,7 +48,24 @@ async fn main() -> Result<()> {
     if let Some(arg) = args.next() {
         if arg == "-h" || arg == "--help" {
             println!("jGit - JetBrains-style Terminal Git Client");
-            println!("Usage: jgit [path]");
+            println!("Usage: jgit [options] [path]");
+            println!();
+            println!("Options:");
+            println!("  -h, --help                     Show this help message");
+            println!("  --print-default-config [NAME]  Print default config (jgit, theme, keymap)");
+            println!("  --init-config                  Generate initial config files in config directory");
+            return Ok(());
+        }
+        if arg == "--print-default-config" {
+            let which = args.next();
+            crate::config::AppConfig::print_default_config(which.as_deref());
+            return Ok(());
+        }
+        if arg == "--init-config" {
+            match crate::config::AppConfig::init_config(None, false) {
+                Ok(dir) => println!("Configuration files generated successfully at: {:?}", dir),
+                Err(e) => eprintln!("Error initializing configuration: {e}"),
+            }
             return Ok(());
         }
         target_path = PathBuf::from(arg);

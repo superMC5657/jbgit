@@ -12,6 +12,7 @@ pub fn branch_menu_items(state: &AppState, name: &str, kind: RefKind) -> Vec<Con
     let Some(snap) = state.repo_snapshot.as_deref() else {
         return Vec::new();
     };
+    let i18n = &state.i18n;
     let current = snap.head_branch.clone();
     let cur = current.clone().unwrap_or_else(|| "HEAD".to_string());
     let no_ongoing = state.require_no_ongoing();
@@ -20,9 +21,9 @@ pub fn branch_menu_items(state: &AppState, name: &str, kind: RefKind) -> Vec<Con
         let fav = state.branches.settings.favorites.is_favorite(full, short);
         run(
             if fav {
-                "Unmark as Favorite"
+                i18n.t("menu.branch.unmark_favorite")
             } else {
-                "Mark as Favorite"
+                i18n.t("menu.branch.mark_favorite")
             },
             Some('f'),
             None,
@@ -46,7 +47,7 @@ pub fn branch_menu_items(state: &AppState, name: &str, kind: RefKind) -> Vec<Con
             let full = format!("refs/heads/{name}");
             items.push(
                 run(
-                    "Checkout",
+                    i18n.t("menu.branch.checkout"),
                     Some('c'),
                     None,
                     op(GitOp::Checkout {
@@ -55,21 +56,21 @@ pub fn branch_menu_items(state: &AppState, name: &str, kind: RefKind) -> Vec<Con
                     }),
                 )
                 .icon("⎇")
-                .enabled_if(!is_current, format!("'{name}' is already checked out"))
+                .enabled_if(!is_current, i18n.t_fmt("menu.branch.already_checked_out", &[("name", &name)]))
                 .require(no_ongoing.clone()),
             );
             items.push(
                 run(
-                    format!("New Branch from '{}'…", ellipsize(&name, 24)),
+                    i18n.t_fmt("menu.branch.new_branch_from", &[("name", &ellipsize(&name, 24))]),
                     Some('n'),
                     None,
-                    dialog(new_branch_dialog(&name, &name, local_names(state), "")),
+                    dialog(new_branch_dialog(&name, &name, local_names(state), "", i18n)),
                 )
                 .icon("+"),
             );
             items.push(
                 run(
-                    format!("Checkout and Rebase onto '{}'", ellipsize(&cur, 24)),
+                    i18n.t_fmt("menu.branch.checkout_and_rebase", &[("cur", &ellipsize(&cur, 24))]),
                     Some('k'),
                     None,
                     op(GitOp::Rebase {
@@ -79,36 +80,35 @@ pub fn branch_menu_items(state: &AppState, name: &str, kind: RefKind) -> Vec<Con
                 )
                 .enabled_if(
                     !is_current && !detached,
-                    "Choose a branch other than the current one",
+                    i18n.t("menu.branch.choose_other_branch"),
                 )
                 .require(no_ongoing.clone()),
             );
             items.push(ContextMenuItem::separator());
             items.push(
                 run(
-                    format!("Compare with '{}'", ellipsize(&cur, 24)),
+                    i18n.t_fmt("menu.branch.compare_with", &[("cur", &ellipsize(&cur, 24))]),
                     Some('o'),
                     None,
                     vec![Action::CompareWithCurrent {
                         branch: name.clone(),
                     }],
                 )
-                .enabled_if(!is_current, "Cannot compare a branch with itself"),
+                .enabled_if(!is_current, i18n.t("menu.branch.compare_self")),
             );
             let diff_local = info
                 .map(|r| vec![Action::CompareWithLocal { target: r.target_oid }])
                 .unwrap_or_default();
             items.push(
-                run("Show Diff with Working Tree", Some('w'), None, diff_local)
-                    .enabled_if(info.is_some(), "Branch target not loaded"),
+                run(i18n.t("menu.branch.show_diff_working_tree"), Some('w'), None, diff_local)
+                    .enabled_if(info.is_some(), i18n.t("menu.branch.target_not_loaded")),
             );
             items.push(ContextMenuItem::separator());
             items.push(
                 run(
-                    format!(
-                        "Rebase '{}' onto '{}'",
-                        ellipsize(&cur, 18),
-                        ellipsize(&name, 18)
+                    i18n.t_fmt(
+                        "menu.branch.rebase_onto",
+                        &[("cur", &ellipsize(&cur, 18)), ("name", &ellipsize(&name, 18))],
                     ),
                     Some('b'),
                     None,
@@ -117,21 +117,20 @@ pub fn branch_menu_items(state: &AppState, name: &str, kind: RefKind) -> Vec<Con
                         branch: None,
                     }),
                 )
-                .enabled_if(!is_current, "Cannot rebase a branch onto itself")
+                .enabled_if(!is_current, i18n.t("menu.branch.rebase_self"))
                 .require(no_ongoing.clone()),
             );
             items.push(
                 run(
-                    format!(
-                        "Merge '{}' into '{}'",
-                        ellipsize(&name, 18),
-                        ellipsize(&cur, 18)
+                    i18n.t_fmt(
+                        "menu.branch.merge_into",
+                        &[("name", &ellipsize(&name, 18)), ("cur", &ellipsize(&cur, 18))],
                     ),
                     Some('m'),
                     None,
                     op(GitOp::Merge { rev: name.clone() }),
                 )
-                .enabled_if(!is_current, "Cannot merge a branch into itself")
+                .enabled_if(!is_current, i18n.t("menu.branch.merge_self"))
                 .require(no_ongoing.clone()),
             );
             items.push(ContextMenuItem::separator());
@@ -149,11 +148,11 @@ pub fn branch_menu_items(state: &AppState, name: &str, kind: RefKind) -> Vec<Con
                 }
             };
             items.push(
-                run("Update", Some('u'), None, update)
+                run(i18n.t("menu.branch.update"), Some('u'), None, update)
                     .icon("↓")
                     .enabled_if(
                         upstream.is_some(),
-                        format!("'{name}' has no upstream branch"),
+                        i18n.t_fmt("menu.branch.no_upstream", &[("name", &name)]),
                     )
                     .require(if is_current {
                         no_ongoing.clone()
@@ -163,7 +162,7 @@ pub fn branch_menu_items(state: &AppState, name: &str, kind: RefKind) -> Vec<Con
             );
             items.push(
                 run(
-                    "Push…",
+                    i18n.t("menu.branch.push"),
                     Some('p'),
                     Some("Ctrl+Shift+K"),
                     vec![Action::PromptPush {
@@ -177,12 +176,12 @@ pub fn branch_menu_items(state: &AppState, name: &str, kind: RefKind) -> Vec<Con
             let mut existing = local_names(state);
             existing.retain(|n| n != &name);
             items.push(run(
-                "Rename…",
+                i18n.t("menu.branch.rename"),
                 Some('e'),
                 Some("F2"),
                 dialog(Dialog::Input(InputDialog::new(
-                    format!("Rename Branch '{name}'"),
-                    "New name:",
+                    i18n.t_fmt("dialog.rename_branch.title", &[("name", &name)]),
+                    i18n.t("dialog.rename_branch.prompt"),
                     name.clone(),
                     InputValidation::RefName {
                         what: "Branch",
@@ -193,13 +192,13 @@ pub fn branch_menu_items(state: &AppState, name: &str, kind: RefKind) -> Vec<Con
             ));
             items.push(
                 run(
-                    "Delete",
+                    i18n.t("menu.branch.delete"),
                     Some('d'),
                     Some("Del"),
                     vec![Action::PromptDeleteBranch { name: name.clone() }],
                 )
                 .icon("✕")
-                .enabled_if(!is_current, "Cannot delete the current branch"),
+                .enabled_if(!is_current, i18n.t("menu.branch.cannot_delete_current")),
             );
             items.push(ContextMenuItem::separator());
             items.push(star_item(&full, &name));
@@ -214,7 +213,7 @@ pub fn branch_menu_items(state: &AppState, name: &str, kind: RefKind) -> Vec<Con
                 .map(|r| r.target_oid);
             items.push(
                 run(
-                    "Checkout",
+                    i18n.t("menu.branch.checkout"),
                     Some('c'),
                     None,
                     vec![Action::CheckoutRemoteBranch {
@@ -226,16 +225,16 @@ pub fn branch_menu_items(state: &AppState, name: &str, kind: RefKind) -> Vec<Con
             );
             items.push(
                 run(
-                    format!("New Branch from '{}'…", ellipsize(name, 24)),
+                    i18n.t_fmt("menu.branch.new_branch_from", &[("name", &ellipsize(name, 24))]),
                     Some('n'),
                     None,
-                    dialog(new_branch_dialog(name, name, local_names(state), short)),
+                    dialog(new_branch_dialog(name, name, local_names(state), short, i18n)),
                 )
                 .icon("+"),
             );
             items.push(ContextMenuItem::separator());
             items.push(run(
-                format!("Compare with '{}'", ellipsize(&cur, 24)),
+                i18n.t_fmt("menu.branch.compare_with", &[("cur", &ellipsize(&cur, 24))]),
                 Some('o'),
                 None,
                 vec![Action::CompareWithCurrent {
@@ -246,13 +245,16 @@ pub fn branch_menu_items(state: &AppState, name: &str, kind: RefKind) -> Vec<Con
                 .map(|target| vec![Action::CompareWithLocal { target }])
                 .unwrap_or_default();
             items.push(
-                run("Show Diff with Working Tree", Some('w'), None, diff_local)
-                    .enabled_if(target_oid.is_some(), "Branch target not loaded"),
+                run(i18n.t("menu.branch.show_diff_working_tree"), Some('w'), None, diff_local)
+                    .enabled_if(target_oid.is_some(), i18n.t("menu.branch.target_not_loaded")),
             );
             items.push(ContextMenuItem::separator());
             items.push(
                 run(
-                    format!("Merge into '{}'", ellipsize(&cur, 24)),
+                    i18n.t_fmt(
+                        "menu.branch.merge_into",
+                        &[("name", &ellipsize(name, 18)), ("cur", &ellipsize(&cur, 18))],
+                    ),
                     Some('m'),
                     None,
                     op(GitOp::Merge {
@@ -263,10 +265,9 @@ pub fn branch_menu_items(state: &AppState, name: &str, kind: RefKind) -> Vec<Con
             );
             items.push(
                 run(
-                    format!(
-                        "Rebase '{}' onto '{}'",
-                        ellipsize(&cur, 18),
-                        ellipsize(name, 22)
+                    i18n.t_fmt(
+                        "menu.branch.rebase_onto",
+                        &[("cur", &ellipsize(&cur, 18)), ("name", &ellipsize(name, 22))],
                     ),
                     Some('b'),
                     None,
@@ -280,17 +281,20 @@ pub fn branch_menu_items(state: &AppState, name: &str, kind: RefKind) -> Vec<Con
             items.push(ContextMenuItem::separator());
             items.push(
                 run(
-                    "Delete Remote Branch…",
+                    i18n.t("menu.branch.delete"),
                     Some('d'),
                     None,
                     dialog(Dialog::Choice(ChoiceDialog::confirm(
-                        "Delete Remote Branch",
+                        i18n.t("menu.branch.delete_remote_title"),
                         vec![
-                            format!("Delete '{short}' on remote '{remote}'?"),
-                            "This runs `git push --delete` and affects everyone using the remote."
-                                .into(),
+                            i18n.t_fmt(
+                                "menu.branch.delete_remote_prompt",
+                                &[("short", short), ("remote", remote)],
+                            ),
+                            i18n.t("menu.branch.delete_remote_warn").into(),
                         ],
-                        "Delete Remote Branch",
+                        i18n.t("menu.branch.delete_remote_title"),
+                        i18n.cancel(),
                         op(GitOp::DeleteRemoteBranch {
                             remote: remote.to_string(),
                             branch: short.to_string(),
@@ -305,7 +309,7 @@ pub fn branch_menu_items(state: &AppState, name: &str, kind: RefKind) -> Vec<Con
         RefKind::Tag => {
             items.push(
                 run(
-                    "Checkout Tag (Detached HEAD)",
+                    i18n.t("menu.branch.checkout"),
                     Some('c'),
                     None,
                     op(GitOp::Checkout {
@@ -317,13 +321,13 @@ pub fn branch_menu_items(state: &AppState, name: &str, kind: RefKind) -> Vec<Con
                 .require(no_ongoing.clone()),
             );
             items.push(run(
-                format!("New Branch from '{}'…", ellipsize(name, 24)),
+                i18n.t_fmt("menu.branch.new_branch_from", &[("name", &ellipsize(name, 24))]),
                 Some('n'),
                 None,
-                dialog(new_branch_dialog(name, name, local_names(state), "")),
+                dialog(new_branch_dialog(name, name, local_names(state), "", i18n)),
             ));
             items.push(run(
-                format!("Compare with '{}'", ellipsize(&cur, 24)),
+                i18n.t_fmt("menu.branch.compare_with", &[("cur", &ellipsize(&cur, 24))]),
                 Some('o'),
                 None,
                 vec![Action::CompareWithCurrent {
@@ -332,7 +336,10 @@ pub fn branch_menu_items(state: &AppState, name: &str, kind: RefKind) -> Vec<Con
             ));
             items.push(
                 run(
-                    format!("Merge into '{}'", ellipsize(&cur, 24)),
+                    i18n.t_fmt(
+                        "menu.branch.merge_into",
+                        &[("name", &ellipsize(name, 18)), ("cur", &ellipsize(&cur, 18))],
+                    ),
                     Some('m'),
                     None,
                     op(GitOp::Merge {
@@ -342,7 +349,7 @@ pub fn branch_menu_items(state: &AppState, name: &str, kind: RefKind) -> Vec<Con
                 .require(no_ongoing.clone()),
             );
             items.push(run(
-                "Copy Tag Name",
+                i18n.t("menu.branch.copy_tag_name"),
                 Some('y'),
                 None,
                 vec![Action::CopyText(name.to_string())],
@@ -353,11 +360,13 @@ pub fn branch_menu_items(state: &AppState, name: &str, kind: RefKind) -> Vec<Con
 }
 
 pub fn ongoing_menu_items(state: &AppState, kind: OngoingKind) -> Vec<ContextMenuItem> {
+    let i18n = &state.i18n;
     let conflicts = state.conflicted_count();
+    let conflicts_s = conflicts.to_string();
     let step = |s: OngoingStep| op(GitOp::Ongoing { kind, step: s });
     let mut items = vec![
         run(
-            format!("Continue {}", kind.title()),
+            i18n.t_fmt("menu.branch.ongoing_continue", &[("kind", kind.title())]),
             Some('c'),
             None,
             step(OngoingStep::Continue),
@@ -365,15 +374,15 @@ pub fn ongoing_menu_items(state: &AppState, kind: OngoingKind) -> Vec<ContextMen
         .icon("▶")
         .enabled_if(
             conflicts == 0,
-            format!("Cannot continue: {conflicts} unresolved conflicted file(s)"),
+            i18n.t_fmt("menu.branch.cannot_continue_conflicts", &[("count", &conflicts_s)]),
         ),
     ];
     if kind.can_skip() {
-        items.push(run("Skip Commit", Some('s'), None, step(OngoingStep::Skip)).icon("⤼"));
+        items.push(run(i18n.t("menu.branch.skip_commit"), Some('s'), None, step(OngoingStep::Skip)).icon("⤼"));
     }
     items.push(
         run(
-            format!("Abort {}", kind.title()),
+            i18n.t_fmt("menu.branch.ongoing_abort", &[("kind", kind.title())]),
             Some('a'),
             None,
             step(OngoingStep::Abort),
@@ -382,7 +391,7 @@ pub fn ongoing_menu_items(state: &AppState, kind: OngoingKind) -> Vec<ContextMen
     );
     items.push(ContextMenuItem::separator());
     items.push(run(
-        "Resolve Conflicts…",
+        i18n.t("menu.stage.resolve_conflicts"),
         Some('r'),
         None,
         vec![Action::OngoingResolve],

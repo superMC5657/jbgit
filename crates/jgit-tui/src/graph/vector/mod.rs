@@ -678,16 +678,7 @@ impl PixelVectorGraphBackend {
             }
         }
         self.scratch_hits.clear();
-        let mut scratch_ctx = RenderContext {
-            theme: ctx.theme,
-            glyph_mode: ctx.glyph_mode,
-            branch_colors: ctx.branch_colors,
-            hit_registry: &mut self.scratch_hits,
-            focused_pane: ctx.focused_pane,
-            hover_target: ctx.hover_target,
-            dragging_splitter: ctx.dragging_splitter,
-            graph_renderer: None,
-        };
+        let mut scratch_ctx = ctx.rebind_hits(&mut self.scratch_hits);
         for (i, r) in self.rows.iter().take(p.rows).enumerate() {
             let row_slice = [RowGraphSlice {
                 visible_row: r.visible_row,

@@ -11,6 +11,7 @@ use jgit_core::{
 };
 
 use crate::app::Action;
+use crate::i18n::I18n;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InputValidation {
@@ -253,6 +254,7 @@ impl ChoiceDialog {
         title: impl Into<String>,
         body: Vec<String>,
         confirm: impl Into<String>,
+        cancel: impl Into<String>,
         actions: Vec<Action>,
     ) -> Self {
         let mut d = Self::buttons(
@@ -260,7 +262,7 @@ impl ChoiceDialog {
             body,
             vec![
                 ChoiceOption::new(confirm, None, actions).danger(),
-                ChoiceOption::new("Cancel", Some('c'), Vec::new()),
+                ChoiceOption::new(cancel, Some('c'), Vec::new()),
             ],
         );
         d.selected = 1;
@@ -589,11 +591,12 @@ pub fn new_branch_dialog(
     start_label: &str,
     existing: Vec<String>,
     default: &str,
+    i18n: &I18n,
 ) -> Dialog {
     Dialog::Input(
         InputDialog::new(
-            format!("New Branch from '{start_label}'"),
-            "New branch name:",
+            i18n.t_fmt("dialog.new_branch.title_from", &[("start", start_label)]),
+            i18n.t("dialog.new_branch.name_prompt"),
             default,
             InputValidation::RefName {
                 what: "Branch",
@@ -603,11 +606,11 @@ pub fn new_branch_dialog(
                 start: start.to_string(),
             },
         )
-        .with_checkbox("Checkout branch", true),
+        .with_checkbox(i18n.t("dialog.new_branch.checkout_checkbox"), true),
     )
 }
 
-pub fn new_branch_from_head_dialog(snap: Option<&RepoSnapshot>) -> Dialog {
+pub fn new_branch_from_head_dialog(snap: Option<&RepoSnapshot>, i18n: &I18n) -> Dialog {
     let existing = snap
         .map(|s| {
             s.local_branch_names()
@@ -619,10 +622,11 @@ pub fn new_branch_from_head_dialog(snap: Option<&RepoSnapshot>) -> Dialog {
     let head = snap
         .and_then(|s| s.head_branch.clone())
         .unwrap_or_else(|| "HEAD".into());
-    new_branch_dialog("HEAD", &head, existing, "")
+    new_branch_dialog("HEAD", &head, existing, "", i18n)
 }
 
-pub fn reset_dialog(target: Oid, subject: &str, branch: &str) -> Dialog {
+pub fn reset_dialog(target: Oid, subject: &str, branch: &str, i18n: &I18n) -> Dialog {
+    let short = target.short();
     let options = ResetMode::ALL
         .iter()
         .map(|&mode| {
@@ -631,13 +635,16 @@ pub fn reset_dialog(target: Oid, subject: &str, branch: &str) -> Dialog {
             let actions = if mode.is_destructive() {
                 vec![Action::OpenDialog(Box::new(Dialog::Choice(
                     ChoiceDialog::confirm(
-                        "Hard Reset",
+                        i18n.t("dialog.reset.hard_title"),
                         vec![
-                            format!("Reset '{branch}' to {} with --hard?", target.short()),
-                            "ALL uncommitted changes in the index and working tree will be LOST."
-                                .into(),
+                            i18n.t_fmt(
+                                "dialog.reset.hard_prompt",
+                                &[("branch", branch), ("oid", &short)],
+                            ),
+                            i18n.t("dialog.reset.hard_warn").into(),
                         ],
-                        "Reset --hard",
+                        i18n.t("dialog.reset.hard_btn"),
+                        i18n.cancel(),
                         vec![Action::RunGitOp(GitOp::Reset { mode, target })],
                     ),
                 )))]
@@ -649,14 +656,17 @@ pub fn reset_dialog(target: Oid, subject: &str, branch: &str) -> Dialog {
         })
         .collect();
     Dialog::Choice(ChoiceDialog::radio(
-        "Git Reset",
+        i18n.t("dialog.reset.title"),
         vec![
-            format!("Reset '{branch}' to {}:", target.short()),
+            i18n.t_fmt(
+                "dialog.reset.prompt",
+                &[("branch", branch), ("oid", &short)],
+            ),
             format!("  \"{}\"", crate::views::truncate_to_width(subject, 52)),
         ],
         options,
         1,
-        "Reset",
+        i18n.t("dialog.reset.confirm_btn"),
     ))
 }
 

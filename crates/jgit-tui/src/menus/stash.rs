@@ -8,15 +8,15 @@ use crate::hit_test::StashButton;
 
 use super::{dialog, ellipsize, local_names, op, run};
 
-struct StashActionSpec {
-    label: &'static str,
+struct StashActionSpec<'a> {
+    label: &'a str,
     mnemonic: char,
     shortcut: Option<&'static str>,
-    disabled_reason: Option<&'static str>,
+    disabled_reason: Option<&'a str>,
     actions: Vec<Action>,
 }
 
-fn stash_spec(state: &AppState, btn: StashButton) -> StashActionSpec {
+fn stash_spec<'a>(state: &'a AppState, btn: StashButton) -> StashActionSpec<'a> {
     let stashes = state
         .repo_snapshot
         .as_ref()
@@ -26,30 +26,32 @@ fn stash_spec(state: &AppState, btn: StashButton) -> StashActionSpec {
     let has = entry.is_some();
     let index = entry.as_ref().map_or(0, |e| e.index);
     let label = entry.as_ref().map(stash_label).unwrap_or_default();
+    let i18n = &state.i18n;
+    let no_stash = (!has).then(|| i18n.t("menu.stash.no_stash_selected"));
 
     match btn {
         StashButton::Apply => StashActionSpec {
-            label: "Apply",
+            label: i18n.t("menu.stash.apply"),
             mnemonic: 'a',
             shortcut: Some("Enter"),
-            disabled_reason: (!has).then_some("No stash selected"),
+            disabled_reason: no_stash,
             actions: op(GitOp::StashApply { index, pop: false }),
         },
         StashButton::Pop => StashActionSpec {
-            label: "Pop",
+            label: i18n.t("menu.stash.pop"),
             mnemonic: 'p',
             shortcut: Some("p"),
-            disabled_reason: (!has).then_some("No stash selected"),
+            disabled_reason: no_stash,
             actions: op(GitOp::StashApply { index, pop: true }),
         },
         StashButton::Branch => StashActionSpec {
-            label: "Unstash as New Branch…",
+            label: i18n.t("menu.stash.branch_from_stash"),
             mnemonic: 'b',
             shortcut: Some("b"),
-            disabled_reason: (!has).then_some("No stash selected"),
+            disabled_reason: no_stash,
             actions: dialog(Dialog::Input(InputDialog::new(
-                "Unstash as Branch",
-                format!("Branch to create from {}:", ellipsize(&label, 40)),
+                i18n.t("dialog.stash.unstash_title"),
+                i18n.t_fmt("dialog.stash.unstash_prompt", &[("label", &ellipsize(&label, 40))]),
                 "",
                 InputValidation::RefName {
                     what: "Branch",
@@ -59,48 +61,53 @@ fn stash_spec(state: &AppState, btn: StashButton) -> StashActionSpec {
             ))),
         },
         StashButton::New => StashActionSpec {
-            label: "New Stash…",
+            label: i18n.t("menu.stash.new_stash"),
             mnemonic: 'n',
             shortcut: Some("n"),
             disabled_reason: None,
             actions: dialog(Dialog::Input(
                 InputDialog::new(
-                    "Stash Local Changes",
-                    "Message (optional):",
+                    i18n.t("dialog.stash.new_title"),
+                    i18n.t("dialog.stash.new_prompt"),
                     "",
                     InputValidation::None,
                     InputIntent::StashMessage,
                 )
-                .with_checkbox("Include untracked files (-u)", true),
+                .with_checkbox(i18n.t("dialog.stash.include_untracked"), true),
             )),
         },
         StashButton::Drop => StashActionSpec {
-            label: "Drop",
+            label: i18n.t("menu.stash.drop"),
             mnemonic: 'd',
             shortcut: Some("Del"),
-            disabled_reason: (!has).then_some("No stash selected"),
+            disabled_reason: no_stash,
             actions: dialog(Dialog::Choice(ChoiceDialog::confirm(
-                "Drop Stash",
-                vec![format!("Drop {label}?"), "Its changes are lost.".into()],
-                "Drop",
+                i18n.t("dialog.stash.drop_title"),
+                vec![
+                    i18n.t_fmt("dialog.stash.drop_prompt", &[("label", &label)]),
+                    i18n.t("dialog.stash.drop_warn").into(),
+                ],
+                i18n.t("dialog.stash.drop_btn"),
+                i18n.cancel(),
                 op(GitOp::StashDrop { index }),
             ))),
         },
-        StashButton::Clear => StashActionSpec {
-            label: "Clear All Stashes…",
-            mnemonic: 'c',
-            shortcut: None,
-            disabled_reason: stashes.is_empty().then_some("No stashes"),
-            actions: dialog(Dialog::Choice(ChoiceDialog::confirm(
-                "Clear Stashes",
-                vec![format!(
-                    "Remove all {} stash(es)? This cannot be undone.",
-                    stashes.len()
-                )],
-                "Clear All",
-                op(GitOp::StashClear),
-            ))),
-        },
+        StashButton::Clear => {
+            let count_s = stashes.len().to_string();
+            StashActionSpec {
+                label: i18n.t("menu.stash.clear_all"),
+                mnemonic: 'c',
+                shortcut: None,
+                disabled_reason: stashes.is_empty().then(|| i18n.t("menu.stash.no_stashes")),
+                actions: dialog(Dialog::Choice(ChoiceDialog::confirm(
+                    i18n.t("dialog.stash.clear_title"),
+                    vec![i18n.t_fmt("dialog.stash.clear_prompt", &[("count", &count_s)])],
+                    i18n.t("dialog.stash.clear_btn"),
+                    i18n.cancel(),
+                    op(GitOp::StashClear),
+                ))),
+            }
+        }
     }
 }
 

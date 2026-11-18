@@ -821,7 +821,10 @@ impl AppState {
                     self.stage_workbench.requested_diff = None;
                 }
                 if self.stage_workbench.current_diff_key.as_ref() == Some(&diff.key) {
-                    if !diff.is_binary && !diff.hunks.is_empty() {
+                    if self.config.jgit.diff.syntax_highlight
+                        && !diff.is_binary
+                        && !diff.hunks.is_empty()
+                    {
                         let hl = Arc::new(HighlightedDiff::build(&diff.as_file_diff()));
                         self.stage_workbench.diff_syntax = Some(hl);
                     } else {

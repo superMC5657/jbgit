@@ -44,7 +44,8 @@ pub fn render_stash_tab(
         .as_ref()
         .map(|s| s.stashes.as_slice())
         .unwrap_or(&[]);
-    let subtitle = format!("{} stash(es)", stashes.len());
+    let count_s = stashes.len().to_string();
+    let subtitle = state.i18n.t_fmt("view.stash.count", &[("count", &count_s)]);
     let list_body = render_pane_frame(frame, split.first, PaneId::StashList, &subtitle, ctx);
     render_stash_list(frame, list_body, state, ctx);
 
@@ -70,12 +71,12 @@ fn render_stash_list(
         return;
     }
     let buttons = [
-        (" ▶ Apply ", StashButton::Apply),
-        (" ⇡ Pop ", StashButton::Pop),
-        (" ⎇ Branch ", StashButton::Branch),
-        (" ✕ Drop ", StashButton::Drop),
-        (" + New ", StashButton::New),
-        (" ⌫ Clear ", StashButton::Clear),
+        (state.i18n.t("view.stash.apply_btn"), StashButton::Apply),
+        (state.i18n.t("view.stash.pop_btn"), StashButton::Pop),
+        (state.i18n.t("view.stash.branch_btn"), StashButton::Branch),
+        (state.i18n.t("view.stash.drop_btn"), StashButton::Drop),
+        (state.i18n.t("view.stash.new_btn"), StashButton::New),
+        (state.i18n.t("view.stash.clear_btn"), StashButton::Clear),
     ];
     let mut x = area.x;
     let mut spans = Vec::new();
@@ -114,11 +115,11 @@ fn render_stash_list(
         frame.render_widget(
             Paragraph::new(vec![
                 Line::from(Span::styled(
-                    " No stashes",
+                    state.i18n.t("view.stash.no_stashes"),
                     Style::default().fg(ctx.theme.fg_muted),
                 )),
                 Line::from(Span::styled(
-                    " n New Stash… · Commit tab toolbar [Stash] · right-click files → Stash Selected",
+                    state.i18n.t("view.stash.empty_hint"),
                     Style::default().fg(ctx.theme.fg_muted),
                 )),
             ]),
@@ -190,7 +191,7 @@ fn render_stash_preview(
         let body = render_pane_frame(frame, area, PaneId::StashDiffPreview, "", ctx);
         frame.render_widget(
             Paragraph::new(Span::styled(
-                " Select a stash to preview its changes",
+                state.i18n.t("view.stash.select_preview"),
                 Style::default().fg(ctx.theme.fg_muted),
             )),
             body,

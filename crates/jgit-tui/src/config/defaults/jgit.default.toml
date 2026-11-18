@@ -1,0 +1,33 @@
+# jGit 主配置文件 (jgit.toml)
+# 对标 Yazi 体系的通用配置
+
+[general]
+# 界面语言: "zh-CN" (简体中文), "en-US" (English), "auto" (跟随系统环境变量)
+language = "zh-CN"
+
+# 启动时默认打开的工作区标签页: "log" (提交历史), "commit" (提交工作台), "branches" (分支一览), "stash" (暂存区)
+default_tab = "log"
+
+# 主题预设风格: "darcula" (JetBrains经典深色), "catppuccin-mocha", "gruvbox-dark"
+# 具体颜色细项可在 theme.toml 中精细调整
+flavor = "darcula"
+
+[graph]
+# 提交图渲染引擎: "auto" (自动侦测图形协议), "vector" (Kitty/Sixel/iTerm2 矢量图), "cell" (ASCII/Unicode 字符网格)
+backend = "auto"
+
+# 图标与图形字符模式: "nerd_font" (需要终端安装 Nerd Font 字体), "unicode" (通用 Unicode 单宽符号)
+glyph_mode = "nerd_font"
+
+# 是否默认折叠长分支标签胶囊 (紧凑模式)
+compact_refs = false
+
+[diff]
+# 代码差异高亮: 是否开启语法加亮 (基于 syntect)
+syntax_highlight = true
+
+# 制表符 (Tab) 宽度
+tab_size = 4
+
+# Diff 上下文保留行数
+context_lines = 3

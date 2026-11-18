@@ -22,20 +22,23 @@ pub fn banner_visible(state: &AppState) -> bool {
 pub fn banner_text(state: &AppState) -> Option<String> {
     let snap = state.repo_snapshot.as_deref()?;
     let kind = OngoingKind::from_state(&snap.state)?;
+    let i18n = &state.i18n;
     let mut text = match &snap.state {
         jgit_core::RepositoryState::Rebase { progress, branch }
         | jgit_core::RepositoryState::RebaseInteractive { progress, branch }
         | jgit_core::RepositoryState::RebaseMerge { progress, branch } => {
-            let mut t = String::from("REBASING");
+            let mut t = i18n.t("banner.rebasing_prefix").to_string();
             if let Some(b) = branch {
                 t.push(' ');
                 t.push_str(b);
             }
             if let Some(onto) = &snap.ongoing_onto {
-                t.push_str(&format!(" onto {onto}"));
+                t.push_str(&i18n.t_fmt("banner.onto", &[("onto", onto)]));
             }
             if let Some((cur, total)) = progress {
-                t.push_str(&format!(" (Step {cur}/{total})"));
+                let c_s = cur.to_string();
+                let t_s = total.to_string();
+                t.push_str(&i18n.t_fmt("banner.step", &[("cur", &c_s), ("total", &t_s)]));
             }
             t
         }
@@ -44,13 +47,13 @@ pub fn banner_text(state: &AppState) -> Option<String> {
             .unwrap_or_else(|| kind.title().to_uppercase()),
     };
     let n = state.conflicted_count();
-    if n > 0 {
-        text.push_str(&format!(
-            " — {n} conflicted file{}",
-            if n == 1 { "" } else { "s" }
-        ));
+    if n == 1 {
+        text.push_str(i18n.t("banner.conflicted_one"));
+    } else if n > 1 {
+        let count_s = n.to_string();
+        text.push_str(&i18n.t_fmt("banner.conflicted_many", &[("count", &count_s)]));
     } else {
-        text.push_str(" — no conflicts left");
+        text.push_str(i18n.t("banner.no_conflicts"));
     }
     Some(format!("⚠ {text}"))
 }
@@ -73,13 +76,13 @@ pub fn render_banner(
     let amber = ctx.theme.ref_detached.icon;
     let bg = ctx.theme.ref_detached.pill_bg;
     let mut buttons = vec![
-        (" Resolve ", OngoingButton::Resolve),
-        (" Continue ", OngoingButton::Continue),
+        (state.i18n.t("banner.resolve_btn"), OngoingButton::Resolve),
+        (state.i18n.t("banner.continue_btn"), OngoingButton::Continue),
     ];
     if kind.can_skip() {
-        buttons.push((" Skip ", OngoingButton::Skip));
+        buttons.push((state.i18n.t("banner.skip_btn"), OngoingButton::Skip));
     }
-    buttons.push((" Abort ", OngoingButton::Abort));
+    buttons.push((state.i18n.t("banner.abort_btn"), OngoingButton::Abort));
     let buttons_w: usize = buttons.iter().map(|(l, _)| l.width() + 4).sum();
     let text_w = (area.width as usize).saturating_sub(buttons_w + 1);
     let shown = truncate_to_width(&format!(" {text}"), text_w);

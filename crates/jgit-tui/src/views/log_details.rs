@@ -16,7 +16,7 @@ use unicode_width::UnicodeWidthStr;
 use crate::app::{AppState, RenderContext};
 use crate::hit_test::{ChangesToolbarButton, DiffToolbarButton, HitTarget};
 use crate::log_view::{DetailsPaneState, DiffPreviewDock, format_absolute_time};
-use crate::syntax::{HighlightedDiff, render_diff_line_spans};
+use crate::syntax::{HighlightedDiff, render_diff_line_spans_with_tab};
 use crate::views::{
     fit_left_right_spans, highlight_spans, list_viewport, render_pane_frame, row_background,
     truncate_to_width, wrap_text,
@@ -119,7 +119,7 @@ pub fn render_changes_browser(
             }
             s
         }
-        (None, Some(_)) => "Loading…".to_string(),
+        (None, Some(_)) => ctx.t("common.loading").to_string(),
         (None, None) => String::new(),
     };
     let body = render_pane_frame(frame, area, pane, &subtitle, ctx);
@@ -176,15 +176,15 @@ pub fn render_changes_browser(
     }
     let Some(bundle) = bundle else {
         let msg = if details.current_key.is_some() {
-            " Loading changes…"
+            ctx.t("view.log_details.loading_changes")
         } else {
-            " Select a commit to see its changes"
+            ctx.t("view.log_details.select_commit_changes")
         };
         frame.render_widget(muted_line(ctx, msg), list);
         return;
     };
     if bundle.changes.is_empty() {
-        frame.render_widget(muted_line(ctx, " No changes (empty commit)"), list);
+        frame.render_widget(muted_line(ctx, ctx.t("view.log_details.no_changes")), list);
         return;
     }
     let rows = details.change_rows();
@@ -317,7 +317,7 @@ pub fn render_docked_diff(
         .details
         .selected_change()
         .map(|c| format!("Diff · {}", c.path))
-        .unwrap_or_else(|| "Diff Preview".to_string());
+        .unwrap_or_else(|| ctx.t("view.log_details.diff_preview").to_string());
     let body = render_pane_frame(frame, area, PaneId::LogDetailsDiff, &subtitle, ctx);
     render_diff_view(frame, body, state, ctx, false);
 }
@@ -409,9 +409,9 @@ pub fn render_diff_preview(
     let mut buttons = vec![
         (
             if d.diff_side_by_side {
-                " ◫ Side-by-side "
+                ctx.t("view.log_details.side_by_side_btn")
             } else {
-                " ▤ Unified "
+                ctx.t("view.log_details.unified_btn")
             }
             .to_string(),
             d.diff_side_by_side,
@@ -432,7 +432,12 @@ pub fn render_diff_preview(
             ));
         }
         buttons.push((
-            if zoomed { " ⤡ Restore " } else { " ⤢ F4 " }.to_string(),
+            if zoomed {
+                ctx.t("view.log_details.restore_btn")
+            } else {
+                " ⤢ F4 "
+            }
+            .to_string(),
             zoomed,
             DiffToolbarButton::Zoom,
         ));
@@ -463,28 +468,28 @@ pub fn render_diff_preview(
 
     let Some(change) = d.selected_change() else {
         let msg = if d.current_bundle().is_none() {
-            " Loading…"
+            ctx.t("common.loading")
         } else {
-            " Select a file in Changes to preview its diff"
+            ctx.t("view.log_details.select_file_diff")
         };
         frame.render_widget(muted_line(ctx, msg), body);
         return;
     };
     let Some(diff) = d.current_diff() else {
         if change.is_binary {
-            frame.render_widget(muted_line(ctx, " Binary file — no text diff"), body);
+            frame.render_widget(muted_line(ctx, ctx.t("view.log_details.binary_diff")), body);
         } else {
-            frame.render_widget(muted_line(ctx, " Loading diff…"), body);
+            frame.render_widget(muted_line(ctx, ctx.t("view.log_details.loading_diff")), body);
         }
         return;
     };
     if diff.is_binary {
-        frame.render_widget(muted_line(ctx, " Binary file — no text diff"), body);
+        frame.render_widget(muted_line(ctx, ctx.t("view.log_details.binary_diff")), body);
         return;
     }
     if diff.hunks.is_empty() {
         frame.render_widget(
-            muted_line(ctx, " No textual changes (mode or rename only)"),
+            muted_line(ctx, ctx.t("view.log_details.no_text_diff")),
             body,
         );
         return;
@@ -499,12 +504,19 @@ pub fn render_diff_preview(
     let scroll = d.diff_scroll.min(total.saturating_sub(h));
     let theme = ctx.theme;
     let num_w = 4usize;
+    let tab_size = ctx.diff_tab_size();
+    let empty_hl;
     let computed_hl;
-    let hl_diff: &HighlightedDiff = match d.current_diff_syntax() {
-        Some(cached) => cached,
-        None => {
-            computed_hl = HighlightedDiff::build(diff);
-            &computed_hl
+    let hl_diff: &HighlightedDiff = if !ctx.diff_syntax_enabled() {
+        empty_hl = HighlightedDiff::default();
+        &empty_hl
+    } else {
+        match d.current_diff_syntax() {
+            Some(cached) => cached,
+            None => {
+                computed_hl = HighlightedDiff::build(diff);
+                &computed_hl
+            }
         }
     };
 
@@ -549,11 +561,12 @@ pub fn render_diff_preview(
                 spans.push(Span::styled(format!("{} ", num(lineno(l))), gutter));
                 spans.push(Span::styled(marker.to_string(), base));
                 let text_w = width.saturating_sub(num_w + 2);
-                let mut body = render_diff_line_spans(
+                let mut body = render_diff_line_spans_with_tab(
                     &l.text,
                     toks,
                     &l.word_ranges,
                     text_w,
+                    tab_size,
                     base,
                     word_bg,
                     theme.true_color,
@@ -578,7 +591,7 @@ pub fn render_diff_preview(
         let rect = Rect::new(body.x, body.y + vis_y as u16, body.width, 1);
         let line = match rows.get(row_idx) {
             None => Line::from(Span::styled(
-                " … diff truncated (too large)",
+                ctx.t("view.log_details.diff_truncated").to_string(),
                 Style::default().fg(theme.status_conflicted),
             )),
             Some(DiffRow::Header(hh)) => Line::from(Span::styled(
@@ -605,11 +618,12 @@ pub fn render_diff_preview(
                     Span::styled(marker.to_string(), base),
                 ];
                 let text_w = width.saturating_sub(num_w * 2 + 3);
-                spans.extend(render_diff_line_spans(
+                spans.extend(render_diff_line_spans_with_tab(
                     &dl.text,
                     toks,
                     &dl.word_ranges,
                     text_w,
+                    tab_size,
                     base,
                     word_bg,
                     theme.true_color,
@@ -669,7 +683,7 @@ fn render_commit_details(
     ctx.hit_registry.register(area, 1, HitTarget::DetailsArea);
     let details = &state.details;
     let Some(key) = &details.current_key else {
-        frame.render_widget(muted_line(ctx, " No commit selected"), area);
+        frame.render_widget(muted_line(ctx, ctx.t("view.log_details.no_commit_selected")), area);
         return;
     };
     let Some(bundle) = details.current_bundle() else {
@@ -682,7 +696,10 @@ fn render_commit_details(
         {
             let lines = vec![
                 Line::from(vec![
-                    Span::styled(" Commit    ", Style::default().fg(ctx.theme.fg_muted)),
+                    Span::styled(
+                        format!(" {:<10}", ctx.t("view.log_details.commit_label")),
+                        Style::default().fg(ctx.theme.fg_muted),
+                    ),
                     Span::styled(
                         c.oid.to_string(),
                         Style::default().fg(ctx.theme.fg_accent_link),
@@ -696,13 +713,13 @@ fn render_commit_details(
                         .add_modifier(Modifier::BOLD),
                 )),
                 Line::from(Span::styled(
-                    " Loading details…",
+                    ctx.t("view.log_details.loading_details"),
                     Style::default().fg(ctx.theme.fg_muted),
                 )),
             ];
             frame.render_widget(Paragraph::new(lines), area);
         } else {
-            frame.render_widget(muted_line(ctx, " Loading details…"), area);
+            frame.render_widget(muted_line(ctx, ctx.t("view.log_details.loading_details")), area);
         }
         return;
     };
@@ -712,8 +729,9 @@ fn render_commit_details(
     let mut hits: Vec<LineHit> = Vec::new();
 
     if bundle.details.len() > 1 {
+        let count_s = bundle.details.len().to_string();
         lines.push(Line::from(Span::styled(
-            format!(" {} commits selected", bundle.details.len()),
+            ctx.t_fmt("view.log_details.commits_selected", &[("count", &count_s)]),
             Style::default()
                 .fg(ctx.theme.fg_bright)
                 .add_modifier(Modifier::BOLD),
@@ -772,7 +790,7 @@ fn build_single_details(
     // 1. Full SHA (click to copy) + signature badge.
     let sha = d.oid.to_string();
     let mut sha_spans = vec![
-        label("Commit"),
+        label(ctx.t("view.log_details.commit_label")),
         Span::styled(
             sha.clone(),
             Style::default()
@@ -782,13 +800,13 @@ fn build_single_details(
     ];
     match d.signature {
         SignatureStatus::Verified => sha_spans.push(Span::styled(
-            " ✓ Verified ",
+            ctx.t("view.log_details.verified").to_string(),
             Style::default()
                 .fg(theme.ref_local.pill_fg)
                 .bg(theme.ref_local.pill_bg),
         )),
         SignatureStatus::SignedUnverified => sha_spans.push(Span::styled(
-            " ⚠ Unverified ",
+            ctx.t("view.log_details.unverified").to_string(),
             Style::default()
                 .fg(theme.ref_detached.pill_fg)
                 .bg(theme.ref_detached.pill_bg),
@@ -805,17 +823,17 @@ fn build_single_details(
 
     // 2. Author / Committer.
     if d.same_author_and_committer() {
-        lines.push(person_line("Author", &d.author, ctx));
+        lines.push(person_line(ctx.t("view.log_details.author_label"), &d.author, ctx));
     } else {
-        lines.push(person_line("Author", &d.author, ctx));
-        lines.push(person_line("Committer", &d.committer, ctx));
+        lines.push(person_line(ctx.t("view.log_details.author_label"), &d.author, ctx));
+        lines.push(person_line(ctx.t("view.log_details.committer_label"), &d.committer, ctx));
     }
 
     // 3. Clickable parents.
-    let mut parent_spans = vec![label("Parents")];
+    let mut parent_spans = vec![label(ctx.t("view.log_details.parents_label"))];
     if d.parents.is_empty() {
         parent_spans.push(Span::styled(
-            "(root commit)",
+            ctx.t("view.log_details.root_commit").to_string(),
             Style::default().fg(theme.fg_muted),
         ));
     }
@@ -873,12 +891,15 @@ fn build_single_details(
                 ]));
             }
         };
-        push_list("Branches", &branches, theme.ref_local.pill_fg);
-        push_list("Tags", &tags, theme.ref_tag.pill_fg);
+        push_list(ctx.t("view.log_details.branches_label"), &branches, theme.ref_local.pill_fg);
+        push_list(ctx.t("view.log_details.tags_label"), &tags, theme.ref_tag.pill_fg);
         if branches.is_empty() && tags.is_empty() {
             lines.push(Line::from(vec![
-                label("Branches"),
-                Span::styled("(not on any branch)", Style::default().fg(theme.fg_muted)),
+                label(ctx.t("view.log_details.branches_label")),
+                Span::styled(
+                    ctx.t("view.log_details.not_on_branch").to_string(),
+                    Style::default().fg(theme.fg_muted),
+                ),
             ]));
         }
     }

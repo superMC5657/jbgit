@@ -55,17 +55,33 @@ pub fn render_top_header(
             jgit_core::RepositoryState::Rebase { progress, .. }
             | jgit_core::RepositoryState::RebaseInteractive { progress, .. }
             | jgit_core::RepositoryState::RebaseMerge { progress, .. } => Some(match progress {
-                Some((c, t)) => format!(" · Rebasing {c}/{t}"),
-                None => " · Rebasing".to_string(),
+                Some((c, t)) => {
+                    let c_s = c.to_string();
+                    let t_s = t.to_string();
+                    state
+                        .i18n
+                        .t_fmt("banner.header_rebasing_progress", &[("cur", &c_s), ("total", &t_s)])
+                }
+                None => state.i18n.t("banner.header_rebasing").to_string(),
             }),
-            jgit_core::RepositoryState::Merge => Some(" · Merging".to_string()),
-            jgit_core::RepositoryState::CherryPick => Some(" · Cherry-picking".to_string()),
-            jgit_core::RepositoryState::Revert => Some(" · Reverting".to_string()),
+            jgit_core::RepositoryState::Merge => {
+                Some(state.i18n.t("banner.header_merging").to_string())
+            }
+            jgit_core::RepositoryState::CherryPick => {
+                Some(state.i18n.t("banner.header_cherry_picking").to_string())
+            }
+            jgit_core::RepositoryState::Revert => {
+                Some(state.i18n.t("banner.header_reverting").to_string())
+            }
             _ => None,
         }
         .unwrap_or_default();
         if let Some(branch) = &snap.head_branch {
-            let unborn = if snap.is_unborn_head { " (unborn)" } else { "" };
+            let unborn = if snap.is_unborn_head {
+                state.i18n.t("view.header.unborn")
+            } else {
+                ""
+            };
             (
                 format!(
                     " {} {}{}{}{} ▾ ",
@@ -96,13 +112,13 @@ pub fn render_top_header(
         }
     } else if state.repo_error.is_some() {
         (
-            " No Repo ".to_string(),
+            state.i18n.t("view.header.no_repo").to_string(),
             ctx.theme.status_untracked,
             ctx.theme.bg_elevated,
         )
     } else {
         (
-            " Loading… ".to_string(),
+            state.i18n.t("view.header.loading").to_string(),
             ctx.theme.fg_muted,
             ctx.theme.bg_elevated,
         )
@@ -244,24 +260,30 @@ pub fn render_tab_bar(
 
     for tab in WorkspaceTab::ALL {
         let active = state.active_tab == tab;
+        let tab_name = match tab {
+            WorkspaceTab::Commit => state.i18n.t("tabs.commit"),
+            WorkspaceTab::Log => state.i18n.t("tabs.log"),
+            WorkspaceTab::Stash => state.i18n.t("tabs.stash"),
+            WorkspaceTab::Console => state.i18n.t("tabs.console"),
+        };
         let label = match tab {
             WorkspaceTab::Commit => {
                 let count = state.stage_status.as_ref().map_or(0, |s| s.total_changes());
                 if count > 0 {
-                    format!(" [{}] {} ({}) ", tab.index(), tab.title(), count)
+                    format!(" [{}] {} ({}) ", tab.index(), tab_name, count)
                 } else {
-                    format!(" [{}] {} ", tab.index(), tab.title())
+                    format!(" [{}] {} ", tab.index(), tab_name)
                 }
             }
             WorkspaceTab::Console => {
                 let count = state.console_entries.len();
                 if count > 0 {
-                    format!(" [{}] {} ({}) ", tab.index(), tab.title(), count)
+                    format!(" [{}] {} ({}) ", tab.index(), tab_name, count)
                 } else {
-                    format!(" [{}] {} ", tab.index(), tab.title())
+                    format!(" [{}] {} ", tab.index(), tab_name)
                 }
             }
-            _ => format!(" [{}] {} ", tab.index(), tab.title()),
+            _ => format!(" [{}] {} ", tab.index(), tab_name),
         };
 
         let w = label.width() as u16;
@@ -362,7 +384,7 @@ pub fn render_footer_bar(
             HitTarget::NotificationDismiss,
         );
         spans.push(Span::styled(
-            "  Alt+Z action · Alt+X dismiss",
+            state.i18n.t("view.header.notification_hint"),
             Style::default().fg(ctx.theme.fg_muted),
         ));
         frame.render_widget(
@@ -412,18 +434,10 @@ pub fn render_footer_bar(
     }
 
     let hint = match state.active_tab {
-        WorkspaceTab::Commit => {
-            " Tab Focus | Space Stage/Unstage | v Visual | s/u/r Hunk | n/p Prev/Next | Alt+M Amend | Ctrl+Enter Commit | ? Help"
-        }
-        WorkspaceTab::Log => {
-            " Tab Focus | / Filter | Shift+↑↓ Range | →/← Parent/Child | Ctrl+G Go to | Ctrl+` Branches | . Menu | F4 Diff | ? Help"
-        }
-        WorkspaceTab::Console => {
-            " 1-4 Tabs | Tab Focus | j/k Select/Scroll | p Run git status | r Refresh | RightClick Probes | q Quit"
-        }
-        WorkspaceTab::Stash => {
-            " j/k Select | Enter/a Apply | p Pop | b Unstash as Branch | d Drop | n New | C Clear | . Menu | ? Help"
-        }
+        WorkspaceTab::Commit => state.i18n.t("view.footer.commit_hint"),
+        WorkspaceTab::Log => state.i18n.t("view.footer.log_hint"),
+        WorkspaceTab::Console => state.i18n.t("view.footer.console_hint"),
+        WorkspaceTab::Stash => state.i18n.t("view.footer.stash_hint"),
     };
 
     let footer = Paragraph::new(Line::from(Span::styled(

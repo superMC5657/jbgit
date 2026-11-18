@@ -146,18 +146,24 @@ pub fn render_log_tab(
         .as_ref()
         .map(|s| {
             if s.is_unborn_head {
-                "unborn HEAD".to_string()
+                state.i18n.t("view.log.unborn_head").to_string()
             } else {
                 let visible = state.log_graph.visible_count();
                 let sel = state.log_graph.selected_range();
                 let sel_n = sel.end() - sel.start() + 1;
+                let total_s = s.commits.len().to_string();
+                let vis_s = visible.to_string();
                 let mut out = if visible == s.commits.len() {
-                    format!("{} commits", s.commits.len())
+                    state.i18n.t_fmt("view.log.commits_count", &[("count", &total_s)])
                 } else {
-                    format!("{visible} of {} commits", s.commits.len())
+                    state.i18n.t_fmt(
+                        "view.log.commits_filtered",
+                        &[("visible", &vis_s), ("total", &total_s)],
+                    )
                 };
                 if sel_n > 1 {
-                    out.push_str(&format!(" · {sel_n} selected"));
+                    let sel_s = sel_n.to_string();
+                    out.push_str(&state.i18n.t_fmt("view.log.selected_count", &[("count", &sel_s)]));
                 }
                 out
             }
@@ -283,7 +289,10 @@ fn render_filter_bar(
     let text = &filter.spec.text;
     let box_w = ((area.width as usize) / 3).clamp(10, 32);
     let (content, fg) = if text.query.is_empty() && !filter.editing_text {
-        ("Text or hash (Ctrl+L)".to_string(), theme.fg_muted)
+        (
+            state.i18n.t("view.log.search_placeholder").to_string(),
+            theme.fg_muted,
+        )
     } else {
         (text.query.clone(), theme.fg_bright)
     };

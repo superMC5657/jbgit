@@ -40,10 +40,10 @@ impl AppState {
     /// Fails with a user-facing reason when a write operation must not start.
     pub(crate) fn require_no_ongoing(&self) -> Result<(), String> {
         match self.ongoing_kind() {
-            Some(k) => Err(format!(
-                "Cannot start: a {} is in progress (Continue or Abort it first)",
-                k.title().to_lowercase()
-            )),
+            Some(k) => {
+                let kind_low = k.title().to_lowercase();
+                Err(self.i18n.t_fmt("toast.ongoing_blocked", &[("kind", &kind_low)]))
+            }
             None => Ok(()),
         }
     }
@@ -198,10 +198,11 @@ impl AppState {
                 self.focused_pane = PaneId::LogChangesTree;
                 self.details.diff_preview = true;
                 self.details.compare_override = Some(DetailsKey::compare_versions(*base, *target));
-                self.status_notice = Some(format!(
-                    "Comparing {} ↔ {} (select a commit to return)",
-                    base.short(),
-                    target.short()
+                let b_s = base.short();
+                let t_s = target.short();
+                self.status_notice = Some(self.i18n.t_fmt(
+                    "toast.comparing_versions",
+                    &[("base", &b_s), ("target", &t_s)],
                 ));
             }
             Action::CompareWithLocal { target } => {
@@ -209,9 +210,10 @@ impl AppState {
                 self.focused_pane = PaneId::LogChangesTree;
                 self.details.diff_preview = true;
                 self.details.compare_override = Some(DetailsKey::compare_with_local(*target));
-                self.status_notice = Some(format!(
-                    "Comparing {} ↔ Working Tree (select a commit to return)",
-                    target.short()
+                let t_s = target.short();
+                self.status_notice = Some(self.i18n.t_fmt(
+                    "toast.comparing_local",
+                    &[("target", &t_s)],
                 ));
             }
             Action::OpenConflictResolver(path) => {
@@ -284,11 +286,12 @@ impl AppState {
                         stage: all_resolved,
                     });
                     self.status_notice = Some(if all_resolved {
-                        format!("Saved & staged resolved '{path}'")
+                        self.i18n.t_fmt("toast.saved_staged_conflict", &[("path", &path)])
                     } else {
-                        format!(
-                            "Saved '{path}' ({} unresolved block(s) kept)",
-                            doc.unresolved_count()
+                        let count_s = doc.unresolved_count().to_string();
+                        self.i18n.t_fmt(
+                            "toast.saved_unresolved_conflict",
+                            &[("path", &path), ("count", &count_s)],
                         )
                     });
                     self.conflict_merge = None;
@@ -300,7 +303,7 @@ impl AppState {
             Action::UncommitHead => {
                 self.active_tab = WorkspaceTab::Commit;
                 self.focused_pane = PaneId::CommitMessageEditor;
-                self.status_notice = Some("Uncommitting HEAD (changes stay staged)…".into());
+                self.status_notice = Some(self.i18n.t("toast.uncommitting_head").into());
                 effects.push(Effect::UndoLastCommit);
             }
             Action::OngoingResolve => {
@@ -322,8 +325,7 @@ impl AppState {
                     self.commit_stage_selected_idx = pos;
                     let _ = self.dispatch_git_action(&Action::OpenConflictResolver(path), effects);
                 } else {
-                    self.status_notice =
-                        Some("No conflicted files — press Continue on the banner".into());
+                    self.status_notice = Some(self.i18n.t("toast.no_conflicts_banner").into());
                 }
             }
             Action::NotificationActivate => {
@@ -461,17 +463,21 @@ impl AppState {
                         .find(|n| !existing.contains(n))
                         .unwrap_or_default();
                     let behind = snap.count_exclusive(remote.target_oid, l.target_oid);
+                    let ahead_s = ahead.to_string();
+                    let behind_s = behind.to_string();
+                    let i18n = self.i18n.clone();
                     self.push_dialog(Dialog::Choice(ChoiceDialog::buttons(
-                        format!("Checkout '{remote_ref}'"),
+                        i18n.t_fmt("dialog.diverged_checkout.title", &[("remote_ref", remote_ref)]),
                         vec![
-                            format!("Local branch '{local_name}' already exists and has diverged:"),
-                            format!(
-                                "  {ahead} local commit(s) not in '{remote_ref}', {behind} remote commit(s) missing locally."
+                            i18n.t_fmt("dialog.diverged_checkout.prompt", &[("local", &local_name)]),
+                            i18n.t_fmt(
+                                "dialog.diverged_checkout.counts",
+                                &[("ahead", &ahead_s), ("remote_ref", remote_ref), ("behind", &behind_s)],
                             ),
                         ],
                         vec![
                             ChoiceOption::new(
-                                format!("Checkout local '{local_name}'"),
+                                i18n.t_fmt("dialog.diverged_checkout.checkout_local", &[("local", &local_name)]),
                                 Some('l'),
                                 vec![Action::RunGitOp(GitOp::Checkout {
                                     target: local_name.clone(),
@@ -479,22 +485,25 @@ impl AppState {
                                 })],
                             ),
                             ChoiceOption::new(
-                                format!("Reset '{local_name}' to '{remote_ref}'"),
+                                i18n.t_fmt(
+                                    "dialog.diverged_checkout.reset_to_remote",
+                                    &[("local", &local_name), ("remote_ref", remote_ref)],
+                                ),
                                 Some('r'),
                                 vec![Action::RunGitOp(GitOp::CheckoutResetBranch {
                                     name: local_name.clone(),
                                     start: remote_ref.to_string(),
                                 })],
                             )
-                            .detail(format!("drops {ahead} local commit(s)"))
+                            .detail(i18n.t_fmt("dialog.diverged_checkout.drops_commits", &[("ahead", &ahead_s)]))
                             .danger(),
                             ChoiceOption::new(
-                                "New Branch…",
+                                i18n.t("dialog.diverged_checkout.new_branch"),
                                 Some('n'),
                                 vec![Action::OpenDialog(Box::new(Dialog::Input(
                                     InputDialog::new(
-                                        format!("Checkout '{remote_ref}' as New Branch"),
-                                        "New local branch name:",
+                                        i18n.t_fmt("dialog.diverged_checkout.new_branch_title", &[("remote_ref", remote_ref)]),
+                                        i18n.t("dialog.diverged_checkout.new_branch_prompt"),
                                         suggestion,
                                         InputValidation::RefName {
                                             what: "Branch",
@@ -506,7 +515,7 @@ impl AppState {
                                     ),
                                 )))],
                             ),
-                            ChoiceOption::new("Cancel", Some('c'), Vec::new()),
+                            ChoiceOption::new(i18n.cancel(), Some('c'), Vec::new()),
                         ],
                     )));
                     return;
@@ -579,19 +588,20 @@ impl AppState {
             return;
         }
         let count = unmerged_head.unwrap_or(0).max(unmerged_up.unwrap_or(0));
-        let mut body = vec![format!(
-            "Branch '{name}' has {count} commit(s) not merged into HEAD{}.",
-            if local.upstream.is_some() {
-                " or its upstream"
-            } else {
-                ""
-            }
-        )];
-        body.push("Those commits are lost unless you restore the branch right away.".into());
+        let count_s = count.to_string();
+        let prompt_key = if local.upstream.is_some() {
+            "dialog.confirm_delete.prompt_unmerged_upstream"
+        } else {
+            "dialog.confirm_delete.prompt_unmerged_head"
+        };
+        let i18n = self.i18n.clone();
+        let mut body = vec![i18n.t_fmt(prompt_key, &[("name", name), ("count", &count_s)])];
+        body.push(i18n.t("dialog.confirm_delete.warn_unmerged").into());
         self.push_dialog(Dialog::Choice(ChoiceDialog::confirm(
-            "Delete Unmerged Branch",
+            i18n.t("dialog.confirm_delete.title_unmerged"),
             body,
-            "Force Delete (-D)",
+            i18n.t("dialog.confirm_delete.force_delete_btn"),
+            i18n.cancel(),
             vec![Action::RunGitOp(GitOp::DeleteBranch {
                 name: name.to_string(),
                 force: true,
@@ -622,24 +632,27 @@ impl AppState {
             .and_then(|u| u.split_once('/').map(|(r, _)| r.to_string()))
             .unwrap_or_else(|| self.default_remote());
         let set_upstream = upstream.is_none();
+        let i18n = self.i18n.clone();
         let mut body = Vec::new();
         match (up_to, local.and_then(|l| l.ahead_behind)) {
-            (Some(oid), _) => body.push(format!(
-                "Push commits of '{branch}' up to {} (later commits stay local).",
-                oid.short()
-            )),
+            (Some(oid), _) => {
+                let oid_s = oid.short();
+                body.push(i18n.t_fmt("dialog.push.up_to_body", &[("branch", branch), ("oid", &oid_s)]));
+            }
             (None, Some((ahead, behind))) => {
-                body.push(format!(
-                    "{ahead} commit(s) will be pushed to '{remote}/{branch}'."
+                let ahead_s = ahead.to_string();
+                body.push(i18n.t_fmt(
+                    "dialog.push.normal_body",
+                    &[("ahead", &ahead_s), ("remote", &remote), ("branch", branch)],
                 ));
                 if behind > 0 {
-                    body.push(format!(
-                        "⚠ Remote has {behind} commit(s) you do not have: a normal push will be rejected."
-                    ));
+                    let behind_s = behind.to_string();
+                    body.push(i18n.t_fmt("dialog.push.behind_warn", &[("behind", &behind_s)]));
                 }
             }
-            (None, None) => body.push(format!(
-                "New branch: '{branch}' will be pushed and tracked as '{remote}/{branch}'."
+            (None, None) => body.push(i18n.t_fmt(
+                "dialog.push.new_branch_body",
+                &[("branch", branch), ("remote", &remote)],
             )),
         }
         let op = |force| {
@@ -652,12 +665,12 @@ impl AppState {
             })
         };
         self.push_dialog(Dialog::Choice(ChoiceDialog::buttons(
-            format!("Push '{branch}' → '{remote}'"),
+            i18n.t_fmt("dialog.push.title", &[("branch", branch), ("remote", &remote)]),
             body,
             vec![
-                ChoiceOption::new("Push", Some('p'), vec![op(false)]),
-                ChoiceOption::new("Force Push (with lease)", Some('f'), vec![op(true)]).danger(),
-                ChoiceOption::new("Cancel", Some('c'), Vec::new()),
+                ChoiceOption::new(i18n.t("dialog.push.push_btn"), Some('p'), vec![op(false)]),
+                ChoiceOption::new(i18n.t("dialog.push.force_push_btn"), Some('f'), vec![op(true)]).danger(),
+                ChoiceOption::new(i18n.cancel(), Some('c'), Vec::new()),
             ],
         )));
     }
@@ -674,11 +687,15 @@ impl AppState {
             self.status_notice = Some(format!("✔ {}", outcome.op.label()));
             match &op {
                 GitOp::DeleteBranch { name, tip, .. } => {
+                    let short_s = tip.short();
                     self.notification = Some(Notification {
-                        text: format!("Deleted branch '{name}' ({})", tip.short()),
+                        text: self.i18n.t_fmt(
+                            "toast.deleted_branch",
+                            &[("name", name), ("short", &short_s)],
+                        ),
                         is_error: false,
                         action: Some((
-                            "Restore Branch".into(),
+                            self.i18n.t("toast.restore_branch_btn").into(),
                             vec![Action::RunGitOp(GitOp::RestoreBranch {
                                 name: name.clone(),
                                 oid: *tip,
@@ -695,15 +712,16 @@ impl AppState {
                         && current.as_deref() != Some(rev.as_str())
                     {
                         let cur = current.unwrap_or_else(|| "HEAD".into());
+                        let i18n = self.i18n.clone();
                         self.push_dialog(Dialog::Choice(ChoiceDialog::buttons(
-                            "Merge Succeeded",
+                            i18n.t("dialog.merge_cleanup.title"),
                             vec![
-                                format!("'{rev}' was merged into '{cur}'."),
-                                format!("Delete the merged branch '{rev}'?"),
+                                i18n.t_fmt("dialog.merge_cleanup.merged_into", &[("rev", rev), ("cur", &cur)]),
+                                i18n.t_fmt("dialog.merge_cleanup.ask_delete", &[("rev", rev)]),
                             ],
                             vec![
                                 ChoiceOption::new(
-                                    format!("Delete '{rev}'"),
+                                    i18n.t_fmt("dialog.merge_cleanup.delete_btn", &[("rev", rev)]),
                                     Some('d'),
                                     vec![Action::RunGitOp(GitOp::DeleteBranch {
                                         name: rev.clone(),
@@ -711,7 +729,7 @@ impl AppState {
                                         tip,
                                     })],
                                 ),
-                                ChoiceOption::new("Keep", Some('k'), Vec::new()),
+                                ChoiceOption::new(i18n.t("dialog.merge_cleanup.keep_btn"), Some('k'), Vec::new()),
                             ],
                         )));
                     }
@@ -719,17 +737,13 @@ impl AppState {
                 GitOp::PatchToClipboard { .. } => {
                     let mut text = outcome.stdout.join("\n");
                     text.push('\n');
-                    self.status_notice = Some(format!(
-                        "Copied patch ({} lines) to clipboard",
-                        outcome.stdout.len()
-                    ));
+                    let count_s = outcome.stdout.len().to_string();
+                    self.status_notice = Some(self.i18n.t_fmt("toast.copied_patch", &[("count", &count_s)]));
                     effects.push(Effect::CopyToClipboard(text));
                 }
                 GitOp::CreatePatchFiles { .. } => {
-                    self.status_notice = Some(format!(
-                        "Created {} patch file(s) in the repository root",
-                        outcome.stdout.len()
-                    ));
+                    let count_s = outcome.stdout.len().to_string();
+                    self.status_notice = Some(self.i18n.t_fmt("toast.created_patches", &[("count", &count_s)]));
                 }
                 GitOp::RewordHead { .. } | GitOp::RewriteHistory { .. } => {
                     self.log_graph.anchor = None;
@@ -738,12 +752,10 @@ impl AppState {
             }
             if outcome.stash_kept {
                 self.notification = Some(Notification {
-                    text:
-                        "Local changes could not be re-applied cleanly; they are saved in stash@{0}"
-                            .into(),
+                    text: self.i18n.t("toast.stash_kept").into(),
                     is_error: true,
                     action: Some((
-                        "Unstash".into(),
+                        self.i18n.t("toast.unstash_btn").into(),
                         vec![Action::RunGitOp(GitOp::StashApply {
                             index: 0,
                             pop: true,
@@ -755,6 +767,7 @@ impl AppState {
         }
 
         let label = outcome.op.label();
+        let i18n = self.i18n.clone();
         match outcome.failure.clone() {
             Some(
                 GitFailure::LocalChangesOverwritten { files }
@@ -769,20 +782,20 @@ impl AppState {
                     GitOp::Reset { .. } => "Reset",
                     _ => "Checkout",
                 };
-                let mut body = vec![format!(
-                    "{label} would overwrite local changes in {} file(s):",
-                    files.len().max(1)
+                let count_s = files.len().max(1).to_string();
+                let mut body = vec![i18n.t_fmt(
+                    "dialog.smart.overwrite_prompt",
+                    &[("label", &label), ("count", &count_s)],
                 )];
                 body.extend(files.iter().take(6).map(|f| format!("  • {f}")));
                 if files.len() > 6 {
-                    body.push(format!("  … and {} more", files.len() - 6));
+                    let rem_s = (files.len() - 6).to_string();
+                    body.push(i18n.t_fmt("dialog.smart.more_files", &[("count", &rem_s)]));
                 }
                 body.push(String::new());
-                body.push(format!(
-                    "Smart {verb} stashes them, runs the operation and restores them."
-                ));
+                body.push(i18n.t_fmt("dialog.smart.explain", &[("verb", verb)]));
                 let mut options = vec![ChoiceOption::new(
-                    format!("Smart {verb}"),
+                    i18n.t_fmt("dialog.smart.title", &[("verb", verb)]),
                     Some('s'),
                     vec![Action::RunGitOp(GitOp::Smart(Box::new(op.clone())))],
                 )];
@@ -793,43 +806,50 @@ impl AppState {
                 if let Some(target) = force_target {
                     options.push(
                         ChoiceOption::new(
-                            "Force Checkout (Discard Local)",
+                            i18n.t("dialog.smart.force_checkout"),
                             Some('f'),
                             vec![Action::RunGitOp(GitOp::ForceCheckout { target })],
                         )
                         .danger(),
                     );
                 }
-                options.push(ChoiceOption::new("Cancel", Some('c'), Vec::new()));
-                self.status_notice = Some(format!("{label}: local changes would be overwritten"));
+                options.push(ChoiceOption::new(i18n.cancel(), Some('c'), Vec::new()));
+                self.status_notice = Some(i18n.t_fmt("toast.overwritten_notice", &[("label", &label)]));
                 self.push_dialog(Dialog::Choice(ChoiceDialog::buttons(
-                    format!("Smart {verb}"),
+                    i18n.t_fmt("dialog.smart.title", &[("verb", verb)]),
                     body,
                     options,
                 )));
             }
             Some(GitFailure::Conflicts) => {
                 let kept = if outcome.stash_kept {
-                    " Local changes are saved in stash@{0}."
+                    i18n.t("toast.local_changes_kept")
                 } else {
                     ""
                 };
-                self.status_notice = Some(format!("{label} stopped on conflicts.{kept}"));
+                self.status_notice = Some(i18n.t_fmt(
+                    "toast.stopped_on_conflicts",
+                    &[("label", &label), ("kept", kept)],
+                ));
                 self.notification = Some(Notification {
-                    text: format!("{label}: resolve conflicts, then Continue on the banner.{kept}"),
+                    text: i18n.t_fmt(
+                        "toast.resolve_conflicts_toast",
+                        &[("label", &label), ("kept", kept)],
+                    ),
                     is_error: true,
-                    action: Some(("Resolve".into(), vec![Action::OngoingResolve])),
+                    action: Some((i18n.t("toast.resolve_btn").into(), vec![Action::OngoingResolve])),
                 });
             }
             Some(GitFailure::NotFullyMerged) => {
                 if let GitOp::DeleteBranch { name, tip, .. } = &op {
                     self.push_dialog(Dialog::Choice(ChoiceDialog::confirm(
-                        "Delete Unmerged Branch",
+                        i18n.t("dialog.confirm_delete.title_unmerged"),
                         vec![
-                            format!("Branch '{name}' is not fully merged."),
-                            "Force delete it? You can restore it right after.".into(),
+                            i18n.t_fmt("dialog.confirm_delete.not_merged_prompt", &[("name", name)]),
+                            i18n.t("dialog.confirm_delete.not_merged_warn").into(),
                         ],
-                        "Force Delete (-D)",
+                        i18n.t("dialog.confirm_delete.force_delete_btn"),
+                        i18n.cancel(),
                         vec![Action::RunGitOp(GitOp::DeleteBranch {
                             name: name.clone(),
                             force: true,
@@ -848,12 +868,13 @@ impl AppState {
                 } = &op
                 {
                     self.push_dialog(Dialog::Choice(ChoiceDialog::confirm(
-                        "Push Rejected",
+                        i18n.t("dialog.push.rejected_title"),
                         vec![
-                            format!("'{remote}/{branch}' contains commits you do not have."),
-                            "Update (pull) first, or force push with lease.".into(),
+                            i18n.t_fmt("dialog.push.rejected_body", &[("remote", remote), ("branch", branch)]),
+                            i18n.t("dialog.push.rejected_hint").into(),
                         ],
-                        "Force Push (with lease)",
+                        i18n.t("dialog.push.force_push_btn"),
+                        i18n.cancel(),
                         vec![Action::RunGitOp(GitOp::Push {
                             branch: branch.clone(),
                             remote: remote.clone(),
@@ -863,17 +884,19 @@ impl AppState {
                         })],
                     )));
                 } else {
-                    self.notify_error(format!("{label}: push rejected"));
+                    self.notify_error(i18n.t_fmt("toast.push_rejected_notice", &[("label", &label)]));
                 }
             }
             Some(
                 GitFailure::LocalChangesOverwritten { .. }
                 | GitFailure::UntrackedOverwritten { .. },
             ) => {
-                self.notify_error(format!("{label}: local changes would be overwritten"));
+                self.notify_error(i18n.t_fmt("toast.overwritten_notice", &[("label", &label)]));
             }
-            Some(GitFailure::Other(msg)) => self.notify_error(format!("{label} failed: {msg}")),
-            None => self.notify_error(format!("{label} failed")),
+            Some(GitFailure::Other(msg)) => {
+                self.notify_error(i18n.t_fmt("toast.op_failed_msg", &[("label", &label), ("error", &msg)]));
+            }
+            None => self.notify_error(i18n.t_fmt("toast.op_failed", &[("label", &label)])),
         }
     }
 
@@ -883,7 +906,7 @@ impl AppState {
             text,
             is_error: true,
             action: Some((
-                "Show Console".into(),
+                self.i18n.t("toast.show_console_btn").into(),
                 vec![Action::SwitchTab(WorkspaceTab::Console)],
             )),
         });

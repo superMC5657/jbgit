@@ -246,6 +246,16 @@ pub enum DiffContext {
 }
 
 impl DiffContext {
+    pub const fn from_lines(lines: usize) -> Self {
+        if lines >= 100 {
+            Self::Full
+        } else if lines >= 10 {
+            Self::Ten
+        } else {
+            Self::Three
+        }
+    }
+
     pub const fn lines(self) -> u32 {
         match self {
             Self::Three => 3,

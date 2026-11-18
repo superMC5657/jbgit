@@ -4,7 +4,7 @@ use jgit_core::graph::{
     EdgeDirection, FixedBitSet, GraphPrintElement, GraphViewOptions, LineStyle, NodeKind,
     PermanentGraph, PrintElementGenerator, RawCommitNode, SortType, VisibleGraph, VisibleRowIdx,
 };
-use jgit_core::{BranchColorId, Oid, PaneId, RefInfo, RefKind};
+use jgit_core::{BranchColorId, Oid, RefInfo, RefKind};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Style};
@@ -206,16 +206,7 @@ impl Fixture {
     }
 
     fn ctx<'a>(&'a self, hits: &'a mut HitTestRegistry) -> RenderContext<'a> {
-        RenderContext {
-            theme: &self.theme,
-            glyph_mode: GlyphMode::Unicode,
-            branch_colors: &self.mgr,
-            hit_registry: hits,
-            focused_pane: PaneId::LogCommitTable,
-            hover_target: None,
-            dragging_splitter: None,
-            graph_renderer: None,
-        }
+        RenderContext::minimal(&self.theme, GlyphMode::Unicode, &self.mgr, hits)
     }
 
     fn bg(&self) -> Color {

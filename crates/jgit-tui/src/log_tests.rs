@@ -103,6 +103,7 @@ fn fixture_state() -> AppState {
         ..Default::default()
     };
     let mut state = AppState::new(".".into(), None);
+    state.i18n = Arc::new(crate::i18n::I18n::load("en-US", None));
     state.apply_engine_event(EngineEvent::RepoSnapshotLoaded {
         snapshot: Arc::new(snap),
         epoch: 1,

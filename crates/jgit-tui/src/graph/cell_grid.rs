@@ -475,7 +475,6 @@ mod tests {
     use crate::graph::state::build_graph_color_map;
     use crate::hit_test::HitTestRegistry;
     use crate::theme::{GlyphMode, ThemePalette};
-    use jgit_core::PaneId;
 
     fn oid(n: u64) -> Oid {
         let mut bytes = [0u8; 20];
@@ -559,16 +558,12 @@ mod tests {
         terminal
             .draw(|f| {
                 let area = Rect::new(0, 0, graph_width, h);
-                let mut ctx = RenderContext {
-                    theme: &theme,
-                    glyph_mode: GlyphMode::Unicode,
-                    branch_colors: &mgr,
-                    hit_registry: &mut hits,
-                    focused_pane: PaneId::LogCommitTable,
-                    hover_target: None,
-                    dragging_splitter: None,
-                    graph_renderer: None,
-                };
+                let mut ctx = RenderContext::minimal(
+                    &theme,
+                    GlyphMode::Unicode,
+                    &mgr,
+                    &mut hits,
+                );
                 let slice = GraphViewportSlice {
                     rows: &slices,
                     area,

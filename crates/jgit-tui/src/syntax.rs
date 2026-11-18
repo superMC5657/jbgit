@@ -9,7 +9,7 @@ use ratatui::text::Span;
 use syntect::easy::HighlightLines;
 use syntect::highlighting::{FontStyle, Theme, ThemeSet};
 use syntect::parsing::SyntaxSet;
-use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+use unicode_width::UnicodeWidthChar;
 
 use crate::theme::to_color;
 
@@ -75,7 +75,7 @@ pub struct SyntaxToken {
 }
 
 /// Pre-highlighted tokens for every line of every hunk in a [`FileDiff`].
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct HighlightedDiff {
     pub hunks: Vec<Vec<Vec<SyntaxToken>>>,
 }
@@ -141,6 +141,7 @@ impl HighlightedDiff {
 
 /// Combines syntax foreground tokens with word-diff background ranges and truncates
 /// cleanly to `max_width` display columns.
+#[cfg(test)]
 pub fn render_diff_line_spans(
     text: &str,
     syntax_tokens: &[SyntaxToken],
@@ -150,12 +151,44 @@ pub fn render_diff_line_spans(
     word_bg: Color,
     true_color: bool,
 ) -> Vec<Span<'static>> {
+    render_diff_line_spans_with_tab(
+        text,
+        syntax_tokens,
+        word_ranges,
+        max_width,
+        4,
+        base,
+        word_bg,
+        true_color,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn render_diff_line_spans_with_tab(
+    text: &str,
+    syntax_tokens: &[SyntaxToken],
+    word_ranges: &[(usize, usize)],
+    max_width: usize,
+    tab_size: usize,
+    base: Style,
+    word_bg: Color,
+    true_color: bool,
+) -> Vec<Span<'static>> {
     if max_width == 0 {
         return Vec::new();
     }
+    let tab_w = tab_size.max(1);
+    let char_display_w = |ch: char| -> usize {
+        if ch == '\t' {
+            tab_w
+        } else {
+            ch.width().unwrap_or(0)
+        }
+    };
+    let total_w: usize = text.chars().map(char_display_w).sum();
 
     // Truncate to fit `max_width` (reserving 1 column for '…' when needed).
-    let (limit, ellipsis) = if text.width() <= max_width {
+    let (limit, ellipsis) = if total_w <= max_width {
         (text.len(), false)
     } else if max_width == 1 {
         return vec![Span::styled("…", base)];
@@ -164,7 +197,7 @@ pub fn render_diff_line_spans(
         let mut used = 0usize;
         let mut end = 0usize;
         for (idx, ch) in text.char_indices() {
-            let cw = ch.width().unwrap_or(0);
+            let cw = char_display_w(ch);
             if used + cw > target {
                 break;
             }
@@ -201,6 +234,7 @@ pub fn render_diff_line_spans(
     cuts.sort_unstable();
     cuts.dedup();
 
+    let tab_spaces = " ".repeat(tab_w);
     let mut spans = Vec::with_capacity(cuts.len());
     for pair in cuts.windows(2) {
         let (s, e) = (pair[0], pair[1]);
@@ -222,7 +256,13 @@ pub fn render_diff_line_spans(
         if in_word {
             style = style.bg(word_bg).add_modifier(Modifier::BOLD);
         }
-        spans.push(Span::styled(text[s..e].to_string(), style));
+        let raw_slice = &text[s..e];
+        let rendered = if raw_slice.contains('\t') {
+            raw_slice.replace('\t', &tab_spaces)
+        } else {
+            raw_slice.to_string()
+        };
+        spans.push(Span::styled(rendered, style));
     }
 
     if ellipsis {
@@ -276,5 +316,21 @@ mod tests {
         );
         let omega = spans.iter().find(|s| s.content == "omega").unwrap();
         assert_eq!(omega.style.bg, Some(Color::Rgb(55, 102, 75)));
+    }
+
+    #[test]
+    fn tab_size_expands_tabs_in_diff_spans() {
+        let spans = render_diff_line_spans_with_tab(
+            "\tlet x = 1;",
+            &[],
+            &[],
+            40,
+            2,
+            Style::default(),
+            Color::Reset,
+            true,
+        );
+        let joined: String = spans.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(joined, "  let x = 1;");
     }
 }

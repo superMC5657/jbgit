@@ -274,16 +274,7 @@ mod tests {
         let mut hits = HitTestRegistry::new();
         terminal
             .draw(|f| {
-                let ctx = RenderContext {
-                    theme: &theme,
-                    glyph_mode: mode,
-                    branch_colors: &branch_colors,
-                    hit_registry: &mut hits,
-                    focused_pane: jgit_core::PaneId::LogCommitTable,
-                    hover_target: None,
-                    dragging_splitter: None,
-                    graph_renderer: None,
-                };
+                let ctx = RenderContext::minimal(&theme, mode, &branch_colors, &mut hits);
                 render_palette_preview(f, f.area(), &ctx);
             })
             .unwrap();

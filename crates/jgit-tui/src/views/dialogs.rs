@@ -193,14 +193,14 @@ fn render_input(
         inner.right(),
         &[
             DialogButtonSpec {
-                label: "OK".into(),
+                label: ctx.ok().into(),
                 selected: true,
                 enabled: err.is_none(),
                 danger: false,
                 target: HitTarget::DialogButton(DialogButtonKind::Confirm),
             },
             DialogButtonSpec {
-                label: "Cancel".into(),
+                label: ctx.cancel().into(),
                 selected: false,
                 enabled: true,
                 danger: false,
@@ -271,7 +271,7 @@ fn render_choice(
             ));
             if o.danger {
                 spans.push(Span::styled(
-                    "  ⚠ DATA LOSS ",
+                    ctx.t("dialog.reset.data_loss_badge").to_string(),
                     Style::default()
                         .fg(Color::White)
                         .bg(ctx.theme.status_conflicted)
@@ -313,7 +313,7 @@ fn render_choice(
                     target: HitTarget::DialogButton(DialogButtonKind::Confirm),
                 },
                 DialogButtonSpec {
-                    label: "Cancel".into(),
+                    label: ctx.cancel().into(),
                     selected: false,
                     enabled: true,
                     danger: false,
@@ -423,7 +423,7 @@ fn render_message(
     );
     frame.render_widget(
         Paragraph::new(Span::styled(
-            " Ctrl+Enter / Alt+Enter / Ctrl+S confirm · Enter newline · Esc cancel",
+            ctx.t("dialog.message.hint").to_string(),
             Style::default().fg(ctx.theme.fg_muted),
         )),
         Rect::new(inner.x, inner.bottom().saturating_sub(2), inner.width, 1),
@@ -436,14 +436,14 @@ fn render_message(
         inner.right(),
         &[
             DialogButtonSpec {
-                label: "OK".into(),
+                label: ctx.ok().into(),
                 selected: true,
                 enabled: !d.text.trim().is_empty(),
                 danger: false,
                 target: HitTarget::DialogButton(DialogButtonKind::Confirm),
             },
             DialogButtonSpec {
-                label: "Cancel".into(),
+                label: ctx.cancel().into(),
                 selected: false,
                 enabled: true,
                 danger: false,
@@ -463,10 +463,8 @@ fn render_rebase(
 ) {
     let h = (d.entries.len() as u16 + 7).min(screen.height.saturating_sub(2));
     let rect = centered(screen, 92, h);
-    let title = format!(
-        "Interactive Rebase from {}",
-        d.base.map_or("--root".to_string(), |b| b.short())
-    );
+    let base_str = d.base.map_or("--root".to_string(), |b| b.short());
+    let title = ctx.t_fmt("dialog.rebase.title", &[("base", &base_str)]);
     let inner = frame_block(frame, screen, ctx, rect, &title, false, z);
     let list_h = inner.height.saturating_sub(4) as usize;
     let scroll = if d.selected >= list_h {
@@ -476,7 +474,7 @@ fn render_rebase(
     };
     frame.render_widget(
         Paragraph::new(Span::styled(
-            " Action   Commit    Subject (oldest first)",
+            ctx.t("dialog.rebase.columns").to_string(),
             Style::default()
                 .fg(ctx.theme.fg_muted)
                 .add_modifier(Modifier::BOLD),
@@ -541,8 +539,7 @@ fn render_rebase(
     let (hint, color) = match d.error() {
         Some(e) => (format!(" ✕ {e}"), ctx.theme.status_conflicted),
         None => (
-            " p pick · r reword · s squash · f fixup · d drop · Space cycle · Alt+↑↓ / J K move"
-                .to_string(),
+            ctx.t("dialog.rebase.hint").to_string(),
             ctx.theme.fg_muted,
         ),
     };
@@ -561,14 +558,14 @@ fn render_rebase(
         inner.right(),
         &[
             DialogButtonSpec {
-                label: "Start Rebasing".into(),
+                label: ctx.t("dialog.rebase.start_btn").into(),
                 selected: true,
                 enabled: d.error().is_none(),
                 danger: false,
                 target: HitTarget::DialogButton(DialogButtonKind::Confirm),
             },
             DialogButtonSpec {
-                label: "Cancel".into(),
+                label: ctx.cancel().into(),
                 selected: false,
                 enabled: true,
                 danger: false,

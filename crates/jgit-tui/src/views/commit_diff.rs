@@ -14,7 +14,7 @@ use unicode_width::UnicodeWidthStr;
 use crate::app::{AppState, RenderContext};
 use crate::hit_test::{DiffHunkActionKind, HitTarget, StageDiffToolbarButton};
 use crate::stage_view::StageDiffRow;
-use crate::syntax::{HighlightedDiff, render_diff_line_spans};
+use crate::syntax::{HighlightedDiff, render_diff_line_spans_with_tab};
 use crate::views::{fit_left_right_spans, render_pane_frame, truncate_to_width};
 
 fn muted_line(ctx: &RenderContext<'_>, text: &str) -> Paragraph<'static> {
@@ -37,13 +37,13 @@ pub fn render_stage_diff_workbench(
     let sw = &state.stage_workbench;
     let subtitle = if let Some(key) = &sw.current_diff_key {
         let side_label = match key.side {
-            StageDiffSide::Staged => "Staged ↔ HEAD",
-            StageDiffSide::Unstaged => "Unstaged ↔ Index ↔ HEAD",
-            StageDiffSide::AmendCommit => "HEAD~1 ↔ HEAD (Amend Reference)",
+            StageDiffSide::Staged => state.i18n.t("view.commit.diff_staged_side"),
+            StageDiffSide::Unstaged => state.i18n.t("view.commit.diff_unstaged_side"),
+            StageDiffSide::AmendCommit => state.i18n.t("view.commit.diff_amend_side"),
         };
         format!("{} ({side_label})", key.path)
     } else {
-        "Select a file to inspect".to_string()
+        state.i18n.t("view.commit.diff_select_file").to_string()
     };
 
     let body = render_pane_frame(frame, area, PaneId::CommitDiffPreview, &subtitle, ctx);
@@ -76,21 +76,21 @@ pub fn render_stage_diff_workbench(
 
     let Some(diff) = &sw.current_diff else {
         let msg = if sw.current_diff_key.is_some() {
-            " Loading three-document diff…"
+            state.i18n.t("view.commit.diff_loading")
         } else {
-            " Select a changed file in Changes to stage hunks or lines"
+            state.i18n.t("view.commit.diff_select_prompt")
         };
         frame.render_widget(muted_line(ctx, msg), diff_area);
         return;
     };
 
     if diff.is_binary {
-        frame.render_widget(muted_line(ctx, " Binary file — no text diff"), diff_area);
+        frame.render_widget(muted_line(ctx, state.i18n.t("view.commit.diff_binary")), diff_area);
         return;
     }
     if diff.hunks.is_empty() {
         frame.render_widget(
-            muted_line(ctx, " No textual differences on this side"),
+            muted_line(ctx, state.i18n.t("view.commit.diff_no_text")),
             diff_area,
         );
         return;
@@ -104,13 +104,20 @@ pub fn render_stage_diff_workbench(
     let focused = ctx.focused_pane == PaneId::CommitDiffPreview;
     let visual_bounds = sw.selected_visual_bounds();
     let num_w = 4usize;
+    let tab_size = ctx.diff_tab_size();
 
+    let empty_hl;
     let computed_hl;
-    let hl_diff: &HighlightedDiff = match &sw.diff_syntax {
-        Some(cached) => cached,
-        None => {
-            computed_hl = HighlightedDiff::build(&diff.as_file_diff());
-            &computed_hl
+    let hl_diff: &HighlightedDiff = if !ctx.diff_syntax_enabled() {
+        empty_hl = HighlightedDiff::default();
+        &empty_hl
+    } else {
+        match &sw.diff_syntax {
+            Some(cached) => cached,
+            None => {
+                computed_hl = HighlightedDiff::build(&diff.as_file_diff());
+                &computed_hl
+            }
         }
     };
 
@@ -182,11 +189,12 @@ pub fn render_stage_diff_workbench(
                 spans.push(Span::styled(format!("{} ", num(lineno(l))), gutter));
                 spans.push(Span::styled(marker.to_string(), base));
                 let text_w = cell_w.saturating_sub(num_w + 3);
-                let mut line_body = render_diff_line_spans(
+                let mut line_body = render_diff_line_spans_with_tab(
                     &l.text,
                     toks,
                     &l.word_ranges,
                     text_w,
+                    tab_size,
                     base,
                     word_bg,
                     theme.true_color,
@@ -332,11 +340,12 @@ pub fn render_stage_diff_workbench(
                     Span::styled(marker.to_string(), base),
                 ];
                 let text_w = width.saturating_sub(num_w * 2 + 4);
-                spans.extend(render_diff_line_spans(
+                spans.extend(render_diff_line_spans_with_tab(
                     &dl.text,
                     toks,
                     &dl.word_ranges,
                     text_w,
+                    tab_size,
                     base,
                     word_bg,
                     theme.true_color,

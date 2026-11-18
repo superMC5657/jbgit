@@ -39,6 +39,76 @@ pub struct RenderContext<'a> {
     pub dragging_splitter: Option<SplitterId>,
     /// Graph backend selector; `None` renders with a plain [`crate::graph::CellGridGraphBackend`].
     pub graph_renderer: Option<&'a mut crate::graph::GraphRenderer>,
+    pub i18n: Option<&'a crate::i18n::I18n>,
+    pub config: Option<&'a crate::config::AppConfig>,
+}
+
+impl<'a> RenderContext<'a> {
+    pub fn minimal(
+        theme: &'a ThemePalette,
+        glyph_mode: GlyphMode,
+        branch_colors: &'a BranchColorManager,
+        hit_registry: &'a mut HitTestRegistry,
+    ) -> Self {
+        Self {
+            theme,
+            glyph_mode,
+            branch_colors,
+            hit_registry,
+            focused_pane: PaneId::LogCommitTable,
+            hover_target: None,
+            dragging_splitter: None,
+            graph_renderer: None,
+            i18n: None,
+            config: None,
+        }
+    }
+
+    pub fn rebind_hits<'b>(&'a self, hit_registry: &'b mut HitTestRegistry) -> RenderContext<'b>
+    where
+        'a: 'b,
+    {
+        RenderContext {
+            theme: self.theme,
+            glyph_mode: self.glyph_mode,
+            branch_colors: self.branch_colors,
+            hit_registry,
+            focused_pane: self.focused_pane,
+            hover_target: self.hover_target,
+            dragging_splitter: self.dragging_splitter,
+            graph_renderer: None,
+            i18n: self.i18n,
+            config: self.config,
+        }
+    }
+
+    pub fn ok(&self) -> &str {
+        self.i18n.map_or("OK", |i| i.ok())
+    }
+
+    pub fn cancel(&self) -> &str {
+        self.i18n.map_or("Cancel", |i| i.cancel())
+    }
+
+    pub fn t<'s>(&'s self, key: &'s str) -> &'s str {
+        self.i18n.map_or(key, |i| i.t(key))
+    }
+
+    pub fn t_fmt(&self, key: &str, args: &[(&str, &str)]) -> String {
+        match self.i18n {
+            Some(i) => i.t_fmt(key, args),
+            None => key.to_string(),
+        }
+    }
+
+    pub fn diff_syntax_enabled(&self) -> bool {
+        self.config
+            .is_none_or(|c| c.jgit.diff.syntax_highlight)
+    }
+
+    pub fn diff_tab_size(&self) -> usize {
+        self.config.map_or(4, |c| c.jgit.diff.tab_size.max(1))
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -643,26 +713,85 @@ pub struct AppState {
     pub git_ops_running: usize,
     pub stash: StashTabState,
     pub conflict_merge: Option<ConflictMergeState>,
+    #[allow(dead_code)]
+    pub config: crate::config::AppConfig,
+    pub i18n: std::sync::Arc<crate::i18n::I18n>,
+    pub pending_keys: Vec<crossterm::event::KeyEvent>,
+    pub pending_key_at: Option<std::time::Instant>,
 }
 
 impl AppState {
     pub fn new(repo_path_display: PathBuf, repo_error: Option<String>) -> Self {
-        let theme = ThemePalette::detect();
+        let config = crate::config::AppConfig::load(Some(&repo_path_display));
+        Self::new_with_config(repo_path_display, repo_error, config)
+    }
+
+    pub fn new_with_config(
+        repo_path_display: PathBuf,
+        repo_error: Option<String>,
+        config: crate::config::AppConfig,
+    ) -> Self {
+        use crate::config::{DefaultTab, GlyphModePref, GraphBackendPref};
+
+        let theme = ThemePalette::from_config(&config.theme);
         let branch_colors = theme.branch_color_manager();
+        let (active_tab, focused_pane) = match config.jgit.general.default_tab {
+            DefaultTab::Commit => (WorkspaceTab::Commit, WorkspaceTab::Commit.default_pane()),
+            DefaultTab::Branches => (WorkspaceTab::Log, PaneId::LogBranchesTree),
+            DefaultTab::Stash => (WorkspaceTab::Stash, WorkspaceTab::Stash.default_pane()),
+            DefaultTab::Console => (WorkspaceTab::Console, WorkspaceTab::Console.default_pane()),
+            DefaultTab::Log => (WorkspaceTab::Log, WorkspaceTab::Log.default_pane()),
+        };
+        let glyph_mode = match config.theme.glyphs.mode {
+            GlyphModePref::Unicode => GlyphMode::Unicode,
+            GlyphModePref::NerdFont => GlyphMode::NerdFont,
+        };
+        let compact_refs = config.jgit.graph.compact_refs;
+        let graph_mode = match config.jgit.graph.backend {
+            GraphBackendPref::Auto => crate::graph::GraphRendererMode::Auto,
+            GraphBackendPref::Vector => crate::graph::GraphRendererMode::Vector,
+            GraphBackendPref::Cell => crate::graph::GraphRendererMode::CharacterGrid,
+        };
+        let diff_context = jgit_core::DiffContext::from_lines(config.jgit.diff.context_lines);
+
+        let locales_dir = crate::config::discovery::find_config_file("locales", Some(&repo_path_display))
+            .or_else(|| {
+                let global_loc = crate::config::discovery::global_config_dir().join("locales");
+                if global_loc.is_dir() { Some(global_loc) } else { None }
+            });
+        let i18n = std::sync::Arc::new(crate::i18n::I18n::load(
+            config.jgit.general.language.as_str(),
+            locales_dir.as_deref(),
+        ));
+
+        let details = DetailsPaneState {
+            diff_context,
+            ..Default::default()
+        };
+        let stage_workbench = StageWorkbenchState {
+            diff_context,
+            ..Default::default()
+        };
+        let mut stash = StashTabState::default();
+        stash.details.diff_context = diff_context;
+
         Self {
             theme,
-            glyph_mode: GlyphMode::Unicode,
+            glyph_mode,
             branch_colors,
-            compact_refs: false,
+            compact_refs,
             show_tag_names: true,
             log_graph: LogGraphState::default(),
             branches: BranchesPaneState::default(),
             log_filter: FilterBarState::default(),
             presentation: LogPresentation::default(),
-            graph_renderer: crate::graph::GraphRenderer::default(),
-            details: DetailsPaneState::default(),
-            active_tab: WorkspaceTab::Log,
-            focused_pane: WorkspaceTab::Log.default_pane(),
+            graph_renderer: crate::graph::GraphRenderer::new(
+                graph_mode,
+                crate::graph::GraphicsCapabilities::default(),
+            ),
+            details,
+            active_tab,
+            focused_pane,
             splitters: SplitterState::default(),
             splitter_containers: FxHashMap::default(),
             terminal_area: Rect::ZERO,
@@ -676,7 +805,7 @@ impl AppState {
             repo_error,
             repo_snapshot: None,
             stage_status: None,
-            stage_workbench: StageWorkbenchState::default(),
+            stage_workbench,
             latest_repo_epoch: 0,
             latest_stage_epoch: 0,
             latest_stage_diff_epoch: 0,
@@ -697,8 +826,12 @@ impl AppState {
             notification: None,
             menu_hover: None,
             git_ops_running: 0,
-            stash: StashTabState::default(),
+            stash,
             conflict_merge: None,
+            config,
+            i18n,
+            pending_keys: Vec::new(),
+            pending_key_at: None,
         }
     }
 
@@ -1634,7 +1767,9 @@ impl AppState {
                 if self.stash.details.requested_diff.as_ref() == Some(&diff.key) {
                     self.stash.details.requested_diff = None;
                 }
-                let hl = (!diff.is_binary && !diff.hunks.is_empty())
+                let hl = (self.config.jgit.diff.syntax_highlight
+                    && !diff.is_binary
+                    && !diff.hunks.is_empty())
                     .then(|| Arc::new(HighlightedDiff::build(&diff)));
                 if self.stash.details.desired_diff_key().as_ref() == Some(&diff.key) {
                     if let Some(h) = &hl {
