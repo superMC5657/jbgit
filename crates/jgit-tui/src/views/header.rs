@@ -6,7 +6,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use unicode_width::UnicodeWidthStr;
 
-use crate::app::{AppState, RenderContext};
+use crate::app::{AppState, ModalLayer, RenderContext};
 use crate::hit_test::{GraphHitKind, HitTarget};
 use crate::views::truncate_to_width;
 
@@ -51,15 +51,29 @@ pub fn render_top_header(
             })
             .map(|r| ctx.glyph_mode.symbols().format_ahead_behind(r.ahead_behind))
             .unwrap_or_default();
+        let ongoing = match &snap.state {
+            jgit_core::RepositoryState::Rebase { progress, .. }
+            | jgit_core::RepositoryState::RebaseInteractive { progress, .. }
+            | jgit_core::RepositoryState::RebaseMerge { progress, .. } => Some(match progress {
+                Some((c, t)) => format!(" · Rebasing {c}/{t}"),
+                None => " · Rebasing".to_string(),
+            }),
+            jgit_core::RepositoryState::Merge => Some(" · Merging".to_string()),
+            jgit_core::RepositoryState::CherryPick => Some(" · Cherry-picking".to_string()),
+            jgit_core::RepositoryState::Revert => Some(" · Reverting".to_string()),
+            _ => None,
+        }
+        .unwrap_or_default();
         if let Some(branch) = &snap.head_branch {
             let unborn = if snap.is_unborn_head { " (unborn)" } else { "" };
             (
                 format!(
-                    " {} {}{}{} ",
+                    " {} {}{}{}{} ▾ ",
                     ctx.glyph_mode.symbols().head,
                     branch,
                     unborn,
-                    ab_suffix
+                    ab_suffix,
+                    ongoing
                 ),
                 ctx.theme.ref_head.pill_fg,
                 ctx.theme.ref_head.pill_bg,
@@ -70,7 +84,12 @@ pub fn render_top_header(
                 .map(|o| o.short())
                 .unwrap_or_else(|| "detached".to_string());
             (
-                format!(" {} {} ", ctx.glyph_mode.symbols().detached_head, short),
+                format!(
+                    " {} {}{} ▾ ",
+                    ctx.glyph_mode.symbols().detached_head,
+                    short,
+                    ongoing
+                ),
                 ctx.theme.ref_detached.pill_fg,
                 ctx.theme.ref_detached.pill_bg,
             )
@@ -277,9 +296,79 @@ pub fn render_footer_bar(
     frame: &mut Frame<'_>,
     area: Rect,
     state: &AppState,
-    ctx: &RenderContext<'_>,
+    ctx: &mut RenderContext<'_>,
 ) {
     if area.height == 0 || area.width == 0 {
+        return;
+    }
+
+    // Disabled-reason of the focused context-menu item.
+    if let Some(ModalLayer::ContextMenu {
+        items, selected, ..
+    }) = state.modal_stack.last()
+        && let Some(item) = items.get(*selected)
+        && let Some(reason) = &item.disabled_reason
+    {
+        frame.render_widget(
+            Paragraph::new(Span::styled(
+                truncate_to_width(&format!(" ⊘ {}: {reason}", item.label), area.width as usize),
+                Style::default().fg(ctx.theme.status_untracked),
+            ))
+            .style(Style::default().bg(ctx.theme.bg_panel)),
+            area,
+        );
+        return;
+    }
+
+    if state.modal_stack.is_empty()
+        && let Some(n) = &state.notification
+    {
+        let icon = if n.is_error { "✕" } else { "✔" };
+        let color = if n.is_error {
+            ctx.theme.status_conflicted
+        } else {
+            ctx.theme.status_added
+        };
+        let action = n.action.as_ref().map(|(l, _)| format!(" [{l}] "));
+        let dismiss = " ✕ ";
+        let right_w = action.as_ref().map_or(0, |a| a.width()) + dismiss.width() + 1;
+        let text = truncate_to_width(
+            &format!(" {icon} {}", n.text),
+            (area.width as usize).saturating_sub(right_w + 1),
+        );
+        let mut spans = vec![Span::styled(text.clone(), Style::default().fg(color))];
+        let mut x = area.x + text.width() as u16;
+        if let Some(a) = action {
+            spans.push(Span::raw(" "));
+            x += 1;
+            let w = a.width() as u16;
+            spans.push(Span::styled(
+                a,
+                Style::default()
+                    .fg(ctx.theme.fg_bright)
+                    .bg(ctx.theme.border_focused)
+                    .add_modifier(Modifier::BOLD),
+            ));
+            ctx.hit_registry
+                .register(Rect::new(x, area.y, w, 1), 6, HitTarget::NotificationAction);
+            x += w;
+        }
+        spans.push(Span::raw(" "));
+        x += 1;
+        spans.push(Span::styled(dismiss, Style::default().fg(ctx.theme.fg_muted)));
+        ctx.hit_registry.register(
+            Rect::new(x, area.y, dismiss.width() as u16, 1),
+            6,
+            HitTarget::NotificationDismiss,
+        );
+        spans.push(Span::styled(
+            "  Alt+Z action · Alt+X dismiss",
+            Style::default().fg(ctx.theme.fg_muted),
+        ));
+        frame.render_widget(
+            Paragraph::new(Line::from(spans)).style(Style::default().bg(ctx.theme.bg_panel)),
+            area,
+        );
         return;
     }
 
@@ -327,13 +416,13 @@ pub fn render_footer_bar(
             " Tab Focus | Space Stage/Unstage | v Visual | s/u/r Hunk | n/p Prev/Next | Alt+M Amend | Ctrl+Enter Commit | ? Help"
         }
         WorkspaceTab::Log => {
-            " Tab Focus | / Filter | Shift+↑↓ Range | →/← Parent/Child | Ctrl+G Go to | Alt+B Branches | F4 Diff | ? Help | q Quit"
+            " Tab Focus | / Filter | Shift+↑↓ Range | →/← Parent/Child | Ctrl+G Go to | Ctrl+` Branches | . Menu | F4 Diff | ? Help"
         }
         WorkspaceTab::Console => {
             " 1-4 Tabs | Tab Focus | j/k Select/Scroll | p Run git status | r Refresh | RightClick Probes | q Quit"
         }
-        _ => {
-            " 1-4 Tabs | Tab Focus | Drag │/─ Split (DblClick Reset) | r Refresh | p Probe | ? Help | q Quit"
+        WorkspaceTab::Stash => {
+            " j/k Select | Enter/a Apply | p Pop | b Unstash as Branch | d Drop | n New | C Clear | . Menu | ? Help"
         }
     };
 

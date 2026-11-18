@@ -43,3 +43,5 @@ Milestone: M5 — 分支浮窗、右键菜单与高阶操作
 ---
 
 ## Comments
+
+- 2026-11-18 (agent): Implemented. Popup model/render/keys in `crates/jgit-tui/src/branches_popup.rs` (Ongoing row → New Branch / Checkout Tag or Revision → reflog `Recent` (`parse_recent_checkouts`, last 50 entries, ≤5) → Local (folder groups) → Remote → Tags when searching; `nucleo` indices highlighted bold `#548AF7`; ★ toggle, upstream + ↑↓, `[↻ Fetch] [⚙]`). Opens via `Ctrl+\`` / `Ctrl+Shift+\`` / header pill click / `Alt+B` outside the Log tab (Log keeps Spec 03's `Alt+B` pane toggle). Branch submenus in `crates/jgit-tui/src/menus/branch.rs`; smart remote checkout and unmerged-delete guard + `[Restore Branch]` notification in `app_git.rs`. Engine-level acceptance in `crates/jgit-engine/tests/git_ops_integration.rs`, UI acceptance in `crates/jgit-tui/src/spec05_tests.rs`.

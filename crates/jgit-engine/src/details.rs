@@ -9,8 +9,8 @@ use std::process::{Command, Stdio};
 use git2::{Delta, DiffFindOptions, DiffOptions, Repository};
 use imara_diff::{Algorithm, Diff, InternedInput};
 use jgit_core::{
-    CommitChangesBundle, CommitDetails, DetailsKey, DiffHunk, DiffLine, DiffLineKind, EpochToken,
-    FileChange, FileDiff, FileDiffKey, FileStatusKind, Oid, PersonStamp, RepoSnapshot,
+    CommitChangesBundle, CommitDetails, DetailsKey, DetailsMode, DiffHunk, DiffLine, DiffLineKind,
+    EpochToken, FileChange, FileDiff, FileDiffKey, FileStatusKind, Oid, PersonStamp, RepoSnapshot,
     SignatureStatus, apply_word_diff,
 };
 
@@ -82,22 +82,11 @@ struct NetEntry {
     is_binary: bool,
 }
 
-fn resolve_single_commit_changes(
-    repo: &Repository,
-    commit: &git2::Commit<'_>,
-    parent_index: usize,
+fn diff_deltas_to_changes(
+    diff: &mut git2::Diff<'_>,
     token: &EpochToken,
 ) -> Result<Vec<ResolvedChange>, EngineError> {
-    let parent_idx = if parent_index < commit.parent_count() {
-        parent_index
-    } else {
-        0
-    };
-    let base = commit.parent(parent_idx).ok().and_then(|p| p.tree().ok());
-    let target = commit.tree()?;
-    let mut diff = repo.diff_tree_to_tree(base.as_ref(), Some(&target), None)?;
     diff.find_similar(Some(DiffFindOptions::new().renames(true)))?;
-
     let mut out = Vec::with_capacity(diff.deltas().len());
     for (idx, delta) in diff.deltas().enumerate() {
         if idx % 64 == 0 && token.is_stale() {
@@ -122,6 +111,49 @@ fn resolve_single_commit_changes(
         });
     }
     Ok(out)
+}
+
+fn resolve_single_commit_changes(
+    repo: &Repository,
+    commit: &git2::Commit<'_>,
+    parent_index: usize,
+    token: &EpochToken,
+) -> Result<Vec<ResolvedChange>, EngineError> {
+    let parent_idx = if parent_index < commit.parent_count() {
+        parent_index
+    } else {
+        0
+    };
+    let base = commit.parent(parent_idx).ok().and_then(|p| p.tree().ok());
+    let target = commit.tree()?;
+    let mut diff = repo.diff_tree_to_tree(base.as_ref(), Some(&target), None)?;
+    diff_deltas_to_changes(&mut diff, token)
+}
+
+fn resolve_compare_versions(
+    repo: &Repository,
+    base: &git2::Commit<'_>,
+    target: &git2::Commit<'_>,
+    token: &EpochToken,
+) -> Result<Vec<ResolvedChange>, EngineError> {
+    let base_tree = base.tree()?;
+    let target_tree = target.tree()?;
+    let mut diff = repo.diff_tree_to_tree(Some(&base_tree), Some(&target_tree), None)?;
+    diff_deltas_to_changes(&mut diff, token)
+}
+
+fn resolve_compare_with_local(
+    repo: &Repository,
+    base: &git2::Commit<'_>,
+    token: &EpochToken,
+) -> Result<Vec<ResolvedChange>, EngineError> {
+    let base_tree = base.tree()?;
+    let mut opts = DiffOptions::new();
+    opts.include_untracked(true)
+        .recurse_untracked_dirs(true)
+        .show_untracked_content(true);
+    let mut diff = repo.diff_tree_to_workdir_with_index(Some(&base_tree), Some(&mut opts))?;
+    diff_deltas_to_changes(&mut diff, token)
 }
 
 /// Folds per-commit changes oldest-to-newest (`VcsLogUtil.collectChanges` /
@@ -237,10 +269,21 @@ fn resolve_changes<'r>(
     let Some(first) = commits.first() else {
         return Err(EngineError::Other("empty commit selection".to_string()));
     };
-    let changes = if commits.len() == 1 {
-        resolve_single_commit_changes(repo, first, key.parent_index, token)?
-    } else {
-        resolve_multi_commit_changes(repo, &commits, token)?
+    let changes = match key.mode {
+        DetailsMode::CompareVersions => {
+            let second = commits.get(1).ok_or_else(|| {
+                EngineError::Other("CompareVersions requires 2 commits".to_string())
+            })?;
+            resolve_compare_versions(repo, first, second, token)?
+        }
+        DetailsMode::CompareWithLocal => resolve_compare_with_local(repo, first, token)?,
+        DetailsMode::Commits => {
+            if commits.len() == 1 {
+                resolve_single_commit_changes(repo, first, key.parent_index, token)?
+            } else {
+                resolve_multi_commit_changes(repo, &commits, token)?
+            }
+        }
     };
     Ok((changes, commits))
 }
@@ -256,6 +299,19 @@ fn read_blob_bytes(repo: &Repository, oid: git2::Oid) -> (Vec<u8>, bool) {
         }
         Err(_) => (Vec::new(), false),
     }
+}
+
+fn read_new_bytes(repo: &Repository, key: &DetailsKey, item: &ResolvedChange) -> (Vec<u8>, bool) {
+    if key.mode == DetailsMode::CompareWithLocal
+        && item.new_oid.is_zero()
+        && item.kind != FileStatusKind::Deleted
+        && let Some(workdir) = repo.workdir()
+        && let Ok(bytes) = std::fs::read(workdir.join(&item.path))
+    {
+        let is_bin = bytes.contains(&0);
+        return (bytes, is_bin);
+    }
+    read_blob_bytes(repo, item.new_oid)
 }
 
 fn imara_line_stats(old: &[u8], new: &[u8]) -> (usize, usize) {
@@ -462,7 +518,7 @@ pub fn load_commit_details_sync(
             let mut is_binary = item.is_binary;
             if idx < MAX_STAT_FILES && !is_binary {
                 let (old_bytes, old_bin) = read_blob_bytes(repo, item.old_oid);
-                let (new_bytes, new_bin) = read_blob_bytes(repo, item.new_oid);
+                let (new_bytes, new_bin) = read_new_bytes(repo, key, &item);
                 is_binary |= old_bin || new_bin;
                 if !is_binary {
                     (additions, deletions) = imara_line_stats(&old_bytes, &new_bytes);
@@ -511,7 +567,7 @@ pub fn load_file_diff_sync(
             return Ok(out);
         }
         let (old_bytes, old_bin) = read_blob_bytes(repo, item.old_oid);
-        let (new_bytes, new_bin) = read_blob_bytes(repo, item.new_oid);
+        let (new_bytes, new_bin) = read_new_bytes(repo, &key.details, &item);
         if old_bin || new_bin {
             out.is_binary = true;
             return Ok(out);

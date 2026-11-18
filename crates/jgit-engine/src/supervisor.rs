@@ -3,9 +3,9 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use jgit_core::{
-    AmendCommitPreview, CommitChangesBundle, DetailsKey, EpochToken, EpochTracker, FileDiff,
-    FileDiffKey, GitConsoleEntry, Oid, RefreshScope, RepoSnapshot, StageStatusSnapshot,
-    StageTarget,
+    AmendCommitPreview, CommitChangesBundle, ConflictDocument, DetailsKey, EpochToken,
+    EpochTracker, FileDiff, FileDiffKey, GitConsoleEntry, GitOp, GitOpOutcome, Oid, RefreshScope,
+    RepoSnapshot, StageStatusSnapshot, StageTarget,
 };
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 
@@ -84,6 +84,18 @@ pub enum TaskRequest {
         is_read_only: bool,
         refresh_after: RefreshScope,
     },
+    /// High-level write operation (checkout, merge, rebase, reset, stash, …).
+    RunGitOp {
+        op: GitOp,
+    },
+    LoadConflictDocument {
+        path: String,
+    },
+    SaveConflictResolution {
+        path: String,
+        content: Vec<u8>,
+        stage: bool,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -143,6 +155,11 @@ pub enum EngineEvent {
         retry_refresh_after: RefreshScope,
     },
     ExternalFsChanged(RefreshScope),
+    /// A [`TaskRequest::RunGitOp`] finished (successfully or not).
+    GitOpFinished(GitOpOutcome),
+    ConflictDocumentLoaded {
+        doc: ConflictDocument,
+    },
     Error(String),
 }
 
@@ -273,6 +290,7 @@ impl EngineSupervisor {
         let sup_location = location.clone();
         let sup_epochs = epochs.clone();
         let sup_cli = cli.map(Arc::new);
+        let op_ids = Arc::new(std::sync::atomic::AtomicU64::new(1));
 
         tokio::spawn(async move {
             let _keep_watcher = watcher;
@@ -491,6 +509,7 @@ impl EngineSupervisor {
                                             args: &args,
                                             stdin_payload: Some(&stdin_payload),
                                             is_read_only: false,
+                                            env: &[],
                                         },
                                         |ev| match ev {
                                             CliStreamEvent::Started(entry) => {
@@ -626,6 +645,67 @@ impl EngineSupervisor {
                             }
                         });
                     }
+                    TaskRequest::RunGitOp { op } => {
+                        let Some(cli_exec) = sup_cli.as_ref().map(Arc::clone) else {
+                            let _ = event_tx
+                                .send(EngineEvent::Error(EngineError::GitNotFound.to_string()));
+                            continue;
+                        };
+                        let loc = sup_location.clone();
+                        let tx = event_tx.clone();
+                        let guard = Arc::clone(&mutation_guard);
+                        let ids = Arc::clone(&op_ids);
+                        tokio::spawn(async move {
+                            let read_only = op.is_read_only();
+                            let token = (!read_only).then(|| guard.begin());
+                            let fwd = tx.clone();
+                            let outcome =
+                                crate::ops::run_git_op(&cli_exec, &loc, &ids, op, move |ev| {
+                                    forward_cli_event(&fwd, ev);
+                                })
+                                .await;
+                            drop(token);
+                            let deferred = guard.take_pending();
+                            let _ = tx.send(EngineEvent::GitOpFinished(outcome));
+                            if !read_only {
+                                let _ = tx.send(EngineEvent::ExternalFsChanged(
+                                    RefreshScope::All.merge(deferred),
+                                ));
+                            }
+                        });
+                    }
+                    TaskRequest::LoadConflictDocument { path } => {
+                        let pool = Arc::clone(&pool);
+                        let loc = sup_location.clone();
+                        let tx = event_tx.clone();
+                        tokio::spawn(async move {
+                            match pool.load_conflict_document(loc, path).await {
+                                Ok(doc) => {
+                                    let _ = tx.send(EngineEvent::ConflictDocumentLoaded { doc });
+                                }
+                                Err(e) => {
+                                    let _ = tx.send(EngineEvent::Error(e.to_string()));
+                                }
+                            }
+                        });
+                    }
+                    TaskRequest::SaveConflictResolution {
+                        path,
+                        content,
+                        stage,
+                    } => {
+                        spawn_guarded_mutation(
+                            &pool,
+                            &sup_location,
+                            &event_tx,
+                            &mutation_guard,
+                            RefreshScope::StageStatus,
+                            move |pool, loc| async move {
+                                pool.save_conflict_resolution(loc, path, content, stage)
+                                    .await
+                            },
+                        );
+                    }
                     TaskRequest::RunGitCli {
                         id,
                         args,
@@ -657,6 +737,7 @@ impl EngineSupervisor {
                                         args: &args,
                                         stdin_payload: stdin_payload.as_deref(),
                                         is_read_only,
+                                        env: &[],
                                     },
                                     |ev| match ev {
                                         CliStreamEvent::Started(entry) => {
@@ -728,6 +809,30 @@ impl EngineSupervisor {
             event_rx,
         ))
     }
+}
+
+pub(crate) fn forward_cli_event(tx: &UnboundedSender<EngineEvent>, ev: CliStreamEvent) {
+    let _ = tx.send(match ev {
+        CliStreamEvent::Started(entry) => EngineEvent::ConsoleStarted(entry),
+        CliStreamEvent::Output {
+            id,
+            is_stderr,
+            line,
+        } => EngineEvent::ConsoleOutput {
+            id,
+            is_stderr,
+            line,
+        },
+        CliStreamEvent::Finished {
+            id,
+            exit_code,
+            duration_ms,
+        } => EngineEvent::ConsoleFinished {
+            id,
+            exit_code,
+            duration_ms,
+        },
+    });
 }
 
 fn spawn_guarded_mutation<F, Fut>(

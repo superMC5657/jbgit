@@ -1,6 +1,9 @@
+pub mod banner;
 pub mod commit;
 pub mod commit_diff;
+pub mod conflict_merge;
 pub mod console;
+pub mod dialogs;
 pub mod header;
 pub mod log;
 pub mod log_branches;
@@ -61,17 +64,29 @@ pub fn render_app(frame: &mut Frame<'_>, state: &mut AppState) {
     let header_h = 1u16.min(area.height);
     let tabs_h = 1u16.min(area.height.saturating_sub(header_h));
     let footer_h = 1u16.min(area.height.saturating_sub(header_h).saturating_sub(tabs_h));
+    let banner_h = u16::from(banner::banner_visible(state))
+        .min(area.height.saturating_sub(header_h + tabs_h + footer_h + 4));
     let body_h = area
         .height
         .saturating_sub(header_h)
         .saturating_sub(tabs_h)
+        .saturating_sub(banner_h)
         .saturating_sub(footer_h);
+    let banner_rect = Rect::new(
+        area.x,
+        area.y.saturating_add(header_h).saturating_add(tabs_h),
+        area.width,
+        banner_h,
+    );
 
     let header_rect = Rect::new(area.x, area.y, area.width, header_h);
     let tabs_rect = Rect::new(area.x, area.y.saturating_add(header_h), area.width, tabs_h);
     let body_rect = Rect::new(
         area.x,
-        area.y.saturating_add(header_h).saturating_add(tabs_h),
+        area.y
+            .saturating_add(header_h)
+            .saturating_add(tabs_h)
+            .saturating_add(banner_h),
         area.width,
         body_h,
     );
@@ -80,6 +95,7 @@ pub fn render_app(frame: &mut Frame<'_>, state: &mut AppState) {
         area.y
             .saturating_add(header_h)
             .saturating_add(tabs_h)
+            .saturating_add(banner_h)
             .saturating_add(body_h),
         area.width,
         footer_h,
@@ -116,6 +132,7 @@ pub fn render_app(frame: &mut Frame<'_>, state: &mut AppState) {
 
         header::render_top_header(frame, header_rect, state, &mut ctx);
         header::render_tab_bar(frame, tabs_rect, state, &mut ctx);
+        banner::render_banner(frame, banner_rect, state, &mut ctx);
 
         match state.active_tab {
             WorkspaceTab::Commit => {
@@ -150,7 +167,7 @@ pub fn render_app(frame: &mut Frame<'_>, state: &mut AppState) {
             }
         }
 
-        header::render_footer_bar(frame, footer_rect, state, &ctx);
+        header::render_footer_bar(frame, footer_rect, state, &mut ctx);
         overlays::render_hover_tooltip(frame, area, state, &ctx);
         overlays::render_modals(frame, area, state, &mut ctx);
     }

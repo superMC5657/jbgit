@@ -1,13 +1,21 @@
 mod app;
+mod app_git;
 mod app_stage;
+mod branches_popup;
+mod dialogs;
 mod graph;
 mod hit_test;
 mod input;
+mod input_menus;
 mod input_stage;
 #[cfg(test)]
 mod log_tests;
+#[cfg(test)]
+mod spec05_tests;
 mod log_view;
+mod menus;
 mod stage_view;
+mod stash_view;
 mod syntax;
 mod terminal;
 mod theme;
@@ -102,8 +110,15 @@ async fn main() -> Result<()> {
                         let actions = route_terminal_event(ev, &mut state);
                         for action in actions {
                             let effects = state.dispatch(action);
-                            handle_external_editor_effects(&effects, &mut state, &mut term_guard);
+                            let refresh_stage = handle_external_editor_effects(&effects, &mut state, &mut term_guard);
                             execute_effects(effects, &mut state, engine_handle.as_ref());
+                            if refresh_stage {
+                                execute_effects(
+                                    vec![Effect::RefreshScope(jgit_core::RefreshScope::StageStatus)],
+                                    &mut state,
+                                    engine_handle.as_ref(),
+                                );
+                            }
                         }
                     }
                     Some(Err(_)) | None => {
@@ -114,8 +129,15 @@ async fn main() -> Result<()> {
             maybe_engine = recv_engine(&mut engine_rx) => {
                 if let Some(ev) = maybe_engine {
                     let effects = state.apply_engine_event(ev);
-                    handle_external_editor_effects(&effects, &mut state, &mut term_guard);
+                    let refresh_stage = handle_external_editor_effects(&effects, &mut state, &mut term_guard);
                     execute_effects(effects, &mut state, engine_handle.as_ref());
+                    if refresh_stage {
+                        execute_effects(
+                            vec![Effect::RefreshScope(jgit_core::RefreshScope::StageStatus)],
+                            &mut state,
+                            engine_handle.as_ref(),
+                        );
+                    }
                 } else {
                     engine_rx = None;
                 }
@@ -139,7 +161,8 @@ fn handle_external_editor_effects(
     effects: &[Effect],
     state: &mut AppState,
     term_guard: &mut Option<TerminalGuard>,
-) {
+) -> bool {
+    let mut refresh_stage = false;
     let editor_bin = || {
         std::env::var("VISUAL")
             .ok()
@@ -190,9 +213,20 @@ fn handle_external_editor_effects(
                 *term_guard = TerminalGuard::enter().ok();
                 state.needs_redraw = true;
             }
+            Effect::OpenExternalMergetool(rel) => {
+                drop(term_guard.take());
+                let _ = std::process::Command::new("git")
+                    .args(["mergetool", "-y", "--", rel])
+                    .current_dir(&state.repo_path_display)
+                    .status();
+                *term_guard = TerminalGuard::enter().ok();
+                state.needs_redraw = true;
+                refresh_stage = true;
+            }
             _ => {}
         }
     }
+    refresh_stage
 }
 
 async fn recv_engine(
@@ -364,6 +398,9 @@ mod tests {
             is_unborn_head: false,
             user_name: None,
             user_email: None,
+            recent_branches: vec![],
+            stashes: vec![],
+            ongoing_onto: None,
             head_branch: Some("main".into()),
             head_oid: Some(oid1),
             refs: vec![],
@@ -482,6 +519,9 @@ mod tests {
             is_unborn_head: true,
             user_name: None,
             user_email: None,
+            recent_branches: vec![],
+            stashes: vec![],
+            ongoing_onto: None,
             head_branch: Some("old".into()),
             head_oid: None,
             refs: vec![],
@@ -502,6 +542,9 @@ mod tests {
             is_unborn_head: false,
             user_name: None,
             user_email: None,
+            recent_branches: vec![],
+            stashes: vec![],
+            ongoing_onto: None,
             head_branch: Some("main".into()),
             head_oid: Some(Oid::ZERO),
             refs: vec![],
@@ -714,6 +757,9 @@ mod tests {
             is_unborn_head: false,
             user_name: None,
             user_email: None,
+            recent_branches: vec![],
+            stashes: vec![],
+            ongoing_onto: None,
             head_branch: None,
             head_oid: Some(oid),
             refs: vec![
@@ -899,6 +945,9 @@ mod tests {
             is_unborn_head: false,
             user_name: None,
             user_email: None,
+            recent_branches: vec![],
+            stashes: vec![],
+            ongoing_onto: None,
             head_branch: Some("main".into()),
             head_oid: Some(oid_n(0)),
             refs: vec![RefInfo {

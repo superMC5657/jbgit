@@ -378,24 +378,13 @@ fn commit_details_changes_file_diff_and_path_matches() {
             .collect::<Vec<_>>(),
         vec!["side.txt"]
     );
-    let p1 = load_commit_details_sync(
-        &loc,
-        &DetailsKey {
-            oids: vec![merge],
-            parent_index: 1,
-        },
-        &token,
-    )
-    .unwrap();
+    let p1 = load_commit_details_sync(&loc, &DetailsKey::commits(vec![merge], 1), &token).unwrap();
     assert!(p1.changes.iter().any(|c| c.path == "src/core/lib.rs"));
 
     // Multi-selection: net diff of initial..HEAD~1 range == HEAD~1 alone here.
     let range = load_commit_details_sync(
         &loc,
-        &DetailsKey {
-            oids: vec![change, rev(dir, "HEAD~2")],
-            parent_index: 0,
-        },
+        &DetailsKey::commits(vec![change, rev(dir, "HEAD~2")], 0),
         &token,
     )
     .unwrap();
@@ -407,10 +396,7 @@ fn commit_details_changes_file_diff_and_path_matches() {
     let init = rev(dir, "HEAD~2");
     let cross = load_commit_details_sync(
         &loc,
-        &DetailsKey {
-            oids: vec![side, init],
-            parent_index: 0,
-        },
+        &DetailsKey::commits(vec![side, init], 0),
         &token,
     )
     .unwrap();

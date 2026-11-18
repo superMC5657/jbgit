@@ -7,9 +7,9 @@ use std::thread::{self, JoinHandle};
 use crossbeam_channel::{Sender, bounded};
 use git2::{BranchType, Delta, Repository, Sort, Status, StatusOptions};
 use jgit_core::{
-    AmendCommitPreview, CommitChangesBundle, CommitSummary, DetailsKey, EpochToken, FileDiff,
-    FileDiffKey, FileStatusKind, Oid, RefInfo, RefKind, RepoSnapshot, StageEntry,
-    StageStatusSnapshot, StageTarget,
+    AmendCommitPreview, CommitChangesBundle, CommitSummary, ConflictDocument, DetailsKey,
+    EpochToken, FileDiff, FileDiffKey, FileStatusKind, Oid, RefInfo, RefKind, RepoSnapshot,
+    StageEntry, StageNodeKind, StageStatusSnapshot, StageTarget,
 };
 
 use crate::details::{load_commit_details_sync, load_file_diff_sync, load_path_matches_sync};
@@ -247,6 +247,40 @@ impl Git2WorkerPool {
         self.run(move || undo_last_commit_sync(&location)).await
     }
 
+    pub async fn load_conflict_document(
+        &self,
+        location: RepoLocation,
+        path: String,
+    ) -> Result<ConflictDocument, EngineError> {
+        self.run(move || load_conflict_document_sync(&location, &path))
+            .await
+    }
+
+    pub async fn save_conflict_resolution(
+        &self,
+        location: RepoLocation,
+        path: String,
+        content: Vec<u8>,
+        stage: bool,
+    ) -> Result<(), EngineError> {
+        self.run(move || {
+            write_worktree_buffer_sync(&location, &path, &content)?;
+            if stage {
+                stage_targets_sync(
+                    &location,
+                    &[StageTarget {
+                        path,
+                        old_path: None,
+                        status_kind: FileStatusKind::Conflicted,
+                        group_kind: StageNodeKind::Conflicted,
+                    }],
+                )?;
+            }
+            Ok(())
+        })
+        .await
+    }
+
     async fn run<T, F>(&self, f: F) -> Result<T, EngineError>
     where
         T: Send + 'static,
@@ -281,6 +315,50 @@ impl Drop for Git2WorkerPool {
             let _ = handle.join();
         }
     }
+}
+
+fn load_conflict_document_sync(
+    location: &RepoLocation,
+    path: &str,
+) -> Result<ConflictDocument, EngineError> {
+    let worktree_bytes = std::fs::read(location.workdir.join(path)).unwrap_or_default();
+    let worktree_text = String::from_utf8_lossy(&worktree_bytes);
+    let (index_ours, index_theirs) = with_thread_repo(&location.git_dir, |repo| {
+        let mut ours = None;
+        let mut theirs = None;
+        if let Ok(index) = repo.index()
+            && let Ok(conflicts) = index.conflicts()
+        {
+            for item in conflicts.flatten() {
+                let entry_path = item
+                    .our
+                    .as_ref()
+                    .or(item.their.as_ref())
+                    .or(item.ancestor.as_ref())
+                    .map(|e| String::from_utf8_lossy(&e.path).replace('\\', "/"));
+                if entry_path.as_deref() == Some(path) {
+                    if let Some(our) = item.our
+                        && let Ok(blob) = repo.find_blob(our.id)
+                    {
+                        ours = Some(String::from_utf8_lossy(blob.content()).into_owned());
+                    }
+                    if let Some(their) = item.their
+                        && let Ok(blob) = repo.find_blob(their.id)
+                    {
+                        theirs = Some(String::from_utf8_lossy(blob.content()).into_owned());
+                    }
+                    break;
+                }
+            }
+        }
+        Ok((ours, theirs))
+    })?;
+    Ok(ConflictDocument::parse(
+        path,
+        &worktree_text,
+        index_ours.as_deref(),
+        index_theirs.as_deref(),
+    ))
 }
 
 pub fn load_repo_snapshot_sync(
@@ -322,6 +400,37 @@ pub fn load_repo_snapshot_sync(
             Err(_) => (None, None),
         };
 
+        let recent_branches = {
+            let existing: Vec<&str> = refs
+                .iter()
+                .filter(|r| r.kind == RefKind::LocalBranch)
+                .map(|r| r.name.as_str())
+                .collect();
+            let reflog = read_tail(&location.git_dir.join("logs").join("HEAD"), 64 * 1024);
+            jgit_core::parse_recent_checkouts(
+                &reflog,
+                probe.head_branch.as_deref(),
+                &existing,
+                50,
+                5,
+            )
+        };
+        let stashes = collect_stashes(repo);
+        let ongoing_onto = ["rebase-merge", "rebase-apply"]
+            .iter()
+            .find_map(|d| std::fs::read_to_string(location.git_dir.join(d).join("onto")).ok())
+            .and_then(|hex| hex.trim().parse::<Oid>().ok())
+            .map(|oid| {
+                refs.iter()
+                    .filter(|r| r.target_oid == oid)
+                    .min_by_key(|r| match r.kind {
+                        RefKind::LocalBranch => 0,
+                        RefKind::RemoteBranch => 1,
+                        _ => 2,
+                    })
+                    .map_or_else(|| oid.short(), |r| r.name.clone())
+            });
+
         Ok(RepoSnapshot {
             repo_name: location.repo_name.clone(),
             workdir: location.workdir.clone(),
@@ -335,8 +444,51 @@ pub fn load_repo_snapshot_sync(
             commits,
             user_name,
             user_email,
+            recent_branches,
+            stashes,
+            ongoing_onto,
         })
     })
+}
+
+/// Reads at most the last `max` bytes of a text file (reflogs can be huge).
+fn read_tail(path: &Path, max: u64) -> String {
+    use std::io::{Read, Seek, SeekFrom};
+    let Ok(mut f) = std::fs::File::open(path) else {
+        return String::new();
+    };
+    let len = f.metadata().map(|m| m.len()).unwrap_or(0);
+    if len > max {
+        let _ = f.seek(SeekFrom::Start(len - max));
+    }
+    let mut buf = Vec::new();
+    let _ = f.read_to_end(&mut buf);
+    let text = String::from_utf8_lossy(&buf).into_owned();
+    if len > max {
+        // Drop the (probably partial) first line.
+        text.split_once('\n')
+            .map(|(_, r)| r.to_string())
+            .unwrap_or_default()
+    } else {
+        text
+    }
+}
+
+/// `stash@{n}` entries from the `refs/stash` reflog (index 0 = newest).
+pub(crate) fn collect_stashes(repo: &Repository) -> Vec<jgit_core::StashEntry> {
+    let Ok(reflog) = repo.reflog("refs/stash") else {
+        return Vec::new();
+    };
+    reflog
+        .iter()
+        .enumerate()
+        .map(|(index, entry)| jgit_core::StashEntry {
+            index,
+            oid: to_core_oid(entry.id_new()),
+            message: entry.message().ok().flatten().unwrap_or("").to_string(),
+            timestamp: entry.committer().when().seconds(),
+        })
+        .collect()
 }
 
 fn collect_refs(

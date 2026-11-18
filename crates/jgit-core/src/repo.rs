@@ -1,6 +1,7 @@
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
-use crate::Oid;
+use crate::{Oid, RewritePlan, TodoEntry, is_protected_branch};
 
 /// Ongoing Git repository workflow / state indicator.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -95,6 +96,16 @@ pub struct CommitSummary {
     pub body: String,
 }
 
+impl CommitSummary {
+    pub fn full_message(&self) -> String {
+        if self.body.trim().is_empty() {
+            self.subject.clone()
+        } else {
+            format!("{}\n\n{}", self.subject, self.body)
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RepoSnapshot {
     pub repo_name: String,
@@ -111,9 +122,133 @@ pub struct RepoSnapshot {
     pub user_name: Option<String>,
     /// `git config user.email`.
     pub user_email: Option<String>,
+    /// Recently checked-out local branches from `.git/logs/HEAD` (newest first, ≤ 5).
+    pub recent_branches: Vec<String>,
+    /// `stash@{n}` entries (index 0 = newest).
+    pub stashes: Vec<crate::StashEntry>,
+    /// Ref name (or short SHA) a paused rebase is replaying onto.
+    pub ongoing_onto: Option<String>,
 }
 
 impl RepoSnapshot {
+    pub fn local_branch(&self, name: &str) -> Option<&RefInfo> {
+        self.refs
+            .iter()
+            .find(|r| r.kind == RefKind::LocalBranch && r.name == name)
+    }
+
+    pub fn head_ref(&self) -> Option<&RefInfo> {
+        self.head_branch
+            .as_deref()
+            .and_then(|b| self.local_branch(b))
+    }
+
+    pub fn local_branch_names(&self) -> Vec<&str> {
+        self.refs
+            .iter()
+            .filter(|r| r.kind == RefKind::LocalBranch)
+            .map(|r| r.name.as_str())
+            .collect()
+    }
+
+    pub fn tag_names(&self) -> Vec<&str> {
+        self.refs
+            .iter()
+            .filter(|r| r.kind == RefKind::Tag)
+            .map(|r| r.name.as_str())
+            .collect()
+    }
+
+    pub fn commit(&self, oid: &Oid) -> Option<&CommitSummary> {
+        self.commits.iter().find(|c| c.oid == *oid)
+    }
+
+    fn walk_ancestors(&self, start: Oid, target: Option<Oid>) -> (HashSet<Oid>, bool) {
+        let idx: HashMap<Oid, &CommitSummary> =
+            self.commits.iter().map(|c| (c.oid, c)).collect();
+        let mut seen = HashSet::new();
+        let mut stack = vec![start];
+        while let Some(o) = stack.pop() {
+            if target == Some(o) {
+                return (seen, true);
+            }
+            if !seen.insert(o) {
+                continue;
+            }
+            if let Some(c) = idx.get(&o) {
+                stack.extend(c.parents.iter().copied());
+            }
+        }
+        (seen, false)
+    }
+
+    /// All commit Oids reachable from `start` within the loaded snapshot.
+    pub fn reachable_from(&self, start: Oid) -> HashSet<Oid> {
+        self.walk_ancestors(start, None).0
+    }
+
+    /// True if `target` is reachable from `from` within the loaded snapshot.
+    pub fn reaches(&self, from: Oid, target: Oid) -> bool {
+        self.walk_ancestors(from, Some(target)).1
+    }
+
+    /// Commits reachable from `from` but not from `exclude` (`exclude..from`)
+    /// within the loaded snapshot.
+    pub fn count_exclusive(&self, from: Oid, exclude: Oid) -> usize {
+        let a = self.reachable_from(from);
+        let b = self.reachable_from(exclude);
+        a.difference(&b).count()
+    }
+
+    /// Plans an interactive-rebase rewrite of `oldest..HEAD` along the
+    /// first-parent chain, rejecting merge commits and commits already pushed
+    /// to protected remote branches.
+    pub fn plan_rewrite(&self, oldest: Oid, verb: &str) -> Result<RewritePlan, String> {
+        let head = self.head_oid.ok_or("No commits yet")?;
+        let idx: HashMap<Oid, &CommitSummary> =
+            self.commits.iter().map(|c| (c.oid, c)).collect();
+        let unreachable = || format!("Cannot {verb}: commit is not reachable from HEAD");
+        let mut chain: Vec<&CommitSummary> = Vec::new();
+        let mut cur = head;
+        loop {
+            let c = idx.get(&cur).ok_or_else(unreachable)?;
+            if c.parents.len() > 1 {
+                return Err(format!(
+                    "Cannot {verb}: the range up to HEAD contains merge commits"
+                ));
+            }
+            chain.push(c);
+            if cur == oldest {
+                break;
+            }
+            cur = *c.parents.first().ok_or_else(unreachable)?;
+            if chain.len() > 5000 {
+                return Err(unreachable());
+            }
+        }
+        if let Some(r) = self.refs.iter().find(|r| {
+            r.kind == RefKind::RemoteBranch
+                && r.name
+                    .split_once('/')
+                    .is_some_and(|(_, b)| is_protected_branch(b))
+                && self.reaches(r.target_oid, oldest)
+        }) {
+            return Err(format!(
+                "Cannot {verb}: commit is already pushed to protected branch '{}'",
+                r.name
+            ));
+        }
+        chain.reverse();
+        Ok(RewritePlan {
+            base: chain[0].parents.first().copied(),
+            entries: chain
+                .iter()
+                .map(|c| TodoEntry::pick(c.oid, c.subject.clone()))
+                .collect(),
+            messages: chain.iter().map(|c| c.full_message()).collect(),
+        })
+    }
+
     /// Resolves `HEAD`, ref names, unique hex prefixes (≥ 4 chars) and
     /// `~N` / `^N` suffix chains (`HEAD~3`, `main^2`, `a1b2c3^^`) against the
     /// loaded commits (`GoToHashOrRef`).

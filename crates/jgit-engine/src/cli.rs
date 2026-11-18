@@ -66,6 +66,8 @@ pub struct CliCommand<'a> {
     pub args: &'a [String],
     pub stdin_payload: Option<&'a [u8]>,
     pub is_read_only: bool,
+    /// Extra environment variables (`GIT_SEQUENCE_EDITOR`, `GIT_EDITOR`, …).
+    pub env: &'a [(String, String)],
 }
 
 impl GitCliExecutor {
@@ -114,6 +116,7 @@ impl GitCliExecutor {
             args,
             stdin_payload,
             is_read_only,
+            env,
         } = req;
         let started_at = Local::now();
         let command_line = format!("git {}", format_args_for_display(args));
@@ -140,6 +143,9 @@ impl GitCliExecutor {
 
         if is_read_only {
             cmd.env("GIT_OPTIONAL_LOCKS", "0");
+        }
+        for (k, v) in env {
+            cmd.env(k, v);
         }
 
         if stdin_payload.is_some() {

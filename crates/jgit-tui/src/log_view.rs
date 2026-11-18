@@ -388,6 +388,8 @@ pub struct DetailsPaneState {
     pub diff_syntax: LruCache<FileDiffKey, Arc<HighlightedDiff>>,
     /// Details the right panes currently represent.
     pub current_key: Option<DetailsKey>,
+    /// Explicit comparison override (`Compare Versions` / `Compare with Local`).
+    pub compare_override: Option<DetailsKey>,
     /// Debounced request: key + deadline.
     pub pending: Option<(DetailsKey, Instant)>,
     /// Which parent a single merge commit is compared against.
@@ -419,6 +421,7 @@ impl Default for DetailsPaneState {
             diff_cache: LruCache::new(DIFF_CACHE_CAPACITY),
             diff_syntax: LruCache::new(DIFF_CACHE_CAPACITY),
             current_key: None,
+            compare_override: None,
             pending: None,
             merge_parent: 0,
             requested_diff: None,

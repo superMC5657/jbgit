@@ -363,54 +363,8 @@ pub(crate) fn stage_tree_context_menu_items(
         actions.push(Action::FocusPane(PaneId::CommitChangesTree));
         actions.push(Action::SelectCommitStageRow(idx));
     }
-    let row = state.stage_workbench.rows.get(idx);
-    let group_kind = row.map(|r| r.group_kind());
-    let file_path = state
-        .stage_entry_at(idx)
-        .map(|e| e.path.clone())
-        .unwrap_or_default();
-    let mut items = Vec::new();
-    if let Some(gk) = group_kind {
-        if gk.can_stage() {
-            items.push(ContextMenuItem::action(
-                "Stage",
-                Some('s'),
-                Some("Space"),
-                ContextMenuAction::StageSelected,
-            ));
-            items.push(ContextMenuItem::action(
-                "Rollback / Discard…",
-                Some('d'),
-                Some("d"),
-                ContextMenuAction::DiscardSelected,
-            ));
-        } else if gk.can_unstage() {
-            items.push(ContextMenuItem::action(
-                "Unstage",
-                Some('u'),
-                Some("Space"),
-                ContextMenuAction::UnstageSelected,
-            ));
-        }
-    }
-    if !file_path.is_empty() {
-        items.push(ContextMenuItem::action(
-            format!("Open {file_path} in $EDITOR"),
-            Some('e'),
-            Some("e"),
-            ContextMenuAction::OpenExternalEditorFile(file_path.clone()),
-        ));
-        items.push(ContextMenuItem::action(
-            format!("Diff {file_path}"),
-            Some('i'),
-            None,
-            ContextMenuAction::RunReadOnlyProbe(vec![
-                "diff".into(),
-                "--".into(),
-                file_path,
-            ]),
-        ));
-    }
+    let mut items = crate::menus::stage_tree_menu_items(state, idx);
+    items.push(ContextMenuItem::separator());
     items.push(ContextMenuItem::submenu(
         "Stage View Options",
         Some('o'),

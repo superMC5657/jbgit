@@ -4,9 +4,10 @@ use std::time::{Duration, Instant};
 
 use jgit_core::graph::SortType;
 use jgit_core::{
-    BranchFilter, BranchNodeKind, ChangeRowKind, CommitSummary, DetailsKey, FileDiffKey,
-    GitConsoleEntry, ModalButton, Oid, PaneId, RefKind, RefreshScope, RepoSnapshot, SplitAxis,
-    SplitterId, StageStatusSnapshot, StageTarget, StageTreeRowKind, WorkspaceTab,
+    BranchFilter, BranchNodeKind, ChangeRowKind, CommitSummary, ConflictChoice, ConflictDocument,
+    DetailsKey, FileDiffKey, GitConsoleEntry, GitOp, ModalButton, Oid, PaneId, RefKind,
+    RefreshScope, RepoSnapshot, SplitAxis, SplitterId, StageStatusSnapshot, StageTarget,
+    StageTreeRowKind, WorkspaceTab,
 };
 use jgit_engine::{
     CommitRequest, EngineEvent, EngineHandle, StageDiffKey, TaskRequest,
@@ -14,6 +15,7 @@ use jgit_engine::{
 use ratatui::layout::Rect;
 use rustc_hash::FxHashMap;
 
+use crate::dialogs::Dialog;
 use crate::graph::LogGraphState;
 use crate::graph::state::FilterInputs;
 use crate::hit_test::{DiffHunkActionKind, HitTarget, HitTestRegistry};
@@ -22,6 +24,7 @@ use crate::log_view::{
     LogPresentation, PathMatches, PathRequest, PresentationToggle,
 };
 use crate::stage_view::StageWorkbenchState;
+use crate::stash_view::StashTabState;
 use crate::syntax::HighlightedDiff;
 use crate::theme::{BranchColorManager, GlyphMode, ThemePalette};
 use crate::widgets::SplitterState;
@@ -38,12 +41,8 @@ pub struct RenderContext<'a> {
 
 #[derive(Debug, Clone)]
 pub enum ContextMenuAction {
-    SwitchTab(WorkspaceTab),
     RefreshRepo,
     RunReadOnlyProbe(Vec<String>),
-    ToggleGlyphMode,
-    OpenHelp,
-    OpenPalettePreview,
     TogglePresentation(PresentationToggle),
     BranchesApplyFilter,
     BranchesNavigate,
@@ -60,12 +59,16 @@ pub enum ContextMenuAction {
     StageToggleShowIgnored,
     StageExpandAll(bool),
     OpenExternalEditorFile(String),
+    /// Arbitrary follow-up actions (Spec 05 Git workflows).
+    Run(Vec<Action>),
 }
 
 #[derive(Debug, Clone)]
 pub enum ContextMenuEntryKind {
     Action(ContextMenuAction),
     Submenu(Vec<ContextMenuItem>),
+    /// `├─────┤` group divider (never selectable).
+    Separator,
 }
 
 #[derive(Debug, Clone)]
@@ -73,6 +76,10 @@ pub struct ContextMenuItem {
     pub label: String,
     pub mnemonic: Option<char>,
     pub shortcut: Option<String>,
+    /// 1-cell icon in the left gutter.
+    pub icon: Option<&'static str>,
+    /// Greyed-out but visible; the reason is shown in the footer when focused.
+    pub disabled_reason: Option<String>,
     pub kind: ContextMenuEntryKind,
 }
 
@@ -87,8 +94,20 @@ impl ContextMenuItem {
             label: label.into(),
             mnemonic,
             shortcut: shortcut.map(ToString::to_string),
+            icon: None,
+            disabled_reason: None,
             kind: ContextMenuEntryKind::Action(action),
         }
+    }
+
+    /// Item running arbitrary [`Action`]s.
+    pub fn run(
+        label: impl Into<String>,
+        mnemonic: Option<char>,
+        shortcut: Option<&str>,
+        actions: Vec<Action>,
+    ) -> Self {
+        Self::action(label, mnemonic, shortcut, ContextMenuAction::Run(actions))
     }
 
     pub fn submenu(
@@ -100,10 +119,78 @@ impl ContextMenuItem {
             label: label.into(),
             mnemonic,
             shortcut: None,
+            icon: None,
+            disabled_reason: None,
             kind: ContextMenuEntryKind::Submenu(items),
         }
     }
+
+    pub fn separator() -> Self {
+        Self {
+            label: String::new(),
+            mnemonic: None,
+            shortcut: None,
+            icon: None,
+            disabled_reason: None,
+            kind: ContextMenuEntryKind::Separator,
+        }
+    }
+
+    pub fn icon(mut self, icon: &'static str) -> Self {
+        self.icon = Some(icon);
+        self
+    }
+
+    /// Disables the item with `reason` unless `ok`.
+    pub fn enabled_if(mut self, ok: bool, reason: impl Into<String>) -> Self {
+        if !ok && self.disabled_reason.is_none() {
+            self.disabled_reason = Some(reason.into());
+        }
+        self
+    }
+
+    pub fn require(self, check: Result<(), String>) -> Self {
+        match check {
+            Ok(()) => self,
+            Err(reason) => self.enabled_if(false, reason),
+        }
+    }
+
+    pub fn is_separator(&self) -> bool {
+        matches!(self.kind, ContextMenuEntryKind::Separator)
+    }
+
+    pub fn is_enabled(&self) -> bool {
+        self.disabled_reason.is_none() && !self.is_separator()
+    }
 }
+
+/// Where a cascading submenu hangs off its parent menu / popup.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MenuParent {
+    pub rect: Rect,
+    pub row_y: u16,
+    pub item_idx: usize,
+}
+
+/// Footer notification with an optional one-click follow-up
+/// (`[Restore Branch]` after a delete, …).
+#[derive(Debug, Clone)]
+pub struct Notification {
+    pub text: String,
+    pub is_error: bool,
+    pub action: Option<(String, Vec<Action>)>,
+}
+
+/// Pending 150 ms hover-to-open (or close) of a cascading submenu.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MenuHover {
+    pub depth: u8,
+    pub item_idx: usize,
+    pub due: Instant,
+}
+
+pub const MENU_HOVER_DELAY: Duration = Duration::from_millis(150);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PopupKind {
@@ -121,8 +208,18 @@ pub enum PopupKind {
     CommitHistory,
     /// Three-way comparison card (`HEAD / Staged / Worktree`) for mixed `StagedRange`.
     ThreeWayInspector,
+    /// Built-in three-pane conflict merge resolver (`Ours | Result | Theirs`).
+    ConflictMerge,
     /// Hook or commit failure output dialog.
     HookError,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct ConflictMergeState {
+    pub path: String,
+    pub doc: Option<ConflictDocument>,
+    pub selected_block: usize,
+    pub scroll: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -139,7 +236,11 @@ pub enum ModalLayer {
         items: Vec<ContextMenuItem>,
         selected: usize,
         depth: u8,
+        /// Set for cascading submenus (placed beside the parent, flipping left).
+        parent: Option<MenuParent>,
     },
+    /// Layer 4: input / choice / message / rebase-todo dialog.
+    Dialog(Box<Dialog>),
     /// Layer 4: Critical Modal Dialog.
     CriticalDialog {
         title: String,
@@ -156,7 +257,7 @@ impl ModalLayer {
         match self {
             Self::FloatingPopup { .. } => 20,
             Self::ContextMenu { depth, .. } => 30u8.saturating_add(depth.saturating_mul(2)),
-            Self::CriticalDialog { .. } => 40,
+            Self::CriticalDialog { .. } | Self::Dialog(_) => 40,
         }
     }
 }
@@ -224,6 +325,13 @@ pub enum Effect {
     UndoLastCommit,
     OpenExternalEditorMessage,
     OpenExternalEditorFile(String),
+    OpenExternalMergetool(String),
+    LoadConflictDocument(String),
+    SaveConflictResolution {
+        path: String,
+        content: Vec<u8>,
+        stage: bool,
+    },
     CopyToClipboard(String),
     RunCli {
         args: Vec<String>,
@@ -231,6 +339,8 @@ pub enum Effect {
         is_read_only: bool,
         refresh_after: RefreshScope,
     },
+    /// High-level Git write operation (Spec 05).
+    GitOp(GitOp),
     Quit,
 }
 
@@ -397,6 +507,73 @@ pub enum Action {
     RunCliProbe(Vec<String>),
     Resize,
     TickSpinner,
+
+    // ── Spec 05: branches popup, menus, dialogs & Git workflows ──
+    OpenSubmenu {
+        parent: MenuParent,
+        items: Vec<ContextMenuItem>,
+        depth: u8,
+    },
+    Notice(String),
+    RunGitOp(GitOp),
+    OpenDialog(Box<Dialog>),
+    /// Confirm the topmost dialog (validated).
+    DialogConfirm,
+    SetTodoMessage {
+        idx: usize,
+        message: String,
+    },
+    OpenBranchesPopup {
+        query: String,
+    },
+    ToggleFavoriteRef {
+        full: String,
+        short: String,
+    },
+    /// `origin/x` → smart tracking checkout (`GitRemoteBranchCheckoutUtil`).
+    CheckoutRemoteBranch {
+        remote_ref: String,
+    },
+    CheckoutRevisionExpr(String),
+    CompareWithCurrent {
+        branch: String,
+    },
+    CompareVersions {
+        base: Oid,
+        target: Oid,
+    },
+    CompareWithLocal {
+        target: Oid,
+    },
+    OpenConflictResolver(String),
+    OpenExternalMergetool(String),
+    ConflictSelectBlock(isize),
+    ConflictSetBlock(usize),
+    ConflictApplyChoice(ConflictChoice),
+    ConflictAcceptAll(ConflictChoice),
+    ConflictScroll(isize),
+    ConflictSaveAndStage,
+    PromptDeleteBranch {
+        name: String,
+    },
+    PromptPush {
+        branch: String,
+        up_to: Option<Oid>,
+    },
+    UncommitHead,
+    OngoingResolve,
+    NotificationActivate,
+    NotificationDismiss,
+    StashSelect(usize),
+    StashMove(isize),
+    StashChangesSelect(usize),
+    StashChangesMove(isize),
+    StashChangesExpand(bool),
+    StashChangesToggleGroupByDir,
+    StashChangesExpandAll(bool),
+    StashDiffToggleSideBySide,
+    StashDiffCycleContext,
+    StashDiffScroll(isize),
 }
 
 pub struct AppState {
@@ -450,6 +627,15 @@ pub struct AppState {
     pub spinner_frame: usize,
     pub needs_redraw: bool,
     pub should_quit: bool,
+
+    /// Footer notification (`[Restore Branch]`, operation errors).
+    pub notification: Option<Notification>,
+    /// Hover-to-open timer of cascading submenus.
+    pub menu_hover: Option<MenuHover>,
+    /// Number of Git write operations in flight.
+    pub git_ops_running: usize,
+    pub stash: StashTabState,
+    pub conflict_merge: Option<ConflictMergeState>,
 }
 
 impl AppState {
@@ -500,6 +686,11 @@ impl AppState {
             spinner_frame: 0,
             needs_redraw: true,
             should_quit: false,
+            notification: None,
+            menu_hover: None,
+            git_ops_running: 0,
+            stash: StashTabState::default(),
+            conflict_merge: None,
         }
     }
 
@@ -526,12 +717,17 @@ impl AppState {
     pub fn has_active_tasks(&self) -> bool {
         self.loading_snapshot
             || self.stage_workbench.commit_in_progress
+            || self.git_ops_running > 0
             || self.console_entries.iter().any(GitConsoleEntry::is_running)
     }
 
     /// Next instant the main loop must wake up for (details debounce).
     pub fn next_deadline(&self) -> Option<Instant> {
-        self.details.next_deadline()
+        let hover = self.menu_hover.map(|h| h.due);
+        match (self.details.next_deadline(), hover) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        }
     }
 
     pub fn spinner_char(&self) -> &'static str {
@@ -672,24 +868,37 @@ impl AppState {
                 depth,
             } => {
                 if !items.is_empty() {
+                    let selected = items.iter().position(|i| !i.is_separator()).unwrap_or(0);
+                    self.menu_hover = None;
                     self.modal_stack.push(ModalLayer::ContextMenu {
                         anchor,
                         items,
-                        selected: 0,
+                        selected,
                         depth,
+                        parent: None,
                     });
                 }
             }
             Action::PopModal => {
-                if let Some(ModalLayer::FloatingPopup {
-                    kind: PopupKind::ThreeWayInspector,
-                    ..
-                }) = self.modal_stack.pop()
-                {
-                    self.stage_workbench.three_way_range_idx = None;
+                self.menu_hover = None;
+                match self.modal_stack.pop() {
+                    Some(ModalLayer::FloatingPopup {
+                        kind: PopupKind::ThreeWayInspector,
+                        ..
+                    }) => {
+                        self.stage_workbench.three_way_range_idx = None;
+                    }
+                    Some(ModalLayer::FloatingPopup {
+                        kind: PopupKind::ConflictMerge,
+                        ..
+                    }) => {
+                        self.conflict_merge = None;
+                    }
+                    _ => {}
                 }
             }
             Action::PopContextMenus => {
+                self.menu_hover = None;
                 while matches!(
                     self.modal_stack.last(),
                     Some(ModalLayer::ContextMenu { .. })
@@ -978,17 +1187,31 @@ impl AppState {
             }
 
             // ── Commit table ──
-            Action::SelectLogRow(idx) => self.log_graph.select_row(idx),
-            Action::ExtendLogSelectionTo(idx) => self.log_graph.extend_selection_to(idx),
-            Action::ScrollLog(delta) => self.log_graph.scroll_by(delta, false),
-            Action::ExtendLogSelection(delta) => self.log_graph.scroll_by(delta, true),
+            Action::SelectLogRow(idx) => {
+                self.details.compare_override = None;
+                self.log_graph.select_row(idx);
+            }
+            Action::ExtendLogSelectionTo(idx) => {
+                self.details.compare_override = None;
+                self.log_graph.extend_selection_to(idx);
+            }
+            Action::ScrollLog(delta) => {
+                self.details.compare_override = None;
+                self.log_graph.scroll_by(delta, false);
+            }
+            Action::ExtendLogSelection(delta) => {
+                self.details.compare_override = None;
+                self.log_graph.scroll_by(delta, true);
+            }
             Action::LogPage { half, down } => {
+                self.details.compare_override = None;
                 let vh = self.log_graph.last_viewport_h.max(2);
                 let step = if half { vh / 2 } else { vh.saturating_sub(1) }.max(1) as isize;
                 self.log_graph
                     .scroll_by(if down { step } else { -step }, false);
             }
             Action::LogEdge { bottom } => {
+                self.details.compare_override = None;
                 let len = self.log_graph.visible_count();
                 self.log_graph.jump_to(
                     snap.as_ref(),
@@ -997,23 +1220,31 @@ impl AppState {
                 );
             }
             Action::JumpToLogRow { row, center } => {
+                self.details.compare_override = None;
                 self.log_graph.jump_to(snap.as_ref(), row, center);
             }
-            Action::GoToParent(idx) => match self.log_graph.parent_row(snap.as_ref(), idx) {
-                Some(row) => self.log_graph.jump_to(snap.as_ref(), row, false),
-                None => {
-                    self.status_notice = Some(if idx == 0 {
-                        "No visible parent commit".to_string()
-                    } else {
-                        format!("No visible parent #{}", idx + 1)
-                    });
+            Action::GoToParent(idx) => {
+                self.details.compare_override = None;
+                match self.log_graph.parent_row(snap.as_ref(), idx) {
+                    Some(row) => self.log_graph.jump_to(snap.as_ref(), row, false),
+                    None => {
+                        self.status_notice = Some(if idx == 0 {
+                            "No visible parent commit".to_string()
+                        } else {
+                            format!("No visible parent #{}", idx + 1)
+                        });
+                    }
                 }
-            },
-            Action::GoToChild => match self.log_graph.child_row() {
-                Some(row) => self.log_graph.jump_to(snap.as_ref(), row, false),
-                None => self.status_notice = Some("No visible child commit".to_string()),
-            },
+            }
+            Action::GoToChild => {
+                self.details.compare_override = None;
+                match self.log_graph.child_row() {
+                    Some(row) => self.log_graph.jump_to(snap.as_ref(), row, false),
+                    None => self.status_notice = Some("No visible child commit".to_string()),
+                }
+            }
             Action::GoToRevision(expr) => {
+                self.details.compare_override = None;
                 let expr = expr.trim().to_string();
                 match snap.as_ref().and_then(|s| s.resolve_revision(&expr)) {
                     Some(oid) => {
@@ -1031,6 +1262,7 @@ impl AppState {
                 }
             }
             Action::JumpToCommit(oid) => {
+                self.details.compare_override = None;
                 if self.log_graph.jump_to_oid(snap.as_ref(), &oid) {
                     self.focused_pane = PaneId::LogCommitTable;
                 } else {
@@ -1039,9 +1271,11 @@ impl AppState {
                 }
             }
             Action::NavLogBack => {
+                self.details.compare_override = None;
                 self.log_graph.nav_back(snap.as_ref());
             }
             Action::NavLogForward => {
+                self.details.compare_override = None;
                 self.log_graph.nav_forward(snap.as_ref());
             }
 
@@ -1165,6 +1399,7 @@ impl AppState {
                 effects.push(Effect::CopyToClipboard(text));
             }
             Action::FlushPendingDetails => {
+                crate::input_menus::flush_menu_hover(self, Instant::now());
                 if let Some((key, _)) = self.details.pending.take()
                     && !self.details.cache.contains(&key)
                 {
@@ -1207,12 +1442,19 @@ impl AppState {
                 }
             }
             other => {
-                let _ = self.dispatch_stage_action(&other, &mut effects);
+                if !self.dispatch_git_action(&other, &mut effects) {
+                    let _ = self.dispatch_stage_action(&other, &mut effects);
+                }
             }
         }
 
         self.reconcile_log_requests(Instant::now(), &mut effects);
         self.reconcile_stage_requests(&mut effects);
+        self.stash.reconcile_requests(
+            self.repo_snapshot.as_ref(),
+            self.active_tab == WorkspaceTab::Stash,
+            &mut effects,
+        );
         effects
     }
 
@@ -1242,19 +1484,21 @@ impl AppState {
             }
         }
 
-        // Commit details (debounced).
-        let oids = self.log_graph.selected_oids(snap.as_ref());
-        if self.details.current_key.as_ref().map(|k| &k.oids) != Some(&oids) {
-            self.details.merge_parent = 0;
-        }
-        let desired = (!oids.is_empty()).then_some(DetailsKey {
-            parent_index: if oids.len() == 1 {
+        // Commit details (debounced), or explicit compare override.
+        let desired = if let Some(cmp) = &self.details.compare_override {
+            Some(cmp.clone())
+        } else {
+            let oids = self.log_graph.selected_oids(snap.as_ref());
+            if self.details.current_key.as_ref().map(|k| &k.oids) != Some(&oids) {
+                self.details.merge_parent = 0;
+            }
+            let parent_index = if oids.len() == 1 {
                 self.details.merge_parent
             } else {
                 0
-            },
-            oids,
-        });
+            };
+            (!oids.is_empty()).then_some(DetailsKey::commits(oids, parent_index))
+        };
         if desired != self.details.current_key {
             self.details.current_key = desired.clone();
             self.details.changes_selected = 0;
@@ -1262,6 +1506,10 @@ impl AppState {
             self.details.diff_scroll = 0;
             self.details.pending = match desired {
                 Some(k) if self.details.cache.get(&k).is_some() => None,
+                Some(k) if self.details.compare_override.is_some() => {
+                    effects.push(Effect::RequestCommitDetails(k));
+                    None
+                }
                 Some(k) => Some((k, now + DETAILS_DEBOUNCE)),
                 None => None,
             };
@@ -1352,6 +1600,15 @@ impl AppState {
                 // Cache every result; only the current key is rendered, so
                 // superseded epochs can never paint stale details.
                 self.latest_commit_details_epoch = self.latest_commit_details_epoch.max(epoch);
+                if self.stash.requested_details.as_ref() == Some(&bundle.key) {
+                    self.stash.requested_details = None;
+                }
+                if self.stash.details.current_key.as_ref() == Some(&bundle.key) {
+                    self.stash
+                        .details
+                        .cache
+                        .insert(bundle.key.clone(), Arc::clone(&bundle));
+                }
                 self.details.cache.insert(bundle.key.clone(), bundle);
             }
             EngineEvent::FileDiffLoaded { diff, epoch } => {
@@ -1359,9 +1616,25 @@ impl AppState {
                 if self.details.requested_diff.as_ref() == Some(&diff.key) {
                     self.details.requested_diff = None;
                 }
-                if !diff.is_binary && !diff.hunks.is_empty() {
-                    let hl = Arc::new(HighlightedDiff::build(&diff));
-                    self.details.diff_syntax.insert(diff.key.clone(), hl);
+                if self.stash.details.requested_diff.as_ref() == Some(&diff.key) {
+                    self.stash.details.requested_diff = None;
+                }
+                let hl = (!diff.is_binary && !diff.hunks.is_empty())
+                    .then(|| Arc::new(HighlightedDiff::build(&diff)));
+                if self.stash.details.desired_diff_key().as_ref() == Some(&diff.key) {
+                    if let Some(h) = &hl {
+                        self.stash
+                            .details
+                            .diff_syntax
+                            .insert(diff.key.clone(), Arc::clone(h));
+                    }
+                    self.stash
+                        .details
+                        .diff_cache
+                        .insert(diff.key.clone(), Arc::clone(&diff));
+                }
+                if let Some(h) = hl {
+                    self.details.diff_syntax.insert(diff.key.clone(), h);
                 }
                 self.details.diff_cache.insert(diff.key.clone(), diff);
             }
@@ -1450,6 +1723,19 @@ impl AppState {
             EngineEvent::ExternalFsChanged(scope) => {
                 effects.push(Effect::RefreshScope(scope));
             }
+            EngineEvent::GitOpFinished(outcome) => {
+                self.git_ops_running = self.git_ops_running.saturating_sub(1);
+                self.apply_git_outcome(outcome, &mut effects);
+            }
+            EngineEvent::ConflictDocumentLoaded { doc } => {
+                if let Some(cm) = &mut self.conflict_merge
+                    && cm.path == doc.path
+                {
+                    cm.selected_block = 0;
+                    cm.scroll = 0;
+                    cm.doc = Some(doc);
+                }
+            }
             EngineEvent::Error(msg) => {
                 self.loading_snapshot = false;
                 self.details.requested_diff = None;
@@ -1461,6 +1747,11 @@ impl AppState {
 
         self.reconcile_log_requests(Instant::now(), &mut effects);
         self.reconcile_stage_requests(&mut effects);
+        self.stash.reconcile_requests(
+            self.repo_snapshot.as_ref(),
+            self.active_tab == WorkspaceTab::Stash,
+            &mut effects,
+        );
         effects
     }
 }
@@ -1568,8 +1859,24 @@ pub fn execute_effects(effects: Vec<Effect>, state: &mut AppState, engine: Optio
             Effect::UndoLastCommit => {
                 handle.send(TaskRequest::UndoLastCommit);
             }
-            Effect::OpenExternalEditorMessage | Effect::OpenExternalEditorFile(_) => {
+            Effect::OpenExternalEditorMessage
+            | Effect::OpenExternalEditorFile(_)
+            | Effect::OpenExternalMergetool(_) => {
                 // Handled in main loop where TerminalGuard can pause raw mode
+            }
+            Effect::LoadConflictDocument(path) => {
+                handle.send(TaskRequest::LoadConflictDocument { path });
+            }
+            Effect::SaveConflictResolution {
+                path,
+                content,
+                stage,
+            } => {
+                handle.send(TaskRequest::SaveConflictResolution {
+                    path,
+                    content,
+                    stage,
+                });
             }
             Effect::RunCli {
                 args,
@@ -1586,6 +1893,10 @@ pub fn execute_effects(effects: Vec<Effect>, state: &mut AppState, engine: Optio
                     is_read_only,
                     refresh_after,
                 });
+            }
+            Effect::GitOp(op) => {
+                state.git_ops_running += 1;
+                handle.send(TaskRequest::RunGitOp { op });
             }
             Effect::CopyToClipboard(_) | Effect::Quit => {}
         }

@@ -4,7 +4,7 @@ use crossterm::event::{
 use jgit_core::{ChangeRowKind, ModalButton, PaneId, WorkspaceTab};
 
 use crate::app::{
-    Action, AppState, ClickRecord, ContextMenuAction, ContextMenuEntryKind, ContextMenuItem,
+    Action, AppState, ClickRecord, ContextMenuAction, ContextMenuItem,
     DragState, ModalLayer, PopupKind,
 };
 use crate::hit_test::{
@@ -14,8 +14,12 @@ use crate::input_stage::{
     route_commit_changes_tree_key, route_commit_priority_key, route_stage_left_click,
     stage_tree_context_menu_items,
 };
+use crate::input_menus::{
+    activate_top_menu_item, context_menu_for_target, keyboard_menu_target, on_menu_hover,
+    route_conflict_merge_key, route_context_menu_key, route_dialog, route_spec05_click,
+    route_stash_key,
+};
 use crate::log_view::{PresentationToggle, complete_last_token, filter_suggestions};
-use crate::views::overlays::context_menu_rect;
 
 pub fn route_terminal_event(event: Event, state: &mut AppState) -> Vec<Action> {
     match event {
@@ -67,6 +71,22 @@ fn route_key(key: KeyEvent, state: &mut AppState) -> Vec<Action> {
     if key.code == KeyCode::F(12) {
         return vec![Action::ToggleGlyphMode];
     }
+    if state.modal_stack.is_empty() && key.modifiers.contains(KeyModifiers::ALT) {
+        match key.code {
+            KeyCode::Char('z')
+                if state
+                    .notification
+                    .as_ref()
+                    .is_some_and(|n| n.action.is_some()) =>
+            {
+                return vec![Action::NotificationActivate];
+            }
+            KeyCode::Char('x') if state.notification.is_some() => {
+                return vec![Action::NotificationDismiss];
+            }
+            _ => {}
+        }
+    }
 
     // Top-down Z-order interception: check topmost modal layer first
     if let Some(top) = state.modal_stack.last_mut() {
@@ -98,12 +118,19 @@ fn route_key(key: KeyEvent, state: &mut AppState) -> Vec<Action> {
             ModalLayer::ContextMenu { .. } => {
                 return route_context_menu_key(key, state);
             }
+            ModalLayer::Dialog(_) => return route_dialog(&key, state),
             ModalLayer::FloatingPopup {
                 kind,
                 query,
                 selected,
             } => {
                 let kind = *kind;
+                if kind == PopupKind::BranchesQuickView {
+                    return crate::branches_popup::route_branches_popup_key(&key, state);
+                }
+                if kind == PopupKind::ConflictMerge {
+                    return route_conflict_merge_key(&key, state);
+                }
                 return match key.code {
                     KeyCode::Esc => vec![Action::PopModal],
                     KeyCode::Char('?') if kind == PopupKind::ShortcutsHelp => {
@@ -214,9 +241,40 @@ fn route_key(key: KeyEvent, state: &mut AppState) -> Vec<Action> {
         return actions;
     }
 
+    if let Some(actions) = route_stash_key(&key, state) {
+        return actions;
+    }
+
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     let alt = key.modifiers.contains(KeyModifiers::ALT);
     let in_log = state.active_tab == WorkspaceTab::Log;
+
+    // Keyboard-equivalent context menu: Menu key, Shift+F10, `.` or `m`.
+    let menu_trigger = key.code == KeyCode::Menu
+        || (key.code == KeyCode::F(10) && key.modifiers.contains(KeyModifiers::SHIFT))
+        || (!ctrl && !alt && key.code == KeyCode::Char('.'))
+        || (!ctrl
+            && !alt
+            && key.code == KeyCode::Char('m')
+            && state.focused_pane != PaneId::LogDetailsDiff);
+    if menu_trigger && let Some(actions) = keyboard_context_menu(state) {
+        return actions;
+    }
+
+    // `GitBranchesPopup`: Ctrl+` / Ctrl+Shift+` (~) or Alt+B outside the Log tab
+    // (where Alt+B keeps collapsing the Branches pane).
+    if (ctrl && matches!(key.code, KeyCode::Char('`' | '~')))
+        || (alt && !in_log && matches!(key.code, KeyCode::Char('b' | 'B')))
+    {
+        return vec![Action::OpenBranchesPopup {
+            query: String::new(),
+        }];
+    }
+    if ctrl && alt && matches!(key.code, KeyCode::Char('n' | 'N')) {
+        return vec![Action::OpenDialog(Box::new(
+            crate::dialogs::new_branch_from_head_dialog(state.repo_snapshot.as_deref()),
+        ))];
+    }
 
     // Layer 1: Workspace global shortcuts
     match key.code {
@@ -296,10 +354,20 @@ fn route_key(key: KeyEvent, state: &mut AppState) -> Vec<Action> {
                 half: false,
                 down: false,
             }],
-            KeyCode::Char('d') if ctrl => vec![Action::LogPage {
-                half: true,
-                down: true,
-            }],
+            KeyCode::Char('d') if ctrl => {
+                let oids = state.selected_commits_oldest_first();
+                if let [base, target] = oids.as_slice() {
+                    vec![Action::CompareVersions {
+                        base: *base,
+                        target: *target,
+                    }]
+                } else {
+                    vec![Action::LogPage {
+                        half: true,
+                        down: true,
+                    }]
+                }
+            }
             KeyCode::Char('u') if ctrl => vec![Action::LogPage {
                 half: true,
                 down: false,
@@ -481,119 +549,19 @@ fn route_log_priority_key(key: &KeyEvent, state: &AppState) -> Option<Vec<Action
     None
 }
 
-fn route_context_menu_key(key: KeyEvent, state: &mut AppState) -> Vec<Action> {
-    match key.code {
-        KeyCode::Esc | KeyCode::Left => vec![Action::PopModal],
-        KeyCode::Up | KeyCode::Char('k') => {
-            if let Some(ModalLayer::ContextMenu {
-                items, selected, ..
-            }) = state.modal_stack.last_mut()
-                && !items.is_empty()
-            {
-                *selected = if *selected == 0 {
-                    items.len() - 1
-                } else {
-                    *selected - 1
-                };
-                state.needs_redraw = true;
-            }
-            Vec::new()
-        }
-        KeyCode::Down | KeyCode::Char('j') => {
-            if let Some(ModalLayer::ContextMenu {
-                items, selected, ..
-            }) = state.modal_stack.last_mut()
-                && !items.is_empty()
-            {
-                *selected = (*selected + 1) % items.len();
-                state.needs_redraw = true;
-            }
-            Vec::new()
-        }
-        KeyCode::Right => {
-            let Some(ModalLayer::ContextMenu {
-                anchor,
-                items,
-                selected,
-                depth,
-            }) = state.modal_stack.last()
-            else {
-                return Vec::new();
-            };
-            if let Some(item) = items.get(*selected)
-                && matches!(item.kind, ContextMenuEntryKind::Submenu(_))
-            {
-                return activate_menu_item(*anchor, items, *selected, *depth, state.terminal_area);
-            }
-            Vec::new()
-        }
-        KeyCode::Enter => {
-            let Some(ModalLayer::ContextMenu {
-                anchor,
-                items,
-                selected,
-                depth,
-            }) = state.modal_stack.last()
-            else {
-                return Vec::new();
-            };
-            activate_menu_item(*anchor, items, *selected, *depth, state.terminal_area)
-        }
-        KeyCode::Char(ch)
-            if !key.modifiers.contains(KeyModifiers::CONTROL)
-                && !key.modifiers.contains(KeyModifiers::ALT) =>
-        {
-            let target = ch.to_ascii_lowercase();
-            let Some(ModalLayer::ContextMenu {
-                anchor,
-                items,
-                depth,
-                ..
-            }) = state.modal_stack.last()
-            else {
-                return Vec::new();
-            };
-            if let Some(idx) = items
-                .iter()
-                .position(|i| i.mnemonic.is_some_and(|m| m.to_ascii_lowercase() == target))
-            {
-                return activate_menu_item(*anchor, items, idx, *depth, state.terminal_area);
-            }
-            Vec::new()
-        }
-        _ => Vec::new(),
+fn keyboard_context_menu(state: &mut AppState) -> Option<Vec<Action>> {
+    let (target, anchor) = keyboard_menu_target(state)?;
+    let mut actions = Vec::new();
+    let items = build_menu_for(&target, state, &mut actions)?;
+    if items.is_empty() {
+        return None;
     }
-}
-
-fn activate_menu_item(
-    anchor: (u16, u16),
-    items: &[ContextMenuItem],
-    idx: usize,
-    depth: u8,
-    screen: ratatui::layout::Rect,
-) -> Vec<Action> {
-    let Some(item) = items.get(idx) else {
-        return Vec::new();
-    };
-    match &item.kind {
-        ContextMenuEntryKind::Submenu(children) => {
-            let parent_rect = context_menu_rect(screen, anchor, items);
-            let sub_anchor = (
-                parent_rect.x.saturating_add(parent_rect.width),
-                parent_rect.y.saturating_add(1).saturating_add(idx as u16),
-            );
-            vec![Action::OpenContextMenu {
-                anchor: sub_anchor,
-                items: children.clone(),
-                depth: depth.saturating_add(1),
-            }]
-        }
-        ContextMenuEntryKind::Action(act) => {
-            let mut out = vec![Action::PopContextMenus];
-            out.extend(resolve_menu_action(act.clone()));
-            out
-        }
-    }
+    actions.push(Action::OpenContextMenu {
+        anchor,
+        items,
+        depth: 0,
+    });
+    Some(actions)
 }
 
 fn route_mouse(mouse: MouseEvent, state: &mut AppState) -> Vec<Action> {
@@ -650,17 +618,18 @@ fn route_mouse(mouse: MouseEvent, state: &mut AppState) -> Vec<Action> {
                 menu_depth,
                 item_idx,
             }) = &next_target
-                && let Some(ModalLayer::ContextMenu {
-                    items,
+            {
+                on_menu_hover(state, *menu_depth, *item_idx);
+            }
+            if let Some(HitTarget::BranchPopupRow(idx)) = &next_target
+                && let Some(ModalLayer::FloatingPopup {
+                    kind: PopupKind::BranchesQuickView,
                     selected,
-                    depth,
                     ..
                 }) = state.modal_stack.last_mut()
-                && *depth == *menu_depth
-                && *item_idx < items.len()
-                && *selected != *item_idx
+                && *selected != *idx
             {
-                *selected = *item_idx;
+                *selected = *idx;
                 state.needs_redraw = true;
             }
             if next_target != state.hover_target {
@@ -726,6 +695,12 @@ fn route_mouse(mouse: MouseEvent, state: &mut AppState) -> Vec<Action> {
                     | HitTarget::Pane(PaneId::CommitChangesTree) => {
                         return vec![Action::ScrollCommitStage(delta / 3)];
                     }
+                    HitTarget::StashRow(_) | HitTarget::Pane(PaneId::StashList) => {
+                        return vec![Action::StashMove(delta / 3)];
+                    }
+                    HitTarget::StashChangeRow(_) | HitTarget::Pane(PaneId::StashDiffPreview) => {
+                        return vec![Action::StashDiffScroll(delta)];
+                    }
                     _ => {}
                 }
             }
@@ -748,6 +723,9 @@ fn route_mouse(mouse: MouseEvent, state: &mut AppState) -> Vec<Action> {
             };
 
             match region.target {
+                HitTarget::ModalBackdrop { layer_z } if (30..40).contains(&layer_z) => {
+                    vec![Action::PopContextMenus]
+                }
                 HitTarget::ModalBackdrop { .. } => vec![Action::PopModal],
                 HitTarget::ModalButton(btn) => match btn {
                     ModalButton::Confirm => vec![Action::ConfirmCriticalDialog],
@@ -763,22 +741,13 @@ fn route_mouse(mouse: MouseEvent, state: &mut AppState) -> Vec<Action> {
                     ) {
                         state.modal_stack.pop();
                     }
-                    if let Some(ModalLayer::ContextMenu {
-                        anchor,
-                        items,
-                        depth,
-                        ..
-                    }) = state.modal_stack.last()
+                    state.menu_hover = None;
+                    if let Some(ModalLayer::ContextMenu { selected, .. }) =
+                        state.modal_stack.last_mut()
                     {
-                        return activate_menu_item(
-                            *anchor,
-                            items,
-                            item_idx,
-                            *depth,
-                            state.terminal_area,
-                        );
+                        *selected = item_idx;
                     }
-                    Vec::new()
+                    activate_top_menu_item(state, item_idx)
                 }
                 HitTarget::Splitter { id, axis } => {
                     if is_double {
@@ -797,9 +766,8 @@ fn route_mouse(mouse: MouseEvent, state: &mut AppState) -> Vec<Action> {
                 }
                 HitTarget::ToolTab(tab) => vec![Action::SwitchTab(tab)],
                 HitTarget::BranchWidgetPill => {
-                    vec![Action::OpenPopup {
-                        kind: PopupKind::BranchesQuickView,
-                        initial_query: String::new(),
+                    vec![Action::OpenBranchesPopup {
+                        query: String::new(),
                     }]
                 }
                 HitTarget::HeaderRefreshButton => vec![Action::RefreshAll],
@@ -907,10 +875,7 @@ fn route_mouse(mouse: MouseEvent, state: &mut AppState) -> Vec<Action> {
                         Action::SelectLogRow(visible_row),
                     ];
                     if is_double {
-                        actions.push(Action::OpenPopup {
-                            kind: PopupKind::BranchesQuickView,
-                            initial_query: ref_name,
-                        });
+                        actions.push(Action::OpenBranchesPopup { query: ref_name });
                     }
                     actions
                 }
@@ -988,6 +953,9 @@ fn route_mouse(mouse: MouseEvent, state: &mut AppState) -> Vec<Action> {
                 }
                 HitTarget::Pane(pane) => vec![Action::FocusPane(pane)],
                 other => {
+                    if let Some(actions) = route_spec05_click(&other, state, is_double) {
+                        return actions;
+                    }
                     route_stage_left_click(other, state, col, row, ctrl, shift, is_double)
                         .unwrap_or_default()
                 }
@@ -1001,237 +969,43 @@ fn route_mouse(mouse: MouseEvent, state: &mut AppState) -> Vec<Action> {
             if matches!(region.target, HitTarget::ModalBackdrop { .. }) {
                 return vec![Action::PopModal];
             }
-            if matches!(region.target, HitTarget::MenuItem { .. }) {
+            if matches!(
+                region.target,
+                HitTarget::MenuItem { .. }
+                    | HitTarget::MenuBody { .. }
+                    | HitTarget::DialogBody
+                    | HitTarget::DialogOption(_)
+                    | HitTarget::DialogButton(_)
+                    | HitTarget::DialogCheckbox
+                    | HitTarget::BranchPopupStar(_)
+                    | HitTarget::BranchPopupFetch
+                    | HitTarget::BranchPopupSettings
+            ) {
                 return Vec::new();
+            }
+            if let HitTarget::BranchPopupRow(idx) = region.target {
+                return route_spec05_click(&HitTarget::BranchPopupRow(idx), state, false)
+                    .unwrap_or_default();
+            }
+            if matches!(region.target, HitTarget::BranchWidgetPill) {
+                return vec![Action::OpenBranchesPopup {
+                    query: String::new(),
+                }];
             }
 
             let mut actions = Vec::new();
+            let Some(menu_items) = build_menu_for(&region.target, state, &mut actions) else {
+                return Vec::new();
+            };
+            if menu_items.is_empty() {
+                return Vec::new();
+            }
             if matches!(
                 state.modal_stack.last(),
                 Some(ModalLayer::ContextMenu { .. })
             ) {
-                actions.push(Action::PopContextMenus);
+                actions.insert(0, Action::PopContextMenus);
             }
-
-            let menu_items = match &region.target {
-                HitTarget::CommitTableRow {
-                    visible_row,
-                    commit_oid,
-                }
-                | HitTarget::GraphPrintElement {
-                    visible_row,
-                    commit_oid,
-                    ..
-                } => {
-                    if !state.log_graph.is_row_selected(*visible_row) {
-                        actions.push(Action::FocusPane(PaneId::LogCommitTable));
-                        actions.push(Action::SelectLogRow(*visible_row));
-                    }
-                    let short = commit_oid.short();
-                    vec![
-                        ContextMenuItem::action(
-                            format!("Inspect commit {short} via git show"),
-                            Some('i'),
-                            None,
-                            ContextMenuAction::RunReadOnlyProbe(vec![
-                                "show".into(),
-                                "--stat".into(),
-                                commit_oid.to_string(),
-                            ]),
-                        ),
-                        ContextMenuItem::action(
-                            "Go to Hash / Branch / Tag…",
-                            Some('g'),
-                            Some("Ctrl+G"),
-                            ContextMenuAction::OpenGoTo,
-                        ),
-                        ContextMenuItem::action(
-                            "Refresh Log & Refs",
-                            Some('r'),
-                            Some("r"),
-                            ContextMenuAction::RefreshRepo,
-                        ),
-                        ContextMenuItem::submenu("Git Probes", Some('p'), probe_submenu_items()),
-                        ContextMenuItem::action(
-                            "Open Console Tab",
-                            Some('c'),
-                            Some("4"),
-                            ContextMenuAction::SwitchTab(WorkspaceTab::Console),
-                        ),
-                        ContextMenuItem::submenu(
-                            "Presentation",
-                            Some('o'),
-                            presentation_menu_items(state),
-                        ),
-                    ]
-                }
-                HitTarget::CommitRefPill {
-                    visible_row,
-                    ref_name,
-                    ..
-                } => {
-                    if state.log_graph.selected_idx != *visible_row {
-                        actions.push(Action::FocusPane(PaneId::LogCommitTable));
-                        actions.push(Action::SelectLogRow(*visible_row));
-                    }
-                    let mut items = ref_pill_menu_items(ref_name);
-                    items.push(ContextMenuItem::submenu(
-                        "Presentation",
-                        Some('o'),
-                        presentation_menu_items(state),
-                    ));
-                    items
-                }
-                HitTarget::CommitRefOverflow {
-                    visible_row,
-                    hidden_refs,
-                } => {
-                    if state.log_graph.selected_idx != *visible_row {
-                        actions.push(Action::FocusPane(PaneId::LogCommitTable));
-                        actions.push(Action::SelectLogRow(*visible_row));
-                    }
-                    overflow_menu_items(hidden_refs)
-                }
-                HitTarget::BranchTreeNode { row: idx, .. } => {
-                    let idx = *idx;
-                    if state.branches.selected != idx {
-                        actions.push(Action::FocusPane(PaneId::LogBranchesTree));
-                        actions.push(Action::SelectBranchRow(idx));
-                    }
-                    let node = state
-                        .branches
-                        .rows
-                        .get(idx)
-                        .map(|r| &state.branches.model.nodes[r.node]);
-                    let branch_name = node
-                        .and_then(|n| n.ref_name.clone())
-                        .unwrap_or_else(|| "HEAD".to_string());
-                    let is_leaf = node.is_some_and(|n| n.is_leaf());
-                    let check = |on: bool| if on { "✓" } else { " " };
-                    let settings = &state.branches.settings;
-                    let mut items = vec![ContextMenuItem::action(
-                        if is_leaf {
-                            format!("Show only {branch_name} in Log")
-                        } else {
-                            "Show only these branches in Log".to_string()
-                        },
-                        Some('f'),
-                        Some("Enter"),
-                        ContextMenuAction::BranchesApplyFilter,
-                    )];
-                    if is_leaf {
-                        items.push(ContextMenuItem::action(
-                            "Navigate Log to Branch Tip",
-                            Some('n'),
-                            Some("J"),
-                            ContextMenuAction::BranchesNavigate,
-                        ));
-                        items.push(ContextMenuItem::action(
-                            if node.is_some_and(|n| n.is_favorite) {
-                                "Unmark as Favorite"
-                            } else {
-                                "Mark as Favorite"
-                            },
-                            Some('m'),
-                            Some("Space"),
-                            ContextMenuAction::BranchesToggleFavorite,
-                        ));
-                        items.push(ContextMenuItem::action(
-                            format!("Log {branch_name}"),
-                            Some('l'),
-                            None,
-                            ContextMenuAction::RunReadOnlyProbe(vec![
-                                "log".into(),
-                                "-n".into(),
-                                "10".into(),
-                                "--oneline".into(),
-                                branch_name,
-                            ]),
-                        ));
-                    }
-                    items.push(ContextMenuItem::submenu(
-                        "Branches View Options",
-                        Some('o'),
-                        vec![
-                            ContextMenuItem::action(
-                                format!(
-                                    "{} Group by Directory",
-                                    check(settings.options.group_by_directory)
-                                ),
-                                Some('d'),
-                                None,
-                                ContextMenuAction::BranchesToggleGroupByDir,
-                            ),
-                            ContextMenuItem::action(
-                                format!("{} Show Tags", check(settings.options.show_tags)),
-                                Some('t'),
-                                None,
-                                ContextMenuAction::BranchesToggleShowTags,
-                            ),
-                            ContextMenuItem::action(
-                                format!(
-                                    "{} Navigate Log to Branch on Selection",
-                                    check(settings.navigate_on_select)
-                                ),
-                                Some('n'),
-                                None,
-                                ContextMenuAction::BranchesToggleNavigateOnSelect,
-                            ),
-                        ],
-                    ));
-                    items.push(ContextMenuItem::action(
-                        "Refresh Repository",
-                        Some('r'),
-                        Some("r"),
-                        ContextMenuAction::RefreshRepo,
-                    ));
-                    items
-                }
-                HitTarget::ChangesTreeNode { node_id, .. } => {
-                    let mut items =
-                        stage_tree_context_menu_items(state, node_id.0 as usize, &mut actions);
-                    items.push(ContextMenuItem::submenu(
-                        "Git Probes",
-                        Some('p'),
-                        probe_submenu_items(),
-                    ));
-                    items
-                }
-                HitTarget::ConsoleCommandRow { idx } => {
-                    if state.console_selected_idx != *idx {
-                        actions.push(Action::FocusPane(PaneId::ConsoleCommandList));
-                        actions.push(Action::SelectConsoleRow(*idx));
-                    }
-                    probe_submenu_items()
-                }
-                _ => vec![
-                    ContextMenuItem::action(
-                        "Refresh Repository Snapshot",
-                        Some('r'),
-                        Some("r"),
-                        ContextMenuAction::RefreshRepo,
-                    ),
-                    ContextMenuItem::submenu("Git Probes", Some('p'), probe_submenu_items()),
-                    ContextMenuItem::action(
-                        "Toggle Unicode / NerdFont",
-                        Some('g'),
-                        Some("F12"),
-                        ContextMenuAction::ToggleGlyphMode,
-                    ),
-                    ContextMenuItem::action(
-                        "Palette Preview",
-                        Some('v'),
-                        Some("F9"),
-                        ContextMenuAction::OpenPalettePreview,
-                    ),
-                    ContextMenuItem::action(
-                        "Keyboard Shortcuts",
-                        Some('h'),
-                        Some("?"),
-                        ContextMenuAction::OpenHelp,
-                    ),
-                ],
-            };
 
             actions.push(Action::OpenContextMenu {
                 anchor: (col, row),
@@ -1242,6 +1016,148 @@ fn route_mouse(mouse: MouseEvent, state: &mut AppState) -> Vec<Action> {
         }
         _ => Vec::new(),
     }
+}
+
+/// Context-menu items for a right-clicked (or keyboard-focused) target.
+fn build_menu_for(
+    target: &HitTarget,
+    state: &mut AppState,
+    actions: &mut Vec<Action>,
+) -> Option<Vec<ContextMenuItem>> {
+    if let Some(items) = context_menu_for_target(target, state, actions) {
+        return Some(items);
+    }
+    let items = match target {
+        HitTarget::BranchTreeNode { row: idx, .. } => {
+            let idx = *idx;
+            if state.branches.selected != idx {
+                actions.push(Action::FocusPane(PaneId::LogBranchesTree));
+                actions.push(Action::SelectBranchRow(idx));
+            }
+            let node = state
+                .branches
+                .rows
+                .get(idx)
+                .map(|r| &state.branches.model.nodes[r.node]);
+            let branch_name = node
+                .and_then(|n| n.ref_name.clone())
+                .unwrap_or_else(|| "HEAD".to_string());
+            let is_leaf = node.is_some_and(|n| n.is_leaf());
+            let check = |on: bool| if on { "✓" } else { " " };
+            let settings = &state.branches.settings;
+            let mut items = match node.map(|n| (n.kind, n.ref_name.clone())) {
+                Some((jgit_core::BranchNodeKind::Leaf(kind), Some(name))) => {
+                    let mut b = crate::menus::branch_menu_items(state, &name, kind);
+                    if !b.is_empty() {
+                        b.push(ContextMenuItem::separator());
+                    }
+                    b
+                }
+                Some((jgit_core::BranchNodeKind::Leaf(jgit_core::RefKind::Head), None)) => {
+                    let mut b =
+                        crate::menus::branch_menu_items(state, "", jgit_core::RefKind::Head);
+                    b.push(ContextMenuItem::separator());
+                    b
+                }
+                _ => Vec::new(),
+            };
+            items.push(ContextMenuItem::action(
+                if is_leaf {
+                    format!("Show only {branch_name} in Log")
+                } else {
+                    "Show only these branches in Log".to_string()
+                },
+                Some('f'),
+                Some("Enter"),
+                ContextMenuAction::BranchesApplyFilter,
+            ));
+            if is_leaf {
+                items.push(ContextMenuItem::action(
+                    "Navigate Log to Branch Tip",
+                    Some('n'),
+                    Some("J"),
+                    ContextMenuAction::BranchesNavigate,
+                ));
+                items.push(ContextMenuItem::action(
+                    if node.is_some_and(|n| n.is_favorite) {
+                        "Unmark as Favorite"
+                    } else {
+                        "Mark as Favorite"
+                    },
+                    Some('m'),
+                    Some("Space"),
+                    ContextMenuAction::BranchesToggleFavorite,
+                ));
+                items.push(ContextMenuItem::action(
+                    format!("Log {branch_name}"),
+                    Some('l'),
+                    None,
+                    ContextMenuAction::RunReadOnlyProbe(vec![
+                        "log".into(),
+                        "-n".into(),
+                        "10".into(),
+                        "--oneline".into(),
+                        branch_name,
+                    ]),
+                ));
+            }
+            items.push(ContextMenuItem::submenu(
+                "Branches View Options",
+                Some('o'),
+                vec![
+                    ContextMenuItem::action(
+                        format!(
+                            "{} Group by Directory",
+                            check(settings.options.group_by_directory)
+                        ),
+                        Some('d'),
+                        None,
+                        ContextMenuAction::BranchesToggleGroupByDir,
+                    ),
+                    ContextMenuItem::action(
+                        format!("{} Show Tags", check(settings.options.show_tags)),
+                        Some('t'),
+                        None,
+                        ContextMenuAction::BranchesToggleShowTags,
+                    ),
+                    ContextMenuItem::action(
+                        format!(
+                            "{} Navigate Log to Branch on Selection",
+                            check(settings.navigate_on_select)
+                        ),
+                        Some('n'),
+                        None,
+                        ContextMenuAction::BranchesToggleNavigateOnSelect,
+                    ),
+                ],
+            ));
+            items.push(ContextMenuItem::action(
+                "Refresh Repository",
+                Some('r'),
+                Some("r"),
+                ContextMenuAction::RefreshRepo,
+            ));
+            items
+        }
+        HitTarget::ChangesTreeNode { node_id, .. } => {
+            let mut items = stage_tree_context_menu_items(state, node_id.0 as usize, actions);
+            items.push(ContextMenuItem::submenu(
+                "Git Probes",
+                Some('p'),
+                probe_submenu_items(),
+            ));
+            items
+        }
+        HitTarget::ConsoleCommandRow { idx } => {
+            if state.console_selected_idx != *idx {
+                actions.push(Action::FocusPane(PaneId::ConsoleCommandList));
+                actions.push(Action::SelectConsoleRow(*idx));
+            }
+            probe_submenu_items()
+        }
+        _ => return None,
+    };
+    Some(items)
 }
 
 fn probe_submenu_items() -> Vec<ContextMenuItem> {
@@ -1276,20 +1192,11 @@ fn probe_submenu_items() -> Vec<ContextMenuItem> {
     ]
 }
 
-fn resolve_menu_action(act: ContextMenuAction) -> Vec<Action> {
+pub(crate) fn resolve_menu_action(act: ContextMenuAction) -> Vec<Action> {
     match act {
-        ContextMenuAction::SwitchTab(tab) => vec![Action::SwitchTab(tab)],
+        ContextMenuAction::Run(actions) => actions,
         ContextMenuAction::RefreshRepo => vec![Action::RefreshAll],
         ContextMenuAction::RunReadOnlyProbe(args) => vec![Action::RunCliProbe(args)],
-        ContextMenuAction::ToggleGlyphMode => vec![Action::ToggleGlyphMode],
-        ContextMenuAction::OpenPalettePreview => vec![Action::OpenPopup {
-            kind: PopupKind::PalettePreview,
-            initial_query: String::new(),
-        }],
-        ContextMenuAction::OpenHelp => vec![Action::OpenPopup {
-            kind: PopupKind::ShortcutsHelp,
-            initial_query: String::new(),
-        }],
         ContextMenuAction::TogglePresentation(t) => vec![Action::TogglePresentation(t)],
         ContextMenuAction::BranchesApplyFilter => vec![Action::BranchesApplyFilter],
         ContextMenuAction::BranchesNavigate => vec![Action::BranchesNavigate],
@@ -1314,37 +1221,6 @@ fn resolve_menu_action(act: ContextMenuAction) -> Vec<Action> {
             vec![Action::OpenExternalEditorFile(Some(p))]
         }
     }
-}
-
-fn ref_pill_menu_items(ref_name: &str) -> Vec<ContextMenuItem> {
-    vec![
-        ContextMenuItem::action(
-            format!("Show log for {ref_name}"),
-            Some('l'),
-            None,
-            ContextMenuAction::RunReadOnlyProbe(vec![
-                "log".into(),
-                "-n".into(),
-                "10".into(),
-                "--oneline".into(),
-                ref_name.to_string(),
-            ]),
-        ),
-        ContextMenuItem::action(
-            "Refresh Log & Refs",
-            Some('r'),
-            Some("r"),
-            ContextMenuAction::RefreshRepo,
-        ),
-    ]
-}
-
-/// Menu behind a `+N` overflow pill: one submenu per hidden ref.
-fn overflow_menu_items(hidden_refs: &[String]) -> Vec<ContextMenuItem> {
-    hidden_refs
-        .iter()
-        .map(|name| ContextMenuItem::submenu(name.clone(), None, ref_pill_menu_items(name)))
-        .collect()
 }
 
 /// `[⚙ Presentation]` menu (`Vcs.Log.PresentationSettings`).

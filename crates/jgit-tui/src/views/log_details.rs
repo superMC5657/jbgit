@@ -2,9 +2,9 @@
 //! diff preview (bottom), and the full-screen zoomed diff.
 
 use jgit_core::{
-    ChangeRowKind, ChangeTreeRow, CommitChangesBundle, CommitDetails, DiffLine, DiffLineKind,
-    FileDiff, MessageLineKind, PaneId, RefKind, SignatureStatus, classify_message_line,
-    issue_ref_ranges, side_by_side_rows,
+    ChangeRowKind, ChangeTreeRow, CommitChangesBundle, CommitDetails, DetailsMode, DiffLine,
+    DiffLineKind, FileDiff, MessageLineKind, PaneId, RefKind, SignatureStatus,
+    classify_message_line, issue_ref_ranges, side_by_side_rows,
 };
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -15,7 +15,7 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::app::{AppState, RenderContext};
 use crate::hit_test::{ChangesToolbarButton, DiffToolbarButton, HitTarget};
-use crate::log_view::{DiffPreviewDock, format_absolute_time};
+use crate::log_view::{DetailsPaneState, DiffPreviewDock, format_absolute_time};
 use crate::syntax::{HighlightedDiff, render_diff_line_spans};
 use crate::views::{
     fit_left_right_spans, highlight_spans, list_viewport, render_pane_frame, row_background,
@@ -64,6 +64,12 @@ fn render_toolbar<T: Copy>(
     x
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DiffHost {
+    Log,
+    Stash,
+}
+
 // ───────────────────────────── Changes browser ─────────────────────────────
 
 pub fn render_changes_pane(
@@ -72,27 +78,57 @@ pub fn render_changes_pane(
     state: &AppState,
     ctx: &mut RenderContext<'_>,
 ) {
-    let details = &state.details;
+    render_changes_browser(
+        frame,
+        area,
+        &state.details,
+        DiffHost::Log,
+        PaneId::LogChangesTree,
+        ctx,
+    );
+}
+
+pub fn render_changes_browser(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    details: &DetailsPaneState,
+    host: DiffHost,
+    pane: PaneId,
+    ctx: &mut RenderContext<'_>,
+) {
     let bundle = details.current_bundle();
     let subtitle = match (bundle, &details.current_key) {
         (Some(b), _) => {
             let (add, del) = b.totals();
             let mut s = format!("{} files  +{add} -{del}", b.changes.len());
-            if b.key.oids.len() > 1 {
-                s = format!("{} commits · {s}", b.key.oids.len());
+            match b.key.mode {
+                DetailsMode::CompareVersions if b.key.oids.len() >= 2 => {
+                    s = format!(
+                        "Compare {} ↔ {} · {s}",
+                        b.key.oids[0].short(),
+                        b.key.oids[1].short()
+                    );
+                }
+                DetailsMode::CompareWithLocal if !b.key.oids.is_empty() => {
+                    s = format!("Compare {} ↔ Working Tree · {s}", b.key.oids[0].short());
+                }
+                _ if b.key.oids.len() > 1 => {
+                    s = format!("{} commits · {s}", b.key.oids.len());
+                }
+                _ => {}
             }
             s
         }
         (None, Some(_)) => "Loading…".to_string(),
         (None, None) => String::new(),
     };
-    let body = render_pane_frame(frame, area, PaneId::LogChangesTree, &subtitle, ctx);
+    let body = render_pane_frame(frame, area, pane, &subtitle, ctx);
     if body.height == 0 || body.width == 0 {
         return;
     }
 
     let merge_parents = bundle
-        .filter(|b| b.key.oids.len() == 1)
+        .filter(|b| b.key.mode == DetailsMode::Commits && b.key.oids.len() == 1)
         .and_then(|b| b.details.first())
         .map_or(0, |d| d.parents.len());
     let mut buttons = vec![
@@ -103,25 +139,30 @@ pub fn render_changes_pane(
         ),
         (" ⊕ ".to_string(), false, ChangesToolbarButton::ExpandAll),
         (" ⊖ ".to_string(), false, ChangesToolbarButton::CollapseAll),
-        (
+    ];
+    if host == DiffHost::Log {
+        buttons.push((
             " ◉ Diff ".to_string(),
             details.diff_preview,
             ChangesToolbarButton::DiffPreview,
-        ),
-    ];
-    if merge_parents >= 2 {
-        buttons.push((
-            format!(" Parent {}/{merge_parents} ", details.merge_parent + 1),
-            true,
-            ChangesToolbarButton::SwitchParent,
         ));
+        if merge_parents >= 2 {
+            buttons.push((
+                format!(" Parent {}/{merge_parents} ", details.merge_parent + 1),
+                true,
+                ChangesToolbarButton::SwitchParent,
+            ));
+        }
     }
     render_toolbar(
         frame,
         Rect::new(body.x, body.y, body.width, 1),
         ctx,
         &buttons,
-        HitTarget::ChangesToolbar,
+        |b| match host {
+            DiffHost::Log => HitTarget::ChangesToolbar(b),
+            DiffHost::Stash => HitTarget::StashChangesToolbar(b),
+        },
     );
 
     let list = Rect::new(
@@ -147,29 +188,31 @@ pub fn render_changes_pane(
         return;
     }
     let rows = details.change_rows();
-    render_change_rows(frame, list, state, ctx, bundle, &rows);
+    render_change_rows(frame, list, details, host, pane, ctx, bundle, &rows);
 }
 
+#[allow(clippy::too_many_arguments)]
 fn render_change_rows(
     frame: &mut Frame<'_>,
     area: Rect,
-    state: &AppState,
+    details: &DetailsPaneState,
+    host: DiffHost,
+    pane: PaneId,
     ctx: &mut RenderContext<'_>,
     bundle: &CommitChangesBundle,
     rows: &[ChangeTreeRow],
 ) {
-    let focused = ctx.focused_pane == PaneId::LogChangesTree;
+    let focused = ctx.focused_pane == pane;
     let glyphs = ctx.glyph_mode.symbols();
-    let (selected, offset) = list_viewport(
-        rows.len(),
-        state.details.changes_selected,
-        area.height as usize,
-    );
+    let (selected, offset) = list_viewport(rows.len(), details.changes_selected, area.height as usize);
     for (vis_y, idx) in (offset..rows.len()).take(area.height as usize).enumerate() {
         let row = &rows[idx];
         let rect = Rect::new(area.x, area.y + vis_y as u16, area.width, 1);
-        let hovered =
-            matches!(ctx.hover_target, Some(HitTarget::LogChangeRow { idx: h }) if *h == idx);
+        let row_target = match host {
+            DiffHost::Log => HitTarget::LogChangeRow { idx },
+            DiffHost::Stash => HitTarget::StashChangeRow(idx),
+        };
+        let hovered = ctx.hover_target == Some(&row_target);
         let bg = row_background(
             idx == selected,
             focused,
@@ -244,8 +287,7 @@ fn render_change_rows(
             Paragraph::new(Line::from(spans)).style(Style::default().bg(bg)),
             rect,
         );
-        ctx.hit_registry
-            .register(rect, 2, HitTarget::LogChangeRow { idx });
+        ctx.hit_registry.register(rect, 2, row_target);
     }
 }
 
@@ -350,10 +392,20 @@ fn render_diff_view(
     ctx: &mut RenderContext<'_>,
     zoomed: bool,
 ) {
+    render_diff_preview(frame, area, &state.details, DiffHost::Log, zoomed, ctx);
+}
+
+pub fn render_diff_preview(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    d: &DetailsPaneState,
+    host: DiffHost,
+    zoomed: bool,
+    ctx: &mut RenderContext<'_>,
+) {
     if area.width == 0 || area.height == 0 {
         return;
     }
-    let d = &state.details;
     let mut buttons = vec![
         (
             if d.diff_side_by_side {
@@ -371,31 +423,43 @@ fn render_diff_view(
             DiffToolbarButton::Context,
         ),
     ];
-    if !zoomed {
+    if host == DiffHost::Log {
+        if !zoomed {
+            buttons.push((
+                format!(" ◧ {} ", d.diff_dock.label()),
+                d.diff_dock != DiffPreviewDock::Details,
+                DiffToolbarButton::Dock,
+            ));
+        }
         buttons.push((
-            format!(" ◧ {} ", d.diff_dock.label()),
-            d.diff_dock != DiffPreviewDock::Details,
-            DiffToolbarButton::Dock,
+            if zoomed { " ⤡ Restore " } else { " ⤢ F4 " }.to_string(),
+            zoomed,
+            DiffToolbarButton::Zoom,
         ));
+        buttons.push((" × ".to_string(), false, DiffToolbarButton::Close));
     }
-    buttons.push((
-        if zoomed { " ⤡ Restore " } else { " ⤢ F4 " }.to_string(),
-        zoomed,
-        DiffToolbarButton::Zoom,
-    ));
-    buttons.push((" × ".to_string(), false, DiffToolbarButton::Close));
     render_toolbar(
         frame,
         Rect::new(area.x, area.y, area.width, 1),
         ctx,
         &buttons,
-        HitTarget::DiffToolbar,
+        |b| match host {
+            DiffHost::Log => HitTarget::DiffToolbar(b),
+            DiffHost::Stash => HitTarget::StashDiffToolbar(b),
+        },
     );
     let body = Rect::new(area.x, area.y + 1, area.width, area.height - 1);
     if body.height == 0 {
         return;
     }
-    ctx.hit_registry.register(body, 2, HitTarget::DiffArea);
+    ctx.hit_registry.register(
+        body,
+        2,
+        match host {
+            DiffHost::Log => HitTarget::DiffArea,
+            DiffHost::Stash => HitTarget::Pane(PaneId::StashDiffPreview),
+        },
+    );
 
     let Some(change) = d.selected_change() else {
         let msg = if d.current_bundle().is_none() {

@@ -74,6 +74,44 @@ pub enum CommitOptionKind {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DialogButtonKind {
+    Confirm,
+    Cancel,
+}
+
+/// Buttons of the ongoing-operation banner (`Git.Ongoing.Rebase.Actions`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OngoingButton {
+    Resolve,
+    Continue,
+    Skip,
+    Abort,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StashButton {
+    Apply,
+    Pop,
+    Branch,
+    Drop,
+    New,
+    Clear,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConflictMergeButtonKind {
+    AcceptOurs,
+    AcceptTheirs,
+    AcceptBoth,
+    AcceptAllOurs,
+    AcceptAllTheirs,
+    Mergetool,
+    ExternalEditor,
+    SaveAndStage,
+    Cancel,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GraphHitKind {
     Node {
         commit_oid: Oid,
@@ -187,6 +225,28 @@ pub enum HitTarget {
         menu_depth: u8,
         item_idx: usize,
     },
+    /// Menu border / separator area (absorbs clicks).
+    MenuBody {
+        menu_depth: u8,
+    },
+    DialogBody,
+    DialogOption(usize),
+    DialogButton(DialogButtonKind),
+    DialogCheckbox,
+    BranchPopupRow(usize),
+    BranchPopupStar(usize),
+    BranchPopupFetch,
+    BranchPopupSettings,
+    OngoingBanner(OngoingButton),
+    NotificationAction,
+    NotificationDismiss,
+    StashRow(usize),
+    StashChangeRow(usize),
+    StashToolbar(StashButton),
+    StashChangesToolbar(ChangesToolbarButton),
+    StashDiffToolbar(DiffToolbarButton),
+    ConflictMergeBlock(usize),
+    ConflictMergeButton(ConflictMergeButtonKind),
     ModalBackdrop {
         layer_z: u8,
     },
@@ -239,6 +299,11 @@ impl HitTestRegistry {
             z_index,
             target,
         });
+    }
+
+    /// Last-registered region whose target satisfies `pred` (keyboard menus).
+    pub fn find(&self, pred: impl Fn(&HitTarget) -> bool) -> Option<&HitRegion> {
+        self.regions.iter().rev().find(|r| pred(&r.target))
     }
 
     /// Returns the topmost region containing `(col, row)`:

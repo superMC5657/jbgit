@@ -8,12 +8,25 @@ use rustc_hash::FxHashSet;
 
 use crate::{FileStatusKind, Oid};
 
+/// What a [`DetailsKey`] represents.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub enum DetailsMode {
+    /// Normal commit inspection (1 commit vs `parent_index`, or net changes of N commits).
+    #[default]
+    Commits,
+    /// Snapshot net diff between two commits (`oids[0]` → `oids[1]`).
+    CompareVersions,
+    /// Snapshot diff of `oids[0]` against the current working tree.
+    CompareWithLocal,
+}
+
 /// Identity of a details request: the selected commits (top-to-bottom visible
-/// order) plus which parent a single merge commit is compared against.
+/// order), which parent a single merge commit is compared against, and mode.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct DetailsKey {
     pub oids: Vec<Oid>,
     pub parent_index: usize,
+    pub mode: DetailsMode,
 }
 
 impl DetailsKey {
@@ -21,6 +34,31 @@ impl DetailsKey {
         Self {
             oids: vec![oid],
             parent_index: 0,
+            mode: DetailsMode::Commits,
+        }
+    }
+
+    pub fn commits(oids: Vec<Oid>, parent_index: usize) -> Self {
+        Self {
+            oids,
+            parent_index,
+            mode: DetailsMode::Commits,
+        }
+    }
+
+    pub fn compare_versions(base: Oid, target: Oid) -> Self {
+        Self {
+            oids: vec![base, target],
+            parent_index: 0,
+            mode: DetailsMode::CompareVersions,
+        }
+    }
+
+    pub fn compare_with_local(oid: Oid) -> Self {
+        Self {
+            oids: vec![oid],
+            parent_index: 0,
+            mode: DetailsMode::CompareWithLocal,
         }
     }
 }

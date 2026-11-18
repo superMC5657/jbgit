@@ -51,3 +51,5 @@ Milestone: M5 — 分支浮窗、右键菜单与高阶操作
 ---
 
 ## Comments
+
+- 2026-11-18 (agent): Implemented. `GitOp` catalogue + failure classifier in `crates/jgit-core/src/git_ops.rs`; conflict parser & 3-pane merge model in `crates/jgit-core/src/conflict.rs`; executor in `crates/jgit-engine/src/ops.rs` (console-streamed steps, Smart stash→op→pop, editor-free interactive rebase using a shell-builtin `GIT_SEQUENCE_EDITOR` and `exec git commit --amend -F` rewording); comparison & conflict loaders in `details.rs` / `pool.rs`. Reset 4 modes (Hard double-confirmed), Uncommit, Cherry-pick/Revert, Reword/Squash/Fixup/Drop/Interactive rebase, Fetch/Pull/Push (+ force-with-lease, Push up to here), Accept Yours/Theirs, `git mergetool` / `$EDITOR`, built-in three-pane conflict merge modal (`views/conflict_merge.rs`), ongoing banner (`views/banner.rs`), and `[3 Stash]` tab (`views/stash.rs`, reusing `CommitChangesBrowser` + `DiffPreview`).

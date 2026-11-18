@@ -1,4 +1,4 @@
-use jgit_core::{GroupOptions, ModalButton, RefInfo, RefKind, group_refs_for_table, word_diff};
+use jgit_core::{GroupOptions, ModalButton, RefInfo, group_refs_for_table, word_diff};
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
@@ -7,7 +7,8 @@ use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 use unicode_width::UnicodeWidthStr;
 
 use crate::app::{
-    AppState, ContextMenuEntryKind, ContextMenuItem, ModalLayer, PopupKind, RenderContext,
+    AppState, ContextMenuEntryKind, ContextMenuItem, MenuParent, ModalLayer, PopupKind,
+    RenderContext,
 };
 use crate::hit_test::HitTarget;
 use crate::syntax::render_diff_line_spans;
@@ -144,31 +145,95 @@ pub fn render_hover_tooltip(
     frame.render_widget(Paragraph::new(lines), inner);
 }
 
-pub fn context_menu_rect(screen: Rect, anchor: (u16, u16), items: &[ContextMenuItem]) -> Rect {
+/// Rows reserved for a context-menu item list (border excluded).
+fn menu_visible_rows(rect: Rect) -> usize {
+    rect.height.saturating_sub(2) as usize
+}
+
+/// Scroll offset keeping `selected` visible (deterministic for hit-testing).
+pub fn menu_scroll(selected: usize, visible: usize, len: usize) -> usize {
+    if visible == 0 || len <= visible || selected < visible {
+        0
+    } else {
+        (selected + 1 - visible).min(len - visible)
+    }
+}
+
+/// Screen row of item `idx` when `idx` is the selected item.
+pub fn menu_item_row_y(_screen: Rect, rect: Rect, items: &[ContextMenuItem], idx: usize) -> u16 {
+    let visible = menu_visible_rows(rect);
+    let scroll = menu_scroll(idx, visible, items.len());
+    rect.y + 1 + idx.saturating_sub(scroll) as u16
+}
+
+fn menu_has_icons(items: &[ContextMenuItem]) -> bool {
+    items.iter().any(|i| i.icon.is_some())
+}
+
+/// Menu rectangle (shadow excluded) with viewport auto-flip: menus that would
+/// overflow the right / bottom edge open to the left / upwards, and cascading
+/// submenus open on the left of their parent when the right side is full.
+pub fn context_menu_rect(
+    screen: Rect,
+    anchor: (u16, u16),
+    parent: Option<MenuParent>,
+    items: &[ContextMenuItem],
+) -> Rect {
+    let icon_w = if menu_has_icons(items) { 2 } else { 0 };
     let max_label = items
         .iter()
         .map(|i| {
             let suffix_w = match &i.kind {
                 ContextMenuEntryKind::Submenu(_) => 3,
                 ContextMenuEntryKind::Action(_) => i.shortcut.as_ref().map_or(0, |s| s.width() + 3),
+                ContextMenuEntryKind::Separator => 0,
             };
-            i.label.width() + suffix_w + 4
+            i.label.width() + suffix_w + 4 + icon_w
         })
         .max()
         .unwrap_or(20);
 
-    let width = (max_label as u16).clamp(22, screen.width.saturating_sub(2).max(22));
-    let height = (items.len() as u16 + 2).min(screen.height.saturating_sub(1).max(3));
+    // One extra column / row is reserved for the drop shadow.
+    let max_w = screen.width.saturating_sub(1).max(1);
+    let max_h = screen.height.saturating_sub(1).max(1);
+    let width = (max_label as u16).clamp(22.min(max_w), max_w);
+    let height = (items.len() as u16 + 2).clamp(3.min(max_h), max_h);
+    let right_edge = screen.right();
+    let bottom_edge = screen.bottom();
+    let fits_right = |x: u16| x.saturating_add(width).saturating_add(1) <= right_edge;
 
-    let x = anchor
-        .0
-        .min(screen.x.saturating_add(screen.width).saturating_sub(width));
-    let y = anchor.1.min(
-        screen
-            .y
-            .saturating_add(screen.height)
-            .saturating_sub(height),
-    );
+    let (x, ay) = match parent {
+        Some(p) => {
+            let right_of = p.rect.right();
+            let x = if fits_right(right_of) {
+                right_of
+            } else if p.rect.x >= screen.x.saturating_add(width) {
+                p.rect.x - width
+            } else {
+                right_edge.saturating_sub(width + 1)
+            };
+            (x, p.row_y.saturating_sub(1))
+        }
+        None => {
+            let x = if fits_right(anchor.0) {
+                anchor.0
+            } else {
+                anchor.0.saturating_sub(width)
+            };
+            (x, anchor.1)
+        }
+    };
+    let y = if ay.saturating_add(height).saturating_add(1) > bottom_edge {
+        ay.saturating_add(1).saturating_sub(height)
+    } else {
+        ay
+    };
+    let x = x
+        .max(screen.x)
+        .min(right_edge.saturating_sub(width + 1).max(screen.x));
+    let y = y
+        .max(screen.y)
+        .min(bottom_edge.saturating_sub(height + 1).max(screen.y));
     Rect::new(x, y, width, height)
 }
 
@@ -181,8 +246,12 @@ pub fn render_modals(
     for layer in &state.modal_stack {
         let z = layer.z_level();
         // Register full-screen backdrop so lower-layer widgets cannot receive clicks
-        ctx.hit_registry
-            .register(screen, z, HitTarget::ModalBackdrop { layer_z: z });
+        // (cascading submenus share their root menu's backdrop so the parent
+        // menu stays hoverable while a child is open).
+        if !matches!(layer, ModalLayer::ContextMenu { depth, .. } if *depth > 0) {
+            ctx.hit_registry
+                .register(screen, z, HitTarget::ModalBackdrop { layer_z: z });
+        }
 
         match layer {
             ModalLayer::FloatingPopup {
@@ -195,7 +264,11 @@ pub fn render_modals(
                 items,
                 selected,
                 depth,
-            } => render_context_menu(frame, screen, ctx, *anchor, items, *selected, *depth, z),
+                parent,
+            } => render_context_menu(
+                frame, screen, ctx, *anchor, *parent, items, *selected, *depth, z,
+            ),
+            ModalLayer::Dialog(d) => crate::views::dialogs::render_dialog(frame, screen, ctx, d, z),
             ModalLayer::CriticalDialog {
                 title,
                 body,
@@ -229,6 +302,14 @@ fn render_floating_popup(
     selected: usize,
     z: u8,
 ) {
+    if kind == PopupKind::BranchesQuickView {
+        crate::branches_popup::render_branches_popup(frame, screen, state, ctx, query, selected, z);
+        return;
+    }
+    if kind == PopupKind::ConflictMerge {
+        crate::views::conflict_merge::render_conflict_merge_modal(frame, screen, state, ctx, z);
+        return;
+    }
     let (max_w, max_h) = match kind {
         PopupKind::PalettePreview => (100, 38),
         PopupKind::ShortcutsHelp => (78, 34),
@@ -260,6 +341,7 @@ fn render_floating_popup(
         PopupKind::ChooseParent => " Choose Parent Commit (1-9 / Enter) ".to_string(),
         PopupKind::CommitHistory => " Commit Message History (Enter to fill, Esc to close) ".to_string(),
         PopupKind::ThreeWayInspector => " Three-Way Change Inspector (Worktree / Staged / HEAD) ".to_string(),
+        PopupKind::ConflictMerge => " Resolve Conflicts ".to_string(),
         PopupKind::HookError => " Commit / Git Hook Failed (Message Preserved) ".to_string(),
     };
 
@@ -328,6 +410,15 @@ fn render_floating_popup(
                     "Dir grouping / expand / collapse / merge parent",
                 ),
                 ("Details: click SHA", "Copy 40-char commit SHA (OSC 52)"),
+                ("", ""),
+                ("── Branches & menus ──", ""),
+                ("Ctrl+` / click ⎇ pill", "Git Branches popup (Alt+B outside Log)"),
+                ("Popup: type / ↑↓ / → ", "Fuzzy search · move · branch actions"),
+                ("Shift+F10 / Menu / .", "Context menu for the focused row (m too)"),
+                ("Ctrl+Alt+N", "New branch from HEAD"),
+                ("Alt+Z / Alt+X", "Run / dismiss footer notification action"),
+                ("Banner buttons", "Resolve · Continue · Skip · Abort"),
+                ("Stash: a p b d n C", "Apply · Pop · Branch · Drop · New · Clear"),
                 ("q / Ctrl+C", "Quit"),
             ];
             let lines: Vec<Line<'_>> = HELP
@@ -472,63 +563,7 @@ fn render_floating_popup(
             }
             frame.render_widget(Paragraph::new(lines), inner);
         }
-        PopupKind::BranchesQuickView => {
-            let mut lines = vec![Line::from(vec![
-                Span::styled(" Search: ", Style::default().fg(ctx.theme.fg_muted)),
-                Span::styled(
-                    if query.is_empty() {
-                        "<type to filter>"
-                    } else {
-                        query
-                    },
-                    Style::default().fg(ctx.theme.fg_bright),
-                ),
-            ])];
-
-            if let Some(snap) = &state.repo_snapshot {
-                let q_low = query.to_ascii_lowercase();
-                let filtered: Vec<_> = snap
-                    .refs
-                    .iter()
-                    .filter(|r| matches!(r.kind, RefKind::LocalBranch | RefKind::RemoteBranch))
-                    .filter(|r| q_low.is_empty() || r.name.to_ascii_lowercase().contains(&q_low))
-                    .collect();
-
-                let sel = if filtered.is_empty() {
-                    0
-                } else {
-                    selected.min(filtered.len() - 1)
-                };
-
-                for (idx, r) in filtered
-                    .iter()
-                    .take(inner.height.saturating_sub(2) as usize)
-                    .enumerate()
-                {
-                    let is_sel = idx == sel;
-                    let bg = if is_sel {
-                        ctx.theme.bg_selection_focused
-                    } else {
-                        ctx.theme.bg_elevated
-                    };
-                    let tag = match r.kind {
-                        RefKind::LocalBranch if r.is_head => ctx.glyph_mode.symbols().head,
-                        RefKind::LocalBranch => ctx.glyph_mode.symbols().local_branch,
-                        _ => ctx.glyph_mode.symbols().remote_branch,
-                    };
-                    let prefix = format!(" {tag} ");
-                    let max_name = (inner.width as usize).saturating_sub(prefix.width());
-                    lines.push(
-                        Line::from(Span::styled(
-                            format!("{prefix}{}", truncate_to_width(&r.name, max_name)),
-                            Style::default().fg(ctx.theme.fg_primary),
-                        ))
-                        .style(Style::default().bg(bg)),
-                    );
-                }
-            }
-            frame.render_widget(Paragraph::new(lines), inner);
-        }
+        PopupKind::BranchesQuickView | PopupKind::ConflictMerge => {}
         PopupKind::CommitHistory => {
             let candidates = state.commit_history_candidates();
             let q_low = query.to_ascii_lowercase();
@@ -698,12 +733,61 @@ fn render_floating_popup(
     }
 }
 
+/// Darkens the cells under a 1-cell drop shadow (right column + bottom row).
+pub fn draw_shadow(frame: &mut Frame<'_>, screen: Rect, rect: Rect) {
+    let shade = ratatui::style::Color::Rgb(14, 14, 16);
+    let dim = ratatui::style::Color::Rgb(70, 72, 76);
+    let buf = frame.buffer_mut();
+    let sx = rect.right();
+    if sx < screen.right() {
+        for y in rect.y.saturating_add(1)..rect.bottom().saturating_add(1).min(screen.bottom()) {
+            if let Some(cell) = buf.cell_mut((sx, y)) {
+                cell.set_bg(shade).set_fg(dim);
+            }
+        }
+    }
+    let sy = rect.bottom();
+    if sy < screen.bottom() {
+        for x in rect.x.saturating_add(1)..rect.right().min(screen.right()) {
+            if let Some(cell) = buf.cell_mut((x, sy)) {
+                cell.set_bg(shade).set_fg(dim);
+            }
+        }
+    }
+}
+
+/// Label spans with the mnemonic letter underlined (`C̲herry-Pick`).
+pub fn mnemonic_spans(label: &str, mnemonic: Option<char>, style: Style) -> Vec<Span<'static>> {
+    let Some(m) = mnemonic else {
+        return vec![Span::styled(label.to_string(), style)];
+    };
+    let lower = m.to_ascii_lowercase();
+    match label
+        .char_indices()
+        .find(|(_, c)| c.to_ascii_lowercase() == lower)
+    {
+        Some((pos, c)) => {
+            let end = pos + c.len_utf8();
+            vec![
+                Span::styled(label[..pos].to_string(), style),
+                Span::styled(
+                    label[pos..end].to_string(),
+                    style.add_modifier(Modifier::UNDERLINED),
+                ),
+                Span::styled(label[end..].to_string(), style),
+            ]
+        }
+        None => vec![Span::styled(label.to_string(), style)],
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn render_context_menu(
     frame: &mut Frame<'_>,
     screen: Rect,
     ctx: &mut RenderContext<'_>,
     anchor: (u16, u16),
+    parent: Option<MenuParent>,
     items: &[ContextMenuItem],
     selected: usize,
     depth: u8,
@@ -713,51 +797,103 @@ fn render_context_menu(
         return;
     }
 
-    let rect = context_menu_rect(screen, anchor, items);
+    let rect = context_menu_rect(screen, anchor, parent, items);
+    draw_shadow(frame, screen, rect);
     frame.render_widget(Clear, rect);
 
     let block = Block::default()
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(ctx.theme.border_focused))
+        .border_type(ratatui::widgets::BorderType::Rounded)
+        .border_style(Style::default().fg(ctx.theme.border_splitter))
         .style(Style::default().bg(ctx.theme.bg_elevated));
     let inner = block.inner(rect);
     frame.render_widget(block, rect);
+    ctx.hit_registry
+        .register(rect, z + 1, HitTarget::MenuBody { menu_depth: depth });
 
-    for (idx, item) in items.iter().take(inner.height as usize).enumerate() {
-        let row_rect = Rect::new(inner.x, inner.y.saturating_add(idx as u16), inner.width, 1);
+    let visible = inner.height as usize;
+    let scroll = menu_scroll(selected, visible, items.len());
+    let has_icons = menu_has_icons(items);
+
+    for (vis, (idx, item)) in items
+        .iter()
+        .enumerate()
+        .skip(scroll)
+        .take(visible)
+        .enumerate()
+    {
+        let y = inner.y.saturating_add(vis as u16);
+        if item.is_separator() {
+            frame.render_widget(
+                Paragraph::new(Span::styled(
+                    format!("├{}┤", "─".repeat(inner.width as usize)),
+                    Style::default().fg(ctx.theme.border_splitter),
+                ))
+                .style(Style::default().bg(ctx.theme.bg_elevated)),
+                Rect::new(rect.x, y, rect.width, 1),
+            );
+            continue;
+        }
+        let row_rect = Rect::new(inner.x, y, inner.width, 1);
         let is_sel = idx == selected;
+        let enabled = item.is_enabled();
         let bg = if is_sel {
-            ctx.theme.bg_selection_focused
+            if enabled {
+                ctx.theme.bg_selection_focused
+            } else {
+                ctx.theme.bg_selection_unfocused
+            }
         } else {
             ctx.theme.bg_elevated
+        };
+        let fg = if !enabled {
+            ctx.theme.fg_muted
+        } else if is_sel {
+            ctx.theme.fg_bright
+        } else {
+            ctx.theme.fg_primary
         };
 
         let right_label = match &item.kind {
             ContextMenuEntryKind::Submenu(_) => "▸",
-            ContextMenuEntryKind::Action(_) => item.shortcut.as_deref().unwrap_or(""),
+            _ => item.shortcut.as_deref().unwrap_or(""),
         };
-        let avail = (inner.width as usize).saturating_sub(right_label.width() + 3);
+        let icon_w = if has_icons { 2 } else { 0 };
+        let avail = (inner.width as usize).saturating_sub(right_label.width() + 3 + icon_w);
         let label = truncate_to_width(&item.label, avail);
-        let pad = (inner.width as usize).saturating_sub(label.width() + right_label.width() + 2);
+        let pad = (inner.width as usize)
+            .saturating_sub(label.width() + right_label.width() + 2 + icon_w);
 
-        let line = Line::from(vec![
-            Span::styled(
-                format!(" {label}"),
-                Style::default().fg(if is_sel {
-                    ctx.theme.fg_bright
+        let mut spans = vec![Span::raw(" ")];
+        if has_icons {
+            let icon = item.icon.unwrap_or(" ");
+            let icon = if icon.width() <= 1 {
+                format!("{icon:<1} ")
+            } else {
+                truncate_to_width(icon, 2)
+            };
+            spans.push(Span::styled(
+                icon,
+                Style::default().fg(if enabled {
+                    ctx.theme.fg_accent_link
                 } else {
-                    ctx.theme.fg_primary
+                    ctx.theme.fg_muted
                 }),
-            ),
-            Span::raw(" ".repeat(pad)),
-            Span::styled(
-                format!("{right_label} "),
-                Style::default().fg(ctx.theme.fg_muted),
-            ),
-        ]);
+            ));
+        }
+        spans.extend(mnemonic_spans(
+            &label,
+            if enabled { item.mnemonic } else { None },
+            Style::default().fg(fg),
+        ));
+        spans.push(Span::raw(" ".repeat(pad)));
+        spans.push(Span::styled(
+            format!("{right_label} "),
+            Style::default().fg(ctx.theme.fg_muted),
+        ));
 
         frame.render_widget(
-            Paragraph::new(line).style(Style::default().bg(bg)),
+            Paragraph::new(Line::from(spans)).style(Style::default().bg(bg)),
             row_rect,
         );
         ctx.hit_registry.register(
@@ -767,6 +903,19 @@ fn render_context_menu(
                 menu_depth: depth,
                 item_idx: idx,
             },
+        );
+    }
+    let arrow_style = Style::default().fg(ctx.theme.fg_accent_link);
+    if scroll > 0 {
+        frame.render_widget(
+            Paragraph::new(Span::styled("▴", arrow_style)),
+            Rect::new(rect.x + rect.width / 2, rect.y, 1, 1),
+        );
+    }
+    if scroll + visible < items.len() {
+        frame.render_widget(
+            Paragraph::new(Span::styled("▾", arrow_style)),
+            Rect::new(rect.x + rect.width / 2, rect.bottom().saturating_sub(1), 1, 1),
         );
     }
 }

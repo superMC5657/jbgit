@@ -1,8 +1,10 @@
 pub mod branch_tree;
+pub mod conflict;
 pub mod console;
 pub mod details;
 pub mod epoch;
 pub mod filter;
+pub mod git_ops;
 pub mod graph;
 pub mod lru;
 pub mod oid;
@@ -17,17 +19,23 @@ pub use branch_tree::{
     BranchTreeRow, BranchesPanelSettings, BranchesTreeModel, FavoriteBranches, fuzzy_match,
     natural_cmp,
 };
+pub use conflict::{ConflictBlock, ConflictChoice, ConflictDocument, ConflictPaneRow, ConflictSegment};
 pub use console::GitConsoleEntry;
 pub use details::{
-    ChangeRowKind, ChangeTreeRow, CommitChangesBundle, CommitDetails, DetailsKey, DiffContext,
-    DiffHunk, DiffLine, DiffLineKind, FileChange, FileDiff, FileDiffKey, MessageLineKind,
-    PersonStamp, SideBySideRow, SignatureStatus, apply_word_diff, build_change_rows,
-    classify_message_line, issue_ref_ranges, side_by_side_rows, word_diff,
+    ChangeRowKind, ChangeTreeRow, CommitChangesBundle, CommitDetails, DetailsKey, DetailsMode,
+    DiffContext, DiffHunk, DiffLine, DiffLineKind, FileChange, FileDiff, FileDiffKey,
+    MessageLineKind, PersonStamp, SideBySideRow, SignatureStatus, apply_word_diff,
+    build_change_rows, classify_message_line, issue_ref_ranges, side_by_side_rows, word_diff,
 };
 pub use epoch::{EpochToken, EpochTracker, RequestEpoch};
 pub use filter::{
     BranchFilter, DateFilter, FilterError, LogFilterSpec, PathFilter, RepoUser, TextFilter,
     TextMatcher, UserFilter, glob_match,
+};
+pub use git_ops::{
+    GitFailure, GitOp, GitOpOutcome, GitStep, OngoingKind, OngoingStep, ResetMode, RewritePlan,
+    StashEntry, TodoAction, TodoEntry, classify_failure, default_squash_messages, fuzzy_indices,
+    is_protected_branch, parse_recent_checkouts, render_todo, validate_ref_name,
 };
 pub use lru::LruCache;
 pub use oid::Oid;
