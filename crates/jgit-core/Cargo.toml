@@ -7,6 +7,8 @@ license.workspace = true
 [dependencies]
 chrono.workspace = true
 fixedbitset.workspace = true
+nucleo-matcher.workspace = true
+regex.workspace = true
 rustc-hash.workspace = true
 thiserror.workspace = true
 unicode-width.workspace = true

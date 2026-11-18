@@ -46,3 +46,5 @@ Milestone: M3 — Git Log 三屏联动工作台
 ---
 
 ## Comments
+
+- 2026-11-18 (agent): Implemented. Engine loaders in `crates/jgit-engine/src/details.rs` (single commit vs parent[N], merge parent switch, chronological zip net diff across multi-commit selections, rename detection, `imara-diff` line diffs + stats, ByWord ranges, `git log --format=%G?` GPG/SSH signature verification); 256-entry LRU + 30 ms debounce + epochs in `crates/jgit-tui/src/app.rs`; changes tree / details / inline (Details/Right/Bottom dock) + F4 zoomed diff with Darcula `syntect` syntax highlighting in `crates/jgit-tui/src/syntax.rs` and `views/log_details.rs`. Full SHA copy uses OSC 52 and depends on terminal support.

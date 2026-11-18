@@ -1,9 +1,10 @@
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use jgit_core::{
-    CommitSummary, EpochToken, EpochTracker, GitConsoleEntry, Oid, RefreshScope, RepoSnapshot,
-    StageStatusSnapshot,
+    CommitChangesBundle, DetailsKey, EpochToken, EpochTracker, FileDiff, FileDiffKey,
+    GitConsoleEntry, Oid, RefreshScope, RepoSnapshot, StageStatusSnapshot,
 };
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 
@@ -20,8 +21,20 @@ pub enum TaskRequest {
     LoadRepoSnapshot {
         epoch: u64,
     },
+    /// Commit metadata + (net) changed-file list for the selected commits.
     LoadCommitDetails {
-        oids: Vec<Oid>,
+        key: DetailsKey,
+        epoch: u64,
+    },
+    /// Line diff of one file of a details selection (diff preview).
+    LoadFileDiff {
+        key: FileDiffKey,
+        epoch: u64,
+    },
+    /// Commits of `snapshot` touching any of `paths` (log `Paths` filter).
+    LoadPathMatches {
+        paths: Vec<String>,
+        snapshot: Arc<RepoSnapshot>,
         epoch: u64,
     },
     LoadStageStatus {
@@ -44,7 +57,16 @@ pub enum EngineEvent {
         epoch: u64,
     },
     CommitDetailsLoaded {
-        commits: Vec<CommitSummary>,
+        bundle: Arc<CommitChangesBundle>,
+        epoch: u64,
+    },
+    FileDiffLoaded {
+        diff: Arc<FileDiff>,
+        epoch: u64,
+    },
+    PathMatchesLoaded {
+        paths: Vec<String>,
+        matches: Arc<HashSet<Oid>>,
         epoch: u64,
     },
     StageStatusLoaded {
@@ -101,9 +123,25 @@ impl EngineHandle {
         epoch
     }
 
-    pub fn request_commit_details(&self, oids: Vec<Oid>) -> u64 {
+    pub fn request_commit_details(&self, key: DetailsKey) -> u64 {
         let epoch = self.epochs.commit_details.next_epoch();
-        self.send(TaskRequest::LoadCommitDetails { oids, epoch });
+        self.send(TaskRequest::LoadCommitDetails { key, epoch });
+        epoch
+    }
+
+    pub fn request_file_diff(&self, key: FileDiffKey) -> u64 {
+        let epoch = self.epochs.file_diff.next_epoch();
+        self.send(TaskRequest::LoadFileDiff { key, epoch });
+        epoch
+    }
+
+    pub fn request_path_matches(&self, paths: Vec<String>, snapshot: Arc<RepoSnapshot>) -> u64 {
+        let epoch = self.epochs.path_filter.next_epoch();
+        self.send(TaskRequest::LoadPathMatches {
+            paths,
+            snapshot,
+            epoch,
+        });
         epoch
     }
 }
@@ -190,14 +228,43 @@ impl EngineSupervisor {
                             move |snapshot| EngineEvent::RepoSnapshotLoaded { snapshot, epoch },
                         );
                     }
-                    TaskRequest::LoadCommitDetails { oids, epoch } => {
+                    TaskRequest::LoadCommitDetails { key, epoch } => {
                         let pool = Arc::clone(&pool);
                         let loc = sup_location.clone();
                         let token = EpochToken::new(sup_epochs.commit_details.clone(), epoch);
                         spawn_epoch_task(
                             &event_tx,
-                            async move { pool.load_commit_details(loc, oids, token).await },
-                            move |commits| EngineEvent::CommitDetailsLoaded { commits, epoch },
+                            async move { pool.load_commit_details(loc, key, token).await },
+                            move |bundle| EngineEvent::CommitDetailsLoaded { bundle, epoch },
+                        );
+                    }
+                    TaskRequest::LoadFileDiff { key, epoch } => {
+                        let pool = Arc::clone(&pool);
+                        let loc = sup_location.clone();
+                        let token = EpochToken::new(sup_epochs.file_diff.clone(), epoch);
+                        spawn_epoch_task(
+                            &event_tx,
+                            async move { pool.load_file_diff(loc, key, token).await },
+                            move |diff| EngineEvent::FileDiffLoaded { diff, epoch },
+                        );
+                    }
+                    TaskRequest::LoadPathMatches {
+                        paths,
+                        snapshot,
+                        epoch,
+                    } => {
+                        let pool = Arc::clone(&pool);
+                        let loc = sup_location.clone();
+                        let token = EpochToken::new(sup_epochs.path_filter.clone(), epoch);
+                        let reported = paths.clone();
+                        spawn_epoch_task(
+                            &event_tx,
+                            async move { pool.load_path_matches(loc, paths, snapshot, token).await },
+                            move |matches| EngineEvent::PathMatchesLoaded {
+                                paths: reported,
+                                matches,
+                                epoch,
+                            },
                         );
                     }
                     TaskRequest::LoadStageStatus {

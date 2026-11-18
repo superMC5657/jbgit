@@ -1,8 +1,5 @@
-use jgit_core::graph::{GraphPrintElement, PrintElementGenerator, ReachableNodes, VisibleRowIdx};
-use jgit_core::{
-    BranchTreeNodeId, GroupOptions, Oid, PaneId, RefInfo, RefKind, RepoSnapshot, SplitAxis,
-    SplitterId, group_refs_for_table,
-};
+use jgit_core::graph::{GraphPrintElement, PrintElementGenerator, VisibleRowIdx};
+use jgit_core::{GroupOptions, Oid, PaneId, RefInfo, SplitAxis, SplitterId, group_refs_for_table};
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
@@ -15,16 +12,18 @@ use crate::graph::{
     CellGridGraphBackend, GraphRenderBackend, GraphViewportSlice, RenderGraphElement, RowGraphSlice,
 };
 use crate::hit_test::{GraphHitKind, HitTarget};
-use crate::views::{render_pane_frame, render_splitter_divider, row_background, truncate_to_width};
+use crate::log_view::{DiffPreviewDock, FilterField, format_absolute_time, format_relative_time};
+use crate::views::log_branches::{render_branches_pane, render_branches_stripe};
+use crate::views::log_details::{
+    render_changes_pane, render_details_or_diff, render_docked_diff, render_zoomed_diff,
+};
+use crate::views::{
+    highlight_spans, render_pane_frame, render_splitter_divider, row_background, truncate_to_width,
+};
 use crate::widgets::PillBadgeBar;
 
-pub fn ordered_branch_refs(snap: &RepoSnapshot) -> Vec<&RefInfo> {
-    let mut out = Vec::with_capacity(snap.refs.len());
-    out.extend(snap.refs.iter().filter(|r| r.kind == RefKind::LocalBranch));
-    out.extend(snap.refs.iter().filter(|r| r.kind == RefKind::RemoteBranch));
-    out.extend(snap.refs.iter().filter(|r| r.kind == RefKind::Tag));
-    out
-}
+/// Width of the collapsed Branches stripe (`ExpandStripeButton`).
+pub const STRIPE_WIDTH: u16 = 2;
 
 pub fn render_log_tab(
     frame: &mut Frame<'_>,
@@ -37,44 +36,98 @@ pub fn render_log_tab(
         return;
     }
 
-    let left_split =
-        state
-            .splitters
-            .split(area, SplitterId::LogLeftHorizontal, SplitAxis::Horizontal);
-    splitter_containers.push((
-        SplitterId::LogLeftHorizontal,
-        SplitAxis::Horizontal,
-        left_split.container,
-    ));
+    if state.details.diff_zoomed {
+        render_zoomed_diff(frame, area, state, ctx);
+        return;
+    }
 
-    let (branches_area, mid_right_area) = if left_split.collapsed {
-        (Rect::ZERO, left_split.first)
-    } else {
-        (left_split.first, left_split.second)
-    };
+    let mut main_area = area;
+    let mut bottom_diff_area: Option<Rect> = None;
+    if state.details.diff_preview && state.details.diff_dock == DiffPreviewDock::Bottom {
+        let bottom_split =
+            state
+                .splitters
+                .split(area, SplitterId::LogDiffBottomVertical, SplitAxis::Vertical);
+        splitter_containers.push((
+            SplitterId::LogDiffBottomVertical,
+            SplitAxis::Vertical,
+            bottom_split.container,
+        ));
+        main_area = bottom_split.first;
+        if !bottom_split.collapsed {
+            render_splitter_divider(
+                frame,
+                bottom_split.divider,
+                SplitterId::LogDiffBottomVertical,
+                SplitAxis::Vertical,
+                ctx,
+            );
+            bottom_diff_area = Some(bottom_split.second);
+        }
+    }
 
-    if !left_split.collapsed {
-        let branches_sub = state
-            .repo_snapshot
-            .as_ref()
-            .map(|s| format!("{} refs", s.refs.len()))
-            .unwrap_or_default();
-        let branches_body = render_pane_frame(
+    let collapsed = state.branches.is_collapsed(state.terminal_area.width);
+    let mut mid_right_area = if collapsed {
+        let stripe_w = STRIPE_WIDTH.min(main_area.width);
+        render_branches_stripe(
             frame,
-            branches_area,
-            PaneId::LogBranchesTree,
-            &branches_sub,
+            Rect::new(main_area.x, main_area.y, stripe_w, main_area.height),
             ctx,
         );
-        render_branches_pane(frame, branches_body, state, ctx);
-
-        render_splitter_divider(
-            frame,
-            left_split.divider,
+        Rect::new(
+            main_area.x + stripe_w,
+            main_area.y,
+            main_area.width - stripe_w,
+            main_area.height,
+        )
+    } else {
+        let left_split =
+            state
+                .splitters
+                .split(main_area, SplitterId::LogLeftHorizontal, SplitAxis::Horizontal);
+        splitter_containers.push((
             SplitterId::LogLeftHorizontal,
             SplitAxis::Horizontal,
-            ctx,
+            left_split.container,
+        ));
+        if left_split.collapsed {
+            left_split.first
+        } else {
+            render_branches_pane(frame, left_split.first, state, ctx);
+            render_splitter_divider(
+                frame,
+                left_split.divider,
+                SplitterId::LogLeftHorizontal,
+                SplitAxis::Horizontal,
+                ctx,
+            );
+            left_split.second
+        }
+    };
+
+    let mut right_diff_area: Option<Rect> = None;
+    if state.details.diff_preview && state.details.diff_dock == DiffPreviewDock::Right {
+        let dock_split = state.splitters.split(
+            mid_right_area,
+            SplitterId::LogDiffRightHorizontal,
+            SplitAxis::Horizontal,
         );
+        splitter_containers.push((
+            SplitterId::LogDiffRightHorizontal,
+            SplitAxis::Horizontal,
+            dock_split.container,
+        ));
+        mid_right_area = dock_split.first;
+        if !dock_split.collapsed {
+            render_splitter_divider(
+                frame,
+                dock_split.divider,
+                SplitterId::LogDiffRightHorizontal,
+                SplitAxis::Horizontal,
+                ctx,
+            );
+            right_diff_area = Some(dock_split.second);
+        }
     }
 
     let right_split = state.splitters.split(
@@ -95,18 +148,39 @@ pub fn render_log_tab(
             if s.is_unborn_head {
                 "unborn HEAD".to_string()
             } else {
-                format!("{} commits", s.commits.len())
+                let visible = state.log_graph.visible_count();
+                let sel = state.log_graph.selected_range();
+                let sel_n = sel.end() - sel.start() + 1;
+                let mut out = if visible == s.commits.len() {
+                    format!("{} commits", s.commits.len())
+                } else {
+                    format!("{visible} of {} commits", s.commits.len())
+                };
+                if sel_n > 1 {
+                    out.push_str(&format!(" · {sel_n} selected"));
+                }
+                out
             }
         })
         .unwrap_or_default();
-    let table_body = render_pane_frame(
+    let center_body = render_pane_frame(
         frame,
         right_split.first,
         PaneId::LogCommitTable,
         &commits_sub,
         ctx,
     );
-    render_commits_table(frame, table_body, state, ctx);
+    if center_body.height > 0 {
+        let bar = Rect::new(center_body.x, center_body.y, center_body.width, 1);
+        render_filter_bar(frame, bar, state, ctx);
+        let table = Rect::new(
+            center_body.x,
+            center_body.y + 1,
+            center_body.width,
+            center_body.height - 1,
+        );
+        render_commits_table(frame, table, state, ctx);
+    }
 
     if !right_split.collapsed {
         render_splitter_divider(
@@ -117,151 +191,190 @@ pub fn render_log_tab(
             ctx,
         );
 
-        let details_body =
-            render_pane_frame(frame, right_split.second, PaneId::LogDetailsDiff, "", ctx);
-        render_commit_details(frame, details_body, state, ctx);
+        let details_split = state.splitters.split(
+            right_split.second,
+            SplitterId::LogDetailsVertical,
+            SplitAxis::Vertical,
+        );
+        splitter_containers.push((
+            SplitterId::LogDetailsVertical,
+            SplitAxis::Vertical,
+            details_split.container,
+        ));
+        render_changes_pane(frame, details_split.first, state, ctx);
+        if !details_split.collapsed {
+            render_splitter_divider(
+                frame,
+                details_split.divider,
+                SplitterId::LogDetailsVertical,
+                SplitAxis::Vertical,
+                ctx,
+            );
+            render_details_or_diff(frame, details_split.second, state, ctx);
+        }
+    }
+
+    if let Some(diff_area) = right_diff_area {
+        render_docked_diff(frame, diff_area, state, ctx);
+    }
+    if let Some(diff_area) = bottom_diff_area {
+        render_docked_diff(frame, diff_area, state, ctx);
     }
 }
 
-fn render_branches_pane(
+/// `VcsLogFilterBar`: text box with `[.*]` / `[Cc]`, four dimension chips and `⚙`.
+fn render_filter_bar(
     frame: &mut Frame<'_>,
     area: Rect,
     state: &AppState,
     ctx: &mut RenderContext<'_>,
 ) {
-    if area.width == 0 || area.height == 0 {
+    if area.width == 0 {
         return;
     }
+    let theme = ctx.theme;
+    frame.render_widget(
+        Paragraph::new("").style(Style::default().bg(theme.bg_panel)),
+        area,
+    );
+    let mut x = area.x;
+    let right = area.right();
+    let filter = &state.log_filter;
 
-    let Some(snap) = &state.repo_snapshot else {
-        return;
+    // ⚙ Presentation, pinned to the far right.
+    let gear = " ⚙ ";
+    let gear_w = gear.width() as u16;
+    if area.width > gear_w + 10 {
+        let rect = Rect::new(right - gear_w, area.y, gear_w, 1);
+        frame.render_widget(
+            Paragraph::new(Span::styled(
+                gear,
+                Style::default().fg(theme.fg_primary).bg(theme.bg_panel),
+            )),
+            rect,
+        );
+        ctx.hit_registry
+            .register(rect, 3, HitTarget::FilterPresentation);
+    }
+    let reserve = gear_w;
+
+    let registry = &mut *ctx.hit_registry;
+    let mut put = |frame: &mut Frame<'_>,
+                   x: &mut u16,
+                   text: &str,
+                   style: Style,
+                   target: Option<HitTarget>,
+                   reserve: u16|
+     -> bool {
+        let w = text.width() as u16;
+        if *x + w + reserve > right {
+            return false;
+        }
+        let rect = Rect::new(*x, area.y, w, 1);
+        frame.render_widget(Paragraph::new(Span::styled(text.to_string(), style)), rect);
+        if let Some(t) = target {
+            registry.register(rect, 3, t);
+        }
+        *x += w;
+        true
     };
 
-    let locals: Vec<_> = snap
-        .refs
-        .iter()
-        .filter(|r| r.kind == RefKind::LocalBranch)
-        .collect();
-    let remotes: Vec<_> = snap
-        .refs
-        .iter()
-        .filter(|r| r.kind == RefKind::RemoteBranch)
-        .collect();
-    let tags: Vec<_> = snap
-        .refs
-        .iter()
-        .filter(|r| r.kind == RefKind::Tag)
-        .collect();
-
-    enum BranchRow<'a> {
-        Header(String),
-        Ref { node_idx: usize, info: &'a RefInfo },
-    }
-
-    let mut rows: Vec<BranchRow<'_>> = Vec::new();
-    let mut node_idx = 0usize;
-
-    let open = ctx.glyph_mode.symbols().tree_expanded;
-    rows.push(BranchRow::Header(format!(
-        " {open} Local ({})",
-        locals.len()
-    )));
-    for r in &locals {
-        rows.push(BranchRow::Ref { node_idx, info: r });
-        node_idx += 1;
-    }
-    if !remotes.is_empty() {
-        rows.push(BranchRow::Header(format!(
-            " {open} Remote ({})",
-            remotes.len()
-        )));
-        for r in &remotes {
-            rows.push(BranchRow::Ref { node_idx, info: r });
-            node_idx += 1;
-        }
-    }
-    if !tags.is_empty() {
-        rows.push(BranchRow::Header(format!(" {open} Tags ({})", tags.len())));
-        for r in &tags {
-            rows.push(BranchRow::Ref { node_idx, info: r });
-            node_idx += 1;
-        }
-    }
-
-    let focused = ctx.focused_pane == PaneId::LogBranchesTree;
-    let selected_node = if node_idx == 0 {
-        0
+    // Text box.
+    let text = &filter.spec.text;
+    let box_w = ((area.width as usize) / 3).clamp(10, 32);
+    let (content, fg) = if text.query.is_empty() && !filter.editing_text {
+        ("Text or hash (Ctrl+L)".to_string(), theme.fg_muted)
     } else {
-        state.branches_selected_idx.min(node_idx - 1)
+        (text.query.clone(), theme.fg_bright)
     };
+    let cursor = if filter.editing_text { "▏" } else { "" };
+    let inner_w = box_w.saturating_sub(3 + cursor.width());
+    let shown = if content.width() > inner_w {
+        // Keep the tail visible while typing.
+        let mut tail: String = content.chars().rev().collect();
+        tail = truncate_to_width(&tail, inner_w);
+        tail.chars().rev().collect()
+    } else {
+        content
+    };
+    let pad = inner_w.saturating_sub(shown.width());
+    let box_bg = if filter.editing_text {
+        theme.bg_selection_focused
+    } else {
+        theme.bg_elevated
+    };
+    let box_text = format!(" ⌕ {shown}{cursor}{}", " ".repeat(pad));
+    let err = state.log_graph.filter_error.is_some();
+    put(
+        frame,
+        &mut x,
+        &box_text,
+        Style::default()
+            .fg(if err { theme.status_conflicted } else { fg })
+            .bg(box_bg),
+        Some(HitTarget::FilterTextInput),
+        reserve,
+    );
+    let toggle_style = |on: bool| {
+        if on {
+            Style::default()
+                .fg(theme.fg_bright)
+                .bg(theme.border_focused)
+        } else {
+            Style::default().fg(theme.fg_muted).bg(box_bg)
+        }
+    };
+    put(
+        frame,
+        &mut x,
+        "[.*]",
+        toggle_style(text.regex),
+        Some(HitTarget::FilterRegexToggle),
+        reserve,
+    );
+    put(
+        frame,
+        &mut x,
+        "[Cc]",
+        toggle_style(text.match_case),
+        Some(HitTarget::FilterCaseToggle),
+        reserve,
+    );
 
-    let visible_h = area.height as usize;
-    for (vis_y, row) in rows.into_iter().take(visible_h).enumerate() {
-        let row_rect = Rect::new(area.x, area.y.saturating_add(vis_y as u16), area.width, 1);
-        match row {
-            BranchRow::Header(title) => {
-                frame.render_widget(
-                    Paragraph::new(Line::from(Span::styled(
-                        truncate_to_width(&title, area.width as usize),
-                        Style::default()
-                            .fg(ctx.theme.fg_muted)
-                            .add_modifier(Modifier::BOLD),
-                    ))),
-                    row_rect,
-                );
-            }
-            BranchRow::Ref { node_idx, info } => {
-                let is_sel = node_idx == selected_node;
-                let is_hovered = matches!(
-                    ctx.hover_target,
-                    Some(HitTarget::BranchTreeNode { node_id, .. }) if node_id.0 as usize == node_idx
-                );
-                let bg =
-                    row_background(is_sel, focused, is_hovered, ctx.theme.bg_canvas, ctx.theme);
-
-                let glyphs = ctx.glyph_mode.symbols();
-                let (icon, fg, text_fg) = match info.kind {
-                    RefKind::LocalBranch if info.is_head => {
-                        (glyphs.head, ctx.theme.ref_head.icon, ctx.theme.fg_primary)
-                    }
-                    RefKind::LocalBranch => (
-                        glyphs.local_branch,
-                        ctx.theme.ref_local.icon,
-                        ctx.theme.fg_primary,
-                    ),
-                    RefKind::RemoteBranch => (
-                        glyphs.remote_branch,
-                        ctx.theme.ref_remote.icon,
-                        ctx.theme.fg_primary,
-                    ),
-                    RefKind::Tag | RefKind::Head => {
-                        (glyphs.tag, ctx.theme.ref_tag.icon, ctx.theme.fg_muted)
-                    }
-                };
-
-                let ab = glyphs.format_ahead_behind(info.ahead_behind);
-                let prefix = format!("  {icon} ");
-                let max_name = (area.width as usize).saturating_sub(prefix.width());
-                let line = Line::from(vec![
-                    Span::styled(prefix, Style::default().fg(fg)),
-                    Span::styled(
-                        truncate_to_width(&format!("{}{}", info.name, ab), max_name),
-                        Style::default().fg(if is_sel { ctx.theme.fg_bright } else { text_fg }),
-                    ),
-                ]);
-                frame.render_widget(
-                    Paragraph::new(line).style(Style::default().bg(bg)),
-                    row_rect,
-                );
-                ctx.hit_registry.register(
-                    row_rect,
-                    2,
-                    HitTarget::BranchTreeNode {
-                        pane: PaneId::LogBranchesTree,
-                        node_id: BranchTreeNodeId(node_idx as u32),
-                    },
-                );
-            }
+    for field in FilterField::ALL {
+        let active = filter.field_active(field);
+        let mut label = filter.field_label(field);
+        if field == FilterField::Paths && filter.path_matches_pending(state.repo_snapshot.as_ref())
+        {
+            label.push('…');
+        }
+        let chip = format!(" {}: {} ▾", field.title(), truncate_to_width(&label, 18));
+        let style = Style::default()
+            .fg(if active {
+                theme.fg_accent_link
+            } else {
+                theme.fg_primary
+            })
+            .bg(theme.bg_panel);
+        if !put(
+            frame,
+            &mut x,
+            &chip,
+            style,
+            Some(HitTarget::FilterChip(field)),
+            reserve,
+        ) {
+            break;
+        }
+        if active {
+            put(
+                frame,
+                &mut x,
+                "×",
+                Style::default().fg(theme.fg_muted).bg(theme.bg_panel),
+                Some(HitTarget::FilterClear(field)),
+                reserve,
+            );
         }
     }
 }
@@ -294,6 +407,8 @@ fn render_commits_table(
     if snap.commits.is_empty() || cached.visible_count() == 0 {
         let msg = if snap.is_unborn_head {
             " Empty repository (unborn HEAD — no commits yet)"
+        } else if !state.log_filter.spec.is_empty() {
+            " No commits match the current filters"
         } else {
             " No commits found"
         };
@@ -304,6 +419,7 @@ fn render_commits_table(
         return;
     }
 
+    // Viewport virtualization: only `offset .. offset + height` rows are touched.
     let visible_h = area.height as usize;
     let total = cached.visible_count();
     let selected = state.log_graph.selected_idx.min(total.saturating_sub(1));
@@ -319,8 +435,10 @@ fn render_commits_table(
     let rows_len = end - offset;
 
     let focused = ctx.focused_pane == PaneId::LogCommitTable;
+    let presentation = &state.presentation;
     let mut elem_gen =
         PrintElementGenerator::new(&cached.permanent, &cached.visible, snap.head_oid);
+    let matcher = state.log_filter.spec.text.compile().ok().flatten();
 
     struct PreparedLogRow {
         visible_row: VisibleRowIdx,
@@ -338,8 +456,9 @@ fn render_commits_table(
         let commit = cached
             .commit_at_visible_row(snap, row_idx)
             .expect("visible row maps to valid commit");
-        let is_sel = row_idx == selected;
-        let is_in_current_branch = cached.current_branch_reachable.contains(perm_id as usize);
+        let is_sel = state.log_graph.is_row_selected(row_idx);
+        let is_in_current_branch = presentation.highlight_current_branch
+            && cached.current_branch_reachable.contains(perm_id as usize);
         let is_hovered = matches!(
             ctx.hover_target,
             Some(HitTarget::CommitTableRow { visible_row, .. })
@@ -387,6 +506,26 @@ fn render_commits_table(
     let graph_cols = ((graph_tracks * 2).min(max_graph_cols) as u16).min(area.width);
     let graph_area = Rect::new(area.x, area.y, graph_cols, rows_len as u16);
 
+    // Fixed-width right columns: [Author 14-18] [Date 12-16] [Hash 8].
+    let text_total = area.width.saturating_sub(graph_cols);
+    let author_w: u16 = if text_total >= 60 {
+        if text_total >= 100 { 18 } else { 14 }
+    } else {
+        0
+    };
+    let date_w: u16 = if text_total >= 40 {
+        if presentation.relative_dates { 12 } else { 17 }
+    } else {
+        0
+    };
+    let hash_w: u16 = if presentation.show_hash_column && text_total >= 50 {
+        9
+    } else {
+        0
+    };
+    let right_cols = author_w + date_w + hash_w;
+    let now = chrono::Local::now().timestamp();
+
     // Register row-level hit regions first (z=1) before graph elements & pills (z=2)
     for (vis_idx, row) in prepared_rows.iter().enumerate() {
         let row_idx = offset + vis_idx;
@@ -432,9 +571,15 @@ fn render_commits_table(
         if text_w == 0 {
             continue;
         }
-        let text_rect = Rect::new(text_x, row_y, text_w, 1);
-        let is_sel = row_idx == selected;
+        let is_sel = state.log_graph.is_row_selected(row_idx);
         let is_head = snap.head_oid == Some(commit.oid);
+        let main_w = text_w.saturating_sub(right_cols);
+        let main_rect = Rect::new(text_x, row_y, main_w, 1);
+
+        frame.render_widget(
+            Paragraph::new("").style(Style::default().bg(bg)),
+            Rect::new(text_x, row_y, text_w, 1),
+        );
 
         let head_marker = is_head.then(|| RefInfo::head_marker(commit.oid));
         let groups = group_refs_for_table(
@@ -448,18 +593,8 @@ fn render_commits_table(
             },
         );
 
-        let hash_prefix = Line::from(vec![Span::styled(
-            format!(" {} ", commit.oid.short()),
-            Style::default().fg(ctx.theme.fg_muted),
-        )]);
-        let hash_w = (hash_prefix.width() as u16).min(text_rect.width);
-        frame.render_widget(
-            Paragraph::new(hash_prefix).style(Style::default().bg(bg)),
-            text_rect,
-        );
-
-        let pills_x = text_rect.x.saturating_add(hash_w);
-        let pills_area = Rect::new(pills_x, row_y, text_rect.right().saturating_sub(pills_x), 1);
+        let pills_x = main_rect.x.saturating_add(1).min(main_rect.right());
+        let pills_area = Rect::new(pills_x, row_y, main_rect.right().saturating_sub(pills_x), 1);
         let pills_w = PillBadgeBar {
             groups: &groups,
             glyphs: ctx.glyph_mode.symbols(),
@@ -473,33 +608,88 @@ fn render_commits_table(
         let subject_area = Rect::new(
             subject_x,
             row_y,
-            text_rect.right().saturating_sub(subject_x),
+            main_rect.right().saturating_sub(subject_x),
             1,
         );
-        let avail_subj = subject_area.width as usize;
-
-        let subject = Span::styled(
-            truncate_to_width(&commit.subject, avail_subj),
-            Style::default()
-                .fg(if is_sel || is_head {
-                    ctx.theme.fg_bright
-                } else if commit.parents.len() > 1 {
-                    // MergeCommitsHighlighter
-                    ctx.theme.fg_muted
-                } else {
-                    ctx.theme.fg_primary
-                })
-                .add_modifier(if is_head {
-                    Modifier::BOLD
-                } else {
-                    Modifier::empty()
-                }),
+        let is_merge = commit.parents.len() > 1;
+        let base = Style::default()
+            .fg(if is_sel || is_head {
+                ctx.theme.fg_bright
+            } else if is_merge && presentation.highlight_merges {
+                // MergeCommitsHighlighter
+                ctx.theme.fg_muted
+            } else {
+                ctx.theme.fg_primary
+            })
+            .bg(bg)
+            .add_modifier(if is_head {
+                Modifier::BOLD
+            } else {
+                Modifier::empty()
+            });
+        let hl = Style::default()
+            .fg(ctx.theme.ref_head.pill_fg)
+            .bg(ctx.theme.ref_head.pill_bg)
+            .add_modifier(Modifier::BOLD);
+        let ranges = matcher
+            .as_ref()
+            .map(|m| m.find_ranges(&commit.subject))
+            .unwrap_or_default();
+        let spans = highlight_spans(
+            &commit.subject,
+            &ranges,
+            subject_area.width as usize,
+            base,
+            hl,
         );
+        frame.render_widget(Paragraph::new(Line::from(spans)), subject_area);
 
-        frame.render_widget(
-            Paragraph::new(Line::from(subject)).style(Style::default().bg(bg)),
-            subject_area,
-        );
+        // Right columns.
+        let mut col_x = main_rect.right();
+        let muted = Style::default().fg(ctx.theme.fg_muted).bg(bg);
+        if author_w > 0 {
+            let author = truncate_to_width(&commit.author_name, author_w as usize - 1);
+            frame.render_widget(
+                Paragraph::new(Span::styled(
+                    format!(" {author}"),
+                    Style::default()
+                        .fg(if is_sel {
+                            ctx.theme.fg_bright
+                        } else {
+                            ctx.theme.fg_primary
+                        })
+                        .bg(bg),
+                )),
+                Rect::new(col_x, row_y, author_w, 1),
+            );
+            col_x += author_w;
+        }
+        if date_w > 0 {
+            let ts = if presentation.use_author_date {
+                commit.author_timestamp
+            } else {
+                commit.timestamp
+            };
+            let date = if presentation.relative_dates {
+                format_relative_time(ts, now)
+            } else {
+                format_absolute_time(ts, true)
+            };
+            frame.render_widget(
+                Paragraph::new(Span::styled(
+                    format!(" {}", truncate_to_width(&date, date_w as usize - 1)),
+                    muted,
+                )),
+                Rect::new(col_x, row_y, date_w, 1),
+            );
+            col_x += date_w;
+        }
+        if hash_w > 0 {
+            frame.render_widget(
+                Paragraph::new(Span::styled(format!(" {}", commit.oid.short()), muted)),
+                Rect::new(col_x, row_y, hash_w, 1),
+            );
+        }
     }
 }
 
@@ -570,102 +760,4 @@ fn is_element_highlighted(
         }
         _ => false,
     }
-}
-
-fn render_commit_details(
-    frame: &mut Frame<'_>,
-    area: Rect,
-    state: &AppState,
-    ctx: &RenderContext<'_>,
-) {
-    if area.width == 0 || area.height == 0 {
-        return;
-    }
-
-    let Some(snap) = &state.repo_snapshot else {
-        return;
-    };
-    let Some(base_commit) = state.log_commit_at(state.log_graph.selected_idx) else {
-        frame.render_widget(
-            Paragraph::new(Span::styled(
-                " No commit selected",
-                Style::default().fg(ctx.theme.fg_muted),
-            )),
-            area,
-        );
-        return;
-    };
-    let commit = state
-        .commit_details
-        .get(&base_commit.oid)
-        .unwrap_or(base_commit);
-
-    let containing = state
-        .log_graph
-        .cached
-        .as_ref()
-        .and_then(|c| {
-            c.permanent.linear.node_of_oid(&commit.oid).map(|node| {
-                ReachableNodes::containing_branches(&c.permanent.linear, node, &snap.refs)
-            })
-        })
-        .unwrap_or_default();
-
-    let parents_str = if commit.parents.is_empty() {
-        "(root)".to_string()
-    } else {
-        commit
-            .parents
-            .iter()
-            .map(|p| p.short())
-            .collect::<Vec<_>>()
-            .join(", ")
-    };
-
-    let mut lines = vec![
-        Line::from(vec![
-            Span::styled(" Commit: ", Style::default().fg(ctx.theme.fg_muted)),
-            Span::styled(
-                commit.oid.to_string(),
-                Style::default().fg(ctx.theme.fg_accent_link),
-            ),
-        ]),
-        Line::from(vec![
-            Span::styled(" Author: ", Style::default().fg(ctx.theme.fg_muted)),
-            Span::styled(
-                format!("{} <{}>", commit.author_name, commit.author_email),
-                Style::default().fg(ctx.theme.fg_primary),
-            ),
-        ]),
-        Line::from(vec![
-            Span::styled(" Parents: ", Style::default().fg(ctx.theme.fg_muted)),
-            Span::styled(parents_str, Style::default().fg(ctx.theme.fg_primary)),
-        ]),
-    ];
-
-    if !containing.is_empty() {
-        let branch_names: Vec<&str> = containing.iter().take(6).map(|r| r.name.as_str()).collect();
-        let suffix = if containing.len() > 6 {
-            format!(" (+{})", containing.len() - 6)
-        } else {
-            String::new()
-        };
-        lines.push(Line::from(vec![
-            Span::styled(" Branches: ", Style::default().fg(ctx.theme.fg_muted)),
-            Span::styled(
-                format!("{}{suffix}", branch_names.join(", ")),
-                Style::default().fg(ctx.theme.fg_primary),
-            ),
-        ]));
-    }
-
-    lines.push(Line::from(""));
-    lines.push(Line::from(Span::styled(
-        format!(" {}", commit.subject),
-        Style::default()
-            .fg(ctx.theme.fg_bright)
-            .add_modifier(Modifier::BOLD),
-    )));
-
-    frame.render_widget(Paragraph::new(lines), area);
 }

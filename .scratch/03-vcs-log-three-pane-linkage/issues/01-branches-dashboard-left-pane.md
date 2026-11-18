@@ -44,3 +44,5 @@ Milestone: M3 — Git Log 三屏联动工作台
 ---
 
 ## Comments
+
+- 2026-11-18 (agent): Implemented. Model in `crates/jgit-core/src/branch_tree.rs` (HEAD/Local/Remote-by-remote/Tags, group-by-directory with compacted single-child folders, ★ favorites with main/master defaults, natural-order comparator, `nucleo-matcher` fuzzy speed search). UI in `crates/jgit-tui/src/views/log_branches.rs` + `log_view.rs`: Enter / double-click filters (folders recurse, Ctrl+Click union), `[Clear Branch Filter]` chip, `J` / `[⌖]` navigates without touching filters, Space toggles ★, `Alt+B` / `[«]` / `»` stripe, auto-collapse below 110 cols. Favorites, expansion and view options persist to `<common-dir>/jgit-branches-panel`.

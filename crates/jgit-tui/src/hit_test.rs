@@ -4,6 +4,36 @@ use jgit_core::{
 };
 use ratatui::layout::Rect;
 
+use crate::log_view::FilterField;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BranchesToolbarButton {
+    /// `[«]` collapse the Branches pane.
+    Collapse,
+    /// `[⌖]` navigate the log to the selected branch.
+    Locate,
+    /// `[⊞]` toggle Group by Directory.
+    GroupByDir,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChangesToolbarButton {
+    GroupByDir,
+    ExpandAll,
+    CollapseAll,
+    DiffPreview,
+    SwitchParent,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DiffToolbarButton {
+    SideBySide,
+    Context,
+    Dock,
+    Zoom,
+    Close,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GraphHitKind {
     Node {
@@ -37,7 +67,34 @@ pub enum HitTarget {
     BranchTreeNode {
         pane: PaneId,
         node_id: BranchTreeNodeId,
+        row: usize,
     },
+    /// `▼` / `▶` expander of a Branches tree folder row (row index).
+    BranchTreeToggle {
+        row: usize,
+    },
+    BranchesToolbar(BranchesToolbarButton),
+    /// 2-column `»` stripe shown while the Branches pane is collapsed.
+    BranchesExpandStripe,
+    FilterTextInput,
+    FilterRegexToggle,
+    FilterCaseToggle,
+    FilterChip(FilterField),
+    FilterClear(FilterField),
+    FilterPresentation,
+    LogChangeRow {
+        idx: usize,
+    },
+    ChangesToolbar(ChangesToolbarButton),
+    DetailsHash {
+        oid: Oid,
+    },
+    DetailsParent {
+        oid: Oid,
+    },
+    DetailsArea,
+    DiffToolbar(DiffToolbarButton),
+    DiffArea,
     GraphPrintElement {
         visible_row: usize,
         element_idx: usize,

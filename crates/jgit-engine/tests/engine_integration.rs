@@ -299,3 +299,160 @@ fn epoch_cancellation_and_mutation_guard() {
     assert!(!guard.is_mutating());
     assert_eq!(guard.take_pending(), RefreshScope::All);
 }
+
+fn rev(dir: &Path, spec: &str) -> jgit_core::Oid {
+    let out = Command::new("git")
+        .args(["rev-parse", spec])
+        .current_dir(dir)
+        .output()
+        .expect("git rev-parse");
+    String::from_utf8_lossy(&out.stdout).trim().parse().unwrap()
+}
+
+#[test]
+fn commit_details_changes_file_diff_and_path_matches() {
+    use jgit_core::{DetailsKey, DiffContext, DiffLineKind, FileDiffKey, FileStatusKind};
+    use jgit_engine::{load_commit_details_sync, load_file_diff_sync, load_path_matches_sync};
+
+    let tmp = TempDir::new().unwrap();
+    let dir = tmp.path();
+    git(dir, &["init", "-b", "main"]);
+    fs::create_dir_all(dir.join("src/core")).unwrap();
+    fs::write(dir.join("src/core/lib.rs"), "fn a() {\n    call(1);\n}\n").unwrap();
+    fs::write(
+        dir.join("old.txt"),
+        "same content here\nline two\nline three\n",
+    )
+    .unwrap();
+    git(dir, &["add", "."]);
+    git(dir, &["commit", "-m", "initial"]);
+
+    fs::write(dir.join("src/core/lib.rs"), "fn a() {\n    call(2);\n}\n").unwrap();
+    git(dir, &["mv", "old.txt", "new.txt"]);
+    git(dir, &["add", "."]);
+    git(
+        dir,
+        &[
+            "commit",
+            "-m",
+            "change call\n\nBody line.\n\nSigned-off-by: Test User <test@example.com>",
+        ],
+    );
+
+    git(dir, &["checkout", "-b", "side", "HEAD~1"]);
+    fs::write(dir.join("side.txt"), "side\n").unwrap();
+    git(dir, &["add", "."]);
+    git(dir, &["commit", "-m", "side work"]);
+    git(dir, &["checkout", "main"]);
+    git(dir, &["merge", "--no-ff", "side", "-m", "merge side"]);
+
+    let loc = RepoLocation::discover(dir).unwrap();
+    let token = RequestEpoch::new().issue();
+
+    // Single commit vs parent[0]: modification + rename with line stats.
+    let change = rev(dir, "HEAD~1");
+    let bundle = load_commit_details_sync(&loc, &DetailsKey::single(change), &token).unwrap();
+    assert_eq!(bundle.details.len(), 1);
+    assert!(bundle.details[0].message.contains("Signed-off-by"));
+    assert_eq!(bundle.changes.len(), 2, "{:?}", bundle.changes);
+    let lib = bundle
+        .changes
+        .iter()
+        .find(|c| c.path == "src/core/lib.rs")
+        .unwrap();
+    assert_eq!(
+        (lib.kind, lib.additions, lib.deletions),
+        (FileStatusKind::Modified, 1, 1)
+    );
+    let renamed = bundle.changes.iter().find(|c| c.path == "new.txt").unwrap();
+    assert_eq!(renamed.kind, FileStatusKind::Renamed);
+    assert_eq!(renamed.old_path.as_deref(), Some("old.txt"));
+
+    // Merge commit: parent[0] shows side.txt; parent[1] shows main's changes.
+    let merge = rev(dir, "HEAD");
+    let p0 = load_commit_details_sync(&loc, &DetailsKey::single(merge), &token).unwrap();
+    assert_eq!(
+        p0.changes
+            .iter()
+            .map(|c| c.path.as_str())
+            .collect::<Vec<_>>(),
+        vec!["side.txt"]
+    );
+    let p1 = load_commit_details_sync(
+        &loc,
+        &DetailsKey {
+            oids: vec![merge],
+            parent_index: 1,
+        },
+        &token,
+    )
+    .unwrap();
+    assert!(p1.changes.iter().any(|c| c.path == "src/core/lib.rs"));
+
+    // Multi-selection: net diff of initial..HEAD~1 range == HEAD~1 alone here.
+    let range = load_commit_details_sync(
+        &loc,
+        &DetailsKey {
+            oids: vec![change, rev(dir, "HEAD~2")],
+            parent_index: 0,
+        },
+        &token,
+    )
+    .unwrap();
+    assert!(range.changes.iter().any(|c| c.path == "src/core/lib.rs"));
+    assert!(range.changes.iter().any(|c| c.path == "new.txt"));
+
+    // Interleaved-branch multi-selection: selecting [side, initial] does NOT pull in `change` (main's commit).
+    let side = rev(dir, "side");
+    let init = rev(dir, "HEAD~2");
+    let cross = load_commit_details_sync(
+        &loc,
+        &DetailsKey {
+            oids: vec![side, init],
+            parent_index: 0,
+        },
+        &token,
+    )
+    .unwrap();
+    let cross_paths: Vec<_> = cross.changes.iter().map(|c| c.path.as_str()).collect();
+    assert!(cross_paths.contains(&"side.txt"), "{cross_paths:?}");
+    assert!(cross_paths.contains(&"src/core/lib.rs"), "{cross_paths:?}");
+    assert!(
+        !cross_paths.contains(&"new.txt"),
+        "interleaved main commit must not leak: {cross_paths:?}"
+    );
+
+    // File diff with word-level ranges.
+    let diff = load_file_diff_sync(
+        &loc,
+        &FileDiffKey {
+            details: DetailsKey::single(change),
+            path: "src/core/lib.rs".into(),
+            old_path: None,
+            context: DiffContext::Three,
+        },
+        &token,
+    )
+    .unwrap();
+    assert!(!diff.is_binary);
+    let lines = &diff.hunks[0].lines;
+    let del = lines
+        .iter()
+        .find(|l| l.kind == DiffLineKind::Deleted)
+        .unwrap();
+    let add = lines
+        .iter()
+        .find(|l| l.kind == DiffLineKind::Added)
+        .unwrap();
+    assert_eq!(&del.text[del.word_ranges[0].0..del.word_ranges[0].1], "1");
+    assert_eq!(&add.text[add.word_ranges[0].0..add.word_ranges[0].1], "2");
+
+    // Path filter: only commits touching src/core (initial + change; merge is TREESAME to parent[0]).
+    let snap = load_repo_snapshot_sync(&loc, &token, 100).unwrap();
+    let matches = load_path_matches_sync(&loc, &["src/core".to_string()], &snap, &token).unwrap();
+    let mut got: Vec<_> = matches.into_iter().collect();
+    got.sort();
+    let mut want = vec![change, rev(dir, "HEAD~2")];
+    want.sort();
+    assert_eq!(got, want);
+}

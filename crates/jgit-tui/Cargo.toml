@@ -18,6 +18,7 @@ crossterm.workspace = true
 futures.workspace = true
 ratatui.workspace = true
 rustc-hash.workspace = true
+syntect.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 unicode-width.workspace = true

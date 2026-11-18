@@ -1,4 +1,4 @@
-use std::io::{self, Stdout};
+use std::io::{self, Stdout, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use crossterm::event::{
@@ -88,4 +88,47 @@ fn install_panic_hook() {
         restore_terminal();
         default_hook(info);
     }));
+}
+
+/// Writes `text` to the system clipboard via the OSC 52 terminal escape.
+pub fn copy_to_clipboard(text: &str) {
+    let mut out = io::stdout();
+    const ESC: char = 27u8 as char;
+    const BEL: char = 7u8 as char;
+    let _ = write!(out, "{ESC}]52;c;{}{BEL}", base64_encode(text.as_bytes()));
+    let _ = out.flush();
+}
+
+fn base64_encode(bytes: &[u8]) -> String {
+    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut b64 = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let n = (u32::from(chunk[0]) << 16)
+            | (u32::from(*chunk.get(1).unwrap_or(&0)) << 8)
+            | u32::from(*chunk.get(2).unwrap_or(&0));
+        for i in 0..4 {
+            if i <= chunk.len() {
+                b64.push(TABLE[((n >> (18 - 6 * i)) & 63) as usize] as char);
+            } else {
+                b64.push('=');
+            }
+        }
+    }
+    b64
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn base64_osc52_payload_matches_reference() {
+        assert_eq!(base64_encode(b"abc"), "YWJj");
+        assert_eq!(base64_encode(b"ab"), "YWI=");
+        assert_eq!(base64_encode(b"a"), "YQ==");
+        assert_eq!(
+            base64_encode(b"0123456789abcdef"),
+            "MDEyMzQ1Njc4OWFiY2RlZg=="
+        );
+    }
 }

@@ -51,7 +51,7 @@ impl Default for SplitterState {
         specs.insert(
             SplitterId::LogLeftHorizontal,
             SplitterSpec {
-                default_ratio: 0.22,
+                default_ratio: 0.20,
                 min_first: 16,
                 min_second: 36,
             },
@@ -59,9 +59,33 @@ impl Default for SplitterState {
         specs.insert(
             SplitterId::LogRightHorizontal,
             SplitterSpec {
-                default_ratio: 0.66,
+                default_ratio: 0.62,
                 min_first: 24,
                 min_second: 20,
+            },
+        );
+        specs.insert(
+            SplitterId::LogDetailsVertical,
+            SplitterSpec {
+                default_ratio: 0.62,
+                min_first: 4,
+                min_second: 4,
+            },
+        );
+        specs.insert(
+            SplitterId::LogDiffRightHorizontal,
+            SplitterSpec {
+                default_ratio: 0.65,
+                min_first: 40,
+                min_second: 24,
+            },
+        );
+        specs.insert(
+            SplitterId::LogDiffBottomVertical,
+            SplitterSpec {
+                default_ratio: 0.60,
+                min_first: 8,
+                min_second: 6,
             },
         );
         specs.insert(

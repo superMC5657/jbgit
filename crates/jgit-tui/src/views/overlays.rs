@@ -230,6 +230,9 @@ fn render_floating_popup(
 ) {
     let (max_w, max_h) = match kind {
         PopupKind::PalettePreview => (100, 38),
+        PopupKind::ShortcutsHelp => (78, 34),
+        PopupKind::GoToRevision => (64, 7),
+        PopupKind::ChooseParent => (68, 12),
         _ => (64, 18),
     };
     let width = screen.width.clamp(screen.width.min(24), max_w);
@@ -245,9 +248,12 @@ fn render_floating_popup(
     frame.render_widget(Clear, rect);
 
     let title = match kind {
-        PopupKind::ShortcutsHelp => " Keyboard & Mouse Shortcuts (Esc to close) ",
-        PopupKind::BranchesQuickView => " Git Branches (Type to filter, Esc to close) ",
-        PopupKind::PalettePreview => " Darcula Palette Preview ",
+        PopupKind::ShortcutsHelp => " Keyboard & Mouse Shortcuts (Esc to close) ".to_string(),
+        PopupKind::BranchesQuickView => " Git Branches (Type to filter, Esc to close) ".to_string(),
+        PopupKind::PalettePreview => " Darcula Palette Preview ".to_string(),
+        PopupKind::FilterEditor(field) => format!(" Filter by {} ", field.title()),
+        PopupKind::GoToRevision => " Go to Hash / Branch / Tag ".to_string(),
+        PopupKind::ChooseParent => " Choose Parent Commit (1-9 / Enter) ".to_string(),
     };
 
     let block = Block::default()
@@ -272,52 +278,191 @@ fn render_floating_popup(
             render_palette_preview(frame, inner, ctx);
         }
         PopupKind::ShortcutsHelp => {
-            let lines = vec![
+            const HELP: &[(&str, &str)] = &[
+                ("1 / 2 / 3 / 4", "Switch Commit / Log / Stash / Console"),
+                (
+                    "Tab / Shift+Tab",
+                    "Cycle Branches → Commits → Changes → Details",
+                ),
+                ("Mouse drag │ / ─", "Resize splitters (double-click resets)"),
+                ("Right click", "Pre-select item & open context menu"),
+                ("r / p", "Refresh snapshot / Run git status probe"),
+                ("F12", "Toggle Unicode / NerdFont glyphs"),
+                ("", ""),
+                ("── Log ──", ""),
+                (
+                    "Ctrl+L or /",
+                    "Text / hash filter (Alt+R regex, Alt+C case)",
+                ),
+                ("Alt+B", "Collapse / expand Branches pane"),
+                (
+                    "Branches: type",
+                    "Speed search · Esc clears / drops branch filter",
+                ),
+                (
+                    "Branches: Enter",
+                    "Filter log by branch / folder (Ctrl+Click = union)",
+                ),
+                (
+                    "Branches: J / Space",
+                    "Navigate log to tip / toggle ★ favorite",
+                ),
+                ("Shift+Up/Down", "Extend commit selection (net changes)"),
+                ("→ / Shift+→ / ←", "Go to parent / second parent / child"),
+                ("Ctrl+G", "Go to hash, branch, tag or HEAD~N"),
+                ("Alt+← / Alt+→", "Navigation history back / forward"),
+                ("g G Ctrl+D/U PgUp/Dn", "Top / bottom / half page / page"),
+                ("Changes: Enter", "Toggle inline diff preview (Ctrl+D)"),
+                ("Changes: F4", "Full-screen diff · [ ] prev/next file"),
+                ("Diff: s / c / m", "Split / context 3→10→Full / dock"),
+                ("Commits: P", "Choose parent commit on merges"),
+                (
+                    "v / e / E / P",
+                    "Dir grouping / expand / collapse / merge parent",
+                ),
+                ("Details: click SHA", "Copy 40-char commit SHA (OSC 52)"),
+                ("q / Ctrl+C", "Quit"),
+            ];
+            let lines: Vec<Line<'_>> = HELP
+                .iter()
+                .map(|(k, v)| {
+                    Line::from(vec![
+                        Span::styled(
+                            format!(" {k:<22}"),
+                            Style::default().fg(ctx.theme.fg_bright),
+                        ),
+                        Span::styled(*v, Style::default().fg(ctx.theme.fg_primary)),
+                    ])
+                })
+                .collect();
+            frame.render_widget(Paragraph::new(lines), inner);
+        }
+        PopupKind::FilterEditor(field) => {
+            let mut lines = vec![
+                Line::from(vec![
+                    Span::styled(" › ", Style::default().fg(ctx.theme.fg_accent_link)),
+                    Span::styled(
+                        format!("{query}▏"),
+                        Style::default().fg(ctx.theme.fg_bright),
+                    ),
+                ]),
                 Line::from(Span::styled(
-                    " 1 / 2 / 3 / 4     Switch Commit / Log / Stash / Console",
-                    Style::default().fg(ctx.theme.fg_primary),
+                    format!(" {}", field.hint()),
+                    Style::default().fg(ctx.theme.fg_muted),
                 )),
                 Line::from(Span::styled(
-                    " Tab / Shift+Tab   Cycle focused pane inside current tab",
-                    Style::default().fg(ctx.theme.fg_primary),
-                )),
-                Line::from(Span::styled(
-                    " j / k / Up / Down Navigate branches, commits, files, or commands",
-                    Style::default().fg(ctx.theme.fg_primary),
-                )),
-                Line::from(Span::styled(
-                    " Mouse Drag │ / ─  Resize splitters (double-click resets)",
-                    Style::default().fg(ctx.theme.fg_primary),
-                )),
-                Line::from(Span::styled(
-                    " Mouse Wheel       Scrolls pane under cursor",
-                    Style::default().fg(ctx.theme.fg_primary),
-                )),
-                Line::from(Span::styled(
-                    " Right Click       Pre-select item & open Context Menu",
-                    Style::default().fg(ctx.theme.fg_primary),
-                )),
-                Line::from(Span::styled(
-                    " r / p             Refresh snapshot / Run git status probe",
-                    Style::default().fg(ctx.theme.fg_primary),
-                )),
-                Line::from(Span::styled(
-                    " F12 / Ctrl+G      Toggle Unicode / NerdFont glyphs",
-                    Style::default().fg(ctx.theme.fg_primary),
-                )),
-                Line::from(Span::styled(
-                    " c / t (Log)       Compact references / Show tag names",
-                    Style::default().fg(ctx.theme.fg_primary),
-                )),
-                Line::from(Span::styled(
-                    " F9                Darcula palette & glyph preview",
-                    Style::default().fg(ctx.theme.fg_primary),
-                )),
-                Line::from(Span::styled(
-                    " q / Ctrl+C        Quit cleanly",
-                    Style::default().fg(ctx.theme.fg_primary),
+                    " Enter apply · Tab complete · ↑↓ pick · empty = all · Esc cancel",
+                    Style::default().fg(ctx.theme.fg_muted),
                 )),
             ];
+            let suggestions =
+                crate::log_view::filter_suggestions(field, state.repo_snapshot.as_deref(), query);
+            let room = inner.height.saturating_sub(3) as usize;
+            let sel = selected.min(suggestions.len().saturating_sub(1));
+            let start = sel.saturating_sub(room.saturating_sub(1));
+            for (idx, s) in suggestions.iter().enumerate().skip(start).take(room) {
+                let bg = if idx == sel {
+                    ctx.theme.bg_selection_focused
+                } else {
+                    ctx.theme.bg_elevated
+                };
+                lines.push(
+                    Line::from(Span::styled(
+                        format!(
+                            "   {}",
+                            truncate_to_width(s, inner.width.saturating_sub(4) as usize)
+                        ),
+                        Style::default().fg(ctx.theme.fg_primary),
+                    ))
+                    .style(Style::default().bg(bg)),
+                );
+            }
+            frame.render_widget(Paragraph::new(lines), inner);
+        }
+        PopupKind::GoToRevision => {
+            let resolved = state
+                .repo_snapshot
+                .as_ref()
+                .and_then(|s| s.resolve_revision(query).map(|oid| (s, oid)));
+            let preview = match resolved {
+                Some((s, oid)) => {
+                    let subject = s
+                        .commits
+                        .iter()
+                        .find(|c| c.oid == oid)
+                        .map(|c| c.subject.as_str())
+                        .unwrap_or("");
+                    Line::from(vec![
+                        Span::styled(
+                            format!(" → {} ", oid.short()),
+                            Style::default().fg(ctx.theme.fg_accent_link),
+                        ),
+                        Span::styled(
+                            truncate_to_width(subject, inner.width.saturating_sub(12) as usize),
+                            Style::default().fg(ctx.theme.fg_primary),
+                        ),
+                    ])
+                }
+                None if query.is_empty() => Line::from(""),
+                None => Line::from(Span::styled(
+                    " No matching revision",
+                    Style::default().fg(ctx.theme.status_conflicted),
+                )),
+            };
+            let lines = vec![
+                Line::from(vec![
+                    Span::styled(" › ", Style::default().fg(ctx.theme.fg_accent_link)),
+                    Span::styled(
+                        format!("{query}▏"),
+                        Style::default().fg(ctx.theme.fg_bright),
+                    ),
+                ]),
+                preview,
+                Line::from(Span::styled(
+                    " SHA prefix, branch, tag, HEAD~N, main^2 · Enter jump · Esc cancel",
+                    Style::default().fg(ctx.theme.fg_muted),
+                )),
+            ];
+            frame.render_widget(Paragraph::new(lines), inner);
+        }
+        PopupKind::ChooseParent => {
+            let mut lines = Vec::new();
+            if let Some(commit) = state.log_commit_at(state.log_graph.selected_idx)
+                && let Some(snap) = &state.repo_snapshot
+            {
+                let sel = selected.min(commit.parents.len().saturating_sub(1));
+                for (idx, poid) in commit.parents.iter().enumerate() {
+                    let subj = snap
+                        .commits
+                        .iter()
+                        .find(|c| c.oid == *poid)
+                        .map(|c| c.subject.as_str())
+                        .unwrap_or("(commit outside loaded snapshot)");
+                    let bg = if idx == sel {
+                        ctx.theme.bg_selection_focused
+                    } else {
+                        ctx.theme.bg_elevated
+                    };
+                    let prefix = format!(" {}. {} ", idx + 1, poid.short());
+                    let max_subj = (inner.width as usize).saturating_sub(prefix.width());
+                    lines.push(
+                        Line::from(vec![
+                            Span::styled(prefix, Style::default().fg(ctx.theme.fg_accent_link)),
+                            Span::styled(
+                                truncate_to_width(subj, max_subj),
+                                Style::default().fg(ctx.theme.fg_primary),
+                            ),
+                        ])
+                        .style(Style::default().bg(bg)),
+                    );
+                }
+            }
+            if lines.is_empty() {
+                lines.push(Line::from(Span::styled(
+                    " No parent commits",
+                    Style::default().fg(ctx.theme.fg_muted),
+                )));
+            }
             frame.render_widget(Paragraph::new(lines), inner);
         }
         PopupKind::BranchesQuickView => {

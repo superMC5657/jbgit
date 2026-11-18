@@ -3,8 +3,9 @@ use std::path::PathBuf;
 use crate::Oid;
 
 /// Ongoing Git repository workflow / state indicator.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub enum RepositoryState {
+    #[default]
     Clean,
     Merge,
     Rebase {
@@ -79,17 +80,22 @@ pub struct RefInfo {
     pub is_head: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct CommitSummary {
     pub oid: Oid,
     pub parents: Vec<Oid>,
     pub author_name: String,
     pub author_email: String,
+    /// Committer timestamp (seconds since epoch).
     pub timestamp: i64,
+    /// Author timestamp (seconds since epoch); differs from `timestamp` after rebase / cherry-pick.
+    pub author_timestamp: i64,
     pub subject: String,
+    /// Message body after the subject line (may be empty). Used by the text filter.
+    pub body: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RepoSnapshot {
     pub repo_name: String,
     pub workdir: PathBuf,
@@ -101,6 +107,77 @@ pub struct RepoSnapshot {
     pub head_oid: Option<Oid>,
     pub refs: Vec<RefInfo>,
     pub commits: Vec<CommitSummary>,
+    /// `git config user.name` (drives the `@me` user filter).
+    pub user_name: Option<String>,
+    /// `git config user.email`.
+    pub user_email: Option<String>,
+}
+
+impl RepoSnapshot {
+    /// Resolves `HEAD`, ref names, unique hex prefixes (≥ 4 chars) and
+    /// `~N` / `^N` suffix chains (`HEAD~3`, `main^2`, `a1b2c3^^`) against the
+    /// loaded commits (`GoToHashOrRef`).
+    pub fn resolve_revision(&self, expr: &str) -> Option<Oid> {
+        let expr = expr.trim();
+        if expr.is_empty() {
+            return None;
+        }
+        let split = expr.find(['~', '^']).unwrap_or(expr.len());
+        let (base, mut ops) = expr.split_at(split);
+
+        let mut cur = self.resolve_base(base)?;
+        let parents_of = |oid: Oid| -> Option<&[Oid]> {
+            self.commits
+                .iter()
+                .find(|c| c.oid == oid)
+                .map(|c| c.parents.as_slice())
+        };
+        while let Some(op) = ops.chars().next() {
+            ops = &ops[1..];
+            let digits_len = ops.find(|c: char| !c.is_ascii_digit()).unwrap_or(ops.len());
+            let n: Option<usize> = ops[..digits_len].parse().ok();
+            ops = &ops[digits_len..];
+            match op {
+                '~' => {
+                    for _ in 0..n.unwrap_or(1) {
+                        cur = *parents_of(cur)?.first()?;
+                    }
+                }
+                '^' => match n.unwrap_or(1) {
+                    0 => {}
+                    k => cur = *parents_of(cur)?.get(k - 1)?,
+                },
+                _ => return None,
+            }
+        }
+        Some(cur)
+    }
+
+    fn resolve_base(&self, base: &str) -> Option<Oid> {
+        if base.eq_ignore_ascii_case("HEAD") || base == "@" {
+            return self.head_oid;
+        }
+        for kind in [RefKind::LocalBranch, RefKind::RemoteBranch, RefKind::Tag] {
+            if let Some(r) = self
+                .refs
+                .iter()
+                .find(|r| r.kind == kind && (r.name == base || r.full_name == base))
+            {
+                return Some(r.target_oid);
+            }
+        }
+        if base.len() >= 4 && base.chars().all(|c| c.is_ascii_hexdigit()) {
+            let mut hits = self
+                .commits
+                .iter()
+                .filter(|c| c.oid.matches_hex_prefix(base));
+            let first = hits.next()?;
+            if hits.next().is_none() {
+                return Some(first.oid);
+            }
+        }
+        None
+    }
 }
 
 /// Granularity of background refresh requested or triggered by FS watcher.
@@ -132,5 +209,41 @@ impl RefreshScope {
 
     pub fn needs_stage_refresh(self) -> bool {
         matches!(self, Self::StageStatus | Self::WorktreeStatus | Self::All)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resolves_refs_hashes_and_ancestry_suffixes() {
+        let oid = |n: u8| Oid::from_bytes([n; 20]);
+        let c = |n: u8, parents: &[u8]| CommitSummary {
+            oid: oid(n),
+            parents: parents.iter().map(|&p| oid(p)).collect(),
+            ..Default::default()
+        };
+        let snap = RepoSnapshot {
+            head_oid: Some(oid(4)),
+            refs: vec![RefInfo {
+                name: "main".into(),
+                full_name: "refs/heads/main".into(),
+                target_oid: oid(4),
+                kind: RefKind::LocalBranch,
+                upstream: None,
+                ahead_behind: None,
+                is_head: true,
+            }],
+            commits: vec![c(4, &[3, 2]), c(3, &[1]), c(2, &[1]), c(1, &[])],
+            ..Default::default()
+        };
+        assert_eq!(snap.resolve_revision("HEAD"), Some(oid(4)));
+        assert_eq!(snap.resolve_revision("main~2"), Some(oid(1)));
+        assert_eq!(snap.resolve_revision("HEAD^2"), Some(oid(2)));
+        assert_eq!(snap.resolve_revision("HEAD^^"), Some(oid(1)));
+        assert_eq!(snap.resolve_revision("0303"), Some(oid(3)));
+        assert_eq!(snap.resolve_revision("HEAD~9"), None);
+        assert_eq!(snap.resolve_revision("nope"), None);
     }
 }

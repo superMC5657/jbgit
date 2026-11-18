@@ -2,6 +2,10 @@ mod app;
 mod graph;
 mod hit_test;
 mod input;
+#[cfg(test)]
+mod log_tests;
+mod log_view;
+mod syntax;
 mod terminal;
 mod theme;
 mod views;
@@ -68,6 +72,16 @@ async fn main() -> Result<()> {
             state.needs_redraw = false;
         }
 
+        // 30 ms details debounce (CommitDetailsLoader): wake once the latest
+        // selection has been stable long enough to fetch its details.
+        let details_deadline = state.next_deadline();
+        let debounce_sleep = async {
+            match details_deadline {
+                Some(at) => tokio::time::sleep_until(tokio::time::Instant::from_std(at)).await,
+                None => std::future::pending::<()>().await,
+            }
+        };
+
         let spinner_sleep = async {
             if state.has_active_tasks() {
                 tokio::time::sleep(Duration::from_millis(100)).await;
@@ -98,6 +112,10 @@ async fn main() -> Result<()> {
                 } else {
                     engine_rx = None;
                 }
+            }
+            _ = debounce_sleep => {
+                let effects = state.dispatch(Action::FlushPendingDetails);
+                execute_effects(effects, &mut state, engine_handle.as_ref());
             }
             _ = spinner_sleep => {
                 let effects = state.dispatch(Action::TickSpinner);
@@ -170,6 +188,9 @@ mod tests {
         // Cycle focus in Log tab
         state.dispatch(Action::SwitchTab(WorkspaceTab::Log));
         assert_eq!(state.focused_pane, PaneId::LogCommitTable);
+        // Focus cycle: Branches → Commits → Changes → Details (wide terminal).
+        state.dispatch(Action::CycleFocus { reverse: false });
+        assert_eq!(state.focused_pane, PaneId::LogChangesTree);
         state.dispatch(Action::CycleFocus { reverse: false });
         assert_eq!(state.focused_pane, PaneId::LogDetailsDiff);
         state.dispatch(Action::CycleFocus { reverse: false });
@@ -274,6 +295,8 @@ mod tests {
             common_dir: ".git".into(),
             state: RepositoryState::Clean,
             is_unborn_head: false,
+            user_name: None,
+            user_email: None,
             head_branch: Some("main".into()),
             head_oid: Some(oid1),
             refs: vec![],
@@ -285,6 +308,8 @@ mod tests {
                     author_email: "a@b.c".into(),
                     timestamp: 0,
                     subject: "first".into(),
+                    author_timestamp: 0,
+                    body: String::new(),
                 },
                 CommitSummary {
                     oid: oid2,
@@ -293,6 +318,8 @@ mod tests {
                     author_email: "b@c.d".into(),
                     timestamp: 1,
                     subject: "second".into(),
+                    author_timestamp: 0,
+                    body: String::new(),
                 },
             ],
         }));
@@ -333,12 +360,12 @@ mod tests {
         terminal.draw(|f| render_app(f, &mut state)).unwrap();
         assert_eq!(state.log_graph.selected_idx, 0);
 
-        // Row 0 is at y=3 (header=0, tabs=1, pane_header=2, row0=3, row1=4)
+        // Row 0 is at y=4 (header=0, tabs=1, pane_header=2, filter_bar=3, row0=4, row1=5)
         let actions = route_terminal_event(
             Event::Mouse(MouseEvent {
                 kind: MouseEventKind::Down(MouseButton::Right),
                 column: 40,
-                row: 4,
+                row: 5,
                 modifiers: KeyModifiers::NONE,
             }),
             &mut state,
@@ -386,6 +413,8 @@ mod tests {
             common_dir: ".git".into(),
             state: RepositoryState::Clean,
             is_unborn_head: true,
+            user_name: None,
+            user_email: None,
             head_branch: Some("old".into()),
             head_oid: None,
             refs: vec![],
@@ -404,6 +433,8 @@ mod tests {
             common_dir: ".git".into(),
             state: RepositoryState::Clean,
             is_unborn_head: false,
+            user_name: None,
+            user_email: None,
             head_branch: Some("main".into()),
             head_oid: Some(Oid::ZERO),
             refs: vec![],
@@ -614,6 +645,8 @@ mod tests {
             common_dir: ".git".into(),
             state: RepositoryState::Clean,
             is_unborn_head: false,
+            user_name: None,
+            user_email: None,
             head_branch: None,
             head_oid: Some(oid),
             refs: vec![
@@ -670,6 +703,8 @@ mod tests {
                 author_email: "a@b.c".into(),
                 timestamp: 0,
                 subject: "detached commit with many refs".into(),
+                author_timestamp: 0,
+                body: String::new(),
             }],
         }));
 
@@ -681,7 +716,7 @@ mod tests {
             (0..buf.area.width).map(|x| buf[(x, y)].symbol()).collect()
         };
         use unicode_width::UnicodeWidthStr;
-        let row_line = row0_text(terminal.backend().buffer(), 3);
+        let row_line = row0_text(terminal.backend().buffer(), 4);
         let col_of = |needle: &str| {
             let byte_idx = row_line.find(needle).unwrap();
             row_line[..byte_idx].width() as u16
@@ -694,7 +729,7 @@ mod tests {
             Event::Mouse(MouseEvent {
                 kind: MouseEventKind::Moved,
                 column: head_x,
-                row: 3,
+                row: 4,
                 modifiers: KeyModifiers::NONE,
             }),
             &mut state,
@@ -711,7 +746,7 @@ mod tests {
             Event::Mouse(MouseEvent {
                 kind: MouseEventKind::Moved,
                 column: plus_x,
-                row: 3,
+                row: 4,
                 modifiers: KeyModifiers::NONE,
             }),
             &mut state,
@@ -729,7 +764,7 @@ mod tests {
             Event::Mouse(MouseEvent {
                 kind: MouseEventKind::Down(MouseButton::Left),
                 column: plus_x,
-                row: 3,
+                row: 4,
                 modifiers: KeyModifiers::NONE,
             }),
             &mut state,
@@ -743,7 +778,7 @@ mod tests {
             Event::Mouse(MouseEvent {
                 kind: MouseEventKind::Down(MouseButton::Right),
                 column: plus_x,
-                row: 3,
+                row: 4,
                 modifiers: KeyModifiers::NONE,
             }),
             &mut state,
@@ -782,6 +817,8 @@ mod tests {
                 author_email: "a@b.c".into(),
                 timestamp: (1000 - i) as i64,
                 subject: format!("commit {i}"),
+                author_timestamp: 0,
+                body: String::new(),
             });
         }
 
@@ -793,6 +830,8 @@ mod tests {
             common_dir: ".git".into(),
             state: RepositoryState::Clean,
             is_unborn_head: false,
+            user_name: None,
+            user_email: None,
             head_branch: Some("main".into()),
             head_oid: Some(oid_n(0)),
             refs: vec![RefInfo {
@@ -815,8 +854,8 @@ mod tests {
             (0..buf.area.width).map(|x| buf[(x, y)].symbol()).collect()
         };
         use unicode_width::UnicodeWidthStr;
-        // Row 1 of commit table is y=4 (header=0, tabs=1, pane_header=2, row0=3, row1=4)
-        let row1 = row_text(terminal.backend().buffer(), 4);
+        // Row 1 of commit table is y=5 (header, tabs, pane_header, filter_bar, row0=4, row1=5)
+        let row1 = row_text(terminal.backend().buffer(), 5);
         let arrow_byte = row1
             .find('▾')
             .expect("expected long-edge down arrow on row 1");
@@ -827,7 +866,7 @@ mod tests {
             Event::Mouse(MouseEvent {
                 kind: MouseEventKind::Moved,
                 column: arrow_x,
-                row: 4,
+                row: 5,
                 modifiers: KeyModifiers::NONE,
             }),
             &mut state,
@@ -842,7 +881,7 @@ mod tests {
             Event::Mouse(MouseEvent {
                 kind: MouseEventKind::Down(MouseButton::Left),
                 column: arrow_x,
-                row: 4,
+                row: 5,
                 modifiers: KeyModifiers::NONE,
             }),
             &mut state,

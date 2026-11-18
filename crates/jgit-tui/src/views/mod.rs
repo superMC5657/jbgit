@@ -2,6 +2,8 @@ pub mod commit;
 pub mod console;
 pub mod header;
 pub mod log;
+pub mod log_branches;
+pub mod log_details;
 pub mod overlays;
 pub mod palette_preview;
 pub mod stash;
@@ -87,9 +89,13 @@ pub fn render_app(frame: &mut Frame<'_>, state: &mut AppState) {
     let glyph_mode = state.glyph_mode;
     let focused_pane = state.focused_pane;
     let hover_target = state.hover_target.clone();
-    let dragging_splitter = state.drag_state.map(|d| d.splitter_id);
+    let dragging_splitter = match state.drag_state {
+        Some(crate::app::DragState::Splitter { splitter_id, .. }) => Some(splitter_id),
+        _ => None,
+    };
     if state.active_tab == WorkspaceTab::Log {
-        state.log_graph.last_viewport_h = body_h.saturating_sub(1) as usize;
+        // Pane header + filter bar sit above the commit table.
+        state.log_graph.last_viewport_h = body_h.saturating_sub(2) as usize;
     }
 
     // Register splitter containers separately after collecting them from layout helpers
@@ -299,4 +305,109 @@ pub fn truncate_to_width(s: &str, max_width: usize) -> String {
     }
     out.push('…');
     out
+}
+
+/// Renders `text` truncated to `max_width` columns with byte `ranges`
+/// painted in `hl` (search hits, word-diff, issue refs).
+pub fn highlight_spans(
+    text: &str,
+    ranges: &[(usize, usize)],
+    max_width: usize,
+    base: Style,
+    hl: Style,
+) -> Vec<Span<'static>> {
+    if max_width == 0 {
+        return Vec::new();
+    }
+    let truncated = truncate_to_width(text, max_width);
+    let (body, ellipsis) = match truncated.strip_suffix('…') {
+        Some(b) if truncated.len() != text.len() || !text.ends_with('…') => (b, true),
+        _ => (truncated.as_str(), false),
+    };
+    let limit = body.len();
+    let mut spans = Vec::new();
+    let mut pos = 0usize;
+    for &(s, e) in ranges {
+        let (s, e) = (s.min(limit), e.min(limit));
+        if s >= e || s < pos || !body.is_char_boundary(s) || !body.is_char_boundary(e) {
+            continue;
+        }
+        if s > pos {
+            spans.push(Span::styled(body[pos..s].to_string(), base));
+        }
+        spans.push(Span::styled(body[s..e].to_string(), hl));
+        pos = e;
+    }
+    if pos < limit {
+        spans.push(Span::styled(body[pos..].to_string(), base));
+    }
+    if ellipsis {
+        spans.push(Span::styled("…", base));
+    }
+    spans
+}
+
+/// Greedy display-width-aware wrapping (breaks on spaces when possible).
+pub fn wrap_text(text: &str, width: usize) -> Vec<String> {
+    let width = width.max(1);
+    let mut out = Vec::new();
+    let mut line = String::new();
+    let mut line_w = 0usize;
+    for word in text.split_inclusive(' ') {
+        let w = word.width();
+        if line_w + w > width && !line.is_empty() {
+            out.push(line.trim_end().to_string());
+            line.clear();
+            line_w = 0;
+        }
+        if w > width {
+            for ch in word.chars() {
+                let cw = ch.width().unwrap_or(0);
+                if line_w + cw > width && !line.is_empty() {
+                    out.push(std::mem::take(&mut line));
+                    line_w = 0;
+                }
+                line.push(ch);
+                line_w += cw;
+            }
+        } else {
+            line.push_str(word);
+            line_w += w;
+        }
+    }
+    if !line.is_empty() || out.is_empty() {
+        out.push(line.trim_end().to_string());
+    }
+    out
+}
+
+/// Truncates `left` to make room for `right` (plus `right_pad` trailing spaces),
+/// padding with spaces so `right` stays aligned to the right edge of `width`.
+pub fn fit_left_right_spans(
+    left: Vec<Span<'static>>,
+    right: Vec<Span<'static>>,
+    width: usize,
+    right_pad: usize,
+) -> Vec<Span<'static>> {
+    let right_w: usize = right.iter().map(|s| s.content.width()).sum();
+    let avail = width.saturating_sub(right_w + right_pad);
+    let mut used = 0usize;
+    let mut spans = Vec::new();
+    for s in left {
+        let w = s.content.width();
+        if used + w <= avail {
+            used += w;
+            spans.push(s);
+        } else {
+            let rest = avail.saturating_sub(used);
+            if rest > 0 {
+                spans.push(Span::styled(truncate_to_width(&s.content, rest), s.style));
+                used = avail;
+            }
+            break;
+        }
+    }
+    spans.push(Span::raw(" ".repeat(avail.saturating_sub(used) + right_pad)));
+    spans.extend(right);
+    spans
 }

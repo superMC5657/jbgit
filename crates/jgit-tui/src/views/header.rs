@@ -324,7 +324,7 @@ pub fn render_footer_bar(
 
     let hint = match state.active_tab {
         WorkspaceTab::Log => {
-            " 1-4 Tabs | Tab Focus | j/k Select | Drag │ Split (DblClick Reset) | Wheel Scroll | RightClick Menu | ? Help | q Quit"
+            " Tab Focus | / Filter | Shift+↑↓ Range | →/← Parent/Child | Ctrl+G Go to | Alt+B Branches | F4 Diff | ? Help | q Quit"
         }
         WorkspaceTab::Console => {
             " 1-4 Tabs | Tab Focus | j/k Select/Scroll | p Run git status | r Refresh | RightClick Probes | q Quit"

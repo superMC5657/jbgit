@@ -57,6 +57,7 @@ impl WorkspaceTab {
             Self::Log => &[
                 PaneId::LogBranchesTree,
                 PaneId::LogCommitTable,
+                PaneId::LogChangesTree,
                 PaneId::LogDetailsDiff,
             ],
             Self::Stash => &[PaneId::StashList, PaneId::StashDiffPreview],
@@ -73,6 +74,7 @@ pub enum PaneId {
     CommitDiffPreview,
     LogBranchesTree,
     LogCommitTable,
+    LogChangesTree,
     LogDetailsDiff,
     StashList,
     StashDiffPreview,
@@ -88,6 +90,7 @@ impl PaneId {
             Self::CommitDiffPreview => "Diff Preview",
             Self::LogBranchesTree => "Branches",
             Self::LogCommitTable => "Commits & Graph",
+            Self::LogChangesTree => "Changes",
             Self::LogDetailsDiff => "Commit Details",
             Self::StashList => "Stashes",
             Self::StashDiffPreview => "Stash Diff",
@@ -111,6 +114,12 @@ pub enum SplitterId {
     CommitLeftVertical,
     LogLeftHorizontal,
     LogRightHorizontal,
+    /// Right pane: changes browser (top) / details or diff preview (bottom).
+    LogDetailsVertical,
+    /// Optional 4th-column diff preview docked to the far right of Log.
+    LogDiffRightHorizontal,
+    /// Optional full-width diff preview docked to the bottom of Log.
+    LogDiffBottomVertical,
     StashMainHorizontal,
     ConsoleMainHorizontal,
 }

@@ -1,5 +1,5 @@
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
@@ -7,10 +7,11 @@ use std::thread::{self, JoinHandle};
 use crossbeam_channel::{Sender, bounded};
 use git2::{BranchType, Delta, Repository, Sort, Status, StatusOptions};
 use jgit_core::{
-    CommitSummary, EpochToken, FileStatusKind, Oid, RefInfo, RefKind, RepoSnapshot, StageEntry,
-    StageStatusSnapshot,
+    CommitChangesBundle, CommitSummary, DetailsKey, EpochToken, FileDiff, FileDiffKey,
+    FileStatusKind, Oid, RefInfo, RefKind, RepoSnapshot, StageEntry, StageStatusSnapshot,
 };
 
+use crate::details::{load_commit_details_sync, load_file_diff_sync, load_path_matches_sync};
 use crate::error::EngineError;
 use crate::probe::{RepoLocation, probe_repo_state, to_core_oid};
 
@@ -18,7 +19,7 @@ thread_local! {
     static THREAD_REPOS: RefCell<HashMap<PathBuf, Repository>> = RefCell::new(HashMap::new());
 }
 
-fn with_thread_repo<F, T>(git_dir: &Path, f: F) -> Result<T, EngineError>
+pub(crate) fn with_thread_repo<F, T>(git_dir: &Path, f: F) -> Result<T, EngineError>
 where
     F: FnOnce(&Repository) -> Result<T, EngineError>,
 {
@@ -113,13 +114,42 @@ impl Git2WorkerPool {
     pub async fn load_commit_details(
         &self,
         location: RepoLocation,
-        oids: Vec<Oid>,
+        key: DetailsKey,
         token: EpochToken,
-    ) -> Result<Vec<CommitSummary>, EngineError> {
+    ) -> Result<Arc<CommitChangesBundle>, EngineError> {
+        self.run(move || load_commit_details_sync(&location, &key, &token).map(Arc::new))
+            .await
+    }
+
+    pub async fn load_file_diff(
+        &self,
+        location: RepoLocation,
+        key: FileDiffKey,
+        token: EpochToken,
+    ) -> Result<Arc<FileDiff>, EngineError> {
+        self.run(move || load_file_diff_sync(&location, &key, &token).map(Arc::new))
+            .await
+    }
+
+    pub async fn load_path_matches(
+        &self,
+        location: RepoLocation,
+        paths: Vec<String>,
+        snapshot: Arc<RepoSnapshot>,
+        token: EpochToken,
+    ) -> Result<Arc<HashSet<Oid>>, EngineError> {
+        self.run(move || load_path_matches_sync(&location, &paths, &snapshot, &token).map(Arc::new))
+            .await
+    }
+
+    async fn run<T, F>(&self, f: F) -> Result<T, EngineError>
+    where
+        T: Send + 'static,
+        F: FnOnce() -> Result<T, EngineError> + Send + 'static,
+    {
         let (done_tx, done_rx) = tokio::sync::oneshot::channel();
         self.spawn_task(move || {
-            let res = load_commit_details_sync(&location, &oids, &token);
-            let _ = done_tx.send(res);
+            let _ = done_tx.send(f());
         });
         done_rx
             .await
@@ -179,6 +209,14 @@ pub fn load_repo_snapshot_sync(
             collect_commits(repo, token, max_commits)?
         };
 
+        let (user_name, user_email) = match repo.config() {
+            Ok(cfg) => (
+                cfg.get_string("user.name").ok(),
+                cfg.get_string("user.email").ok(),
+            ),
+            Err(_) => (None, None),
+        };
+
         Ok(RepoSnapshot {
             repo_name: location.repo_name.clone(),
             workdir: location.workdir.clone(),
@@ -190,6 +228,8 @@ pub fn load_repo_snapshot_sync(
             head_oid: probe.head_oid,
             refs,
             commits,
+            user_name,
+            user_email,
         })
     })
 }
@@ -313,34 +353,16 @@ fn commit_to_summary(commit: &git2::Commit<'_>) -> CommitSummary {
         author_name: author.name().unwrap_or("Unknown").to_string(),
         author_email: author.email().unwrap_or("").to_string(),
         timestamp: commit.time().seconds(),
+        author_timestamp: author.when().seconds(),
         subject: commit.summary().ok().flatten().unwrap_or("").to_string(),
+        body: commit
+            .body()
+            .ok()
+            .flatten()
+            .unwrap_or("")
+            .trim()
+            .to_string(),
     }
-}
-
-pub fn load_commit_details_sync(
-    location: &RepoLocation,
-    oids: &[Oid],
-    token: &EpochToken,
-) -> Result<Vec<CommitSummary>, EngineError> {
-    if token.is_stale() {
-        return Err(EngineError::Cancelled);
-    }
-
-    with_thread_repo(&location.git_dir, |repo| {
-        let mut out = Vec::with_capacity(oids.len());
-        for (idx, oid) in oids.iter().enumerate() {
-            if idx % 32 == 0 && token.is_stale() {
-                return Err(EngineError::Cancelled);
-            }
-            let Ok(raw) = git2::Oid::from_bytes(oid.as_bytes()) else {
-                continue;
-            };
-            if let Ok(commit) = repo.find_commit(raw) {
-                out.push(commit_to_summary(&commit));
-            }
-        }
-        Ok(out)
-    })
 }
 
 pub fn load_stage_status_sync(
@@ -470,7 +492,7 @@ fn worktree_status_kind(st: Status) -> Option<FileStatusKind> {
     }
 }
 
-fn delta_to_kind(delta: Delta) -> Option<FileStatusKind> {
+pub(crate) fn delta_to_kind(delta: Delta) -> Option<FileStatusKind> {
     match delta {
         Delta::Added => Some(FileStatusKind::Added),
         Delta::Deleted => Some(FileStatusKind::Deleted),

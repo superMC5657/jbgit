@@ -5,7 +5,7 @@ use thiserror::Error;
 
 /// 20-byte SHA-1 object identifier decoupled from `git2::Oid` so `jgit-core`
 /// stays pure and UI-renderable without FFI dependencies.
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Oid([u8; 20]);
 
 #[derive(Debug, Error)]
@@ -31,6 +31,19 @@ impl Oid {
     pub fn short(&self) -> String {
         let full = self.to_string();
         full[..7].to_string()
+    }
+
+    /// Returns `true` if the lowercase hex form of this oid starts with `prefix`
+    /// (case-insensitive). Empty prefixes never match.
+    pub fn matches_hex_prefix(&self, prefix: &str) -> bool {
+        if prefix.is_empty() || prefix.len() > 40 {
+            return false;
+        }
+        let full = self.to_string();
+        full.as_bytes()
+            .iter()
+            .zip(prefix.as_bytes())
+            .all(|(a, b)| *a == b.to_ascii_lowercase())
     }
 }
 
