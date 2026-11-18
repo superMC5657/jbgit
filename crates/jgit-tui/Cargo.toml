@@ -1,0 +1,23 @@
+[package]
+name = "jgit-tui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "jgit"
+path = "src/main.rs"
+
+[dependencies]
+jgit-core.workspace = true
+jgit-engine.workspace = true
+
+anyhow.workspace = true
+chrono.workspace = true
+crossterm.workspace = true
+futures.workspace = true
+ratatui.workspace = true
+rustc-hash.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+unicode-width.workspace = true

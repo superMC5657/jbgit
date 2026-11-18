@@ -1,0 +1,10 @@
+[package]
+name = "jgit-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+chrono.workspace = true
+rustc-hash.workspace = true
+thiserror.workspace = true

@@ -1,0 +1,596 @@
+mod app;
+mod hit_test;
+mod input;
+mod terminal;
+mod theme;
+mod views;
+mod widgets;
+
+use std::path::PathBuf;
+use std::time::Duration;
+
+use anyhow::Result;
+use crossterm::event::EventStream;
+use futures::StreamExt;
+use jgit_engine::{EngineSupervisor, RepoLocation};
+
+use crate::app::{Action, AppState, execute_effects};
+use crate::input::route_terminal_event;
+use crate::terminal::TerminalGuard;
+use crate::views::render_app;
+
+#[tokio::main]
+async fn main() -> Result<()> {
+    let mut args = std::env::args().skip(1);
+    let mut target_path = PathBuf::from(".");
+
+    if let Some(arg) = args.next() {
+        if arg == "-h" || arg == "--help" {
+            println!("jGit - JetBrains-style Terminal Git Client");
+            println!("Usage: jgit [path]");
+            return Ok(());
+        }
+        target_path = PathBuf::from(arg);
+    }
+
+    let (engine_handle, mut engine_rx, mut state) = match RepoLocation::discover(&target_path) {
+        Ok(loc) => {
+            let workdir = loc.workdir.clone();
+            match EngineSupervisor::start(loc, true) {
+                Ok((handle, rx)) => {
+                    let s = AppState::new(workdir, None);
+                    (Some(handle), Some(rx), s)
+                }
+                Err(e) => (
+                    None,
+                    None,
+                    AppState::new(target_path, Some(format!("Engine error: {e}"))),
+                ),
+            }
+        }
+        Err(e) => (None, None, AppState::new(target_path, Some(e.to_string()))),
+    };
+
+    if let Some(handle) = engine_handle.as_ref() {
+        let initial_effects = state.dispatch(Action::RefreshAll);
+        execute_effects(initial_effects, &mut state, Some(handle));
+    }
+
+    let mut term_guard = TerminalGuard::enter()?;
+    let mut event_stream = EventStream::new();
+
+    while !state.should_quit {
+        if state.needs_redraw {
+            term_guard.terminal_mut().draw(|frame| {
+                render_app(frame, &mut state);
+            })?;
+            state.needs_redraw = false;
+        }
+
+        let spinner_sleep = async {
+            if state.has_active_tasks() {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            } else {
+                std::future::pending::<()>().await;
+            }
+        };
+
+        tokio::select! {
+            maybe_term = event_stream.next() => {
+                match maybe_term {
+                    Some(Ok(ev)) => {
+                        let actions = route_terminal_event(ev, &mut state);
+                        for action in actions {
+                            let effects = state.dispatch(action);
+                            execute_effects(effects, &mut state, engine_handle.as_ref());
+                        }
+                    }
+                    Some(Err(_)) | None => {
+                        state.should_quit = true;
+                    }
+                }
+            }
+            maybe_engine = recv_engine(&mut engine_rx) => {
+                if let Some(ev) = maybe_engine {
+                    let effects = state.apply_engine_event(ev);
+                    execute_effects(effects, &mut state, engine_handle.as_ref());
+                } else {
+                    engine_rx = None;
+                }
+            }
+            _ = spinner_sleep => {
+                let effects = state.dispatch(Action::TickSpinner);
+                execute_effects(effects, &mut state, engine_handle.as_ref());
+            }
+        }
+    }
+
+    drop(term_guard);
+    Ok(())
+}
+
+async fn recv_engine(
+    rx: &mut Option<tokio::sync::mpsc::UnboundedReceiver<jgit_engine::EngineEvent>>,
+) -> Option<jgit_engine::EngineEvent> {
+    match rx {
+        Some(channel) => channel.recv().await,
+        None => std::future::pending().await,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crossterm::event::{
+        Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+    };
+    use jgit_core::{PaneId, SplitAxis, SplitterId, WorkspaceTab};
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+    use ratatui::layout::Rect;
+
+    use crate::app::{Action, AppState};
+    use crate::input::route_terminal_event;
+    use crate::views::render_app;
+
+    #[test]
+    fn test_backend_render_tiny_and_normal_no_panic() {
+        let mut state = AppState::new(std::path::PathBuf::from("."), None);
+        for (w, h) in [(10, 4), (45, 12), (59, 15), (120, 40)] {
+            let backend = TestBackend::new(w, h);
+            let mut terminal = Terminal::new(backend).unwrap();
+            terminal.draw(|f| render_app(f, &mut state)).unwrap();
+        }
+    }
+
+    #[test]
+    fn tab_switch_and_focus_ring_and_splitter_drag() {
+        let mut state = AppState::new(std::path::PathBuf::from("."), None);
+        let backend = TestBackend::new(120, 40);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| render_app(f, &mut state)).unwrap();
+
+        // Switch tabs with 1..4
+        for (ch, expected) in [
+            ('1', WorkspaceTab::Commit),
+            ('2', WorkspaceTab::Log),
+            ('3', WorkspaceTab::Stash),
+            ('4', WorkspaceTab::Console),
+        ] {
+            let actions = route_terminal_event(
+                Event::Key(KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE)),
+                &mut state,
+            );
+            for a in actions {
+                state.dispatch(a);
+            }
+            assert_eq!(state.active_tab, expected);
+        }
+
+        // Cycle focus in Log tab
+        state.dispatch(Action::SwitchTab(WorkspaceTab::Log));
+        assert_eq!(state.focused_pane, PaneId::LogCommitTable);
+        state.dispatch(Action::CycleFocus { reverse: false });
+        assert_eq!(state.focused_pane, PaneId::LogDetailsDiff);
+        state.dispatch(Action::CycleFocus { reverse: false });
+        assert_eq!(state.focused_pane, PaneId::LogBranchesTree);
+
+        // Render Log tab and simulate dragging LogLeftHorizontal splitter
+        terminal.draw(|f| render_app(f, &mut state)).unwrap();
+        let (_, container) = state
+            .splitter_containers
+            .get(&SplitterId::LogLeftHorizontal)
+            .copied()
+            .unwrap();
+        let initial_ratio = state.splitters.ratio(SplitterId::LogLeftHorizontal);
+        let split = state.splitters.split(
+            container,
+            SplitterId::LogLeftHorizontal,
+            SplitAxis::Horizontal,
+        );
+        let div_x = split.divider.x;
+        let div_y = split.divider.y + 2;
+
+        // Left down on divider
+        let actions = route_terminal_event(
+            Event::Mouse(MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column: div_x,
+                row: div_y,
+                modifiers: KeyModifiers::NONE,
+            }),
+            &mut state,
+        );
+        for a in actions {
+            state.dispatch(a);
+        }
+        assert!(state.drag_state.is_some());
+
+        // Drag right by +12 columns
+        route_terminal_event(
+            Event::Mouse(MouseEvent {
+                kind: MouseEventKind::Drag(MouseButton::Left),
+                column: div_x + 12,
+                row: div_y,
+                modifiers: KeyModifiers::NONE,
+            }),
+            &mut state,
+        );
+        let dragged_ratio = state.splitters.ratio(SplitterId::LogLeftHorizontal);
+        assert!(dragged_ratio > initial_ratio);
+
+        // Release mouse
+        route_terminal_event(
+            Event::Mouse(MouseEvent {
+                kind: MouseEventKind::Up(MouseButton::Left),
+                column: div_x + 12,
+                row: div_y,
+                modifiers: KeyModifiers::NONE,
+            }),
+            &mut state,
+        );
+        assert!(state.drag_state.is_none());
+
+        // Double-click resets splitter ratio (re-render to update divider rect)
+        terminal.draw(|f| render_app(f, &mut state)).unwrap();
+        let split2 = state.splitters.split(
+            container,
+            SplitterId::LogLeftHorizontal,
+            SplitAxis::Horizontal,
+        );
+        let dx2 = split2.divider.x;
+        for _ in 0..2 {
+            let acts = route_terminal_event(
+                Event::Mouse(MouseEvent {
+                    kind: MouseEventKind::Down(MouseButton::Left),
+                    column: dx2,
+                    row: div_y,
+                    modifiers: KeyModifiers::NONE,
+                }),
+                &mut state,
+            );
+            for a in acts {
+                state.dispatch(a);
+            }
+        }
+        let reset_ratio = state.splitters.ratio(SplitterId::LogLeftHorizontal);
+        assert!((reset_ratio - initial_ratio).abs() < 0.001);
+        let _ = Rect::ZERO;
+    }
+
+    #[test]
+    fn mouse_wheel_routes_to_hovered_pane_and_right_click_preselects() {
+        use chrono::Local;
+        use jgit_core::{CommitSummary, GitConsoleEntry, Oid, RepoSnapshot, RepositoryState};
+        use std::sync::Arc;
+
+        let mut state = AppState::new(std::path::PathBuf::from("."), None);
+        let oid1 = Oid::from_bytes([1u8; 20]);
+        let oid2 = Oid::from_bytes([2u8; 20]);
+        state.repo_snapshot = Some(Arc::new(RepoSnapshot {
+            repo_name: "demo".into(),
+            workdir: ".".into(),
+            git_dir: ".git".into(),
+            common_dir: ".git".into(),
+            state: RepositoryState::Clean,
+            is_unborn_head: false,
+            head_branch: Some("main".into()),
+            head_oid: Some(oid1),
+            refs: vec![],
+            commits: vec![
+                CommitSummary {
+                    oid: oid1,
+                    parents: vec![],
+                    author_name: "Alice".into(),
+                    author_email: "a@b.c".into(),
+                    timestamp: 0,
+                    subject: "first".into(),
+                },
+                CommitSummary {
+                    oid: oid2,
+                    parents: vec![oid1],
+                    author_name: "Bob".into(),
+                    author_email: "b@c.d".into(),
+                    timestamp: 1,
+                    subject: "second".into(),
+                },
+            ],
+        }));
+        state.console_entries.push(GitConsoleEntry {
+            id: 1,
+            started_at: Local::now(),
+            duration_ms: Some(5),
+            command_line: "git status".into(),
+            stdout_lines: (0..30).map(|i| format!("line {i}")).collect(),
+            stderr_lines: vec![],
+            exit_code: Some(0),
+        });
+
+        let backend = TestBackend::new(120, 40);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        // In Console tab, focus stays on ConsoleCommandList while wheel over ConsoleOutputDetail scrolls output!
+        state.dispatch(Action::SwitchTab(WorkspaceTab::Console));
+        assert_eq!(state.focused_pane, PaneId::ConsoleCommandList);
+        terminal.draw(|f| render_app(f, &mut state)).unwrap();
+        let actions = route_terminal_event(
+            Event::Mouse(MouseEvent {
+                kind: MouseEventKind::ScrollDown,
+                column: 90,
+                row: 10,
+                modifiers: KeyModifiers::NONE,
+            }),
+            &mut state,
+        );
+        for a in actions {
+            state.dispatch(a);
+        }
+        assert!(state.console_output_scroll > 0);
+        assert_eq!(state.focused_pane, PaneId::ConsoleCommandList);
+
+        // In Log tab, right-clicking row 1 pre-selects row 1 AND opens ContextMenu
+        state.dispatch(Action::SwitchTab(WorkspaceTab::Log));
+        terminal.draw(|f| render_app(f, &mut state)).unwrap();
+        assert_eq!(state.log_selected_idx, 0);
+
+        // Row 0 is at y=3 (header=0, tabs=1, pane_header=2, row0=3, row1=4)
+        let actions = route_terminal_event(
+            Event::Mouse(MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Right),
+                column: 40,
+                row: 4,
+                modifiers: KeyModifiers::NONE,
+            }),
+            &mut state,
+        );
+        for a in actions {
+            state.dispatch(a);
+        }
+        assert_eq!(state.log_selected_idx, 1);
+        assert_eq!(state.modal_stack.len(), 1);
+
+        // Re-render with ContextMenu open and verify clicking outside closes menu without selecting row 0
+        terminal.draw(|f| render_app(f, &mut state)).unwrap();
+        let actions = route_terminal_event(
+            Event::Mouse(MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column: 5,
+                row: 3,
+                modifiers: KeyModifiers::NONE,
+            }),
+            &mut state,
+        );
+        for a in actions {
+            state.dispatch(a);
+        }
+        assert!(state.modal_stack.is_empty());
+        assert_eq!(state.log_selected_idx, 1);
+    }
+
+    #[test]
+    fn stale_epoch_events_are_silently_dropped_on_ui_arrival() {
+        use jgit_core::{Oid, RepoSnapshot, RepositoryState, StageEntry, FileStatusKind, StageStatusSnapshot};
+        use jgit_engine::EngineEvent;
+        use std::sync::Arc;
+
+        let mut state = AppState::new(std::path::PathBuf::from("."), None);
+        state.latest_repo_epoch = 5;
+        state.latest_stage_epoch = 4;
+
+        let stale_snap = Arc::new(RepoSnapshot {
+            repo_name: "stale".into(),
+            workdir: ".".into(),
+            git_dir: ".git".into(),
+            common_dir: ".git".into(),
+            state: RepositoryState::Clean,
+            is_unborn_head: true,
+            head_branch: Some("old".into()),
+            head_oid: None,
+            refs: vec![],
+            commits: vec![],
+        });
+        state.apply_engine_event(EngineEvent::RepoSnapshotLoaded {
+            snapshot: stale_snap,
+            epoch: 3,
+        });
+        assert!(state.repo_snapshot.is_none());
+
+        let fresh_snap = Arc::new(RepoSnapshot {
+            repo_name: "fresh".into(),
+            workdir: ".".into(),
+            git_dir: ".git".into(),
+            common_dir: ".git".into(),
+            state: RepositoryState::Clean,
+            is_unborn_head: false,
+            head_branch: Some("main".into()),
+            head_oid: Some(Oid::ZERO),
+            refs: vec![],
+            commits: vec![],
+        });
+        state.apply_engine_event(EngineEvent::RepoSnapshotLoaded {
+            snapshot: fresh_snap,
+            epoch: 5,
+        });
+        assert_eq!(
+            state.repo_snapshot.as_ref().map(|s| s.repo_name.as_str()),
+            Some("fresh")
+        );
+
+        let stale_stage = Arc::new(StageStatusSnapshot {
+            unstaged: vec![StageEntry {
+                path: "stale.rs".into(),
+                old_path: None,
+                kind: FileStatusKind::Modified,
+            }],
+            ..Default::default()
+        });
+        state.apply_engine_event(EngineEvent::StageStatusLoaded {
+            status: stale_stage,
+            epoch: 2,
+        });
+        assert!(state.stage_status.is_none());
+    }
+
+    #[test]
+    fn cjk_truncate_respects_display_width() {
+        use crate::views::truncate_to_width;
+        use unicode_width::UnicodeWidthStr;
+
+        let s = "修复中文提交信息对齐问题";
+        for max_w in 0..=12 {
+            let out = truncate_to_width(s, max_w);
+            assert!(
+                out.width() <= max_w,
+                "truncated '{out}' width {} exceeded {max_w}",
+                out.width()
+            );
+        }
+        assert_eq!(truncate_to_width(s, 5), "修复…");
+    }
+
+    #[test]
+    fn context_menu_cascading_submenu_mnemonics_hover_and_no_stacking() {
+        use crate::app::{ContextMenuAction, ContextMenuEntryKind, ContextMenuItem, ModalLayer};
+        use jgit_core::{FileStatusKind, StageEntry, StageStatusSnapshot};
+        use std::sync::Arc;
+
+        let mut state = AppState::new(std::path::PathBuf::from("."), None);
+        state.stage_status = Some(Arc::new(StageStatusSnapshot {
+            unstaged: vec![
+                StageEntry {
+                    path: "a.rs".into(),
+                    old_path: None,
+                    kind: FileStatusKind::Modified,
+                },
+                StageEntry {
+                    path: "b.rs".into(),
+                    old_path: None,
+                    kind: FileStatusKind::Modified,
+                },
+            ],
+            ..Default::default()
+        }));
+        state.dispatch(Action::SwitchTab(WorkspaceTab::Commit));
+
+        let backend = TestBackend::new(120, 40);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| render_app(f, &mut state)).unwrap();
+
+        // Right-click second row in Commit changes tree (y=4: header=0, tabs=1, pane_header=2, row0=3, row1=4)
+        let actions = route_terminal_event(
+            Event::Mouse(MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Right),
+                column: 10,
+                row: 4,
+                modifiers: KeyModifiers::NONE,
+            }),
+            &mut state,
+        );
+        for a in actions {
+            state.dispatch(a);
+        }
+        assert_eq!(state.commit_stage_selected_idx, 1);
+        assert_eq!(state.modal_stack.len(), 1);
+
+        // Render menu, then hover second item ("Refresh Stage Status") and check selection updates
+        terminal.draw(|f| render_app(f, &mut state)).unwrap();
+        route_terminal_event(
+            Event::Mouse(MouseEvent {
+                kind: MouseEventKind::Moved,
+                column: 14,
+                row: 6,
+                modifiers: KeyModifiers::NONE,
+            }),
+            &mut state,
+        );
+        assert!(matches!(
+            state.modal_stack.last(),
+            Some(ModalLayer::ContextMenu { selected: 1, .. })
+        ));
+
+        // Right-clicking on a MenuItem must not stack a duplicate ContextMenu
+        let dup_actions = route_terminal_event(
+            Event::Mouse(MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Right),
+                column: 14,
+                row: 6,
+                modifiers: KeyModifiers::NONE,
+            }),
+            &mut state,
+        );
+        assert!(dup_actions.is_empty());
+
+        // Mnemonic 'p' opens the cascading "Git Probes" submenu (depth 1)
+        let sub_actions = route_terminal_event(
+            Event::Key(KeyEvent::new(KeyCode::Char('p'), KeyModifiers::NONE)),
+            &mut state,
+        );
+        for a in sub_actions {
+            state.dispatch(a);
+        }
+        assert_eq!(state.modal_stack.len(), 2);
+        assert!(matches!(
+            state.modal_stack.last(),
+            Some(ModalLayer::ContextMenu { depth: 1, .. })
+        ));
+
+        // Mnemonic 's' inside submenu closes both ContextMenu layers and emits RunCliProbe
+        let run_actions = route_terminal_event(
+            Event::Key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::NONE)),
+            &mut state,
+        );
+        let mut effects = Vec::new();
+        for a in run_actions {
+            effects.extend(state.dispatch(a));
+        }
+        assert!(state.modal_stack.is_empty());
+        assert_eq!(effects.len(), 1);
+        let _ = (
+            ContextMenuAction::RefreshRepo,
+            ContextMenuEntryKind::Submenu(vec![]),
+            ContextMenuItem::action("x", None, None, ContextMenuAction::RefreshRepo),
+        );
+    }
+
+    #[test]
+    fn index_lock_retry_replays_blocked_cli_command() {
+        use crate::app::Effect;
+        use jgit_core::RefreshScope;
+        use jgit_engine::EngineEvent;
+
+        let mut state = AppState::new(std::path::PathBuf::from("."), None);
+        state.apply_engine_event(EngineEvent::IndexLockDetected {
+            lock_path: ".git/index.lock".into(),
+            message: "Unable to create '.git/index.lock': File exists.".into(),
+            retry_args: vec!["add".into(), "--pathspec-from-file=-".into()],
+            retry_stdin: Some(b"src/lib.rs\0".to_vec()),
+            retry_is_read_only: false,
+            retry_refresh_after: RefreshScope::StageStatus,
+        });
+        assert_eq!(state.modal_stack.len(), 1);
+
+        let actions = route_terminal_event(
+            Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+            &mut state,
+        );
+        let mut effects = Vec::new();
+        for a in actions {
+            effects.extend(state.dispatch(a));
+        }
+        assert!(state.modal_stack.is_empty());
+        assert_eq!(effects.len(), 1);
+        match &effects[0] {
+            Effect::RunCli {
+                args,
+                stdin_payload,
+                is_read_only,
+                refresh_after,
+            } => {
+                assert_eq!(args, &vec!["add".to_string(), "--pathspec-from-file=-".to_string()]);
+                assert_eq!(stdin_payload.as_deref(), Some(b"src/lib.rs\0".as_slice()));
+                assert!(!is_read_only);
+                assert_eq!(*refresh_after, RefreshScope::StageStatus);
+            }
+            other => panic!("expected RunCli retry effect, got {other:?}"),
+        }
+    }
+}
