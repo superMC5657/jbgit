@@ -792,7 +792,7 @@ impl AppState {
             details,
             active_tab,
             focused_pane,
-            splitters: SplitterState::default(),
+            splitters: SplitterState::new_with_layout(&config.jgit.layout),
             splitter_containers: FxHashMap::default(),
             terminal_area: Rect::ZERO,
             modal_stack: Vec::new(),

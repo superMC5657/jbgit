@@ -31,3 +31,17 @@ tab_size = 4
 
 # Diff 上下文保留行数
 context_lines = 3
+
+[layout]
+# Log 日志主视图栏位比例: [左侧分支树, 中间提交图谱, 右侧提交详情/Diff]
+# 对标 Yazi manager.ratio 规范 (默认 [1, 3, 2])
+log_ratio = [ 1, 3, 2 ]
+
+# Commit 提交工作台比例: [左侧文件变更树, 右侧 Diff 预览] (默认 [1, 2])
+commit_ratio = [ 1, 2 ]
+
+# Stash 贮藏箱比例: [左侧贮藏条目, 右侧差异预览] (默认 [2, 3])
+stash_ratio = [ 2, 3 ]
+
+# Console 控制台比例: [左侧命令历史, 右侧执行输出] (默认 [2, 3])
+console_ratio = [ 2, 3 ]

@@ -65,35 +65,27 @@ impl AppConfig {
     /// Default -> Global User Config -> Repository Config -> JGIT_CONFIG_DIR
     pub fn load(workdir: Option<&Path>) -> Self {
         let mut config = Self::load_defaults();
-        let mut flags = OverlayFlags::default();
 
         // Layer 1: Global user configuration
         let global_dir = global_config_dir();
-        config.apply_dir_overlays(&global_dir, false, &mut flags);
+        config.apply_dir_overlays(&global_dir, false);
 
         // Layer 2: Repo-level configuration (.jgit/)
         if let Some(wd) = workdir {
             let repo_jgit_dir = wd.join(".jgit");
-            config.apply_dir_overlays(&repo_jgit_dir, true, &mut flags);
+            config.apply_dir_overlays(&repo_jgit_dir, true);
         }
 
         // Layer 3: JGIT_CONFIG_DIR environment variable (highest override)
         if let Some(env_dir) = std::env::var_os(JGIT_CONFIG_DIR_ENV) {
-            config.apply_dir_overlays(Path::new(&env_dir), false, &mut flags);
-        }
-
-        // Honor jgit.toml `[general].flavor` / `[graph].glyph_mode` when theme.toml did not override them.
-        if flags.jgit_flavor_set && !flags.theme_flavor_set {
-            config.theme.flavor = config.jgit.general.flavor;
-        }
-        if flags.jgit_glyph_set && !flags.theme_glyph_set {
-            config.theme.glyphs.mode = config.jgit.graph.glyph_mode;
+            config.apply_dir_overlays(Path::new(&env_dir), false);
         }
 
         config
     }
 
-    fn apply_dir_overlays(&mut self, dir: &Path, allow_config_toml_alias: bool, flags: &mut OverlayFlags) {
+    fn apply_dir_overlays(&mut self, dir: &Path, allow_config_toml_alias: bool) {
+        let mut flags = OverlayFlags::default();
         if allow_config_toml_alias {
             load_toml_overlay::<JgitConfigOverlay>(&dir.join("config.toml"), |ov| {
                 if ov.general.as_ref().and_then(|g| g.flavor).is_some() {
@@ -126,6 +118,14 @@ impl AppConfig {
         load_toml_overlay::<KeymapConfigOverlay>(&dir.join("keymap.toml"), |ov| {
             self.keymap.merge_overlay(ov);
         });
+
+        // Honor jgit.toml `[general].flavor` / `[graph].glyph_mode` when theme.toml in this layer did not override them.
+        if flags.jgit_flavor_set && !flags.theme_flavor_set {
+            self.theme.flavor = self.jgit.general.flavor;
+        }
+        if flags.jgit_glyph_set && !flags.theme_glyph_set {
+            self.theme.glyphs.mode = self.jgit.graph.glyph_mode;
+        }
     }
 
     /// Prints the requested default configuration to standard output.
@@ -283,5 +283,25 @@ default_tab = "branches"
         let cfg = AppConfig::load(Some(temp.path()));
         assert_eq!(cfg.jgit.general.default_tab, DefaultTab::Branches);
         assert_eq!(cfg.theme.flavor, ThemeFlavor::GruvboxDark);
+    }
+
+    #[test]
+    fn test_layout_ratio_parsing_and_overlay() {
+        let mut cfg = AppConfig::load_defaults();
+        assert_eq!(cfg.jgit.layout.log_ratio, vec![1, 3, 2]);
+
+        let overlay_toml = r#"
+[layout]
+log_ratio = [1, 4, 3]
+commit_ratio = [2, 5]
+"#;
+        let overlay: JgitConfigOverlay = toml::from_str(overlay_toml).unwrap();
+        cfg.jgit.merge_overlay(&overlay);
+
+        assert_eq!(cfg.jgit.layout.log_ratio, vec![1, 4, 3]);
+        assert_eq!(cfg.jgit.layout.commit_ratio, vec![2, 5]);
+        // Unspecified ratios keep defaults
+        assert_eq!(cfg.jgit.layout.stash_ratio, vec![2, 3]);
+        assert_eq!(cfg.jgit.layout.console_ratio, vec![2, 3]);
     }
 }

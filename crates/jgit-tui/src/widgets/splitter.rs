@@ -111,6 +111,89 @@ impl Default for SplitterState {
 }
 
 impl SplitterState {
+    pub fn new_with_layout(layout: &crate::config::jgit_config::LayoutSection) -> Self {
+        let mut state = Self::default();
+        state.apply_layout_config(layout);
+        state
+    }
+
+    pub fn apply_layout_config(&mut self, layout: &crate::config::jgit_config::LayoutSection) {
+        // log_ratio: [branches, commits, details] (len >= 3) or [branches, commits] (len == 2)
+        if layout.log_ratio.len() >= 3 {
+            let a = layout.log_ratio[0] as f32;
+            let b = layout.log_ratio[1] as f32;
+            let c = layout.log_ratio[2] as f32;
+            let total = a + b + c;
+            if total > 0.0 {
+                let r_left = (a / total).clamp(0.05, 0.90);
+                self.ratios.insert(SplitterId::LogLeftHorizontal, r_left);
+                if let Some(spec) = self.specs.get_mut(&SplitterId::LogLeftHorizontal) {
+                    spec.default_ratio = r_left;
+                }
+                if b + c > 0.0 {
+                    let r_right = (b / (b + c)).clamp(0.05, 0.90);
+                    self.ratios.insert(SplitterId::LogRightHorizontal, r_right);
+                    if let Some(spec) = self.specs.get_mut(&SplitterId::LogRightHorizontal) {
+                        spec.default_ratio = r_right;
+                    }
+                }
+            }
+        } else if layout.log_ratio.len() == 2 {
+            let a = layout.log_ratio[0] as f32;
+            let b = layout.log_ratio[1] as f32;
+            let total = a + b;
+            if total > 0.0 {
+                let r = (a / total).clamp(0.05, 0.90);
+                self.ratios.insert(SplitterId::LogLeftHorizontal, r);
+                if let Some(spec) = self.specs.get_mut(&SplitterId::LogLeftHorizontal) {
+                    spec.default_ratio = r;
+                }
+            }
+        }
+
+        // commit_ratio: [changes, diff]
+        if layout.commit_ratio.len() >= 2 {
+            let a = layout.commit_ratio[0] as f32;
+            let b = layout.commit_ratio[1] as f32;
+            let total = a + b;
+            if total > 0.0 {
+                let r = (a / total).clamp(0.05, 0.90);
+                self.ratios.insert(SplitterId::CommitMainHorizontal, r);
+                if let Some(spec) = self.specs.get_mut(&SplitterId::CommitMainHorizontal) {
+                    spec.default_ratio = r;
+                }
+            }
+        }
+
+        // stash_ratio: [stash_list, diff]
+        if layout.stash_ratio.len() >= 2 {
+            let a = layout.stash_ratio[0] as f32;
+            let b = layout.stash_ratio[1] as f32;
+            let total = a + b;
+            if total > 0.0 {
+                let r = (a / total).clamp(0.05, 0.90);
+                self.ratios.insert(SplitterId::StashMainHorizontal, r);
+                if let Some(spec) = self.specs.get_mut(&SplitterId::StashMainHorizontal) {
+                    spec.default_ratio = r;
+                }
+            }
+        }
+
+        // console_ratio: [commands, output]
+        if layout.console_ratio.len() >= 2 {
+            let a = layout.console_ratio[0] as f32;
+            let b = layout.console_ratio[1] as f32;
+            let total = a + b;
+            if total > 0.0 {
+                let r = (a / total).clamp(0.05, 0.90);
+                self.ratios.insert(SplitterId::ConsoleMainHorizontal, r);
+                if let Some(spec) = self.specs.get_mut(&SplitterId::ConsoleMainHorizontal) {
+                    spec.default_ratio = r;
+                }
+            }
+        }
+    }
+
     pub fn ratio(&self, id: SplitterId) -> f32 {
         self.ratios.get(&id).copied().unwrap_or(0.5)
     }
@@ -304,5 +387,40 @@ mod tests {
                 assert!(l2.first.height <= h);
             }
         }
+    }
+
+    #[test]
+    fn custom_layout_ratios_apply_to_splitters() {
+        use crate::config::jgit_config::LayoutSection;
+
+        let layout = LayoutSection {
+            log_ratio: vec![1, 4, 3], // total 8 -> left: 1/8 = 0.125, right: 4/7 ≈ 0.5714
+            commit_ratio: vec![1, 3],  // total 4 -> 1/4 = 0.25
+            stash_ratio: vec![2, 3],   // total 5 -> 2/5 = 0.40
+            console_ratio: vec![1, 1], // total 2 -> 1/2 = 0.50
+        };
+
+        let mut state = SplitterState::new_with_layout(&layout);
+
+        let r_log_left = state.ratio(SplitterId::LogLeftHorizontal);
+        assert!((r_log_left - 0.125).abs() < 1e-4);
+
+        let r_log_right = state.ratio(SplitterId::LogRightHorizontal);
+        assert!((r_log_right - (4.0 / 7.0)).abs() < 1e-4);
+
+        let r_commit = state.ratio(SplitterId::CommitMainHorizontal);
+        assert!((r_commit - 0.25).abs() < 1e-4);
+
+        let r_stash = state.ratio(SplitterId::StashMainHorizontal);
+        assert!((r_stash - 0.40).abs() < 1e-4);
+
+        let r_console = state.ratio(SplitterId::ConsoleMainHorizontal);
+        assert!((r_console - 0.50).abs() < 1e-4);
+
+        // Test reset restores configured ratio
+        state.ratios.insert(SplitterId::CommitMainHorizontal, 0.88);
+        assert_eq!(state.ratio(SplitterId::CommitMainHorizontal), 0.88);
+        state.reset(SplitterId::CommitMainHorizontal);
+        assert!((state.ratio(SplitterId::CommitMainHorizontal) - 0.25).abs() < 1e-4);
     }
 }

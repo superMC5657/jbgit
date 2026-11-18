@@ -217,6 +217,8 @@ pub struct JgitConfig {
     pub graph: GraphSection,
     #[serde(default)]
     pub diff: DiffSection,
+    #[serde(default)]
+    pub layout: LayoutSection,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -271,6 +273,45 @@ impl Default for DiffSection {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct LayoutSection {
+    #[serde(default = "default_log_ratio")]
+    pub log_ratio: Vec<u32>,
+    #[serde(default = "default_commit_ratio")]
+    pub commit_ratio: Vec<u32>,
+    #[serde(default = "default_stash_ratio")]
+    pub stash_ratio: Vec<u32>,
+    #[serde(default = "default_console_ratio")]
+    pub console_ratio: Vec<u32>,
+}
+
+fn default_log_ratio() -> Vec<u32> {
+    vec![1, 3, 2]
+}
+
+fn default_commit_ratio() -> Vec<u32> {
+    vec![1, 2]
+}
+
+fn default_stash_ratio() -> Vec<u32> {
+    vec![2, 3]
+}
+
+fn default_console_ratio() -> Vec<u32> {
+    vec![2, 3]
+}
+
+impl Default for LayoutSection {
+    fn default() -> Self {
+        Self {
+            log_ratio: default_log_ratio(),
+            commit_ratio: default_commit_ratio(),
+            stash_ratio: default_stash_ratio(),
+            console_ratio: default_console_ratio(),
+        }
+    }
+}
+
 impl JgitConfig {
     /// Merge an optional partial override on top of self.
     pub fn merge_overlay(&mut self, overlay: &JgitConfigOverlay) {
@@ -307,6 +348,28 @@ impl JgitConfig {
                 self.diff.context_lines = cl;
             }
         }
+        if let Some(lo) = &overlay.layout {
+            if let Some(r) = &lo.log_ratio {
+                if r.len() >= 2 {
+                    self.layout.log_ratio = r.clone();
+                }
+            }
+            if let Some(r) = &lo.commit_ratio {
+                if r.len() >= 2 {
+                    self.layout.commit_ratio = r.clone();
+                }
+            }
+            if let Some(r) = &lo.stash_ratio {
+                if r.len() >= 2 {
+                    self.layout.stash_ratio = r.clone();
+                }
+            }
+            if let Some(r) = &lo.console_ratio {
+                if r.len() >= 2 {
+                    self.layout.console_ratio = r.clone();
+                }
+            }
+        }
     }
 }
 
@@ -320,6 +383,7 @@ pub struct JgitConfigOverlay {
     pub general: Option<GeneralSectionOverlay>,
     pub graph: Option<GraphSectionOverlay>,
     pub diff: Option<DiffSectionOverlay>,
+    pub layout: Option<LayoutSectionOverlay>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -341,4 +405,12 @@ pub struct DiffSectionOverlay {
     pub syntax_highlight: Option<bool>,
     pub tab_size: Option<usize>,
     pub context_lines: Option<usize>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct LayoutSectionOverlay {
+    pub log_ratio: Option<Vec<u32>>,
+    pub commit_ratio: Option<Vec<u32>>,
+    pub stash_ratio: Option<Vec<u32>>,
+    pub console_ratio: Option<Vec<u32>>,
 }
