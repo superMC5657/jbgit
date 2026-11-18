@@ -7,13 +7,21 @@ use std::thread::{self, JoinHandle};
 use crossbeam_channel::{Sender, bounded};
 use git2::{BranchType, Delta, Repository, Sort, Status, StatusOptions};
 use jgit_core::{
-    CommitChangesBundle, CommitSummary, DetailsKey, EpochToken, FileDiff, FileDiffKey,
-    FileStatusKind, Oid, RefInfo, RefKind, RepoSnapshot, StageEntry, StageStatusSnapshot,
+    AmendCommitPreview, CommitChangesBundle, CommitSummary, DetailsKey, EpochToken, FileDiff,
+    FileDiffKey, FileStatusKind, Oid, RefInfo, RefKind, RepoSnapshot, StageEntry,
+    StageStatusSnapshot, StageTarget,
 };
 
 use crate::details::{load_commit_details_sync, load_file_diff_sync, load_path_matches_sync};
 use crate::error::EngineError;
 use crate::probe::{RepoLocation, probe_repo_state, to_core_oid};
+use crate::stage::{
+    CommitOutcome, CommitPrecheckInfo, CommitRequest, StageDiffKey, ThreeDocStageDiff,
+    apply_stage_buffer_sync, discard_targets_sync, execute_commit_git2_sync,
+    load_amend_preview_sync, load_stage_file_diff_sync, probe_commit_precheck_sync,
+    stage_all_tracked_sync, stage_targets_sync, undo_last_commit_sync, unstage_targets_sync,
+    write_worktree_buffer_sync,
+};
 
 thread_local! {
     static THREAD_REPOS: RefCell<HashMap<PathBuf, Repository>> = RefCell::new(HashMap::new());
@@ -140,6 +148,103 @@ impl Git2WorkerPool {
     ) -> Result<Arc<HashSet<Oid>>, EngineError> {
         self.run(move || load_path_matches_sync(&location, &paths, &snapshot, &token).map(Arc::new))
             .await
+    }
+
+    pub async fn load_stage_file_diff(
+        &self,
+        location: RepoLocation,
+        key: StageDiffKey,
+        token: EpochToken,
+    ) -> Result<Arc<ThreeDocStageDiff>, EngineError> {
+        self.run(move || load_stage_file_diff_sync(&location, &key, &token).map(Arc::new))
+            .await
+    }
+
+    pub async fn load_amend_preview(
+        &self,
+        location: RepoLocation,
+    ) -> Result<Option<AmendCommitPreview>, EngineError> {
+        self.run(move || load_amend_preview_sync(&location)).await
+    }
+
+    pub async fn probe_commit_precheck(&self, location: RepoLocation) -> CommitPrecheckInfo {
+        self.run(move || Ok(probe_commit_precheck_sync(&location)))
+            .await
+            .unwrap_or_default()
+    }
+
+    pub async fn apply_stage_buffer(
+        &self,
+        location: RepoLocation,
+        path: String,
+        new_staged_bytes: Vec<u8>,
+        file_mode: u32,
+        remove_from_index: bool,
+    ) -> Result<(), EngineError> {
+        self.run(move || {
+            apply_stage_buffer_sync(
+                &location,
+                &path,
+                &new_staged_bytes,
+                file_mode,
+                remove_from_index,
+            )
+        })
+        .await
+    }
+
+    pub async fn write_worktree_buffer(
+        &self,
+        location: RepoLocation,
+        path: String,
+        new_local_bytes: Vec<u8>,
+    ) -> Result<(), EngineError> {
+        self.run(move || write_worktree_buffer_sync(&location, &path, &new_local_bytes))
+            .await
+    }
+
+    pub async fn stage_targets(
+        &self,
+        location: RepoLocation,
+        targets: Vec<StageTarget>,
+    ) -> Result<(), EngineError> {
+        self.run(move || stage_targets_sync(&location, &targets))
+            .await
+    }
+
+    pub async fn stage_all_tracked(&self, location: RepoLocation) -> Result<(), EngineError> {
+        self.run(move || stage_all_tracked_sync(&location)).await
+    }
+
+    pub async fn unstage_targets(
+        &self,
+        location: RepoLocation,
+        targets: Vec<StageTarget>,
+    ) -> Result<(), EngineError> {
+        self.run(move || unstage_targets_sync(&location, &targets))
+            .await
+    }
+
+    pub async fn discard_targets(
+        &self,
+        location: RepoLocation,
+        targets: Vec<StageTarget>,
+    ) -> Result<(), EngineError> {
+        self.run(move || discard_targets_sync(&location, &targets))
+            .await
+    }
+
+    pub async fn execute_commit_git2(
+        &self,
+        location: RepoLocation,
+        request: CommitRequest,
+    ) -> Result<CommitOutcome, EngineError> {
+        self.run(move || execute_commit_git2_sync(&location, &request))
+            .await
+    }
+
+    pub async fn undo_last_commit(&self, location: RepoLocation) -> Result<String, EngineError> {
+        self.run(move || undo_last_commit_sync(&location)).await
     }
 
     async fn run<T, F>(&self, f: F) -> Result<T, EngineError>
@@ -397,6 +502,35 @@ pub fn load_stage_status_sync(
         }
 
         let mut snap = StageStatusSnapshot::default();
+        if let Ok(index) = repo.index()
+            && let Ok(conflicts) = index.conflicts()
+        {
+            for item in conflicts.flatten() {
+                let p = item
+                    .our
+                    .as_ref()
+                    .or(item.their.as_ref())
+                    .or(item.ancestor.as_ref())
+                    .map(|e| String::from_utf8_lossy(&e.path).replace('\\', "/"));
+                if let Some(path) = p {
+                    let label = match (
+                        item.ancestor.is_some(),
+                        item.our.is_some(),
+                        item.their.is_some(),
+                    ) {
+                        (true, true, true) => "Both Modified",
+                        (false, true, true) => "Added by Both",
+                        (true, true, false) => "Deleted by Them",
+                        (true, false, true) => "Deleted by Us",
+                        (true, false, false) => "Both Deleted",
+                        (false, true, false) => "Added by Us",
+                        (false, false, true) => "Added by Them",
+                        (false, false, false) => "Conflicted",
+                    };
+                    snap.conflict_labels.insert(path, label.to_string());
+                }
+            }
+        }
         for entry in statuses.iter() {
             let st = entry.status();
             let path = entry.path().unwrap_or_default().to_string();

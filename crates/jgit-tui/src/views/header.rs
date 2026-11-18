@@ -323,6 +323,9 @@ pub fn render_footer_bar(
     }
 
     let hint = match state.active_tab {
+        WorkspaceTab::Commit => {
+            " Tab Focus | Space Stage/Unstage | v Visual | s/u/r Hunk | n/p Prev/Next | Alt+M Amend | Ctrl+Enter Commit | ? Help"
+        }
         WorkspaceTab::Log => {
             " Tab Focus | / Filter | Shift+↑↓ Range | →/← Parent/Child | Ctrl+G Go to | Alt+B Branches | F4 Diff | ? Help | q Quit"
         }

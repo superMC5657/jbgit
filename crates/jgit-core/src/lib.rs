@@ -9,6 +9,7 @@ pub mod oid;
 pub mod refs;
 pub mod repo;
 pub mod stage;
+pub mod stage_tracker;
 pub mod ui;
 
 pub use branch_tree::{
@@ -35,7 +36,16 @@ pub use refs::{
     group_refs_for_table, shorten_group_label, shorten_ref_name,
 };
 pub use repo::{CommitSummary, RefInfo, RefKind, RefreshScope, RepoSnapshot, RepositoryState};
-pub use stage::{FileStatusKind, StageEntry, StageStatusSnapshot};
+pub use stage::{
+    AmendCommitPreview, FileStatusKind, StageEntry, StageNodeKind, StageStatusSnapshot,
+    StageTarget, StageTreeOptions, StageTreeRow, StageTreeRowKind, UNTRACKED_COLLAPSE_THRESHOLD,
+    build_stage_tree_rows, collect_targets_under_row, next_anchor_after_mutation,
+};
+pub use stage_tracker::{
+    DiffBlock, LineEnding, LineGutterMark, LineSelection, SlicedDocument, SlicedLine,
+    StageDiffHunk, StageDiffLineMeta, StageLineTracker, StagedRange, compute_diff_blocks,
+    merge_stage_blocks,
+};
 pub use ui::{
     BranchTreeNodeId, ChangeNodeId, ModalButton, PaneId, SplitAxis, SplitterId, TreeId,
     WorkspaceTab,

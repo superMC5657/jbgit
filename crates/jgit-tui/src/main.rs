@@ -1,10 +1,13 @@
 mod app;
+mod app_stage;
 mod graph;
 mod hit_test;
 mod input;
+mod input_stage;
 #[cfg(test)]
 mod log_tests;
 mod log_view;
+mod stage_view;
 mod syntax;
 mod terminal;
 mod theme;
@@ -19,7 +22,7 @@ use crossterm::event::EventStream;
 use futures::StreamExt;
 use jgit_engine::{EngineSupervisor, RepoLocation};
 
-use crate::app::{Action, AppState, execute_effects};
+use crate::app::{Action, AppState, Effect, execute_effects};
 use crate::input::route_terminal_event;
 use crate::terminal::TerminalGuard;
 use crate::views::render_app;
@@ -61,14 +64,16 @@ async fn main() -> Result<()> {
         execute_effects(initial_effects, &mut state, Some(handle));
     }
 
-    let mut term_guard = TerminalGuard::enter()?;
+    let mut term_guard = Some(TerminalGuard::enter()?);
     let mut event_stream = EventStream::new();
 
     while !state.should_quit {
         if state.needs_redraw {
-            term_guard.terminal_mut().draw(|frame| {
-                render_app(frame, &mut state);
-            })?;
+            if let Some(guard) = term_guard.as_mut() {
+                guard.terminal_mut().draw(|frame| {
+                    render_app(frame, &mut state);
+                })?;
+            }
             state.needs_redraw = false;
         }
 
@@ -97,6 +102,7 @@ async fn main() -> Result<()> {
                         let actions = route_terminal_event(ev, &mut state);
                         for action in actions {
                             let effects = state.dispatch(action);
+                            handle_external_editor_effects(&effects, &mut state, &mut term_guard);
                             execute_effects(effects, &mut state, engine_handle.as_ref());
                         }
                     }
@@ -108,6 +114,7 @@ async fn main() -> Result<()> {
             maybe_engine = recv_engine(&mut engine_rx) => {
                 if let Some(ev) = maybe_engine {
                     let effects = state.apply_engine_event(ev);
+                    handle_external_editor_effects(&effects, &mut state, &mut term_guard);
                     execute_effects(effects, &mut state, engine_handle.as_ref());
                 } else {
                     engine_rx = None;
@@ -126,6 +133,66 @@ async fn main() -> Result<()> {
 
     drop(term_guard);
     Ok(())
+}
+
+fn handle_external_editor_effects(
+    effects: &[Effect],
+    state: &mut AppState,
+    term_guard: &mut Option<TerminalGuard>,
+) {
+    let editor_bin = || {
+        std::env::var("VISUAL")
+            .ok()
+            .filter(|s| !s.trim().is_empty())
+            .or_else(|| std::env::var("EDITOR").ok().filter(|s| !s.trim().is_empty()))
+            .unwrap_or_else(|| {
+                if cfg!(windows) {
+                    "notepad".to_string()
+                } else {
+                    "vi".to_string()
+                }
+            })
+    };
+
+    for eff in effects {
+        match eff {
+            Effect::OpenExternalEditorMessage => {
+                let tmp_path = std::env::temp_dir().join("jgit-commit-editmsg.txt");
+                if std::fs::write(&tmp_path, state.stage_workbench.editor.text()).is_err() {
+                    continue;
+                }
+                drop(term_guard.take());
+                let cmd = editor_bin();
+                let status = std::process::Command::new(&cmd).arg(&tmp_path).status();
+                *term_guard = TerminalGuard::enter().ok();
+                if status.is_ok_and(|s| s.success())
+                    && let Ok(updated) = std::fs::read_to_string(&tmp_path)
+                {
+                    let prev = state.stage_workbench.editor.text();
+                    if !state.stage_workbench.amend
+                        && !prev.trim().is_empty()
+                        && prev.trim() != updated.trim()
+                    {
+                        state.stage_workbench.push_history(&prev);
+                    }
+                    state.stage_workbench.editor.set_text(&updated);
+                    state.stage_workbench.empty_message_error = false;
+                    state.stage_workbench.save_draft();
+                }
+                let _ = std::fs::remove_file(&tmp_path);
+                state.needs_redraw = true;
+            }
+            Effect::OpenExternalEditorFile(rel) => {
+                let full = state.repo_path_display.join(rel);
+                drop(term_guard.take());
+                let cmd = editor_bin();
+                let _ = std::process::Command::new(&cmd).arg(&full).status();
+                *term_guard = TerminalGuard::enter().ok();
+                state.needs_redraw = true;
+            }
+            _ => {}
+        }
+    }
 }
 
 async fn recv_engine(
@@ -509,12 +576,12 @@ mod tests {
         let mut terminal = Terminal::new(backend).unwrap();
         terminal.draw(|f| render_app(f, &mut state)).unwrap();
 
-        // Right-click second row in Commit changes tree (y=4: header=0, tabs=1, pane_header=2, row0=3, row1=4)
+        // Right-click b.rs in Commit changes tree (y=6: header=0, tabs=1, pane_header=2, toolbar=3, group=4, a.rs=5, b.rs=6)
         let actions = route_terminal_event(
             Event::Mouse(MouseEvent {
                 kind: MouseEventKind::Down(MouseButton::Right),
                 column: 10,
-                row: 4,
+                row: 6,
                 modifiers: KeyModifiers::NONE,
             }),
             &mut state,
@@ -522,16 +589,16 @@ mod tests {
         for a in actions {
             state.dispatch(a);
         }
-        assert_eq!(state.commit_stage_selected_idx, 1);
+        assert_eq!(state.commit_stage_selected_idx, 2);
         assert_eq!(state.modal_stack.len(), 1);
 
-        // Render menu, then hover second item ("Refresh Stage Status") and check selection updates
+        // Render menu, then hover second item (menu anchored at row 6 -> border at 6, item 0 at 7, item 1 at 8)
         terminal.draw(|f| render_app(f, &mut state)).unwrap();
         route_terminal_event(
             Event::Mouse(MouseEvent {
                 kind: MouseEventKind::Moved,
                 column: 14,
-                row: 6,
+                row: 8,
                 modifiers: KeyModifiers::NONE,
             }),
             &mut state,
@@ -546,7 +613,7 @@ mod tests {
             Event::Mouse(MouseEvent {
                 kind: MouseEventKind::Down(MouseButton::Right),
                 column: 14,
-                row: 6,
+                row: 8,
                 modifiers: KeyModifiers::NONE,
             }),
             &mut state,
@@ -901,5 +968,341 @@ mod tests {
             state.dispatch(a);
         }
         assert_eq!(state.log_graph.selected_idx, 0);
+    }
+
+    #[test]
+    fn stage_workbench_dual_presence_visual_select_and_amend_draft_restore() {
+        use jgit_core::{
+            AmendCommitPreview, DiffContext, FileChange, FileStatusKind, StageEntry,
+            StageStatusSnapshot,
+        };
+        use jgit_engine::{EngineEvent, StageDiffKey, StageDiffSide, ThreeDocStageDiff};
+        use std::sync::Arc;
+
+        let mut state = AppState::new(std::path::PathBuf::from("."), None);
+        state.stage_status = Some(Arc::new(StageStatusSnapshot {
+            staged: vec![StageEntry {
+                path: "src/foo.rs".into(),
+                old_path: None,
+                kind: FileStatusKind::Added,
+            }],
+            unstaged: vec![StageEntry {
+                path: "src/foo.rs".into(),
+                old_path: None,
+                kind: FileStatusKind::Modified,
+            }],
+            ..Default::default()
+        }));
+        state.dispatch(Action::SwitchTab(WorkspaceTab::Commit));
+        state.dispatch(Action::StageToggleGroupByDir); // flat mode for predictable row indices
+
+        // Dual presence: Staged (0), src/foo.rs (1), Unstaged (2), src/foo.rs (3)
+        assert_eq!(state.stage_workbench.rows.len(), 4);
+
+        // Selecting Staged/src/foo.rs targets StageDiffSide::Staged
+        state.dispatch(Action::SelectCommitStageRow(1));
+        assert_eq!(
+            state
+                .stage_workbench
+                .current_diff_key
+                .as_ref()
+                .map(|k| k.side),
+            Some(StageDiffSide::Staged)
+        );
+
+        // Selecting Unstaged/src/foo.rs targets StageDiffSide::Unstaged
+        state.dispatch(Action::SelectCommitStageRow(3));
+        assert_eq!(
+            state
+                .stage_workbench
+                .current_diff_key
+                .as_ref()
+                .map(|k| k.side),
+            Some(StageDiffSide::Unstaged)
+        );
+
+        // Feed ThreeDocStageDiff and test visual selection partial staging effect
+        let vcs = b"fn a() {}\n";
+        let staged = b"fn a() {}\nfn staged_line() {}\n";
+        let local = b"fn a() {}\nfn staged_line() {}\nfn local_1() {}\nfn local_2() {}\n";
+        let tracker = jgit_core::StageLineTracker::new(vcs, staged, local);
+        let (hunks, is_truncated) = tracker.build_interactive_hunks(false, DiffContext::Three, 20_000);
+        let diff = Arc::new(ThreeDocStageDiff {
+            key: StageDiffKey {
+                path: "src/foo.rs".into(),
+                old_path: None,
+                side: StageDiffSide::Unstaged,
+                context: DiffContext::Three,
+            },
+            vcs_exists: true,
+            staged_exists: true,
+            local_exists: true,
+            vcs_bytes: vcs.to_vec(),
+            staged_bytes: staged.to_vec(),
+            local_bytes: local.to_vec(),
+            file_mode: 0o100644,
+            is_binary: false,
+            is_conflicted: false,
+            tracker,
+            hunks,
+            is_truncated,
+        });
+        state.apply_engine_event(EngineEvent::StageFileDiffLoaded { diff, epoch: 1 });
+
+        // Focus diff, move to first Added line (`fn local_1() {}`), toggle visual mode, stage only that line!
+        state.dispatch(Action::FocusPane(PaneId::CommitDiffPreview));
+        // Row 0 = Header, Row 1 = Context `fn a()`, Row 2 = Context `fn staged_line()`, Row 3 = Added `fn local_1()`
+        state.dispatch(Action::StageDiffMoveCursor(3));
+        state.dispatch(Action::StageDiffToggleVisual);
+        let effs = state.dispatch(Action::StageDiffStageSelection);
+        match effs.into_iter().find(|e| matches!(e, crate::app::Effect::ApplyStageBuffer { .. })) {
+            Some(crate::app::Effect::ApplyStageBuffer { new_staged_bytes, .. }) => {
+                assert_eq!(
+                    new_staged_bytes,
+                    b"fn a() {}\nfn staged_line() {}\nfn local_1() {}\n"
+                );
+            }
+            other => panic!("expected ApplyStageBuffer, got {other:?}"),
+        }
+
+        // Test non-modal Amend draft preservation + virtual tree node
+        state.dispatch(Action::FocusPane(PaneId::CommitMessageEditor));
+        state.dispatch(Action::CommitEditorPaste("wip: my draft".into()));
+        state.apply_engine_event(EngineEvent::AmendPreviewLoaded {
+            preview: Some(AmendCommitPreview {
+                short_sha: "a8f3d21".into(),
+                message: "feat: previous commit".into(),
+                files: vec![FileChange {
+                    path: "prev.rs".into(),
+                    old_path: None,
+                    kind: FileStatusKind::Modified,
+                    additions: 1,
+                    deletions: 0,
+                    is_binary: false,
+                }],
+            }),
+        });
+
+        state.dispatch(Action::CommitToggleAmend);
+        assert!(state.stage_workbench.amend);
+        assert_eq!(state.stage_workbench.editor.text(), "feat: previous commit");
+        assert!(
+            state
+                .stage_workbench
+                .rows
+                .iter()
+                .any(|r| r.label.contains("Head Commit to Amend (a8f3d21)"))
+        );
+
+        // Render full Commit tab to verify no panic and Amend node visible
+        let backend = TestBackend::new(120, 40);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| render_app(f, &mut state)).unwrap();
+
+        // Untoggling Amend restores original draft!
+        state.dispatch(Action::CommitToggleAmend);
+        assert!(!state.stage_workbench.amend);
+        assert_eq!(state.stage_workbench.editor.text(), "wip: my draft");
+    }
+
+    #[test]
+    fn stage_review_fixes_amend_diff_gutter_click_draft_persistence_and_push_confirm() {
+        use jgit_core::{
+            AmendCommitPreview, DiffContext, FileChange, FileStatusKind, StageTreeRowKind,
+        };
+        use jgit_engine::{
+            CommitOutcome, EngineEvent, StageDiffKey, StageDiffSide, ThreeDocStageDiff,
+        };
+        use std::sync::Arc;
+
+        let mut state = AppState::new(std::path::PathBuf::from("."), None);
+        state.stage_status = Some(Arc::new(jgit_core::StageStatusSnapshot::default()));
+        let tmp_dir = std::env::temp_dir().join(format!("jgit-test-draft-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&tmp_dir);
+        let draft_file = tmp_dir.join("jgit-commit-draft");
+        let _ = std::fs::remove_file(&draft_file);
+        state.stage_workbench.load_draft(draft_file.clone());
+        state.dispatch(Action::SwitchTab(WorkspaceTab::Commit));
+
+        // 1. Editing commit message persists draft to disk and reloads into fresh state
+        state.dispatch(Action::FocusPane(PaneId::CommitMessageEditor));
+        state.dispatch(Action::CommitEditorPaste("draft: unsent note".into()));
+        assert!(state.commit_history_candidates().iter().any(|c| c == "draft: unsent note"));
+        let mut reloaded = AppState::new(std::path::PathBuf::from("."), None);
+        reloaded.stage_workbench.load_draft(draft_file.clone());
+        assert_eq!(reloaded.stage_workbench.editor.text(), "draft: unsent note");
+        let _ = std::fs::remove_dir_all(&tmp_dir);
+
+        // 2. Amend toggle always emits RequestAmendPreview & AmendFile selects StageDiffSide::AmendCommit
+        state.apply_engine_event(EngineEvent::AmendPreviewLoaded {
+            preview: Some(AmendCommitPreview {
+                short_sha: "1122334".into(),
+                message: "feat: head commit".into(),
+                files: vec![FileChange {
+                    path: "prev.rs".into(),
+                    old_path: None,
+                    kind: FileStatusKind::Modified,
+                    additions: 1,
+                    deletions: 1,
+                    is_binary: false,
+                }],
+            }),
+        });
+        let amend_effs = state.dispatch(Action::CommitToggleAmend);
+        assert!(
+            amend_effs
+                .iter()
+                .any(|e| matches!(e, crate::app::Effect::RequestAmendPreview))
+        );
+        let amend_file_idx = state
+            .stage_workbench
+            .rows
+            .iter()
+            .position(|r| matches!(r.kind, StageTreeRowKind::AmendFile { .. }))
+            .expect("AmendFile row");
+        state.dispatch(Action::SelectCommitStageRow(amend_file_idx));
+        assert_eq!(
+            state
+                .stage_workbench
+                .current_diff_key
+                .as_ref()
+                .map(|k| k.side),
+            Some(StageDiffSide::AmendCommit)
+        );
+
+        // Stale amend preview refreshes editor when a newer HEAD preview arrives
+        state.apply_engine_event(EngineEvent::AmendPreviewLoaded {
+            preview: Some(AmendCommitPreview {
+                short_sha: "5566778".into(),
+                message: "feat: newer head commit".into(),
+                files: vec![],
+            }),
+        });
+        assert_eq!(state.stage_workbench.editor.text(), "feat: newer head commit");
+        state.dispatch(Action::CommitToggleAmend); // turn amend back off
+
+        // 3. Mixed 3-doc diff: gutter click opens ThreeWayInspector with word-level diff & ]c doesn't cycle context
+        state.stage_status = Some(Arc::new(jgit_core::StageStatusSnapshot {
+            staged: vec![jgit_core::StageEntry {
+                path: "src/lib.rs".into(),
+                old_path: None,
+                kind: FileStatusKind::Modified,
+            }],
+            unstaged: vec![jgit_core::StageEntry {
+                path: "src/lib.rs".into(),
+                old_path: None,
+                kind: FileStatusKind::Modified,
+            }],
+            ..Default::default()
+        }));
+        state.dispatch(Action::StageToggleGroupByDir);
+        state.dispatch(Action::SelectCommitStageRow(3)); // Unstaged/src/lib.rs
+        let vcs = b"let x = old_val;\n";
+        let staged = b"let x = staged_val;\n";
+        let local = b"let x = local_val;\n";
+        let tracker = jgit_core::StageLineTracker::new(vcs, staged, local);
+        let (hunks, is_truncated) = tracker.build_interactive_hunks(false, DiffContext::Three, 20_000);
+        state.stage_workbench.current_diff_key = Some(StageDiffKey {
+            path: "src/lib.rs".into(),
+            old_path: None,
+            side: StageDiffSide::Unstaged,
+            context: DiffContext::Three,
+        });
+        state.apply_engine_event(EngineEvent::StageFileDiffLoaded {
+            diff: Arc::new(ThreeDocStageDiff {
+                key: StageDiffKey {
+                    path: "src/lib.rs".into(),
+                    old_path: None,
+                    side: StageDiffSide::Unstaged,
+                    context: DiffContext::Three,
+                },
+                vcs_exists: true,
+                staged_exists: true,
+                local_exists: true,
+                vcs_bytes: vcs.to_vec(),
+                staged_bytes: staged.to_vec(),
+                local_bytes: local.to_vec(),
+                file_mode: 0o100644,
+                is_binary: false,
+                is_conflicted: false,
+                tracker,
+                hunks,
+                is_truncated,
+            }),
+            epoch: 1,
+        });
+
+        let backend = TestBackend::new(120, 36);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| render_app(f, &mut state)).unwrap();
+
+        // Find the `▚` mixed gutter cell in the rendered buffer and click it
+        let buf = terminal.backend().buffer();
+        let mut gutter_pos = None;
+        for y in 0..36 {
+            for x in 0..120 {
+                if buf[(x, y)].symbol() == "▚" {
+                    gutter_pos = Some((x, y));
+                    break;
+                }
+            }
+            if gutter_pos.is_some() {
+                break;
+            }
+        }
+        let (gx, gy) = gutter_pos.expect("mixed 3-way gutter bar rendered");
+        let click_acts = route_terminal_event(
+            Event::Mouse(MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column: gx,
+                row: gy,
+                modifiers: KeyModifiers::NONE,
+            }),
+            &mut state,
+        );
+        for a in click_acts {
+            state.dispatch(a);
+        }
+        assert!(matches!(
+            state.modal_stack.last(),
+            Some(crate::app::ModalLayer::FloatingPopup {
+                kind: crate::app::PopupKind::ThreeWayInspector,
+                ..
+            })
+        ));
+        terminal.draw(|f| render_app(f, &mut state)).unwrap();
+        state.dispatch(Action::PopModal);
+        assert!(state.stage_workbench.three_way_range_idx.is_none());
+
+        // `]c` jumps hunk without changing diff_context
+        state.dispatch(Action::FocusPane(PaneId::CommitDiffPreview));
+        for ch in [']', 'c'] {
+            for a in route_terminal_event(
+                Event::Key(KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE)),
+                &mut state,
+            ) {
+                state.dispatch(a);
+            }
+        }
+        assert_eq!(state.stage_workbench.diff_context, DiffContext::Three);
+
+        // 4. CommitCompleted with and_push opens Push confirmation dialog instead of blind push
+        let commit_effs = state.apply_engine_event(EngineEvent::CommitCompleted(CommitOutcome {
+            success: true,
+            commit_oid: None,
+            short_sha: Some("abc1234".into()),
+            summary: "Committed abc1234".into(),
+            error_output: None,
+            and_push: true,
+            preserved_message: None,
+        }));
+        assert!(!commit_effs.iter().any(|e| matches!(
+            e,
+            crate::app::Effect::RunCli { args, .. } if args.first().map(String::as_str) == Some("push")
+        )));
+        assert!(matches!(
+            state.modal_stack.last(),
+            Some(crate::app::ModalLayer::CriticalDialog { title, .. }) if title == "Confirm Push"
+        ));
     }
 }

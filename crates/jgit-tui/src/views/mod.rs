@@ -1,4 +1,5 @@
 pub mod commit;
+pub mod commit_diff;
 pub mod console;
 pub mod header;
 pub mod log;

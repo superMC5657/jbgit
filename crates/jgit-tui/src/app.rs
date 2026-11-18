@@ -6,19 +6,22 @@ use jgit_core::graph::SortType;
 use jgit_core::{
     BranchFilter, BranchNodeKind, ChangeRowKind, CommitSummary, DetailsKey, FileDiffKey,
     GitConsoleEntry, ModalButton, Oid, PaneId, RefKind, RefreshScope, RepoSnapshot, SplitAxis,
-    SplitterId, StageStatusSnapshot, WorkspaceTab,
+    SplitterId, StageStatusSnapshot, StageTarget, StageTreeRowKind, WorkspaceTab,
 };
-use jgit_engine::{EngineEvent, EngineHandle, TaskRequest};
+use jgit_engine::{
+    CommitRequest, EngineEvent, EngineHandle, StageDiffKey, TaskRequest,
+};
 use ratatui::layout::Rect;
 use rustc_hash::FxHashMap;
 
 use crate::graph::LogGraphState;
 use crate::graph::state::FilterInputs;
-use crate::hit_test::{HitTarget, HitTestRegistry};
+use crate::hit_test::{DiffHunkActionKind, HitTarget, HitTestRegistry};
 use crate::log_view::{
     BranchesPaneState, DETAILS_DEBOUNCE, DetailsPaneState, FilterBarState, FilterField,
     LogPresentation, PathMatches, PathRequest, PresentationToggle,
 };
+use crate::stage_view::StageWorkbenchState;
 use crate::syntax::HighlightedDiff;
 use crate::theme::{BranchColorManager, GlyphMode, ThemePalette};
 use crate::widgets::SplitterState;
@@ -49,6 +52,14 @@ pub enum ContextMenuAction {
     BranchesToggleShowTags,
     BranchesToggleNavigateOnSelect,
     OpenGoTo,
+    StageSelected,
+    UnstageSelected,
+    StageAllTracked,
+    DiscardSelected,
+    StageToggleGroupByDir,
+    StageToggleShowIgnored,
+    StageExpandAll(bool),
+    OpenExternalEditorFile(String),
 }
 
 #[derive(Debug, Clone)]
@@ -106,6 +117,12 @@ pub enum PopupKind {
     GoToRevision,
     /// Parent chooser for merge commits with ≥ 2 parents.
     ChooseParent,
+    /// Commit message history picker (`Ctrl+M` / `[🕘]`).
+    CommitHistory,
+    /// Three-way comparison card (`HEAD / Staged / Worktree`) for mixed `StagedRange`.
+    ThreeWayInspector,
+    /// Hook or commit failure output dialog.
+    HookError,
 }
 
 #[derive(Debug, Clone)]
@@ -169,6 +186,16 @@ impl ClickRecord {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EditorMoveKind {
+    Left,
+    Right,
+    Up,
+    Down,
+    Home,
+    End,
+}
+
 #[derive(Debug, Clone)]
 pub enum Effect {
     RefreshRepoAndStage,
@@ -176,6 +203,27 @@ pub enum Effect {
     RequestCommitDetails(DetailsKey),
     RequestFileDiff(FileDiffKey),
     RequestPathMatches(Vec<String>, Arc<RepoSnapshot>),
+    RequestStageFileDiff(StageDiffKey),
+    RequestAmendPreview,
+    RequestCommitPrecheck,
+    ApplyStageBuffer {
+        path: String,
+        new_staged_bytes: Vec<u8>,
+        file_mode: u32,
+        remove_from_index: bool,
+    },
+    WriteWorktreeBuffer {
+        path: String,
+        new_local_bytes: Vec<u8>,
+    },
+    StageTargets(Vec<StageTarget>),
+    StageAllTracked,
+    UnstageTargets(Vec<StageTarget>),
+    DiscardTargets(Vec<StageTarget>),
+    ExecuteCommit(CommitRequest),
+    UndoLastCommit,
+    OpenExternalEditorMessage,
+    OpenExternalEditorFile(String),
     CopyToClipboard(String),
     RunCli {
         args: Vec<String>,
@@ -292,6 +340,60 @@ pub enum Action {
     ScrollConsoleOutput(isize),
     SelectCommitStageRow(usize),
     ScrollCommitStage(isize),
+    StageExpand(bool),
+    StageToggleRow(usize),
+    StageToggleMulti(usize),
+    StageSelectAll,
+    StageToggleGroupByDir,
+    StageExpandAll(bool),
+    StageToggleShowIgnored,
+    StageToggleDiffCollapsed,
+    StageActionSelected,
+    UnstageActionSelected,
+    StageAllTracked,
+    DiscardPromptSelected,
+    StashAll,
+    ResolveConflictsNotice,
+    StageDiffMoveCursor(isize),
+    StageDiffScroll(isize),
+    StageDiffJumpHunk(isize),
+    StageDiffToggleVisual,
+    StageDiffToggleSideBySide,
+    StageDiffCycleContext,
+    StageDiffSwitchSide,
+    StageDiffStageSelection,
+    StageDiffUnstageSelection,
+    StageDiffRollbackSelection,
+    StageDiffUndoRollback,
+    OpenThreeWayInspector {
+        row_idx: Option<usize>,
+        range_idx: Option<usize>,
+    },
+    ApplyStageDiffHunk(usize, DiffHunkActionKind),
+    CommitEditorChar(char),
+    CommitEditorNewline,
+    CommitEditorPaste(String),
+    CommitEditorBackspace,
+    CommitEditorDelete,
+    CommitEditorDeleteWord,
+    CommitEditorMove(EditorMoveKind),
+    CommitEditorUndo,
+    CommitEditorRedo,
+    CommitToggleAmend,
+    CommitToggleSignoff,
+    CommitToggleRunHooks,
+    CommitToggleAuthorInput,
+    CommitFocusAuthorInput,
+    CommitAuthorChar(char),
+    CommitAuthorBackspace,
+    CommitAuthorDone,
+    CommitApplyHistory(usize),
+    SubmitCommit {
+        and_push: bool,
+    },
+    UndoLastCommit,
+    OpenExternalEditorMessage,
+    OpenExternalEditorFile(Option<String>),
     RunCliProbe(Vec<String>),
     Resize,
     TickSpinner,
@@ -326,14 +428,17 @@ pub struct AppState {
     pub repo_error: Option<String>,
     pub repo_snapshot: Option<Arc<RepoSnapshot>>,
     pub stage_status: Option<Arc<StageStatusSnapshot>>,
+    pub stage_workbench: StageWorkbenchState,
 
     pub latest_repo_epoch: u64,
     pub latest_stage_epoch: u64,
+    pub latest_stage_diff_epoch: u64,
     pub latest_commit_details_epoch: u64,
     pub latest_file_diff_epoch: u64,
     pub latest_path_epoch: u64,
 
     pub commit_stage_selected_idx: usize,
+    pub hook_error_output: Option<String>,
 
     pub console_entries: Vec<GitConsoleEntry>,
     pub console_selected_idx: usize,
@@ -377,12 +482,15 @@ impl AppState {
             repo_error,
             repo_snapshot: None,
             stage_status: None,
+            stage_workbench: StageWorkbenchState::default(),
             latest_repo_epoch: 0,
             latest_stage_epoch: 0,
+            latest_stage_diff_epoch: 0,
             latest_commit_details_epoch: 0,
             latest_file_diff_epoch: 0,
             latest_path_epoch: 0,
             commit_stage_selected_idx: 0,
+            hook_error_output: None,
             console_entries: Vec::new(),
             console_selected_idx: 0,
             console_output_scroll: 0,
@@ -416,7 +524,9 @@ impl AppState {
     }
 
     pub fn has_active_tasks(&self) -> bool {
-        self.loading_snapshot || self.console_entries.iter().any(GitConsoleEntry::is_running)
+        self.loading_snapshot
+            || self.stage_workbench.commit_in_progress
+            || self.console_entries.iter().any(GitConsoleEntry::is_running)
     }
 
     /// Next instant the main loop must wake up for (details debounce).
@@ -430,18 +540,33 @@ impl AppState {
     }
 
     pub fn stage_item_count(&self) -> usize {
-        self.stage_status.as_ref().map_or(0, |s| s.total_changes())
+        self.stage_workbench.rows.len()
     }
 
-    pub fn stage_entry_at(&self, idx: usize) -> Option<&jgit_core::StageEntry> {
-        let status = self.stage_status.as_ref()?;
-        status
-            .conflicted
-            .iter()
-            .chain(status.staged.iter())
-            .chain(status.unstaged.iter())
-            .chain(status.untracked.iter())
-            .nth(idx)
+    pub fn stage_entry_at(&self, idx: usize) -> Option<jgit_core::StageEntry> {
+        let row = self.stage_workbench.rows.get(idx)?;
+        match &row.kind {
+            StageTreeRowKind::File {
+                path,
+                old_path,
+                status_kind,
+                ..
+            } => Some(jgit_core::StageEntry {
+                path: path.clone(),
+                old_path: old_path.clone(),
+                kind: *status_kind,
+            }),
+            StageTreeRowKind::AmendFile {
+                path,
+                old_path,
+                status_kind,
+            } => Some(jgit_core::StageEntry {
+                path: path.clone(),
+                old_path: old_path.clone(),
+                kind: *status_kind,
+            }),
+            _ => None,
+        }
     }
 
     fn effective_focus_ring(&self) -> Vec<PaneId> {
@@ -495,6 +620,9 @@ impl AppState {
             Action::SwitchTab(tab) => {
                 self.active_tab = tab;
                 self.focused_pane = tab.default_pane();
+                if tab == WorkspaceTab::Commit {
+                    effects.push(Effect::RequestCommitPrecheck);
+                }
             }
             Action::CycleFocus { reverse } => {
                 let ring = self.effective_focus_ring();
@@ -553,7 +681,13 @@ impl AppState {
                 }
             }
             Action::PopModal => {
-                self.modal_stack.pop();
+                if let Some(ModalLayer::FloatingPopup {
+                    kind: PopupKind::ThreeWayInspector,
+                    ..
+                }) = self.modal_stack.pop()
+                {
+                    self.stage_workbench.three_way_range_idx = None;
+                }
             }
             Action::PopContextMenus => {
                 while matches!(
@@ -1059,20 +1193,6 @@ impl AppState {
                 let next = (self.console_output_scroll as isize + delta).max(0) as usize;
                 self.console_output_scroll = next;
             }
-            Action::SelectCommitStageRow(idx) => {
-                let total = self.stage_item_count();
-                if total > 0 {
-                    self.commit_stage_selected_idx = idx.min(total - 1);
-                }
-            }
-            Action::ScrollCommitStage(delta) => {
-                let total = self.stage_item_count();
-                if total > 0 {
-                    self.commit_stage_selected_idx =
-                        (self.commit_stage_selected_idx as isize + delta)
-                            .clamp(0, (total - 1) as isize) as usize;
-                }
-            }
             Action::RunCliProbe(args) => {
                 effects.push(Effect::RunCli {
                     args,
@@ -1086,9 +1206,13 @@ impl AppState {
                     self.spinner_frame = self.spinner_frame.wrapping_add(1);
                 }
             }
+            other => {
+                let _ = self.dispatch_stage_action(&other, &mut effects);
+            }
         }
 
         self.reconcile_log_requests(Instant::now(), &mut effects);
+        self.reconcile_stage_requests(&mut effects);
         effects
     }
 
@@ -1186,6 +1310,15 @@ impl AppState {
         let mut effects = Vec::new();
         self.needs_redraw = true;
 
+        let event = match self.apply_stage_engine_event(event, &mut effects) {
+            None => {
+                self.reconcile_log_requests(Instant::now(), &mut effects);
+                self.reconcile_stage_requests(&mut effects);
+                return effects;
+            }
+            Some(ev) => ev,
+        };
+
         match event {
             EngineEvent::RepoSnapshotLoaded { snapshot, epoch } => {
                 if epoch < self.latest_repo_epoch {
@@ -1198,10 +1331,22 @@ impl AppState {
                 {
                     self.branches
                         .load_settings(snapshot.common_dir.join("jgit-branches-panel"));
+                    self.stage_workbench
+                        .load_history(snapshot.common_dir.join("jgit-commit-history"));
+                    self.stage_workbench
+                        .load_draft(snapshot.common_dir.join("jgit-commit-draft"));
+                }
+                let prev_head = self.repo_snapshot.as_ref().and_then(|s| s.head_oid);
+                let head_changed = prev_head.is_some() && prev_head != snapshot.head_oid;
+                if head_changed && !self.stage_workbench.amend {
+                    self.stage_workbench.amend_preview = None;
                 }
                 self.log_graph.on_snapshot_loaded();
                 self.details.containing = None;
                 self.repo_snapshot = Some(snapshot);
+                if self.stage_workbench.amend {
+                    effects.push(Effect::RequestAmendPreview);
+                }
             }
             EngineEvent::CommitDetailsLoaded { bundle, epoch } => {
                 // Cache every result; only the current key is rendered, so
@@ -1240,17 +1385,13 @@ impl AppState {
                     self.on_filter_changed();
                 }
             }
-            EngineEvent::StageStatusLoaded { status, epoch } => {
-                if epoch < self.latest_stage_epoch {
-                    return effects;
-                }
-                self.latest_stage_epoch = epoch;
-
-                let total = status.total_changes();
-                if self.commit_stage_selected_idx >= total {
-                    self.commit_stage_selected_idx = total.saturating_sub(1);
-                }
-                self.stage_status = Some(status);
+            EngineEvent::StageStatusLoaded { .. }
+            | EngineEvent::StageFileDiffLoaded { .. }
+            | EngineEvent::AmendPreviewLoaded { .. }
+            | EngineEvent::CommitPrecheckLoaded { .. }
+            | EngineEvent::CommitCompleted(_)
+            | EngineEvent::UndoCommitCompleted { .. } => {
+                unreachable!("handled by apply_stage_engine_event")
             }
             EngineEvent::ConsoleStarted(entry) => {
                 self.console_entries.insert(0, entry);
@@ -1312,11 +1453,14 @@ impl AppState {
             EngineEvent::Error(msg) => {
                 self.loading_snapshot = false;
                 self.details.requested_diff = None;
+                self.stage_workbench.requested_diff = None;
+                self.stage_workbench.commit_in_progress = false;
                 self.status_notice = Some(format!("Engine: {msg}"));
             }
         }
 
         self.reconcile_log_requests(Instant::now(), &mut effects);
+        self.reconcile_stage_requests(&mut effects);
         effects
     }
 }
@@ -1336,13 +1480,15 @@ pub fn execute_effects(effects: Vec<Effect>, state: &mut AppState, engine: Optio
         };
         match effect {
             Effect::RefreshRepoAndStage => {
+                let show_ignored = state.stage_workbench.tree_opts.show_ignored;
                 state.latest_repo_epoch =
                     state.latest_repo_epoch.max(handle.request_repo_snapshot());
                 state.latest_stage_epoch = state
                     .latest_stage_epoch
-                    .max(handle.request_stage_status(false));
+                    .max(handle.request_stage_status(show_ignored));
             }
             Effect::RefreshScope(scope) => {
+                let show_ignored = state.stage_workbench.tree_opts.show_ignored;
                 if scope.needs_graph_refresh() {
                     state.latest_repo_epoch =
                         state.latest_repo_epoch.max(handle.request_repo_snapshot());
@@ -1350,7 +1496,7 @@ pub fn execute_effects(effects: Vec<Effect>, state: &mut AppState, engine: Optio
                 if scope.needs_stage_refresh() {
                     state.latest_stage_epoch = state
                         .latest_stage_epoch
-                        .max(handle.request_stage_status(false));
+                        .max(handle.request_stage_status(show_ignored));
                 }
             }
             Effect::RequestCommitDetails(key) => {
@@ -1367,6 +1513,63 @@ pub fn execute_effects(effects: Vec<Effect>, state: &mut AppState, engine: Optio
                 state.latest_path_epoch = state
                     .latest_path_epoch
                     .max(handle.request_path_matches(paths, snapshot));
+            }
+            Effect::RequestStageFileDiff(key) => {
+                state.latest_stage_diff_epoch = state
+                    .latest_stage_diff_epoch
+                    .max(handle.request_stage_file_diff(key));
+            }
+            Effect::RequestAmendPreview => {
+                handle.request_amend_preview();
+            }
+            Effect::RequestCommitPrecheck => {
+                handle.request_commit_precheck();
+            }
+            Effect::ApplyStageBuffer {
+                path,
+                new_staged_bytes,
+                file_mode,
+                remove_from_index,
+            } => {
+                handle.send(TaskRequest::ApplyStageBuffer {
+                    path,
+                    new_staged_bytes,
+                    file_mode,
+                    remove_from_index,
+                });
+            }
+            Effect::WriteWorktreeBuffer {
+                path,
+                new_local_bytes,
+            } => {
+                handle.send(TaskRequest::WriteWorktreeBuffer {
+                    path,
+                    new_local_bytes,
+                });
+            }
+            Effect::StageTargets(targets) => {
+                handle.send(TaskRequest::StageTargets { targets });
+            }
+            Effect::StageAllTracked => {
+                handle.send(TaskRequest::StageAllTracked);
+            }
+            Effect::UnstageTargets(targets) => {
+                handle.send(TaskRequest::UnstageTargets { targets });
+            }
+            Effect::DiscardTargets(targets) => {
+                handle.send(TaskRequest::DiscardTargets { targets });
+            }
+            Effect::ExecuteCommit(request) => {
+                state.stage_workbench.commit_in_progress = true;
+                let id = state.next_cli_id;
+                state.next_cli_id += 1;
+                handle.send(TaskRequest::ExecuteCommit { id, request });
+            }
+            Effect::UndoLastCommit => {
+                handle.send(TaskRequest::UndoLastCommit);
+            }
+            Effect::OpenExternalEditorMessage | Effect::OpenExternalEditorFile(_) => {
+                // Handled in main loop where TerminalGuard can pause raw mode
             }
             Effect::RunCli {
                 args,

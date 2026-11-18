@@ -456,3 +456,367 @@ fn commit_details_changes_file_diff_and_path_matches() {
     want.sort();
     assert_eq!(got, want);
 }
+
+#[test]
+fn partial_hunk_and_line_staging_matches_native_git_diff() {
+    use jgit_core::{DiffContext, LineSelection, RequestEpoch};
+    use jgit_engine::{
+        StageDiffKey, StageDiffSide, apply_stage_buffer_sync, load_stage_file_diff_sync,
+    };
+
+    let tmp = TempDir::new().unwrap();
+    let dir = tmp.path();
+    git(dir, &["init", "-b", "main"]);
+
+    let initial = "\
+1: keep
+2: hunk1_old
+3: keep
+4: keep
+5: keep
+6: keep
+7: keep
+8: hunk2_old_a
+9: hunk2_old_b
+10: keep
+11: keep
+12: keep
+13: keep
+14: keep
+15: hunk3_old
+16: keep
+";
+    fs::write(dir.join("multi.txt"), initial).unwrap();
+    git(dir, &["add", "multi.txt"]);
+    git(dir, &["commit", "-m", "base"]);
+
+    let modified = "\
+1: keep
+2: hunk1_new
+3: keep
+4: keep
+5: keep
+6: keep
+7: keep
+8: hunk2_new_a
+9: hunk2_new_b
+10: hunk2_new_c
+11: keep
+12: keep
+13: keep
+14: keep
+15: keep
+16: hunk3_new
+17: keep
+";
+    fs::write(dir.join("multi.txt"), modified).unwrap();
+
+    let loc = RepoLocation::discover(dir).unwrap();
+    let token = RequestEpoch::new().issue();
+    let diff = load_stage_file_diff_sync(
+        &loc,
+        &StageDiffKey {
+            path: "multi.txt".into(),
+            old_path: None,
+            side: StageDiffSide::Unstaged,
+            context: DiffContext::Three,
+        },
+        &token,
+    )
+    .unwrap();
+
+    // Expect 3 distinct unstaged blocks
+    assert_eq!(diff.tracker.unstaged_blocks.len(), 3);
+
+    // Stage ONLY 2 lines from hunk 2 (block index 1):
+    // delete line index 7 (`8: hunk2_old_a`) and add line index 7 (`8: hunk2_new_a`) and index 9 (`10: hunk2_new_c`)
+    let b1 = diff.tracker.unstaged_blocks[1];
+    let new_staged = diff.tracker.stage_lines(&LineSelection::from_iters(
+        false,
+        [b1.start1],
+        [b1.start2, b1.start2 + 2],
+    ));
+    apply_stage_buffer_sync(&loc, "multi.txt", &new_staged, 0o100644, false).unwrap();
+
+    // Worktree must be completely untouched
+    assert_eq!(fs::read_to_string(dir.join("multi.txt")).unwrap(), modified);
+
+    // Verify native `git diff --cached` and `git diff`
+    let cached_out = Command::new("git")
+        .args(["diff", "--cached"])
+        .current_dir(dir)
+        .output()
+        .unwrap();
+    let cached_str = String::from_utf8_lossy(&cached_out.stdout);
+    assert!(cached_str.contains("-8: hunk2_old_a"), "{cached_str}");
+    assert!(cached_str.contains("+8: hunk2_new_a"), "{cached_str}");
+    assert!(cached_str.contains("+10: hunk2_new_c"), "{cached_str}");
+    assert!(!cached_str.contains("hunk1_new"), "{cached_str}");
+    assert!(!cached_str.contains("hunk3_new"), "{cached_str}");
+
+    let wt_out = Command::new("git")
+        .args(["diff"])
+        .current_dir(dir)
+        .output()
+        .unwrap();
+    let wt_str = String::from_utf8_lossy(&wt_out.stdout);
+    assert!(wt_str.contains("+2: hunk1_new"), "{wt_str}");
+    assert!(wt_str.contains("+9: hunk2_new_b"), "{wt_str}");
+    assert!(wt_str.contains("+16: hunk3_new"), "{wt_str}");
+}
+
+#[test]
+fn partial_stage_untracked_file_and_preserve_executable_mode() {
+    use jgit_core::{DiffContext, LineSelection, RequestEpoch};
+    use jgit_engine::{
+        StageDiffKey, StageDiffSide, apply_stage_buffer_sync, load_stage_file_diff_sync,
+    };
+
+    let tmp = TempDir::new().unwrap();
+    let dir = tmp.path();
+    git(dir, &["init", "-b", "main"]);
+    fs::write(dir.join("init.txt"), "0\n").unwrap();
+    git(dir, &["add", "."]);
+    git(dir, &["commit", "-m", "init"]);
+
+    let script = (1..=10).map(|i| format!("line {i}\n")).collect::<String>();
+    fs::write(dir.join("run.sh"), &script).unwrap();
+
+    let loc = RepoLocation::discover(dir).unwrap();
+    let token = RequestEpoch::new().issue();
+    let diff = load_stage_file_diff_sync(
+        &loc,
+        &StageDiffKey {
+            path: "run.sh".into(),
+            old_path: None,
+            side: StageDiffSide::Unstaged,
+            context: DiffContext::Three,
+        },
+        &token,
+    )
+    .unwrap();
+
+    // Stage only the first 5 lines with 0o100755 mode
+    let staged_buf = diff
+        .tracker
+        .stage_lines(&LineSelection::from_iters(false, [], 0..5));
+    apply_stage_buffer_sync(&loc, "run.sh", &staged_buf, 0o100755, false).unwrap();
+
+    // Verify worktree still has 10 lines, while Index has 5 lines with 100755 mode
+    assert_eq!(fs::read_to_string(dir.join("run.sh")).unwrap(), script);
+    let ls_out = Command::new("git")
+        .args(["ls-files", "--stage", "run.sh"])
+        .current_dir(dir)
+        .output()
+        .unwrap();
+    let ls_str = String::from_utf8_lossy(&ls_out.stdout);
+    assert!(ls_str.starts_with("100755 "), "expected 100755 mode: {ls_str}");
+}
+
+#[tokio::test]
+async fn commit_unborn_amend_undo_and_hooks_workflow() {
+    use jgit_engine::{
+        CommitRequest, EngineEvent, EngineSupervisor, TaskRequest, execute_commit_git2_sync,
+        load_amend_preview_sync, undo_last_commit_sync,
+    };
+
+    let tmp = TempDir::new().unwrap();
+    let dir = tmp.path();
+    git(dir, &["init", "-b", "main"]);
+    git(dir, &["config", "user.name", "Tester"]);
+    git(dir, &["config", "user.email", "tester@example.com"]);
+
+    fs::write(dir.join("a.txt"), "hello\n").unwrap();
+    git(dir, &["add", "a.txt"]);
+
+    let loc = RepoLocation::discover(dir).unwrap();
+
+    // 1. Unborn HEAD initial commit
+    let res1 = execute_commit_git2_sync(
+        &loc,
+        &CommitRequest {
+            message: "feat: initial commit".into(),
+            amend: false,
+            signoff: true,
+            run_hooks: true,
+            author_override: None,
+            stage_all_tracked: false,
+            and_push: false,
+        },
+    )
+    .unwrap();
+    assert!(res1.success);
+
+    // 2. Amend commit
+    fs::write(dir.join("a.txt"), "hello world\n").unwrap();
+    git(dir, &["add", "a.txt"]);
+    let preview = load_amend_preview_sync(&loc).unwrap().unwrap();
+    assert!(preview.message.contains("Signed-off-by: Tester <tester@example.com>"));
+
+    let res2 = execute_commit_git2_sync(
+        &loc,
+        &CommitRequest {
+            message: "feat: amended commit".into(),
+            amend: true,
+            signoff: true,
+            run_hooks: true,
+            author_override: None,
+            stage_all_tracked: false,
+            and_push: false,
+        },
+    )
+    .unwrap();
+    assert!(res2.success);
+    assert!(res2.commit_oid.is_some());
+
+    // 3. Regular second commit + Undo commit
+    fs::write(dir.join("b.txt"), "b\n").unwrap();
+    git(dir, &["add", "b.txt"]);
+    let res3 = execute_commit_git2_sync(
+        &loc,
+        &CommitRequest {
+            message: "feat: second".into(),
+            amend: false,
+            signoff: false,
+            run_hooks: true,
+            author_override: None,
+            stage_all_tracked: false,
+            and_push: false,
+        },
+    )
+    .unwrap();
+    assert!(res3.success);
+    let undone_msg = undo_last_commit_sync(&loc).unwrap();
+    assert_eq!(undone_msg, "feat: second");
+
+    // 4. Hook rejection with run_hooks=true vs bypass with run_hooks=false (--no-verify)
+    if GitCliExecutor::detect().is_ok() {
+        let hooks_dir = dir.join(".git/hooks");
+        fs::create_dir_all(&hooks_dir).unwrap();
+        let hook_path = hooks_dir.join("pre-commit");
+        fs::write(&hook_path, "#!/bin/sh\necho 'lint failed: bad code' >&2\nexit 1\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = fs::metadata(&hook_path).unwrap().permissions();
+            perms.set_mode(0o755);
+            fs::set_permissions(&hook_path, perms).unwrap();
+        }
+
+        let (handle, mut rx) = EngineSupervisor::start(loc.clone(), false).unwrap();
+        handle.send(TaskRequest::ExecuteCommit {
+            id: 1,
+            request: CommitRequest {
+                message: "feat: blocked by hook".into(),
+                amend: false,
+                signoff: false,
+                run_hooks: true,
+                author_override: None,
+                stage_all_tracked: false,
+                and_push: false,
+            },
+        });
+
+        let mut outcome1 = None;
+        let deadline = tokio::time::sleep(Duration::from_secs(5));
+        tokio::pin!(deadline);
+        while outcome1.is_none() {
+            tokio::select! {
+                Some(ev) = rx.recv() => {
+                    if let EngineEvent::CommitCompleted(o) = ev {
+                        outcome1 = Some(o);
+                    }
+                }
+                _ = &mut deadline => panic!("timed out waiting for hook failure"),
+            }
+        }
+        let o1 = outcome1.unwrap();
+        assert!(!o1.success, "expected pre-commit hook to fail");
+        assert_eq!(o1.preserved_message.as_deref(), Some("feat: blocked by hook"));
+        assert!(
+            o1.error_output
+                .as_deref()
+                .unwrap_or("")
+                .contains("lint failed"),
+            "{:?}",
+            o1.error_output
+        );
+
+        // Now bypass with run_hooks = false (--no-verify)
+        handle.send(TaskRequest::ExecuteCommit {
+            id: 2,
+            request: CommitRequest {
+                message: "feat: bypass hook".into(),
+                amend: false,
+                signoff: false,
+                run_hooks: false,
+                author_override: None,
+                stage_all_tracked: false,
+                and_push: false,
+            },
+        });
+
+        let mut outcome2 = None;
+        let deadline2 = tokio::time::sleep(Duration::from_secs(5));
+        tokio::pin!(deadline2);
+        while outcome2.is_none() {
+            tokio::select! {
+                Some(ev) = rx.recv() => {
+                    if let EngineEvent::CommitCompleted(o) = ev {
+                        outcome2 = Some(o);
+                    }
+                }
+                _ = &mut deadline2 => panic!("timed out waiting for --no-verify commit"),
+            }
+        }
+        let o2 = outcome2.unwrap();
+        assert!(o2.success, "expected --no-verify commit to succeed: {:?}", o2.error_output);
+    }
+}
+
+#[test]
+fn amend_commit_side_loads_head_parent_diff_even_when_clean() {
+    use jgit_core::{DiffContext, DiffLineKind, RequestEpoch};
+    use jgit_engine::{StageDiffKey, StageDiffSide, load_stage_file_diff_sync};
+
+    let tmp = TempDir::new().unwrap();
+    let dir = tmp.path();
+    git(dir, &["init", "-b", "main"]);
+    git(dir, &["config", "user.name", "Tester"]);
+    git(dir, &["config", "user.email", "tester@example.com"]);
+
+    fs::write(dir.join("note.txt"), "before line\n").unwrap();
+    git(dir, &["add", "note.txt"]);
+    git(dir, &["commit", "-m", "first"]);
+
+    fs::write(dir.join("note.txt"), "after line\n").unwrap();
+    git(dir, &["add", "note.txt"]);
+    git(dir, &["commit", "-m", "second"]);
+
+    let loc = RepoLocation::discover(dir).unwrap();
+    let token = RequestEpoch::new().issue();
+    let diff = load_stage_file_diff_sync(
+        &loc,
+        &StageDiffKey {
+            path: "note.txt".into(),
+            old_path: None,
+            side: StageDiffSide::AmendCommit,
+            context: DiffContext::Three,
+        },
+        &token,
+    )
+    .unwrap();
+
+    assert_eq!(diff.hunks.len(), 1);
+    let lines = &diff.hunks[0].hunk.lines;
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.kind == DiffLineKind::Deleted && l.text == "before line")
+    );
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.kind == DiffLineKind::Added && l.text == "after line")
+    );
+}

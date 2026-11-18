@@ -35,7 +35,7 @@ impl Default for SplitterState {
         specs.insert(
             SplitterId::CommitMainHorizontal,
             SplitterSpec {
-                default_ratio: 0.40,
+                default_ratio: 0.35,
                 min_first: 22,
                 min_second: 24,
             },

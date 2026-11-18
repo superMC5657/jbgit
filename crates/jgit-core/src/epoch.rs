@@ -67,6 +67,7 @@ pub struct EpochTracker {
     pub file_diff: RequestEpoch,
     pub path_filter: RequestEpoch,
     pub stage_status: RequestEpoch,
+    pub stage_diff: RequestEpoch,
 }
 
 #[cfg(test)]

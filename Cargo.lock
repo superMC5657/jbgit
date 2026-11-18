@@ -1037,6 +1037,7 @@ dependencies = [
  "chrono",
  "criterion",
  "fixedbitset 0.5.9",
+ "imara-diff",
  "nucleo-matcher",
  "proptest",
  "regex",

@@ -10,6 +10,10 @@ use crate::app::{
 use crate::hit_test::{
     BranchesToolbarButton, ChangesToolbarButton, DiffToolbarButton, GraphHitKind, HitTarget,
 };
+use crate::input_stage::{
+    route_commit_changes_tree_key, route_commit_priority_key, route_stage_left_click,
+    stage_tree_context_menu_items,
+};
 use crate::log_view::{PresentationToggle, complete_last_token, filter_suggestions};
 use crate::views::overlays::context_menu_rect;
 
@@ -23,7 +27,24 @@ pub fn route_terminal_event(event: Event, state: &mut AppState) -> Vec<Action> {
         }
         Event::Mouse(mouse) => route_mouse(mouse, state),
         Event::Resize(_, _) => vec![Action::Resize],
-        Event::FocusGained | Event::FocusLost | Event::Paste(_) => Vec::new(),
+        Event::Paste(text) => {
+            if state.modal_stack.is_empty()
+                && state.active_tab == WorkspaceTab::Commit
+                && state.focused_pane == PaneId::CommitMessageEditor
+            {
+                if state.stage_workbench.editing_author {
+                    text.chars()
+                        .filter(|c| *c != '\n' && *c != '\r')
+                        .map(Action::CommitAuthorChar)
+                        .collect()
+                } else {
+                    vec![Action::CommitEditorPaste(text)]
+                }
+            } else {
+                Vec::new()
+            }
+        }
+        Event::FocusGained | Event::FocusLost => Vec::new(),
     }
 }
 
@@ -103,6 +124,24 @@ fn route_key(key: KeyEvent, state: &mut AppState) -> Vec<Action> {
                             let idx = *selected;
                             vec![Action::PopModal, Action::GoToParent(idx)]
                         }
+                        PopupKind::CommitHistory => {
+                            let q_low = query.to_ascii_lowercase();
+                            let sel = *selected;
+                            let candidates = state.commit_history_candidates();
+                            let mapped = candidates
+                                .iter()
+                                .enumerate()
+                                .filter(|(_, m)| {
+                                    q_low.is_empty() || m.to_ascii_lowercase().contains(&q_low)
+                                })
+                                .nth(sel)
+                                .map(|(i, _)| i);
+                            if let Some(idx) = mapped {
+                                vec![Action::PopModal, Action::CommitApplyHistory(idx)]
+                            } else {
+                                vec![Action::PopModal]
+                            }
+                        }
                         _ => Vec::new(),
                     },
                     KeyCode::Char(d @ '1'..='9')
@@ -165,6 +204,12 @@ fn route_key(key: KeyEvent, state: &mut AppState) -> Vec<Action> {
 
     if state.active_tab == WorkspaceTab::Log
         && let Some(actions) = route_log_priority_key(&key, state)
+    {
+        return actions;
+    }
+
+    if state.active_tab == WorkspaceTab::Commit
+        && let Some(actions) = route_commit_priority_key(&key, state)
     {
         return actions;
     }
@@ -352,11 +397,7 @@ fn route_key(key: KeyEvent, state: &mut AppState) -> Vec<Action> {
             KeyCode::PageUp => vec![Action::ScrollConsoleOutput(-10)],
             _ => Vec::new(),
         },
-        PaneId::CommitChangesTree => match key.code {
-            KeyCode::Down | KeyCode::Char('j') => vec![Action::ScrollCommitStage(1)],
-            KeyCode::Up | KeyCode::Char('k') => vec![Action::ScrollCommitStage(-1)],
-            _ => Vec::new(),
-        },
+        PaneId::CommitChangesTree => route_commit_changes_tree_key(&key, state),
         _ => Vec::new(),
     }
 }
@@ -654,7 +695,16 @@ fn route_mouse(mouse: MouseEvent, state: &mut AppState) -> Vec<Action> {
                     | HitTarget::Pane(PaneId::LogChangesTree) => {
                         return vec![Action::ChangesMove(delta / 3)];
                     }
-                    HitTarget::DiffArea => return vec![Action::ScrollDiff(delta)],
+                    HitTarget::DiffArea
+                    | HitTarget::StageDiffLine { .. }
+                    | HitTarget::StageDiffGutter { .. }
+                    | HitTarget::Pane(PaneId::CommitDiffPreview) => {
+                        return vec![if state.active_tab == WorkspaceTab::Commit {
+                            Action::StageDiffScroll(delta)
+                        } else {
+                            Action::ScrollDiff(delta)
+                        }];
+                    }
                     HitTarget::DetailsArea
                     | HitTarget::DetailsHash { .. }
                     | HitTarget::DetailsParent { .. }
@@ -927,21 +977,6 @@ fn route_mouse(mouse: MouseEvent, state: &mut AppState) -> Vec<Action> {
                     }
                     actions
                 }
-                HitTarget::ChangesTreeNode { node_id, .. } => {
-                    let idx = node_id.0 as usize;
-                    let mut actions = vec![
-                        Action::FocusPane(PaneId::CommitChangesTree),
-                        Action::SelectCommitStageRow(idx),
-                    ];
-                    if is_double && let Some(entry) = state.stage_entry_at(idx) {
-                        actions.push(Action::RunCliProbe(vec![
-                            "diff".into(),
-                            "--".into(),
-                            entry.path.clone(),
-                        ]));
-                    }
-                    actions
-                }
                 HitTarget::ConsoleCommandRow { idx } => {
                     vec![
                         Action::FocusPane(PaneId::ConsoleCommandList),
@@ -952,6 +987,10 @@ fn route_mouse(mouse: MouseEvent, state: &mut AppState) -> Vec<Action> {
                     vec![Action::FocusPane(PaneId::ConsoleOutputDetail)]
                 }
                 HitTarget::Pane(pane) => vec![Action::FocusPane(pane)],
+                other => {
+                    route_stage_left_click(other, state, col, row, ctrl, shift, is_double)
+                        .unwrap_or_default()
+                }
             }
         }
         MouseEventKind::Down(MouseButton::Right) => {
@@ -1149,34 +1188,8 @@ fn route_mouse(mouse: MouseEvent, state: &mut AppState) -> Vec<Action> {
                     items
                 }
                 HitTarget::ChangesTreeNode { node_id, .. } => {
-                    let idx = node_id.0 as usize;
-                    if state.commit_stage_selected_idx != idx {
-                        actions.push(Action::FocusPane(PaneId::CommitChangesTree));
-                        actions.push(Action::SelectCommitStageRow(idx));
-                    }
-                    let file_path = state
-                        .stage_entry_at(idx)
-                        .map(|e| e.path.clone())
-                        .unwrap_or_default();
-                    let mut items = Vec::new();
-                    if !file_path.is_empty() {
-                        items.push(ContextMenuItem::action(
-                            format!("Diff {file_path}"),
-                            Some('d'),
-                            None,
-                            ContextMenuAction::RunReadOnlyProbe(vec![
-                                "diff".into(),
-                                "--".into(),
-                                file_path,
-                            ]),
-                        ));
-                    }
-                    items.push(ContextMenuItem::action(
-                        "Refresh Stage Status",
-                        Some('r'),
-                        Some("r"),
-                        ContextMenuAction::RefreshRepo,
-                    ));
+                    let mut items =
+                        stage_tree_context_menu_items(state, node_id.0 as usize, &mut actions);
                     items.push(ContextMenuItem::submenu(
                         "Git Probes",
                         Some('p'),
@@ -1290,6 +1303,16 @@ fn resolve_menu_action(act: ContextMenuAction) -> Vec<Action> {
             kind: PopupKind::GoToRevision,
             initial_query: String::new(),
         }],
+        ContextMenuAction::StageSelected => vec![Action::StageActionSelected],
+        ContextMenuAction::UnstageSelected => vec![Action::UnstageActionSelected],
+        ContextMenuAction::StageAllTracked => vec![Action::StageAllTracked],
+        ContextMenuAction::DiscardSelected => vec![Action::DiscardPromptSelected],
+        ContextMenuAction::StageToggleGroupByDir => vec![Action::StageToggleGroupByDir],
+        ContextMenuAction::StageToggleShowIgnored => vec![Action::StageToggleShowIgnored],
+        ContextMenuAction::StageExpandAll(expand) => vec![Action::StageExpandAll(expand)],
+        ContextMenuAction::OpenExternalEditorFile(p) => {
+            vec![Action::OpenExternalEditorFile(Some(p))]
+        }
     }
 }
 

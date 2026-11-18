@@ -35,6 +35,45 @@ pub enum DiffToolbarButton {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StageToolbarButton {
+    Refresh,
+    StageAllTracked,
+    Stash,
+    GroupByDir,
+    ToggleDiff,
+    Options,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StageDiffToolbarButton {
+    SwitchSide,
+    SideBySide,
+    Context,
+    PrevHunk,
+    NextHunk,
+    Close,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DiffHunkActionKind {
+    Stage,
+    Unstage,
+    Rollback,
+    Inspect3Way,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CommitOptionKind {
+    Amend,
+    Signoff,
+    RunHooks,
+    AuthorToggle,
+    AuthorInput,
+    History,
+    ExternalEditor,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GraphHitKind {
     Node {
         commit_oid: Oid,
@@ -120,6 +159,26 @@ pub enum HitTarget {
         node_id: ChangeNodeId,
         on_hover_action_icon: bool,
     },
+    StageToolbar(StageToolbarButton),
+    StageResolveConflicts,
+    StageDiffToolbar(StageDiffToolbarButton),
+    DiffHunkAction {
+        hunk_idx: usize,
+        action: DiffHunkActionKind,
+    },
+    StageDiffLine {
+        row_idx: usize,
+    },
+    StageDiffGutter {
+        row_idx: usize,
+        staged_range_idx: Option<usize>,
+    },
+    CommitEditorArea,
+    CommitOption(CommitOptionKind),
+    CommitButton {
+        and_push: bool,
+    },
+    UndoCommitButton,
     ConsoleCommandRow {
         idx: usize,
     },

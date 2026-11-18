@@ -1,4 +1,4 @@
-use jgit_core::{GroupOptions, ModalButton, RefInfo, RefKind, group_refs_for_table};
+use jgit_core::{GroupOptions, ModalButton, RefInfo, RefKind, group_refs_for_table, word_diff};
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
@@ -10,6 +10,7 @@ use crate::app::{
     AppState, ContextMenuEntryKind, ContextMenuItem, ModalLayer, PopupKind, RenderContext,
 };
 use crate::hit_test::HitTarget;
+use crate::syntax::render_diff_line_spans;
 use crate::theme::RefBadgeKind;
 use crate::views::palette_preview::render_palette_preview;
 use crate::views::truncate_to_width;
@@ -233,6 +234,9 @@ fn render_floating_popup(
         PopupKind::ShortcutsHelp => (78, 34),
         PopupKind::GoToRevision => (64, 7),
         PopupKind::ChooseParent => (68, 12),
+        PopupKind::CommitHistory => (76, 18),
+        PopupKind::ThreeWayInspector => (84, 22),
+        PopupKind::HookError => (84, 20),
         _ => (64, 18),
     };
     let width = screen.width.clamp(screen.width.min(24), max_w);
@@ -254,6 +258,9 @@ fn render_floating_popup(
         PopupKind::FilterEditor(field) => format!(" Filter by {} ", field.title()),
         PopupKind::GoToRevision => " Go to Hash / Branch / Tag ".to_string(),
         PopupKind::ChooseParent => " Choose Parent Commit (1-9 / Enter) ".to_string(),
+        PopupKind::CommitHistory => " Commit Message History (Enter to fill, Esc to close) ".to_string(),
+        PopupKind::ThreeWayInspector => " Three-Way Change Inspector (Worktree / Staged / HEAD) ".to_string(),
+        PopupKind::HookError => " Commit / Git Hook Failed (Message Preserved) ".to_string(),
     };
 
     let block = Block::default()
@@ -521,6 +528,172 @@ fn render_floating_popup(
                 }
             }
             frame.render_widget(Paragraph::new(lines), inner);
+        }
+        PopupKind::CommitHistory => {
+            let candidates = state.commit_history_candidates();
+            let q_low = query.to_ascii_lowercase();
+            let filtered: Vec<(usize, &String)> = candidates
+                .iter()
+                .enumerate()
+                .filter(|(_, m)| q_low.is_empty() || m.to_ascii_lowercase().contains(&q_low))
+                .collect();
+            let mut lines = vec![Line::from(vec![
+                Span::styled(" Filter: ", Style::default().fg(ctx.theme.fg_muted)),
+                Span::styled(
+                    format!("{query}▏"),
+                    Style::default().fg(ctx.theme.fg_bright),
+                ),
+            ])];
+            if filtered.is_empty() {
+                lines.push(Line::from(Span::styled(
+                    " No commit history yet",
+                    Style::default().fg(ctx.theme.fg_muted),
+                )));
+            } else {
+                let sel = selected.min(filtered.len() - 1);
+                let room = inner.height.saturating_sub(2) as usize;
+                let start = sel.saturating_sub(room.saturating_sub(1));
+                for (vis, (_, msg)) in filtered.iter().enumerate().skip(start).take(room) {
+                    let is_sel = vis == sel;
+                    let bg = if is_sel {
+                        ctx.theme.bg_selection_focused
+                    } else {
+                        ctx.theme.bg_elevated
+                    };
+                    let first_line = msg.lines().next().unwrap_or("");
+                    lines.push(
+                        Line::from(Span::styled(
+                            format!(
+                                " {}",
+                                truncate_to_width(first_line, inner.width.saturating_sub(2) as usize)
+                            ),
+                            Style::default().fg(if is_sel {
+                                ctx.theme.fg_bright
+                            } else {
+                                ctx.theme.fg_primary
+                            }),
+                        ))
+                        .style(Style::default().bg(bg)),
+                    );
+                }
+            }
+            frame.render_widget(Paragraph::new(lines), inner);
+        }
+        PopupKind::ThreeWayInspector => {
+            let mut lines = Vec::new();
+            if let Some(diff) = &state.stage_workbench.current_diff
+                && let Some(range) = state.stage_workbench.three_way_range_for_popup()
+            {
+                let max_w = inner.width.saturating_sub(4) as usize;
+                let local_rows = diff.tracker.local_doc.slice_display(range.local_range);
+                let staged_rows = diff.tracker.staged_doc.slice_display(range.staged_range);
+                let vcs_rows = diff.tracker.vcs_doc.slice_display(range.vcs_range);
+
+                let compute_ranges =
+                    |primary: &[String], other_a: &[String], other_b: &[String]| {
+                        primary
+                            .iter()
+                            .enumerate()
+                            .map(|(idx, line)| {
+                                let mut ranges = Vec::new();
+                                if let Some(a) = other_a.get(idx) {
+                                    let (r, _) = word_diff(line, a);
+                                    ranges.extend(r);
+                                }
+                                if let Some(b) = other_b.get(idx) {
+                                    let (r, _) = word_diff(line, b);
+                                    ranges.extend(r);
+                                }
+                                ranges
+                            })
+                            .collect::<Vec<_>>()
+                    };
+
+                let local_word_ranges = compute_ranges(&local_rows, &staged_rows, &vcs_rows);
+                let staged_word_ranges = compute_ranges(&staged_rows, &vcs_rows, &local_rows);
+                let vcs_word_ranges = compute_ranges(&vcs_rows, &staged_rows, &local_rows);
+
+                let mut push_section = |title: &str,
+                                        color: ratatui::style::Color,
+                                        word_bg: ratatui::style::Color,
+                                        rows: &[String],
+                                        word_ranges: &[Vec<(usize, usize)>]| {
+                    lines.push(Line::from(Span::styled(
+                        format!(" ── {title} ──"),
+                        Style::default().fg(color).add_modifier(Modifier::BOLD),
+                    )));
+                    if rows.is_empty() {
+                        lines.push(Line::from(Span::styled(
+                            "   (empty)",
+                            Style::default().fg(ctx.theme.fg_muted),
+                        )));
+                    } else {
+                        let base = Style::default().fg(ctx.theme.fg_primary);
+                        for (idx, r) in rows.iter().enumerate() {
+                            let wr = word_ranges.get(idx).map(Vec::as_slice).unwrap_or(&[]);
+                            let mut spans = vec![Span::raw("   ")];
+                            spans.extend(render_diff_line_spans(
+                                r,
+                                &[],
+                                wr,
+                                max_w,
+                                base,
+                                word_bg,
+                                ctx.theme.true_color,
+                            ));
+                            lines.push(Line::from(spans));
+                        }
+                    }
+                };
+                push_section(
+                    "Worktree (Unstaged)",
+                    ctx.theme.status_added,
+                    ctx.theme.diff_add_word_bg,
+                    &local_rows,
+                    &local_word_ranges,
+                );
+                push_section(
+                    "Staged (Index)",
+                    ctx.theme.status_modified,
+                    ctx.theme.diff_mod_bg,
+                    &staged_rows,
+                    &staged_word_ranges,
+                );
+                push_section(
+                    "HEAD (Base)",
+                    ctx.theme.fg_muted,
+                    ctx.theme.diff_del_word_bg,
+                    &vcs_rows,
+                    &vcs_word_ranges,
+                );
+            } else {
+                lines.push(Line::from(Span::styled(
+                    " Move cursor onto a changed line to inspect HEAD / Staged / Worktree",
+                    Style::default().fg(ctx.theme.fg_muted),
+                )));
+            }
+            frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
+        }
+        PopupKind::HookError => {
+            let msg = state
+                .hook_error_output
+                .as_deref()
+                .unwrap_or("Commit failed");
+            let mut lines: Vec<Line<'_>> = msg
+                .lines()
+                .map(|l| {
+                    Line::from(Span::styled(
+                        format!(" {l}"),
+                        Style::default().fg(ctx.theme.status_conflicted),
+                    ))
+                })
+                .collect();
+            lines.push(Line::from(""));
+            lines.push(Line::from(Span::styled(
+                " Your commit message was preserved. Press Esc to close.",
+                Style::default().fg(ctx.theme.fg_muted),
+            )));
+            frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
         }
     }
 }
