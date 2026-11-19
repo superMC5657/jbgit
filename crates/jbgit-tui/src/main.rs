@@ -321,7 +321,11 @@ mod tests {
 
     #[test]
     fn test_backend_render_tiny_and_normal_no_panic() {
-        let mut state = AppState::new(std::path::PathBuf::from("."), None);
+        let mut state = AppState::new_with_config(
+            std::path::PathBuf::from("."),
+            None,
+            crate::config::AppConfig::load_defaults(),
+        );
         for (w, h) in [(10, 4), (45, 12), (59, 15), (120, 40)] {
             let backend = TestBackend::new(w, h);
             let mut terminal = Terminal::new(backend).unwrap();
@@ -331,7 +335,11 @@ mod tests {
 
     #[test]
     fn tab_switch_and_focus_ring_and_splitter_drag() {
-        let mut state = AppState::new(std::path::PathBuf::from("."), None);
+        let mut state = AppState::new_with_config(
+            std::path::PathBuf::from("."),
+            None,
+            crate::config::AppConfig::load_defaults(),
+        );
         let backend = TestBackend::new(120, 40);
         let mut terminal = Terminal::new(backend).unwrap();
         terminal.draw(|f| render_app(f, &mut state)).unwrap();
@@ -453,7 +461,11 @@ mod tests {
         use jbgit_core::{CommitSummary, GitConsoleEntry, Oid, RepoSnapshot, RepositoryState};
         use std::sync::Arc;
 
-        let mut state = AppState::new(std::path::PathBuf::from("."), None);
+        let mut state = AppState::new_with_config(
+            std::path::PathBuf::from("."),
+            None,
+            crate::config::AppConfig::load_defaults(),
+        );
         let oid1 = Oid::from_bytes([1u8; 20]);
         let oid2 = Oid::from_bytes([2u8; 20]);
         state.repo_snapshot = Some(Arc::new(RepoSnapshot {
@@ -573,7 +585,11 @@ mod tests {
         use jbgit_engine::EngineEvent;
         use std::sync::Arc;
 
-        let mut state = AppState::new(std::path::PathBuf::from("."), None);
+        let mut state = AppState::new_with_config(
+            std::path::PathBuf::from("."),
+            None,
+            crate::config::AppConfig::load_defaults(),
+        );
         state.latest_repo_epoch = 5;
         state.latest_stage_epoch = 4;
 
@@ -664,7 +680,11 @@ mod tests {
         use jbgit_core::{FileStatusKind, StageEntry, StageStatusSnapshot};
         use std::sync::Arc;
 
-        let mut state = AppState::new(std::path::PathBuf::from("."), None);
+        let mut state = AppState::new_with_config(
+            std::path::PathBuf::from("."),
+            None,
+            crate::config::AppConfig::load_defaults(),
+        );
         state.stage_status = Some(Arc::new(StageStatusSnapshot {
             unstaged: vec![
                 StageEntry {
@@ -768,7 +788,11 @@ mod tests {
         use jbgit_core::RefreshScope;
         use jbgit_engine::EngineEvent;
 
-        let mut state = AppState::new(std::path::PathBuf::from("."), None);
+        let mut state = AppState::new_with_config(
+            std::path::PathBuf::from("."),
+            None,
+            crate::config::AppConfig::load_defaults(),
+        );
         state.apply_engine_event(EngineEvent::IndexLockDetected {
             lock_path: ".git/index.lock".into(),
             message: "Unable to create '.git/index.lock': File exists.".into(),
@@ -813,7 +837,11 @@ mod tests {
         use jbgit_core::{CommitSummary, Oid, RefInfo, RefKind, RepoSnapshot, RepositoryState};
         use std::sync::Arc;
 
-        let mut state = AppState::new(std::path::PathBuf::from("."), None);
+        let mut state = AppState::new_with_config(
+            std::path::PathBuf::from("."),
+            None,
+            crate::config::AppConfig::load_defaults(),
+        );
         let oid = Oid::from_bytes([7u8; 20]);
         state.repo_snapshot = Some(Arc::new(RepoSnapshot {
             repo_name: "demo".into(),
@@ -1003,7 +1031,11 @@ mod tests {
             });
         }
 
-        let mut state = AppState::new(std::path::PathBuf::from("."), None);
+        let mut state = AppState::new_with_config(
+            std::path::PathBuf::from("."),
+            None,
+            crate::config::AppConfig::load_defaults(),
+        );
         state.repo_snapshot = Some(Arc::new(RepoSnapshot {
             repo_name: "demo".into(),
             workdir: ".".into(),
@@ -1096,7 +1128,11 @@ mod tests {
         use jbgit_engine::{EngineEvent, StageDiffKey, StageDiffSide, ThreeDocStageDiff};
         use std::sync::Arc;
 
-        let mut state = AppState::new(std::path::PathBuf::from("."), None);
+        let mut state = AppState::new_with_config(
+            std::path::PathBuf::from("."),
+            None,
+            crate::config::AppConfig::load_defaults(),
+        );
         state.stage_status = Some(Arc::new(StageStatusSnapshot {
             staged: vec![StageEntry {
                 path: "src/foo.rs".into(),
@@ -1232,7 +1268,11 @@ mod tests {
         };
         use std::sync::Arc;
 
-        let mut state = AppState::new(std::path::PathBuf::from("."), None);
+        let mut state = AppState::new_with_config(
+            std::path::PathBuf::from("."),
+            None,
+            crate::config::AppConfig::load_defaults(),
+        );
         state.stage_status = Some(Arc::new(jbgit_core::StageStatusSnapshot::default()));
         let tmp_dir = std::env::temp_dir().join(format!("jbgit-test-draft-{}", std::process::id()));
         let _ = std::fs::create_dir_all(&tmp_dir);
@@ -1422,5 +1462,206 @@ mod tests {
             Some(crate::app::ModalLayer::CriticalDialog { title, .. })
                 if title == state.i18n.t("dialog.push.confirm_title")
         ));
+    }
+
+    #[test]
+    fn vertical_layout_ratios_render_drag_and_reset() {
+        use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+        use jbgit_core::{
+            Oid, RepoSnapshot, RepositoryState, SplitAxis, SplitterId, StashEntry, WorkspaceTab,
+        };
+        use std::sync::Arc;
+
+        let temp = tempfile::tempdir().unwrap();
+        let cfg_dir = temp.path().join(".jbgit");
+        std::fs::create_dir_all(&cfg_dir).unwrap();
+        std::fs::write(
+            cfg_dir.join("jbgit.toml"),
+            r#"
+[layout]
+log_details_ratio = [1, 3]
+log_diff_right_ratio = [3, 1]
+log_diff_bottom_ratio = [2, 3]
+commit_left_ratio = [3, 1]
+stash_preview_ratio = [1, 1]
+"#,
+        )
+        .unwrap();
+
+        let mut state = AppState::new(temp.path().to_path_buf(), None);
+        state.repo_snapshot = Some(Arc::new(RepoSnapshot {
+            repo_name: "demo".into(),
+            workdir: temp.path().to_path_buf(),
+            git_dir: temp.path().join(".git"),
+            common_dir: temp.path().join(".git"),
+            state: RepositoryState::Clean,
+            is_unborn_head: false,
+            user_name: None,
+            user_email: None,
+            recent_branches: vec![],
+            stashes: vec![StashEntry {
+                index: 0,
+                oid: Oid::from_bytes([2u8; 20]),
+                message: "WIP on main: test".into(),
+                timestamp: 1_700_000_000,
+            }],
+            ongoing_onto: None,
+            head_branch: Some("main".into()),
+            head_oid: Some(Oid::from_bytes([1u8; 20])),
+            refs: vec![],
+            commits: vec![],
+        }));
+
+        assert!((state.splitters.ratio(SplitterId::LogDetailsVertical) - 0.25).abs() < 1e-4);
+        assert!((state.splitters.ratio(SplitterId::LogDiffRightHorizontal) - 0.75).abs() < 1e-4);
+        assert!((state.splitters.ratio(SplitterId::LogDiffBottomVertical) - 0.40).abs() < 1e-4);
+        assert!((state.splitters.ratio(SplitterId::CommitLeftVertical) - 0.75).abs() < 1e-4);
+        assert!((state.splitters.ratio(SplitterId::StashPreviewVertical) - 0.50).abs() < 1e-4);
+
+        let backend = TestBackend::new(120, 40);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        let cases = [
+            (
+                WorkspaceTab::Log,
+                None,
+                SplitterId::LogDetailsVertical,
+                SplitAxis::Vertical,
+                0.25f32,
+                6i16,
+            ),
+            (
+                WorkspaceTab::Log,
+                Some(crate::log_view::DiffPreviewDock::Right),
+                SplitterId::LogDiffRightHorizontal,
+                SplitAxis::Horizontal,
+                0.75f32,
+                -15i16,
+            ),
+            (
+                WorkspaceTab::Log,
+                Some(crate::log_view::DiffPreviewDock::Bottom),
+                SplitterId::LogDiffBottomVertical,
+                SplitAxis::Vertical,
+                0.40f32,
+                6i16,
+            ),
+            (
+                WorkspaceTab::Commit,
+                None,
+                SplitterId::CommitLeftVertical,
+                SplitAxis::Vertical,
+                0.75f32,
+                -6i16,
+            ),
+            (
+                WorkspaceTab::Stash,
+                None,
+                SplitterId::StashPreviewVertical,
+                SplitAxis::Vertical,
+                0.50f32,
+                5i16,
+            ),
+        ];
+
+        for (tab, dock, splitter_id, expected_axis, expected_default, delta) in cases {
+            state.dispatch(Action::SwitchTab(tab));
+            if let Some(d) = dock {
+                state.details.diff_preview = true;
+                state.details.diff_dock = d;
+            } else {
+                state.details.diff_preview = false;
+            }
+            terminal.draw(|f| render_app(f, &mut state)).unwrap();
+
+            let (axis, container) = state
+                .splitter_containers
+                .get(&splitter_id)
+                .copied()
+                .unwrap_or_else(|| panic!("splitter {splitter_id:?} not registered on {tab:?}"));
+            assert_eq!(axis, expected_axis);
+
+            let split = state.splitters.split(container, splitter_id, expected_axis);
+            assert!(!split.collapsed);
+            let (div_x, div_y, target_x, target_y) = match expected_axis {
+                SplitAxis::Vertical => (
+                    split.divider.x + 2,
+                    split.divider.y,
+                    split.divider.x + 2,
+                    (split.divider.y as i16 + delta) as u16,
+                ),
+                SplitAxis::Horizontal => (
+                    split.divider.x,
+                    split.divider.y + 2,
+                    (split.divider.x as i16 + delta) as u16,
+                    split.divider.y + 2,
+                ),
+            };
+
+            for a in route_terminal_event(
+                Event::Mouse(MouseEvent {
+                    kind: MouseEventKind::Down(MouseButton::Left),
+                    column: div_x,
+                    row: div_y,
+                    modifiers: KeyModifiers::NONE,
+                }),
+                &mut state,
+            ) {
+                state.dispatch(a);
+            }
+            assert!(state.drag_state.is_some());
+
+            route_terminal_event(
+                Event::Mouse(MouseEvent {
+                    kind: MouseEventKind::Drag(MouseButton::Left),
+                    column: target_x,
+                    row: target_y,
+                    modifiers: KeyModifiers::NONE,
+                }),
+                &mut state,
+            );
+            let dragged = state.splitters.ratio(splitter_id);
+            if delta > 0 {
+                assert!(dragged > expected_default);
+            } else {
+                assert!(dragged < expected_default);
+            }
+
+            route_terminal_event(
+                Event::Mouse(MouseEvent {
+                    kind: MouseEventKind::Up(MouseButton::Left),
+                    column: target_x,
+                    row: target_y,
+                    modifiers: KeyModifiers::NONE,
+                }),
+                &mut state,
+            );
+
+            // Re-render and double-click divider to reset back to configured default ratio
+            terminal.draw(|f| render_app(f, &mut state)).unwrap();
+            let split2 = state.splitters.split(container, splitter_id, expected_axis);
+            let (reset_x, reset_y) = match expected_axis {
+                SplitAxis::Vertical => (split2.divider.x + 2, split2.divider.y),
+                SplitAxis::Horizontal => (split2.divider.x, split2.divider.y + 2),
+            };
+            for _ in 0..2 {
+                for a in route_terminal_event(
+                    Event::Mouse(MouseEvent {
+                        kind: MouseEventKind::Down(MouseButton::Left),
+                        column: reset_x,
+                        row: reset_y,
+                        modifiers: KeyModifiers::NONE,
+                    }),
+                    &mut state,
+                ) {
+                    state.dispatch(a);
+                }
+            }
+            assert!(
+                (state.splitters.ratio(splitter_id) - expected_default).abs() < 1e-4,
+                "reset for {splitter_id:?} expected {expected_default}, got {}",
+                state.splitters.ratio(splitter_id)
+            );
+        }
     }
 }

@@ -16,7 +16,27 @@ use super::{
     KEY_CHORD_WINDOW, KeyAction, KeySequence, MatchResult, match_bindings_filtered,
 };
 
-fn is_amend_diff(state: &AppState) -> bool {
+pub const DEFAULT_CONSOLE_PROBE_CHAR: char = 'p';
+
+pub fn console_status_probe_key(keymap: &crate::config::KeymapConfig) -> String {
+    keymap
+        .primary_key_for(&[KeymapScope::Global], &KeyAction::GitStatusProbe)
+        .unwrap_or_else(|| DEFAULT_CONSOLE_PROBE_CHAR.to_string())
+}
+
+pub fn git_status_probe_action() -> Action {
+    Action::RunCliProbe(vec![
+        "status".into(),
+        "--short".into(),
+        "--branch".into(),
+    ])
+}
+
+pub fn is_branch_speed_search_char(c: char) -> bool {
+    (c.is_alphabetic() || matches!(c, '-' | '_' | '/' | '0' | '5'..='9')) && c != 'J'
+}
+
+pub fn is_amend_diff(state: &AppState) -> bool {
     state
         .stage_workbench
         .current_diff_key
@@ -159,8 +179,11 @@ pub fn is_action_applicable(run: &KeyAction, state: &AppState) -> bool {
         | KeyAction::GitPush
         | KeyAction::Palette
         | KeyAction::ToggleGlyphMode
-        | KeyAction::CycleGraphRenderer
-        | KeyAction::GitStatusProbe => true,
+        | KeyAction::CycleGraphRenderer => true,
+        KeyAction::GitStatusProbe => {
+            state.active_tab == WorkspaceTab::Console
+                && state.focused_pane == PaneId::ConsoleCommandList
+        }
 
         KeyAction::ToggleVisual
         | KeyAction::RollbackSelection
@@ -169,18 +192,15 @@ pub fn is_action_applicable(run: &KeyAction, state: &AppState) -> bool {
         | KeyAction::ThreeWayInspector => {
             state.active_tab == WorkspaceTab::Commit
                 && state.focused_pane == PaneId::CommitDiffPreview
+                && !is_amend_diff(state)
         }
         KeyAction::ToggleStage | KeyAction::StageSelection | KeyAction::UnstageSelection => {
             state.active_tab == WorkspaceTab::Commit
-                && matches!(
-                    state.focused_pane,
-                    PaneId::CommitDiffPreview | PaneId::CommitChangesTree
-                )
+                && (state.focused_pane == PaneId::CommitChangesTree
+                    || (state.focused_pane == PaneId::CommitDiffPreview && !is_amend_diff(state)))
         }
         KeyAction::CycleDiffDock => state.active_tab == WorkspaceTab::Log,
-        KeyAction::ZoomDiff => {
-            state.active_tab == WorkspaceTab::Log || state.focused_pane == PaneId::StashDiffPreview
-        }
+        KeyAction::ZoomDiff => state.active_tab == WorkspaceTab::Log,
         KeyAction::PrevHunk
         | KeyAction::NextHunk
         | KeyAction::PrevFile
@@ -330,11 +350,7 @@ pub fn execute_action(run: &KeyAction, state: &mut AppState) -> Option<Vec<Actio
         }]),
         KeyAction::ToggleGlyphMode => Some(vec![Action::ToggleGlyphMode]),
         KeyAction::CycleGraphRenderer => Some(vec![Action::CycleGraphRenderer]),
-        KeyAction::GitStatusProbe => Some(vec![Action::RunCliProbe(vec![
-            "status".into(),
-            "--short".into(),
-            "--branch".into(),
-        ])]),
+        KeyAction::GitStatusProbe => Some(vec![git_status_probe_action()]),
         KeyAction::GotoRevision => Some(vec![Action::OpenPopup {
             kind: PopupKind::GoToRevision,
             initial_query: String::new(),

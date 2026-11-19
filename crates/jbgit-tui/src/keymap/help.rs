@@ -186,12 +186,21 @@ fn current_context_rows(state: &AppState) -> Vec<HelpRow> {
     }
 
     if state.active_tab == WorkspaceTab::Console {
-        out.push(HelpRow::Entry {
-            keys: "p".to_string(),
-            desc: localized_action_desc(state, &KeyAction::GitStatusProbe, None),
-            scope_tag: pane_title.to_string(),
-            run: Some(KeyAction::GitStatusProbe),
-        });
+        if state.focused_pane == PaneId::ConsoleCommandList {
+            out.push(HelpRow::Entry {
+                keys: super::actions::console_status_probe_key(km),
+                desc: localized_action_desc(state, &KeyAction::GitStatusProbe, None),
+                scope_tag: pane_title.to_string(),
+                run: Some(KeyAction::GitStatusProbe),
+            });
+        } else {
+            out.push(HelpRow::Entry {
+                keys: "Esc".to_string(),
+                desc: i18n.t("help.action.back_to_commands").to_string(),
+                scope_tag: pane_title.to_string(),
+                run: None,
+            });
+        }
         return out;
     }
 

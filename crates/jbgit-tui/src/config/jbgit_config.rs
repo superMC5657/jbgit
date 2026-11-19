@@ -390,11 +390,21 @@ where
 pub struct LayoutSection {
     #[serde(default = "default_log_ratio")]
     pub log_ratio: TripleRatio,
-    #[serde(default = "default_commit_ratio")]
+    #[serde(default = "default_pair::<3, 2>")]
+    pub log_details_ratio: PairRatio,
+    #[serde(default = "default_pair::<2, 1>")]
+    pub log_diff_right_ratio: PairRatio,
+    #[serde(default = "default_pair::<3, 2>")]
+    pub log_diff_bottom_ratio: PairRatio,
+    #[serde(default = "default_pair::<1, 2>")]
     pub commit_ratio: PairRatio,
-    #[serde(default = "default_stash_ratio")]
+    #[serde(default = "default_pair::<3, 2>")]
+    pub commit_left_ratio: PairRatio,
+    #[serde(default = "default_pair::<2, 3>")]
     pub stash_ratio: PairRatio,
-    #[serde(default = "default_console_ratio")]
+    #[serde(default = "default_pair::<1, 2>")]
+    pub stash_preview_ratio: PairRatio,
+    #[serde(default = "default_pair::<2, 3>")]
     pub console_ratio: PairRatio,
 }
 
@@ -402,42 +412,59 @@ fn default_log_ratio() -> TripleRatio {
     TripleRatio([1, 3, 2])
 }
 
-fn default_commit_ratio() -> PairRatio {
-    PairRatio([1, 2])
-}
-
-fn default_stash_ratio() -> PairRatio {
-    PairRatio([2, 3])
-}
-
-fn default_console_ratio() -> PairRatio {
-    PairRatio([2, 3])
+fn default_pair<const A: u32, const B: u32>() -> PairRatio {
+    PairRatio([A, B])
 }
 
 impl Default for LayoutSection {
     fn default() -> Self {
         Self {
             log_ratio: default_log_ratio(),
-            commit_ratio: default_commit_ratio(),
-            stash_ratio: default_stash_ratio(),
-            console_ratio: default_console_ratio(),
+            log_details_ratio: default_pair::<3, 2>(),
+            log_diff_right_ratio: default_pair::<2, 1>(),
+            log_diff_bottom_ratio: default_pair::<3, 2>(),
+            commit_ratio: default_pair::<1, 2>(),
+            commit_left_ratio: default_pair::<3, 2>(),
+            stash_ratio: default_pair::<2, 3>(),
+            stash_preview_ratio: default_pair::<1, 2>(),
+            console_ratio: default_pair::<2, 3>(),
         }
     }
 }
 
 impl LayoutSection {
-    pub fn splitter_defaults(&self) -> [(jbgit_core::SplitterId, f32); 5] {
+    pub fn splitter_defaults(&self) -> [(jbgit_core::SplitterId, f32); 10] {
         let (log_left, log_right) = self.log_ratio.split_ratios();
         [
             (jbgit_core::SplitterId::LogLeftHorizontal, log_left),
             (jbgit_core::SplitterId::LogRightHorizontal, log_right),
             (
+                jbgit_core::SplitterId::LogDetailsVertical,
+                self.log_details_ratio.first_ratio(),
+            ),
+            (
+                jbgit_core::SplitterId::LogDiffRightHorizontal,
+                self.log_diff_right_ratio.first_ratio(),
+            ),
+            (
+                jbgit_core::SplitterId::LogDiffBottomVertical,
+                self.log_diff_bottom_ratio.first_ratio(),
+            ),
+            (
                 jbgit_core::SplitterId::CommitMainHorizontal,
                 self.commit_ratio.first_ratio(),
             ),
             (
+                jbgit_core::SplitterId::CommitLeftVertical,
+                self.commit_left_ratio.first_ratio(),
+            ),
+            (
                 jbgit_core::SplitterId::StashMainHorizontal,
                 self.stash_ratio.first_ratio(),
+            ),
+            (
+                jbgit_core::SplitterId::StashPreviewVertical,
+                self.stash_preview_ratio.first_ratio(),
             ),
             (
                 jbgit_core::SplitterId::ConsoleMainHorizontal,
@@ -487,14 +514,28 @@ impl JbgitConfig {
             if let Some(r) = lo.log_ratio {
                 self.layout.log_ratio = r;
             }
-            if let Some(r) = lo.commit_ratio {
-                self.layout.commit_ratio = r;
-            }
-            if let Some(r) = lo.stash_ratio {
-                self.layout.stash_ratio = r;
-            }
-            if let Some(r) = lo.console_ratio {
-                self.layout.console_ratio = r;
+            for (dst, src) in [
+                (&mut self.layout.log_details_ratio, lo.log_details_ratio),
+                (
+                    &mut self.layout.log_diff_right_ratio,
+                    lo.log_diff_right_ratio,
+                ),
+                (
+                    &mut self.layout.log_diff_bottom_ratio,
+                    lo.log_diff_bottom_ratio,
+                ),
+                (&mut self.layout.commit_ratio, lo.commit_ratio),
+                (&mut self.layout.commit_left_ratio, lo.commit_left_ratio),
+                (&mut self.layout.stash_ratio, lo.stash_ratio),
+                (
+                    &mut self.layout.stash_preview_ratio,
+                    lo.stash_preview_ratio,
+                ),
+                (&mut self.layout.console_ratio, lo.console_ratio),
+            ] {
+                if let Some(r) = src {
+                    *dst = r;
+                }
             }
         }
     }
@@ -539,9 +580,19 @@ pub struct LayoutSectionOverlay {
     #[serde(default, deserialize_with = "deserialize_opt_triple_ratio")]
     pub log_ratio: Option<TripleRatio>,
     #[serde(default, deserialize_with = "deserialize_opt_pair_ratio")]
+    pub log_details_ratio: Option<PairRatio>,
+    #[serde(default, deserialize_with = "deserialize_opt_pair_ratio")]
+    pub log_diff_right_ratio: Option<PairRatio>,
+    #[serde(default, deserialize_with = "deserialize_opt_pair_ratio")]
+    pub log_diff_bottom_ratio: Option<PairRatio>,
+    #[serde(default, deserialize_with = "deserialize_opt_pair_ratio")]
     pub commit_ratio: Option<PairRatio>,
     #[serde(default, deserialize_with = "deserialize_opt_pair_ratio")]
+    pub commit_left_ratio: Option<PairRatio>,
+    #[serde(default, deserialize_with = "deserialize_opt_pair_ratio")]
     pub stash_ratio: Option<PairRatio>,
+    #[serde(default, deserialize_with = "deserialize_opt_pair_ratio")]
+    pub stash_preview_ratio: Option<PairRatio>,
     #[serde(default, deserialize_with = "deserialize_opt_pair_ratio")]
     pub console_ratio: Option<PairRatio>,
 }

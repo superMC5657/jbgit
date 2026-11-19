@@ -189,16 +189,35 @@ tab_size = 4
 context_lines = 3
 
 [layout]
-# Log 视图三栏权重: [左侧分支树, 中间提交图谱, 右侧提交详情/Diff]
+# --- Log 提交历史视图 ---
+# 横向三栏权重: [左侧分支树, 中间提交图谱, 右侧变更与详情区]
 log_ratio = [ 1, 3, 2 ]
 
-# Commit 工作台两栏权重: [左侧变更文件树, 右侧 Diff 预览]
+# 右侧栏上下权重: [上方变更文件树, 下方提交详情/内联 Diff]
+log_details_ratio = [ 3, 2 ]
+
+# 右侧停靠 Diff 预览横向权重: [左侧主区(提交图谱+变更详情), 右侧停靠 Diff]
+log_diff_right_ratio = [ 2, 1 ]
+
+# 底部停靠 Diff 预览上下权重: [上方日志主区, 下方停靠 Diff]
+log_diff_bottom_ratio = [ 3, 2 ]
+
+# --- Commit 提交工作台 ---
+# 横向两栏权重: [左侧本地变更与提交区, 右侧 Diff 预览]
 commit_ratio = [ 1, 2 ]
 
-# Stash 贮藏箱两栏权重: [左侧贮藏列表, 右侧 Diff 预览]
+# 左侧栏上下权重: [上方本地变更文件树, 下方提交说明]
+commit_left_ratio = [ 3, 2 ]
+
+# --- Stash 贮藏箱 ---
+# 横向两栏权重: [左侧贮藏列表, 右侧变更与 Diff 预览]
 stash_ratio = [ 2, 3 ]
 
-# Console 控制台两栏权重: [左侧命令历史, 右侧执行输出]
+# 右侧预览区上下权重: [上方变更文件树, 下方 Diff 预览]
+stash_preview_ratio = [ 1, 2 ]
+
+# --- Console 控制台 ---
+# 横向两栏权重: [左侧命令历史, 右侧执行输出]
 console_ratio = [ 2, 3 ]
 ```
 

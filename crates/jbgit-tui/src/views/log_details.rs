@@ -486,10 +486,19 @@ pub fn render_diff_preview(
     ];
     if host == DiffHost::Log {
         if !zoomed {
+            let dock_k = ctx
+                .config
+                .and_then(|c| {
+                    c.keymap.primary_key_for(
+                        &[KeymapScope::Diff, KeymapScope::Log, KeymapScope::Global],
+                        &KeyAction::CycleDiffDock,
+                    )
+                })
+                .unwrap_or_else(|| "m".to_string());
             buttons.push((
                 ctx.t_fmt(
                     "view.log_details.dock_btn",
-                    &[("dock", ctx.diff_dock_label(d.diff_dock))],
+                    &[("dock", ctx.diff_dock_label(d.diff_dock)), ("key", &dock_k)],
                 ),
                 d.diff_dock != DiffPreviewDock::Details,
                 DiffToolbarButton::Dock,
@@ -501,8 +510,10 @@ pub fn render_diff_preview(
             let zoom_k = ctx
                 .config
                 .and_then(|c| {
-                    c.keymap
-                        .primary_key_for(&[KeymapScope::Diff, KeymapScope::Log], &KeyAction::ZoomDiff)
+                    c.keymap.primary_key_for(
+                        &[KeymapScope::Diff, KeymapScope::Log, KeymapScope::Global],
+                        &KeyAction::ZoomDiff,
+                    )
                 })
                 .unwrap_or_else(|| "z".to_string());
             ctx.t_fmt("view.log_details.zoom_btn", &[("key", &zoom_k)])

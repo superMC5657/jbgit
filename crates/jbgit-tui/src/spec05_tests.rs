@@ -1368,6 +1368,78 @@ prepend_keymap = [
 }
 
 #[test]
+fn footer_hints_match_active_mode_dock_stash_and_console_probe() {
+    let mut state = state_with(snapshot());
+
+    // 1. LogDetailsDiff in Commit Details mode (diff_preview = false) must NOT show diff-only hints
+    state.dispatch(Action::SwitchTab(WorkspaceTab::Log));
+    state.dispatch(Action::FocusPane(PaneId::LogDetailsDiff));
+    state.details.diff_preview = false;
+    let term = render(&mut state, 140, 40);
+    let details_footer = row_text(term.backend().buffer(), 39);
+    assert!(details_footer.contains("Diff"), "{details_footer}");
+    assert!(details_footer.contains("Parent"), "{details_footer}");
+    assert!(!details_footer.contains("Dock"), "{details_footer}");
+    assert!(!details_footer.contains("Split"), "{details_footer}");
+    assert!(!details_footer.contains("Context"), "{details_footer}");
+
+    // 2. LogDetailsDiff in Diff Preview mode (diff_preview = true) MUST show `m Dock`
+    state.details.diff_preview = true;
+    let term = render(&mut state, 140, 40);
+    let diff_footer = row_text(term.backend().buffer(), 39);
+    assert!(diff_footer.contains(" m "), "{diff_footer}");
+    assert!(diff_footer.contains("Dock"), "{diff_footer}");
+    assert!(diff_footer.contains("Zoom"), "{diff_footer}");
+    assert!(diff_footer.contains("Split"), "{diff_footer}");
+    assert!(diff_footer.contains("Context"), "{diff_footer}");
+
+    // 3. CommitDiffPreview shows Context (`w`) and Back (`Esc`)
+    state.dispatch(Action::SwitchTab(WorkspaceTab::Commit));
+    state.dispatch(Action::FocusPane(PaneId::CommitDiffPreview));
+    let term = render(&mut state, 160, 40);
+    let commit_diff_footer = row_text(term.backend().buffer(), 39);
+    assert!(commit_diff_footer.contains(" w "), "{commit_diff_footer}");
+    assert!(commit_diff_footer.contains("Context"), "{commit_diff_footer}");
+    assert!(commit_diff_footer.contains("Esc"), "{commit_diff_footer}");
+
+    // 4. CommitMessageEditor shows Sign-off (`Alt+S`)
+    state.dispatch(Action::FocusPane(PaneId::CommitMessageEditor));
+    let term = render(&mut state, 140, 40);
+    let msg_footer = row_text(term.backend().buffer(), 39);
+    assert!(msg_footer.contains("Sign-off"), "{msg_footer}");
+
+    // 5. StashDiffPreview does NOT advertise ghost Zoom and shows Hunk / File / Group
+    state.dispatch(Action::SwitchTab(WorkspaceTab::Stash));
+    state.dispatch(Action::FocusPane(PaneId::StashDiffPreview));
+    let term = render(&mut state, 140, 40);
+    let stash_footer = row_text(term.backend().buffer(), 39);
+    assert!(!stash_footer.contains("Zoom"), "{stash_footer}");
+    assert!(stash_footer.contains("Hunk"), "{stash_footer}");
+    assert!(stash_footer.contains("File"), "{stash_footer}");
+    assert!(stash_footer.contains("Group"), "{stash_footer}");
+    key(&mut state, KeyCode::Char('z'), KeyModifiers::NONE);
+    assert!(!state.details.diff_zoomed);
+
+    // 6. ConsoleCommandList `p` actually triggers status probe instead of global git_pull
+    state.dispatch(Action::SwitchTab(WorkspaceTab::Console));
+    state.dispatch(Action::FocusPane(PaneId::ConsoleCommandList));
+    let term = render(&mut state, 140, 40);
+    let console_footer = row_text(term.backend().buffer(), 39);
+    assert!(console_footer.contains(" p "), "{console_footer}");
+    assert!(console_footer.contains("Status"), "{console_footer}");
+    let actions = route_terminal_event(
+        Event::Key(KeyEvent::new(KeyCode::Char('p'), KeyModifiers::NONE)),
+        &mut state,
+    );
+    assert!(
+        actions
+            .iter()
+            .any(|a| matches!(a, Action::RunCliProbe(args) if args.first().map(String::as_str) == Some("status"))),
+        "expected RunCliProbe(status), got {actions:?}"
+    );
+}
+
+#[test]
 fn which_key_popup_appears_on_prefix_and_dismisses() {
     let mut state = state_with(snapshot());
     state.dispatch(Action::SwitchTab(WorkspaceTab::Log));
@@ -1509,4 +1581,103 @@ fn zh_cn_reset_dialog_and_collapsed_branches_stripe_align_cjk_widths() {
     let buf = term.backend().buffer();
     assert_eq!(buf[(0, 1)].symbol(), "分");
     assert_eq!(buf[(0, 2)].symbol(), "支");
+}
+
+#[test]
+fn footer_and_help_respect_amend_readonly_author_edit_speed_search_and_console_detail() {
+    use crate::config::{KeymapConfig, KeymapPreset};
+    use crate::keymap::KeyAction;
+    use crate::keymap::help::{HelpRow, build_help_rows};
+    use jbgit_engine::{StageDiffKey, StageDiffSide};
+
+    // 1. CommitDiffPreview in Amend read-only mode hides write-only pills and help entries
+    let mut state = state_with(snapshot());
+    state.dispatch(Action::SwitchTab(WorkspaceTab::Commit));
+    state.dispatch(Action::FocusPane(PaneId::CommitDiffPreview));
+    state.stage_workbench.current_diff_key = Some(StageDiffKey {
+        path: "a.rs".into(),
+        old_path: None,
+        side: StageDiffSide::AmendCommit,
+        context: jbgit_core::DiffContext::Three,
+    });
+    let term = render(&mut state, 160, 40);
+    let amend_footer = row_text(term.backend().buffer(), 39);
+    assert!(amend_footer.contains("Hunk"), "{amend_footer}");
+    assert!(amend_footer.contains("Context"), "{amend_footer}");
+    assert!(amend_footer.contains("Esc"), "{amend_footer}");
+    assert!(!amend_footer.contains("Stage"), "{amend_footer}");
+    assert!(!amend_footer.contains("Rollback"), "{amend_footer}");
+    assert!(!amend_footer.contains("Visual"), "{amend_footer}");
+    assert!(!amend_footer.contains("3-Way"), "{amend_footer}");
+    let help_rows = build_help_rows(&state, "");
+    let ctx_rows: Vec<&HelpRow> = help_rows
+        .iter()
+        .skip(1)
+        .take_while(|r| !matches!(r, HelpRow::Section(_)))
+        .collect();
+    let has_ctx_action = |action: KeyAction| {
+        ctx_rows.iter().any(|r| {
+            matches!(
+                r,
+                HelpRow::Entry {
+                    run: Some(run),
+                    ..
+                } if *run == action
+            )
+        })
+    };
+    assert!(!has_ctx_action(KeyAction::RollbackSelection));
+    assert!(!has_ctx_action(KeyAction::ToggleVisual));
+    assert!(!has_ctx_action(KeyAction::ThreeWayInspector));
+    assert!(!has_ctx_action(KeyAction::SwitchDiffSide));
+    assert!(has_ctx_action(KeyAction::NextHunk));
+
+    // 2. CommitMessageEditor with editing_author = true shows Enter/Esc Apply instead of Esc Back
+    state.dispatch(Action::FocusPane(PaneId::CommitMessageEditor));
+    state.stage_workbench.editing_author = true;
+    let term = render(&mut state, 160, 40);
+    let author_footer = row_text(term.backend().buffer(), 39);
+    assert!(author_footer.contains("Enter/Esc"), "{author_footer}");
+    assert!(author_footer.contains("Apply"), "{author_footer}");
+    assert!(!author_footer.contains("Back"), "{author_footer}");
+
+    // 3. LogBranchesTree under JetBrains preset (tree_speed_search = true) hides captured single letters
+    let mut jb_state = state_with(snapshot());
+    jb_state.config.keymap = KeymapConfig::for_preset(KeymapPreset::Jetbrains);
+    jb_state.dispatch(Action::SwitchTab(WorkspaceTab::Log));
+    jb_state.dispatch(Action::FocusPane(PaneId::LogBranchesTree));
+    let term = render(&mut jb_state, 160, 40);
+    let jb_footer = row_text(term.backend().buffer(), 39);
+    assert!(jb_footer.contains("Type"), "{jb_footer}");
+    assert!(jb_footer.contains("Ctrl+F"), "{jb_footer}");
+    assert!(jb_footer.contains("Ctrl+T"), "{jb_footer}");
+    assert!(jb_footer.contains("Del"), "{jb_footer}");
+    assert!(!jb_footer.contains("Checkout"), "{jb_footer}");
+    assert!(!jb_footer.contains("Fetch"), "{jb_footer}");
+
+    // 4. ConsoleOutputDetail help does not advertise GitStatusProbe and `p` does not trigger probe
+    let mut console_state = state_with(snapshot());
+    console_state.dispatch(Action::SwitchTab(WorkspaceTab::Console));
+    console_state.dispatch(Action::FocusPane(PaneId::ConsoleOutputDetail));
+    let detail_help = build_help_rows(&console_state, "");
+    assert!(
+        !detail_help.iter().take(5).any(|r| matches!(
+            r,
+            HelpRow::Entry {
+                run: Some(KeyAction::GitStatusProbe),
+                ..
+            }
+        )),
+        "ConsoleOutputDetail context help should not advertise GitStatusProbe"
+    );
+    let detail_p_actions = route_terminal_event(
+        Event::Key(KeyEvent::new(KeyCode::Char('p'), KeyModifiers::NONE)),
+        &mut console_state,
+    );
+    assert!(
+        !detail_p_actions
+            .iter()
+            .any(|a| matches!(a, Action::RunCliProbe(_))),
+        "p in ConsoleOutputDetail must not run RunCliProbe: {detail_p_actions:?}"
+    );
 }

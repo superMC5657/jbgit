@@ -319,17 +319,35 @@ default_tab = "branches"
         assert!(toml::from_str::<JbgitConfig>(DEFAULT_JBGIT_TOML).is_ok());
         let mut cfg = AppConfig::load_defaults();
         assert_eq!(cfg.jbgit.layout.log_ratio.weights(), [1, 3, 2]);
+        assert_eq!(cfg.jbgit.layout.log_details_ratio.weights(), [3, 2]);
+        assert_eq!(cfg.jbgit.layout.log_diff_right_ratio.weights(), [2, 1]);
+        assert_eq!(cfg.jbgit.layout.log_diff_bottom_ratio.weights(), [3, 2]);
+        assert_eq!(cfg.jbgit.layout.commit_ratio.weights(), [1, 2]);
+        assert_eq!(cfg.jbgit.layout.commit_left_ratio.weights(), [3, 2]);
+        assert_eq!(cfg.jbgit.layout.stash_ratio.weights(), [2, 3]);
+        assert_eq!(cfg.jbgit.layout.stash_preview_ratio.weights(), [1, 2]);
+        assert_eq!(cfg.jbgit.layout.console_ratio.weights(), [2, 3]);
 
         let overlay_toml = r#"
 [layout]
 log_ratio = [1, 4, 3]
+log_details_ratio = [1, 1]
+log_diff_right_ratio = [3, 2]
+log_diff_bottom_ratio = [2, 1]
 commit_ratio = [2, 5]
+commit_left_ratio = [4, 1]
+stash_preview_ratio = [2, 3]
 "#;
         let overlay: JbgitConfigOverlay = toml::from_str(overlay_toml).unwrap();
         cfg.jbgit.merge_overlay(&overlay);
 
         assert_eq!(cfg.jbgit.layout.log_ratio.weights(), [1, 4, 3]);
+        assert_eq!(cfg.jbgit.layout.log_details_ratio.weights(), [1, 1]);
+        assert_eq!(cfg.jbgit.layout.log_diff_right_ratio.weights(), [3, 2]);
+        assert_eq!(cfg.jbgit.layout.log_diff_bottom_ratio.weights(), [2, 1]);
         assert_eq!(cfg.jbgit.layout.commit_ratio.weights(), [2, 5]);
+        assert_eq!(cfg.jbgit.layout.commit_left_ratio.weights(), [4, 1]);
+        assert_eq!(cfg.jbgit.layout.stash_preview_ratio.weights(), [2, 3]);
         // Unspecified ratios keep defaults
         assert_eq!(cfg.jbgit.layout.stash_ratio.weights(), [2, 3]);
         assert_eq!(cfg.jbgit.layout.console_ratio.weights(), [2, 3]);
@@ -342,8 +360,13 @@ commit_ratio = [2, 5]
             r#"
 [layout]
 log_ratio = [2, 5, 3]
+log_details_ratio = [4, 3]
+log_diff_right_ratio = [3, 1]
+log_diff_bottom_ratio = [4, 1]
 commit_ratio = [3, 7]
+commit_left_ratio = [7, 3]
 stash_ratio = [1, 4]
+stash_preview_ratio = [2, 5]
 "#,
         )
         .unwrap();
@@ -355,8 +378,13 @@ stash_ratio = [1, 4]
             r#"
 [layout]
 log_ratio = [0, 0, 0]
+log_details_ratio = [0, 0]
+log_diff_right_ratio = [1, 2, 3]
+log_diff_bottom_ratio = []
 commit_ratio = [0, 0]
+commit_left_ratio = [5]
 stash_ratio = [1]
+stash_preview_ratio = [0, 0]
 console_ratio = [1, 4]
 "#,
         )
@@ -364,8 +392,13 @@ console_ratio = [1, 4]
         cfg.jbgit.merge_overlay(&bad_overlay);
 
         assert_eq!(cfg.jbgit.layout.log_ratio.weights(), [2, 5, 3]);
+        assert_eq!(cfg.jbgit.layout.log_details_ratio.weights(), [4, 3]);
+        assert_eq!(cfg.jbgit.layout.log_diff_right_ratio.weights(), [3, 1]);
+        assert_eq!(cfg.jbgit.layout.log_diff_bottom_ratio.weights(), [4, 1]);
         assert_eq!(cfg.jbgit.layout.commit_ratio.weights(), [3, 7]);
+        assert_eq!(cfg.jbgit.layout.commit_left_ratio.weights(), [7, 3]);
         assert_eq!(cfg.jbgit.layout.stash_ratio.weights(), [1, 4]);
+        assert_eq!(cfg.jbgit.layout.stash_preview_ratio.weights(), [2, 5]);
         assert_eq!(cfg.jbgit.layout.console_ratio.weights(), [1, 4]);
 
         // 2-element log_ratio and trailing-zero [1, 0, 0] are also rejected cleanly.
@@ -400,28 +433,94 @@ log_ratio = [1, 0, 0]
         let mut state = SplitterState::with_default_ratios(defaults.splitter_defaults());
         assert!((state.ratio(SplitterId::LogLeftHorizontal) - (1.0 / 6.0)).abs() < 1e-4);
         assert!((state.ratio(SplitterId::LogRightHorizontal) - 0.6).abs() < 1e-4);
+        assert!((state.ratio(SplitterId::LogDetailsVertical) - 0.6).abs() < 1e-4);
+        assert!((state.ratio(SplitterId::LogDiffRightHorizontal) - (2.0 / 3.0)).abs() < 1e-4);
+        assert!((state.ratio(SplitterId::LogDiffBottomVertical) - 0.6).abs() < 1e-4);
         assert!((state.ratio(SplitterId::CommitMainHorizontal) - (1.0 / 3.0)).abs() < 1e-4);
+        assert!((state.ratio(SplitterId::CommitLeftVertical) - 0.6).abs() < 1e-4);
         assert!((state.ratio(SplitterId::StashMainHorizontal) - 0.4).abs() < 1e-4);
+        assert!((state.ratio(SplitterId::StashPreviewVertical) - (1.0 / 3.0)).abs() < 1e-4);
         assert!((state.ratio(SplitterId::ConsoleMainHorizontal) - 0.4).abs() < 1e-4);
 
         // Reset restores the layout-configured default (not hardcoded SplitterState::default)
         state.reset(SplitterId::LogLeftHorizontal);
         state.reset(SplitterId::LogRightHorizontal);
+        state.reset(SplitterId::LogDetailsVertical);
+        state.reset(SplitterId::CommitLeftVertical);
+        state.reset(SplitterId::StashPreviewVertical);
         assert!((state.ratio(SplitterId::LogLeftHorizontal) - (1.0 / 6.0)).abs() < 1e-4);
         assert!((state.ratio(SplitterId::LogRightHorizontal) - 0.6).abs() < 1e-4);
+        assert!((state.ratio(SplitterId::LogDetailsVertical) - 0.6).abs() < 1e-4);
+        assert!((state.ratio(SplitterId::CommitLeftVertical) - 0.6).abs() < 1e-4);
+        assert!((state.ratio(SplitterId::StashPreviewVertical) - (1.0 / 3.0)).abs() < 1e-4);
 
         let custom = LayoutSection {
             log_ratio: TripleRatio::new(1, 4, 3).unwrap(),
+            log_details_ratio: PairRatio::new(1, 3).unwrap(),
+            log_diff_right_ratio: PairRatio::new(3, 1).unwrap(),
+            log_diff_bottom_ratio: PairRatio::new(2, 3).unwrap(),
             commit_ratio: PairRatio::new(1, 3).unwrap(),
+            commit_left_ratio: PairRatio::new(4, 1).unwrap(),
             stash_ratio: PairRatio::new(3, 2).unwrap(),
+            stash_preview_ratio: PairRatio::new(1, 1).unwrap(),
             console_ratio: PairRatio::new(1, 1).unwrap(),
         };
-        let custom_state = SplitterState::with_default_ratios(custom.splitter_defaults());
+        let mut custom_state = SplitterState::with_default_ratios(custom.splitter_defaults());
         assert!((custom_state.ratio(SplitterId::LogLeftHorizontal) - 0.125).abs() < 1e-4);
         assert!((custom_state.ratio(SplitterId::LogRightHorizontal) - (4.0 / 7.0)).abs() < 1e-4);
+        assert!((custom_state.ratio(SplitterId::LogDetailsVertical) - 0.25).abs() < 1e-4);
+        assert!((custom_state.ratio(SplitterId::LogDiffRightHorizontal) - 0.75).abs() < 1e-4);
+        assert!((custom_state.ratio(SplitterId::LogDiffBottomVertical) - 0.40).abs() < 1e-4);
         assert!((custom_state.ratio(SplitterId::CommitMainHorizontal) - 0.25).abs() < 1e-4);
+        assert!((custom_state.ratio(SplitterId::CommitLeftVertical) - 0.80).abs() < 1e-4);
         assert!((custom_state.ratio(SplitterId::StashMainHorizontal) - 0.60).abs() < 1e-4);
+        assert!((custom_state.ratio(SplitterId::StashPreviewVertical) - 0.50).abs() < 1e-4);
         assert!((custom_state.ratio(SplitterId::ConsoleMainHorizontal) - 0.50).abs() < 1e-4);
+
+        // Mutating then resetting vertical & dock splitters restores custom configured defaults
+        custom_state.update_from_pointer(
+            SplitterId::LogDetailsVertical,
+            jbgit_core::SplitAxis::Vertical,
+            ratatui::layout::Rect::new(0, 0, 40, 40),
+            0,
+            25,
+        );
+        assert!((custom_state.ratio(SplitterId::LogDetailsVertical) - 0.25).abs() > 0.1);
+        custom_state.reset(SplitterId::LogDetailsVertical);
+        assert!((custom_state.ratio(SplitterId::LogDetailsVertical) - 0.25).abs() < 1e-4);
+
+        custom_state.update_from_pointer(
+            SplitterId::CommitLeftVertical,
+            jbgit_core::SplitAxis::Vertical,
+            ratatui::layout::Rect::new(0, 0, 40, 40),
+            0,
+            12,
+        );
+        assert!((custom_state.ratio(SplitterId::CommitLeftVertical) - 0.80).abs() > 0.1);
+        custom_state.reset(SplitterId::CommitLeftVertical);
+        assert!((custom_state.ratio(SplitterId::CommitLeftVertical) - 0.80).abs() < 1e-4);
+
+        custom_state.update_from_pointer(
+            SplitterId::LogDiffRightHorizontal,
+            jbgit_core::SplitAxis::Horizontal,
+            ratatui::layout::Rect::new(0, 0, 120, 40),
+            60,
+            0,
+        );
+        assert!((custom_state.ratio(SplitterId::LogDiffRightHorizontal) - 0.75).abs() > 0.1);
+        custom_state.reset(SplitterId::LogDiffRightHorizontal);
+        assert!((custom_state.ratio(SplitterId::LogDiffRightHorizontal) - 0.75).abs() < 1e-4);
+
+        custom_state.update_from_pointer(
+            SplitterId::LogDiffBottomVertical,
+            jbgit_core::SplitAxis::Vertical,
+            ratatui::layout::Rect::new(0, 0, 40, 40),
+            0,
+            30,
+        );
+        assert!((custom_state.ratio(SplitterId::LogDiffBottomVertical) - 0.40).abs() > 0.1);
+        custom_state.reset(SplitterId::LogDiffBottomVertical);
+        assert!((custom_state.ratio(SplitterId::LogDiffBottomVertical) - 0.40).abs() < 1e-4);
     }
 
     #[test]

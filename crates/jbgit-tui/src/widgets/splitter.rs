@@ -97,6 +97,14 @@ impl Default for SplitterState {
             },
         );
         specs.insert(
+            SplitterId::StashPreviewVertical,
+            SplitterSpec {
+                default_ratio: 0.35,
+                min_first: 4,
+                min_second: 4,
+            },
+        );
+        specs.insert(
             SplitterId::ConsoleMainHorizontal,
             SplitterSpec {
                 default_ratio: 0.42,
@@ -327,15 +335,25 @@ mod tests {
         let mut state = SplitterState::with_default_ratios([
             (SplitterId::LogLeftHorizontal, 0.125),
             (SplitterId::LogRightHorizontal, 4.0 / 7.0),
+            (SplitterId::LogDetailsVertical, 0.35),
+            (SplitterId::LogDiffRightHorizontal, 0.70),
+            (SplitterId::LogDiffBottomVertical, 0.55),
             (SplitterId::CommitMainHorizontal, 0.25),
+            (SplitterId::CommitLeftVertical, 0.75),
             (SplitterId::StashMainHorizontal, 0.01),   // clamped to 0.05
+            (SplitterId::StashPreviewVertical, 0.45),
             (SplitterId::ConsoleMainHorizontal, 0.99), // clamped to 0.90
         ]);
 
         assert!((state.ratio(SplitterId::LogLeftHorizontal) - 0.125).abs() < 1e-4);
         assert!((state.ratio(SplitterId::LogRightHorizontal) - (4.0 / 7.0)).abs() < 1e-4);
+        assert!((state.ratio(SplitterId::LogDetailsVertical) - 0.35).abs() < 1e-4);
+        assert!((state.ratio(SplitterId::LogDiffRightHorizontal) - 0.70).abs() < 1e-4);
+        assert!((state.ratio(SplitterId::LogDiffBottomVertical) - 0.55).abs() < 1e-4);
         assert!((state.ratio(SplitterId::CommitMainHorizontal) - 0.25).abs() < 1e-4);
+        assert!((state.ratio(SplitterId::CommitLeftVertical) - 0.75).abs() < 1e-4);
         assert!((state.ratio(SplitterId::StashMainHorizontal) - 0.05).abs() < 1e-4);
+        assert!((state.ratio(SplitterId::StashPreviewVertical) - 0.45).abs() < 1e-4);
         assert!((state.ratio(SplitterId::ConsoleMainHorizontal) - 0.90).abs() < 1e-4);
 
         // Test reset restores configured default ratio (including clamped values)
@@ -343,6 +361,18 @@ mod tests {
         assert_eq!(state.ratio(SplitterId::CommitMainHorizontal), 0.88);
         state.reset(SplitterId::CommitMainHorizontal);
         assert!((state.ratio(SplitterId::CommitMainHorizontal) - 0.25).abs() < 1e-4);
+
+        state.ratios.insert(SplitterId::CommitLeftVertical, 0.30);
+        state.reset(SplitterId::CommitLeftVertical);
+        assert!((state.ratio(SplitterId::CommitLeftVertical) - 0.75).abs() < 1e-4);
+
+        state.ratios.insert(SplitterId::LogDetailsVertical, 0.80);
+        state.reset(SplitterId::LogDetailsVertical);
+        assert!((state.ratio(SplitterId::LogDetailsVertical) - 0.35).abs() < 1e-4);
+
+        state.ratios.insert(SplitterId::StashPreviewVertical, 0.80);
+        state.reset(SplitterId::StashPreviewVertical);
+        assert!((state.ratio(SplitterId::StashPreviewVertical) - 0.45).abs() < 1e-4);
 
         state.ratios.insert(SplitterId::StashMainHorizontal, 0.42);
         state.reset(SplitterId::StashMainHorizontal);

@@ -4,7 +4,7 @@
 
 use jbgit_core::{PaneId, SplitAxis, SplitterId};
 use ratatui::Frame;
-use ratatui::layout::{Constraint, Direction, Layout, Rect};
+use ratatui::layout::Rect;
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
@@ -56,7 +56,7 @@ pub fn render_stash_tab(
             SplitAxis::Horizontal,
             ctx,
         );
-        render_stash_preview(frame, split.second, state, ctx);
+        render_stash_preview(frame, split.second, state, ctx, splitter_containers);
     }
 }
 
@@ -177,6 +177,7 @@ fn render_stash_preview(
     area: Rect,
     state: &AppState,
     ctx: &mut RenderContext<'_>,
+    splitter_containers: &mut Vec<(SplitterId, SplitAxis, Rect)>,
 ) {
     if area.height == 0 || area.width == 0 {
         return;
@@ -198,31 +199,52 @@ fn render_stash_preview(
         return;
     }
 
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Percentage(35), Constraint::Percentage(65)])
-        .split(area);
+    let preview_split = state.splitters.split(
+        area,
+        SplitterId::StashPreviewVertical,
+        SplitAxis::Vertical,
+    );
+    splitter_containers.push((
+        SplitterId::StashPreviewVertical,
+        SplitAxis::Vertical,
+        preview_split.container,
+    ));
     render_changes_browser(
         frame,
-        chunks[0],
+        preview_split.first,
         &state.stash.details,
         DiffHost::Stash,
         PaneId::StashDiffPreview,
         ctx,
     );
-    let diff_sub = state
-        .stash
-        .details
-        .selected_change()
-        .map(|c| state.i18n.t_fmt("view.log_details.diff_file", &[("path", &c.path)]))
-        .unwrap_or_else(|| state.i18n.t("view.log_details.diff_preview").to_string());
-    let diff_body = render_pane_frame(frame, chunks[1], PaneId::StashDiffPreview, &diff_sub, ctx);
-    render_diff_preview(
-        frame,
-        diff_body,
-        &state.stash.details,
-        DiffHost::Stash,
-        false,
-        ctx,
-    );
+    if !preview_split.collapsed {
+        render_splitter_divider(
+            frame,
+            preview_split.divider,
+            SplitterId::StashPreviewVertical,
+            SplitAxis::Vertical,
+            ctx,
+        );
+        let diff_sub = state
+            .stash
+            .details
+            .selected_change()
+            .map(|c| state.i18n.t_fmt("view.log_details.diff_file", &[("path", &c.path)]))
+            .unwrap_or_else(|| state.i18n.t("view.log_details.diff_preview").to_string());
+        let diff_body = render_pane_frame(
+            frame,
+            preview_split.second,
+            PaneId::StashDiffPreview,
+            &diff_sub,
+            ctx,
+        );
+        render_diff_preview(
+            frame,
+            diff_body,
+            &state.stash.details,
+            DiffHost::Stash,
+            false,
+            ctx,
+        );
+    }
 }

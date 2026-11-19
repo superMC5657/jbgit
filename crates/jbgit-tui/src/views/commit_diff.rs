@@ -241,7 +241,7 @@ pub fn render_stage_diff_workbench(
                 };
 
                 let km = &state.config.keymap;
-                let diff_scopes = &[KeymapScope::Diff];
+                let diff_scopes = &[KeymapScope::Diff, KeymapScope::Commit, KeymapScope::Global];
                 let unstage_key = km
                     .primary_key_for(diff_scopes, &KeyAction::UnstageSelection)
                     .or_else(|| km.primary_key_for(diff_scopes, &KeyAction::ToggleStage))
@@ -546,7 +546,7 @@ fn render_diff_hint_bar(
 ) {
     let sw = &state.stage_workbench;
     let km = &state.config.keymap;
-    let diff_scopes = &[KeymapScope::Diff];
+    let diff_scopes = &[KeymapScope::Diff, KeymapScope::Commit, KeymapScope::Global];
     let key_pair = |a: KeyAction, b: KeyAction, fallback: &str| -> String {
         match (
             km.primary_key_for(diff_scopes, &a),

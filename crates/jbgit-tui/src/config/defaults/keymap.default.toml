@@ -66,6 +66,7 @@ key_bindings = [
     { on = [ "<F2>" ], run = "reword", desc = "修改提交说明 (Reword)" },
     { on = [ "<Del>" ], run = "drop_commit", desc = "丢弃提交 (Drop)" },
     { on = [ "m" ], run = "choose_parent", desc = "选择 / 切换合并父提交" },
+    { on = [ "v" ], run = "toggle_group", desc = "切换按目录树分组" },
 ]
 
 [branch]
@@ -150,4 +151,5 @@ key_bindings = [
     { on = [ "<Del>" ], run = "stash_drop", desc = "删除选中贮藏" },
     { on = [ "B" ], run = "stash_branch", desc = "从选中贮藏创建分支" },
     { on = [ "C" ], run = "stash_clear", desc = "清空所有贮藏" },
+    { on = [ "v" ], run = "toggle_group", desc = "切换按目录树分组" },
 ]

@@ -121,6 +121,8 @@ pub enum SplitterId {
     /// Optional full-width diff preview docked to the bottom of Log.
     LogDiffBottomVertical,
     StashMainHorizontal,
+    /// Right pane of Stash: changed files browser (top) / diff preview (bottom).
+    StashPreviewVertical,
     ConsoleMainHorizontal,
 }
 

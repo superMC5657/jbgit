@@ -339,6 +339,24 @@ fn route_key(key: KeyEvent, state: &mut AppState) -> Vec<Action> {
         return actions;
     }
 
+    if state.active_tab == WorkspaceTab::Console
+        && state.focused_pane == PaneId::ConsoleCommandList
+        && state.pending_keys.is_empty()
+        && key.code == KeyCode::Char(crate::keymap::actions::DEFAULT_CONSOLE_PROBE_CHAR)
+        && !key.modifiers.contains(KeyModifiers::CONTROL)
+        && !key.modifiers.contains(KeyModifiers::ALT)
+        && state
+            .config
+            .keymap
+            .primary_key_for(
+                &[crate::config::KeymapScope::Global],
+                &crate::keymap::KeyAction::GitStatusProbe,
+            )
+            .is_none()
+    {
+        return vec![crate::keymap::actions::git_status_probe_action()];
+    }
+
     // Layer 0: Dynamic Keymap (from keymap.toml; handles Esc chord cancellation internally)
     if let Some(actions) = crate::keymap::route_dynamic_key(&key, state) {
         return actions;
@@ -463,11 +481,6 @@ fn route_key(key: KeyEvent, state: &mut AppState) -> Vec<Action> {
         },
         PaneId::ConsoleCommandList => match key.code {
             KeyCode::Enter => vec![Action::FocusPane(PaneId::ConsoleOutputDetail)],
-            KeyCode::Char('p') if !ctrl && !alt => vec![Action::RunCliProbe(vec![
-                "status".into(),
-                "--short".into(),
-                "--branch".into(),
-            ])],
             _ => Vec::new(),
         },
         PaneId::ConsoleOutputDetail => match key.code {
@@ -636,8 +649,7 @@ fn route_log_priority_key(key: &KeyEvent, state: &mut AppState) -> Option<Vec<Ac
             }
         } else if state.config.keymap.tree_speed_search
             && let Some(c) = plain_char(key)
-            && (c.is_alphabetic() || matches!(c, '-' | '_' | '/' | '0' | '5'..='9'))
-            && c != 'J'
+            && crate::keymap::actions::is_branch_speed_search_char(c)
         {
             return Some(vec![Action::BranchesSearchInput(c)]);
         }
