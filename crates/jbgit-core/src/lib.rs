@@ -20,7 +20,9 @@ pub use branch_tree::{
     natural_cmp,
 };
 pub use conflict::{ConflictBlock, ConflictChoice, ConflictDocument, ConflictPaneRow, ConflictSegment};
-pub use console::GitConsoleEntry;
+pub use console::{
+    ConsoleLine, ConsoleLineSeverity, ConsoleStream, GitConsoleEntry, classify_console_line,
+};
 pub use details::{
     ChangeRowKind, ChangeTreeRow, CommitChangesBundle, CommitDetails, DetailsKey, DetailsMode,
     DiffContext, DiffHunk, DiffLine, DiffLineKind, FileChange, FileDiff, FileDiffKey,

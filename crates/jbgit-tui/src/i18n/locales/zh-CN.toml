@@ -628,7 +628,7 @@ select_preview = " 选择一条贮藏记录以预览变更"
 [view.console]
 list_subtitle = "共 {count} 条命令 (按 'p' 执行状态探测)"
 empty_list = " 暂未执行任何 Git 命令。按 'p' 运行 git status。"
-select_prompt = " 请在左侧选择一条命令以查看标准输出与错误输出。"
+select_prompt = " 请在左侧选择一条命令以查看输出。"
 running = "执行中 {spinner}"
 exit_status = "退出码 {code} ({ms} ms)"
 no_output = " (无输出)"

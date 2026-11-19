@@ -1923,17 +1923,9 @@ impl AppState {
                 self.console_selected_idx = 0;
                 self.console_output_scroll = 0;
             }
-            EngineEvent::ConsoleOutput {
-                id,
-                is_stderr,
-                line,
-            } => {
+            EngineEvent::ConsoleOutput { id, stream, line } => {
                 if let Some(entry) = self.console_entries.iter_mut().find(|e| e.id == id) {
-                    if is_stderr {
-                        entry.stderr_lines.push(line);
-                    } else {
-                        entry.stdout_lines.push(line);
-                    }
+                    entry.push_line(stream, line);
                 }
             }
             EngineEvent::ConsoleFinished {

@@ -458,7 +458,10 @@ mod tests {
     #[test]
     fn mouse_wheel_routes_to_hovered_pane_and_right_click_preselects() {
         use chrono::Local;
-        use jbgit_core::{CommitSummary, GitConsoleEntry, Oid, RepoSnapshot, RepositoryState};
+        use jbgit_core::{
+            CommitSummary, ConsoleLine, ConsoleStream, GitConsoleEntry, Oid, RepoSnapshot,
+            RepositoryState,
+        };
         use std::sync::Arc;
 
         let mut state = AppState::new_with_config(
@@ -511,8 +514,12 @@ mod tests {
             started_at: Local::now(),
             duration_ms: Some(5),
             command_line: "git status".into(),
-            stdout_lines: (0..30).map(|i| format!("line {i}")).collect(),
-            stderr_lines: vec![],
+            output_lines: (0..30)
+                .map(|i| ConsoleLine {
+                    stream: ConsoleStream::Stdout,
+                    text: format!("line {i}"),
+                })
+                .collect(),
             exit_code: Some(0),
         });
 

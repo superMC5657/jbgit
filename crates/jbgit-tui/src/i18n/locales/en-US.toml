@@ -628,7 +628,7 @@ select_preview = " Select a stash to preview its changes"
 [view.console]
 list_subtitle = "{count} entries (press 'p' to probe)"
 empty_list = " No Git CLI commands executed yet. Press 'p' to run git status."
-select_prompt = " Select a command entry on the left to inspect stdout/stderr."
+select_prompt = " Select a command entry on the left to inspect command output."
 running = "RUNNING {spinner}"
 exit_status = "EXIT {code} ({ms} ms)"
 no_output = " (no output)"

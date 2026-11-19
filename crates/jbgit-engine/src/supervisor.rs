@@ -3,9 +3,9 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use jbgit_core::{
-    AmendCommitPreview, CommitChangesBundle, ConflictDocument, DetailsKey, EpochToken,
-    EpochTracker, FileDiff, FileDiffKey, GitConsoleEntry, GitOp, GitOpOutcome, Oid, RefreshScope,
-    RepoSnapshot, StageStatusSnapshot, StageTarget,
+    AmendCommitPreview, CommitChangesBundle, ConflictDocument, ConsoleStream, DetailsKey,
+    EpochToken, EpochTracker, FileDiff, FileDiffKey, GitConsoleEntry, GitOp, GitOpOutcome, Oid,
+    RefreshScope, RepoSnapshot, StageStatusSnapshot, StageTarget,
 };
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 
@@ -138,7 +138,7 @@ pub enum EngineEvent {
     ConsoleStarted(GitConsoleEntry),
     ConsoleOutput {
         id: u64,
-        is_stderr: bool,
+        stream: ConsoleStream,
         line: String,
     },
     ConsoleFinished {
@@ -511,33 +511,7 @@ impl EngineSupervisor {
                                             is_read_only: false,
                                             env: &[],
                                         },
-                                        |ev| match ev {
-                                            CliStreamEvent::Started(entry) => {
-                                                let _ = tx.send(EngineEvent::ConsoleStarted(entry));
-                                            }
-                                            CliStreamEvent::Output {
-                                                id,
-                                                is_stderr,
-                                                line,
-                                            } => {
-                                                let _ = tx.send(EngineEvent::ConsoleOutput {
-                                                    id,
-                                                    is_stderr,
-                                                    line,
-                                                });
-                                            }
-                                            CliStreamEvent::Finished {
-                                                id,
-                                                exit_code,
-                                                duration_ms,
-                                            } => {
-                                                let _ = tx.send(EngineEvent::ConsoleFinished {
-                                                    id,
-                                                    exit_code,
-                                                    duration_ms,
-                                                });
-                                            }
-                                        },
+                                        |ev| forward_cli_event(&tx, ev),
                                     )
                                     .await;
 
@@ -739,33 +713,7 @@ impl EngineSupervisor {
                                         is_read_only,
                                         env: &[],
                                     },
-                                    |ev| match ev {
-                                        CliStreamEvent::Started(entry) => {
-                                            let _ = tx.send(EngineEvent::ConsoleStarted(entry));
-                                        }
-                                        CliStreamEvent::Output {
-                                            id,
-                                            is_stderr,
-                                            line,
-                                        } => {
-                                            let _ = tx.send(EngineEvent::ConsoleOutput {
-                                                id,
-                                                is_stderr,
-                                                line,
-                                            });
-                                        }
-                                        CliStreamEvent::Finished {
-                                            id,
-                                            exit_code,
-                                            duration_ms,
-                                        } => {
-                                            let _ = tx.send(EngineEvent::ConsoleFinished {
-                                                id,
-                                                exit_code,
-                                                duration_ms,
-                                            });
-                                        }
-                                    },
+                                    |ev| forward_cli_event(&tx, ev),
                                 )
                                 .await;
 
@@ -814,13 +762,9 @@ impl EngineSupervisor {
 pub(crate) fn forward_cli_event(tx: &UnboundedSender<EngineEvent>, ev: CliStreamEvent) {
     let _ = tx.send(match ev {
         CliStreamEvent::Started(entry) => EngineEvent::ConsoleStarted(entry),
-        CliStreamEvent::Output {
+        CliStreamEvent::Output { id, stream, line } => EngineEvent::ConsoleOutput {
             id,
-            is_stderr,
-            line,
-        } => EngineEvent::ConsoleOutput {
-            id,
-            is_stderr,
+            stream,
             line,
         },
         CliStreamEvent::Finished {

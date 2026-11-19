@@ -3,7 +3,7 @@ use std::process::Stdio;
 use std::time::Instant;
 
 use chrono::Local;
-use jbgit_core::GitConsoleEntry;
+use jbgit_core::{ConsoleStream, GitConsoleEntry};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
 
@@ -127,8 +127,7 @@ impl GitCliExecutor {
             started_at,
             duration_ms: None,
             command_line,
-            stdout_lines: Vec::new(),
-            stderr_lines: Vec::new(),
+            output_lines: Vec::new(),
             exit_code: None,
         }));
 
@@ -184,7 +183,11 @@ impl GitCliExecutor {
                 res = next_line(&mut stdout_lines_reader), if !stdout_done => {
                     match res {
                         Some(line) => {
-                            on_event(CliStreamEvent::Output { id, is_stderr: false, line: line.clone() });
+                            on_event(CliStreamEvent::Output {
+                                id,
+                                stream: ConsoleStream::Stdout,
+                                line: line.clone(),
+                            });
                             stdout_lines.push(line);
                         }
                         None => stdout_done = true,
@@ -193,7 +196,11 @@ impl GitCliExecutor {
                 res = next_line(&mut stderr_lines_reader), if !stderr_done => {
                     match res {
                         Some(line) => {
-                            on_event(CliStreamEvent::Output { id, is_stderr: true, line: line.clone() });
+                            on_event(CliStreamEvent::Output {
+                                id,
+                                stream: ConsoleStream::Stderr,
+                                line: line.clone(),
+                            });
                             stderr_lines.push(line);
                         }
                         None => stderr_done = true,
@@ -229,7 +236,7 @@ pub enum CliStreamEvent {
     Started(GitConsoleEntry),
     Output {
         id: u64,
-        is_stderr: bool,
+        stream: ConsoleStream,
         line: String,
     },
     Finished {
