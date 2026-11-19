@@ -36,7 +36,7 @@
   - 左侧：**分支树 (Branches Dashboard)**（按目录层级折叠、收藏置顶、ahead/behind 计数）。
   - 中间：**提交图谱与筛选条 (VCS Log Table & Filter Bar)**。
   - 右侧：**提交详情与变更文件 Diff 联动 (Commit Changes Details & Diff)**。
-- **多维复合筛选**：支持在过滤栏按分支 (`branch:`)、用户 (`user:`)、日期 (`date:`)、路径 (`path:`) 以及消息/哈希/正则快速检索。
+- **多维复合筛选**：支持提交文本/哈希搜索（可切换 `[.*]` 正则 `<Alt-r>` 与 `[Cc]` 大小写敏感 `<Alt-c>`），以及按 **Branch / User / Date / Paths** 四个可点击筛选芯片打开编辑器进行组合过滤。
 
 ### 2. ⚡ Commit 暂存工作台与行级局部暂存
 - **双栏工作台**：左侧展示变更文件树（支持按目录层级折叠或扁平列表切换），右侧实时呈现文件差异（Diff）。
@@ -48,10 +48,10 @@
   - 具备提交前检查（Unborn 初始状态、空提交防护、Hook 失败保留草稿等）。
 
 ### 3. 🌿 分支管理与全局速查浮窗 (Branches Popup)
-- **类似 IDEA 的全局浮窗**：按 `<C-~>` 或 `<C-`>` 随处唤出分支速查弹窗。
+- **类似 IDEA 的全局浮窗**：按 `<Ctrl-~>` 或 `` <Ctrl-`> ``（非 Log 标签页下亦支持 `<Alt-b>`）随处唤出分支速查弹窗，按 `<Esc>` 关闭。
 - **Speed Search 模糊速查**：键盘直接打字即可秒级过滤目标分支。
 - **丰富的分支操作**：
-  - 检出 (Checkout)、新建分支、重命名 (`<F2>`)、删除分支 (`<Del>`)、星标收藏置顶 (`f`)。
+  - 检出 (Checkout)、新建分支、重命名 (`<F2>`)、删除分支 (`<Del>`)、星标收藏置顶（在分支树按 `<Space>` 切换或通过分支菜单）。
   - 远程分支追踪与分支对比 (Compare with Current)。
 - **高级 Git 交互与右键菜单**：
   - Rebase、Merge、Cherry-pick、Revert、Reset (Soft / Mixed / Hard)。
@@ -85,7 +85,8 @@ jGit/
 │   │                           # notify 文件变动防抖监听与锁竞争自动重试
 │   └── jgit-tui/               # 终端用户界面：Ratatui + Crossterm、主题/字体光栅化、
 │                               # 窗口拆分器 (Splitter)、Hit-Test 交互路由与多语言引擎
-└── docs/                       # 设计规约与架构文档
+├── docs/                       # Agent 协作与工作流指引 (docs/agents/)
+└── .scratch/                   # 各里程碑功能规约 (Specs) 与 Issue 拆解
 ```
 
 ---
@@ -143,15 +144,14 @@ jgit --print-default-config keymap    # 查看 keymap.toml 默认项
 ### 全局操作 (Global)
 | 快捷键 | 功能描述 |
 | :--- | :--- |
-| `q` | 退出 jGit |
+| `q` / `<Ctrl-c>` | 退出 jGit |
 | `?` | 打开交互式快捷键帮助视窗 |
 | `r` | 强制刷新 Git 仓库状态 |
-| `<Alt-1>` | 切换至 **提交日志 (Log)** 视图 |
-| `<Alt-2>` | 切换至 **提交工作台 (Commit)** 视图 |
-| `<Alt-3>` | 切换至 **分支一览 (Branches)** 视图 |
-| `<Alt-4>` | 切换至 **贮藏箱 (Stash)** 视图 |
-| `<Ctrl-~>` / `<Ctrl-`>` | 呼出 / 关闭全局分支速查浮窗 (Branches Popup) |
-| `<F9>` | 打开全局调色板与配色预览 |
+| `1` / `2` / `3` / `4` | 按标签栏顺序切换视图：**Commit (`1`)** / **Log (`2`)** / **Stash (`3`)** / **Console (`4`)** |
+| `<Alt-1>` – `<Alt-4>` | 快捷切页（默认依次为 **Log** / **Commit** / **Log 分支树** / **Stash**，可在 `keymap.toml` 自定义） |
+| `<Tab>` / `<Shift-Tab>` | 在当前视图各面板之间循环切换焦点 |
+| `<Ctrl-~>` / `` <Ctrl-`> `` | 呼出全局分支速查浮窗（非 Log 页亦可用 `<Alt-b>`；`<Esc>` 关闭） |
+| `<F9>` | 在 Log 视图打开快速跳转（Go To Revision）；在其他视图打开调色板与配色预览 |
 
 ### 提交日志视图 (Log View)
 | 快捷键 | 功能描述 |
@@ -172,28 +172,48 @@ jgit --print-default-config keymap    # 查看 keymap.toml 默认项
 | :--- | :--- |
 | `<Space>` | **暂存 / 取消暂存** 当前选中的文件、差异块 (Hunk) 或指定代码行 |
 | `<Ctrl-Enter>` | 执行提交 |
-| `<Alt-a>` | 切换追加至上一提交 (`Amend`) 模式 |
+| `<Alt-a>` / `<Alt-m>` | 切换追加至上一提交 (`Amend`) 模式 |
 | `<Ctrl-a>` | 全选变更文件 |
-| `<Del>` | 放弃选中文件或代码块的本地修改 (Discard Changes) |
+| `<Del>` / `d` | 放弃选中文件或代码块的本地修改 (Discard Changes) |
 | `v` | 切换按目录层级树展示 / 扁平列表展示 |
 | `e` | 在外部系统编辑器中打开当前文件 |
 
-### 分支管理 (Branches)
+### 分支树面板 (Log Branches Pane)
 | 快捷键 | 功能描述 |
 | :--- | :--- |
-| `直接打字` | Speed Search 模糊速查过滤分支 |
-| `f` | 添加 / 取消收藏当前分支 (置顶显示) |
-| `c` | 检出选中的分支 |
+| `直接打字` / `<Esc>` | Speed Search 模糊速查过滤分支 / 清除筛选 |
+| `<Space>` | 添加 / 取消收藏当前分支（置顶显示） |
+| `<Enter>` | 按选中分支过滤提交日志 |
+| `J` | 跳转至选中分支对应的提交记录 |
 | `<F2>` | 重命名选中的分支 |
 | `<Del>` | 安全删除选中的分支 |
+| `鼠标右键` / `<Shift-F10>` | 打开分支上下文菜单（检出、新建、合并、变基、对比等） |
+
+### 全局分支浮窗 (Branches Popup)
+| 快捷键 | 功能描述 |
+| :--- | :--- |
+| `直接打字` / `<Ctrl-u>` | Speed Search 模糊速查过滤分支 / 清空输入 |
+| `<Enter>` / `<Right>` | 打开选中分支的操作子菜单（检出、新建、重命名、删除、对比等） |
+| `<Alt-f>` / `<Esc>` | 执行远程 Fetch / 关闭浮窗 |
 
 ### 差异对比 (Diff View)
+**Log / Stash Diff 预览**：
 | 快捷键 | 功能描述 |
 | :--- | :--- |
 | `s` | 切换单列统一对比 (Unified) / 双列并排对比 (Side-by-Side) |
 | `c` | 循环切换上下文行数 (3 行 / 10 行 / 全量代码) |
-| `[` / `]` | 快速跳转至上一个 / 下一个变更文件 |
-| `<F4>` | 切换全屏放大预览 Diff |
+| `m` | 切换 Log Diff 预览停靠位置 |
+| `[` / `]` | 在 Log 中快速跳转至上一个 / 下一个变更文件 |
+| `<F4>` / `<Ctrl-Enter>` | 切换 Log 全屏放大预览 Diff |
+
+**Commit 工作台 Diff 预览**：
+| 快捷键 | 功能描述 |
+| :--- | :--- |
+| `S` | 切换单列统一对比 / 双列并排对比 |
+| `c` | 循环切换上下文行数 (3 行 / 10 行 / 全量代码) |
+| `[` / `]` 或 `p` / `n` | 跳转至上一个 / 下一个 Hunk 差异块 |
+| `s` / `<Space>` / `u` | 暂存或取消暂存当前行 / 选区；`r` 回滚本地修改 |
+| `v` / `x` / `i` | 切换行选区 (Visual) / 切换 Staged 与 Unstaged 侧 / 打开三方合并视图 |
 
 ---
 
@@ -211,7 +231,7 @@ jgit --print-default-config keymap    # 查看 keymap.toml 默认项
 # 界面语言: "zh-CN" (简体中文), "en-US" (English), "auto" (自动跟随环境变量)
 language = "zh-CN"
 
-# 启动时默认打开的标签页: "log", "commit", "branches", "stash"
+# 启动时默认打开的标签页: "log", "commit", "branches", "stash", "console"
 default_tab = "log"
 
 # 主题预设: "darcula", "catppuccin-mocha", "gruvbox-dark"
@@ -269,4 +289,4 @@ key_bindings = [
 
 ## 📄 开源许可证 (License)
 
-本项目遵循 [Apache License 2.0](LICENSE) 开源协议。
+本项目遵循 **Apache License 2.0** 开源协议（详见 `Cargo.toml`）。

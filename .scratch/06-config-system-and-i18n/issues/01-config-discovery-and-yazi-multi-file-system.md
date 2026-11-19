@@ -31,6 +31,7 @@ Milestone: M6 — 配置体系与国际化
     - `[general]`：`language` ("zh-CN" / "en-US" / "auto")、`default_tab`、`flavor`
     - `[graph]`：`backend` ("auto" / "vector" / "cell")、`glyph_mode` ("nerd_font" / "unicode")、`compact_refs`
     - `[diff]`：`syntax_highlight`、`tab_size`、`context_lines`
+    - `[layout]`：`log_ratio`、`commit_ratio`、`stash_ratio`、`console_ratio`（类似 Yazi 的栏位权重比例，接入 `SplitterState`）
 - [x] **层级合并算法 (Layered Merge)**：
   - 将用户指定的非空配置层叠应用到底层默认配置上。
 - [x] **CLI 辅助命令扩展**：
@@ -59,5 +60,7 @@ Milestone: M6 — 配置体系与国际化
     - `mod.rs`: `AppConfig::load`、`print_default_config`、`init_config`。
   - `crates/jgit-tui/src/main.rs`: 支持 `--help`、`--print-default-config [NAME]` 及 `--init-config` 参数分发。
   - `crates/jgit-tui/src/app.rs`: `AppState` 接入 `config: AppConfig` 并根据配置项动态初始化默认 tab、glyph 模式等。
-  - 支持类似 Yazi 的 `[layout]` 布局比例控制：`log_ratio` (如 `[1, 3, 2]`)、`commit_ratio` (`[1, 2]`)、`stash_ratio` (`[2, 3]`)、`console_ratio` (`[2, 3]`)，并无缝集成到 `SplitterState`。
-  - 单元测试与端到端运行验收全部通过（133+ 单元测试 pass）。
+  - 单元测试与端到端运行验收全部通过（116+ 单元测试 pass）。
+- 2026-11-19 (agent): 完成 Review 修复与增强：
+  - 新增 Yazi 风格 `[layout]` 配置节（`log_ratio` / `commit_ratio` / `stash_ratio` / `console_ratio`），并通过强类型校验值对象 `TripleRatio` / `PairRatio` 与 `LayoutSection::splitter_defaults()` 解耦注入 `SplitterState::with_default_ratios`（支持双击分割线恢复配置比例，无效或零和覆写安全回退保留下层合法比例）。
+  - 补充跨层配置回退、非法比例保留及 `SplitterState` 集成单元测试；新增并校准项目根目录 `README.md` 与 `jgit.default.toml` 注释。

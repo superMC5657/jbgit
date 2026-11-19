@@ -273,32 +273,145 @@ impl Default for DiffSection {
     }
 }
 
+pub const RATIO_MIN: f32 = 0.05;
+pub const RATIO_MAX: f32 = 0.90;
+
+fn clamp_ratio(num: u32, denom: u64) -> f32 {
+    ((num as f64) / (denom as f64)).clamp(RATIO_MIN as f64, RATIO_MAX as f64) as f32
+}
+
+/// Validated two-pane weight pair (sum must be > 0).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PairRatio([u32; 2]);
+
+impl PairRatio {
+    pub const fn new(a: u32, b: u32) -> Option<Self> {
+        if (a as u64) + (b as u64) > 0 {
+            Some(Self([a, b]))
+        } else {
+            None
+        }
+    }
+
+    pub fn from_slice(weights: &[u32]) -> Option<Self> {
+        match weights {
+            &[a, b] => Self::new(a, b),
+            _ => None,
+        }
+    }
+
+    pub const fn weights(self) -> [u32; 2] {
+        self.0
+    }
+
+    pub fn first_ratio(self) -> f32 {
+        clamp_ratio(self.0[0], (self.0[0] as u64) + (self.0[1] as u64))
+    }
+}
+
+impl Serialize for PairRatio {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.0.serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for PairRatio {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let raw = Vec::<u32>::deserialize(deserializer)?;
+        Self::from_slice(&raw)
+            .ok_or_else(|| serde::de::Error::custom("expected 2 non-negative weights with sum > 0"))
+    }
+}
+
+/// Validated three-pane weight triple (middle + right sum must be > 0).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TripleRatio([u32; 3]);
+
+impl TripleRatio {
+    pub const fn new(a: u32, b: u32, c: u32) -> Option<Self> {
+        if (b as u64) + (c as u64) > 0 {
+            Some(Self([a, b, c]))
+        } else {
+            None
+        }
+    }
+
+    pub fn from_slice(weights: &[u32]) -> Option<Self> {
+        match weights {
+            &[a, b, c] => Self::new(a, b, c),
+            _ => None,
+        }
+    }
+
+    pub const fn weights(self) -> [u32; 3] {
+        self.0
+    }
+
+    pub fn split_ratios(self) -> (f32, f32) {
+        let [a, b, c] = self.0;
+        let bc = (b as u64) + (c as u64);
+        let total = (a as u64) + bc;
+        (clamp_ratio(a, total), clamp_ratio(b, bc))
+    }
+}
+
+impl Serialize for TripleRatio {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.0.serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for TripleRatio {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let raw = Vec::<u32>::deserialize(deserializer)?;
+        Self::from_slice(&raw).ok_or_else(|| {
+            serde::de::Error::custom("expected 3 non-negative weights with trailing pair sum > 0")
+        })
+    }
+}
+
+fn deserialize_opt_pair_ratio<'de, D>(deserializer: D) -> Result<Option<PairRatio>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let raw = Option::<Vec<u32>>::deserialize(deserializer)?;
+    Ok(raw.as_deref().and_then(PairRatio::from_slice))
+}
+
+fn deserialize_opt_triple_ratio<'de, D>(deserializer: D) -> Result<Option<TripleRatio>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let raw = Option::<Vec<u32>>::deserialize(deserializer)?;
+    Ok(raw.as_deref().and_then(TripleRatio::from_slice))
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct LayoutSection {
     #[serde(default = "default_log_ratio")]
-    pub log_ratio: Vec<u32>,
+    pub log_ratio: TripleRatio,
     #[serde(default = "default_commit_ratio")]
-    pub commit_ratio: Vec<u32>,
+    pub commit_ratio: PairRatio,
     #[serde(default = "default_stash_ratio")]
-    pub stash_ratio: Vec<u32>,
+    pub stash_ratio: PairRatio,
     #[serde(default = "default_console_ratio")]
-    pub console_ratio: Vec<u32>,
+    pub console_ratio: PairRatio,
 }
 
-fn default_log_ratio() -> Vec<u32> {
-    vec![1, 3, 2]
+fn default_log_ratio() -> TripleRatio {
+    TripleRatio([1, 3, 2])
 }
 
-fn default_commit_ratio() -> Vec<u32> {
-    vec![1, 2]
+fn default_commit_ratio() -> PairRatio {
+    PairRatio([1, 2])
 }
 
-fn default_stash_ratio() -> Vec<u32> {
-    vec![2, 3]
+fn default_stash_ratio() -> PairRatio {
+    PairRatio([2, 3])
 }
 
-fn default_console_ratio() -> Vec<u32> {
-    vec![2, 3]
+fn default_console_ratio() -> PairRatio {
+    PairRatio([2, 3])
 }
 
 impl Default for LayoutSection {
@@ -309,6 +422,28 @@ impl Default for LayoutSection {
             stash_ratio: default_stash_ratio(),
             console_ratio: default_console_ratio(),
         }
+    }
+}
+
+impl LayoutSection {
+    pub fn splitter_defaults(&self) -> [(jgit_core::SplitterId, f32); 5] {
+        let (log_left, log_right) = self.log_ratio.split_ratios();
+        [
+            (jgit_core::SplitterId::LogLeftHorizontal, log_left),
+            (jgit_core::SplitterId::LogRightHorizontal, log_right),
+            (
+                jgit_core::SplitterId::CommitMainHorizontal,
+                self.commit_ratio.first_ratio(),
+            ),
+            (
+                jgit_core::SplitterId::StashMainHorizontal,
+                self.stash_ratio.first_ratio(),
+            ),
+            (
+                jgit_core::SplitterId::ConsoleMainHorizontal,
+                self.console_ratio.first_ratio(),
+            ),
+        ]
     }
 }
 
@@ -349,25 +484,17 @@ impl JgitConfig {
             }
         }
         if let Some(lo) = &overlay.layout {
-            if let Some(r) = &lo.log_ratio {
-                if r.len() >= 2 {
-                    self.layout.log_ratio = r.clone();
-                }
+            if let Some(r) = lo.log_ratio {
+                self.layout.log_ratio = r;
             }
-            if let Some(r) = &lo.commit_ratio {
-                if r.len() >= 2 {
-                    self.layout.commit_ratio = r.clone();
-                }
+            if let Some(r) = lo.commit_ratio {
+                self.layout.commit_ratio = r;
             }
-            if let Some(r) = &lo.stash_ratio {
-                if r.len() >= 2 {
-                    self.layout.stash_ratio = r.clone();
-                }
+            if let Some(r) = lo.stash_ratio {
+                self.layout.stash_ratio = r;
             }
-            if let Some(r) = &lo.console_ratio {
-                if r.len() >= 2 {
-                    self.layout.console_ratio = r.clone();
-                }
+            if let Some(r) = lo.console_ratio {
+                self.layout.console_ratio = r;
             }
         }
     }
@@ -409,8 +536,12 @@ pub struct DiffSectionOverlay {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct LayoutSectionOverlay {
-    pub log_ratio: Option<Vec<u32>>,
-    pub commit_ratio: Option<Vec<u32>>,
-    pub stash_ratio: Option<Vec<u32>>,
-    pub console_ratio: Option<Vec<u32>>,
+    #[serde(default, deserialize_with = "deserialize_opt_triple_ratio")]
+    pub log_ratio: Option<TripleRatio>,
+    #[serde(default, deserialize_with = "deserialize_opt_pair_ratio")]
+    pub commit_ratio: Option<PairRatio>,
+    #[serde(default, deserialize_with = "deserialize_opt_pair_ratio")]
+    pub stash_ratio: Option<PairRatio>,
+    #[serde(default, deserialize_with = "deserialize_opt_pair_ratio")]
+    pub console_ratio: Option<PairRatio>,
 }

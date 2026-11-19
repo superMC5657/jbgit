@@ -12,7 +12,7 @@ use serde::de::DeserializeOwned;
 pub use discovery::{JGIT_CONFIG_DIR_ENV, find_config_file, global_config_dir};
 pub use jgit_config::{
     DefaultTab, GlyphModePref, GraphBackendPref, JgitConfig, JgitConfigOverlay, LanguagePref,
-    ThemeFlavor,
+    LayoutSection, PairRatio, ThemeFlavor, TripleRatio,
 };
 pub use keymap_config::{KeyBindingConfig, KeymapConfig, KeymapConfigOverlay};
 pub use theme_config::{ThemeConfig, ThemeConfigOverlay};
@@ -287,8 +287,9 @@ default_tab = "branches"
 
     #[test]
     fn test_layout_ratio_parsing_and_overlay() {
+        assert!(toml::from_str::<JgitConfig>(DEFAULT_JGIT_TOML).is_ok());
         let mut cfg = AppConfig::load_defaults();
-        assert_eq!(cfg.jgit.layout.log_ratio, vec![1, 3, 2]);
+        assert_eq!(cfg.jgit.layout.log_ratio.weights(), [1, 3, 2]);
 
         let overlay_toml = r#"
 [layout]
@@ -298,10 +299,141 @@ commit_ratio = [2, 5]
         let overlay: JgitConfigOverlay = toml::from_str(overlay_toml).unwrap();
         cfg.jgit.merge_overlay(&overlay);
 
-        assert_eq!(cfg.jgit.layout.log_ratio, vec![1, 4, 3]);
-        assert_eq!(cfg.jgit.layout.commit_ratio, vec![2, 5]);
+        assert_eq!(cfg.jgit.layout.log_ratio.weights(), [1, 4, 3]);
+        assert_eq!(cfg.jgit.layout.commit_ratio.weights(), [2, 5]);
         // Unspecified ratios keep defaults
-        assert_eq!(cfg.jgit.layout.stash_ratio, vec![2, 3]);
-        assert_eq!(cfg.jgit.layout.console_ratio, vec![2, 3]);
+        assert_eq!(cfg.jgit.layout.stash_ratio.weights(), [2, 3]);
+        assert_eq!(cfg.jgit.layout.console_ratio.weights(), [2, 3]);
+    }
+
+    #[test]
+    fn test_layout_invalid_overlays_preserve_lower_layer_and_sibling_keys() {
+        let mut cfg = AppConfig::load_defaults();
+        let valid_base: JgitConfigOverlay = toml::from_str(
+            r#"
+[layout]
+log_ratio = [2, 5, 3]
+commit_ratio = [3, 7]
+stash_ratio = [1, 4]
+"#,
+        )
+        .unwrap();
+        cfg.jgit.merge_overlay(&valid_base);
+
+        // Invalid ratios (zero sums, wrong lengths) must be ignored individually without
+        // wiping lower-layer ratios or rejecting sibling valid keys in the same file.
+        let bad_overlay: JgitConfigOverlay = toml::from_str(
+            r#"
+[layout]
+log_ratio = [0, 0, 0]
+commit_ratio = [0, 0]
+stash_ratio = [1]
+console_ratio = [1, 4]
+"#,
+        )
+        .unwrap();
+        cfg.jgit.merge_overlay(&bad_overlay);
+
+        assert_eq!(cfg.jgit.layout.log_ratio.weights(), [2, 5, 3]);
+        assert_eq!(cfg.jgit.layout.commit_ratio.weights(), [3, 7]);
+        assert_eq!(cfg.jgit.layout.stash_ratio.weights(), [1, 4]);
+        assert_eq!(cfg.jgit.layout.console_ratio.weights(), [1, 4]);
+
+        // 2-element log_ratio and trailing-zero [1, 0, 0] are also rejected cleanly.
+        let two_elem_log: JgitConfigOverlay = toml::from_str(
+            r#"
+[layout]
+log_ratio = [1, 2]
+"#,
+        )
+        .unwrap();
+        cfg.jgit.merge_overlay(&two_elem_log);
+        assert_eq!(cfg.jgit.layout.log_ratio.weights(), [2, 5, 3]);
+
+        let trailing_zero_log: JgitConfigOverlay = toml::from_str(
+            r#"
+[layout]
+log_ratio = [1, 0, 0]
+"#,
+        )
+        .unwrap();
+        cfg.jgit.merge_overlay(&trailing_zero_log);
+        assert_eq!(cfg.jgit.layout.log_ratio.weights(), [2, 5, 3]);
+    }
+
+    #[test]
+    fn test_layout_section_splitter_defaults_integration() {
+        use crate::widgets::SplitterState;
+        use jgit_core::SplitterId;
+
+        // Default [1, 3, 2] -> left 1/6, right 3/5
+        let defaults = LayoutSection::default();
+        let mut state = SplitterState::with_default_ratios(defaults.splitter_defaults());
+        assert!((state.ratio(SplitterId::LogLeftHorizontal) - (1.0 / 6.0)).abs() < 1e-4);
+        assert!((state.ratio(SplitterId::LogRightHorizontal) - 0.6).abs() < 1e-4);
+        assert!((state.ratio(SplitterId::CommitMainHorizontal) - (1.0 / 3.0)).abs() < 1e-4);
+        assert!((state.ratio(SplitterId::StashMainHorizontal) - 0.4).abs() < 1e-4);
+        assert!((state.ratio(SplitterId::ConsoleMainHorizontal) - 0.4).abs() < 1e-4);
+
+        // Reset restores the layout-configured default (not hardcoded SplitterState::default)
+        state.reset(SplitterId::LogLeftHorizontal);
+        state.reset(SplitterId::LogRightHorizontal);
+        assert!((state.ratio(SplitterId::LogLeftHorizontal) - (1.0 / 6.0)).abs() < 1e-4);
+        assert!((state.ratio(SplitterId::LogRightHorizontal) - 0.6).abs() < 1e-4);
+
+        let custom = LayoutSection {
+            log_ratio: TripleRatio::new(1, 4, 3).unwrap(),
+            commit_ratio: PairRatio::new(1, 3).unwrap(),
+            stash_ratio: PairRatio::new(3, 2).unwrap(),
+            console_ratio: PairRatio::new(1, 1).unwrap(),
+        };
+        let custom_state = SplitterState::with_default_ratios(custom.splitter_defaults());
+        assert!((custom_state.ratio(SplitterId::LogLeftHorizontal) - 0.125).abs() < 1e-4);
+        assert!((custom_state.ratio(SplitterId::LogRightHorizontal) - (4.0 / 7.0)).abs() < 1e-4);
+        assert!((custom_state.ratio(SplitterId::CommitMainHorizontal) - 0.25).abs() < 1e-4);
+        assert!((custom_state.ratio(SplitterId::StashMainHorizontal) - 0.60).abs() < 1e-4);
+        assert!((custom_state.ratio(SplitterId::ConsoleMainHorizontal) - 0.50).abs() < 1e-4);
+    }
+
+    #[test]
+    fn test_cross_layer_flavor_and_glyph_fallback_precedence() {
+        let layer1 = tempfile::tempdir().unwrap();
+        let layer2 = tempfile::tempdir().unwrap();
+        let layer3 = tempfile::tempdir().unwrap();
+
+        fs::write(
+            layer1.path().join("theme.toml"),
+            "flavor = \"catppuccin-mocha\"\n[glyphs]\nmode = \"unicode\"\n",
+        )
+        .unwrap();
+        fs::write(
+            layer2.path().join("jgit.toml"),
+            "[general]\nflavor = \"gruvbox-dark\"\n[graph]\nglyph_mode = \"nerd_font\"\n",
+        )
+        .unwrap();
+        fs::write(
+            layer3.path().join("jgit.toml"),
+            "[general]\nflavor = \"darcula\"\n",
+        )
+        .unwrap();
+        fs::write(
+            layer3.path().join("theme.toml"),
+            "flavor = \"catppuccin-mocha\"\n",
+        )
+        .unwrap();
+
+        let mut cfg = AppConfig::load_defaults();
+        cfg.apply_dir_overlays(layer1.path(), false);
+        assert_eq!(cfg.theme.flavor, ThemeFlavor::CatppuccinMocha);
+        assert_eq!(cfg.theme.glyphs.mode, GlyphModePref::Unicode);
+
+        // Layer 2 jgit.toml without same-layer theme.toml overrides Layer 1 theme.toml
+        cfg.apply_dir_overlays(layer2.path(), false);
+        assert_eq!(cfg.theme.flavor, ThemeFlavor::GruvboxDark);
+        assert_eq!(cfg.theme.glyphs.mode, GlyphModePref::NerdFont);
+
+        // Layer 3 same-layer theme.toml wins over same-layer jgit.toml
+        cfg.apply_dir_overlays(layer3.path(), false);
+        assert_eq!(cfg.theme.flavor, ThemeFlavor::CatppuccinMocha);
     }
 }
