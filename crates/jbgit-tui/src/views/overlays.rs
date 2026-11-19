@@ -446,8 +446,8 @@ fn render_floating_popup(
         PopupKind::HookError => (84, 20),
         _ => (64, 18),
     };
-    let width = screen.width.clamp(screen.width.min(24), max_w);
-    let height = screen.height.clamp(screen.height.min(8), max_h);
+    let width = screen.width.min(max_w);
+    let height = screen.height.min(max_h);
     let x = screen
         .x
         .saturating_add(screen.width.saturating_sub(width) / 2);

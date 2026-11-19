@@ -381,7 +381,8 @@ fn parent_child_navigation_history_and_goto() {
     key(&mut state, KeyCode::Right, KeyModifiers::ALT);
     assert_eq!(selected_oid(&state), oid(O1));
 
-    // Ctrl+G opens Go-to; Enter resolves refs and HEAD~N.
+    // Ctrl+G opens Go-to; rendering the floating popup must not panic at any terminal size,
+    // and Enter resolves refs and HEAD~N.
     key(&mut state, KeyCode::Char('g'), KeyModifiers::CONTROL);
     assert!(matches!(
         state.modal_stack.last(),
@@ -390,9 +391,12 @@ fn parent_child_navigation_history_and_goto() {
             ..
         })
     ));
+    let _ = render(&mut state, 140, 40);
+    let _ = render(&mut state, 20, 6);
     for c in "HEAD~1".chars() {
         key(&mut state, KeyCode::Char(c), KeyModifiers::NONE);
     }
+    let _ = render(&mut state, 140, 40);
     key(&mut state, KeyCode::Enter, KeyModifiers::NONE);
     assert!(state.modal_stack.is_empty());
     assert_eq!(selected_oid(&state), oid(A2));
