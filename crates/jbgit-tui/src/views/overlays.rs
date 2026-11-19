@@ -294,6 +294,7 @@ pub fn render_modals(
 pub fn render_which_key_popup(
     frame: &mut Frame<'_>,
     screen: Rect,
+    footer_h: u16,
     state: &AppState,
     ctx: &RenderContext<'_>,
 ) {
@@ -329,13 +330,14 @@ pub fn render_which_key_popup(
     let w = ((content_w + 2) as u16)
         .clamp(30, 58)
         .min(screen.width.saturating_sub(2));
-    let h = ((visible.len() + 3) as u16).min(screen.height.saturating_sub(2));
+    let bottom_margin = footer_h.saturating_add(1);
+    let h = ((visible.len() + 3) as u16).min(screen.height.saturating_sub(bottom_margin));
     if w < 16 || h < 5 {
         return;
     }
 
     let x = screen.x + screen.width.saturating_sub(w + 2);
-    let y = screen.y + screen.height.saturating_sub(h + 2);
+    let y = screen.y + screen.height.saturating_sub(h + bottom_margin);
     let rect = Rect::new(x, y, w, h);
 
     draw_shadow(frame, screen, rect);

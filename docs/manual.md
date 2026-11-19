@@ -262,7 +262,7 @@ mode = "nerd_font"
 
 ### 5. `keymap.toml`：快捷键预设与增量覆盖
 
-`keymap.toml` 支持全局按键预设切换与分作用域（`[global]`、`[log]`、`[branch]`、`[commit]`、`[diff]`、`[stash]`）增量定制：
+`keymap.toml` 支持全局按键预设切换与分作用域（`[global]`、`[log]`、`[branch]`、`[commit]`、`[diff]`、`[stash]`、`[console]`）增量定制：
 
 - **预设风格 (`preset`)**：
   - `"default"`：极简零冲突推荐预设（默认）。
@@ -271,6 +271,13 @@ mode = "nerd_font"
 - **分支树直接打字搜索 (`tree_speed_search`)**：
   - `false`（默认）：在分支树面板按 `/` 或 `<Ctrl-f>` 进入搜索，单键 `j`/`k`/`c`/`q`/`r` 等保留导航与快捷操作。
   - `true`：在分支树面板直接打字即可实时过滤分支。
+- **底栏快捷键提示定制 (`show_hint` 与 `footer_max_lines`)**：
+  - 每条按键绑定支持可选参数 `show_hint = true | false`，用于控制该动作是否显示在底部快捷键提示栏中；省略时通过 `prepend_keymap` / `key_bindings` 改键会自动继承该动作原有的展示设置（使用 `run = "noop"` 解绑主按键时也会由存活别名继承），而 `append_keymap` 仅追加低优先级别名而不抢占主绑定的提示，显式设置则覆盖默认状态。
+  - **展示顺序**：当前聚焦作用域（如 `diff`、`branch`、`commit`、`log`、`stash`、`console`）优先，其次为 `global`；同一作用域内严格按照 `keymap.toml` 中的声明顺序从左向右排列（`prepend_keymap` 会排在作用域前列，`?` 帮助固定锚定在底栏最右侧）。
+  - **超出宽度与多行 (`footer_max_lines`)**：
+    - `1`（默认）：单行展示，超出终端宽度的条目自动隐藏并在右侧显示 `+N` 提示角标。
+    - `2` / `3` 等正整数：允许底栏按宽度自动折行多行展示，仅在超过最大行数时折叠隐藏并显示 `+N`。
+    - `0`：隐藏底栏常驻快捷键提示（错误/通知 Toast、右键菜单禁用原因、图谱跳转悬停提示等临时状态仍会按需显示）。
 - **增量覆盖与解绑**：
   - `prepend_keymap`（推荐）：只覆盖同按键或追加优先绑定，保留同一动作的其他默认别名。
   - `append_keymap`：追加在默认列表末尾。
@@ -283,11 +290,18 @@ mode = "nerd_font"
 ```toml
 preset = "default"
 tree_speed_search = false
+footer_max_lines = 1
 
 [global]
 prepend_keymap = [
     { on = "r", run = "noop" },                                  # 解绑默认 r
     { on = ["g", "s"], run = "git_status_probe", desc = "状态探测" },
+]
+
+[log]
+prepend_keymap = [
+    { on = "y", run = "copy_hash", show_hint = false },          # 隐藏底栏 y 复制哈希提示
+    { on = "u", run = "uncommit", show_hint = true },            # 在底栏前置展示 u 撤回提交
 ]
 
 [diff]
@@ -302,8 +316,9 @@ prepend_keymap = [
 | 作用域 | 可用 `run` 动作标识符 |
 | :--- | :--- |
 | `global` | `quit`, `help`, `context_menu`, `refresh`, `tab_commit`, `tab_log`, `tab_branches`, `tab_stash`, `tab_console`, `focus_next`, `focus_prev`, `toggle_branches_popup`, `toggle_branches_pane`, `git_fetch`, `git_pull`, `git_push`, `goto_revision`, `palette`, `toggle_glyph_mode`, `cycle_graph_renderer`, `git_status_probe`, `noop` |
-| `log` | `cursor_down`, `cursor_up`, `goto_top`, `goto_bottom`, `page_down_half`, `page_up_half`, `goto_revision`, `focus_filter`, `toggle_branches_pane`, `compare_or_diff`, `zoom_diff`, `copy_hash`, `checkout`, `new_branch`, `uncommit`, `reword`, `drop_commit`, `choose_parent` |
+| `log` | `cursor_down`, `cursor_up`, `goto_top`, `goto_bottom`, `page_down_half`, `page_up_half`, `goto_revision`, `focus_filter`, `toggle_branches_pane`, `compare_or_diff`, `zoom_diff`, `copy_hash`, `checkout`, `new_branch`, `uncommit`, `reword`, `drop_commit`, `choose_parent`, `toggle_group` |
 | `branch` | `branch_search`, `toggle_favorite`, `checkout`, `new_branch`, `rename_branch`, `delete_branch`, `navigate_branch` |
 | `commit` | `cursor_down`, `cursor_up`, `goto_top`, `goto_bottom`, `toggle_stage`, `stage_selection`, `unstage_selection`, `focus_commit_msg`, `commit`, `commit_and_push`, `toggle_amend`, `toggle_signoff`, `commit_history`, `select_all`, `discard_changes`, `toggle_group`, `edit_file` |
 | `diff` | `cursor_down`, `cursor_up`, `prev_hunk`, `next_hunk`, `prev_file`, `next_file`, `toggle_side_by_side`, `cycle_diff_context`, `cycle_diff_dock`, `zoom_diff`, `toggle_stage`, `stage_selection`, `unstage_selection`, `toggle_visual`, `rollback_selection`, `undo_rollback`, `switch_diff_side`, `three_way_inspector` |
-| `stash` | `cursor_down`, `cursor_up`, `goto_top`, `goto_bottom`, `stash_new`, `stash_apply`, `stash_pop`, `stash_drop`, `stash_branch`, `stash_clear` |
+| `stash` | `cursor_down`, `cursor_up`, `goto_top`, `goto_bottom`, `stash_new`, `stash_apply`, `stash_pop`, `stash_drop`, `stash_branch`, `stash_clear`, `toggle_group` |
+| `console` | `goto_top`, `goto_bottom`, `page_down_half`, `page_up_half` |

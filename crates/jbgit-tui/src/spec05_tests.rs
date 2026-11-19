@@ -1682,3 +1682,271 @@ fn footer_and_help_respect_amend_readonly_author_edit_speed_search_and_console_d
         "p in ConsoleOutputDetail must not run RunCliProbe: {detail_p_actions:?}"
     );
 }
+
+#[test]
+fn footer_selective_show_hint_and_declaration_order() {
+    let mut state = state_with(snapshot());
+    state.config.keymap = crate::config::KeymapConfig::for_preset(crate::config::KeymapPreset::Default);
+    state.dispatch(Action::SwitchTab(WorkspaceTab::Log));
+    state.dispatch(Action::FocusPane(PaneId::LogCommitTable));
+
+    // Default Log footer places Log scope before Global scope
+    let term = render(&mut state, 200, 30);
+    let default_footer = row_text(term.backend().buffer(), 29);
+    let filter_pos = default_footer.find("Filter").expect(&default_footer);
+    let menu_pos = default_footer.find("Menu").expect(&default_footer);
+    assert!(filter_pos < menu_pos, "{default_footer}");
+    assert!(default_footer.contains("Copy hash"), "{default_footer}");
+    assert!(default_footer.contains("Help"), "{default_footer}");
+
+    // Hide copy_hash, promote uncommit via prepend_keymap, and hide help
+    let ov: crate::config::keymap_config::KeymapConfigOverlay = toml::from_str(
+        r#"
+[log]
+prepend_keymap = [
+    { on = "u", run = "uncommit", show_hint = true },
+    { on = "y", run = "copy_hash", show_hint = false },
+]
+
+[global]
+prepend_keymap = [
+    { on = "?", run = "help", show_hint = false },
+]
+"#,
+    )
+    .unwrap();
+    state.config.keymap.merge_overlay(&ov);
+
+    let term = render(&mut state, 200, 30);
+    let updated_footer = row_text(term.backend().buffer(), 29);
+    assert!(updated_footer.contains("Uncommit"), "{updated_footer}");
+    assert!(!updated_footer.contains("Copy hash"), "{updated_footer}");
+    assert!(!updated_footer.contains("Help"), "{updated_footer}");
+    // Prepended `uncommit` appears before `Filter`
+    let uncommit_pos = updated_footer.find("Uncommit").expect(&updated_footer);
+    let filter_pos2 = updated_footer.find("Filter").expect(&updated_footer);
+    assert!(uncommit_pos < filter_pos2, "{updated_footer}");
+
+    // Reordering entries in [log] changes left-to-right order in footer
+    let mut state_reordered = state_with(snapshot());
+    state_reordered.config.keymap =
+        crate::config::KeymapConfig::for_preset(crate::config::KeymapPreset::Default);
+    state_reordered.dispatch(Action::SwitchTab(WorkspaceTab::Log));
+    state_reordered.dispatch(Action::FocusPane(PaneId::LogCommitTable));
+    let reorder_ov: crate::config::keymap_config::KeymapConfigOverlay = toml::from_str(
+        r#"
+[log]
+key_bindings = [
+    { on = "y", run = "copy_hash", show_hint = true },
+    { on = "c", run = "checkout", show_hint = true },
+]
+"#,
+    )
+    .unwrap();
+    state_reordered.config.keymap.merge_overlay(&reorder_ov);
+    let term = render(&mut state_reordered, 160, 30);
+    let reordered_footer = row_text(term.backend().buffer(), 29);
+    let copy_pos = reordered_footer.find("Copy hash").expect(&reordered_footer);
+    let checkout_pos = reordered_footer.find("Checkout").expect(&reordered_footer);
+    assert!(copy_pos < checkout_pos, "{reordered_footer}");
+}
+
+#[test]
+fn footer_overflow_single_line_multiline_and_hidden() {
+    let mut state = state_with(snapshot());
+    state.config.keymap = crate::config::KeymapConfig::for_preset(crate::config::KeymapPreset::Default);
+    state.dispatch(Action::SwitchTab(WorkspaceTab::Log));
+    state.dispatch(Action::FocusPane(PaneId::LogCommitTable));
+
+    // 1. Default footer_max_lines = 1 at narrow width (80 cols): shows `+N` and right-aligned `? Help`
+    state.config.keymap.footer_max_lines = 1;
+    let term = render(&mut state, 80, 24);
+    let row_last = row_text(term.backend().buffer(), 23);
+    assert!(row_last.contains("Filter"), "{row_last}");
+    assert!(row_last.contains("Help"), "{row_last}");
+    assert!(row_last.contains(" +"), "expected +N overflow badge: {row_last}");
+    assert!(!row_last.contains("Parent"), "{row_last}");
+    assert!(!row_last.contains("Refresh"), "{row_last}");
+
+    // 2. Multi-line footer (footer_max_lines = 2): overflows onto row 23 and puts `? Help` on last row
+    state.config.keymap.footer_max_lines = 2;
+    let term = render(&mut state, 80, 24);
+    let row_22 = row_text(term.backend().buffer(), 22);
+    let row_23 = row_text(term.backend().buffer(), 23);
+    assert!(row_22.contains("Filter"), "{row_22}");
+    assert!(row_22.contains("Zoom"), "{row_22}");
+    assert!(!row_22.contains("Help"), "Help must sit on bottom row: {row_22}");
+    assert!(row_23.contains("Help"), "{row_23}");
+    // Items overflowing row 22 appear on row 23, and remaining overflow shows `+N`
+    assert!(row_23.contains("Parent"), "{row_23}");
+    assert!(row_23.contains("Sidebar"), "{row_23}");
+    assert!(row_23.contains(" +"), "expected +N on 2nd line: {row_23}");
+
+    // 3. Multi-line footer (footer_max_lines = 3): fits every Log + Global pill cleanly with no `+N`
+    state.config.keymap.footer_max_lines = 3;
+    let term = render(&mut state, 80, 24);
+    let combined_footer = format!(
+        "{}\n{}\n{}",
+        row_text(term.backend().buffer(), 21),
+        row_text(term.backend().buffer(), 22),
+        row_text(term.backend().buffer(), 23)
+    );
+    assert!(combined_footer.contains("Refresh"), "{combined_footer}");
+    assert!(combined_footer.contains("Help"), "{combined_footer}");
+    assert!(!combined_footer.contains(" +"), "unexpected +N when all fit: {combined_footer}");
+
+    // 4. Hidden footer (footer_max_lines = 0): no key hints on row 23, but notifications still render
+    state.config.keymap.footer_max_lines = 0;
+    let term = render(&mut state, 120, 24);
+    let hidden_row = row_text(term.backend().buffer(), 23);
+    assert!(!hidden_row.contains("Filter"), "{hidden_row}");
+    assert!(!hidden_row.contains("Help"), "{hidden_row}");
+
+    state.notification = Some(crate::app::Notification {
+        text: "Fetch finished".to_string(),
+        is_error: false,
+        action: None,
+    });
+    let term = render(&mut state, 120, 24);
+    let notif_row = row_text(term.backend().buffer(), 23);
+    assert!(notif_row.contains("Fetch finished"), "{notif_row}");
+}
+
+#[test]
+fn footer_cross_scope_shadowing_does_not_leak_hidden_key() {
+    let mut state = state_with(snapshot());
+    state.config.keymap = crate::config::KeymapConfig::for_preset(crate::config::KeymapPreset::Default);
+    state.dispatch(Action::SwitchTab(WorkspaceTab::Log));
+    state.dispatch(Action::FocusPane(PaneId::LogDetailsDiff));
+    state.details.diff_preview = true;
+
+    // Hide `cycle_diff_dock` (`m`) in [diff]; [log]'s `m` (`choose_parent`) must NOT leak into footer.
+    let ov: crate::config::keymap_config::KeymapConfigOverlay = toml::from_str(
+        r#"
+[diff]
+prepend_keymap = [
+    { on = "m", run = "cycle_diff_dock", show_hint = false },
+]
+"#,
+    )
+    .unwrap();
+    state.config.keymap.merge_overlay(&ov);
+
+    let term = render(&mut state, 160, 40);
+    let diff_footer = row_text(term.backend().buffer(), 39);
+    assert!(!diff_footer.contains("Dock"), "{diff_footer}");
+    assert!(!diff_footer.contains("Parent"), "shadowed log key leaked: {diff_footer}");
+}
+
+#[test]
+fn footer_console_probe_vim_diff_noop_append_and_which_key_non_overlap() {
+    use crate::config::{KeymapConfig, KeymapPreset, keymap_config::KeymapConfigOverlay};
+
+    // 1. Default ConsoleCommandList shows `p Status` without `Pull`;
+    //    rebinding git_status_probe in [global] shows `g s Status` and unshadows `p Pull`.
+    let mut console_state = state_with(snapshot());
+    console_state.config.keymap = KeymapConfig::for_preset(KeymapPreset::Default);
+    console_state.dispatch(Action::SwitchTab(WorkspaceTab::Console));
+    console_state.dispatch(Action::FocusPane(PaneId::ConsoleCommandList));
+    let term = render(&mut console_state, 160, 30);
+    let default_console_footer = row_text(term.backend().buffer(), 29);
+    assert!(default_console_footer.contains(" p  Status"), "{default_console_footer}");
+    assert!(!default_console_footer.contains("Pull"), "{default_console_footer}");
+
+    let probe_ov: KeymapConfigOverlay = toml::from_str(
+        r#"
+[global]
+prepend_keymap = [
+    { on = ["g", "s"], run = "git_status_probe", show_hint = true },
+]
+"#,
+    )
+    .unwrap();
+    console_state.config.keymap.merge_overlay(&probe_ov);
+    let term = render(&mut console_state, 160, 30);
+    let custom_console_footer = row_text(term.backend().buffer(), 29);
+    assert!(custom_console_footer.contains(" g s  Status"), "{custom_console_footer}");
+    assert!(custom_console_footer.contains(" p  Pull"), "{custom_console_footer}");
+
+    // 2. Vim CommitDiffPreview shows `s Stage` and `u Unstage` without duplicate `Space Stage`,
+    //    and <Space> still triggers staging.
+    let mut vim_state = state_with(snapshot());
+    vim_state.config.keymap = KeymapConfig::for_preset(KeymapPreset::Vim);
+    vim_state.dispatch(Action::SwitchTab(WorkspaceTab::Commit));
+    vim_state.dispatch(Action::FocusPane(PaneId::CommitDiffPreview));
+    let term = render(&mut vim_state, 160, 30);
+    let vim_diff_footer = row_text(term.backend().buffer(), 29);
+    assert!(vim_diff_footer.contains(" s  Stage"), "{vim_diff_footer}");
+    assert!(vim_diff_footer.contains(" u  Unstage"), "{vim_diff_footer}");
+    assert_eq!(vim_diff_footer.matches("Stage").count(), 1, "{vim_diff_footer}");
+    let space_actions = route_terminal_event(
+        Event::Key(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE)),
+        &mut vim_state,
+    );
+    assert!(
+        space_actions
+            .iter()
+            .any(|a| matches!(a, Action::StageDiffStageSelection)),
+        "Space in Vim CommitDiffPreview should still stage: {space_actions:?}"
+    );
+
+    // 3. Unbinding `r` via noop in [global] shows surviving `F5 Refresh` in footer.
+    let mut noop_state = state_with(snapshot());
+    noop_state.config.keymap = KeymapConfig::for_preset(KeymapPreset::Default);
+    let noop_ov: KeymapConfigOverlay = toml::from_str(
+        r#"
+[global]
+prepend_keymap = [
+    { on = "r", run = "noop" },
+]
+"#,
+    )
+    .unwrap();
+    noop_state.config.keymap.merge_overlay(&noop_ov);
+    noop_state.dispatch(Action::SwitchTab(WorkspaceTab::Log));
+    noop_state.dispatch(Action::FocusPane(PaneId::LogCommitTable));
+    let term = render(&mut noop_state, 220, 30);
+    let noop_footer = row_text(term.backend().buffer(), 29);
+    assert!(noop_footer.contains(" F5  Refresh"), "{noop_footer}");
+
+    // 4. [log] append_keymap alias preserves `y Copy hash` in its original declaration position.
+    let mut append_state = state_with(snapshot());
+    append_state.config.keymap = KeymapConfig::for_preset(KeymapPreset::Default);
+    append_state.dispatch(Action::SwitchTab(WorkspaceTab::Log));
+    append_state.dispatch(Action::FocusPane(PaneId::LogCommitTable));
+    let append_ov: KeymapConfigOverlay = toml::from_str(
+        r#"
+[log]
+append_keymap = [
+    { on = "Y", run = "copy_hash" },
+]
+"#,
+    )
+    .unwrap();
+    append_state.config.keymap.merge_overlay(&append_ov);
+    let term = render(&mut append_state, 200, 30);
+    let append_footer = row_text(term.backend().buffer(), 29);
+    let new_branch_pos = append_footer.find("Branch").expect(&append_footer);
+    let copy_pos = append_footer.find(" y  Copy hash").expect(&append_footer);
+    let zoom_pos = append_footer.find("Zoom").expect(&append_footer);
+    assert!(new_branch_pos < copy_pos && copy_pos < zoom_pos, "{append_footer}");
+
+    // 5. Which-Key popup with footer_max_lines = 2 does NOT overwrite either footer row.
+    let mut wk_state = state_with(snapshot());
+    wk_state.config.keymap = KeymapConfig::for_preset(KeymapPreset::Default);
+    wk_state.config.keymap.footer_max_lines = 2;
+    wk_state.dispatch(Action::SwitchTab(WorkspaceTab::Log));
+    wk_state.dispatch(Action::FocusPane(PaneId::LogCommitTable));
+    key(&mut wk_state, KeyCode::Char('g'), KeyModifiers::NONE);
+    let term = render(&mut wk_state, 80, 24);
+    let buf = term.backend().buffer();
+    let row_22 = row_text(buf, 22);
+    let row_23 = row_text(buf, 23);
+    assert!(row_22.contains("Filter") && row_22.contains("Zoom"), "{row_22}");
+    assert!(row_23.contains("Parent") && row_23.contains("Help"), "{row_23}");
+    let above_footer = (0..22)
+        .map(|y| row_text(buf, y))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(above_footer.contains("g +"), "{above_footer}");
+}

@@ -4,6 +4,7 @@ pub mod commit_diff;
 pub mod conflict_merge;
 pub mod console;
 pub mod dialogs;
+pub mod footer;
 pub mod header;
 pub mod log;
 pub mod log_branches;
@@ -67,8 +68,20 @@ pub fn render_app(frame: &mut Frame<'_>, state: &mut AppState) {
     // Saturating layout: Row 0 = Global Header, Row 1 = Tool Tabs, Middle = Body, Last = Footer
     let header_h = 1u16.min(area.height);
     let tabs_h = 1u16.min(area.height.saturating_sub(header_h));
-    let footer_h = 1u16.min(area.height.saturating_sub(header_h).saturating_sub(tabs_h));
-    let banner_h = u16::from(banner::banner_visible(state))
+    let banner_raw = u16::from(banner::banner_visible(state));
+    let avail_after_top = area.height.saturating_sub(header_h).saturating_sub(tabs_h);
+    let max_footer_cap = area
+        .height
+        .saturating_sub(header_h + tabs_h + banner_raw + 4)
+        .max(1)
+        .min(avail_after_top);
+    let footer_h = footer::footer_bar_height(
+        state,
+        area.width,
+        max_footer_cap,
+        state.hover_target.as_ref(),
+    );
+    let banner_h = banner_raw
         .min(area.height.saturating_sub(header_h + tabs_h + footer_h + 4));
     let body_h = area
         .height
@@ -178,9 +191,9 @@ pub fn render_app(frame: &mut Frame<'_>, state: &mut AppState) {
             }
         }
 
-        header::render_footer_bar(frame, footer_rect, state, &mut ctx);
+        footer::render_footer_bar(frame, footer_rect, state, &mut ctx);
         overlays::render_hover_tooltip(frame, area, state, &ctx);
-        overlays::render_which_key_popup(frame, area, state, &ctx);
+        overlays::render_which_key_popup(frame, area, footer_h, state, &ctx);
         overlays::render_modals(frame, area, state, &mut ctx);
 
         // Vector graph images go out only after every overlay is known.

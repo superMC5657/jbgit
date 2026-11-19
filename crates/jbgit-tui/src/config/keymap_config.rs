@@ -70,12 +70,18 @@ where
     }
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+fn default_footer_max_lines() -> u16 {
+    1
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct KeymapConfig {
     #[serde(default)]
     pub preset: KeymapPreset,
     #[serde(default)]
     pub tree_speed_search: bool,
+    #[serde(default = "default_footer_max_lines")]
+    pub footer_max_lines: u16,
     #[serde(default)]
     pub global: KeyBindingsList,
     #[serde(default)]
@@ -90,6 +96,23 @@ pub struct KeymapConfig {
     pub stash: KeyBindingsList,
     #[serde(default)]
     pub console: KeyBindingsList,
+}
+
+impl Default for KeymapConfig {
+    fn default() -> Self {
+        Self {
+            preset: KeymapPreset::default(),
+            tree_speed_search: false,
+            footer_max_lines: default_footer_max_lines(),
+            global: KeyBindingsList::default(),
+            log: KeyBindingsList::default(),
+            commit: KeyBindingsList::default(),
+            branch: KeyBindingsList::default(),
+            diff: KeyBindingsList::default(),
+            stash: KeyBindingsList::default(),
+            console: KeyBindingsList::default(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -109,12 +132,15 @@ pub struct KeyBindingConfig {
     pub run: KeyAction,
     #[serde(default)]
     pub desc: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub show_hint: Option<bool>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct KeymapConfigOverlay {
     pub preset: Option<KeymapPreset>,
     pub tree_speed_search: Option<bool>,
+    pub footer_max_lines: Option<u16>,
     pub global: Option<KeyBindingsList>,
     pub log: Option<KeyBindingsList>,
     pub commit: Option<KeyBindingsList>,
@@ -141,63 +167,153 @@ fn is_active_run(run: &KeyAction) -> bool {
     run.is_active()
 }
 
-fn merge_section(base: &mut Vec<KeyBindingConfig>, overlay: &KeyBindingsList) {
-    if !overlay.key_bindings.is_empty() {
-        base.retain(|existing| {
-            !overlay.key_bindings.iter().any(|ov| {
-                keys_equal(&ov.on, &existing.on)
-                    || (is_active_run(&ov.run) && ov.run == existing.run)
-            })
-        });
-        base.extend(
-            overlay
-                .key_bindings
-                .iter()
-                .filter(|ov| is_active_run(&ov.run))
-                .cloned(),
-        );
-    }
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MergeMode {
+    Replace,
+    Prepend,
+    Append,
+}
 
-    if !overlay.prepend_keymap.is_empty() {
-        base.retain(|existing| {
-            !overlay
-                .prepend_keymap
-                .iter()
-                .any(|ov| keys_equal(&ov.on, &existing.on))
-        });
-        let mut prepended: Vec<KeyBindingConfig> = overlay
-            .prepend_keymap
-            .iter()
-            .filter(|ov| is_active_run(&ov.run))
-            .cloned()
-            .collect();
-        prepended.append(base);
-        *base = prepended;
-    }
+fn find_exact_binding<'a>(
+    base: &'a [KeyBindingConfig],
+    entry: &KeyBindingConfig,
+) -> Option<&'a KeyBindingConfig> {
+    base.iter()
+        .find(|existing| keys_equal(&existing.on, &entry.on) && existing.run == entry.run)
+}
 
-    if !overlay.append_keymap.is_empty() {
-        base.retain(|existing| {
-            !overlay
-                .append_keymap
-                .iter()
-                .any(|ov| keys_equal(&ov.on, &existing.on))
-        });
-        base.extend(
-            overlay
-                .append_keymap
-                .iter()
-                .filter(|ov| is_active_run(&ov.run))
-                .cloned(),
-        );
+fn push_unique_action(list: &mut Vec<KeyAction>, action: &KeyAction) {
+    if !list.contains(action) {
+        list.push(action.clone());
     }
 }
 
-fn kb(on: &[&str], run: KeyAction, desc: Option<&str>) -> KeyBindingConfig {
+fn demote_inherited_hints(base: &mut [KeyBindingConfig], demote_runs: &[KeyAction]) {
+    if demote_runs.is_empty() {
+        return;
+    }
+    for existing in base {
+        if existing.show_hint == Some(true) && demote_runs.contains(&existing.run) {
+            existing.show_hint = None;
+        }
+    }
+}
+
+fn apply_overlay_entries(
+    base: &mut Vec<KeyBindingConfig>,
+    entries: &[KeyBindingConfig],
+    mode: MergeMode,
+) {
+    if entries.is_empty() {
+        return;
+    }
+
+    let base_has_hint: Vec<KeyAction> = base
+        .iter()
+        .filter(|b| is_active_run(&b.run) && b.show_hint == Some(true))
+        .map(|b| b.run.clone())
+        .collect();
+
+    let mut demote_runs: Vec<KeyAction> = Vec::new();
+    let mut handled_runs: Vec<KeyAction> = Vec::new();
+    for ov in entries {
+        if !is_active_run(&ov.run) {
+            continue;
+        }
+        if ov.show_hint.is_some() {
+            push_unique_action(&mut demote_runs, &ov.run);
+            push_unique_action(&mut handled_runs, &ov.run);
+        } else if find_exact_binding(base, ov).is_some_and(|e| e.show_hint.is_some()) {
+            push_unique_action(&mut handled_runs, &ov.run);
+        }
+    }
+
+    let mut resolved = Vec::with_capacity(entries.len());
+    for ov in entries {
+        if !is_active_run(&ov.run) {
+            continue;
+        }
+        let mut entry = ov.clone();
+        if entry.show_hint.is_none() {
+            if let Some(exact) = find_exact_binding(base, &entry)
+                && exact.show_hint.is_some()
+            {
+                entry.show_hint = exact.show_hint;
+            } else if mode != MergeMode::Append
+                && !handled_runs.contains(&entry.run)
+                && base_has_hint.contains(&entry.run)
+                && !demote_runs.contains(&entry.run)
+            {
+                entry.show_hint = Some(true);
+                push_unique_action(&mut demote_runs, &entry.run);
+            }
+        }
+        resolved.push(entry);
+    }
+
+    let mut orphaned_hint_runs: Vec<KeyAction> = Vec::new();
+    base.retain(|existing| {
+        let colliding = entries.iter().find(|ov| keys_equal(&ov.on, &existing.on));
+        let remove = colliding.is_some()
+            || (mode == MergeMode::Replace
+                && entries
+                    .iter()
+                    .any(|ov| is_active_run(&ov.run) && ov.run == existing.run));
+        if remove
+            && existing.show_hint == Some(true)
+            && is_active_run(&existing.run)
+            && !demote_runs.contains(&existing.run)
+            && colliding.is_none_or(|ov| ov.show_hint != Some(false))
+        {
+            push_unique_action(&mut orphaned_hint_runs, &existing.run);
+        }
+        !remove
+    });
+
+    demote_inherited_hints(base, &demote_runs);
+    match mode {
+        MergeMode::Replace | MergeMode::Append => base.extend(resolved),
+        MergeMode::Prepend => {
+            resolved.append(base);
+            *base = resolved;
+        }
+    }
+
+    for run in orphaned_hint_runs {
+        if !base
+            .iter()
+            .any(|b| b.run == run && b.show_hint == Some(true))
+            && let Some(survivor) = base
+                .iter_mut()
+                .find(|b| b.run == run && b.show_hint.is_none())
+        {
+            survivor.show_hint = Some(true);
+        }
+    }
+}
+
+fn merge_section(base: &mut Vec<KeyBindingConfig>, overlay: &KeyBindingsList) {
+    apply_overlay_entries(base, &overlay.key_bindings, MergeMode::Replace);
+    apply_overlay_entries(base, &overlay.prepend_keymap, MergeMode::Prepend);
+    apply_overlay_entries(base, &overlay.append_keymap, MergeMode::Append);
+}
+
+fn kb_hint(
+    on: &[&str],
+    run: KeyAction,
+    desc: Option<&str>,
+    show_hint: Option<bool>,
+) -> KeyBindingConfig {
     KeyBindingConfig {
         on: on.iter().map(|s| (*s).to_string()).collect(),
         run,
         desc: desc.map(ToString::to_string),
+        show_hint,
     }
+}
+
+fn kb(on: &[&str], run: KeyAction, desc: Option<&str>) -> KeyBindingConfig {
+    kb_hint(on, run, desc, None)
 }
 
 impl KeymapConfig {
@@ -209,6 +325,7 @@ impl KeymapConfig {
             &mut self.branch,
             &mut self.diff,
             &mut self.stash,
+            &mut self.console,
         ] {
             let extra = KeyBindingsList {
                 key_bindings: Vec::new(),
@@ -236,10 +353,10 @@ impl KeymapConfig {
                     tree_speed_search: Some(true),
                     global: Some(KeyBindingsList {
                         prepend_keymap: vec![
+                            kb(&["<C-t>"], KeyAction::GitPull, None),
+                            kb(&["<C-S-k>"], KeyAction::GitPush, None),
                             kb(&["<C-`>"], KeyAction::ToggleBranchesPopup, None),
                             kb(&["<C-~>"], KeyAction::ToggleBranchesPopup, None),
-                            kb(&["<C-S-k>"], KeyAction::GitPush, None),
-                            kb(&["<C-t>"], KeyAction::GitPull, None),
                             kb(&["<C-k>"], KeyAction::TabCommit, None),
                             kb(&["<C-A-n>"], KeyAction::NewBranch, None),
                         ],
@@ -285,8 +402,9 @@ impl KeymapConfig {
                     diff: Some(KeyBindingsList {
                         prepend_keymap: vec![
                             kb(&["c"], KeyAction::CycleDiffContext, None),
-                            kb(&["s"], KeyAction::StageSelection, None),
-                            kb(&["u"], KeyAction::UnstageSelection, None),
+                            kb_hint(&["s"], KeyAction::StageSelection, None, Some(true)),
+                            kb_hint(&["u"], KeyAction::UnstageSelection, None, Some(true)),
+                            kb_hint(&["<Space>"], KeyAction::ToggleStage, None, Some(false)),
                         ],
                         ..Default::default()
                     }),
@@ -302,10 +420,15 @@ impl KeymapConfig {
         if let Some(p) = overlay.preset
             && p != self.preset
         {
+            let prev_footer_lines = self.footer_max_lines;
             *self = Self::for_preset(p);
+            self.footer_max_lines = prev_footer_lines;
         }
         if let Some(tss) = overlay.tree_speed_search {
             self.tree_speed_search = tss;
+        }
+        if let Some(lines) = overlay.footer_max_lines {
+            self.footer_max_lines = lines;
         }
         if let Some(g) = &overlay.global {
             merge_section(&mut self.global.key_bindings, g);

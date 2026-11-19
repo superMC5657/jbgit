@@ -3,6 +3,7 @@
 
 pub mod actions;
 pub mod help;
+pub(crate) mod resolve;
 
 use std::fmt;
 use std::time::Duration;
@@ -269,6 +270,85 @@ impl KeyAction {
 
     pub fn is_active(&self) -> bool {
         !matches!(self, Self::Noop | Self::Unknown(_))
+    }
+
+    /// Returns the default i18n key for this action's footer pill label, if any.
+    pub fn footer_pill_key(&self) -> Option<&'static str> {
+        Some(match self {
+            Self::Noop | Self::Unknown(_) => return None,
+            Self::Quit => "view.footer.pill.quit",
+            Self::Help => "view.footer.pill.help",
+            Self::ContextMenu => "view.footer.pill.menu",
+            Self::Refresh => "view.footer.pill.refresh",
+            Self::TabCommit => "view.footer.pill.tab_commit",
+            Self::TabLog => "view.footer.pill.tab_log",
+            Self::TabBranches => "view.footer.pill.tab_branches",
+            Self::TabStash => "view.footer.pill.tab_stash",
+            Self::TabConsole => "view.footer.pill.tab_console",
+            Self::FocusNext => "view.footer.pill.focus_next",
+            Self::FocusPrev => "view.footer.pill.focus_prev",
+            Self::ToggleBranchesPopup => "view.footer.pill.branches",
+            Self::ToggleBranchesPane => "view.footer.pill.branches_pane",
+            Self::GitFetch => "view.footer.pill.fetch",
+            Self::GitPull => "view.footer.pill.pull",
+            Self::GitPush => "view.footer.pill.push",
+            Self::Palette => "view.footer.pill.palette",
+            Self::ToggleGlyphMode => "view.footer.pill.glyph_mode",
+            Self::CycleGraphRenderer => "view.footer.pill.graph_renderer",
+            Self::GitStatusProbe => "view.footer.pill.status_probe",
+            Self::GotoRevision => "view.footer.pill.goto",
+            Self::CursorDown => "view.footer.pill.cursor_down",
+            Self::CursorUp => "view.footer.pill.cursor_up",
+            Self::GotoTop => "view.footer.pill.goto_top",
+            Self::GotoBottom => "view.footer.pill.goto_bottom",
+            Self::PageDownHalf => "view.footer.pill.page_down_half",
+            Self::PageUpHalf => "view.footer.pill.page_up_half",
+            Self::CompareOrDiff | Self::CompareVersions => "view.footer.pill.diff",
+            Self::CopyHash => "view.footer.pill.copy_hash",
+            Self::Checkout => "view.footer.pill.checkout",
+            Self::NewBranch => "view.footer.pill.new_branch",
+            Self::ChooseParent => "view.footer.pill.parent",
+            Self::FocusFilter => "view.footer.pill.filter",
+            Self::Uncommit => "view.footer.pill.uncommit",
+            Self::Reword => "view.footer.pill.reword",
+            Self::DropCommit => "view.footer.pill.drop_commit",
+            Self::BranchSearch => "view.footer.pill.search",
+            Self::ToggleFavorite => "view.footer.pill.favorite",
+            Self::RenameBranch => "view.footer.pill.rename",
+            Self::DeleteBranch => "view.footer.pill.delete",
+            Self::NavigateBranch => "view.footer.pill.navigate_branch",
+            Self::FocusCommitMsg => "view.footer.pill.msg",
+            Self::ToggleStage | Self::StageSelection => "view.footer.pill.stage",
+            Self::UnstageSelection => "view.footer.pill.unstage",
+            Self::Commit => "view.footer.pill.commit",
+            Self::CommitAndPush => "view.footer.pill.commit_push",
+            Self::ToggleAmend => "view.footer.pill.amend",
+            Self::ToggleSignoff => "view.footer.pill.signoff",
+            Self::CommitHistory => "view.footer.pill.history",
+            Self::SelectAll => "view.footer.pill.select_all",
+            Self::DiscardChanges => "view.footer.pill.discard",
+            Self::ToggleGroup => "view.footer.pill.group",
+            Self::EditFile => "view.footer.pill.edit",
+            Self::ToggleVisual => "view.footer.pill.visual",
+            Self::RollbackSelection => "view.footer.pill.rollback",
+            Self::UndoRollback => "view.footer.pill.undo_rollback",
+            Self::SwitchDiffSide => "view.footer.pill.switch_side",
+            Self::ThreeWayInspector => "view.footer.pill.three_way",
+            Self::PrevHunk => "view.footer.pill.prev_hunk",
+            Self::NextHunk => "view.footer.pill.next_hunk",
+            Self::PrevFile => "view.footer.pill.prev_file",
+            Self::NextFile => "view.footer.pill.next_file",
+            Self::ToggleSideBySide => "view.footer.pill.side_by_side",
+            Self::CycleDiffContext => "view.footer.pill.context",
+            Self::CycleDiffDock => "view.footer.pill.dock",
+            Self::ZoomDiff => "view.footer.pill.zoom",
+            Self::StashNew => "view.footer.pill.stash_new",
+            Self::StashApply => "view.footer.pill.apply",
+            Self::StashPop => "view.footer.pill.pop",
+            Self::StashDrop => "view.footer.pill.drop",
+            Self::StashBranch => "view.footer.pill.new_branch",
+            Self::StashClear => "view.footer.pill.stash_clear",
+        })
     }
 }
 

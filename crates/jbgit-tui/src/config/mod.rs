@@ -673,4 +673,337 @@ prepend_keymap = [
             Some("K")
         );
     }
+
+    #[test]
+    fn test_keymap_footer_max_lines_and_show_hint_inheritance() {
+        use crate::keymap::KeyAction;
+
+        assert_eq!(KeymapConfig::default().footer_max_lines, 1);
+        let mut cfg = AppConfig::load_defaults();
+        assert_eq!(cfg.keymap.footer_max_lines, 1);
+
+        // Parsing footer_max_lines (0, 2, 3) and preserving across preset switch
+        for lines in [0u16, 2, 3] {
+            let ov: KeymapConfigOverlay =
+                toml::from_str(&format!("footer_max_lines = {lines}\n")).unwrap();
+            cfg.keymap.merge_overlay(&ov);
+            assert_eq!(cfg.keymap.footer_max_lines, lines);
+        }
+
+        let preset_ov: KeymapConfigOverlay = toml::from_str("preset = \"vim\"\n").unwrap();
+        cfg.keymap.merge_overlay(&preset_ov);
+        assert_eq!(cfg.keymap.preset, KeymapPreset::Vim);
+        assert_eq!(cfg.keymap.footer_max_lines, 3);
+
+        // Vim [log] replaces <C-d> with page_down_half while `d` inherits show_hint = Some(true)
+        assert!(
+            cfg.keymap
+                .log
+                .key_bindings
+                .iter()
+                .any(|b| b.run == KeyAction::CompareOrDiff
+                    && b.on == ["d"]
+                    && b.show_hint == Some(true))
+        );
+
+        // Prepending rebind without show_hint inherits Some(true) and demotes base binding,
+        // so a later show_hint = false cleanly hides the action.
+        let mut cfg2 = AppConfig::load_defaults();
+        let ov_rebind: KeymapConfigOverlay = toml::from_str(
+            r#"
+[commit]
+prepend_keymap = [
+    { on = "S", run = "toggle_stage" },
+]
+"#,
+        )
+        .unwrap();
+        cfg2.keymap.merge_overlay(&ov_rebind);
+        assert!(cfg2.keymap.commit.key_bindings.iter().any(|b| {
+            b.run == KeyAction::ToggleStage && b.on == ["S"] && b.show_hint == Some(true)
+        }));
+        assert!(cfg2.keymap.commit.key_bindings.iter().all(|b| {
+            !(b.run == KeyAction::ToggleStage && b.on == ["<Space>"] && b.show_hint == Some(true))
+        }));
+
+        let ov_hide: KeymapConfigOverlay = toml::from_str(
+            r#"
+[commit]
+prepend_keymap = [
+    { on = "S", run = "toggle_stage", show_hint = false },
+]
+"#,
+        )
+        .unwrap();
+        cfg2.keymap.merge_overlay(&ov_hide);
+        assert!(cfg2.keymap.commit.key_bindings.iter().any(|b| {
+            b.run == KeyAction::ToggleStage && b.on == ["S"] && b.show_hint == Some(false)
+        }));
+        assert!(
+            !cfg2
+                .keymap
+                .commit
+                .key_bindings
+                .iter()
+                .any(|b| b.run == KeyAction::ToggleStage && b.show_hint == Some(true))
+        );
+
+        // key_bindings replacement inherits show_hint = Some(true) from base Refresh
+        let ov_kb: KeymapConfigOverlay = toml::from_str(
+            r#"
+[global]
+key_bindings = [
+    { on = ["<F5>"], run = "refresh" },
+]
+"#,
+        )
+        .unwrap();
+        cfg2.keymap.merge_overlay(&ov_kb);
+        assert!(cfg2.keymap.global.key_bindings.iter().any(|b| {
+            b.run == KeyAction::Refresh && b.on == ["<F5>"] && b.show_hint == Some(true)
+        }));
+
+        // Explicit show_hint = true turns on a hidden action
+        let ov_enable: KeymapConfigOverlay = toml::from_str(
+            r#"
+[log]
+prepend_keymap = [
+    { on = "u", run = "uncommit", show_hint = true },
+]
+"#,
+        )
+        .unwrap();
+        cfg2.keymap.merge_overlay(&ov_enable);
+        assert!(cfg2.keymap.log.key_bindings.iter().any(|b| {
+            b.run == KeyAction::Uncommit && b.on == ["u"] && b.show_hint == Some(true)
+        }));
+
+        // Full key_bindings overlay listing primary + alias without show_hint keeps Some(true) only on `/`
+        let mut cfg3 = AppConfig::load_defaults();
+        let ov_multi_alias: KeymapConfigOverlay = toml::from_str(
+            r#"
+[log]
+key_bindings = [
+    { on = ["/"], run = "focus_filter" },
+    { on = ["<C-f>"], run = "focus_filter" },
+]
+"#,
+        )
+        .unwrap();
+        cfg3.keymap.merge_overlay(&ov_multi_alias);
+        let focus_bindings: Vec<_> = cfg3
+            .keymap
+            .log
+            .key_bindings
+            .iter()
+            .filter(|b| b.run == KeyAction::FocusFilter)
+            .collect();
+        assert_eq!(focus_bindings.len(), 2);
+        assert_eq!(focus_bindings[0].on, ["/"]);
+        assert_eq!(focus_bindings[0].show_hint, Some(true));
+        assert_eq!(focus_bindings[1].on, ["<C-f>"]);
+        assert_eq!(focus_bindings[1].show_hint, None);
+
+        // Explicit show_hint = false alongside sibling alias without show_hint does NOT steal Some(true)
+        let mut cfg4 = AppConfig::load_defaults();
+        let ov_hide_with_alias: KeymapConfigOverlay = toml::from_str(
+            r#"
+[log]
+key_bindings = [
+    { on = "/", run = "focus_filter", show_hint = false },
+    { on = "<C-f>", run = "focus_filter" },
+]
+"#,
+        )
+        .unwrap();
+        cfg4.keymap.merge_overlay(&ov_hide_with_alias);
+        assert!(
+            !cfg4
+                .keymap
+                .log
+                .key_bindings
+                .iter()
+                .any(|b| b.run == KeyAction::FocusFilter && b.show_hint == Some(true))
+        );
+    }
+
+    #[test]
+    fn test_keymap_append_noop_and_explicit_hide_hint_semantics() {
+        use crate::keymap::KeyAction;
+
+        // 1. append_keymap without show_hint preserves primary binding's show_hint and order
+        let mut cfg = AppConfig::load_defaults();
+        let copy_idx_before = cfg
+            .keymap
+            .log
+            .key_bindings
+            .iter()
+            .position(|b| b.run == KeyAction::CopyHash && b.on == ["y"])
+            .unwrap();
+        let ov_append_alias: KeymapConfigOverlay = toml::from_str(
+            r#"
+[log]
+append_keymap = [
+    { on = "Y", run = "copy_hash" },
+]
+"#,
+        )
+        .unwrap();
+        cfg.keymap.merge_overlay(&ov_append_alias);
+        let copy_idx_after = cfg
+            .keymap
+            .log
+            .key_bindings
+            .iter()
+            .position(|b| b.run == KeyAction::CopyHash && b.on == ["y"])
+            .unwrap();
+        assert_eq!(copy_idx_after, copy_idx_before);
+        assert_eq!(
+            cfg.keymap.log.key_bindings[copy_idx_after].show_hint,
+            Some(true)
+        );
+        let appended = cfg
+            .keymap
+            .log
+            .key_bindings
+            .iter()
+            .find(|b| b.run == KeyAction::CopyHash && b.on == ["Y"])
+            .unwrap();
+        assert_eq!(appended.show_hint, None);
+
+        // 2. append_keymap with explicit show_hint = true demotes base Some(true)
+        let ov_append_explicit: KeymapConfigOverlay = toml::from_str(
+            r#"
+[log]
+append_keymap = [
+    { on = "Y", run = "copy_hash", show_hint = true },
+]
+"#,
+        )
+        .unwrap();
+        cfg.keymap.merge_overlay(&ov_append_explicit);
+        assert_eq!(
+            cfg.keymap
+                .log
+                .key_bindings
+                .iter()
+                .filter(|b| b.run == KeyAction::CopyHash && b.show_hint == Some(true))
+                .map(|b| b.on.clone())
+                .collect::<Vec<_>>(),
+            vec![vec!["Y".to_string()]]
+        );
+
+        // 3. prepend_keymap with explicit show_hint = false on an alias key hides base Some(true)
+        let mut cfg_hide = AppConfig::load_defaults();
+        let ov_hide_f5: KeymapConfigOverlay = toml::from_str(
+            r#"
+[global]
+prepend_keymap = [
+    { on = "<F5>", run = "refresh", show_hint = false },
+]
+"#,
+        )
+        .unwrap();
+        cfg_hide.keymap.merge_overlay(&ov_hide_f5);
+        assert!(
+            !cfg_hide
+                .keymap
+                .global
+                .key_bindings
+                .iter()
+                .any(|b| b.run == KeyAction::Refresh && b.show_hint == Some(true))
+        );
+
+        let mut cfg_jb = KeymapConfig::for_preset(KeymapPreset::Jetbrains);
+        let ov_hide_jb_pull: KeymapConfigOverlay = toml::from_str(
+            r#"
+[global]
+prepend_keymap = [
+    { on = "p", run = "git_pull", show_hint = false },
+]
+"#,
+        )
+        .unwrap();
+        cfg_jb.merge_overlay(&ov_hide_jb_pull);
+        assert!(
+            !cfg_jb
+                .global
+                .key_bindings
+                .iter()
+                .any(|b| b.run == KeyAction::GitPull && b.show_hint == Some(true))
+        );
+
+        // 4. Unbinding primary key via noop promotes surviving alias, unless disabled/also unbound
+        let mut cfg_noop = AppConfig::load_defaults();
+        let ov_unbind_r: KeymapConfigOverlay = toml::from_str(
+            r#"
+[global]
+prepend_keymap = [
+    { on = "r", run = "noop" },
+]
+"#,
+        )
+        .unwrap();
+        cfg_noop.keymap.merge_overlay(&ov_unbind_r);
+        assert!(cfg_noop.keymap.global.key_bindings.iter().any(|b| {
+            b.run == KeyAction::Refresh && b.on == ["<F5>"] && b.show_hint == Some(true)
+        }));
+
+        let mut cfg_noop_disabled = AppConfig::load_defaults();
+        let ov_hide_then_unbind: KeymapConfigOverlay = toml::from_str(
+            r#"
+[global]
+prepend_keymap = [
+    { on = "<F5>", run = "refresh", show_hint = false },
+]
+"#,
+        )
+        .unwrap();
+        cfg_noop_disabled.keymap.merge_overlay(&ov_hide_then_unbind);
+        // Re-enable `r` first? No, `<F5>` is `Some(false)`, so unbinding `r` must NOT promote `<F5>`.
+        cfg_noop_disabled.keymap.merge_overlay(&ov_unbind_r);
+        assert!(
+            !cfg_noop_disabled
+                .keymap
+                .global
+                .key_bindings
+                .iter()
+                .any(|b| b.run == KeyAction::Refresh && b.show_hint == Some(true))
+        );
+
+        let mut cfg_unbind_both = AppConfig::load_defaults();
+        let ov_both_noop: KeymapConfigOverlay = toml::from_str(
+            r#"
+[global]
+prepend_keymap = [
+    { on = "r", run = "noop" },
+    { on = "<F5>", run = "noop" },
+]
+"#,
+        )
+        .unwrap();
+        cfg_unbind_both.keymap.merge_overlay(&ov_both_noop);
+        assert!(
+            !cfg_unbind_both
+                .keymap
+                .global
+                .key_bindings
+                .iter()
+                .any(|b| b.run == KeyAction::Refresh)
+        );
+
+        // 5. Vim [diff] marks <Space> -> ToggleStage as show_hint = Some(false) while keeping it bound
+        let vim = KeymapConfig::for_preset(KeymapPreset::Vim);
+        assert!(vim.diff.key_bindings.iter().any(|b| {
+            b.run == KeyAction::ToggleStage
+                && b.on == ["<Space>"]
+                && b.show_hint == Some(false)
+        }));
+        assert!(vim.diff.key_bindings.iter().any(|b| {
+            b.run == KeyAction::StageSelection && b.on == ["s"] && b.show_hint == Some(true)
+        }));
+        assert!(vim.diff.key_bindings.iter().any(|b| {
+            b.run == KeyAction::UnstageSelection && b.on == ["u"] && b.show_hint == Some(true)
+        }));
+    }
 }
