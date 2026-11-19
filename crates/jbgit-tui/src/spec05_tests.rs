@@ -1336,7 +1336,10 @@ fn non_contiguous_squash_rejected_compare_views_stash_reuse_and_conflict_modal()
 
 #[test]
 fn dynamic_footer_tracks_focus_and_keymap_overrides() {
+    use crate::config::{KeymapConfig, KeymapPreset};
+
     let mut state = state_with(snapshot());
+    state.config.keymap = KeymapConfig::for_preset(KeymapPreset::Default);
     state.dispatch(Action::SwitchTab(WorkspaceTab::Log));
     state.dispatch(Action::FocusPane(PaneId::LogCommitTable));
     let term = render(&mut state, 140, 40);
@@ -1369,7 +1372,10 @@ prepend_keymap = [
 
 #[test]
 fn footer_hints_match_active_mode_dock_stash_and_console_probe() {
+    use crate::config::{KeymapConfig, KeymapPreset, keymap_config::KeymapConfigOverlay};
+
     let mut state = state_with(snapshot());
+    state.config.keymap = KeymapConfig::for_preset(KeymapPreset::Default);
 
     // 1. LogDetailsDiff in Commit Details mode (diff_preview = false) must NOT show diff-only hints
     state.dispatch(Action::SwitchTab(WorkspaceTab::Log));
@@ -1378,37 +1384,63 @@ fn footer_hints_match_active_mode_dock_stash_and_console_probe() {
     let term = render(&mut state, 140, 40);
     let details_footer = row_text(term.backend().buffer(), 39);
     assert!(details_footer.contains("Diff"), "{details_footer}");
-    assert!(details_footer.contains("Parent"), "{details_footer}");
     assert!(!details_footer.contains("Dock"), "{details_footer}");
     assert!(!details_footer.contains("Split"), "{details_footer}");
     assert!(!details_footer.contains("Context"), "{details_footer}");
+    assert!(!details_footer.contains("Hunk"), "{details_footer}");
 
-    // 2. LogDetailsDiff in Diff Preview mode (diff_preview = true) MUST show `m Dock`
+    // 2. LogDetailsDiff in Diff Preview mode (diff_preview = true) shows core diff hints
+    //    (Hunk/File/Zoom) while keeping rarely used layout toggles (Dock/Split/Context) hidden
+    //    unless opted in via show_hint = true.
     state.details.diff_preview = true;
     let term = render(&mut state, 140, 40);
     let diff_footer = row_text(term.backend().buffer(), 39);
-    assert!(diff_footer.contains(" m "), "{diff_footer}");
-    assert!(diff_footer.contains("Dock"), "{diff_footer}");
+    assert!(diff_footer.contains("Hunk"), "{diff_footer}");
+    assert!(diff_footer.contains("File"), "{diff_footer}");
     assert!(diff_footer.contains("Zoom"), "{diff_footer}");
-    assert!(diff_footer.contains("Split"), "{diff_footer}");
-    assert!(diff_footer.contains("Context"), "{diff_footer}");
+    assert!(!diff_footer.contains("Dock"), "{diff_footer}");
+    assert!(!diff_footer.contains("Split"), "{diff_footer}");
+    assert!(!diff_footer.contains("Context"), "{diff_footer}");
 
-    // 3. CommitDiffPreview shows Context (`w`) and Back (`Esc`)
+    let dock_ov: KeymapConfigOverlay = toml::from_str(
+        r#"
+[diff]
+prepend_keymap = [
+    { on = "m", run = "cycle_diff_dock", show_hint = true },
+]
+"#,
+    )
+    .unwrap();
+    let mut opt_in_state = state_with(snapshot());
+    opt_in_state.config.keymap = KeymapConfig::for_preset(KeymapPreset::Default);
+    opt_in_state.config.keymap.merge_overlay(&dock_ov);
+    opt_in_state.dispatch(Action::SwitchTab(WorkspaceTab::Log));
+    opt_in_state.dispatch(Action::FocusPane(PaneId::LogDetailsDiff));
+    opt_in_state.details.diff_preview = true;
+    let term = render(&mut opt_in_state, 140, 40);
+    let opt_in_footer = row_text(term.backend().buffer(), 39);
+    assert!(opt_in_footer.contains(" m "), "{opt_in_footer}");
+    assert!(opt_in_footer.contains("Dock"), "{opt_in_footer}");
+
+    // 3. CommitDiffPreview shows Stage / Hunk / Zoom / Back (`Esc`) without rare `Context`
     state.dispatch(Action::SwitchTab(WorkspaceTab::Commit));
     state.dispatch(Action::FocusPane(PaneId::CommitDiffPreview));
     let term = render(&mut state, 160, 40);
     let commit_diff_footer = row_text(term.backend().buffer(), 39);
-    assert!(commit_diff_footer.contains(" w "), "{commit_diff_footer}");
-    assert!(commit_diff_footer.contains("Context"), "{commit_diff_footer}");
+    assert!(commit_diff_footer.contains("Stage"), "{commit_diff_footer}");
+    assert!(commit_diff_footer.contains("Hunk"), "{commit_diff_footer}");
     assert!(commit_diff_footer.contains("Esc"), "{commit_diff_footer}");
+    assert!(!commit_diff_footer.contains("Context"), "{commit_diff_footer}");
 
-    // 4. CommitMessageEditor shows Sign-off (`Alt+S`)
+    // 4. CommitMessageEditor shows Commit / Amend / Esc without rare `Sign-off`
     state.dispatch(Action::FocusPane(PaneId::CommitMessageEditor));
     let term = render(&mut state, 140, 40);
     let msg_footer = row_text(term.backend().buffer(), 39);
-    assert!(msg_footer.contains("Sign-off"), "{msg_footer}");
+    assert!(msg_footer.contains("Commit"), "{msg_footer}");
+    assert!(msg_footer.contains("Amend"), "{msg_footer}");
+    assert!(!msg_footer.contains("Sign-off"), "{msg_footer}");
 
-    // 5. StashDiffPreview does NOT advertise ghost Zoom and shows Hunk / File / Group
+    // 5. StashDiffPreview does NOT advertise ghost Zoom and shows Hunk / File without rare `Group`
     state.dispatch(Action::SwitchTab(WorkspaceTab::Stash));
     state.dispatch(Action::FocusPane(PaneId::StashDiffPreview));
     let term = render(&mut state, 140, 40);
@@ -1416,7 +1448,7 @@ fn footer_hints_match_active_mode_dock_stash_and_console_probe() {
     assert!(!stash_footer.contains("Zoom"), "{stash_footer}");
     assert!(stash_footer.contains("Hunk"), "{stash_footer}");
     assert!(stash_footer.contains("File"), "{stash_footer}");
-    assert!(stash_footer.contains("Group"), "{stash_footer}");
+    assert!(!stash_footer.contains("Group"), "{stash_footer}");
     key(&mut state, KeyCode::Char('z'), KeyModifiers::NONE);
     assert!(!state.details.diff_zoomed);
 
@@ -1768,23 +1800,23 @@ fn footer_overflow_single_line_multiline_and_hidden() {
     assert!(!row_last.contains("Parent"), "{row_last}");
     assert!(!row_last.contains("Refresh"), "{row_last}");
 
-    // 2. Multi-line footer (footer_max_lines = 2): overflows onto row 23 and puts `? Help` on last row
+    // 2. Multi-line footer (footer_max_lines = 2) at 60 cols: overflows onto row 23 with `+N` and puts `? Help` on last row
     state.config.keymap.footer_max_lines = 2;
-    let term = render(&mut state, 80, 24);
+    let term = render(&mut state, 60, 24);
     let row_22 = row_text(term.backend().buffer(), 22);
     let row_23 = row_text(term.backend().buffer(), 23);
     assert!(row_22.contains("Filter"), "{row_22}");
-    assert!(row_22.contains("Zoom"), "{row_22}");
+    assert!(row_22.contains("Diff"), "{row_22}");
     assert!(!row_22.contains("Help"), "Help must sit on bottom row: {row_22}");
     assert!(row_23.contains("Help"), "{row_23}");
     // Items overflowing row 22 appear on row 23, and remaining overflow shows `+N`
-    assert!(row_23.contains("Parent"), "{row_23}");
-    assert!(row_23.contains("Sidebar"), "{row_23}");
+    assert!(row_23.contains("Copy hash"), "{row_23}");
+    assert!(row_23.contains("Go to"), "{row_23}");
     assert!(row_23.contains(" +"), "expected +N on 2nd line: {row_23}");
 
-    // 3. Multi-line footer (footer_max_lines = 3): fits every Log + Global pill cleanly with no `+N`
+    // 3. Multi-line footer (footer_max_lines = 3) at 60 cols: fits every Log + Global pill cleanly with no `+N`
     state.config.keymap.footer_max_lines = 3;
-    let term = render(&mut state, 80, 24);
+    let term = render(&mut state, 60, 24);
     let combined_footer = format!(
         "{}\n{}\n{}",
         row_text(term.backend().buffer(), 21),
@@ -1820,9 +1852,15 @@ fn footer_cross_scope_shadowing_does_not_leak_hidden_key() {
     state.dispatch(Action::FocusPane(PaneId::LogDetailsDiff));
     state.details.diff_preview = true;
 
-    // Hide `cycle_diff_dock` (`m`) in [diff]; [log]'s `m` (`choose_parent`) must NOT leak into footer.
+    // Enable `choose_parent` (`m`) in [log], and hide `cycle_diff_dock` (`m`) in [diff];
+    // [log]'s `m` (`choose_parent`) must NOT leak into footer when Diff pane is focused.
     let ov: crate::config::keymap_config::KeymapConfigOverlay = toml::from_str(
         r#"
+[log]
+prepend_keymap = [
+    { on = "m", run = "choose_parent", show_hint = true },
+]
+
 [diff]
 prepend_keymap = [
     { on = "m", run = "cycle_diff_dock", show_hint = false },
@@ -1928,8 +1966,8 @@ append_keymap = [
     let append_footer = row_text(term.backend().buffer(), 29);
     let new_branch_pos = append_footer.find("Branch").expect(&append_footer);
     let copy_pos = append_footer.find(" y  Copy hash").expect(&append_footer);
-    let zoom_pos = append_footer.find("Zoom").expect(&append_footer);
-    assert!(new_branch_pos < copy_pos && copy_pos < zoom_pos, "{append_footer}");
+    let goto_pos = append_footer.find("Go to").expect(&append_footer);
+    assert!(new_branch_pos < copy_pos && copy_pos < goto_pos, "{append_footer}");
 
     // 5. Which-Key popup with footer_max_lines = 2 does NOT overwrite either footer row.
     let mut wk_state = state_with(snapshot());
@@ -1942,8 +1980,8 @@ append_keymap = [
     let buf = term.backend().buffer();
     let row_22 = row_text(buf, 22);
     let row_23 = row_text(buf, 23);
-    assert!(row_22.contains("Filter") && row_22.contains("Zoom"), "{row_22}");
-    assert!(row_23.contains("Parent") && row_23.contains("Help"), "{row_23}");
+    assert!(row_22.contains("Filter") && row_22.contains("Copy hash"), "{row_22}");
+    assert!(row_23.contains("Go to") && row_23.contains("Help"), "{row_23}");
     let above_footer = (0..22)
         .map(|y| row_text(buf, y))
         .collect::<Vec<_>>()
