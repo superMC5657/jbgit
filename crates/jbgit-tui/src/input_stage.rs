@@ -366,12 +366,12 @@ pub(crate) fn stage_tree_context_menu_items(
     let mut items = crate::menus::stage_tree_menu_items(state, idx);
     items.push(ContextMenuItem::separator());
     items.push(ContextMenuItem::submenu(
-        "Stage View Options",
+        state.i18n.t("menu.stage.view_options"),
         Some('o'),
         stage_options_menu_items(state),
     ));
     items.push(ContextMenuItem::action(
-        "Refresh Stage Status",
+        state.i18n.t("menu.stage.refresh_status"),
         Some('r'),
         Some("r"),
         ContextMenuAction::RefreshRepo,
@@ -381,11 +381,13 @@ pub(crate) fn stage_tree_context_menu_items(
 
 pub(crate) fn stage_options_menu_items(state: &AppState) -> Vec<ContextMenuItem> {
     let check = |on: bool| if on { "✓" } else { " " };
+    let i18n = &state.i18n;
     vec![
         ContextMenuItem::action(
             format!(
-                "{} Group by Directory",
-                check(state.stage_workbench.tree_opts.group_by_dir)
+                "{} {}",
+                check(state.stage_workbench.tree_opts.group_by_dir),
+                i18n.t("menu.stage.opt_group_by_dir")
             ),
             Some('g'),
             Some("v"),
@@ -393,27 +395,28 @@ pub(crate) fn stage_options_menu_items(state: &AppState) -> Vec<ContextMenuItem>
         ),
         ContextMenuItem::action(
             format!(
-                "{} Show Ignored Files",
-                check(state.stage_workbench.tree_opts.show_ignored)
+                "{} {}",
+                check(state.stage_workbench.tree_opts.show_ignored),
+                i18n.t("menu.stage.opt_show_ignored")
             ),
             Some('i'),
             None,
             ContextMenuAction::StageToggleShowIgnored,
         ),
         ContextMenuItem::action(
-            "Expand All",
+            i18n.t("menu.stage.expand_all"),
             Some('e'),
             None,
             ContextMenuAction::StageExpandAll(true),
         ),
         ContextMenuItem::action(
-            "Collapse All",
+            i18n.t("menu.stage.collapse_all"),
             Some('c'),
             None,
             ContextMenuAction::StageExpandAll(false),
         ),
         ContextMenuItem::action(
-            "Stage All Tracked",
+            i18n.t("menu.stage.stage_all_tracked"),
             Some('a'),
             None,
             ContextMenuAction::StageAllTracked,

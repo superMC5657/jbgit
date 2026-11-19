@@ -343,7 +343,7 @@ pub fn route_dialog(key: &KeyEvent, state: &mut AppState) -> Vec<Action> {
     let Some(ModalLayer::Dialog(d)) = state.modal_stack.last_mut() else {
         return Vec::new();
     };
-    match route_dialog_key(d, key) {
+    match route_dialog_key(d, key, &state.i18n) {
         DialogKey::None => Vec::new(),
         DialogKey::Redraw => {
             state.needs_redraw = true;
@@ -436,27 +436,33 @@ pub fn route_spec05_click(
             let rect = crate::branches_popup::popup_layout(state.terminal_area, 1, 0).rect;
             let check = |on: bool| if on { "✓" } else { " " };
             let o = &state.branches.settings.options;
+            let i18n = &state.i18n;
             vec![Action::OpenContextMenu {
                 anchor: (rect.right().saturating_sub(20), rect.y + 1),
                 items: vec![
                     ContextMenuItem::run(
                         format!(
-                            "{} Group by Directory (Branches pane)",
-                            check(o.group_by_directory)
+                            "{} {}",
+                            check(o.group_by_directory),
+                            i18n.t("view.branches_popup.opt_group_by_dir")
                         ),
                         Some('d'),
                         None,
                         vec![Action::BranchesToggleGroupByDir],
                     ),
                     ContextMenuItem::run(
-                        format!("{} Show Tags (Branches pane)", check(o.show_tags)),
+                        format!(
+                            "{} {}",
+                            check(o.show_tags),
+                            i18n.t("view.branches_popup.opt_show_tags")
+                        ),
                         Some('t'),
                         None,
                         vec![Action::BranchesToggleShowTags],
                     ),
                     ContextMenuItem::separator(),
                     ContextMenuItem::run(
-                        "Fetch All Remotes",
+                        i18n.t("view.branches_popup.fetch_all_remotes"),
                         Some('f'),
                         Some("Alt+F"),
                         vec![Action::RunGitOp(GitOp::Fetch)],
@@ -473,10 +479,12 @@ pub fn route_spec05_click(
             match btn {
                 OngoingButton::Resolve => vec![Action::OngoingResolve],
                 OngoingButton::Continue if state.conflicted_count() > 0 => {
-                    vec![Action::Notice(format!(
-                        "Resolve {} conflicted file(s) and stage them before continuing",
-                        state.conflicted_count()
-                    ))]
+                    let count_s = state.conflicted_count().to_string();
+                    vec![Action::Notice(
+                        state
+                            .i18n
+                            .t_fmt("toast.resolve_before_continue", &[("count", &count_s)]),
+                    )]
                 }
                 OngoingButton::Continue => step(OngoingStep::Continue),
                 OngoingButton::Skip => step(OngoingStep::Skip),
@@ -626,14 +634,15 @@ pub fn context_menu_for_target(
             if items.is_empty() {
                 items = menus::log_commit_menu_items(state);
             } else {
+                let short = short_of_row(state, *visible_row);
                 items.push(ContextMenuItem::separator());
                 items.push(ContextMenuItem::submenu(
-                    format!("Commit {}", short_of_row(state, *visible_row)),
+                    state.i18n.t_fmt("menu.log.commit_sub", &[("short", &short)]),
                     Some('i'),
                     menus::log_commit_menu_items(state),
                 ));
                 items.push(ContextMenuItem::submenu(
-                    "Presentation",
+                    state.i18n.t("menu.log.presentation"),
                     Some('o'),
                     crate::input::presentation_menu_items(state),
                 ));
@@ -655,7 +664,7 @@ pub fn context_menu_for_target(
                     let mut sub = menus::ref_menu_items(state, name);
                     if sub.is_empty() {
                         sub.push(ContextMenuItem::run(
-                            format!("Show log for {name}"),
+                            state.i18n.t_fmt("menu.log.show_log_for", &[("name", name)]),
                             Some('l'),
                             None,
                             vec![Action::RunCliProbe(vec![

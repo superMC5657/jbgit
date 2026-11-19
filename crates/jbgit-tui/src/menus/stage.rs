@@ -117,13 +117,14 @@ pub fn stage_tree_menu_items(state: &AppState, idx: usize) -> Vec<ContextMenuIte
             );
         }
     }
+    let paths_count_s = paths.len().to_string();
     items.push(
         run(
             i18n.t("menu.stage.stash_changes"),
             Some('h'),
             None,
             op(GitOp::StashPush {
-                message: Some(format!("Selected files ({})", paths.len())),
+                message: Some(i18n.t_fmt("menu.stage.stash_selected_msg", &[("count", &paths_count_s)])),
                 include_untracked: untracked,
                 paths: paths.clone(),
             }),

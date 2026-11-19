@@ -208,8 +208,21 @@ fn render_stage_tree_pane(
                     format!("{arrow} "),
                     Style::default().fg(ctx.theme.fg_muted),
                 ));
+                let group_title = if *kind == StageNodeKind::AmendCommit {
+                    let sha = state
+                        .stage_workbench
+                        .amend_preview
+                        .as_ref()
+                        .map(|p| p.short_sha.as_str())
+                        .unwrap_or("");
+                    state
+                        .i18n
+                        .t_fmt("view.commit.group.amend_commit", &[("sha", sha)])
+                } else {
+                    state.i18n.stage_group_title(*kind).to_string()
+                };
                 left.push(Span::styled(
-                    format!("{} ({file_count})", row.label),
+                    format!("{group_title} ({file_count})"),
                     Style::default().fg(title_fg).add_modifier(Modifier::BOLD),
                 ));
                 if *kind == StageNodeKind::Conflicted {
@@ -388,17 +401,21 @@ fn render_stage_toolbar(
         area,
     );
 
+    let tracked_btn = state.i18n.t("view.commit.toolbar_tracked");
+    let stash_btn = state.i18n.t("view.commit.toolbar_stash");
+    let dir_btn = state.i18n.t("view.commit.toolbar_dir");
+    let diff_btn = state.i18n.t("view.commit.toolbar_diff");
     let buttons = [
         (" ↻ ", false, StageToolbarButton::Refresh),
-        (" + Tracked ", false, StageToolbarButton::StageAllTracked),
-        (" Stash ", false, StageToolbarButton::Stash),
+        (tracked_btn, false, StageToolbarButton::StageAllTracked),
+        (stash_btn, false, StageToolbarButton::Stash),
         (
-            " ⊞ Dir ",
+            dir_btn,
             sw.tree_opts.group_by_dir,
             StageToolbarButton::GroupByDir,
         ),
         (
-            " ◉ Diff ",
+            diff_btn,
             !sw.diff_collapsed,
             StageToolbarButton::ToggleDiff,
         ),
@@ -586,7 +603,7 @@ fn render_commit_options_row(
         ),
         (" 🕘 ".to_string(), false, CommitOptionKind::History),
         (
-            " ✎ $EDITOR ".to_string(),
+            ctx.t("view.commit.external_editor_btn").to_string(),
             false,
             CommitOptionKind::ExternalEditor,
         ),

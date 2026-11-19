@@ -33,7 +33,8 @@ pub fn render_branches_stripe(frame: &mut Frame<'_>, area: Rect, ctx: &mut Rende
             .fg(ctx.theme.fg_bright)
             .add_modifier(Modifier::BOLD),
     ))];
-    for ch in "Branches"
+    for ch in ctx
+        .t("view.branches.stripe")
         .chars()
         .take(area.height.saturating_sub(2) as usize)
     {
@@ -57,7 +58,11 @@ pub fn render_branches_pane(
     let sub = state
         .repo_snapshot
         .as_ref()
-        .map(|s| format!("{} refs", s.refs.len()))
+        .map(|s| {
+            state
+                .i18n
+                .t_fmt("view.branches.refs_count", &[("count", &s.refs.len().to_string())])
+        })
         .unwrap_or_default();
     let body = render_pane_frame(frame, area, PaneId::LogBranchesTree, &sub, ctx);
 
@@ -98,8 +103,11 @@ pub fn render_branches_pane(
     let mut list_area = body;
     if !state.log_filter.spec.branch.is_empty() && list_area.height > 1 {
         let bar = Rect::new(list_area.x, list_area.y, list_area.width, 1);
-        let btn_text = "[Clear Branch Filter]";
-        let label = format!(" Filtered: {}", state.log_filter.spec.branch.label());
+        let btn_text = state.i18n.t("view.branches.clear_filter_btn");
+        let label = state.i18n.t_fmt(
+            "view.branches.filtered_prefix",
+            &[("label", &state.log_filter.spec.branch.label())],
+        );
         let btn_w = btn_text.width() as u16;
         let left_w = list_area.width.saturating_sub(btn_w + 1) as usize;
         let hovered = matches!(
@@ -171,9 +179,9 @@ pub fn render_branches_pane(
         frame.render_widget(
             Paragraph::new(Span::styled(
                 if pane.query.is_empty() {
-                    " No branches"
+                    state.i18n.t("view.branches.no_branches")
                 } else {
-                    " No matching branches"
+                    state.i18n.t("view.branches.no_matching")
                 },
                 Style::default().fg(ctx.theme.fg_muted),
             )),
@@ -242,7 +250,12 @@ pub fn render_branches_pane(
                         Style::default().fg(ctx.theme.fg_muted),
                     ));
                 }
-                spans.push(Span::styled(node.label.clone(), label_style));
+                let cat_label = if let BranchNodeKind::Category(cat) = node.kind {
+                    ctx.branch_category_title(cat).to_string()
+                } else {
+                    node.label.clone()
+                };
+                spans.push(Span::styled(cat_label, label_style));
                 if show_count || node.kind == BranchNodeKind::Category(BranchCategory::Tags) {
                     spans.push(Span::styled(
                         format!(" ({})", node.leaf_count),
@@ -289,7 +302,22 @@ pub fn render_branches_pane(
                 if node.is_current || kind == RefKind::Head {
                     style = style.add_modifier(Modifier::BOLD);
                 }
-                spans.push(Span::styled(node.label.clone(), style));
+                let leaf_label = if kind == RefKind::Head {
+                    if let Some(oid_str) = node
+                        .label
+                        .strip_prefix("HEAD (detached ")
+                        .and_then(|s| s.strip_suffix(')'))
+                    {
+                        state
+                            .i18n
+                            .t_fmt("view.branches.head_detached", &[("oid", oid_str)])
+                    } else {
+                        node.label.clone()
+                    }
+                } else {
+                    node.label.clone()
+                };
+                spans.push(Span::styled(leaf_label, style));
                 if let Some((ahead, behind)) = node.ahead_behind {
                     if ahead > 0 {
                         right.push(Span::styled(

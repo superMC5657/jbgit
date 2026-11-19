@@ -1257,6 +1257,7 @@ mod app_level {
     #[test]
     fn presentation_menu_and_f8_switch_the_graph_renderer_live() {
         let mut state = state();
+        state.i18n = std::sync::Arc::new(crate::i18n::I18n::load("en-US", None));
         let items = presentation_menu_items(&state);
         let labels: Vec<&str> = renderer_submenu(&items)
             .iter()

@@ -33,9 +33,10 @@ pub use filter::{
     TextMatcher, UserFilter, glob_match,
 };
 pub use git_ops::{
-    GitFailure, GitOp, GitOpOutcome, GitStep, OngoingKind, OngoingStep, ResetMode, RewritePlan,
-    StashEntry, TodoAction, TodoEntry, classify_failure, default_squash_messages, fuzzy_indices,
-    is_protected_branch, parse_recent_checkouts, render_todo, validate_ref_name,
+    GitFailure, GitOp, GitOpOutcome, GitStep, OngoingKind, OngoingStep, RefNameError, ResetMode,
+    RewritePlan, StashEntry, TodoAction, TodoEntry, classify_failure, default_squash_messages,
+    fuzzy_indices, is_protected_branch, parse_recent_checkouts, render_todo, validate_ref_name,
+    validate_ref_name_typed,
 };
 pub use lru::LruCache;
 pub use oid::Oid;
@@ -43,7 +44,9 @@ pub use refs::{
     BranchColorId, GroupOptions, LabelDisplay, RefGroup, RefGroupKind, branch_color_id,
     group_refs_for_table, shorten_group_label, shorten_ref_name,
 };
-pub use repo::{CommitSummary, RefInfo, RefKind, RefreshScope, RepoSnapshot, RepositoryState};
+pub use repo::{
+    CommitSummary, RefInfo, RefKind, RefreshScope, RepoSnapshot, RepositoryState, RewritePlanError,
+};
 pub use stage::{
     AmendCommitPreview, FileStatusKind, StageEntry, StageNodeKind, StageStatusSnapshot,
     StageTarget, StageTreeOptions, StageTreeRow, StageTreeRowKind, UNTRACKED_COLLAPSE_THRESHOLD,

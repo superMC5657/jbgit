@@ -40,27 +40,41 @@ pub fn render_palette_preview(frame: &mut Frame<'_>, area: Rect, ctx: &RenderCon
         ))
     };
     let muted = Style::default().fg(theme.fg_muted);
+    let tr_fmt = |key: &str, en: String, vars: &[(&str, &str)]| -> String {
+        ctx.i18n.map_or(en, |i| i.t_fmt(key, vars))
+    };
+
+    let glyph_mode_label = ctx.glyph_mode.label();
+    let color_mode_label = if theme.true_color {
+        tr(ctx, "palette.truecolor", "TrueColor 24-bit")
+    } else {
+        tr(ctx, "palette.ansi256", "ANSI-256 (CIE76)")
+    };
 
     line(
         frame,
         &mut y,
         Line::from(vec![
             Span::styled(
-                format!(" Glyphs: {}", ctx.glyph_mode.label()),
-                Style::default().fg(theme.fg_primary),
-            ),
-            Span::styled(
-                format!(
-                    "   Color: {}",
-                    if theme.true_color {
-                        "TrueColor 24-bit"
-                    } else {
-                        "ANSI-256 (CIE76)"
-                    }
+                tr_fmt(
+                    "palette.glyphs",
+                    format!(" Glyphs: {glyph_mode_label}"),
+                    &[("mode", glyph_mode_label)],
                 ),
                 Style::default().fg(theme.fg_primary),
             ),
-            Span::styled("   F12 toggle glyphs · Esc close", muted),
+            Span::styled(
+                tr_fmt(
+                    "palette.color",
+                    format!("   Color: {color_mode_label}"),
+                    &[("mode", color_mode_label)],
+                ),
+                Style::default().fg(theme.fg_primary),
+            ),
+            Span::styled(
+                tr(ctx, "palette.hint", "   F12 toggle glyphs · Esc close"),
+                muted,
+            ),
         ]),
     );
     line(frame, &mut y, Line::default());
@@ -69,7 +83,11 @@ pub fn render_palette_preview(frame: &mut Frame<'_>, area: Rect, ctx: &RenderCon
     line(
         frame,
         &mut y,
-        heading("Branch tracks — fg on canvas · muted container · WCAG vs #1E1F22"),
+        heading(tr(
+            ctx,
+            "palette.tracks_heading",
+            "Branch tracks — fg on canvas · muted container · WCAG vs #1E1F22",
+        )),
     );
     let graph = &ctx.glyph_mode.symbols().graph;
     let colors = theme.branch_color_manager();
@@ -111,7 +129,10 @@ pub fn render_palette_preview(frame: &mut Frame<'_>, area: Rect, ctx: &RenderCon
     let ids: Vec<BranchColorId> = (0..20)
         .map(|k| BranchColorId(k * TRACK_COUNT as i32))
         .collect();
-    let mut spans = vec![Span::styled(" >14 concurrent tracks  ", muted)];
+    let mut spans = vec![Span::styled(
+        tr(ctx, "palette.concurrent_prefix", " >14 concurrent tracks  "),
+        muted,
+    )];
     for color in colors.assign_visible(&ids) {
         spans.push(Span::styled(
             format!("{} ", graph.node),
@@ -119,14 +140,22 @@ pub fn render_palette_preview(frame: &mut Frame<'_>, area: Rect, ctx: &RenderCon
         ));
     }
     spans.push(Span::styled(
-        " (collisions shift slots; HSB fallback beyond 14)",
+        tr(
+            ctx,
+            "palette.concurrent_suffix",
+            " (collisions shift slots; HSB fallback beyond 14)",
+        ),
         muted,
     ));
     line(frame, &mut y, Line::from(spans));
     line(frame, &mut y, Line::default());
 
     // --- Semantic tokens ----------------------------------------------------
-    line(frame, &mut y, heading("Semantic tokens"));
+    line(
+        frame,
+        &mut y,
+        heading(tr(ctx, "palette.tokens_heading", "Semantic tokens")),
+    );
     let tokens = semantic_tokens(theme);
     let per_row = (area.width / TOKEN_CELL_W).max(1) as usize;
     for chunk in tokens.chunks(per_row) {
@@ -151,7 +180,11 @@ pub fn render_palette_preview(frame: &mut Frame<'_>, area: Rect, ctx: &RenderCon
     line(
         frame,
         &mut y,
-        heading("Ref pills — normal row / focused selection / detached HEAD"),
+        heading(tr(
+            ctx,
+            "palette.pills_heading",
+            "Ref pills — normal row / focused selection / detached HEAD",
+        )),
     );
     let attached = sample_groups(false);
     let detached = sample_groups(true);
@@ -178,7 +211,7 @@ pub fn render_palette_preview(frame: &mut Frame<'_>, area: Rect, ctx: &RenderCon
         let subj_x = inner.x.saturating_add(used);
         frame.render_widget(
             Paragraph::new(Span::styled(
-                "feat: commit subject",
+                tr(ctx, "palette.sample_subject", "feat: commit subject"),
                 Style::default().fg(theme.fg_bright),
             ))
             .style(Style::default().bg(row_bg)),
@@ -192,7 +225,11 @@ pub fn render_palette_preview(frame: &mut Frame<'_>, area: Rect, ctx: &RenderCon
     line(
         frame,
         &mut y,
-        heading("Glyph ruler — every glyph must sit exactly between two │ markers"),
+        heading(tr(
+            ctx,
+            "palette.ruler_heading",
+            "Glyph ruler — every glyph must sit exactly between two │ markers",
+        )),
     );
     let mut spans = vec![Span::styled(" │", muted)];
     for (_, glyph) in ctx.glyph_mode.symbols().named() {
@@ -200,6 +237,10 @@ pub fn render_palette_preview(frame: &mut Frame<'_>, area: Rect, ctx: &RenderCon
         spans.push(Span::styled("│", muted));
     }
     line(frame, &mut y, Line::from(spans));
+}
+
+fn tr<'a>(ctx: &'a RenderContext<'_>, key: &'a str, en: &'a str) -> &'a str {
+    ctx.i18n.map_or(en, |i| i.t(key))
 }
 
 fn semantic_tokens(t: &ThemePalette) -> Vec<(&'static str, Color)> {

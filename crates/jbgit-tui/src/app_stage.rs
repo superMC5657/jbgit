@@ -187,7 +187,11 @@ impl AppState {
                         StageNodeKind::can_stage,
                     );
                     if !targets.is_empty() {
-                        self.status_notice = Some(format!("Staging {} path(s)…", targets.len()));
+                        let count_s = targets.len().to_string();
+                        self.status_notice = Some(
+                            self.i18n
+                                .t_fmt("toast.staging_paths", &[("count", &count_s)]),
+                        );
                         effects.push(Effect::StageTargets(targets));
                     }
                 }
@@ -201,14 +205,19 @@ impl AppState {
                         StageNodeKind::can_unstage,
                     );
                     if !targets.is_empty() {
-                        self.status_notice = Some(format!("Unstaging {} path(s)…", targets.len()));
+                        let count_s = targets.len().to_string();
+                        self.status_notice = Some(
+                            self.i18n
+                                .t_fmt("toast.unstaging_paths", &[("count", &count_s)]),
+                        );
                         effects.push(Effect::UnstageTargets(targets));
                     }
                 }
             }
             Action::StageAllTracked => {
                 effects.push(Effect::StageAllTracked);
-                self.status_notice = Some("Staging all tracked changes…".to_string());
+                self.status_notice =
+                    Some(self.i18n.t("toast.staging_all_tracked").to_string());
             }
             Action::DiscardPromptSelected => {
                 self.stage_workbench.sync_rows(self.stage_status.as_deref());
@@ -219,7 +228,7 @@ impl AppState {
                         |k| matches!(k, StageNodeKind::Unstaged | StageNodeKind::Untracked),
                     );
                     if !targets.is_empty() {
-                        let count = targets.len();
+                        let count_s = targets.len().to_string();
                         let sample = targets
                             .iter()
                             .take(4)
@@ -227,12 +236,13 @@ impl AppState {
                             .collect::<Vec<_>>()
                             .join("\n");
                         self.modal_stack.push(ModalLayer::CriticalDialog {
-                            title: "Discard Unstaged Changes".to_string(),
-                            body: format!(
-                                "Discard changes in {count} file(s)?\nUntracked files will be deleted.\n\n{sample}"
+                            title: self.i18n.t("dialog.discard.title").to_string(),
+                            body: self.i18n.t_fmt(
+                                "dialog.discard.body",
+                                &[("count", &count_s), ("sample", &sample)],
                             ),
-                            confirm_label: "Discard".to_string(),
-                            cancel_label: "Cancel".to_string(),
+                            confirm_label: self.i18n.t("common.discard").to_string(),
+                            cancel_label: self.i18n.cancel().to_string(),
                             selected_button: ModalButton::Cancel,
                             confirm_effect: Some(Effect::DiscardTargets(targets)),
                         });
@@ -258,12 +268,12 @@ impl AppState {
                         .collect::<Vec<_>>()
                         .join("\n");
                     self.modal_stack.push(ModalLayer::CriticalDialog {
-                        title: "Unresolved Merge Conflicts".to_string(),
-                        body: format!(
-                            "Resolve conflict markers in the following file(s), then Stage them:\n\n{paths}"
-                        ),
-                        confirm_label: "OK".to_string(),
-                        cancel_label: "Close".to_string(),
+                        title: self.i18n.t("dialog.conflicts_notice.title").to_string(),
+                        body: self
+                            .i18n
+                            .t_fmt("dialog.conflicts_notice.body", &[("paths", &paths)]),
+                        confirm_label: self.i18n.ok().to_string(),
+                        cancel_label: self.i18n.close().to_string(),
                         selected_button: ModalButton::Confirm,
                         confirm_effect: None,
                     });
@@ -366,7 +376,10 @@ impl AppState {
             }
             Action::StageDiffUndoRollback => {
                 if let Some(entry) = self.stage_workbench.rollback_undo_stack.pop() {
-                    self.status_notice = Some(format!("Undid rollback in {}", entry.path));
+                    self.status_notice = Some(
+                        self.i18n
+                            .t_fmt("toast.undid_rollback", &[("path", &entry.path)]),
+                    );
                     effects.push(Effect::WriteWorktreeBuffer {
                         path: entry.path,
                         new_local_bytes: entry.prev_local_bytes,
@@ -609,10 +622,10 @@ impl AppState {
                         prev_local_bytes: diff.local_bytes.clone(),
                     });
                 self.stage_workbench.visual_anchor_row = None;
-                self.status_notice = Some(format!(
-                    "Rolled back lines in {} (Ctrl+Z to undo)",
-                    diff.key.path
-                ));
+                self.status_notice = Some(
+                    self.i18n
+                        .t_fmt("toast.rolled_back_lines", &[("path", &diff.key.path)]),
+                );
                 effects.push(Effect::WriteWorktreeBuffer {
                     path: diff.key.path.clone(),
                     new_local_bytes: new_local,
@@ -672,7 +685,7 @@ impl AppState {
         if let Some(status) = &self.stage_status
             && !status.conflicted.is_empty()
         {
-            self.status_notice = Some("Resolve merge conflicts before committing".to_string());
+            self.status_notice = Some(self.i18n.t("toast.resolve_before_commit").to_string());
             let _ = self.dispatch(Action::ResolveConflictsNotice);
             return;
         }
@@ -681,7 +694,7 @@ impl AppState {
         if msg.trim().is_empty() {
             self.stage_workbench.empty_message_error = true;
             self.focused_pane = PaneId::CommitMessageEditor;
-            self.status_notice = Some("Commit message cannot be empty".to_string());
+            self.status_notice = Some(self.i18n.t("common.commit_msg_empty").to_string());
             return;
         }
 
@@ -712,15 +725,15 @@ impl AppState {
                     and_push,
                 };
                 self.modal_stack.push(ModalLayer::CriticalDialog {
-                    title: "Nothing Staged".to_string(),
-                    body: "No changes are currently staged.\nStage all tracked modified files and commit?".to_string(),
-                    confirm_label: "Stage All & Commit".to_string(),
-                    cancel_label: "Cancel".to_string(),
+                    title: self.i18n.t("dialog.nothing_staged.title").to_string(),
+                    body: self.i18n.t("dialog.nothing_staged.body").to_string(),
+                    confirm_label: self.i18n.t("dialog.nothing_staged.confirm_btn").to_string(),
+                    cancel_label: self.i18n.cancel().to_string(),
                     selected_button: ModalButton::Confirm,
                     confirm_effect: Some(Effect::ExecuteCommit(req)),
                 });
             } else {
-                self.status_notice = Some("No staged changes to commit".to_string());
+                self.status_notice = Some(self.i18n.t("toast.no_staged_to_commit").to_string());
             }
             return;
         }
@@ -870,6 +883,7 @@ impl AppState {
             EngineEvent::CommitCompleted(outcome) => {
                 self.stage_workbench.commit_in_progress = false;
                 if outcome.success {
+                    let was_amend = self.stage_workbench.amend;
                     let committed_msg = self.stage_workbench.editor.text();
                     self.stage_workbench.push_history(&committed_msg);
                     self.stage_workbench.editor.clear();
@@ -879,11 +893,18 @@ impl AppState {
                     self.stage_workbench.amend_preview = None;
                     self.stage_workbench.empty_message_error = false;
                     self.stage_workbench.save_draft();
+                    let localized_summary = match outcome.short_sha.as_deref() {
+                        Some(sha) if was_amend => {
+                            self.i18n.t_fmt("toast.amended_commit", &[("sha", sha)])
+                        }
+                        Some(sha) => self.i18n.t_fmt("toast.committed", &[("sha", sha)]),
+                        None => outcome.summary.clone(),
+                    };
                     self.stage_workbench.last_commit_banner = Some(CommitBanner {
-                        summary: outcome.summary.clone(),
+                        summary: localized_summary.clone(),
                         can_undo: true,
                     });
-                    self.status_notice = Some(outcome.summary.clone());
+                    self.status_notice = Some(localized_summary);
                     if outcome.and_push {
                         let branch = self
                             .repo_snapshot
@@ -892,12 +913,13 @@ impl AppState {
                             .unwrap_or("HEAD");
                         let sha = outcome.short_sha.as_deref().unwrap_or("commit");
                         self.modal_stack.push(ModalLayer::CriticalDialog {
-                            title: "Confirm Push".to_string(),
-                            body: format!(
-                                "Created commit {sha}.\nPush branch '{branch}' to configured remote?"
+                            title: self.i18n.t("dialog.push.confirm_title").to_string(),
+                            body: self.i18n.t_fmt(
+                                "dialog.push.confirm_body",
+                                &[("sha", sha), ("branch", branch)],
                             ),
-                            confirm_label: "Push".to_string(),
-                            cancel_label: "Cancel".to_string(),
+                            confirm_label: self.i18n.t("dialog.push.push_btn").to_string(),
+                            cancel_label: self.i18n.cancel().to_string(),
                             selected_button: ModalButton::Confirm,
                             confirm_effect: Some(Effect::RunCli {
                                 args: vec!["push".into()],
@@ -935,7 +957,7 @@ impl AppState {
                     self.stage_workbench.save_draft();
                 }
                 self.status_notice =
-                    Some("Undid last commit (changes kept staged)".to_string());
+                    Some(self.i18n.t("toast.undid_last_commit").to_string());
                 None
             }
             other => Some(other),

@@ -7,7 +7,7 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use jbgit_core::{
     GitOp, Oid, RepoSnapshot, ResetMode, StashEntry, TodoAction, TodoEntry,
-    default_squash_messages, validate_ref_name,
+    default_squash_messages,
 };
 
 use crate::app::Action;
@@ -83,30 +83,30 @@ impl InputDialog {
     }
 
     /// Live inline validation error (red text; disables the confirm button).
-    pub fn error(&self) -> Option<String> {
+    pub fn error(&self, i18n: &I18n) -> Option<String> {
         match &self.validation {
             InputValidation::None => None,
             InputValidation::NonEmpty => self
                 .value
                 .trim()
                 .is_empty()
-                .then(|| "Value cannot be empty".to_string()),
+                .then(|| i18n.t("common.cannot_be_empty").to_string()),
             InputValidation::RefName { what, existing } => {
                 let refs: Vec<&str> = existing.iter().map(String::as_str).collect();
-                validate_ref_name(&self.value, &refs, what).err()
+                i18n.validate_ref_name(&self.value, &refs, what).err()
             }
         }
     }
 
-    pub fn can_confirm(&self) -> bool {
-        self.error().is_none()
+    pub fn can_confirm(&self, i18n: &I18n) -> bool {
+        self.error(i18n).is_none()
     }
 
     pub fn checked(&self) -> bool {
         self.checkbox.as_ref().is_some_and(|(_, on)| *on)
     }
 
-    pub fn confirm_actions(&self) -> Vec<Action> {
+    pub fn confirm_actions(&self, i18n: &I18n) -> Vec<Action> {
         let value = self.value.trim().to_string();
         let checked = self.checked();
         match &self.intent {
@@ -130,7 +130,7 @@ impl InputDialog {
                 if checked {
                     vec![Action::OpenDialog(Box::new(Dialog::Message(
                         MessageDialog::new(
-                            format!("Annotated Tag '{value}'"),
+                            i18n.t_fmt("dialog.new_tag.annotated_title", &[("name", &value)]),
                             String::new(),
                             MessageIntent::AnnotatedTag {
                                 name: value,
@@ -306,10 +306,10 @@ impl MessageDialog {
         }
     }
 
-    pub fn confirm_actions(&self) -> Vec<Action> {
+    pub fn confirm_actions(&self, i18n: &I18n) -> Vec<Action> {
         let msg = self.text.trim_end().to_string();
         if msg.trim().is_empty() && !matches!(self.intent, MessageIntent::AnnotatedTag { .. }) {
-            return vec![Action::Notice("Commit message cannot be empty".into())];
+            return vec![Action::Notice(i18n.t("common.commit_msg_empty").into())];
         }
         match &self.intent {
             MessageIntent::RewordHead => {
@@ -350,28 +350,22 @@ pub struct RebaseTodoDialog {
 }
 
 impl RebaseTodoDialog {
-    pub fn error(&self) -> Option<String> {
+    pub fn error(&self, i18n: &I18n) -> Option<String> {
         let first_kept = self.entries.iter().find(|e| e.action != TodoAction::Drop);
         if let Some(e) = first_kept
             && matches!(e.action, TodoAction::Squash | TodoAction::Fixup)
         {
-            return Some(format!(
-                "'{}' cannot be squashed: no previous commit to fold into",
-                e.subject
-            ));
+            return Some(i18n.t_fmt("dialog.rebase.err_squash_first", &[("subject", &e.subject)]));
         }
         if self.entries.iter().all(|e| e.action == TodoAction::Drop) {
-            return Some("Cannot drop every commit".into());
+            return Some(i18n.t("dialog.rebase.err_drop_all").into());
         }
         if let Some(e) = self
             .entries
             .iter()
             .find(|e| e.action == TodoAction::Reword && e.message.is_none())
         {
-            return Some(format!(
-                "Reword '{}': press r to edit its message",
-                e.subject
-            ));
+            return Some(i18n.t_fmt("dialog.rebase.err_reword_missing", &[("subject", &e.subject)]));
         }
         None
     }
@@ -421,12 +415,12 @@ pub enum Dialog {
 
 impl Dialog {
     /// Actions emitted when the dialog is confirmed (`None` = cannot confirm).
-    pub fn confirm_actions(&self) -> Option<Vec<Action>> {
+    pub fn confirm_actions(&self, i18n: &I18n) -> Option<Vec<Action>> {
         match self {
-            Self::Input(d) => d.can_confirm().then(|| d.confirm_actions()),
+            Self::Input(d) => d.can_confirm(i18n).then(|| d.confirm_actions(i18n)),
             Self::Choice(d) => d.options.get(d.selected).map(|o| o.actions.clone()),
-            Self::Message(d) => Some(d.confirm_actions()),
-            Self::RebaseTodo(d) => d.error().is_none().then(|| d.confirm_actions()),
+            Self::Message(d) => Some(d.confirm_actions(i18n)),
+            Self::RebaseTodo(d) => d.error(i18n).is_none().then(|| d.confirm_actions()),
         }
     }
 }
@@ -440,7 +434,7 @@ pub enum DialogKey {
     Actions(Vec<Action>),
 }
 
-pub fn route_dialog_key(dialog: &mut Dialog, key: &KeyEvent) -> DialogKey {
+pub fn route_dialog_key(dialog: &mut Dialog, key: &KeyEvent, i18n: &I18n) -> DialogKey {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     let alt = key.modifiers.contains(KeyModifiers::ALT);
     let plain = !ctrl && !alt;
@@ -564,7 +558,7 @@ pub fn route_dialog_key(dialog: &mut Dialog, key: &KeyEvent) -> DialogKey {
                             .unwrap_or_default();
                         return DialogKey::Actions(vec![Action::OpenDialog(Box::new(
                             Dialog::Message(MessageDialog::new(
-                                format!("Reword '{}'", e.subject),
+                                i18n.t_fmt("dialog.rebase.reword_entry_title", &[("subject", &e.subject)]),
                                 text,
                                 MessageIntent::TodoEntry { idx },
                             )),
@@ -630,7 +624,8 @@ pub fn reset_dialog(target: Oid, subject: &str, branch: &str, i18n: &I18n) -> Di
     let options = ResetMode::ALL
         .iter()
         .map(|&mode| {
-            let label = format!("{:<6} {}", mode.label(), mode.flag());
+            let mode_lbl = i18n.reset_mode_label(mode);
+            let label = format!("{:<6} {}", mode_lbl, mode.flag());
             let mnemonic = mode.label().chars().next().map(|c| c.to_ascii_lowercase());
             let actions = if mode.is_destructive() {
                 vec![Action::OpenDialog(Box::new(Dialog::Choice(
@@ -651,7 +646,7 @@ pub fn reset_dialog(target: Oid, subject: &str, branch: &str, i18n: &I18n) -> Di
             } else {
                 vec![Action::RunGitOp(GitOp::Reset { mode, target })]
             };
-            let o = ChoiceOption::new(label, mnemonic, actions).detail(mode.description());
+            let o = ChoiceOption::new(label, mnemonic, actions).detail(i18n.reset_mode_desc(mode));
             if mode.is_destructive() { o.danger() } else { o }
         })
         .collect();

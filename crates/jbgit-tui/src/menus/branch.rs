@@ -361,12 +361,13 @@ pub fn branch_menu_items(state: &AppState, name: &str, kind: RefKind) -> Vec<Con
 
 pub fn ongoing_menu_items(state: &AppState, kind: OngoingKind) -> Vec<ContextMenuItem> {
     let i18n = &state.i18n;
+    let kind_title = i18n.ongoing_title(kind);
     let conflicts = state.conflicted_count();
     let conflicts_s = conflicts.to_string();
     let step = |s: OngoingStep| op(GitOp::Ongoing { kind, step: s });
     let mut items = vec![
         run(
-            i18n.t_fmt("menu.branch.ongoing_continue", &[("kind", kind.title())]),
+            i18n.t_fmt("menu.branch.ongoing_continue", &[("kind", kind_title)]),
             Some('c'),
             None,
             step(OngoingStep::Continue),
@@ -382,7 +383,7 @@ pub fn ongoing_menu_items(state: &AppState, kind: OngoingKind) -> Vec<ContextMen
     }
     items.push(
         run(
-            i18n.t_fmt("menu.branch.ongoing_abort", &[("kind", kind.title())]),
+            i18n.t_fmt("menu.branch.ongoing_abort", &[("kind", kind_title)]),
             Some('a'),
             None,
             step(OngoingStep::Abort),

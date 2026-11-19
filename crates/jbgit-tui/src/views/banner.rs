@@ -42,9 +42,16 @@ pub fn banner_text(state: &AppState) -> Option<String> {
             }
             t
         }
+        jbgit_core::RepositoryState::Merge => i18n.t("ongoing.state_merging").to_string(),
+        jbgit_core::RepositoryState::CherryPick => {
+            i18n.t("ongoing.state_cherry_picking").to_string()
+        }
+        jbgit_core::RepositoryState::Revert => i18n.t("ongoing.state_reverting").to_string(),
+        jbgit_core::RepositoryState::Bisect => i18n.t("ongoing.state_bisecting").to_string(),
+        jbgit_core::RepositoryState::Detached => i18n.t("ongoing.state_detached").to_string(),
         other => other
             .banner_label()
-            .unwrap_or_else(|| kind.title().to_uppercase()),
+            .unwrap_or_else(|| i18n.ongoing_title(kind).to_uppercase()),
     };
     let n = state.conflicted_count();
     if n == 1 {

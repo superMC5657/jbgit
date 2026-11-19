@@ -98,7 +98,7 @@ pub fn render_top_header(
             let short = snap
                 .head_oid
                 .map(|o| o.short())
-                .unwrap_or_else(|| "detached".to_string());
+                .unwrap_or_else(|| state.i18n.t("view.header.detached").to_string());
             (
                 format!(
                     " {} {}{} ▾ ",
@@ -147,7 +147,7 @@ pub fn render_top_header(
 
     // Ongoing state banner (Merge / Rebase progress / Cherry-Pick)
     if let Some(snap) = &state.repo_snapshot
-        && let Some(banner) = snap.state.banner_label()
+        && let Some(banner) = localized_state_banner(&snap.state, &state.i18n)
     {
         spans.push(Span::raw(" "));
         spans.push(Span::styled(
@@ -407,14 +407,20 @@ pub fn render_footer_bar(
     {
         let g = &ctx.glyph_mode.symbols().graph;
         let arrow = if *is_down { g.arrow_down } else { g.arrow_up };
-        let dir_label = if *is_down { "parent" } else { "child" };
+        let dir_label = if *is_down {
+            state.i18n.t("view.footer.arrow_parent")
+        } else {
+            state.i18n.t("view.footer.arrow_child")
+        };
         let target_subj = state
             .log_commit_at(*target_row)
             .map(|c| c.subject.as_str())
             .unwrap_or("");
-        let prefix = format!(" {arrow} Jump to {dir_label} ");
+        let prefix = state
+            .i18n
+            .t_fmt("view.footer.arrow_jump_prefix", &[("arrow", arrow), ("dir", dir_label)]);
         let short = target_oid.short();
-        let suffix = " (Click to jump, Alt+Left to return)";
+        let suffix = state.i18n.t("view.footer.arrow_jump_suffix");
         let subj_budget = (area.width as usize)
             .saturating_sub(prefix.width() + short.width() + 2 + suffix.width());
         let line = Line::from(vec![
@@ -446,6 +452,45 @@ pub fn render_footer_bar(
     )))
     .style(Style::default().bg(ctx.theme.bg_panel));
     frame.render_widget(footer, area);
+}
+
+fn localized_state_banner(
+    st: &jbgit_core::RepositoryState,
+    i18n: &crate::i18n::I18n,
+) -> Option<String> {
+    let format_rebase = |prefix: &str, progress: Option<(usize, usize)>, branch: Option<&str>| {
+        match (branch, progress) {
+            (Some(b), Some((cur, total))) => format!("{prefix} {b} ({cur}/{total})"),
+            (Some(b), None) => format!("{prefix} {b}"),
+            (None, Some((cur, total))) => format!("{prefix} ({cur}/{total})"),
+            (None, None) => prefix.to_string(),
+        }
+    };
+    match st {
+        jbgit_core::RepositoryState::Clean => None,
+        jbgit_core::RepositoryState::Detached => Some(i18n.t("ongoing.state_detached").to_string()),
+        jbgit_core::RepositoryState::Merge => Some(i18n.t("ongoing.state_merging").to_string()),
+        jbgit_core::RepositoryState::CherryPick => {
+            Some(i18n.t("ongoing.state_cherry_picking").to_string())
+        }
+        jbgit_core::RepositoryState::Revert => Some(i18n.t("ongoing.state_reverting").to_string()),
+        jbgit_core::RepositoryState::Bisect => Some(i18n.t("ongoing.state_bisecting").to_string()),
+        jbgit_core::RepositoryState::Rebase { progress, branch } => Some(format_rebase(
+            i18n.t("ongoing.state_rebasing"),
+            *progress,
+            branch.as_deref(),
+        )),
+        jbgit_core::RepositoryState::RebaseInteractive { progress, branch } => Some(format_rebase(
+            i18n.t("ongoing.state_rebasing_i"),
+            *progress,
+            branch.as_deref(),
+        )),
+        jbgit_core::RepositoryState::RebaseMerge { progress, branch } => Some(format_rebase(
+            i18n.t("ongoing.state_rebasing"),
+            *progress,
+            branch.as_deref(),
+        )),
+    }
 }
 
 fn span_width(spans: &[Span<'_>]) -> u16 {

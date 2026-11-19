@@ -20,8 +20,8 @@ use crate::graph::LogGraphState;
 use crate::graph::state::FilterInputs;
 use crate::hit_test::{DiffHunkActionKind, HitTarget, HitTestRegistry};
 use crate::log_view::{
-    BranchesPaneState, DETAILS_DEBOUNCE, DetailsPaneState, FilterBarState, FilterField,
-    LogPresentation, PathMatches, PathRequest, PresentationToggle,
+    BranchesPaneState, DETAILS_DEBOUNCE, DetailsPaneState, DiffPreviewDock, FilterBarState,
+    FilterField, LogPresentation, PathMatches, PathRequest, PresentationToggle,
 };
 use crate::stage_view::StageWorkbenchState;
 use crate::stash_view::StashTabState;
@@ -98,6 +98,35 @@ impl<'a> RenderContext<'a> {
         match self.i18n {
             Some(i) => i.t_fmt(key, args),
             None => key.to_string(),
+        }
+    }
+
+    pub fn pane_title(&self, pane: PaneId) -> &str {
+        self.i18n.map_or(pane.label(), |i| i.pane_title(pane))
+    }
+
+    pub fn branch_category_title(&self, cat: jbgit_core::BranchCategory) -> &str {
+        self.i18n
+            .map_or(cat.title(), |i| i.branch_category_title(cat))
+    }
+
+    pub fn diff_context_label(&self, ctx: jbgit_core::DiffContext) -> &str {
+        self.i18n
+            .map_or(ctx.label(), |i| i.diff_context_label(ctx))
+    }
+
+    pub fn diff_dock_label(&self, dock: DiffPreviewDock) -> &str {
+        self.i18n.map_or(dock.label(), |i| i.diff_dock_label(dock))
+    }
+
+    pub fn todo_action_label(&self, act: jbgit_core::TodoAction) -> &str {
+        self.i18n.map_or(act.label(), |i| i.todo_action_label(act))
+    }
+
+    pub fn format_relative_time(&self, ts: i64, now: i64) -> String {
+        match self.i18n {
+            Some(i) => i.format_relative_time(ts, now),
+            None => crate::log_view::format_relative_time(ts, now),
         }
     }
 
@@ -922,7 +951,10 @@ impl AppState {
         self.log_graph.filter_generation = self.log_graph.filter_generation.wrapping_add(1);
         self.ensure_graph_cache();
         if let Some(err) = &self.log_graph.filter_error {
-            self.status_notice = Some(format!("Filter: {err}"));
+            self.status_notice = Some(
+                self.i18n
+                    .t_fmt("toast.filter_error", &[("err", &err.to_string())]),
+            );
         }
     }
 
@@ -938,7 +970,10 @@ impl AppState {
             .log_graph
             .jump_to_oid(self.repo_snapshot.as_ref(), &oid)
         {
-            self.status_notice = Some(format!("{label}: tip commit is hidden by current filters"));
+            self.status_notice = Some(
+                self.i18n
+                    .t_fmt("toast.tip_hidden_by_filter", &[("label", &label)]),
+            );
         }
     }
 
@@ -981,7 +1016,10 @@ impl AppState {
             }
             Action::ToggleGlyphMode => {
                 self.glyph_mode = self.glyph_mode.toggle();
-                self.status_notice = Some(format!("GlyphMode: {}", self.glyph_mode.label()));
+                self.status_notice = Some(
+                    self.i18n
+                        .t_fmt("toast.glyph_mode", &[("mode", self.glyph_mode.label())]),
+                );
             }
             Action::ToggleCompactRefs => {
                 return self.dispatch(Action::TogglePresentation(PresentationToggle::CompactRefs));
@@ -1139,10 +1177,11 @@ impl AppState {
                 if !names.is_empty() {
                     self.log_filter.spec.branch = BranchFilter::from_names(names);
                     self.branches.multi.clear();
-                    self.status_notice = Some(format!(
-                        "Branch filter: {}",
-                        self.log_filter.spec.branch.label()
-                    ));
+                    let label = self.log_filter.spec.branch.label();
+                    self.status_notice = Some(
+                        self.i18n
+                            .t_fmt("toast.branch_filter_set", &[("label", &label)]),
+                    );
                     self.on_filter_changed();
                 }
             }
@@ -1171,10 +1210,13 @@ impl AppState {
                     self.branches.save_settings();
                     self.branches.sync_model(snap.as_ref(), true);
                     self.branches.select_key(&node.key);
-                    self.status_notice = Some(format!(
-                        "{} {}",
-                        if on { "★ Favorite:" } else { "Unfavorited:" },
-                        short
+                    self.status_notice = Some(self.i18n.t_fmt(
+                        if on {
+                            "toast.favorite_added"
+                        } else {
+                            "toast.favorite_removed"
+                        },
+                        &[("name", &short)],
                     ));
                 }
             }
@@ -1201,7 +1243,8 @@ impl AppState {
                     self.branches.multi.clear();
                 } else if !self.log_filter.spec.branch.is_empty() {
                     self.log_filter.spec.branch = BranchFilter::default();
-                    self.status_notice = Some("Branch filter cleared".to_string());
+                    self.status_notice =
+                        Some(self.i18n.t("toast.branch_filter_cleared").to_string());
                     self.on_filter_changed();
                 }
             }
@@ -1221,10 +1264,8 @@ impl AppState {
                 let s = &mut self.branches.settings;
                 s.navigate_on_select = !s.navigate_on_select;
                 self.branches.save_settings();
-                self.status_notice = Some(format!(
-                    "Navigate Log to Branch on Selection: {}",
-                    on_off(self.branches.settings.navigate_on_select)
-                ));
+                let st = self.i18n.on_off(self.branches.settings.navigate_on_select);
+                self.status_notice = Some(self.i18n.t_fmt("toast.nav_on_select", &[("state", st)]));
             }
 
             // ── Filter bar ──
@@ -1257,10 +1298,11 @@ impl AppState {
                 self.on_filter_changed();
             }
             Action::ApplyFilterField { field, expr } => {
-                if let Err(err) = field.apply(
+                if let Err(err) = field.apply_i18n(
                     &mut self.log_filter.spec,
                     &expr,
                     chrono::Local::now().timestamp(),
+                    &self.i18n,
                 ) {
                     self.status_notice = Some(err);
                     return effects;
@@ -1285,52 +1327,63 @@ impl AppState {
             Action::TogglePresentation(t) => {
                 let p = &mut self.presentation;
                 let o = &mut self.log_graph.options;
-                let (label, on) = match t {
+                let (label_key, on) = match t {
                     PresentationToggle::CompactRefs => {
                         self.compact_refs = !self.compact_refs;
-                        ("Compact References View", self.compact_refs)
+                        ("presentation.compact_refs", self.compact_refs)
                     }
                     PresentationToggle::ShowTagNames => {
                         self.show_tag_names = !self.show_tag_names;
-                        ("Show Tag Names", self.show_tag_names)
+                        ("presentation.show_tag_names", self.show_tag_names)
                     }
                     PresentationToggle::ShowLongEdges => {
                         o.show_long_edges = !o.show_long_edges;
-                        ("Show Long Edges", o.show_long_edges)
+                        ("presentation.show_long_edges", o.show_long_edges)
                     }
                     PresentationToggle::IntelliSort => {
                         o.sort_type = match o.sort_type {
                             SortType::IntelliSort => SortType::Topo,
                             SortType::Topo => SortType::IntelliSort,
                         };
-                        ("IntelliSort", o.sort_type == SortType::IntelliSort)
+                        (
+                            "presentation.intelli_sort",
+                            o.sort_type == SortType::IntelliSort,
+                        )
                     }
                     PresentationToggle::FirstParentOnly => {
                         o.first_parent_only = !o.first_parent_only;
-                        ("First Parent Only", o.first_parent_only)
+                        ("presentation.first_parent_only", o.first_parent_only)
                     }
                     PresentationToggle::HighlightCurrentBranch => {
                         p.highlight_current_branch = !p.highlight_current_branch;
-                        ("Highlight: Current Branch", p.highlight_current_branch)
+                        (
+                            "presentation.highlight_current_branch",
+                            p.highlight_current_branch,
+                        )
                     }
                     PresentationToggle::HighlightMerges => {
                         p.highlight_merges = !p.highlight_merges;
-                        ("Highlight: Merge Commits", p.highlight_merges)
+                        ("presentation.highlight_merges", p.highlight_merges)
                     }
                     PresentationToggle::ShowHashColumn => {
                         p.show_hash_column = !p.show_hash_column;
-                        ("Hash column", p.show_hash_column)
+                        ("presentation.show_hash_column", p.show_hash_column)
                     }
                     PresentationToggle::RelativeDates => {
                         p.relative_dates = !p.relative_dates;
-                        ("Relative dates", p.relative_dates)
+                        ("presentation.relative_dates", p.relative_dates)
                     }
                     PresentationToggle::UseAuthorDate => {
                         p.use_author_date = !p.use_author_date;
-                        ("Author date (vs commit date)", p.use_author_date)
+                        ("presentation.use_author_date", p.use_author_date)
                     }
                 };
-                self.status_notice = Some(format!("{label}: {}", on_off(on)));
+                let label = self.i18n.t(label_key);
+                let state = self.i18n.on_off(on);
+                self.status_notice = Some(
+                    self.i18n
+                        .t_fmt("toast.presentation_toggle", &[("label", label), ("state", state)]),
+                );
                 self.ensure_graph_cache();
             }
 
@@ -1377,9 +1430,10 @@ impl AppState {
                     Some(row) => self.log_graph.jump_to(snap.as_ref(), row, false),
                     None => {
                         self.status_notice = Some(if idx == 0 {
-                            "No visible parent commit".to_string()
+                            self.i18n.t("toast.no_visible_parent").to_string()
                         } else {
-                            format!("No visible parent #{}", idx + 1)
+                            let n_s = (idx + 1).to_string();
+                            self.i18n.t_fmt("toast.no_visible_parent_n", &[("n", &n_s)])
                         });
                     }
                 }
@@ -1388,7 +1442,9 @@ impl AppState {
                 self.details.compare_override = None;
                 match self.log_graph.child_row() {
                     Some(row) => self.log_graph.jump_to(snap.as_ref(), row, false),
-                    None => self.status_notice = Some("No visible child commit".to_string()),
+                    None => {
+                        self.status_notice = Some(self.i18n.t("toast.no_visible_child").to_string());
+                    }
                 }
             }
             Action::GoToRevision(expr) => {
@@ -1396,17 +1452,24 @@ impl AppState {
                 let expr = expr.trim().to_string();
                 match snap.as_ref().and_then(|s| s.resolve_revision(&expr)) {
                     Some(oid) => {
+                        let short = oid.short();
                         if self.log_graph.jump_to_oid(snap.as_ref(), &oid) {
                             self.focused_pane = PaneId::LogCommitTable;
-                            self.status_notice = Some(format!("Go to {expr} → {}", oid.short()));
+                            self.status_notice = Some(
+                                self.i18n
+                                    .t_fmt("toast.goto_ok", &[("expr", &expr), ("short", &short)]),
+                            );
                         } else {
-                            self.status_notice = Some(format!(
-                                "{expr} ({}) is hidden by current filters",
-                                oid.short()
-                            ));
+                            self.status_notice = Some(
+                                self.i18n
+                                    .t_fmt("toast.goto_hidden", &[("expr", &expr), ("short", &short)]),
+                            );
                         }
                     }
-                    None => self.status_notice = Some(format!("Revision '{expr}' not found")),
+                    None => {
+                        self.status_notice =
+                            Some(self.i18n.t_fmt("toast.goto_not_found", &[("expr", &expr)]));
+                    }
                 }
             }
             Action::JumpToCommit(oid) => {
@@ -1414,8 +1477,11 @@ impl AppState {
                 if self.log_graph.jump_to_oid(snap.as_ref(), &oid) {
                     self.focused_pane = PaneId::LogCommitTable;
                 } else {
-                    self.status_notice =
-                        Some(format!("Commit {} is not visible in the log", oid.short()));
+                    let short = oid.short();
+                    self.status_notice = Some(
+                        self.i18n
+                            .t_fmt("toast.commit_not_visible", &[("short", &short)]),
+                    );
                 }
             }
             Action::NavLogBack => {
@@ -1489,12 +1555,14 @@ impl AppState {
                 };
                 if parents >= 2 {
                     self.details.merge_parent = (self.details.merge_parent + 1) % parents;
-                    self.status_notice = Some(format!(
-                        "Showing changes against parent #{} of {parents}",
-                        self.details.merge_parent + 1
+                    let cur_s = (self.details.merge_parent + 1).to_string();
+                    let tot_s = parents.to_string();
+                    self.status_notice = Some(self.i18n.t_fmt(
+                        "toast.merge_parent_switched",
+                        &[("cur", &cur_s), ("total", &tot_s)],
                     ));
                 } else {
-                    self.status_notice = Some("Not a merge commit".to_string());
+                    self.status_notice = Some(self.i18n.t("toast.not_merge_commit").to_string());
                 }
             }
             Action::ToggleDiffPreview => {
@@ -1503,10 +1571,9 @@ impl AppState {
             }
             Action::DiffCycleDock => {
                 self.details.diff_dock = self.details.diff_dock.next();
-                self.status_notice = Some(format!(
-                    "Diff preview dock: {}",
-                    self.details.diff_dock.label()
-                ));
+                let dock_lbl = self.i18n.diff_dock_label(self.details.diff_dock);
+                self.status_notice =
+                    Some(self.i18n.t_fmt("toast.diff_dock_set", &[("dock", dock_lbl)]));
             }
             Action::ZoomDiff(on) => {
                 self.details.diff_zoomed = on && self.details.selected_change().is_some();
@@ -1529,10 +1596,11 @@ impl AppState {
             }
             Action::DiffCycleContext => {
                 self.details.diff_context = self.details.diff_context.next();
-                self.status_notice = Some(format!(
-                    "Diff context: {}",
-                    self.details.diff_context.label()
-                ));
+                let ctx_lbl = self.i18n.diff_context_label(self.details.diff_context);
+                self.status_notice = Some(
+                    self.i18n
+                        .t_fmt("toast.diff_context_set", &[("ctx", ctx_lbl)]),
+                );
             }
             Action::ScrollDiff(delta) => {
                 self.details.diff_scroll =
@@ -1543,7 +1611,7 @@ impl AppState {
                     (self.details.details_scroll as isize + delta).max(0) as usize;
             }
             Action::CopyText(text) => {
-                self.status_notice = Some(format!("Copied {text}"));
+                self.status_notice = Some(self.i18n.t_fmt("toast.copied_text", &[("text", &text)]));
                 effects.push(Effect::CopyToClipboard(text));
             }
             Action::FlushPendingDetails => {
@@ -1852,15 +1920,15 @@ impl AppState {
                 retry_is_read_only,
                 retry_refresh_after,
             } => {
+                let path_s = lock_path.display().to_string();
                 self.modal_stack.push(ModalLayer::CriticalDialog {
-                    title: "Git Index Lock Conflict".to_string(),
-                    body: format!(
-                        "Another Git process appears to hold:\n{}\n\n{}",
-                        lock_path.display(),
-                        message
+                    title: self.i18n.t("dialog.index_lock.title").to_string(),
+                    body: self.i18n.t_fmt(
+                        "dialog.index_lock.body",
+                        &[("path", &path_s), ("message", &message)],
                     ),
-                    confirm_label: "Retry".to_string(),
-                    cancel_label: "Dismiss".to_string(),
+                    confirm_label: self.i18n.t("common.retry").to_string(),
+                    cancel_label: self.i18n.t("common.dismiss").to_string(),
                     selected_button: ModalButton::Confirm,
                     confirm_effect: Some(Effect::RunCli {
                         args: retry_args,
@@ -1891,7 +1959,7 @@ impl AppState {
                 self.details.requested_diff = None;
                 self.stage_workbench.requested_diff = None;
                 self.stage_workbench.commit_in_progress = false;
-                self.status_notice = Some(format!("Engine: {msg}"));
+                self.status_notice = Some(self.i18n.t_fmt("toast.engine_error", &[("msg", &msg)]));
             }
         }
 
@@ -1904,10 +1972,6 @@ impl AppState {
         );
         effects
     }
-}
-
-fn on_off(on: bool) -> &'static str {
-    if on { "on" } else { "off" }
 }
 
 pub fn execute_effects(effects: Vec<Effect>, state: &mut AppState, engine: Option<&EngineHandle>) {

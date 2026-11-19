@@ -259,6 +259,23 @@ impl FilterField {
         }
         Ok(())
     }
+
+    pub fn apply_i18n(
+        self,
+        spec: &mut LogFilterSpec,
+        expr: &str,
+        now: i64,
+        i18n: &crate::i18n::I18n,
+    ) -> Result<(), String> {
+        match self {
+            Self::Date => {
+                spec.date = DateFilter::parse(expr, now)
+                    .ok_or_else(|| i18n.t_fmt("filter.date_parse_err", &[("expr", expr.trim())]))?;
+                Ok(())
+            }
+            other => other.apply(spec, expr, now),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]

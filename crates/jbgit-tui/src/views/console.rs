@@ -34,10 +34,10 @@ pub fn render_console_tab(
         split.container,
     ));
 
-    let list_sub = format!(
-        "{} entries (press 'p' to probe)",
-        state.console_entries.len()
-    );
+    let count_s = state.console_entries.len().to_string();
+    let list_sub = state
+        .i18n
+        .t_fmt("view.console.list_subtitle", &[("count", &count_s)]);
     let list_body = render_pane_frame(
         frame,
         split.first,
@@ -85,7 +85,7 @@ fn render_command_list(
     if state.console_entries.is_empty() {
         frame.render_widget(
             Paragraph::new(Span::styled(
-                " No Git CLI commands executed yet. Press 'p' to run git status.",
+                state.i18n.t("view.console.empty_list"),
                 Style::default().fg(ctx.theme.fg_muted),
             )),
             area,
@@ -181,7 +181,7 @@ fn render_command_output(
     let Some(entry) = state.console_entries.get(state.console_selected_idx) else {
         frame.render_widget(
             Paragraph::new(Span::styled(
-                " Select a command entry on the left to inspect stdout/stderr.",
+                state.i18n.t("view.console.select_prompt"),
                 Style::default().fg(ctx.theme.fg_muted),
             )),
             area,
@@ -191,22 +191,38 @@ fn render_command_output(
 
     let mut lines: Vec<Line<'_>> = Vec::new();
     let status_span = match entry.exit_code {
-        None => Span::styled(
-            format!("RUNNING {}", state.spinner_char()),
-            Style::default().fg(ctx.theme.border_focused),
-        ),
-        Some(0) => Span::styled(
-            format!("EXIT 0 ({} ms)", entry.duration_ms.unwrap_or_default()),
-            Style::default()
-                .fg(ctx.theme.status_added)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Some(code) => Span::styled(
-            format!("EXIT {code} ({} ms)", entry.duration_ms.unwrap_or_default()),
-            Style::default()
-                .fg(ctx.theme.status_conflicted)
-                .add_modifier(Modifier::BOLD),
-        ),
+        None => {
+            let sp = state.spinner_char().to_string();
+            Span::styled(
+                state
+                    .i18n
+                    .t_fmt("view.console.running", &[("spinner", &sp)]),
+                Style::default().fg(ctx.theme.border_focused),
+            )
+        }
+        Some(0) => {
+            let ms = entry.duration_ms.unwrap_or_default().to_string();
+            Span::styled(
+                state
+                    .i18n
+                    .t_fmt("view.console.exit_status", &[("code", "0"), ("ms", &ms)]),
+                Style::default()
+                    .fg(ctx.theme.status_added)
+                    .add_modifier(Modifier::BOLD),
+            )
+        }
+        Some(code) => {
+            let code_s = code.to_string();
+            let ms = entry.duration_ms.unwrap_or_default().to_string();
+            Span::styled(
+                state
+                    .i18n
+                    .t_fmt("view.console.exit_status", &[("code", &code_s), ("ms", &ms)]),
+                Style::default()
+                    .fg(ctx.theme.status_conflicted)
+                    .add_modifier(Modifier::BOLD),
+            )
+        }
     };
 
     lines.push(Line::from(vec![
@@ -225,7 +241,7 @@ fn render_command_output(
 
     if entry.stdout_lines.is_empty() && entry.stderr_lines.is_empty() {
         lines.push(Line::from(Span::styled(
-            " (no output)",
+            state.i18n.t("view.console.no_output"),
             Style::default().fg(ctx.theme.fg_muted),
         )));
     } else {

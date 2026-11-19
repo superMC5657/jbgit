@@ -37,14 +37,17 @@ pub fn render_conflict_merge_modal(
     let Some(cm) = &state.conflict_merge else {
         return;
     };
+    let i18n = &state.i18n;
     let title = match &cm.doc {
-        Some(doc) => format!(
-            " Resolve Conflicts — {} ({} unresolved / {}) ",
-            cm.path,
-            doc.unresolved_count(),
-            doc.conflict_count
-        ),
-        None => format!(" Resolve Conflicts — {} (Loading…) ", cm.path),
+        Some(doc) => {
+            let u = doc.unresolved_count().to_string();
+            let t = doc.conflict_count.to_string();
+            i18n.t_fmt(
+                "conflict_merge.title",
+                &[("path", &cm.path), ("unresolved", &u), ("total", &t)],
+            )
+        }
+        None => i18n.t_fmt("conflict_merge.title_loading", &[("path", &cm.path)]),
     };
     let block = Block::default()
         .title(Span::styled(
@@ -69,7 +72,7 @@ pub fn render_conflict_merge_modal(
     let Some(doc) = &cm.doc else {
         frame.render_widget(
             Paragraph::new(Span::styled(
-                " Loading conflict blocks…",
+                i18n.t("conflict_merge.loading"),
                 Style::default().fg(ctx.theme.fg_muted),
             )),
             inner,
@@ -81,8 +84,12 @@ pub fn render_conflict_merge_modal(
     let right_w = inner.width.saturating_sub(col_w * 2 + 2);
     let header_rect = Rect::new(inner.x, inner.y, inner.width, 1);
     let active_block = doc.block(cm.selected_block);
-    let ours_title = active_block.map_or("Ours", |b| b.ours_label.as_str());
-    let theirs_title = active_block.map_or("Theirs", |b| b.theirs_label.as_str());
+    let ours_title = active_block.map_or(i18n.t("conflict_merge.ours_default"), |b| {
+        b.ours_label.as_str()
+    });
+    let theirs_title = active_block.map_or(i18n.t("conflict_merge.theirs_default"), |b| {
+        b.theirs_label.as_str()
+    });
     let pad_col = |t: &str, w: u16| {
         let trunc = truncate_to_width(t, w as usize);
         let pad = (w as usize).saturating_sub(trunc.width());
@@ -90,7 +97,10 @@ pub fn render_conflict_merge_modal(
     };
     let hdr = Line::from(vec![
         Span::styled(
-            pad_col(&format!(" Ours ({ours_title})"), col_w),
+            pad_col(
+                &i18n.t_fmt("conflict_merge.ours_col", &[("title", ours_title)]),
+                col_w,
+            ),
             Style::default()
                 .fg(ctx.theme.status_added)
                 .bg(ctx.theme.bg_panel)
@@ -98,7 +108,7 @@ pub fn render_conflict_merge_modal(
         ),
         Span::styled("│", Style::default().fg(ctx.theme.border_splitter)),
         Span::styled(
-            pad_col(" Merged Result", col_w),
+            pad_col(i18n.t("conflict_merge.merged_col"), col_w),
             Style::default()
                 .fg(ctx.theme.fg_bright)
                 .bg(ctx.theme.bg_panel)
@@ -106,7 +116,10 @@ pub fn render_conflict_merge_modal(
         ),
         Span::styled("│", Style::default().fg(ctx.theme.border_splitter)),
         Span::styled(
-            pad_col(&format!(" Theirs ({theirs_title})"), right_w),
+            pad_col(
+                &i18n.t_fmt("conflict_merge.theirs_col", &[("title", theirs_title)]),
+                right_w,
+            ),
             Style::default()
                 .fg(ctx.theme.fg_accent_link)
                 .bg(ctx.theme.bg_panel)
@@ -173,10 +186,7 @@ pub fn render_conflict_merge_modal(
     let hint_y = inner.bottom().saturating_sub(2);
     frame.render_widget(
         Paragraph::new(Span::styled(
-            truncate_to_width(
-                " n/p conflict · ↑↓ scroll · y Ours · t Theirs · b Both · Y/T All · m mergetool · e $EDITOR · Enter Save & Stage",
-                inner.width as usize,
-            ),
+            truncate_to_width(i18n.t("conflict_merge.hint"), inner.width as usize),
             Style::default().fg(ctx.theme.fg_muted),
         ))
         .style(Style::default().bg(ctx.theme.bg_panel)),
@@ -185,23 +195,23 @@ pub fn render_conflict_merge_modal(
 
     let btn_y = inner.bottom().saturating_sub(1);
     let buttons = [
-        (" [y] Ours ", ConflictMergeButtonKind::AcceptOurs, false),
-        (" [t] Theirs ", ConflictMergeButtonKind::AcceptTheirs, false),
-        (" [b] Both ", ConflictMergeButtonKind::AcceptBoth, false),
-        (" [Y] All Ours ", ConflictMergeButtonKind::AcceptAllOurs, false),
-        (" [T] All Theirs ", ConflictMergeButtonKind::AcceptAllTheirs, false),
-        (" [m] mergetool ", ConflictMergeButtonKind::Mergetool, false),
-        (" [e] $EDITOR ", ConflictMergeButtonKind::ExternalEditor, false),
+        (i18n.t("conflict_merge.btn_ours"), ConflictMergeButtonKind::AcceptOurs, false),
+        (i18n.t("conflict_merge.btn_theirs"), ConflictMergeButtonKind::AcceptTheirs, false),
+        (i18n.t("conflict_merge.btn_both"), ConflictMergeButtonKind::AcceptBoth, false),
+        (i18n.t("conflict_merge.btn_all_ours"), ConflictMergeButtonKind::AcceptAllOurs, false),
+        (i18n.t("conflict_merge.btn_all_theirs"), ConflictMergeButtonKind::AcceptAllTheirs, false),
+        (i18n.t("conflict_merge.btn_mergetool"), ConflictMergeButtonKind::Mergetool, false),
+        (i18n.t("conflict_merge.btn_editor"), ConflictMergeButtonKind::ExternalEditor, false),
         (
             if doc.unresolved_count() == 0 {
-                " Save & Stage "
+                i18n.t("conflict_merge.btn_save_stage")
             } else {
-                " Save "
+                i18n.t("conflict_merge.btn_save")
             },
             ConflictMergeButtonKind::SaveAndStage,
             true,
         ),
-        (" Close ", ConflictMergeButtonKind::Cancel, false),
+        (i18n.t("conflict_merge.btn_close"), ConflictMergeButtonKind::Cancel, false),
     ];
     let mut bx = inner.x + 1;
     for (label, kind, primary) in buttons {

@@ -29,6 +29,10 @@ fn muted_line(ctx: &RenderContext<'_>, text: &str) -> Paragraph<'static> {
     ))
 }
 
+fn pad_label(s: &str, width: usize) -> String {
+    format!(" {s}{}", " ".repeat(width.saturating_sub(s.width())))
+}
+
 /// Renders a row of clickable toolbar buttons; returns the x after the last one.
 fn render_toolbar<T: Copy>(
     frame: &mut Frame<'_>,
@@ -100,24 +104,36 @@ pub fn render_changes_browser(
     let subtitle = match (bundle, &details.current_key) {
         (Some(b), _) => {
             let (add, del) = b.totals();
-            let mut s = format!("{} files  +{add} -{del}", b.changes.len());
+            let stats = ctx.t_fmt(
+                "view.log_details.files_stats",
+                &[
+                    ("count", &b.changes.len().to_string()),
+                    ("add", &add.to_string()),
+                    ("del", &del.to_string()),
+                ],
+            );
             match b.key.mode {
-                DetailsMode::CompareVersions if b.key.oids.len() >= 2 => {
-                    s = format!(
-                        "Compare {} ↔ {} · {s}",
-                        b.key.oids[0].short(),
-                        b.key.oids[1].short()
-                    );
-                }
-                DetailsMode::CompareWithLocal if !b.key.oids.is_empty() => {
-                    s = format!("Compare {} ↔ Working Tree · {s}", b.key.oids[0].short());
-                }
-                _ if b.key.oids.len() > 1 => {
-                    s = format!("{} commits · {s}", b.key.oids.len());
-                }
-                _ => {}
+                DetailsMode::CompareVersions if b.key.oids.len() >= 2 => ctx.t_fmt(
+                    "view.log_details.compare_versions_sub",
+                    &[
+                        ("a", &b.key.oids[0].short()),
+                        ("b", &b.key.oids[1].short()),
+                        ("stats", &stats),
+                    ],
+                ),
+                DetailsMode::CompareWithLocal if !b.key.oids.is_empty() => ctx.t_fmt(
+                    "view.log_details.compare_local_sub",
+                    &[("a", &b.key.oids[0].short()), ("stats", &stats)],
+                ),
+                _ if b.key.oids.len() > 1 => ctx.t_fmt(
+                    "view.log_details.commits_stats_sub",
+                    &[
+                        ("count", &b.key.oids.len().to_string()),
+                        ("stats", &stats),
+                    ],
+                ),
+                _ => stats,
             }
-            s
         }
         (None, Some(_)) => ctx.t("common.loading").to_string(),
         (None, None) => String::new(),
@@ -133,7 +149,7 @@ pub fn render_changes_browser(
         .map_or(0, |d| d.parents.len());
     let mut buttons = vec![
         (
-            " ⊞ Dir ".to_string(),
+            ctx.t("view.log_details.toolbar_dir").to_string(),
             details.changes_group_by_dir,
             ChangesToolbarButton::GroupByDir,
         ),
@@ -142,13 +158,19 @@ pub fn render_changes_browser(
     ];
     if host == DiffHost::Log {
         buttons.push((
-            " ◉ Diff ".to_string(),
+            ctx.t("view.log_details.toolbar_diff").to_string(),
             details.diff_preview,
             ChangesToolbarButton::DiffPreview,
         ));
         if merge_parents >= 2 {
             buttons.push((
-                format!(" Parent {}/{merge_parents} ", details.merge_parent + 1),
+                ctx.t_fmt(
+                    "view.log_details.toolbar_parent",
+                    &[
+                        ("cur", &(details.merge_parent + 1).to_string()),
+                        ("total", &merge_parents.to_string()),
+                    ],
+                ),
                 true,
                 ChangesToolbarButton::SwitchParent,
             ));
@@ -267,7 +289,7 @@ fn render_change_rows(
                 }
                 if change.is_binary {
                     right.push(Span::styled(
-                        "bin ",
+                        ctx.t("view.log_details.bin_badge").to_string(),
                         Style::default().fg(ctx.theme.fg_muted),
                     ));
                 } else {
@@ -316,7 +338,7 @@ pub fn render_docked_diff(
     let subtitle = state
         .details
         .selected_change()
-        .map(|c| format!("Diff · {}", c.path))
+        .map(|c| ctx.t_fmt("view.log_details.diff_file", &[("path", &c.path)]))
         .unwrap_or_else(|| ctx.t("view.log_details.diff_preview").to_string());
     let body = render_pane_frame(frame, area, PaneId::LogDetailsDiff, &subtitle, ctx);
     render_diff_view(frame, body, state, ctx, false);
@@ -341,9 +363,13 @@ pub fn render_zoomed_diff(
         .selected_change()
         .map(|c| c.path.clone())
         .unwrap_or_default();
-    let header = format!(
-        " ⤢ {path}   ({pos}/{})   [ / ] prev/next file · s split · c context · Esc back",
-        files.len()
+    let header = ctx.t_fmt(
+        "view.log_details.zoom_header",
+        &[
+            ("path", &path),
+            ("pos", &pos.to_string()),
+            ("total", &files.len().to_string()),
+        ],
     );
     frame.render_widget(
         Paragraph::new(Span::styled(
@@ -418,7 +444,10 @@ pub fn render_diff_preview(
             DiffToolbarButton::SideBySide,
         ),
         (
-            format!(" ctx {} ", d.diff_context.label()),
+            ctx.t_fmt(
+                "view.log_details.ctx_btn",
+                &[("ctx", ctx.diff_context_label(d.diff_context))],
+            ),
             false,
             DiffToolbarButton::Context,
         ),
@@ -426,7 +455,10 @@ pub fn render_diff_preview(
     if host == DiffHost::Log {
         if !zoomed {
             buttons.push((
-                format!(" ◧ {} ", d.diff_dock.label()),
+                ctx.t_fmt(
+                    "view.log_details.dock_btn",
+                    &[("dock", ctx.diff_dock_label(d.diff_dock))],
+                ),
                 d.diff_dock != DiffPreviewDock::Details,
                 DiffToolbarButton::Dock,
             ));
@@ -435,7 +467,7 @@ pub fn render_diff_preview(
             if zoomed {
                 ctx.t("view.log_details.restore_btn")
             } else {
-                " ⤢ F4 "
+                ctx.t("view.log_details.zoom_btn")
             }
             .to_string(),
             zoomed,
@@ -648,7 +680,7 @@ pub fn render_diff_preview(
 fn person_line(label: &str, p: &jbgit_core::PersonStamp, ctx: &RenderContext<'_>) -> Line<'static> {
     Line::from(vec![
         Span::styled(
-            format!(" {label:<10}"),
+            pad_label(label, 10),
             Style::default().fg(ctx.theme.fg_muted),
         ),
         Span::styled(p.name.clone(), Style::default().fg(ctx.theme.fg_bright)),
@@ -697,7 +729,7 @@ fn render_commit_details(
             let lines = vec![
                 Line::from(vec![
                     Span::styled(
-                        format!(" {:<10}", ctx.t("view.log_details.commit_label")),
+                        pad_label(ctx.t("view.log_details.commit_label"), 10),
                         Style::default().fg(ctx.theme.fg_muted),
                     ),
                     Span::styled(
@@ -785,7 +817,7 @@ fn build_single_details(
     hits: &mut Vec<LineHit>,
 ) {
     let theme = ctx.theme;
-    let label = |s: &str| Span::styled(format!(" {s:<10}"), Style::default().fg(theme.fg_muted));
+    let label = |s: &str| Span::styled(pad_label(s, 10), Style::default().fg(theme.fg_muted));
 
     // 1. Full SHA (click to copy) + signature badge.
     let sha = d.oid.to_string();

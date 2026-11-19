@@ -41,8 +41,15 @@ impl AppState {
     pub(crate) fn require_no_ongoing(&self) -> Result<(), String> {
         match self.ongoing_kind() {
             Some(k) => {
-                let kind_low = k.title().to_lowercase();
-                Err(self.i18n.t_fmt("toast.ongoing_blocked", &[("kind", &kind_low)]))
+                let kind_title = self.i18n.ongoing_title(k);
+                let kind_str = if self.i18n.lang == "en-US" {
+                    kind_title.to_lowercase()
+                } else {
+                    kind_title.to_string()
+                };
+                Err(self
+                    .i18n
+                    .t_fmt("toast.ongoing_blocked", &[("kind", &kind_str)]))
             }
             None => Ok(()),
         }
@@ -56,9 +63,12 @@ impl AppState {
 
     /// Plan for rewriting `oldest..HEAD` along the first-parent chain.
     pub(crate) fn rewrite_plan(&self, oldest: Oid, verb: &str) -> Result<RewritePlan, String> {
-        let snap = self.snapshot().ok_or("Repository not loaded")?;
+        let snap = self
+            .snapshot()
+            .ok_or_else(|| self.i18n.t("toast.repo_not_loaded").to_string())?;
         self.require_no_ongoing()?;
-        snap.plan_rewrite(oldest, verb)
+        snap.plan_rewrite_typed(oldest)
+            .map_err(|err| self.i18n.rewrite_plan_error(&err, verb))
     }
 
     /// Selected Log commits ordered oldest → newest (topological).
@@ -80,7 +90,8 @@ impl AppState {
     }
 
     fn start_git_op(&mut self, op: GitOp, effects: &mut Vec<Effect>) {
-        self.status_notice = Some(format!("{}…", op.label()));
+        let label = self.i18n.git_op_label(&op);
+        self.status_notice = Some(self.i18n.t_fmt("toast.op_running", &[("label", &label)]));
         self.notification = None;
         effects.push(Effect::GitOp(op));
     }
@@ -130,18 +141,18 @@ impl AppState {
                 let Some(ModalLayer::Dialog(d)) = self.modal_stack.last() else {
                     return true;
                 };
-                match d.confirm_actions() {
+                match d.confirm_actions(&self.i18n) {
                     Some(actions) => {
                         self.modal_stack.pop();
                         self.run_actions(actions, effects);
                     }
                     None => {
                         if let Dialog::Input(i) = d.as_ref()
-                            && let Some(err) = i.error()
+                            && let Some(err) = i.error(&self.i18n)
                         {
                             self.status_notice = Some(err);
                         } else if let Dialog::RebaseTodo(r) = d.as_ref()
-                            && let Some(err) = r.error()
+                            && let Some(err) = r.error(&self.i18n)
                         {
                             self.status_notice = Some(err);
                         }
@@ -176,9 +187,13 @@ impl AppState {
                 self.branches.save_settings();
                 let snap = self.repo_snapshot.clone();
                 self.branches.sync_model(snap.as_ref(), true);
-                self.status_notice = Some(format!(
-                    "{} {short}",
-                    if on { "★ Favorite:" } else { "Unfavorited:" }
+                self.status_notice = Some(self.i18n.t_fmt(
+                    if on {
+                        "toast.favorite_added"
+                    } else {
+                        "toast.favorite_removed"
+                    },
+                    &[("name", short)],
                 ));
             }
             Action::CheckoutRemoteBranch { remote_ref } => self.checkout_remote(remote_ref, effects),
@@ -427,7 +442,10 @@ impl AppState {
             .iter()
             .find(|r| r.kind == RefKind::RemoteBranch && r.name == remote_ref)
         else {
-            self.status_notice = Some(format!("Remote branch '{remote_ref}' not found"));
+            self.status_notice = Some(
+                self.i18n
+                    .t_fmt("toast.remote_not_found", &[("name", remote_ref)]),
+            );
             return;
         };
         let local_name = remote_ref
@@ -534,7 +552,10 @@ impl AppState {
             .clone()
             .unwrap_or_else(|| "HEAD".to_string());
         let (Some(a), Some(b)) = (snap.resolve_revision(branch), snap.head_oid) else {
-            self.status_notice = Some(format!("Cannot compare '{branch}'"));
+            self.status_notice = Some(
+                self.i18n
+                    .t_fmt("toast.cannot_compare_branch", &[("name", branch)]),
+            );
             return;
         };
         let only_a = snap.count_exclusive(a, b);
@@ -546,8 +567,16 @@ impl AppState {
         self.log_graph.filter_generation = self.log_graph.filter_generation.wrapping_add(1);
         self.ensure_graph_cache();
         self.log_graph.jump_to_oid(self.repo_snapshot.as_ref(), &a);
-        self.status_notice = Some(format!(
-            "Compare '{branch}' ↔ '{current}': {only_a} commit(s) only in '{branch}', {only_b} only in '{current}' (Esc in Branches clears)"
+        let oa = only_a.to_string();
+        let ob = only_b.to_string();
+        self.status_notice = Some(self.i18n.t_fmt(
+            "toast.compare_summary",
+            &[
+                ("branch", branch),
+                ("current", &current),
+                ("only_a", &oa),
+                ("only_b", &ob),
+            ],
         ));
     }
 
@@ -556,11 +585,14 @@ impl AppState {
             return;
         };
         let Some(local) = snap.local_branch(name) else {
-            self.status_notice = Some(format!("Branch '{name}' not found"));
+            self.status_notice = Some(self.i18n.t_fmt("toast.branch_not_found", &[("name", name)]));
             return;
         };
         if local.is_head {
-            self.status_notice = Some(format!("Cannot delete the current branch '{name}'"));
+            self.status_notice = Some(
+                self.i18n
+                    .t_fmt("toast.cannot_delete_current", &[("name", name)]),
+            );
             return;
         }
         let tip = local.target_oid;
@@ -683,8 +715,9 @@ impl AppState {
             other => other.clone(),
         };
         let is_smart = matches!(outcome.op, GitOp::Smart(_));
+        let op_label = self.i18n.git_op_label(&outcome.op);
         if outcome.success {
-            self.status_notice = Some(format!("✔ {}", outcome.op.label()));
+            self.status_notice = Some(self.i18n.t_fmt("toast.op_done", &[("label", &op_label)]));
             match &op {
                 GitOp::DeleteBranch { name, tip, .. } => {
                     let short_s = tip.short();
@@ -766,22 +799,25 @@ impl AppState {
             return;
         }
 
-        let label = outcome.op.label();
+        let label = op_label;
         let i18n = self.i18n.clone();
         match outcome.failure.clone() {
             Some(
                 GitFailure::LocalChangesOverwritten { files }
                 | GitFailure::UntrackedOverwritten { files },
             ) if op.supports_smart() && !is_smart => {
-                let verb = match &op {
-                    GitOp::Merge { .. } => "Merge",
-                    GitOp::Rebase { .. } | GitOp::Pull { rebase: true } => "Rebase",
-                    GitOp::Pull { .. } => "Pull",
-                    GitOp::CherryPick { .. } => "Cherry-Pick",
-                    GitOp::Revert { .. } => "Revert",
-                    GitOp::Reset { .. } => "Reset",
-                    _ => "Checkout",
+                let verb_key = match &op {
+                    GitOp::Merge { .. } => "dialog.smart.verb.merge",
+                    GitOp::Rebase { .. } | GitOp::Pull { rebase: true } => {
+                        "dialog.smart.verb.rebase"
+                    }
+                    GitOp::Pull { .. } => "dialog.smart.verb.pull",
+                    GitOp::CherryPick { .. } => "dialog.smart.verb.cherry_pick",
+                    GitOp::Revert { .. } => "dialog.smart.verb.revert",
+                    GitOp::Reset { .. } => "dialog.smart.verb.reset",
+                    _ => "dialog.smart.verb.checkout",
                 };
+                let verb = i18n.t(verb_key);
                 let count_s = files.len().max(1).to_string();
                 let mut body = vec![i18n.t_fmt(
                     "dialog.smart.overwrite_prompt",

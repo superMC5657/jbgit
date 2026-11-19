@@ -1,6 +1,13 @@
 use std::fs;
 use std::path::Path;
+use jbgit_core::{
+    BranchCategory, DiffContext, GitOp, OngoingKind, OngoingStep, PaneId, RefNameError, ResetMode,
+    RewritePlanError, StageNodeKind, TodoAction, validate_ref_name_typed,
+};
 use rustc_hash::FxHashMap;
+
+use crate::graph::GraphRendererMode;
+use crate::log_view::{DiffPreviewDock, FilterField, format_absolute_time};
 
 pub const EMBEDDED_ZH_CN: &str = include_str!("locales/zh-CN.toml");
 pub const EMBEDDED_EN_US: &str = include_str!("locales/en-US.toml");
@@ -100,6 +107,353 @@ impl I18n {
     pub fn no(&self) -> &str {
         self.t("common.no")
     }
+
+    pub fn on_off(&self, on: bool) -> &str {
+        if on {
+            self.t("common.on")
+        } else {
+            self.t("common.off")
+        }
+    }
+
+    pub fn pane_title(&self, pane: PaneId) -> &str {
+        match pane {
+            PaneId::CommitChangesTree => self.t("pane.commit_changes"),
+            PaneId::CommitMessageEditor => self.t("pane.commit_message"),
+            PaneId::CommitDiffPreview => self.t("pane.commit_diff"),
+            PaneId::LogBranchesTree => self.t("pane.log_branches"),
+            PaneId::LogCommitTable => self.t("pane.log_commits"),
+            PaneId::LogChangesTree => self.t("pane.log_changes"),
+            PaneId::LogDetailsDiff => self.t("pane.log_details"),
+            PaneId::StashList => self.t("pane.stash_list"),
+            PaneId::StashDiffPreview => self.t("pane.stash_diff"),
+            PaneId::ConsoleCommandList => self.t("pane.console_commands"),
+            PaneId::ConsoleOutputDetail => self.t("pane.console_output"),
+        }
+    }
+
+    pub fn stage_group_title(&self, kind: StageNodeKind) -> &str {
+        match kind {
+            StageNodeKind::Conflicted => self.t("view.commit.group.conflicted"),
+            StageNodeKind::Staged => self.t("view.commit.group.staged"),
+            StageNodeKind::Unstaged => self.t("view.commit.group.unstaged"),
+            StageNodeKind::Untracked => self.t("view.commit.group.untracked"),
+            StageNodeKind::Ignored => self.t("view.commit.group.ignored"),
+            StageNodeKind::AmendCommit => self.t("view.commit.amend_head"),
+        }
+    }
+
+    pub fn branch_category_title(&self, cat: BranchCategory) -> &str {
+        match cat {
+            BranchCategory::Local => self.t("view.branches.category.local"),
+            BranchCategory::Remote => self.t("view.branches.category.remote"),
+            BranchCategory::Tags => self.t("view.branches.category.tags"),
+        }
+    }
+
+    pub fn ongoing_title(&self, kind: OngoingKind) -> &str {
+        match kind {
+            OngoingKind::Rebase => self.t("ongoing.rebase"),
+            OngoingKind::Merge => self.t("ongoing.merge"),
+            OngoingKind::CherryPick => self.t("ongoing.cherry_pick"),
+            OngoingKind::Revert => self.t("ongoing.revert"),
+        }
+    }
+
+    pub fn reset_mode_label(&self, mode: ResetMode) -> &str {
+        match mode {
+            ResetMode::Soft => self.t("dialog.reset.mode.soft.label"),
+            ResetMode::Mixed => self.t("dialog.reset.mode.mixed.label"),
+            ResetMode::Hard => self.t("dialog.reset.mode.hard.label"),
+            ResetMode::Keep => self.t("dialog.reset.mode.keep.label"),
+        }
+    }
+
+    pub fn reset_mode_desc(&self, mode: ResetMode) -> &str {
+        match mode {
+            ResetMode::Soft => self.t("dialog.reset.mode.soft.desc"),
+            ResetMode::Mixed => self.t("dialog.reset.mode.mixed.desc"),
+            ResetMode::Hard => self.t("dialog.reset.mode.hard.desc"),
+            ResetMode::Keep => self.t("dialog.reset.mode.keep.desc"),
+        }
+    }
+
+    pub fn todo_action_label(&self, action: TodoAction) -> &str {
+        match action {
+            TodoAction::Pick => self.t("dialog.rebase.action.pick"),
+            TodoAction::Reword => self.t("dialog.rebase.action.reword"),
+            TodoAction::Squash => self.t("dialog.rebase.action.squash"),
+            TodoAction::Fixup => self.t("dialog.rebase.action.fixup"),
+            TodoAction::Drop => self.t("dialog.rebase.action.drop"),
+        }
+    }
+
+    pub fn diff_context_label(&self, ctx: DiffContext) -> &str {
+        match ctx {
+            DiffContext::Three => "3",
+            DiffContext::Ten => "10",
+            DiffContext::Full => self.t("diff.context.full"),
+        }
+    }
+
+    pub fn diff_dock_label(&self, dock: DiffPreviewDock) -> &str {
+        match dock {
+            DiffPreviewDock::Details => self.t("diff.dock.details"),
+            DiffPreviewDock::Right => self.t("diff.dock.right"),
+            DiffPreviewDock::Bottom => self.t("diff.dock.bottom"),
+        }
+    }
+
+    pub fn graph_renderer_label(&self, mode: GraphRendererMode) -> &str {
+        match mode {
+            GraphRendererMode::Auto => self.t("presentation.renderer_auto"),
+            GraphRendererMode::Vector => self.t("presentation.renderer_vector"),
+            GraphRendererMode::CharacterGrid => self.t("presentation.renderer_cell"),
+        }
+    }
+
+    pub fn filter_field_title(&self, field: FilterField) -> &str {
+        match field {
+            FilterField::Branch => self.t("filter.branch.title"),
+            FilterField::User => self.t("filter.user.title"),
+            FilterField::Date => self.t("filter.date.title"),
+            FilterField::Paths => self.t("filter.paths.title"),
+        }
+    }
+
+    pub fn filter_field_hint(&self, field: FilterField) -> &str {
+        match field {
+            FilterField::Branch => self.t("filter.branch.hint"),
+            FilterField::User => self.t("filter.user.hint"),
+            FilterField::Date => self.t("filter.date.hint"),
+            FilterField::Paths => self.t("filter.paths.hint"),
+        }
+    }
+
+    pub fn format_date_filter_label(&self, raw: &str) -> String {
+        match raw {
+            "Today" => self.t("filter.date_today").to_string(),
+            "Yesterday" => self.t("filter.date_yesterday").to_string(),
+            "Last 7 Days" => self.t("filter.date_last_7").to_string(),
+            "Last 30 Days" => self.t("filter.date_last_30").to_string(),
+            other => {
+                if let Some(n) = other
+                    .strip_prefix("Last ")
+                    .and_then(|s| s.strip_suffix(" Days"))
+                {
+                    self.t_fmt("filter.date_last_n", &[("n", n)])
+                } else {
+                    other.to_string()
+                }
+            }
+        }
+    }
+
+    pub fn format_relative_time(&self, ts: i64, now: i64) -> String {
+        let delta = now - ts;
+        if delta < 0 {
+            return format_absolute_time(ts, false);
+        }
+        match delta {
+            0..60 => self.t("time.just_now").to_string(),
+            60..3_600 => self.t_fmt("time.minutes_ago", &[("n", &(delta / 60).to_string())]),
+            3_600..86_400 => self.t_fmt("time.hours_ago", &[("n", &(delta / 3_600).to_string())]),
+            86_400..172_800 => self.t("time.yesterday").to_string(),
+            172_800..604_800 => {
+                self.t_fmt("time.days_ago", &[("n", &(delta / 86_400).to_string())])
+            }
+            _ => format_absolute_time(ts, false),
+        }
+    }
+
+    pub fn validate_ref_name(&self, name: &str, existing: &[&str], what_key: &str) -> Result<(), String> {
+        let what = match what_key {
+            "Branch" | "branch" | "validation.what.branch" => self.t("validation.what.branch"),
+            "Tag" | "tag" | "validation.what.tag" => self.t("validation.what.tag"),
+            other => other,
+        };
+        let what_lower = what.to_ascii_lowercase();
+        validate_ref_name_typed(name, existing).map_err(|err| match err {
+            RefNameError::Empty => self.t_fmt("validation.empty", &[("what", what)]),
+            RefNameError::StartsWithDash => {
+                self.t_fmt("validation.starts_with_dash", &[("what", what)])
+            }
+            RefNameError::ContainsSpaces => self.t_fmt("validation.spaces", &[("what", what)]),
+            RefNameError::ContainsDoubleDot => {
+                self.t_fmt("validation.double_dot", &[("what", what)])
+            }
+            RefNameError::ContainsAtBrace => self.t_fmt("validation.at_brace", &[("what", what)]),
+            RefNameError::InvalidChar(ch) => {
+                let c_s = ch.to_string();
+                self.t_fmt("validation.bad_char", &[("what", what), ("ch", &c_s)])
+            }
+            RefNameError::EmptyPathComponent => {
+                self.t_fmt("validation.empty_component", &[("what", what)])
+            }
+            RefNameError::EndsWithDot => self.t_fmt("validation.ends_with_dot", &[("what", what)]),
+            RefNameError::ComponentStartsWithDot(comp) => {
+                self.t_fmt("validation.comp_dot", &[("comp", &comp)])
+            }
+            RefNameError::ComponentEndsWithLock(comp) => {
+                self.t_fmt("validation.comp_lock", &[("comp", &comp)])
+            }
+            RefNameError::ReservedHead => {
+                self.t_fmt("validation.head_reserved", &[("what", &what_lower)])
+            }
+            RefNameError::AlreadyExists(n) => {
+                self.t_fmt("validation.exists", &[("what", what), ("name", &n)])
+            }
+            RefNameError::ConflictsWithExisting(conflict) => {
+                self.t_fmt("validation.conflicts", &[("what", what), ("conflict", &conflict)])
+            }
+        })
+    }
+
+    pub fn rewrite_plan_error(&self, err: &RewritePlanError, verb_key: &str) -> String {
+        let verb = match verb_key {
+            "reword" => self.t("rewrite.verb.reword"),
+            "fixup" => self.t("rewrite.verb.fixup"),
+            "rebase" => self.t("rewrite.verb.rebase"),
+            "squash" => self.t("rewrite.verb.squash"),
+            "drop" => self.t("rewrite.verb.drop"),
+            other => other,
+        };
+        match err {
+            RewritePlanError::NoCommits => self.t("rewrite.err_no_commits").to_string(),
+            RewritePlanError::NotReachable => {
+                self.t_fmt("rewrite.err_not_reachable", &[("verb", verb)])
+            }
+            RewritePlanError::ContainsMergeCommits => {
+                self.t_fmt("rewrite.err_merge_commits", &[("verb", verb)])
+            }
+            RewritePlanError::ProtectedBranch(branch) => {
+                self.t_fmt("rewrite.err_protected", &[("verb", verb), ("branch", branch)])
+            }
+        }
+    }
+
+    pub fn git_op_label(&self, op: &GitOp) -> String {
+        match op {
+            GitOp::Checkout { target, .. } => {
+                self.t_fmt("git_op.checkout", &[("target", target)])
+            }
+            GitOp::ForceCheckout { target } => {
+                self.t_fmt("git_op.force_checkout", &[("target", target)])
+            }
+            GitOp::CheckoutNewBranch { name, .. } => {
+                self.t_fmt("git_op.checkout_new_branch", &[("name", name)])
+            }
+            GitOp::CheckoutResetBranch { name, .. } => {
+                self.t_fmt("git_op.checkout_reset_branch", &[("name", name)])
+            }
+            GitOp::CreateBranch { name, .. } => {
+                self.t_fmt("git_op.create_branch", &[("name", name)])
+            }
+            GitOp::RenameBranch { old, new } => {
+                self.t_fmt("git_op.rename_branch", &[("old", old), ("new", new)])
+            }
+            GitOp::DeleteBranch { name, .. } => {
+                self.t_fmt("git_op.delete_branch", &[("name", name)])
+            }
+            GitOp::RestoreBranch { name, .. } => {
+                self.t_fmt("git_op.restore_branch", &[("name", name)])
+            }
+            GitOp::DeleteRemoteBranch { remote, branch } => self.t_fmt(
+                "git_op.delete_remote_branch",
+                &[("remote", remote), ("branch", branch)],
+            ),
+            GitOp::CreateTag { name, .. } => self.t_fmt("git_op.create_tag", &[("name", name)]),
+            GitOp::Merge { rev } => self.t_fmt("git_op.merge", &[("rev", rev)]),
+            GitOp::Rebase { onto, branch } => match branch {
+                Some(b) => self.t_fmt("git_op.rebase_branch", &[("branch", b), ("onto", onto)]),
+                None => self.t_fmt("git_op.rebase_onto", &[("onto", onto)]),
+            },
+            GitOp::CherryPick { oids } => {
+                let c = oids.len().to_string();
+                self.t_fmt("git_op.cherry_pick", &[("count", &c)])
+            }
+            GitOp::Revert { oids } => {
+                let c = oids.len().to_string();
+                self.t_fmt("git_op.revert", &[("count", &c)])
+            }
+            GitOp::Reset { mode, target } => {
+                let mode_lbl = self.reset_mode_label(*mode);
+                let short = target.short();
+                self.t_fmt("git_op.reset", &[("mode", mode_lbl), ("short", &short)])
+            }
+            GitOp::Fetch => self.t("git_op.fetch").to_string(),
+            GitOp::Pull { rebase } => {
+                if *rebase {
+                    self.t("git_op.pull_rebase").to_string()
+                } else {
+                    self.t("git_op.pull").to_string()
+                }
+            }
+            GitOp::Push { branch, .. } => self.t_fmt("git_op.push", &[("branch", branch)]),
+            GitOp::UpdateBranch { branch, .. } => {
+                self.t_fmt("git_op.update_branch", &[("branch", branch)])
+            }
+            GitOp::RewordHead { .. } => self.t("git_op.reword_head").to_string(),
+            GitOp::RewriteHistory { todo, .. } => {
+                let c = todo.len().to_string();
+                self.t_fmt("git_op.rewrite_history", &[("count", &c)])
+            }
+            GitOp::FixupCommit { target, .. } => {
+                let short = target.short();
+                self.t_fmt("git_op.fixup_commit", &[("short", &short)])
+            }
+            GitOp::Ongoing { kind, step } => {
+                let k = self.ongoing_title(*kind);
+                let key = match step {
+                    OngoingStep::Continue => "git_op.ongoing_continue",
+                    OngoingStep::Skip => "git_op.ongoing_skip",
+                    OngoingStep::Abort => "git_op.ongoing_abort",
+                };
+                self.t_fmt(key, &[("kind", k)])
+            }
+            GitOp::StashPush { .. } => self.t("git_op.stash_push").to_string(),
+            GitOp::StashApply { index, pop } => {
+                let idx_s = index.to_string();
+                self.t_fmt(
+                    if *pop {
+                        "git_op.stash_pop"
+                    } else {
+                        "git_op.stash_apply"
+                    },
+                    &[("index", &idx_s)],
+                )
+            }
+            GitOp::StashDrop { index } => {
+                let idx_s = index.to_string();
+                self.t_fmt("git_op.stash_drop", &[("index", &idx_s)])
+            }
+            GitOp::StashClear => self.t("git_op.stash_clear").to_string(),
+            GitOp::StashBranch { name, .. } => self.t_fmt("git_op.stash_branch", &[("name", name)]),
+            GitOp::AcceptSide { ours, .. } => {
+                if *ours {
+                    self.t("git_op.accept_yours").to_string()
+                } else {
+                    self.t("git_op.accept_theirs").to_string()
+                }
+            }
+            GitOp::IntentToAdd { .. } => self.t("git_op.intent_to_add").to_string(),
+            GitOp::AddToIgnore { .. } => self.t("git_op.add_to_ignore").to_string(),
+            GitOp::DeleteFiles { paths } => {
+                let c = paths.len().to_string();
+                self.t_fmt("git_op.delete_files", &[("count", &c)])
+            }
+            GitOp::CreatePatchFiles { .. } => self.t("git_op.create_patch").to_string(),
+            GitOp::PatchToClipboard { .. } => self.t("git_op.patch_to_clipboard").to_string(),
+            GitOp::Smart(inner) => {
+                let inner_lbl = self.git_op_label(inner);
+                self.t_fmt("git_op.smart", &[("label", &inner_lbl)])
+            }
+        }
+    }
+
+    pub fn load_for_cli() -> Self {
+        Self::load(&detect_system_language(), None)
+    }
 }
 
 fn normalize_lang_code(code: &str) -> String {
@@ -190,7 +544,7 @@ mod tests {
         let i18n = I18n::load("zh-CN", None);
         assert_eq!(i18n.t("common.ok"), "确定");
         assert_eq!(i18n.t("common.cancel"), "取消");
-        assert_eq!(i18n.t("menu.branch.checkout"), "检出 (Checkout)");
+        assert_eq!(i18n.t("menu.branch.checkout"), "检出");
         let formatted = i18n.t_fmt("menu.branch.already_checked_out", &[("name", "main")]);
         assert_eq!(formatted, "'main' 当前已检出");
     }
@@ -265,11 +619,59 @@ custom_extra = "自定义内容"
         let items = crate::menus::branch_menu_items(&state, "特性/分支-1", jbgit_core::RefKind::LocalBranch);
         let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
 
-        assert!(labels.contains(&"检出 (Checkout)"));
+        assert!(labels.contains(&"检出"));
         assert!(labels.iter().any(|l| l.contains("特性/分支-1")));
         assert!(labels.iter().any(|l| l.contains("与 'main' 对比")));
         assert!(labels.contains(&"与工作区对比差异"));
-        assert!(labels.contains(&"删除 (Delete)"));
+        assert!(labels.contains(&"删除"));
+    }
+
+    #[test]
+    fn test_locale_key_parity() {
+        let en = parse_and_flatten_toml(EMBEDDED_EN_US);
+        let zh = parse_and_flatten_toml(EMBEDDED_ZH_CN);
+        assert!(!en.is_empty());
+        let missing_in_zh: Vec<&String> = en.keys().filter(|k| !zh.contains_key(*k)).collect();
+        let extra_in_zh: Vec<&String> = zh.keys().filter(|k| !en.contains_key(*k)).collect();
+        assert!(
+            missing_in_zh.is_empty(),
+            "Keys missing in zh-CN.toml: {missing_in_zh:?}"
+        );
+        assert!(
+            extra_in_zh.is_empty(),
+            "Keys missing in en-US.toml: {extra_in_zh:?}"
+        );
+    }
+
+    #[test]
+    fn test_zh_cn_ui_helpers_and_ops() {
+        let zh = I18n::load("zh-CN", None);
+        assert_eq!(zh.pane_title(PaneId::LogBranchesTree), "分支");
+        assert_eq!(zh.stage_group_title(StageNodeKind::Conflicted), "合并冲突");
+        assert_eq!(zh.stage_group_title(StageNodeKind::Staged), "已暂存");
+        assert_eq!(zh.diff_context_label(DiffContext::Full), "全量");
+        assert_eq!(zh.diff_dock_label(DiffPreviewDock::Bottom), "底部栏");
+        assert_eq!(zh.format_relative_time(1000, 1010), "刚刚");
+        assert_eq!(zh.format_relative_time(1000, 1000 + 5 * 60), "5分钟前");
+        assert_eq!(
+            zh.git_op_label(&GitOp::Checkout {
+                target: "main".into(),
+                detach: false,
+            }),
+            "检出 'main'"
+        );
+        assert_eq!(
+            zh.git_op_label(&GitOp::Pull { rebase: true }),
+            "拉取更新 (变基)"
+        );
+        assert_eq!(
+            zh.rewrite_plan_error(&RewritePlanError::NoCommits, "reword"),
+            "暂无任何提交"
+        );
+        assert_eq!(
+            zh.validate_ref_name("HEAD", &[], "branch"),
+            Err("'HEAD' 不能用作分支名称".into())
+        );
     }
 
     #[test]

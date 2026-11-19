@@ -39,15 +39,19 @@ pub fn render_app(frame: &mut Frame<'_>, state: &mut AppState) {
     );
 
     if area.width < 40 || area.height < 10 {
+        let w_s = area.width.to_string();
+        let h_s = area.height.to_string();
         let msg = Paragraph::new(vec![
             Line::from(Span::styled(
-                "Terminal too small",
+                state.i18n.t("view.common.terminal_too_small"),
                 Style::default()
                     .fg(state.theme.fg_bright)
                     .add_modifier(Modifier::BOLD),
             )),
             Line::from(Span::styled(
-                format!("Current: {}x{} (min 60x16)", area.width, area.height),
+                state
+                    .i18n
+                    .t_fmt("view.common.terminal_size", &[("w", &w_s), ("h", &h_s)]),
                 Style::default().fg(state.theme.fg_muted),
             )),
         ])
@@ -229,7 +233,7 @@ pub fn render_pane_frame(
             Style::default().fg(bar_fg),
         ),
         Span::styled(
-            pane.label(),
+            ctx.pane_title(pane),
             Style::default().fg(title_fg).add_modifier(if is_focused {
                 Modifier::BOLD
             } else {

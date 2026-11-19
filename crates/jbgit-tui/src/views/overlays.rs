@@ -38,7 +38,7 @@ pub fn render_hover_tooltip(
         } => {
             let g = ctx.glyph_mode.symbols();
             (
-                " Detached HEAD ",
+                ctx.t("tooltip.detached_title"),
                 ctx.theme.ref_detached.icon,
                 vec![
                     Line::from(vec![
@@ -47,12 +47,12 @@ pub fn render_hover_tooltip(
                             Style::default().fg(ctx.theme.ref_detached.icon),
                         ),
                         Span::styled(
-                            "HEAD points directly to a commit (not a branch).",
+                            ctx.t("tooltip.detached_line1").to_string(),
                             Style::default().fg(ctx.theme.ref_detached.pill_fg),
                         ),
                     ]),
                     Line::from(Span::styled(
-                        " New commits will not belong to any branch until checked out.",
+                        ctx.t("tooltip.detached_line2").to_string(),
                         Style::default().fg(ctx.theme.fg_muted),
                     )),
                 ],
@@ -99,11 +99,11 @@ pub fn render_hover_tooltip(
                 }
             }
             ref_lines.push(Line::from(Span::styled(
-                " Right-click +N for actions",
+                ctx.t("tooltip.overflow_hint").to_string(),
                 Style::default().fg(ctx.theme.fg_muted),
             )));
             (
-                " All Commit References ",
+                ctx.t("tooltip.overflow_title"),
                 ctx.theme.border_focused,
                 ref_lines,
             )
@@ -341,9 +341,12 @@ fn render_floating_popup(
                 format!(" {t} ")
             }
         }
-        PopupKind::BranchesQuickView => " Git Branches (Type to filter, Esc to close) ".to_string(),
-        PopupKind::PalettePreview => " Darcula Palette Preview ".to_string(),
-        PopupKind::FilterEditor(field) => ctx.t_fmt("popup.filter_by", &[("field", field.title())]),
+        PopupKind::BranchesQuickView => format!(" {} ", ctx.t("view.branches_popup.title")),
+        PopupKind::PalettePreview => ctx.t("popup.palette_title").to_string(),
+        PopupKind::FilterEditor(field) => {
+            let field_name = ctx.i18n.map_or(field.title(), |i| i.filter_field_title(field));
+            ctx.t_fmt("popup.filter_by", &[("field", field_name)])
+        }
         PopupKind::GoToRevision => ctx.t("popup.goto_title").to_string(),
         PopupKind::ChooseParent => ctx.t("popup.choose_parent_title").to_string(),
         PopupKind::CommitHistory => ctx.t("popup.commit_history_title").to_string(),
@@ -389,11 +392,9 @@ fn render_floating_popup(
             };
 
             let add_row = |lines: &mut Vec<Line<'_>>, key_str: String, desc: String| {
+                let padded = format!(" {key_str}{}", " ".repeat(22usize.saturating_sub(key_str.width())));
                 lines.push(Line::from(vec![
-                    Span::styled(
-                        format!(" {key_str:<22}"),
-                        Style::default().fg(ctx.theme.fg_bright),
-                    ),
+                    Span::styled(padded, Style::default().fg(ctx.theme.fg_bright)),
                     Span::styled(desc, Style::default().fg(ctx.theme.fg_primary)),
                 ]));
             };
@@ -457,28 +458,25 @@ fn render_floating_popup(
                 );
                 add_row(
                     &mut lines,
-                    "Mouse drag │ / ─".to_string(),
+                    ctx.t("help.mouse_drag_key").to_string(),
                     ctx.t("help.mouse_drag").to_string(),
                 );
                 add_row(
                     &mut lines,
-                    "Right click".to_string(),
+                    ctx.t("help.right_click_key").to_string(),
                     ctx.t("help.right_click").to_string(),
                 );
             } else {
-                const HELP: &[(&str, &str)] = &[
-                    ("1 / 2 / 3 / 4", "Switch Commit / Log / Stash / Console"),
-                    (
-                        "Tab / Shift+Tab",
-                        "Cycle Branches → Commits → Changes → Details",
-                    ),
-                    ("Mouse drag │ / ─", "Resize splitters (double-click resets)"),
-                    ("Right click", "Pre-select item & open context menu"),
-                    ("r / p", "Refresh snapshot / Run git status probe"),
-                    ("F12", "Toggle Unicode / NerdFont glyphs"),
-                    ("q / Ctrl+C", "Quit"),
+                let help_rows = [
+                    ("1 / 2 / 3 / 4", ctx.t("help.fallback.tabs")),
+                    ("Tab / Shift+Tab", ctx.t("help.fallback.focus")),
+                    (ctx.t("help.mouse_drag_key"), ctx.t("help.fallback.drag")),
+                    (ctx.t("help.right_click_key"), ctx.t("help.fallback.right_click")),
+                    ("r / p", ctx.t("help.fallback.refresh")),
+                    ("F12", ctx.t("help.fallback.glyphs")),
+                    ("q / Ctrl+C", ctx.t("help.fallback.quit")),
                 ];
-                for (k, v) in HELP {
+                for (k, v) in help_rows {
                     add_row(&mut lines, k.to_string(), v.to_string());
                 }
             }
@@ -496,11 +494,14 @@ fn render_floating_popup(
                     ),
                 ]),
                 Line::from(Span::styled(
-                    format!(" {}", field.hint()),
+                    format!(
+                        " {}",
+                        ctx.i18n.map_or(field.hint(), |i| i.filter_field_hint(field))
+                    ),
                     Style::default().fg(ctx.theme.fg_muted),
                 )),
                 Line::from(Span::styled(
-                    " Enter apply · Tab complete · ↑↓ pick · empty = all · Esc cancel",
+                    ctx.t("filter.editor_hint").to_string(),
                     Style::default().fg(ctx.theme.fg_muted),
                 )),
             ];
@@ -586,7 +587,7 @@ fn render_floating_popup(
                         .iter()
                         .find(|c| c.oid == *poid)
                         .map(|c| c.subject.as_str())
-                        .unwrap_or("(commit outside loaded snapshot)");
+                        .unwrap_or_else(|| ctx.t("popup.choose_parent_outside"));
                     let bg = if idx == sel {
                         ctx.theme.bg_selection_focused
                     } else {
@@ -608,7 +609,7 @@ fn render_floating_popup(
             }
             if lines.is_empty() {
                 lines.push(Line::from(Span::styled(
-                    " No parent commits",
+                    ctx.t("popup.choose_parent_none").to_string(),
                     Style::default().fg(ctx.theme.fg_muted),
                 )));
             }
@@ -624,7 +625,10 @@ fn render_floating_popup(
                 .filter(|(_, m)| q_low.is_empty() || m.to_ascii_lowercase().contains(&q_low))
                 .collect();
             let mut lines = vec![Line::from(vec![
-                Span::styled(" Filter: ", Style::default().fg(ctx.theme.fg_muted)),
+                Span::styled(
+                    ctx.t("popup.commit_history_filter").to_string(),
+                    Style::default().fg(ctx.theme.fg_muted),
+                ),
                 Span::styled(
                     format!("{query}▏"),
                     Style::default().fg(ctx.theme.fg_bright),
@@ -710,7 +714,7 @@ fn render_floating_popup(
                     )));
                     if rows.is_empty() {
                         lines.push(Line::from(Span::styled(
-                            "   (empty)",
+                            ctx.t("popup.three_way_empty").to_string(),
                             Style::default().fg(ctx.theme.fg_muted),
                         )));
                     } else {
@@ -733,21 +737,21 @@ fn render_floating_popup(
                     }
                 };
                 push_section(
-                    "Worktree (Unstaged)",
+                    ctx.t("popup.three_way_worktree"),
                     ctx.theme.status_added,
                     ctx.theme.diff_add_word_bg,
                     &local_rows,
                     &local_word_ranges,
                 );
                 push_section(
-                    "Staged (Index)",
+                    ctx.t("popup.three_way_staged"),
                     ctx.theme.status_modified,
                     ctx.theme.diff_mod_bg,
                     &staged_rows,
                     &staged_word_ranges,
                 );
                 push_section(
-                    "HEAD (Base)",
+                    ctx.t("popup.three_way_head"),
                     ctx.theme.fg_muted,
                     ctx.theme.diff_del_word_bg,
                     &vcs_rows,
@@ -755,7 +759,7 @@ fn render_floating_popup(
                 );
             } else {
                 lines.push(Line::from(Span::styled(
-                    " Move cursor onto a changed line to inspect HEAD / Staged / Worktree",
+                    ctx.t("popup.three_way_hint").to_string(),
                     Style::default().fg(ctx.theme.fg_muted),
                 )));
             }
@@ -765,7 +769,7 @@ fn render_floating_popup(
             let msg = state
                 .hook_error_output
                 .as_deref()
-                .unwrap_or("Commit failed");
+                .unwrap_or_else(|| ctx.t("popup.hook_error_fallback"));
             let mut lines: Vec<Line<'_>> = msg
                 .lines()
                 .map(|l| {

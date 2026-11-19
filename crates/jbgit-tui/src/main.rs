@@ -46,14 +46,15 @@ async fn main() -> Result<()> {
     let mut target_path = PathBuf::from(".");
 
     if let Some(arg) = args.next() {
+        let cli_i18n = crate::i18n::I18n::load_for_cli();
         if arg == "-h" || arg == "--help" {
-            println!("jbgit - JetBrains-style Terminal Git Client");
-            println!("Usage: jbgit [options] [path]");
+            println!("{}", cli_i18n.t("cli.tagline"));
+            println!("{}", cli_i18n.t("cli.usage"));
             println!();
-            println!("Options:");
-            println!("  -h, --help                     Show this help message");
-            println!("  --print-default-config [NAME]  Print default config (jbgit, theme, keymap)");
-            println!("  --init-config                  Generate initial config files in config directory");
+            println!("{}", cli_i18n.t("cli.options"));
+            println!("{}", cli_i18n.t("cli.opt_help"));
+            println!("{}", cli_i18n.t("cli.opt_print_default"));
+            println!("{}", cli_i18n.t("cli.opt_init_config"));
             return Ok(());
         }
         if arg == "--print-default-config" {
@@ -63,14 +64,21 @@ async fn main() -> Result<()> {
         }
         if arg == "--init-config" {
             match crate::config::AppConfig::init_config(None, false) {
-                Ok(dir) => println!("Configuration files generated successfully at: {:?}", dir),
-                Err(e) => eprintln!("Error initializing configuration: {e}"),
+                Ok(dir) => println!(
+                    "{}",
+                    cli_i18n.t_fmt("cli.init_ok", &[("dir", &format!("{dir:?}"))])
+                ),
+                Err(e) => eprintln!(
+                    "{}",
+                    cli_i18n.t_fmt("cli.init_err", &[("err", &e.to_string())])
+                ),
             }
             return Ok(());
         }
         target_path = PathBuf::from(arg);
     }
 
+    let cli_i18n = crate::i18n::I18n::load_for_cli();
     let (engine_handle, mut engine_rx, mut state) = match RepoLocation::discover(&target_path) {
         Ok(loc) => {
             let workdir = loc.workdir.clone();
@@ -82,7 +90,10 @@ async fn main() -> Result<()> {
                 Err(e) => (
                     None,
                     None,
-                    AppState::new(target_path, Some(format!("Engine error: {e}"))),
+                    AppState::new(
+                        target_path,
+                        Some(cli_i18n.t_fmt("cli.engine_err", &[("err", &e.to_string())])),
+                    ),
                 ),
             }
         }
@@ -866,6 +877,7 @@ mod tests {
             }],
         }));
 
+        state.i18n = Arc::new(crate::i18n::I18n::load("en-US", None));
         let backend = TestBackend::new(100, 24);
         let mut terminal = Terminal::new(backend).unwrap();
         terminal.draw(|f| render_app(f, &mut state)).unwrap();
@@ -1396,7 +1408,8 @@ mod tests {
         )));
         assert!(matches!(
             state.modal_stack.last(),
-            Some(crate::app::ModalLayer::CriticalDialog { title, .. }) if title == "Confirm Push"
+            Some(crate::app::ModalLayer::CriticalDialog { title, .. })
+                if title == state.i18n.t("dialog.push.confirm_title")
         ));
     }
 }

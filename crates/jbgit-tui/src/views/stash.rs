@@ -12,7 +12,6 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::app::{AppState, RenderContext};
 use crate::hit_test::{HitTarget, StashButton};
-use crate::log_view::format_relative_time;
 use crate::views::log_details::{DiffHost, render_changes_browser, render_diff_preview};
 use crate::views::{
     fit_left_right_spans, list_viewport, render_pane_frame, render_splitter_divider,
@@ -156,7 +155,7 @@ fn render_stash_list(
             ),
         ];
         let right = vec![Span::styled(
-            format_relative_time(s.timestamp, now),
+            state.i18n.format_relative_time(s.timestamp, now),
             Style::default().fg(ctx.theme.fg_muted),
         )];
         frame.render_widget(
@@ -215,8 +214,8 @@ fn render_stash_preview(
         .stash
         .details
         .selected_change()
-        .map(|c| format!("Diff · {}", c.path))
-        .unwrap_or_else(|| "Diff Preview".to_string());
+        .map(|c| state.i18n.t_fmt("view.log_details.diff_file", &[("path", &c.path)]))
+        .unwrap_or_else(|| state.i18n.t("view.log_details.diff_preview").to_string());
     let diff_body = render_pane_frame(frame, chunks[1], PaneId::StashDiffPreview, &diff_sub, ctx);
     render_diff_preview(
         frame,

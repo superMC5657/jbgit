@@ -1147,11 +1147,12 @@ fn build_menu_for(
                 }
                 _ => Vec::new(),
             };
+            let i18n = &state.i18n;
             items.push(ContextMenuItem::action(
                 if is_leaf {
-                    format!("Show only {branch_name} in Log")
+                    i18n.t_fmt("menu.branch.show_only_branch", &[("name", &branch_name)])
                 } else {
-                    "Show only these branches in Log".to_string()
+                    i18n.t("menu.branch.show_only_branches").to_string()
                 },
                 Some('f'),
                 Some("Enter"),
@@ -1159,23 +1160,23 @@ fn build_menu_for(
             ));
             if is_leaf {
                 items.push(ContextMenuItem::action(
-                    "Navigate Log to Branch Tip",
+                    i18n.t("menu.branch.navigate_to_tip"),
                     Some('n'),
                     Some("J"),
                     ContextMenuAction::BranchesNavigate,
                 ));
                 items.push(ContextMenuItem::action(
                     if node.is_some_and(|n| n.is_favorite) {
-                        "Unmark as Favorite"
+                        i18n.t("menu.branch.unmark_favorite")
                     } else {
-                        "Mark as Favorite"
+                        i18n.t("menu.branch.mark_favorite")
                     },
                     Some('m'),
                     Some("Space"),
                     ContextMenuAction::BranchesToggleFavorite,
                 ));
                 items.push(ContextMenuItem::action(
-                    format!("Log {branch_name}"),
+                    i18n.t_fmt("menu.branch.log_branch", &[("name", &branch_name)]),
                     Some('l'),
                     None,
                     ContextMenuAction::RunReadOnlyProbe(vec![
@@ -1188,28 +1189,34 @@ fn build_menu_for(
                 ));
             }
             items.push(ContextMenuItem::submenu(
-                "Branches View Options",
+                i18n.t("menu.branch.view_options"),
                 Some('o'),
                 vec![
                     ContextMenuItem::action(
                         format!(
-                            "{} Group by Directory",
-                            check(settings.options.group_by_directory)
+                            "{} {}",
+                            check(settings.options.group_by_directory),
+                            i18n.t("menu.branch.opt_group_by_dir")
                         ),
                         Some('d'),
                         None,
                         ContextMenuAction::BranchesToggleGroupByDir,
                     ),
                     ContextMenuItem::action(
-                        format!("{} Show Tags", check(settings.options.show_tags)),
+                        format!(
+                            "{} {}",
+                            check(settings.options.show_tags),
+                            i18n.t("menu.branch.opt_show_tags")
+                        ),
                         Some('t'),
                         None,
                         ContextMenuAction::BranchesToggleShowTags,
                     ),
                     ContextMenuItem::action(
                         format!(
-                            "{} Navigate Log to Branch on Selection",
-                            check(settings.navigate_on_select)
+                            "{} {}",
+                            check(settings.navigate_on_select),
+                            i18n.t("menu.branch.opt_nav_on_select")
                         ),
                         Some('n'),
                         None,
@@ -1218,7 +1225,7 @@ fn build_menu_for(
                 ],
             ));
             items.push(ContextMenuItem::action(
-                "Refresh Repository",
+                i18n.t("menu.branch.refresh_repo"),
                 Some('r'),
                 Some("r"),
                 ContextMenuAction::RefreshRepo,
@@ -1228,9 +1235,9 @@ fn build_menu_for(
         HitTarget::ChangesTreeNode { node_id, .. } => {
             let mut items = stage_tree_context_menu_items(state, node_id.0 as usize, actions);
             items.push(ContextMenuItem::submenu(
-                "Git Probes",
+                state.i18n.t("menu.stage.git_probes"),
                 Some('p'),
-                probe_submenu_items(),
+                probe_submenu_items(&state.i18n),
             ));
             items
         }
@@ -1239,17 +1246,17 @@ fn build_menu_for(
                 actions.push(Action::FocusPane(PaneId::ConsoleCommandList));
                 actions.push(Action::SelectConsoleRow(*idx));
             }
-            probe_submenu_items()
+            probe_submenu_items(&state.i18n)
         }
         _ => return None,
     };
     Some(items)
 }
 
-fn probe_submenu_items() -> Vec<ContextMenuItem> {
+fn probe_submenu_items(i18n: &crate::i18n::I18n) -> Vec<ContextMenuItem> {
     vec![
         ContextMenuItem::action(
-            "Run git status --short --branch",
+            i18n.t("menu.stage.probe_status"),
             Some('s'),
             Some("p"),
             ContextMenuAction::RunReadOnlyProbe(vec![
@@ -1259,13 +1266,13 @@ fn probe_submenu_items() -> Vec<ContextMenuItem> {
             ]),
         ),
         ContextMenuItem::action(
-            "Run git branch -vv",
+            i18n.t("menu.stage.probe_branch"),
             Some('b'),
             None,
             ContextMenuAction::RunReadOnlyProbe(vec!["branch".into(), "-vv".into()]),
         ),
         ContextMenuItem::action(
-            "Run git log -n 10 --oneline",
+            i18n.t("menu.stage.probe_log"),
             Some('l'),
             None,
             ContextMenuAction::RunReadOnlyProbe(vec![
@@ -1316,10 +1323,11 @@ pub fn presentation_menu_items(state: &AppState) -> Vec<ContextMenuItem> {
     let check = |on: bool| if on { "✓" } else { " " };
     let p = &state.presentation;
     let o = &state.log_graph.options;
+    let i18n = &state.i18n;
     let item =
-        |on: bool, label: &str, mnemonic: char, shortcut: Option<&str>, t: PresentationToggle| {
+        |on: bool, key: &str, mnemonic: char, shortcut: Option<&str>, t: PresentationToggle| {
             ContextMenuItem::action(
-                format!("{} {label}", check(on)),
+                format!("{} {}", check(on), i18n.t(key)),
                 Some(mnemonic),
                 shortcut,
                 ContextMenuAction::TogglePresentation(t),
@@ -1328,84 +1336,87 @@ pub fn presentation_menu_items(state: &AppState) -> Vec<ContextMenuItem> {
     vec![
         item(
             state.compact_refs,
-            "Compact References View",
+            "presentation.compact_refs",
             'c',
             Some("c"),
             PresentationToggle::CompactRefs,
         ),
         item(
             state.show_tag_names,
-            "Show Tag Names",
+            "presentation.show_tag_names",
             't',
             Some("t"),
             PresentationToggle::ShowTagNames,
         ),
         item(
             o.show_long_edges,
-            "Show Long Edges",
+            "presentation.show_long_edges",
             'l',
             None,
             PresentationToggle::ShowLongEdges,
         ),
         item(
             o.sort_type == SortType::IntelliSort,
-            "IntelliSort (Bek)",
+            "presentation.intelli_sort",
             'i',
             None,
             PresentationToggle::IntelliSort,
         ),
         item(
             o.first_parent_only,
-            "First Parent Only",
+            "presentation.first_parent_only",
             'f',
             None,
             PresentationToggle::FirstParentOnly,
         ),
         item(
             p.highlight_current_branch,
-            "Highlight: Current Branch",
+            "presentation.highlight_current_branch",
             'b',
             None,
             PresentationToggle::HighlightCurrentBranch,
         ),
         item(
             p.highlight_merges,
-            "Highlight: Merge Commits",
+            "presentation.highlight_merges",
             'm',
             None,
             PresentationToggle::HighlightMerges,
         ),
         item(
             p.show_hash_column,
-            "Show Hash Column",
+            "presentation.show_hash_column",
             'h',
             None,
             PresentationToggle::ShowHashColumn,
         ),
         item(
             p.relative_dates,
-            "Relative Dates",
+            "presentation.relative_dates",
             'r',
             None,
             PresentationToggle::RelativeDates,
         ),
         item(
             p.use_author_date,
-            "Use Author Date",
+            "presentation.use_author_date",
             'u',
             None,
             PresentationToggle::UseAuthorDate,
         ),
         ContextMenuItem::separator(),
         ContextMenuItem::submenu(
-            format!("Graph Renderer: {}", state.graph_renderer.mode().label()),
+            i18n.t_fmt(
+                "presentation.graph_renderer",
+                &[("mode", i18n.graph_renderer_label(state.graph_renderer.mode()))],
+            ),
             Some('g'),
             GraphRendererMode::ALL
                 .into_iter()
                 .map(|mode| {
                     let on = state.graph_renderer.mode() == mode;
                     ContextMenuItem::action(
-                        format!("{} {}", if on { "●" } else { "○" }, mode.label()),
+                        format!("{} {}", if on { "●" } else { "○" }, i18n.graph_renderer_label(mode)),
                         mode.label().chars().next().map(|c| c.to_ascii_lowercase()),
                         (mode == state.graph_renderer.mode().next()).then_some("F8"),
                         ContextMenuAction::SetGraphRenderer(mode),

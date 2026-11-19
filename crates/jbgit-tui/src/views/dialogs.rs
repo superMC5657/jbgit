@@ -147,7 +147,7 @@ fn render_input(
     let rect = centered(screen, 64, h);
     let inner = frame_block(frame, screen, ctx, rect, &d.title, false, z);
     let w = inner.width as usize;
-    let err = d.error();
+    let err = ctx.i18n.and_then(|i| d.error(i));
     let mut lines = vec![
         Line::from(Span::styled(
             format!(" {}", d.prompt),
@@ -174,7 +174,11 @@ fn render_input(
     ];
     if let Some((label, on)) = &d.checkbox {
         lines.push(Line::from(Span::styled(
-            format!(" [{}] {label}   (Tab)", if *on { "x" } else { " " }),
+            format!(
+                " [{}] {label}   ({})",
+                if *on { "x" } else { " " },
+                ctx.t("dialog.checkbox.tab_hint")
+            ),
             Style::default().fg(ctx.theme.fg_primary),
         )));
         ctx.hit_registry.register(
@@ -509,9 +513,11 @@ fn render_rebase(
                 .fg(ctx.theme.fg_muted)
                 .add_modifier(Modifier::CROSSED_OUT);
         }
+        let act_lbl = ctx.todo_action_label(e.action);
+        let act_pad = " ".repeat(8usize.saturating_sub(act_lbl.width()));
         let line = Line::from(vec![
             Span::styled(
-                format!(" {:<8}", e.action.label()),
+                format!(" {act_lbl}{act_pad}"),
                 Style::default().fg(color).add_modifier(Modifier::BOLD),
             ),
             Span::styled(
@@ -536,7 +542,8 @@ fn render_rebase(
             .register(r, z + 2, HitTarget::DialogOption(i));
     }
     let hint_y = inner.bottom().saturating_sub(3);
-    let (hint, color) = match d.error() {
+    let err = ctx.i18n.and_then(|i| d.error(i));
+    let (hint, color) = match &err {
         Some(e) => (format!(" ✕ {e}"), ctx.theme.status_conflicted),
         None => (
             ctx.t("dialog.rebase.hint").to_string(),
@@ -560,7 +567,7 @@ fn render_rebase(
             DialogButtonSpec {
                 label: ctx.t("dialog.rebase.start_btn").into(),
                 selected: true,
-                enabled: d.error().is_none(),
+                enabled: err.is_none(),
                 danger: false,
                 target: HitTarget::DialogButton(DialogButtonKind::Confirm),
             },

@@ -12,7 +12,7 @@ use crate::graph::{
     CellGridGraphBackend, GraphRenderBackend, GraphViewportSlice, RenderGraphElement, RowGraphSlice,
 };
 use crate::hit_test::{GraphHitKind, HitTarget};
-use crate::log_view::{DiffPreviewDock, FilterField, format_absolute_time, format_relative_time};
+use crate::log_view::{DiffPreviewDock, FilterField, format_absolute_time};
 use crate::views::log_branches::{render_branches_pane, render_branches_stripe};
 use crate::views::log_details::{
     render_changes_pane, render_details_or_diff, render_docked_diff, render_zoomed_diff,
@@ -352,12 +352,24 @@ fn render_filter_bar(
 
     for field in FilterField::ALL {
         let active = filter.field_active(field);
-        let mut label = filter.field_label(field);
+        let mut label = if !active {
+            state.i18n.t("filter.all").to_string()
+        } else if field == FilterField::Date {
+            state.i18n.format_date_filter_label(&filter.field_label(field))
+        } else {
+            filter.field_label(field)
+        };
         if field == FilterField::Paths && filter.path_matches_pending(state.repo_snapshot.as_ref())
         {
             label.push('…');
         }
-        let chip = format!(" {}: {} ▾", field.title(), truncate_to_width(&label, 18));
+        let chip = state.i18n.t_fmt(
+            "filter.chip",
+            &[
+                ("field", state.i18n.filter_field_title(field)),
+                ("label", &truncate_to_width(&label, 18)),
+            ],
+        );
         let style = Style::default()
             .fg(if active {
                 theme.fg_accent_link
@@ -401,7 +413,7 @@ fn render_commits_table(
     let Some(snap) = &state.repo_snapshot else {
         frame.render_widget(
             Paragraph::new(Span::styled(
-                " Loading commit graph…",
+                state.i18n.t("view.log.loading_graph"),
                 Style::default().fg(ctx.theme.fg_muted),
             )),
             area,
@@ -415,11 +427,11 @@ fn render_commits_table(
 
     if snap.commits.is_empty() || cached.visible_count() == 0 {
         let msg = if snap.is_unborn_head {
-            " Empty repository (unborn HEAD — no commits yet)"
+            state.i18n.t("view.log.empty_unborn")
         } else if !state.log_filter.spec.is_empty() {
-            " No commits match the current filters"
+            state.i18n.t("view.log.empty_filtered")
         } else {
-            " No commits found"
+            state.i18n.t("view.log.empty_none")
         };
         frame.render_widget(
             Paragraph::new(Span::styled(msg, Style::default().fg(ctx.theme.fg_muted))),
@@ -687,7 +699,7 @@ fn render_commits_table(
                 commit.timestamp
             };
             let date = if presentation.relative_dates {
-                format_relative_time(ts, now)
+                state.i18n.format_relative_time(ts, now)
             } else {
                 format_absolute_time(ts, true)
             };

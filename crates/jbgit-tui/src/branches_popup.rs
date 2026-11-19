@@ -530,20 +530,26 @@ pub fn render_branches_popup(
                 )],
                 Vec::new(),
             ),
-            PopupRow::Ongoing(kind) => (
-                vec![Span::styled(
-                    format!(
-                        " {} {} in progress: Continue │ Abort{}",
-                        g.warning,
-                        kind.title(),
-                        if kind.can_skip() { " │ Skip" } else { "" }
-                    ),
-                    Style::default()
-                        .fg(ctx.theme.ref_detached.icon)
-                        .add_modifier(Modifier::BOLD),
-                )],
-                vec![Span::styled("▸ ", Style::default().fg(ctx.theme.fg_muted))],
-            ),
+            PopupRow::Ongoing(kind) => {
+                let kind_title = state.i18n.ongoing_title(*kind);
+                let skip = if kind.can_skip() {
+                    state.i18n.t("view.branches_popup.ongoing_skip_part")
+                } else {
+                    ""
+                };
+                (
+                    vec![Span::styled(
+                        state.i18n.t_fmt(
+                            "view.branches_popup.ongoing_in_progress",
+                            &[("icon", g.warning), ("kind", kind_title), ("skip", skip)],
+                        ),
+                        Style::default()
+                            .fg(ctx.theme.ref_detached.icon)
+                            .add_modifier(Modifier::BOLD),
+                    )],
+                    vec![Span::styled("▸ ", Style::default().fg(ctx.theme.fg_muted))],
+                )
+            }
             PopupRow::NewBranch => (
                 vec![Span::styled(
                     state.i18n.t("view.branches_popup.new_branch_btn").to_string(),

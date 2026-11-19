@@ -223,7 +223,7 @@ pub fn render_stage_diff_workbench(
             None => {
                 frame.render_widget(
                     Paragraph::new(Line::from(Span::styled(
-                        " … diff truncated (too large)",
+                        state.i18n.t("view.commit.diff_truncated"),
                         Style::default().fg(theme.status_conflicted),
                     ))),
                     rect,
@@ -242,19 +242,19 @@ pub fn render_stage_diff_workbench(
                 match diff.key.side {
                     StageDiffSide::Staged => {
                         pills.push((
-                            " [- Unstage (u)] ".to_string(),
+                            state.i18n.t("view.commit.hunk_unstage_pill").to_string(),
                             theme.status_untracked,
                             DiffHunkActionKind::Unstage,
                         ));
                     }
                     StageDiffSide::Unstaged => {
                         pills.push((
-                            " [+ Stage (s)] ".to_string(),
+                            state.i18n.t("view.commit.hunk_stage_pill").to_string(),
                             theme.status_added,
                             DiffHunkActionKind::Stage,
                         ));
                         pills.push((
-                            " [↺ Rollback (r)] ".to_string(),
+                            state.i18n.t("view.commit.hunk_rollback_pill").to_string(),
                             theme.status_conflicted,
                             DiffHunkActionKind::Rollback,
                         ));
@@ -263,7 +263,7 @@ pub fn render_stage_diff_workbench(
                 }
                 if diff.key.side != StageDiffSide::AmendCommit && hunk.has_mixed_range {
                     pills.push((
-                        " [i 3-way] ".to_string(),
+                        state.i18n.t("view.commit.hunk_three_way_pill").to_string(),
                         theme.ref_head.icon,
                         DiffHunkActionKind::Inspect3Way,
                     ));
@@ -446,26 +446,29 @@ fn render_stage_diff_toolbar(
     let mut buttons: Vec<(String, bool, StageDiffToolbarButton)> = vec![
         (
             if sw.diff_side_by_side {
-                " ◫ Split "
+                state.i18n.t("view.commit.diff_split_btn")
             } else {
-                " ▤ Unified "
+                state.i18n.t("view.commit.diff_unified_btn")
             }
             .to_string(),
             sw.diff_side_by_side,
             StageDiffToolbarButton::SideBySide,
         ),
         (
-            format!(" Context: {}▾ ", sw.diff_context.label()),
+            state.i18n.t_fmt(
+                "view.commit.diff_context_btn",
+                &[("ctx", state.i18n.diff_context_label(sw.diff_context))],
+            ),
             false,
             StageDiffToolbarButton::Context,
         ),
         (
-            " Prev ↑ ".to_string(),
+            state.i18n.t("view.commit.diff_prev_hunk_btn").to_string(),
             false,
             StageDiffToolbarButton::PrevHunk,
         ),
         (
-            " Next ↓ ".to_string(),
+            state.i18n.t("view.commit.diff_next_hunk_btn").to_string(),
             false,
             StageDiffToolbarButton::NextHunk,
         ),
@@ -475,9 +478,9 @@ fn render_stage_diff_toolbar(
         && (!diff.tracker.staged_blocks.is_empty() && !diff.tracker.unstaged_blocks.is_empty())
     {
         let label = if diff.key.side == StageDiffSide::Staged {
-            " ⇄ View Unstaged "
+            state.i18n.t("view.commit.diff_view_unstaged_btn")
         } else {
-            " ⇄ View Staged "
+            state.i18n.t("view.commit.diff_view_staged_btn")
         };
         buttons.push((label.to_string(), true, StageDiffToolbarButton::SwitchSide));
     }
@@ -518,20 +521,20 @@ fn render_diff_hint_bar(
         .as_ref()
         .is_some_and(|k| k.side == StageDiffSide::AmendCommit);
     let text = if is_amend_ref {
-        " Read-only HEAD~1 ↔ HEAD Amend Reference  [n/p] Hunk  [S] Split  [c] Context".to_string()
+        state.i18n.t("view.commit.diff_hint_amend").to_string()
     } else {
         let mut parts = Vec::new();
         if sw.visual_anchor_row.is_some() {
-            parts.push("VISUAL LINE");
+            parts.push(state.i18n.t("view.commit.diff_visual_line"));
         }
         let undo_hint = if !sw.rollback_undo_stack.is_empty() {
-            "  [Ctrl+Z] Undo Rollback"
+            state.i18n.t("view.commit.diff_undo_rollback_hint")
         } else {
             ""
         };
-        format!(
-            " {} [Space/s] Stage  [u] Unstage  [r] Rollback  [v] Visual  [n/p] Hunk  [i] 3-Way  [x] Side  [e] $EDITOR{undo_hint}",
-            parts.join(" · ")
+        state.i18n.t_fmt(
+            "view.commit.diff_hint_editable",
+            &[("mode", &parts.join(" · ")), ("undo", undo_hint)],
         )
     };
     frame.render_widget(

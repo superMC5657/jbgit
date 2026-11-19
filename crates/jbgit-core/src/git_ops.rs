@@ -989,60 +989,105 @@ pub fn parse_recent_checkouts(
     out
 }
 
-/// `git check-ref-format --branch` rules plus duplicate detection.
-pub fn validate_ref_name(name: &str, existing: &[&str], what: &str) -> Result<(), String> {
+/// Typed reason a branch or tag name fails `git check-ref-format`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RefNameError {
+    Empty,
+    StartsWithDash,
+    ContainsSpaces,
+    ContainsDoubleDot,
+    ContainsAtBrace,
+    InvalidChar(char),
+    EmptyPathComponent,
+    EndsWithDot,
+    ComponentStartsWithDot(String),
+    ComponentEndsWithLock(String),
+    ReservedHead,
+    AlreadyExists(String),
+    ConflictsWithExisting(String),
+}
+
+impl RefNameError {
+    pub fn format_en(&self, what: &str) -> String {
+        match self {
+            Self::Empty => format!("{what} name cannot be empty"),
+            Self::StartsWithDash => format!("{what} name cannot start with '-'"),
+            Self::ContainsSpaces => format!("{what} name cannot contain spaces"),
+            Self::ContainsDoubleDot => format!("{what} name cannot contain '..'"),
+            Self::ContainsAtBrace => format!("{what} name cannot contain '@{{' or be '@'"),
+            Self::InvalidChar(c) => format!("{what} name cannot contain '{c}'"),
+            Self::EmptyPathComponent => format!("{what} name has an empty path component"),
+            Self::EndsWithDot => format!("{what} name cannot end with '.'"),
+            Self::ComponentStartsWithDot(comp) => {
+                format!("path component cannot start with '.' ('{comp}')")
+            }
+            Self::ComponentEndsWithLock(comp) => {
+                format!("path component cannot end with '.lock' ('{comp}')")
+            }
+            Self::ReservedHead => format!("'HEAD' is not a valid {} name", what.to_lowercase()),
+            Self::AlreadyExists(name) => format!("{what} '{name}' already exists"),
+            Self::ConflictsWithExisting(conflict) => {
+                format!("{what} name conflicts with existing '{conflict}'")
+            }
+        }
+    }
+}
+
+/// Typed `git check-ref-format --branch` validation plus duplicate detection.
+pub fn validate_ref_name_typed(name: &str, existing: &[&str]) -> Result<(), RefNameError> {
     if name.is_empty() {
-        return Err(format!("{what} name cannot be empty"));
+        return Err(RefNameError::Empty);
     }
     if name.starts_with('-') {
-        return Err(format!("{what} name cannot start with '-'"));
+        return Err(RefNameError::StartsWithDash);
     }
     if name.chars().any(|c| c.is_whitespace()) {
-        return Err(format!("{what} name cannot contain spaces"));
+        return Err(RefNameError::ContainsSpaces);
     }
     if name.contains("..") {
-        return Err(format!("{what} name cannot contain '..'"));
+        return Err(RefNameError::ContainsDoubleDot);
     }
     if name.contains("@{") || name == "@" {
-        return Err(format!("{what} name cannot contain '@{{' or be '@'"));
+        return Err(RefNameError::ContainsAtBrace);
     }
     if let Some(c) = name
         .chars()
         .find(|c| c.is_control() || matches!(c, '~' | '^' | ':' | '?' | '*' | '[' | '\\'))
     {
-        return Err(format!("{what} name cannot contain '{c}'"));
+        return Err(RefNameError::InvalidChar(c));
     }
     if name.starts_with('/') || name.ends_with('/') || name.contains("//") {
-        return Err(format!("{what} name has an empty path component"));
+        return Err(RefNameError::EmptyPathComponent);
     }
     if name.ends_with('.') {
-        return Err(format!("{what} name cannot end with '.'"));
+        return Err(RefNameError::EndsWithDot);
     }
     for comp in name.split('/') {
         if comp.starts_with('.') {
-            return Err(format!("path component cannot start with '.' ('{comp}')"));
+            return Err(RefNameError::ComponentStartsWithDot(comp.to_string()));
         }
         if comp.ends_with(".lock") {
-            return Err(format!("path component cannot end with '.lock' ('{comp}')"));
+            return Err(RefNameError::ComponentEndsWithLock(comp.to_string()));
         }
     }
     if name == "HEAD" {
-        return Err(format!(
-            "'HEAD' is not a valid {} name",
-            what.to_lowercase()
-        ));
+        return Err(RefNameError::ReservedHead);
     }
     if existing.contains(&name) {
-        return Err(format!("{what} '{name}' already exists"));
+        return Err(RefNameError::AlreadyExists(name.to_string()));
     }
-    // A new ref cannot be a directory prefix of / nested under an existing ref.
     if let Some(conflict) = existing.iter().find(|e| {
         e.strip_prefix(name).is_some_and(|r| r.starts_with('/'))
             || name.strip_prefix(**e).is_some_and(|r| r.starts_with('/'))
     }) {
-        return Err(format!("{what} name conflicts with existing '{conflict}'"));
+        return Err(RefNameError::ConflictsWithExisting((*conflict).to_string()));
     }
     Ok(())
+}
+
+/// `git check-ref-format --branch` rules plus duplicate detection.
+pub fn validate_ref_name(name: &str, existing: &[&str], what: &str) -> Result<(), String> {
+    validate_ref_name_typed(name, existing).map_err(|err| err.format_en(what))
 }
 
 /// Fuzzy (`nucleo`) match returning the score and the matched **char**

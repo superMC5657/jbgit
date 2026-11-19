@@ -3,6 +3,30 @@ use std::path::PathBuf;
 
 use crate::{Oid, RewritePlan, TodoEntry, is_protected_branch};
 
+/// Typed reason a commit range cannot be rewritten by interactive rebase.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RewritePlanError {
+    NoCommits,
+    NotReachable,
+    ContainsMergeCommits,
+    ProtectedBranch(String),
+}
+
+impl RewritePlanError {
+    pub fn format_en(&self, verb: &str) -> String {
+        match self {
+            Self::NoCommits => "No commits yet".to_string(),
+            Self::NotReachable => format!("Cannot {verb}: commit is not reachable from HEAD"),
+            Self::ContainsMergeCommits => {
+                format!("Cannot {verb}: the range up to HEAD contains merge commits")
+            }
+            Self::ProtectedBranch(branch) => {
+                format!("Cannot {verb}: commit is already pushed to protected branch '{branch}'")
+            }
+        }
+    }
+}
+
 /// Ongoing Git repository workflow / state indicator.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub enum RepositoryState {
@@ -200,30 +224,28 @@ impl RepoSnapshot {
         a.difference(&b).count()
     }
 
-    /// Plans an interactive-rebase rewrite of `oldest..HEAD` along the
-    /// first-parent chain, rejecting merge commits and commits already pushed
-    /// to protected remote branches.
-    pub fn plan_rewrite(&self, oldest: Oid, verb: &str) -> Result<RewritePlan, String> {
-        let head = self.head_oid.ok_or("No commits yet")?;
+    /// Typed error version of [`Self::plan_rewrite`] for localized UI messages.
+    pub fn plan_rewrite_typed(&self, oldest: Oid) -> Result<RewritePlan, RewritePlanError> {
+        let head = self.head_oid.ok_or(RewritePlanError::NoCommits)?;
         let idx: HashMap<Oid, &CommitSummary> =
             self.commits.iter().map(|c| (c.oid, c)).collect();
-        let unreachable = || format!("Cannot {verb}: commit is not reachable from HEAD");
         let mut chain: Vec<&CommitSummary> = Vec::new();
         let mut cur = head;
         loop {
-            let c = idx.get(&cur).ok_or_else(unreachable)?;
+            let c = idx.get(&cur).ok_or(RewritePlanError::NotReachable)?;
             if c.parents.len() > 1 {
-                return Err(format!(
-                    "Cannot {verb}: the range up to HEAD contains merge commits"
-                ));
+                return Err(RewritePlanError::ContainsMergeCommits);
             }
             chain.push(c);
             if cur == oldest {
                 break;
             }
-            cur = *c.parents.first().ok_or_else(unreachable)?;
+            cur = *c
+                .parents
+                .first()
+                .ok_or(RewritePlanError::NotReachable)?;
             if chain.len() > 5000 {
-                return Err(unreachable());
+                return Err(RewritePlanError::NotReachable);
             }
         }
         if let Some(r) = self.refs.iter().find(|r| {
@@ -233,10 +255,7 @@ impl RepoSnapshot {
                     .is_some_and(|(_, b)| is_protected_branch(b))
                 && self.reaches(r.target_oid, oldest)
         }) {
-            return Err(format!(
-                "Cannot {verb}: commit is already pushed to protected branch '{}'",
-                r.name
-            ));
+            return Err(RewritePlanError::ProtectedBranch(r.name.clone()));
         }
         chain.reverse();
         Ok(RewritePlan {
@@ -247,6 +266,14 @@ impl RepoSnapshot {
                 .collect(),
             messages: chain.iter().map(|c| c.full_message()).collect(),
         })
+    }
+
+    /// Plans an interactive-rebase rewrite of `oldest..HEAD` along the
+    /// first-parent chain, rejecting merge commits and commits already pushed
+    /// to protected remote branches.
+    pub fn plan_rewrite(&self, oldest: Oid, verb: &str) -> Result<RewritePlan, String> {
+        self.plan_rewrite_typed(oldest)
+            .map_err(|err| err.format_en(verb))
     }
 
     /// Resolves `HEAD`, ref names, unique hex prefixes (≥ 4 chars) and
