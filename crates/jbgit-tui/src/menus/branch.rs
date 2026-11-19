@@ -5,6 +5,7 @@ use crate::config::KeymapScope;
 use crate::dialogs::{
     ChoiceDialog, Dialog, InputDialog, InputIntent, InputValidation, new_branch_dialog,
 };
+use crate::keymap::KeyAction;
 
 use super::{dialog, ellipsize, local_names, op, run};
 
@@ -15,16 +16,16 @@ pub fn branch_menu_items(state: &AppState, name: &str, kind: RefKind) -> Vec<Con
     };
     let i18n = &state.i18n;
     let km = &state.config.keymap;
-    let checkout_sc = km.primary_key_for(&[KeymapScope::Branch], "checkout");
-    let new_branch_sc = km.primary_key_for(&[KeymapScope::Branch], "new_branch");
-    let pull_sc = km.primary_key_for(&[KeymapScope::Global], "git_pull");
-    let push_sc = km.primary_key_for(&[KeymapScope::Global], "git_push");
-    let rename_sc = km.primary_key_for(&[KeymapScope::Branch], "rename_branch");
+    let checkout_sc = km.primary_key_for(&[KeymapScope::Branch], &KeyAction::Checkout);
+    let new_branch_sc = km.primary_key_for(&[KeymapScope::Branch], &KeyAction::NewBranch);
+    let pull_sc = km.primary_key_for(&[KeymapScope::Global], &KeyAction::GitPull);
+    let push_sc = km.primary_key_for(&[KeymapScope::Global], &KeyAction::GitPush);
+    let rename_sc = km.primary_key_for(&[KeymapScope::Branch], &KeyAction::RenameBranch);
     let delete_sc = km
-        .all_keys_for(&[KeymapScope::Branch], "delete_branch")
+        .all_keys_for(&[KeymapScope::Branch], &KeyAction::DeleteBranch)
         .join(" / ");
     let delete_sc = (!delete_sc.is_empty()).then_some(delete_sc);
-    let fav_sc = km.primary_key_for(&[KeymapScope::Branch], "toggle_favorite");
+    let fav_sc = km.primary_key_for(&[KeymapScope::Branch], &KeyAction::ToggleFavorite);
 
     let current = snap.head_branch.clone();
     let cur = current.clone().unwrap_or_else(|| "HEAD".to_string());

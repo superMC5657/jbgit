@@ -559,7 +559,7 @@ pub fn render_branches_popup(
                             crate::config::KeymapScope::Branch,
                             crate::config::KeymapScope::Log,
                         ],
-                        "new_branch",
+                        &crate::keymap::KeyAction::NewBranch,
                     )
                     .unwrap_or_else(|| "Ctrl+Alt+N".to_string());
                 (

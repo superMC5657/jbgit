@@ -339,15 +339,7 @@ fn route_key(key: KeyEvent, state: &mut AppState) -> Vec<Action> {
         return actions;
     }
 
-    // Cancel pending chord on Esc cleanly.
-    if !state.pending_keys.is_empty() && key.code == KeyCode::Esc {
-        state.pending_keys.clear();
-        state.pending_key_at = None;
-        state.needs_redraw = true;
-        return Vec::new();
-    }
-
-    // Layer 0: Dynamic Keymap (from keymap.toml)
+    // Layer 0: Dynamic Keymap (from keymap.toml; handles Esc chord cancellation internally)
     if let Some(actions) = crate::keymap::route_dynamic_key(&key, state) {
         return actions;
     }
@@ -540,7 +532,7 @@ fn route_shortcuts_help_key(key: &KeyEvent, state: &mut AppState) -> Vec<Action>
             };
             let mut out = vec![Action::PopModal];
             if let Some(r) = run_opt
-                && r != "help"
+                && r != crate::keymap::KeyAction::Help
                 && let Some(actions) = crate::keymap::execute_action(&r, state)
             {
                 out.extend(actions);
@@ -620,14 +612,21 @@ fn route_log_priority_key(key: &KeyEvent, state: &mut AppState) -> Option<Vec<Ac
     }
 
     if state.focused_pane == PaneId::LogBranchesTree {
-        if state.branches.searching {
+        let active_search = state.branches.searching;
+        let speed_active = state.config.keymap.tree_speed_search && !state.branches.query.is_empty();
+        if active_search {
             match key.code {
-                KeyCode::Esc => return Some(vec![Action::BranchesEscape]),
                 KeyCode::Enter => return Some(vec![Action::BranchesSearchDone]),
                 KeyCode::Up => return Some(vec![Action::ScrollBranches(-1)]),
                 KeyCode::Down => return Some(vec![Action::ScrollBranches(1)]),
-                KeyCode::Backspace => return Some(vec![Action::BranchesSearchBackspace]),
                 KeyCode::Char('u') if ctrl => return Some(vec![Action::BranchesSearchClear]),
+                _ => {}
+            }
+        }
+        if active_search || speed_active {
+            match key.code {
+                KeyCode::Esc => return Some(vec![Action::BranchesEscape]),
+                KeyCode::Backspace => return Some(vec![Action::BranchesSearchBackspace]),
                 _ => {}
             }
             if let Some(c) = plain_char(key)
@@ -635,25 +634,12 @@ fn route_log_priority_key(key: &KeyEvent, state: &mut AppState) -> Option<Vec<Ac
             {
                 return Some(vec![Action::BranchesSearchInput(c)]);
             }
-        } else if state.config.keymap.tree_speed_search {
-            let searching = !state.branches.query.is_empty();
-            if searching {
-                match key.code {
-                    KeyCode::Esc => return Some(vec![Action::BranchesEscape]),
-                    KeyCode::Backspace => return Some(vec![Action::BranchesSearchBackspace]),
-                    _ => {}
-                }
-                if let Some(c) = plain_char(key)
-                    && c != ' '
-                {
-                    return Some(vec![Action::BranchesSearchInput(c)]);
-                }
-            } else if let Some(c) = plain_char(key)
-                && (c.is_alphabetic() || matches!(c, '-' | '_' | '/' | '.' | '0' | '5'..='9'))
-                && c != 'J'
-            {
-                return Some(vec![Action::BranchesSearchInput(c)]);
-            }
+        } else if state.config.keymap.tree_speed_search
+            && let Some(c) = plain_char(key)
+            && (c.is_alphabetic() || matches!(c, '-' | '_' | '/' | '0' | '5'..='9'))
+            && c != 'J'
+        {
+            return Some(vec![Action::BranchesSearchInput(c)]);
         }
     }
     None
@@ -1173,9 +1159,18 @@ fn build_menu_for(
             };
             let i18n = &state.i18n;
             let km = &state.config.keymap;
-            let nav_sc = km.primary_key_for(&[crate::config::KeymapScope::Branch], "navigate_branch");
-            let fav_sc = km.primary_key_for(&[crate::config::KeymapScope::Branch], "toggle_favorite");
-            let refresh_sc = km.primary_key_for(&[crate::config::KeymapScope::Global], "refresh");
+            let nav_sc = km.primary_key_for(
+                &[crate::config::KeymapScope::Branch],
+                &crate::keymap::KeyAction::NavigateBranch,
+            );
+            let fav_sc = km.primary_key_for(
+                &[crate::config::KeymapScope::Branch],
+                &crate::keymap::KeyAction::ToggleFavorite,
+            );
+            let refresh_sc = km.primary_key_for(
+                &[crate::config::KeymapScope::Global],
+                &crate::keymap::KeyAction::Refresh,
+            );
             items.push(ContextMenuItem::action(
                 if is_leaf {
                     i18n.t_fmt("menu.branch.show_only_branch", &[("name", &branch_name)])

@@ -625,7 +625,8 @@ pub fn reset_dialog(target: Oid, subject: &str, branch: &str, i18n: &I18n) -> Di
         .iter()
         .map(|&mode| {
             let mode_lbl = i18n.reset_mode_label(mode);
-            let label = format!("{:<6} {}", mode_lbl, mode.flag());
+            let pad = 8usize.saturating_sub(unicode_width::UnicodeWidthStr::width(mode_lbl));
+            let label = format!("{mode_lbl}{} {}", " ".repeat(pad), mode.flag());
             let mnemonic = mode.label().chars().next().map(|c| c.to_ascii_lowercase());
             let actions = if mode.is_destructive() {
                 vec![Action::OpenDialog(Box::new(Dialog::Choice(

@@ -732,4 +732,41 @@ custom_extra = "自定义内容"
             assert_eq!(query, "标签-发布");
         }
     }
+
+    #[test]
+    fn test_locale_placeholder_parity() {
+        fn extract_placeholders(s: &str) -> std::collections::BTreeSet<String> {
+            let mut set = std::collections::BTreeSet::new();
+            let bytes = s.as_bytes();
+            let mut i = 0;
+            while i < bytes.len() {
+                if bytes[i] == b'{'
+                    && let Some(rel_end) = bytes[i + 1..].iter().position(|&b| b == b'}')
+                {
+                    let inner = &s[i + 1..i + 1 + rel_end];
+                    if !inner.is_empty()
+                        && inner.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+                    {
+                        set.insert(inner.to_string());
+                    }
+                    i += rel_end + 2;
+                    continue;
+                }
+                i += 1;
+            }
+            set
+        }
+
+        let en = parse_and_flatten_toml(EMBEDDED_EN_US);
+        let zh = parse_and_flatten_toml(EMBEDDED_ZH_CN);
+        for (k, en_val) in &en {
+            let zh_val = zh.get(k).unwrap();
+            let en_ph = extract_placeholders(en_val);
+            let zh_ph = extract_placeholders(zh_val);
+            assert_eq!(
+                en_ph, zh_ph,
+                "placeholder mismatch for key '{k}': en={en_ph:?}, zh={zh_ph:?}"
+            );
+        }
+    }
 }

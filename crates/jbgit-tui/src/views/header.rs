@@ -10,6 +10,7 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::app::{AppState, ModalLayer, RenderContext};
 use crate::hit_test::{GraphHitKind, HitTarget};
+use crate::keymap::KeyAction;
 use crate::views::truncate_to_width;
 
 pub fn render_top_header(
@@ -510,8 +511,8 @@ fn render_dynamic_footer_hints(
             &mut pills,
             ctx,
             footer_key_pair(
-                km.primary_key_for(diff_scopes, "prev_hunk"),
-                km.primary_key_for(diff_scopes, "next_hunk"),
+                km.primary_key_for(diff_scopes, &KeyAction::PrevHunk),
+                km.primary_key_for(diff_scopes, &KeyAction::NextHunk),
             ),
             "view.footer.pill.hunk",
         );
@@ -519,24 +520,24 @@ fn render_dynamic_footer_hints(
             &mut pills,
             ctx,
             footer_key_pair(
-                km.primary_key_for(diff_scopes, "prev_file"),
-                km.primary_key_for(diff_scopes, "next_file"),
+                km.primary_key_for(diff_scopes, &KeyAction::PrevFile),
+                km.primary_key_for(diff_scopes, &KeyAction::NextFile),
             ),
             "view.footer.pill.file",
         );
         push_footer_key(
             &mut pills,
             ctx,
-            km.primary_key_for(diff_scopes, "toggle_side_by_side"),
+            km.primary_key_for(diff_scopes, &KeyAction::ToggleSideBySide),
             "view.footer.pill.side_by_side",
         );
         push_footer_key(
             &mut pills,
             ctx,
-            km.primary_key_for(diff_scopes, "cycle_diff_context"),
+            km.primary_key_for(diff_scopes, &KeyAction::CycleDiffContext),
             "view.footer.pill.context",
         );
-        let zoom_key = match km.primary_key_for(diff_scopes, "zoom_diff") {
+        let zoom_key = match km.primary_key_for(diff_scopes, &KeyAction::ZoomDiff) {
             Some(k) if k != "Esc" => format!("{k}/Esc"),
             _ => "Esc".to_string(),
         };
@@ -548,56 +549,75 @@ fn render_dynamic_footer_hints(
                 push_footer_key(
                     &mut pills,
                     ctx,
-                    km.primary_key_for(scopes, "toggle_stage"),
+                    km.primary_key_for(scopes, &KeyAction::ToggleStage)
+                        .or_else(|| km.primary_key_for(scopes, &KeyAction::StageSelection)),
                     "view.footer.pill.stage",
                 );
                 push_footer_key(
                     &mut pills,
                     ctx,
-                    km.primary_key_for(scopes, "discard_changes"),
+                    km.primary_key_for(scopes, &KeyAction::DiscardChanges),
                     "view.footer.pill.discard",
                 );
                 push_footer_key(
                     &mut pills,
                     ctx,
-                    km.primary_key_for(scopes, "focus_commit_msg"),
+                    km.primary_key_for(scopes, &KeyAction::FocusCommitMsg),
                     "view.footer.pill.msg",
                 );
                 push_footer_key(
                     &mut pills,
                     ctx,
-                    km.primary_key_for(scopes, "toggle_amend"),
+                    km.primary_key_for(scopes, &KeyAction::ToggleAmend),
                     "view.footer.pill.amend",
                 );
                 push_footer_key(
                     &mut pills,
                     ctx,
-                    km.primary_key_for(&[KeymapScope::Global], "context_menu"),
+                    km.primary_key_for(&[KeymapScope::Global], &KeyAction::ContextMenu),
                     "view.footer.pill.menu",
                 );
                 push_footer_key(
                     &mut pills,
                     ctx,
-                    km.primary_key_for(scopes, "edit_file"),
+                    km.primary_key_for(scopes, &KeyAction::EditFile),
                     "view.footer.pill.edit",
                 );
                 push_footer_key(
                     &mut pills,
                     ctx,
-                    km.primary_key_for(&[KeymapScope::Global], "toggle_branches_popup"),
+                    km.primary_key_for(&[KeymapScope::Global], &KeyAction::ToggleBranchesPopup),
                     "view.footer.pill.branches",
                 );
             }
             (WorkspaceTab::Commit, PaneId::CommitMessageEditor) => {
                 include_help_pill = false;
-                push_footer_lit(
+                let commit_scopes = &[KeymapScope::Commit];
+                let commit_keys = km.editor_keys_for(commit_scopes, &KeyAction::Commit);
+                let commit_label = if commit_keys.is_empty() {
+                    None
+                } else {
+                    Some(
+                        commit_keys
+                            .into_iter()
+                            .take(2)
+                            .collect::<Vec<_>>()
+                            .join(" / "),
+                    )
+                };
+                push_footer_key(&mut pills, ctx, commit_label, "view.footer.pill.commit");
+                push_footer_key(
                     &mut pills,
                     ctx,
-                    "Ctrl+S / Ctrl+Enter",
-                    "view.footer.pill.commit",
+                    km.primary_editor_key_for(commit_scopes, &KeyAction::ToggleAmend),
+                    "view.footer.pill.amend",
                 );
-                push_footer_lit(&mut pills, ctx, "Alt+A", "view.footer.pill.amend");
-                push_footer_lit(&mut pills, ctx, "Ctrl+M", "view.footer.pill.history");
+                push_footer_key(
+                    &mut pills,
+                    ctx,
+                    km.primary_editor_key_for(commit_scopes, &KeyAction::CommitHistory),
+                    "view.footer.pill.history",
+                );
                 push_footer_lit(&mut pills, ctx, "Esc", "view.footer.pill.back");
             }
             (WorkspaceTab::Commit, PaneId::CommitDiffPreview) => {
@@ -605,46 +625,47 @@ fn render_dynamic_footer_hints(
                 push_footer_key(
                     &mut pills,
                     ctx,
-                    km.primary_key_for(scopes, "toggle_stage"),
+                    km.primary_key_for(scopes, &KeyAction::StageSelection)
+                        .or_else(|| km.primary_key_for(scopes, &KeyAction::ToggleStage)),
                     "view.footer.pill.stage",
                 );
                 push_footer_key(
                     &mut pills,
                     ctx,
-                    km.primary_key_for(scopes, "rollback_selection"),
+                    km.primary_key_for(scopes, &KeyAction::RollbackSelection),
                     "view.footer.pill.rollback",
                 );
                 push_footer_key(
                     &mut pills,
                     ctx,
-                    km.primary_key_for(scopes, "toggle_visual"),
+                    km.primary_key_for(scopes, &KeyAction::ToggleVisual),
                     "view.footer.pill.visual",
                 );
                 push_footer_key(
                     &mut pills,
                     ctx,
                     footer_key_pair(
-                        km.primary_key_for(scopes, "prev_hunk"),
-                        km.primary_key_for(scopes, "next_hunk"),
+                        km.primary_key_for(scopes, &KeyAction::PrevHunk),
+                        km.primary_key_for(scopes, &KeyAction::NextHunk),
                     ),
                     "view.footer.pill.hunk",
                 );
                 push_footer_key(
                     &mut pills,
                     ctx,
-                    km.primary_key_for(scopes, "toggle_side_by_side"),
+                    km.primary_key_for(scopes, &KeyAction::ToggleSideBySide),
                     "view.footer.pill.side_by_side",
                 );
                 push_footer_key(
                     &mut pills,
                     ctx,
-                    km.primary_key_for(scopes, "switch_diff_side"),
+                    km.primary_key_for(scopes, &KeyAction::SwitchDiffSide),
                     "view.footer.pill.switch_side",
                 );
                 push_footer_key(
                     &mut pills,
                     ctx,
-                    km.primary_key_for(scopes, "three_way_inspector"),
+                    km.primary_key_for(scopes, &KeyAction::ThreeWayInspector),
                     "view.footer.pill.three_way",
                 );
             }
@@ -654,49 +675,49 @@ fn render_dynamic_footer_hints(
                 push_footer_key(
                     &mut pills,
                     ctx,
-                    km.primary_key_for(scopes, "branch_search"),
+                    km.primary_key_for(scopes, &KeyAction::BranchSearch),
                     "view.footer.pill.search",
                 );
                 push_footer_key(
                     &mut pills,
                     ctx,
-                    km.primary_key_for(scopes, "checkout"),
+                    km.primary_key_for(scopes, &KeyAction::Checkout),
                     "view.footer.pill.checkout",
                 );
                 push_footer_key(
                     &mut pills,
                     ctx,
-                    km.primary_key_for(scopes, "new_branch"),
+                    km.primary_key_for(scopes, &KeyAction::NewBranch),
                     "view.footer.pill.new_branch",
                 );
                 push_footer_key(
                     &mut pills,
                     ctx,
-                    km.primary_key_for(scopes, "toggle_favorite"),
+                    km.primary_key_for(scopes, &KeyAction::ToggleFavorite),
                     "view.footer.pill.favorite",
                 );
                 push_footer_key(
                     &mut pills,
                     ctx,
-                    km.primary_key_for(global, "git_fetch"),
+                    km.primary_key_for(global, &KeyAction::GitFetch),
                     "view.footer.pill.fetch",
                 );
                 push_footer_key(
                     &mut pills,
                     ctx,
-                    km.primary_key_for(global, "git_pull"),
+                    km.primary_key_for(global, &KeyAction::GitPull),
                     "view.footer.pill.pull",
                 );
                 push_footer_key(
                     &mut pills,
                     ctx,
-                    km.primary_key_for(global, "git_push"),
+                    km.primary_key_for(global, &KeyAction::GitPush),
                     "view.footer.pill.push",
                 );
                 push_footer_key(
                     &mut pills,
                     ctx,
-                    km.primary_key_for(global, "context_menu"),
+                    km.primary_key_for(global, &KeyAction::ContextMenu),
                     "view.footer.pill.menu",
                 );
             }
@@ -706,49 +727,49 @@ fn render_dynamic_footer_hints(
                 push_footer_key(
                     &mut pills,
                     ctx,
-                    km.primary_key_for(scopes, "focus_filter"),
+                    km.primary_key_for(scopes, &KeyAction::FocusFilter),
                     "view.footer.pill.filter",
                 );
                 push_footer_key(
                     &mut pills,
                     ctx,
-                    km.primary_key_for(scopes, "checkout"),
+                    km.primary_key_for(scopes, &KeyAction::Checkout),
                     "view.footer.pill.checkout",
                 );
                 push_footer_key(
                     &mut pills,
                     ctx,
-                    km.primary_key_for(scopes, "compare_or_diff"),
+                    km.primary_key_for(scopes, &KeyAction::CompareOrDiff),
                     "view.footer.pill.diff",
                 );
                 push_footer_key(
                     &mut pills,
                     ctx,
-                    km.primary_key_for(scopes, "new_branch"),
+                    km.primary_key_for(scopes, &KeyAction::NewBranch),
                     "view.footer.pill.new_branch",
                 );
                 push_footer_key(
                     &mut pills,
                     ctx,
-                    km.primary_key_for(scopes, "copy_hash"),
+                    km.primary_key_for(scopes, &KeyAction::CopyHash),
                     "view.footer.pill.copy_hash",
                 );
                 push_footer_key(
                     &mut pills,
                     ctx,
-                    km.primary_key_for(global, "toggle_branches_popup"),
+                    km.primary_key_for(global, &KeyAction::ToggleBranchesPopup),
                     "view.footer.pill.branches",
                 );
                 push_footer_key(
                     &mut pills,
                     ctx,
-                    km.primary_key_for(global, "git_pull"),
+                    km.primary_key_for(global, &KeyAction::GitPull),
                     "view.footer.pill.pull",
                 );
                 push_footer_key(
                     &mut pills,
                     ctx,
-                    km.primary_key_for(global, "git_push"),
+                    km.primary_key_for(global, &KeyAction::GitPush),
                     "view.footer.pill.push",
                 );
             }
@@ -757,19 +778,19 @@ fn render_dynamic_footer_hints(
                 push_footer_key(
                     &mut pills,
                     ctx,
-                    km.primary_key_for(scopes, "compare_or_diff"),
+                    km.primary_key_for(scopes, &KeyAction::CompareOrDiff),
                     "view.footer.pill.diff_toggle",
                 );
                 push_footer_key(
                     &mut pills,
                     ctx,
-                    km.primary_key_for(&[KeymapScope::Commit, KeymapScope::Log], "toggle_group"),
+                    km.primary_key_for(&[KeymapScope::Commit, KeymapScope::Log], &KeyAction::ToggleGroup),
                     "view.footer.pill.group",
                 );
                 push_footer_key(
                     &mut pills,
                     ctx,
-                    km.primary_key_for(&[KeymapScope::Global], "context_menu"),
+                    km.primary_key_for(&[KeymapScope::Global], &KeyAction::ContextMenu),
                     "view.footer.pill.menu",
                 );
                 push_footer_lit(&mut pills, ctx, "Esc", "view.footer.pill.back");
@@ -779,27 +800,27 @@ fn render_dynamic_footer_hints(
                 push_footer_key(
                     &mut pills,
                     ctx,
-                    km.primary_key_for(scopes, "zoom_diff"),
+                    km.primary_key_for(scopes, &KeyAction::ZoomDiff),
                     "view.footer.pill.zoom",
                 );
                 push_footer_key(
                     &mut pills,
                     ctx,
-                    km.primary_key_for(scopes, "toggle_side_by_side"),
+                    km.primary_key_for(scopes, &KeyAction::ToggleSideBySide),
                     "view.footer.pill.side_by_side",
                 );
                 push_footer_key(
                     &mut pills,
                     ctx,
-                    km.primary_key_for(scopes, "cycle_diff_context"),
+                    km.primary_key_for(scopes, &KeyAction::CycleDiffContext),
                     "view.footer.pill.context",
                 );
                 push_footer_key(
                     &mut pills,
                     ctx,
                     footer_key_pair(
-                        km.primary_key_for(scopes, "prev_hunk"),
-                        km.primary_key_for(scopes, "next_hunk"),
+                        km.primary_key_for(scopes, &KeyAction::PrevHunk),
+                        km.primary_key_for(scopes, &KeyAction::NextHunk),
                     ),
                     "view.footer.pill.hunk",
                 );
@@ -807,8 +828,8 @@ fn render_dynamic_footer_hints(
                     &mut pills,
                     ctx,
                     footer_key_pair(
-                        km.primary_key_for(scopes, "prev_file"),
-                        km.primary_key_for(scopes, "next_file"),
+                        km.primary_key_for(scopes, &KeyAction::PrevFile),
+                        km.primary_key_for(scopes, &KeyAction::NextFile),
                     ),
                     "view.footer.pill.file",
                 );
@@ -820,37 +841,37 @@ fn render_dynamic_footer_hints(
                 push_footer_key(
                     &mut pills,
                     ctx,
-                    km.primary_key_for(scopes, "stash_apply"),
+                    km.primary_key_for(scopes, &KeyAction::StashApply),
                     "view.footer.pill.apply",
                 );
                 push_footer_key(
                     &mut pills,
                     ctx,
-                    km.primary_key_for(scopes, "stash_pop"),
+                    km.primary_key_for(scopes, &KeyAction::StashPop),
                     "view.footer.pill.pop",
                 );
                 push_footer_key(
                     &mut pills,
                     ctx,
-                    km.primary_key_for(scopes, "stash_new"),
+                    km.primary_key_for(scopes, &KeyAction::StashNew),
                     "view.footer.pill.stash_new",
                 );
                 push_footer_key(
                     &mut pills,
                     ctx,
-                    km.primary_key_for(scopes, "stash_drop"),
+                    km.primary_key_for(scopes, &KeyAction::StashDrop),
                     "view.footer.pill.drop",
                 );
                 push_footer_key(
                     &mut pills,
                     ctx,
-                    km.primary_key_for(scopes, "stash_branch"),
+                    km.primary_key_for(scopes, &KeyAction::StashBranch),
                     "view.footer.pill.new_branch",
                 );
                 push_footer_key(
                     &mut pills,
                     ctx,
-                    km.primary_key_for(&[KeymapScope::Global], "context_menu"),
+                    km.primary_key_for(&[KeymapScope::Global], &KeyAction::ContextMenu),
                     "view.footer.pill.menu",
                 );
             }
@@ -859,25 +880,25 @@ fn render_dynamic_footer_hints(
                 push_footer_key(
                     &mut pills,
                     ctx,
-                    km.primary_key_for(scopes, "zoom_diff"),
+                    km.primary_key_for(scopes, &KeyAction::ZoomDiff),
                     "view.footer.pill.zoom",
                 );
                 push_footer_key(
                     &mut pills,
                     ctx,
-                    km.primary_key_for(scopes, "toggle_side_by_side"),
+                    km.primary_key_for(scopes, &KeyAction::ToggleSideBySide),
                     "view.footer.pill.side_by_side",
                 );
                 push_footer_key(
                     &mut pills,
                     ctx,
-                    km.primary_key_for(scopes, "cycle_diff_context"),
+                    km.primary_key_for(scopes, &KeyAction::CycleDiffContext),
                     "view.footer.pill.context",
                 );
                 push_footer_key(
                     &mut pills,
                     ctx,
-                    km.primary_key_for(&[KeymapScope::Commit, KeymapScope::Stash], "toggle_group"),
+                    km.primary_key_for(&[KeymapScope::Commit, KeymapScope::Stash], &KeyAction::ToggleGroup),
                     "view.footer.pill.group",
                 );
                 push_footer_lit(&mut pills, ctx, "Esc", "view.footer.pill.back");
@@ -887,14 +908,14 @@ fn render_dynamic_footer_hints(
                 push_footer_key(
                     &mut pills,
                     ctx,
-                    km.primary_key_for(global, "focus_next"),
+                    km.primary_key_for(global, &KeyAction::FocusNext),
                     "view.footer.pill.detail",
                 );
                 push_footer_lit(&mut pills, ctx, "p", "view.footer.pill.status_probe");
                 push_footer_key(
                     &mut pills,
                     ctx,
-                    km.primary_key_for(global, "refresh"),
+                    km.primary_key_for(global, &KeyAction::Refresh),
                     "view.footer.pill.refresh",
                 );
             }
@@ -904,7 +925,7 @@ fn render_dynamic_footer_hints(
                 push_footer_key(
                     &mut pills,
                     ctx,
-                    km.primary_key_for(global, "refresh"),
+                    km.primary_key_for(global, &KeyAction::Refresh),
                     "view.footer.pill.refresh",
                 );
             }
@@ -913,7 +934,7 @@ fn render_dynamic_footer_hints(
     }
 
     let help_pill = if include_help_pill {
-        km.primary_key_for(&[KeymapScope::Global], "help")
+        km.primary_key_for(&[KeymapScope::Global], &KeyAction::Help)
             .map(|k| (k, ctx.t("view.footer.pill.help").to_string()))
     } else {
         None

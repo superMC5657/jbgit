@@ -63,11 +63,22 @@ async fn main() -> Result<()> {
             return Ok(());
         }
         if arg == "--init-config" {
-            match crate::config::AppConfig::init_config(None, false) {
-                Ok(dir) => println!(
-                    "{}",
-                    cli_i18n.t_fmt("cli.init_ok", &[("dir", &format!("{dir:?}"))])
-                ),
+            match crate::config::AppConfig::init_config_detailed(None, false) {
+                Ok((dir, files)) => {
+                    for (name, created) in files {
+                        let path_s = format!("{:?}", dir.join(name));
+                        let msg_key = if created {
+                            "cli.init_file_generated"
+                        } else {
+                            "cli.init_file_skipped"
+                        };
+                        println!("{}", cli_i18n.t_fmt(msg_key, &[("path", &path_s)]));
+                    }
+                    println!(
+                        "{}",
+                        cli_i18n.t_fmt("cli.init_ok", &[("dir", &format!("{dir:?}"))])
+                    );
+                }
                 Err(e) => eprintln!(
                     "{}",
                     cli_i18n.t_fmt("cli.init_err", &[("err", &e.to_string())])

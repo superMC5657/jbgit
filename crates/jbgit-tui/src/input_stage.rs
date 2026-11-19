@@ -12,6 +12,7 @@ use crate::app::{
 use crate::hit_test::{
     CommitOptionKind, HitTarget, StageDiffToolbarButton, StageToolbarButton,
 };
+use crate::keymap::KeyAction;
 
 const BRACKET_CHORD_WINDOW: Duration = Duration::from_millis(500);
 
@@ -24,33 +25,11 @@ pub(crate) fn route_commit_priority_key(
     let shift = key.modifiers.contains(KeyModifiers::SHIFT);
 
     if state.focused_pane == PaneId::CommitMessageEditor {
-        match key.code {
-            KeyCode::Tab => return Some(vec![Action::CycleFocus { reverse: false }]),
-            KeyCode::BackTab => return Some(vec![Action::CycleFocus { reverse: true }]),
-            KeyCode::Char(d @ ('1' | '2' | '3' | '4')) if alt => {
-                if let Some(tab) = jbgit_core::WorkspaceTab::from_digit(d) {
-                    return Some(vec![Action::SwitchTab(tab)]);
-                }
-            }
-            KeyCode::Char('s') if ctrl => {
-                return Some(vec![Action::SubmitCommit { and_push: false }]);
-            }
-            KeyCode::Enter if ctrl || alt => {
-                return Some(vec![Action::SubmitCommit { and_push: false }]);
-            }
-            KeyCode::Char('k') if ctrl && alt => {
-                return Some(vec![Action::SubmitCommit { and_push: true }]);
-            }
-            KeyCode::Char('a' | 'm') if alt => return Some(vec![Action::CommitToggleAmend]),
-            KeyCode::Char('s') if alt => return Some(vec![Action::CommitToggleSignoff]),
-            KeyCode::Char('m') if ctrl => {
-                return Some(vec![Action::OpenPopup {
-                    kind: PopupKind::CommitHistory,
-                    initial_query: String::new(),
-                }]);
-            }
-            KeyCode::Char('e') if ctrl => return Some(vec![Action::OpenExternalEditorMessage]),
-            _ => {}
+        if let Some(actions) = crate::keymap::route_editor_dynamic_key(key, state) {
+            return Some(actions);
+        }
+        if key.code == KeyCode::Char('e') && ctrl && !alt {
+            return Some(vec![Action::OpenExternalEditorMessage]);
         }
         if state.stage_workbench.editing_author {
             return Some(match key.code {
@@ -307,7 +286,7 @@ pub(crate) fn stage_tree_context_menu_items(
     let refresh_sc = state
         .config
         .keymap
-        .primary_key_for(&[crate::config::KeymapScope::Global], "refresh");
+        .primary_key_for(&[crate::config::KeymapScope::Global], &KeyAction::Refresh);
     items.push(ContextMenuItem::separator());
     items.push(ContextMenuItem::submenu(
         state.i18n.t("menu.stage.view_options"),
@@ -329,7 +308,7 @@ pub(crate) fn stage_options_menu_items(state: &AppState) -> Vec<ContextMenuItem>
     let group_sc = state
         .config
         .keymap
-        .primary_key_for(&[crate::config::KeymapScope::Commit], "toggle_group");
+        .primary_key_for(&[crate::config::KeymapScope::Commit], &KeyAction::ToggleGroup);
     vec![
         ContextMenuItem::action(
             format!(

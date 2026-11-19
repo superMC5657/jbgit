@@ -38,8 +38,11 @@ pub fn render_branches_stripe(frame: &mut Frame<'_>, area: Rect, ctx: &mut Rende
         .chars()
         .take(area.height.saturating_sub(2) as usize)
     {
+        let mut buf = [0u8; 4];
+        let s = ch.encode_utf8(&mut buf);
+        let pad = (area.width as usize).saturating_sub(s.width());
         lines.push(Line::from(Span::styled(
-            format!("{ch} "),
+            format!("{s}{}", " ".repeat(pad)),
             Style::default().fg(ctx.theme.fg_muted),
         )));
     }

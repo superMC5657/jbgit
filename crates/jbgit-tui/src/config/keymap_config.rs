@@ -1,5 +1,7 @@
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
+use crate::keymap::KeyAction;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum KeymapPreset {
     #[default]
@@ -101,7 +103,7 @@ pub struct KeyBindingsList {
 pub struct KeyBindingConfig {
     #[serde(deserialize_with = "deserialize_key_seq")]
     pub on: Vec<String>,
-    pub run: String,
+    pub run: KeyAction,
     #[serde(default)]
     pub desc: Option<String>,
 }
@@ -131,8 +133,8 @@ fn keys_equal(a: &[String], b: &[String]) -> bool {
     }
 }
 
-fn is_active_run(run: &str) -> bool {
-    !run.is_empty() && run != "noop"
+fn is_active_run(run: &KeyAction) -> bool {
+    run.is_active()
 }
 
 fn merge_section(base: &mut Vec<KeyBindingConfig>, overlay: &KeyBindingsList) {
@@ -186,10 +188,10 @@ fn merge_section(base: &mut Vec<KeyBindingConfig>, overlay: &KeyBindingsList) {
     }
 }
 
-fn kb(on: &[&str], run: &str, desc: Option<&str>) -> KeyBindingConfig {
+fn kb(on: &[&str], run: KeyAction, desc: Option<&str>) -> KeyBindingConfig {
     KeyBindingConfig {
         on: on.iter().map(|s| (*s).to_string()).collect(),
-        run: run.to_string(),
+        run,
         desc: desc.map(ToString::to_string),
     }
 }
@@ -230,30 +232,30 @@ impl KeymapConfig {
                     tree_speed_search: Some(true),
                     global: Some(KeyBindingsList {
                         prepend_keymap: vec![
-                            kb(&["<C-`>"], "toggle_branches_popup", None),
-                            kb(&["<C-~>"], "toggle_branches_popup", None),
-                            kb(&["<C-S-k>"], "git_push", None),
-                            kb(&["<C-t>"], "git_pull", None),
-                            kb(&["<C-k>"], "tab_commit", None),
-                            kb(&["<C-A-n>"], "new_branch", None),
+                            kb(&["<C-`>"], KeyAction::ToggleBranchesPopup, None),
+                            kb(&["<C-~>"], KeyAction::ToggleBranchesPopup, None),
+                            kb(&["<C-S-k>"], KeyAction::GitPush, None),
+                            kb(&["<C-t>"], KeyAction::GitPull, None),
+                            kb(&["<C-k>"], KeyAction::TabCommit, None),
+                            kb(&["<C-A-n>"], KeyAction::NewBranch, None),
                         ],
                         ..Default::default()
                     }),
                     log: Some(KeyBindingsList {
-                        prepend_keymap: vec![kb(&["<C-l>"], "focus_filter", None)],
+                        prepend_keymap: vec![kb(&["<C-l>"], KeyAction::FocusFilter, None)],
                         ..Default::default()
                     }),
                     commit: Some(KeyBindingsList {
                         prepend_keymap: vec![
-                            kb(&["<A-m>"], "toggle_amend", None),
-                            kb(&["<C-Enter>"], "commit", None),
+                            kb(&["<A-m>"], KeyAction::ToggleAmend, None),
+                            kb(&["<C-Enter>"], KeyAction::Commit, None),
                         ],
                         ..Default::default()
                     }),
                     diff: Some(KeyBindingsList {
                         prepend_keymap: vec![
-                            kb(&["<F4>"], "zoom_diff", None),
-                            kb(&["c"], "cycle_diff_context", None),
+                            kb(&["<F4>"], KeyAction::ZoomDiff, None),
+                            kb(&["c"], KeyAction::CycleDiffContext, None),
                         ],
                         ..Default::default()
                     }),
@@ -270,16 +272,17 @@ impl KeymapConfig {
                     tree_speed_search: Some(false),
                     log: Some(KeyBindingsList {
                         prepend_keymap: vec![
-                            kb(&["<C-d>"], "page_down_half", None),
-                            kb(&["<C-u>"], "page_up_half", None),
+                            kb(&["<C-d>"], KeyAction::PageDownHalf, None),
+                            kb(&["<C-u>"], KeyAction::PageUpHalf, None),
+                            kb(&["d"], KeyAction::CompareOrDiff, None),
                         ],
                         ..Default::default()
                     }),
                     diff: Some(KeyBindingsList {
                         prepend_keymap: vec![
-                            kb(&["c"], "cycle_diff_context", None),
-                            kb(&["s"], "stage_selection", None),
-                            kb(&["u"], "unstage_selection", None),
+                            kb(&["c"], KeyAction::CycleDiffContext, None),
+                            kb(&["s"], KeyAction::StageSelection, None),
+                            kb(&["u"], KeyAction::UnstageSelection, None),
                         ],
                         ..Default::default()
                     }),
@@ -331,10 +334,10 @@ impl KeymapConfig {
         }
     }
 
-    pub fn primary_key_for(&self, scopes: &[KeymapScope], run: &str) -> Option<String> {
+    pub fn primary_key_for(&self, scopes: &[KeymapScope], run: &KeyAction) -> Option<String> {
         for &scope in scopes {
             for b in self.bindings_for(scope) {
-                if b.run == run
+                if &b.run == run
                     && let Some(seq) = crate::keymap::KeySequence::parse(&b.on)
                 {
                     return Some(seq.to_display_string());
@@ -344,11 +347,11 @@ impl KeymapConfig {
         None
     }
 
-    pub fn all_keys_for(&self, scopes: &[KeymapScope], run: &str) -> Vec<String> {
+    pub fn all_keys_for(&self, scopes: &[KeymapScope], run: &KeyAction) -> Vec<String> {
         let mut out = Vec::new();
         for &scope in scopes {
             for b in self.bindings_for(scope) {
-                if b.run == run
+                if &b.run == run
                     && let Some(seq) = crate::keymap::KeySequence::parse(&b.on)
                 {
                     let disp = seq.to_display_string();
@@ -359,5 +362,27 @@ impl KeymapConfig {
             }
         }
         out
+    }
+
+    pub fn editor_keys_for(&self, scopes: &[KeymapScope], run: &KeyAction) -> Vec<String> {
+        let mut out = Vec::new();
+        for &scope in scopes {
+            for b in self.bindings_for(scope) {
+                if &b.run == run
+                    && let Some(seq) = crate::keymap::KeySequence::parse(&b.on)
+                    && seq.starts_with_editor_chord()
+                {
+                    let disp = seq.to_display_string();
+                    if !out.contains(&disp) {
+                        out.push(disp);
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    pub fn primary_editor_key_for(&self, scopes: &[KeymapScope], run: &KeyAction) -> Option<String> {
+        self.editor_keys_for(scopes, run).into_iter().next()
     }
 }

@@ -248,7 +248,7 @@ mode = "nerd_font"
 - **预设风格 (`preset`)**：
   - `"default"`：极简零冲突推荐预设（默认）。
   - `"jetbrains"`：贴近 IntelliJ IDEA 习惯（自动开启 `tree_speed_search = true`，并补充 `<C-k>` 打开 Commit、`<C-S-k>` Push、`<C-t>` Pull、`<C-A-n>` 新建分支、`<A-m>` Amend 等映射）。
-  - `"vim"`：Vim / Lazygit 风格（Log 中 `<C-d>`/`<C-u>` 半页翻滚，Diff 中 `s`/`u` 暂存/取消暂存，`c` 切换上下文行数）。
+  - `"vim"`：Vim / Lazygit 风格（Log 中 `<C-d>`/`<C-u>` 半页翻滚、`d` 对比提交/开关差异，Diff 中 `s`/`u` 暂存/取消暂存，`c` 切换上下文行数）。
 - **分支树直接打字搜索 (`tree_speed_search`)**：
   - `false`（默认）：在分支树面板按 `/` 或 `<Ctrl-f>` 进入搜索，单键 `j`/`k`/`c`/`q`/`r` 等保留导航与快捷操作。
   - `true`：在分支树面板直接打字即可实时过滤分支。

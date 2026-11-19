@@ -12,7 +12,9 @@ use ratatui::widgets::Paragraph;
 use unicode_width::UnicodeWidthStr;
 
 use crate::app::{AppState, RenderContext};
+use crate::config::KeymapScope;
 use crate::hit_test::{DiffHunkActionKind, HitTarget, StageDiffToolbarButton};
+use crate::keymap::KeyAction;
 use crate::stage_view::StageDiffRow;
 use crate::syntax::{HighlightedDiff, render_diff_line_spans_with_tab};
 use crate::views::{fit_left_right_spans, render_pane_frame, truncate_to_width};
@@ -238,23 +240,47 @@ pub fn render_stage_diff_workbench(
                     theme.diff_mod_bg
                 };
 
+                let km = &state.config.keymap;
+                let diff_scopes = &[KeymapScope::Diff];
+                let unstage_key = km
+                    .primary_key_for(diff_scopes, &KeyAction::UnstageSelection)
+                    .or_else(|| km.primary_key_for(diff_scopes, &KeyAction::ToggleStage))
+                    .unwrap_or_else(|| "Space".to_string());
+                let stage_key = km
+                    .primary_key_for(diff_scopes, &KeyAction::StageSelection)
+                    .or_else(|| km.primary_key_for(diff_scopes, &KeyAction::ToggleStage))
+                    .unwrap_or_else(|| "Space".to_string());
+                let rollback_key = km
+                    .primary_key_for(diff_scopes, &KeyAction::RollbackSelection)
+                    .unwrap_or_else(|| "d".to_string());
+                let three_way_key = km
+                    .primary_key_for(diff_scopes, &KeyAction::ThreeWayInspector)
+                    .unwrap_or_else(|| "i".to_string());
+
                 let mut pills: Vec<(String, Color, DiffHunkActionKind)> = Vec::new();
                 match diff.key.side {
                     StageDiffSide::Staged => {
                         pills.push((
-                            state.i18n.t("view.commit.hunk_unstage_pill").to_string(),
+                            state
+                                .i18n
+                                .t_fmt("view.commit.hunk_unstage_pill", &[("key", &unstage_key)]),
                             theme.status_untracked,
                             DiffHunkActionKind::Unstage,
                         ));
                     }
                     StageDiffSide::Unstaged => {
                         pills.push((
-                            state.i18n.t("view.commit.hunk_stage_pill").to_string(),
+                            state
+                                .i18n
+                                .t_fmt("view.commit.hunk_stage_pill", &[("key", &stage_key)]),
                             theme.status_added,
                             DiffHunkActionKind::Stage,
                         ));
                         pills.push((
-                            state.i18n.t("view.commit.hunk_rollback_pill").to_string(),
+                            state.i18n.t_fmt(
+                                "view.commit.hunk_rollback_pill",
+                                &[("key", &rollback_key)],
+                            ),
                             theme.status_conflicted,
                             DiffHunkActionKind::Rollback,
                         ));
@@ -263,7 +289,10 @@ pub fn render_stage_diff_workbench(
                 }
                 if diff.key.side != StageDiffSide::AmendCommit && hunk.has_mixed_range {
                     pills.push((
-                        state.i18n.t("view.commit.hunk_three_way_pill").to_string(),
+                        state.i18n.t_fmt(
+                            "view.commit.hunk_three_way_pill",
+                            &[("key", &three_way_key)],
+                        ),
                         theme.ref_head.icon,
                         DiffHunkActionKind::Inspect3Way,
                     ));
@@ -516,25 +545,91 @@ fn render_diff_hint_bar(
     ctx: &RenderContext<'_>,
 ) {
     let sw = &state.stage_workbench;
+    let km = &state.config.keymap;
+    let diff_scopes = &[KeymapScope::Diff];
+    let key_pair = |a: KeyAction, b: KeyAction, fallback: &str| -> String {
+        match (
+            km.primary_key_for(diff_scopes, &a),
+            km.primary_key_for(diff_scopes, &b),
+        ) {
+            (Some(k1), Some(k2)) => format!("{k1}/{k2}"),
+            (Some(k1), None) => k1,
+            (None, Some(k2)) => k2,
+            (None, None) => fallback.to_string(),
+        }
+    };
+    let hunk_k = key_pair(KeyAction::PrevHunk, KeyAction::NextHunk, "[/]");
+    let split_k = km
+        .primary_key_for(diff_scopes, &KeyAction::ToggleSideBySide)
+        .unwrap_or_else(|| "S".to_string());
+    let ctx_k = km
+        .primary_key_for(diff_scopes, &KeyAction::CycleDiffContext)
+        .unwrap_or_else(|| "w".to_string());
+
     let is_amend_ref = sw
         .current_diff_key
         .as_ref()
         .is_some_and(|k| k.side == StageDiffSide::AmendCommit);
     let text = if is_amend_ref {
-        state.i18n.t("view.commit.diff_hint_amend").to_string()
+        state.i18n.t_fmt(
+            "view.commit.diff_hint_amend",
+            &[("hunk", &hunk_k), ("split", &split_k), ("context", &ctx_k)],
+        )
     } else {
         let mut parts = Vec::new();
         if sw.visual_anchor_row.is_some() {
             parts.push(state.i18n.t("view.commit.diff_visual_line"));
         }
+        let undo_k = km
+            .primary_key_for(diff_scopes, &KeyAction::UndoRollback)
+            .unwrap_or_else(|| "Ctrl+Z".to_string());
         let undo_hint = if !sw.rollback_undo_stack.is_empty() {
-            state.i18n.t("view.commit.diff_undo_rollback_hint")
+            state
+                .i18n
+                .t_fmt("view.commit.diff_undo_rollback_hint", &[("key", &undo_k)])
         } else {
-            ""
+            String::new()
         };
+        let stage_k = match (
+            km.primary_key_for(diff_scopes, &KeyAction::StageSelection),
+            km.primary_key_for(diff_scopes, &KeyAction::UnstageSelection),
+        ) {
+            (Some(s), Some(u)) if s != u => format!("{s}/{u}"),
+            (Some(s), _) => s,
+            (None, _) => km
+                .primary_key_for(diff_scopes, &KeyAction::ToggleStage)
+                .unwrap_or_else(|| "Space".to_string()),
+        };
+        let rollback_k = km
+            .primary_key_for(diff_scopes, &KeyAction::RollbackSelection)
+            .unwrap_or_else(|| "d".to_string());
+        let visual_k = km
+            .primary_key_for(diff_scopes, &KeyAction::ToggleVisual)
+            .unwrap_or_else(|| "v".to_string());
+        let three_way_k = km
+            .primary_key_for(diff_scopes, &KeyAction::ThreeWayInspector)
+            .unwrap_or_else(|| "i".to_string());
+        let side_k = km
+            .primary_key_for(diff_scopes, &KeyAction::SwitchDiffSide)
+            .unwrap_or_else(|| "x".to_string());
+        let edit_k = km
+            .primary_key_for(&[KeymapScope::Commit], &KeyAction::EditFile)
+            .unwrap_or_else(|| "e".to_string());
         state.i18n.t_fmt(
             "view.commit.diff_hint_editable",
-            &[("mode", &parts.join(" · ")), ("undo", undo_hint)],
+            &[
+                ("mode", &parts.join(" · ")),
+                ("stage", &stage_k),
+                ("rollback", &rollback_k),
+                ("visual", &visual_k),
+                ("hunk", &hunk_k),
+                ("split", &split_k),
+                ("context", &ctx_k),
+                ("three_way", &three_way_k),
+                ("side", &side_k),
+                ("edit", &edit_k),
+                ("undo", &undo_hint),
+            ],
         )
     };
     frame.render_widget(

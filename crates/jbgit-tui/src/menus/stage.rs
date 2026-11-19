@@ -5,6 +5,7 @@ use crate::app::{Action, AppState, ContextMenuAction, ContextMenuItem};
 use crate::config::KeymapScope;
 use crate::dialogs::{ChoiceDialog, Dialog};
 use crate::hit_test::DiffHunkActionKind;
+use crate::keymap::KeyAction;
 
 use super::{dialog, diff_patch_args, op, run};
 
@@ -12,12 +13,12 @@ use super::{dialog, diff_patch_args, op, run};
 pub fn stage_tree_menu_items(state: &AppState, idx: usize) -> Vec<ContextMenuItem> {
     let i18n = &state.i18n;
     let km = &state.config.keymap;
-    let stage_sc = km.primary_key_for(&[KeymapScope::Commit], "toggle_stage");
+    let stage_sc = km.primary_key_for(&[KeymapScope::Commit], &KeyAction::ToggleStage);
     let discard_sc = km
-        .all_keys_for(&[KeymapScope::Commit], "discard_changes")
+        .all_keys_for(&[KeymapScope::Commit], &KeyAction::DiscardChanges)
         .join(" / ");
     let discard_sc = (!discard_sc.is_empty()).then_some(discard_sc);
-    let edit_sc = km.primary_key_for(&[KeymapScope::Commit], "edit_file");
+    let edit_sc = km.primary_key_for(&[KeymapScope::Commit], &KeyAction::EditFile);
     let row = state.stage_workbench.rows.get(idx);
     let group = row.map(|r| r.group_kind());
     let targets = state
@@ -258,9 +259,9 @@ fn stage_diff_common_items(
 ) -> Vec<ContextMenuItem> {
     let i18n = &state.i18n;
     let km = &state.config.keymap;
-    let sbs_sc = km.primary_key_for(&[KeymapScope::Diff], "toggle_side_by_side");
-    let three_sc = km.primary_key_for(&[KeymapScope::Diff], "three_way_inspector");
-    let edit_sc = km.primary_key_for(&[KeymapScope::Commit], "edit_file");
+    let sbs_sc = km.primary_key_for(&[KeymapScope::Diff], &KeyAction::ToggleSideBySide);
+    let three_sc = km.primary_key_for(&[KeymapScope::Diff], &KeyAction::ThreeWayInspector);
+    let edit_sc = km.primary_key_for(&[KeymapScope::Commit], &KeyAction::EditFile);
     let staged = side == Some(StageDiffSide::Staged);
     let paths: Vec<String> = path.iter().cloned().collect();
     let patch = diff_patch_args(staged, &paths);
@@ -304,9 +305,14 @@ fn stage_diff_common_items(
 pub fn stage_diff_menu_items(state: &AppState) -> Vec<ContextMenuItem> {
     let i18n = &state.i18n;
     let km = &state.config.keymap;
-    let stage_sc = km.primary_key_for(&[KeymapScope::Diff], "toggle_stage");
+    let stage_sc = km
+        .primary_key_for(&[KeymapScope::Diff], &KeyAction::StageSelection)
+        .or_else(|| km.primary_key_for(&[KeymapScope::Diff], &KeyAction::ToggleStage));
+    let unstage_sc = km
+        .primary_key_for(&[KeymapScope::Diff], &KeyAction::UnstageSelection)
+        .or_else(|| km.primary_key_for(&[KeymapScope::Diff], &KeyAction::ToggleStage));
     let rollback_sc = km
-        .all_keys_for(&[KeymapScope::Diff], "rollback_selection")
+        .all_keys_for(&[KeymapScope::Diff], &KeyAction::RollbackSelection)
         .join(" / ");
     let rollback_sc = (!rollback_sc.is_empty()).then_some(rollback_sc);
     let (side, path) = diff_side_and_path(state);
@@ -330,7 +336,7 @@ pub fn stage_diff_menu_items(state: &AppState) -> Vec<ContextMenuItem> {
         run(
             i18n.t("menu.stage.unstage_selection"),
             Some('u'),
-            stage_sc.as_deref(),
+            unstage_sc.as_deref(),
             vec![Action::StageDiffUnstageSelection],
         )
         .enabled_if(

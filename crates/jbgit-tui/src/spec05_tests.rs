@@ -1423,3 +1423,90 @@ fn shortcuts_help_palette_filters_and_executes_selected_action() {
         })
     ));
 }
+
+#[test]
+fn jetbrains_tree_speed_search_preserves_context_menu_dot_and_vim_diff_menu_shows_su() {
+    use crate::config::{KeymapConfig, KeymapPreset};
+
+    // 1. JetBrains preset: `.` on LogBranchesTree opens context menu instead of speed search.
+    let mut state = state_with(snapshot());
+    state.config.keymap = KeymapConfig::for_preset(KeymapPreset::Jetbrains);
+    state.dispatch(Action::SwitchTab(WorkspaceTab::Log));
+    state.dispatch(Action::FocusPane(PaneId::LogBranchesTree));
+    let _ = render(&mut state, 140, 40);
+
+    key(&mut state, KeyCode::Char('.'), KeyModifiers::NONE);
+    assert!(
+        matches!(state.modal_stack.last(), Some(ModalLayer::ContextMenu { .. })),
+        "expected context menu on '.' under jetbrains preset"
+    );
+    state.dispatch(Action::PopContextMenus);
+
+    type_str(&mut state, "main");
+    assert_eq!(state.branches.query, "main");
+
+    // 2. Vim preset: stage_diff_menu_items displays `s` and `u` separately.
+    state.config.keymap = KeymapConfig::for_preset(KeymapPreset::Vim);
+    let diff_menu = crate::menus::stage_diff_menu_items(&state);
+    assert_eq!(
+        find_item(&diff_menu, "Stage Hunk or Lines").shortcut.as_deref(),
+        Some("s")
+    );
+    assert_eq!(
+        find_item(&diff_menu, "Unstage Hunk or Lines").shortcut.as_deref(),
+        Some("u")
+    );
+}
+
+#[test]
+fn zh_cn_reset_dialog_and_collapsed_branches_stripe_align_cjk_widths() {
+    use unicode_width::UnicodeWidthStr;
+
+    let mut state = state_with(snapshot());
+    state.i18n = Arc::new(crate::i18n::I18n::load("zh-CN", None));
+
+    // Reset dialog flags must start at the exact same display column in zh-CN.
+    let dlg = crate::dialogs::reset_dialog(oid(9), "修复对齐", "main", &state.i18n);
+    let Dialog::Choice(choice) = dlg else {
+        panic!("expected ChoiceDialog");
+    };
+    let flag_cols: Vec<usize> = choice
+        .options
+        .iter()
+        .map(|o| {
+            let prefix = o.label.split("--").next().unwrap();
+            prefix.width()
+        })
+        .collect();
+    assert!(
+        flag_cols.windows(2).all(|w| w[0] == w[1]),
+        "reset mode flags misaligned: {flag_cols:?}"
+    );
+
+    // Collapsed branches stripe renders `"分支"` cleanly into a 2-column area.
+    let mut term = Terminal::new(TestBackend::new(2, 6)).unwrap();
+    let mut hit_registry = crate::hit_test::HitTestRegistry::default();
+    let mut ctx = crate::app::RenderContext {
+        theme: &state.theme,
+        glyph_mode: state.glyph_mode,
+        branch_colors: &state.branch_colors,
+        hit_registry: &mut hit_registry,
+        focused_pane: PaneId::LogCommitTable,
+        hover_target: None,
+        dragging_splitter: None,
+        graph_renderer: None,
+        i18n: Some(&state.i18n),
+        config: Some(&state.config),
+    };
+    term.draw(|frame| {
+        crate::views::log_branches::render_branches_stripe(
+            frame,
+            Rect::new(0, 0, 2, 6),
+            &mut ctx,
+        );
+    })
+    .unwrap();
+    let buf = term.backend().buffer();
+    assert_eq!(buf[(0, 1)].symbol(), "分");
+    assert_eq!(buf[(0, 2)].symbol(), "支");
+}

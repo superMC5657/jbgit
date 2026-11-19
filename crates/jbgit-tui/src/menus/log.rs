@@ -6,6 +6,7 @@ use crate::dialogs::{
     ChoiceDialog, Dialog, InputDialog, InputIntent, InputValidation, MessageDialog, MessageIntent,
     RebaseTodoDialog, new_branch_dialog, reset_dialog,
 };
+use crate::keymap::KeyAction;
 
 use super::{branch_menu_items, dialog, ellipsize, local_names, op, run};
 
@@ -28,13 +29,13 @@ pub fn log_commit_menu_items(state: &AppState) -> Vec<ContextMenuItem> {
     let no_ongoing = state.require_no_ongoing();
     let i18n = &state.i18n;
     let km = &state.config.keymap;
-    let checkout_sc = km.primary_key_for(&[KeymapScope::Log], "checkout");
-    let compare_sc = km.primary_key_for(&[KeymapScope::Log], "compare_or_diff");
-    let uncommit_sc = km.primary_key_for(&[KeymapScope::Log], "uncommit");
-    let reword_sc = km.primary_key_for(&[KeymapScope::Log], "reword");
-    let new_branch_sc = km.primary_key_for(&[KeymapScope::Log], "new_branch");
-    let copy_sc = km.primary_key_for(&[KeymapScope::Log], "copy_hash");
-    let goto_sc = km.primary_key_for(&[KeymapScope::Log], "goto_revision");
+    let checkout_sc = km.primary_key_for(&[KeymapScope::Log], &KeyAction::Checkout);
+    let compare_sc = km.primary_key_for(&[KeymapScope::Log], &KeyAction::CompareOrDiff);
+    let uncommit_sc = km.primary_key_for(&[KeymapScope::Log], &KeyAction::Uncommit);
+    let reword_sc = km.primary_key_for(&[KeymapScope::Log], &KeyAction::Reword);
+    let new_branch_sc = km.primary_key_for(&[KeymapScope::Log], &KeyAction::NewBranch);
+    let copy_sc = km.primary_key_for(&[KeymapScope::Log], &KeyAction::CopyHash);
+    let goto_sc = km.primary_key_for(&[KeymapScope::Log], &KeyAction::GotoRevision);
     let need_single = |what: &str| i18n.t_fmt("menu.log.need_single", &[("what", what)]);
     let mut items = Vec::new();
 
@@ -496,7 +497,7 @@ fn drop_item(state: &AppState, oids: &[Oid]) -> ContextMenuItem {
     let drop_sc = state
         .config
         .keymap
-        .all_keys_for(&[KeymapScope::Log], "drop_commit")
+        .all_keys_for(&[KeymapScope::Log], &KeyAction::DropCommit)
         .join(" / ");
     let drop_sc = (!drop_sc.is_empty()).then_some(drop_sc);
     let count_s = oids.len().to_string();
@@ -554,9 +555,9 @@ fn drop_item(state: &AppState, oids: &[Oid]) -> ContextMenuItem {
 pub fn log_diff_menu_items(state: &AppState) -> Vec<ContextMenuItem> {
     let i18n = &state.i18n;
     let km = &state.config.keymap;
-    let sbs_sc = km.primary_key_for(&[KeymapScope::Diff], "toggle_side_by_side");
-    let ctx_sc = km.primary_key_for(&[KeymapScope::Diff], "cycle_diff_context");
-    let zoom_sc = km.primary_key_for(&[KeymapScope::Diff], "zoom_diff");
+    let sbs_sc = km.primary_key_for(&[KeymapScope::Diff], &KeyAction::ToggleSideBySide);
+    let ctx_sc = km.primary_key_for(&[KeymapScope::Diff], &KeyAction::CycleDiffContext);
+    let zoom_sc = km.primary_key_for(&[KeymapScope::Diff], &KeyAction::ZoomDiff);
     let change = state.details.selected_change().map(|c| c.path.clone());
     let oids = state
         .details
