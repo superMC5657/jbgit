@@ -1,0 +1,22 @@
+[package]
+name = "jbgit-engine"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+jbgit-core.workspace = true
+
+anyhow.workspace = true
+chrono.workspace = true
+crossbeam-channel.workspace = true
+git2.workspace = true
+imara-diff.workspace = true
+notify.workspace = true
+notify-debouncer-mini.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

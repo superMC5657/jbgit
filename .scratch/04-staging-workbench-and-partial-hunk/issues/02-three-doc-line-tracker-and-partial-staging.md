@@ -12,13 +12,13 @@ Milestone: M4 — 变更暂存工作台与局部暂存
 
 ## 1. 背景与目标
 
-在 `jgit-core::stage` 与 `jgit-engine` 中完整落地 IDEA `GitStageLineStatusTracker` 的三文档双差分块合并算法与 `git2::Index::add_frombuffer` 纯内存写入机制，并在右侧交互式 Diff 面板中提供 **Hunk 级** 与 **单行 / 多行可视选区级（Visual Line Selection）** 的局部 Stage、Unstage 与 Rollback 能力，彻底杜绝手工拼 patch 容易失败或误改工作区文件的问题。
+在 `jbgit-core::stage` 与 `jbgit-engine` 中完整落地 IDEA `GitStageLineStatusTracker` 的三文档双差分块合并算法与 `git2::Index::add_frombuffer` 纯内存写入机制，并在右侧交互式 Diff 面板中提供 **Hunk 级** 与 **单行 / 多行可视选区级（Visual Line Selection）** 的局部 Stage、Unstage 与 Rollback 能力，彻底杜绝手工拼 patch 容易失败或误改工作区文件的问题。
 
 ---
 
 ## 2. 核心实现任务清单
 
-- [ ] **无损行切片文档与 `BlockMerger` 实现 (`jgit-core::stage`)**：
+- [ ] **无损行切片文档与 `BlockMerger` 实现 (`jbgit-core::stage`)**：
   - 实现 `SlicedDocument`：将字节数组按行切分，精确记录每行的内容切片及行尾换行符类型（`\n`、`\r\n` 或文件尾无换行 `None`），确保重组回字节流时与原文件 100% 字节级一致（Byte-for-byte identical）。
   - 基于 `imara-diff` 计算 `staged_blocks = diff(vcs_doc, staged_doc)` 与 `unstaged_blocks = diff(staged_doc, local_doc)`。
   - 移植 `BlockMerger`（`GitStageLineStatusTracker.kt` 第 922-1018 行），输出统一坐标系的 `Vec<StagedRange>`。

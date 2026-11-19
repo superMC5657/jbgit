@@ -24,9 +24,9 @@
 
 | Crate | 核心职责 | 严禁引入的依赖 |
 | :--- | :--- | :--- |
-| `jgit-core` | 纯内存领域模型：DAG 提交图结构、DFS 轨道与非交叉布局算法、引用分组与排序器、三文档行级局部暂存补丁计算、模糊匹配与筛选数据结构 | 严禁依赖 `ratatui`、`crossterm`、文件系统监听或终端状态，确保纯函数式基准测试（`criterion`）与属性测试（`proptest`）毫秒级运行 |
-| `jgit-engine` | 封装 `git2`（线程局部 `Repository` 句柄池）与系统 `git` CLI 异步执行器、`notify` 防抖文件监听器、后台任务队列与 `GitConsoleEntry` 命令审计流 | 严禁依赖 `ratatui`、`crossterm` |
-| `jgit-tui` | 终端生命周期接管（Alternate Screen、Raw Mode、Bracketed Paste、Mouse Capture）、Darcula 主题系统、可拖拽双重/三重分屏布局、自研高保真控件与浮窗/右键菜单栈 | 不直接调用底层 `git2` 原始类型，全部消费 `jgit-core` 与 `jgit-engine` 暴露的快照与命令协议 |
+| `jbgit-core` | 纯内存领域模型：DAG 提交图结构、DFS 轨道与非交叉布局算法、引用分组与排序器、三文档行级局部暂存补丁计算、模糊匹配与筛选数据结构 | 严禁依赖 `ratatui`、`crossterm`、文件系统监听或终端状态，确保纯函数式基准测试（`criterion`）与属性测试（`proptest`）毫秒级运行 |
+| `jbgit-engine` | 封装 `git2`（线程局部 `Repository` 句柄池）与系统 `git` CLI 异步执行器、`notify` 防抖文件监听器、后台任务队列与 `GitConsoleEntry` 命令审计流 | 严禁依赖 `ratatui`、`crossterm` |
+| `jbgit-tui` | 终端生命周期接管（Alternate Screen、Raw Mode、Bracketed Paste、Mouse Capture）、Darcula 主题系统、可拖拽双重/三重分屏布局、自研高保真控件与浮窗/右键菜单栈 | 不直接调用底层 `git2` 原始类型，全部消费 `jbgit-core` 与 `jbgit-engine` 暴露的快照与命令协议 |
 
 ### 核心第三方依赖选型基线
 
@@ -59,7 +59,7 @@
                                                               │ Effect / TaskRequest (epoch)
                                                               ▼
 ┌──────────────────────┐   EngineEvent (epoch)  ┌───────────────────────────┐
-│  notify Debouncer    │ ─────────────────────► │   jgit-engine Supervisor  │
+│  notify Debouncer    │ ─────────────────────► │  jbgit-engine Supervisor  │
 │ (.git & Worktree)    │                        │ ┌───────────┬───────────┐ │
 └──────────────────────┘                        │ │git2 Worker│ CLI Runner│ │
                                                 │ │ ThreadPool│ (Async)   │ │
@@ -121,7 +121,7 @@ pub struct HitRegion {
 
 ---
 
-## 4. 混合 Git 引擎规范 (`jgit-engine`)
+## 4. 混合 Git 引擎规范 (`jbgit-engine`)
 
 ### 4.1 读写通道职责边界矩阵
 
@@ -146,7 +146,7 @@ pub struct HitRegion {
 1. **环境变量标准注入**：
    - 只读辅助命令一律携带 `GIT_OPTIONAL_LOCKS=0`，防止后台状态探测与外部终端的 `git rebase` 争抢 `.git/index.lock`。
    - 禁用分页器与颜色转义：`GIT_PAGER=cat`、`LC_ALL=C.UTF-8`（解析机器输出时）、`GIT_TERMINAL_PROMPT=0`（避免后台进程挂起等待 stdin 密码；若遇凭据缺失则捕获错误并在 TUI 弹窗提示）。
-   - 非交互式变基编辑器：当用户在 TUI 中执行 `Reword` / `Squash` / `Fixup` / `Drop` 时，jGit 将自身可执行文件以内部子命令模式（或临时无副作用脚本）设为 `GIT_SEQUENCE_EDITOR` 与 `GIT_EDITOR`，精准改写 `git-rebase-todo` 后立即返回，与 IDEA `GitInteractiveRebaseEditorHandler` 机制一致。
+   - 非交互式变基编辑器：当用户在 TUI 中执行 `Reword` / `Squash` / `Fixup` / `Drop` 时，jbgit 将自身可执行文件以内部子命令模式（或临时无副作用脚本）设为 `GIT_SEQUENCE_EDITOR` 与 `GIT_EDITOR`，精准改写 `git-rebase-todo` 后立即返回，与 IDEA `GitInteractiveRebaseEditorHandler` 机制一致。
 2. **大批量路径参数传递**：
    - 当暂存/回滚选中超过 32 个文件时（尤其在 Windows 命令行长度限制下），使用 `--pathspec-from-file=- --pathspec-file-nul` 通过 `stdin` 传递 NUL 分隔路径列表。
 3. **Git Console 实时审计日志**：
@@ -166,7 +166,7 @@ pub struct HitRegion {
 
 ### 4.3 多线程 `git2::Repository` 句柄池与文件监听
 
-1. **线程安全**：`git2::Repository` 是 `Send` 但非 `Sync`。`jgit-engine` 维护 `rayon` / 固定工作线程池，每个工作线程通过 `thread_local!` 惰性持有只读 `git2::Repository` 实例，避免每次查询重新打开 `.git/config` 与 packfile 索引。
+1. **线程安全**：`git2::Repository` 是 `Send` 但非 `Sync`。`jbgit-engine` 维护 `rayon` / 固定工作线程池，每个工作线程通过 `thread_local!` 惰性持有只读 `git2::Repository` 实例，避免每次查询重新打开 `.git/config` 与 packfile 索引。
 2. **细粒度防抖监听（`RepoWatcher`）**：
    - 监听 `.git/HEAD`、`.git/refs/`、`.git/packed-refs`、`.git/MERGE_HEAD`、`.git/REBASE_HEAD`、`.git/CHERRY_PICK_HEAD` -> 触发 **`RefAndGraphRefresh`**（100ms 防抖）。
    - 监听 `.git/index` -> 触发 **`StageStatusRefresh`**（80ms 防抖）。

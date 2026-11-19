@@ -62,7 +62,7 @@
 
 ## 3. Darcula 14 色分支轨道调色板与分配算法
 
-综合 `RepositoryColorsApi.kt`（第 31-47 行 `NEW_UI_REPOSITORY_COLORS`）、`VcsLogColorManagerFactory.kt`（第 28-44 行）以及 `DefaultColorGenerator.kt`（第 39-58 行），我们定义 **jGit Darcula 14 色高对比度分支轨道调色板**。
+综合 `RepositoryColorsApi.kt`（第 31-47 行 `NEW_UI_REPOSITORY_COLORS`）、`VcsLogColorManagerFactory.kt`（第 28-44 行）以及 `DefaultColorGenerator.kt`（第 39-58 行），我们定义 **jbgit Darcula 14 色高对比度分支轨道调色板**。
 
 针对终端深色背景 `#1E1F22`，所有 14 色均对齐 JetBrains New UI 色相环并校准亮度（WCAG 对比度 ≥ 4.5:1），同时配备对应的暗调胶囊容器色（用于多根仓库徽标或轨道选中衬底）：
 
@@ -159,7 +159,7 @@
 ### 全局界面骨架线框图（Log 三屏 + 右侧上下双重分屏态）
 
 ```text
- jGit  ⎇ main ↑2 ↓1 │ [1 Commit (3)]  [2 Log ●]  [3 Stash]  [4 Console]            [Fetch] [Pull] [Push]
+ jbgit  ⎇ main ↑2 ↓1 │ [1 Commit (3)]  [2 Log ●]  [3 Stash]  [4 Console]            [Fetch] [Pull] [Push]
 ────────────────────┼──────────────────────────────────────────────────────┬─────────────────────────────
 ▎Branches      [🔍] │ 🔍 Text or Hash…  │ Branch: All ▾ │ User ▾ │ [⚙ ▾]  │ Changes (4 files)   [⊞][👁]
  ▼ HEAD (main)      │ ●  ▐◆ main▌ ▐☁ origin/main▌ feat: add non-cross…  │ ▼ src/graph

@@ -1058,7 +1058,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3bd1574e617a9a6c1f8f8181bd7e841e1f20e4277607ef28945765188d6284d4"
 
 [[package]]
-name = "jgit-core"
+name = "jbgit-core"
 version = "0.1.0"
 dependencies = [
  "chrono",
@@ -1074,7 +1074,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "jgit-engine"
+name = "jbgit-engine"
 version = "0.1.0"
 dependencies = [
  "anyhow",
@@ -1082,7 +1082,7 @@ dependencies = [
  "crossbeam-channel",
  "git2",
  "imara-diff",
- "jgit-core",
+ "jbgit-core",
  "notify",
  "notify-debouncer-mini",
  "tempfile",
@@ -1092,7 +1092,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "jgit-tui"
+name = "jbgit-tui"
 version = "0.1.0"
 dependencies = [
  "anyhow",
@@ -1100,8 +1100,8 @@ dependencies = [
  "crossterm",
  "futures",
  "insta",
- "jgit-core",
- "jgit-engine",
+ "jbgit-core",
+ "jbgit-engine",
  "png",
  "ratatui",
  "rustc-hash",

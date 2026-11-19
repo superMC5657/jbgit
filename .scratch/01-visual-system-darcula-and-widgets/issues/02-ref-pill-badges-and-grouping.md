@@ -20,7 +20,7 @@ Milestone: M2 — 非交叉 DAG 图与 Pill 徽标
 
 ## 2. 核心实现任务清单
 
-- [x] **引用分组与融合引擎 (`jgit-core::refs::group_refs_for_table`)**：
+- [x] **引用分组与融合引擎 (`jbgit-core::refs::group_refs_for_table`)**：
   - 实现 `GitLabelComparator` 排序：`HEAD` -> `CURRENT_BRANCH` -> `main/master` -> `origin/main` -> `LOCAL_BRANCH` -> `REMOTE_BRANCH` -> `TAG` -> `OTHER`。
   - **跟踪分支同位融合（对标 `createTrackedGroup`）**：当本地分支 `B` 与其配置的上游跟踪分支（或匹配的 `<remote>/B`）指向同一个 Commit Oid 时，自动将二者合并为单个 `RefGroup::TrackedPair { remote: "origin", branch: "B" }`，显示文本为 `"origin & B"`，附带双色标识（`#3CB45C` + `#9F79B5`）！
   - **HEAD 融合与 Detached HEAD 独立告警**：当仓库处于正常分支 `B` 上时，将 `HEAD` 金色图标并入 `B`（或 `origin & B`）胶囊最前端；当处于 Detached HEAD 时，独立生成首枚橙色警告胶囊 `⚠ HEAD`（悬停提示游离头状态说明）。
@@ -54,8 +54,8 @@ Milestone: M2 — 非交叉 DAG 图与 Pill 徽标
 
 ### 2026-11-18 — implemented
 
-- 分组/排序/缩写：`crates/jgit-core/src/refs.rs`（`group_refs_for_table`、`shorten_ref_name`、`natural_cmp`）。HEAD 通过合成的 `RefInfo::head_marker` 传入：有 `is_head` 本地分支则并入其胶囊，否则生成最左 `DetachedHead`。
-- 渲染：`crates/jgit-tui/src/widgets/pill_badge.rs`，布局为纯函数 `layout_pills`；`+N` 溢出胶囊注册 `HitTarget::CommitRefOverflow { visible_row, hidden_refs }`，悬停展开全部引用浮层、右键弹出按隐藏引用分组的子菜单。
+- 分组/排序/缩写：`crates/jbgit-core/src/refs.rs`（`group_refs_for_table`、`shorten_ref_name`、`natural_cmp`）。HEAD 通过合成的 `RefInfo::head_marker` 传入：有 `is_head` 本地分支则并入其胶囊，否则生成最左 `DetachedHead`。
+- 渲染：`crates/jbgit-tui/src/widgets/pill_badge.rs`，布局为纯函数 `layout_pills`；`+N` 溢出胶囊注册 `HitTarget::CommitRefOverflow { visible_row, hidden_refs }`，悬停展开全部引用浮层、右键弹出按隐藏引用分组的子菜单。
 - 双色跟踪胶囊：Unicode 用 `⎇⇄`，NerdFont 用 `\u{e0a0}` + `\u{f444}`（双色点）。
 - Compact / Show Tag Names：Log 表格中按 `c` / `t` 切换，或右键 “Reference View Options”。
 - 已在 WezTerm 无头 mux 中运行真实二进制核验（`../user-a…`、`+3`、选中行端帽无黑边、CJK 对齐）。

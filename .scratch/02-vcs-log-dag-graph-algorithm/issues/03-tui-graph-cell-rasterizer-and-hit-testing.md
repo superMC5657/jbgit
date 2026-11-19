@@ -14,7 +14,7 @@ Milestone: M2 — 非交叉 DAG 图与 Pill 徽标
 
 ## 1. 背景与目标
 
-将 `jgit-core` 计算出的单行抽象 `Vec<GraphPrintElement>` 光栅化渲染到 `ratatui::buffer::Buffer` 的双列/轨字符网格中，完美呈现圆角弯头（`╭╮╰╯`）、多色交汇（`├┤┼`）、虚线折叠边（`┆`）、长边截断箭头（`▾▴`）与高亮圆点（`●◎`），并支持鼠标悬停高亮整条边/箭头与左键点击长边箭头瞬间跳转对端提交！
+将 `jbgit-core` 计算出的单行抽象 `Vec<GraphPrintElement>` 光栅化渲染到 `ratatui::buffer::Buffer` 的双列/轨字符网格中，完美呈现圆角弯头（`╭╮╰╯`）、多色交汇（`├┤┼`）、虚线折叠边（`┆`）、长边截断箭头（`▾▴`）与高亮圆点（`●◎`），并支持鼠标悬停高亮整条边/箭头与左键点击长边箭头瞬间跳转对端提交！
 
 ---
 
@@ -55,7 +55,7 @@ Milestone: M2 — 非交叉 DAG 图与 Pill 徽标
 
 ### 2026-11-18 — implemented
 
-- 代码实现位于 `crates/jgit-tui/src/graph/{mod, cell_grid, state}.rs`。
+- 代码实现位于 `crates/jbgit-tui/src/graph/{mod, cell_grid, state}.rs`。
 - 定义 `GraphRenderBackend` trait 与 `CellGridGraphBackend` 默认字符网格后端。
 - `BitmaskGlyphComposer` 实现四向位掩码盒线合成（含圆角弯头、交叉着色与虚线过滤边）。
 - 鼠标命中支持 `HitTarget::GraphPrintElement`，长边截断箭头点击平滑居中跳转远端父/子提交，并支持 `Alt+Left` 返回。

@@ -1,0 +1,61 @@
+# jbgit 快捷键映射配置文件 (keymap.toml)
+# 对标 Yazi 体系的 key_bindings 规范: on = ["按键序列"], run = "动作名", desc = "操作描述"
+
+[global]
+key_bindings = [
+    { on = [ "q" ], run = "quit", desc = "退出 jbgit" },
+    { on = [ "?" ], run = "help", desc = "打开快捷键帮助视窗" },
+    { on = [ "r" ], run = "refresh", desc = "强制刷新 Git 仓库状态" },
+    { on = [ "<A-1>" ], run = "tab_log", desc = "切换至提交日志 (Log) 视图" },
+    { on = [ "<A-2>" ], run = "tab_commit", desc = "切换至提交工作台 (Commit) 视图" },
+    { on = [ "<A-3>" ], run = "tab_branches", desc = "切换至分支树 (Branches) 视图" },
+    { on = [ "<A-4>" ], run = "tab_stash", desc = "切换至贮藏箱 (Stash) 视图" },
+    { on = [ "<C-`>" ], run = "toggle_branches_popup", desc = "呼出/关闭全局分支速查浮窗" },
+    { on = [ "<F9>" ], run = "palette", desc = "打开全局调色板预览" },
+]
+
+[log]
+key_bindings = [
+    { on = [ "j" ], run = "cursor_down", desc = "向下移动一行" },
+    { on = [ "<Down>" ], run = "cursor_down", desc = "向下移动一行" },
+    { on = [ "k" ], run = "cursor_up", desc = "向上移动一行" },
+    { on = [ "<Up>" ], run = "cursor_up", desc = "向上移动一行" },
+    { on = [ "<C-d>" ], run = "compare_versions", desc = "版本对比 Diff" },
+    { on = [ "<C-g>" ], run = "goto_revision", desc = "按哈希/分支/Tag快速跳转" },
+    { on = [ "c" ], run = "checkout", desc = "检出选中的分支或提交" },
+    { on = [ "g", "g" ], run = "goto_top", desc = "跳转至提交图顶部" },
+    { on = [ "G" ], run = "goto_bottom", desc = "跳转至提交图底部" },
+    { on = [ "/" ], run = "focus_filter", desc = "聚焦分支/提交筛选输入框" },
+    { on = [ "u" ], run = "uncommit", desc = "撤销最近一次提交 (保留变更)" },
+    { on = [ "<F2>" ], run = "reword", desc = "修改选中的提交说明 (Reword)" },
+    { on = [ "<Del>" ], run = "drop_commit", desc = "删除提交 (交互式变基 Drop)" },
+]
+
+[commit]
+key_bindings = [
+    { on = [ "<Space>" ], run = "toggle_stage", desc = "暂存 / 取消暂存当前文件或代码块" },
+    { on = [ "<C-Enter>" ], run = "commit", desc = "执行提交" },
+    { on = [ "<A-a>" ], run = "toggle_amend", desc = "切换追加至上一提交 (Amend)" },
+    { on = [ "<C-a>" ], run = "select_all", desc = "全选变更文件" },
+    { on = [ "<Del>" ], run = "discard_changes", desc = "放弃选中文件的本地变更" },
+    { on = [ "v" ], run = "toggle_group", desc = "切换按目录树分组展示" },
+    { on = [ "e" ], run = "edit_file", desc = "在外部编辑器中打开该文件" },
+]
+
+[branch]
+key_bindings = [
+    { on = [ "f" ], run = "toggle_favorite", desc = "添加/取消收藏当前分支" },
+    { on = [ "c" ], run = "checkout", desc = "检出选中分支" },
+    { on = [ "<F2>" ], run = "rename_branch", desc = "重命名分支" },
+    { on = [ "<Del>" ], run = "delete_branch", desc = "删除分支" },
+]
+
+[diff]
+key_bindings = [
+    { on = [ "s" ], run = "toggle_side_by_side", desc = "切换单列 / 并排差异对比" },
+    { on = [ "c" ], run = "cycle_diff_context", desc = "切换上下文保留行数 (3 / 10 / 全量)" },
+    { on = [ "m" ], run = "cycle_diff_dock", desc = "切换 Diff 预览停靠位置" },
+    { on = [ "[" ], run = "prev_file", desc = "跳转至上一个变更文件" },
+    { on = [ "]" ], run = "next_file", desc = "跳转至下一个变更文件" },
+    { on = [ "<F4>" ], run = "zoom_diff", desc = "切换全屏 Diff 预览" },
+]

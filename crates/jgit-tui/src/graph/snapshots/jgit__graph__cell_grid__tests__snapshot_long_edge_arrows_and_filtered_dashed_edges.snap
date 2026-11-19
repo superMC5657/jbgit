@@ -1,9 +1,0 @@
----
-source: crates/jgit-tui/src/graph/cell_grid.rs
-expression: "format!(\"{}\\n{}\\n{}\\n{}\\n{}\", lines[0], lines[1], lines[15], lines[34],\nlines[35])"
----
-◎─╮
-▾ ●
-●
-▴ ●
-●─╯

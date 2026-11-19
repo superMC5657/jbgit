@@ -1,4 +1,4 @@
-# jGit Feature Specs & Issues 索引
+# jbgit Feature Specs & Issues 索引
 
 ---
 
@@ -32,11 +32,11 @@
 ## 3. 目标 Rust Workspace 拓扑
 
 ```text
-jGit/
+jbgit/
 ├── Cargo.toml                  # Workspace root
 ├── crates/
-│   ├── jgit-core/              # 纯领域模型与无 UI 依赖的核心算法库（graph / refs / stage / filter）
-│   ├── jgit-engine/            # git2 线程池 + git CLI 执行器 (GIT_OPTIONAL_LOCKS=0) + notify 防抖监听
-│   └── jgit-tui/               # ratatui + crossterm 终端界面层（theme / layout / widgets / views）
+│   ├── jbgit-core/             # 纯领域模型与无 UI 依赖的核心算法库（graph / refs / stage / filter）
+│   ├── jbgit-engine/           # git2 线程池 + git CLI 执行器 (GIT_OPTIONAL_LOCKS=0) + notify 防抖监听
+│   └── jbgit-tui/              # ratatui + crossterm 终端界面层（theme / layout / widgets / views）
 └── .scratch/                   # 按 Feature 组织的 Specs 与 Issues
 ```

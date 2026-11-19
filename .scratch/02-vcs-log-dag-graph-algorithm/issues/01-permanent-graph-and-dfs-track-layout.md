@@ -16,7 +16,7 @@ Milestone: M2 — 非交叉 DAG 图与 Pill 徽标
 
 ## 1. 背景与目标
 
-在 `crates/jgit-core/src/graph/` 中高保真移植 IDEA `vcs-log` 的静态永久图构建器与主干优先 DFS 连续轨道布局器（`GraphLayoutBuilder`），确保主干（`origin/main` / `main`）永远占据 `layout_index = 1` 的最左连续直轨，且任意深度的线性历史不会引发递归栈溢出。
+在 `crates/jbgit-core/src/graph/` 中高保真移植 IDEA `vcs-log` 的静态永久图构建器与主干优先 DFS 连续轨道布局器（`GraphLayoutBuilder`），确保主干（`origin/main` / `main`）永远占据 `layout_index = 1` 的最左连续直轨，且任意深度的线性历史不会引发递归栈溢出。
 
 ---
 
@@ -57,9 +57,9 @@ Milestone: M2 — 非交叉 DAG 图与 Pill 徽标
 
 ### 2026-11-18 — implemented
 
-- 代码实现位于 `crates/jgit-core/src/graph/permanent.rs`。
+- 代码实现位于 `crates/jbgit-core/src/graph/permanent.rs`。
 - `PermanentLinearGraphBuilder` 实现了紧凑 CSR 双向邻接表与对标 IDEA 的去重父提交和未加载浅克隆边界处理。
 - `GitBranchLayoutComparator` 实现了完整的优先级与分支排序，保证 `origin/main` / `main` 恒占最左轨道。
 - 显式堆栈 DFS 遍历避免递归，实测 200,000 连续线性提交平稳通过无栈溢出。
 - `ReachableNodes` 封装基于 `FixedBitSet` 的分支可达性查询。
-- 基准测试 `crates/jgit-core/benches/graph_layout.rs` 支持 release 模式压测。
+- 基准测试 `crates/jbgit-core/benches/graph_layout.rs` 支持 release 模式压测。

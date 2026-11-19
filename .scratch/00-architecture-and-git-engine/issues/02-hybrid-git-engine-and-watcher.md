@@ -13,7 +13,7 @@ Milestone: M1 — 底座、主题与混合引擎
 
 ## 1. 背景与目标
 
-实现 `crates/jgit-engine`，封装多线程 `git2::Repository` 句柄池、异步 `git` CLI 子进程执行器、`.git` 与工作区防抖文件监听器，以及结构化 `GitConsoleEntry` 命令审计流，为上层 TUI 提供携带 `epoch` 版本号的响应式数据快照与写操作执行能力。
+实现 `crates/jbgit-engine`，封装多线程 `git2::Repository` 句柄池、异步 `git` CLI 子进程执行器、`.git` 与工作区防抖文件监听器，以及结构化 `GitConsoleEntry` 命令审计流，为上层 TUI 提供携带 `epoch` 版本号的响应式数据快照与写操作执行能力。
 
 ---
 
@@ -35,7 +35,7 @@ Milestone: M1 — 底座、主题与混合引擎
   - 使用 `notify-debouncer-mini` 区分监听 `.git/` 关键元数据文件（100ms 防抖）与工作区目录（250ms 防抖，跳过 `.git/objects` 及大型忽略目录）。
   - 实现写操作期间的刷新抑制锁（`MutationGuard`）：内部 CLI 写操作执行期间暂存外部刷新信号，待写操作结束合并触发一次全量同步。
 - [ ] **`[4 Console]` 终端命令审计视图接入**：
-  - 在 `jgit-tui` 的 `Console` 标签页渲染命令列表、实时运行 Spinner、绿色成功 / 红色失败退出码徽标及可滚动输出详情。
+  - 在 `jbgit-tui` 的 `Console` 标签页渲染命令列表、实时运行 Spinner、绿色成功 / 红色失败退出码徽标及可滚动输出详情。
 
 ---
 

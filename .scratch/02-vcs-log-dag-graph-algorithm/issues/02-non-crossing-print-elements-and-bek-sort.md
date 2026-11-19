@@ -57,7 +57,7 @@ Milestone: M2 — 非交叉 DAG 图与 Pill 徽标
 
 ### 2026-11-18 — implemented
 
-- 代码实现位于 `crates/jgit-core/src/graph/{edges_in_row, visible, print_elements}.rs`。
+- 代码实现位于 `crates/jbgit-core/src/graph/{edges_in_row, visible, print_elements}.rs`。
 - `EdgesInRowGenerator` 实现块大小 40 与 1000 步行进的双向 LRU 快照缓存。
 - `VisibleGraphController` 支持 Topo、Bek (IntelliSort)、First-Parent 过滤与分支/可达过滤。
 - `GraphElementComparatorByLayoutIndex` 实现严格弱序并通过了随机 DAG 穷举三元组全序传递性验证测试。

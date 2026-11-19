@@ -1,0 +1,23 @@
+[package]
+name = "jbgit-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+chrono.workspace = true
+fixedbitset.workspace = true
+imara-diff.workspace = true
+nucleo-matcher.workspace = true
+regex.workspace = true
+rustc-hash.workspace = true
+thiserror.workspace = true
+unicode-width.workspace = true
+
+[dev-dependencies]
+criterion.workspace = true
+proptest.workspace = true
+
+[[bench]]
+name = "graph_layout"
+harness = false

@@ -146,7 +146,7 @@
 [左屏选中分支并回车]
       │ FilterAction::SetBranches(vec!["feat/ui"])
       ▼
-[jgit-engine 后台构建 VisibleGraph (≤15ms)]
+[jbgit-engine 后台构建 VisibleGraph (≤15ms)]
       │ EngineEvent::VisiblePackUpdated { pack, epoch }
       ▼
 [中屏 GraphCommitTable 重绘 & 选中首行提交 C0]

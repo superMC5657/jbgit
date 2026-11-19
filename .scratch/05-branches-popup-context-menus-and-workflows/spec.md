@@ -20,7 +20,7 @@
 ### 1.1 浮窗视觉结构与级联双栏设计
 
 ```text
-           ┌─ Git Branches (jGit) ────────────────────────── [↻ Fetch] [⚙] ─┐
+           ┌─ Git Branches (jbgit) ───────────────────────── [↻ Fetch] [⚙] ─┐
            │ 🔍 feat                                                   [Esc] │
            ├─────────────────────────────────────────────────────────────────┤
            │ ⚠ Rebase in progress: Continue │ Abort │ Skip   (仅进行中状态显示)│
@@ -142,7 +142,7 @@
 
 ### 4.3 进行中多步操作全局状态横幅 (`OngoingRepositoryStateBanner`)
 对标 `GitMergeRebaseWidget` 与 `Git.Ongoing.Rebase.Actions`：
-- `jgit-engine` 实时检测 `.git/rebase-merge`、`.git/rebase-apply`、`.git/MERGE_HEAD`、`.git/CHERRY_PICK_HEAD`、`.git/REVERT_HEAD`：
+- `jbgit-engine` 实时检测 `.git/rebase-merge`、`.git/rebase-apply`、`.git/MERGE_HEAD`、`.git/CHERRY_PICK_HEAD`、`.git/REVERT_HEAD`：
 - 一旦处于中间态，在主界面顶栏下方点亮醒目的琥珀色横幅：
   ```text
   ⚠ REBASING feat/dag onto main (Step 2/5) — 1 conflicted file   [ Resolve ] [ Continue ] [ Skip ] [ Abort ]

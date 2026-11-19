@@ -22,7 +22,7 @@ Milestone: M3 — Git Log 三屏联动工作台
 ## 2. 核心实现任务清单
 
 - [ ] **异步防抖详情与变更树加载器 (`CommitDetailsLoader`)**：
-  - 在 `jgit-engine` 实现单提交（对比 `parent[0]`；若为根提交则对比空树；若为 Merge 提交支持切换对比 `parent[0]` 或 `parent[1]`）与**多选提交集合**（按时间序合并净 Tree Diff）的快速变更列表及增删行数统计。
+  - 在 `jbgit-engine` 实现单提交（对比 `parent[0]`；若为根提交则对比空树；若为 Merge 提交支持切换对比 `parent[0]` 或 `parent[1]`）与**多选提交集合**（按时间序合并净 Tree Diff）的快速变更列表及增删行数统计。
   - 内置容量 256 的 LRU 内存缓存：已浏览过的提交再次选中时 0ms 瞬时渲染；快速按键划过时通过 30ms 防抖 + `epoch` 丢弃中间态任务。
 - [ ] **右上分屏：`CommitChangesBrowser` 变更树**：
   - 支持目录层级模式（含单链目录折叠 `src/core/graph`）与扁平文件列表模式切换。
@@ -47,4 +47,4 @@ Milestone: M3 — Git Log 三屏联动工作台
 
 ## Comments
 
-- 2026-11-18 (agent): Implemented. Engine loaders in `crates/jgit-engine/src/details.rs` (single commit vs parent[N], merge parent switch, chronological zip net diff across multi-commit selections, rename detection, `imara-diff` line diffs + stats, ByWord ranges, `git log --format=%G?` GPG/SSH signature verification); 256-entry LRU + 30 ms debounce + epochs in `crates/jgit-tui/src/app.rs`; changes tree / details / inline (Details/Right/Bottom dock) + F4 zoomed diff with Darcula `syntect` syntax highlighting in `crates/jgit-tui/src/syntax.rs` and `views/log_details.rs`. Full SHA copy uses OSC 52 and depends on terminal support.
+- 2026-11-18 (agent): Implemented. Engine loaders in `crates/jbgit-engine/src/details.rs` (single commit vs parent[N], merge parent switch, chronological zip net diff across multi-commit selections, rename detection, `imara-diff` line diffs + stats, ByWord ranges, `git log --format=%G?` GPG/SSH signature verification); 256-entry LRU + 30 ms debounce + epochs in `crates/jbgit-tui/src/app.rs`; changes tree / details / inline (Details/Right/Bottom dock) + F4 zoomed diff with Darcula `syntect` syntax highlighting in `crates/jbgit-tui/src/syntax.rs` and `views/log_details.rs`. Full SHA copy uses OSC 52 and depends on terminal support.

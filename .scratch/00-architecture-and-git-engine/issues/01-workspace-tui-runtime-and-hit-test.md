@@ -12,7 +12,7 @@ Milestone: M1 — 底座、主题与混合引擎
 
 ## 1. 背景与目标
 
-搭建 `jGit` 三层 Cargo Workspace（`jgit-core`、`jgit-engine`、`jgit-tui`），实现基于 `tokio` + `crossterm` + `ratatui` 的非阻塞 60 FPS 终端主循环，并内置两大核心基础设施：
+搭建 `jbgit` 三层 Cargo Workspace（`jbgit-core`、`jbgit-engine`、`jbgit-tui`），实现基于 `tokio` + `crossterm` + `ratatui` 的非阻塞 60 FPS 终端主循环，并内置两大核心基础设施：
 1. **1-Cell 细线可拖拽分屏系统（`OneCellSplitter`）**：还原 IDEA 无冗余外框的极简多分屏视觉与鼠标拖拽缩放体验；
 2. **即时模式空间矩形命中注册表（`HitTestRegistry`）与多层模态栈（Z-Order Router）**：让任意自定义控件在渲染时声明点击/悬停/右键热区，支撑后续鼠标右键菜单与轨道节点点击。
 
@@ -22,7 +22,7 @@ Milestone: M1 — 底座、主题与混合引擎
 
 - [ ] **Workspace 脚手架搭建**：
   - 创建根 `Cargo.toml`（Rust 2024 Edition，统一配置 `[workspace.dependencies]`：`ratatui`、`crossterm`、`tokio`、`git2`、`anyhow`、`thiserror`、`tracing`、`unicode-width`、`rustc-hash`）。
-  - 创建 `crates/jgit-core`、`crates/jgit-engine`、`crates/jgit-tui`（含二进制入口 `jgit` CLI 参数解析：支持 `jgit [path]` 打开指定目录或向上探查最近 `.git` 根目录）。
+  - 创建 `crates/jbgit-core`、`crates/jbgit-engine`、`crates/jbgit-tui`（含二进制入口 `jbgit` CLI 参数解析：支持 `jbgit [path]` 打开指定目录或向上探查最近 `.git` 根目录）。
 - [ ] **终端生命周期与异常安全恢复**：
   - 启用 Alternate Screen、Raw Mode、`EnableMouseCapture`、`EnableBracketedPaste`、`PushKeyboardEnhancementFlags`（按终端支持能力优雅启用以识别 `Ctrl+Enter` 等组合键）。
   - 安装 `std::panic::set_hook` 守护：发生任何 panic 时先还原终端状态再打印堆栈，杜绝终端乱码锁死。
@@ -67,7 +67,7 @@ pub struct RenderContext<'a> {
 
 ## 5. 验收标准 (Acceptance Criteria)
 
-- [ ] 运行 `cargo run -p jgit-tui` 能正常进入全屏 TUI，`q` 或 `Ctrl+C` 干净退出恢复原终端屏幕。
+- [ ] 运行 `cargo run -p jbgit-tui` 能正常进入全屏 TUI，`q` 或 `Ctrl+C` 干净退出恢复原终端屏幕。
 - [ ] 支持用 `1/2/3/4` 或鼠标点击切换四个顶层标签页，`Tab` 在分屏焦点环间流转并点亮焦点指示条。
 - [ ] 鼠标按住任意 `│` 或 `─` 分割线左右/上下拖动可实时丝滑改变面板比例，双击分割线恢复默认比例。
 - [ ] 单元测试覆盖 `HitTestRegistry` 的多层 `z_index` 遮挡拦截（例如浮窗遮挡底层表格时点击不会穿透到底层）。

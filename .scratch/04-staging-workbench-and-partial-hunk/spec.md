@@ -79,7 +79,7 @@
 
 IDEA `GitStageLineStatusTracker` 采用 **纯内存三文档双差分块合并模型（Three-Document Dual-Diff Block Model）**，数学上 100% 严密，零外部进程调用，天然免疫换行符与上下文偏移错误！
 
-### 3.2 三文档与 `StagedRange` 数据模型 (`jgit-core::stage`)
+### 3.2 三文档与 `StagedRange` 数据模型 (`jbgit-core::stage`)
 
 对于任意选中的文本文件，从 `git2` 一次性加载三份行切片文档（保留每行原始 `\n` 或 `\r\n` 结尾字节元数据）：
 1. **`vcs_doc` (`HEAD`)**：从 `HEAD` Tree 读取该路径（若发生重命名则读 `orig_path`）的 Blob；若为新增文件则为空文档 `[]`。

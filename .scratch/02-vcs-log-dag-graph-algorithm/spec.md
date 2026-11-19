@@ -32,7 +32,7 @@ IntelliJ IDEA `platform/vcs-log/graph` 通过 **两阶段解耦架构** 彻底�
 
 ---
 
-## 2. 核心数据结构设计 (`jgit-core::graph`)
+## 2. 核心数据结构设计 (`jbgit-core::graph`)
 
 ```rust
 /// 永久图中的密集节点下标 (0 .. nodes_count)，0 为最新提交
@@ -256,7 +256,7 @@ let edge_color = color_getter.node_color(owner_perm_id);
 
 ## 6. 阶段四（双后端抽象与默认字符后端）：`GraphRenderBackend` 与字符矩阵光栅化器 (`CellGridGraphBackend`)
 
-为了同时兼顾 **100% 终端普适性** 与 **现代图形终端的 GUI 级抗锯齿矢量表现力**，`jgit-tui` 将 `jgit-core` 输出的抽象几何图元（`GraphPrintElement`）与具体终端绘制解耦为统一的可插拔接口 `GraphRenderBackend`：
+为了同时兼顾 **100% 终端普适性** 与 **现代图形终端的 GUI 级抗锯齿矢量表现力**，`jbgit-tui` 将 `jbgit-core` 输出的抽象几何图元（`GraphPrintElement`）与具体终端绘制解耦为统一的可插拔接口 `GraphRenderBackend`：
 
 ```rust
 pub struct GraphViewportSlice<'a> {

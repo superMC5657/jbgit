@@ -1,0 +1,9 @@
+---
+source: crates/jbgit-tui/src/graph/cell_grid.rs
+expression: "lines.join(\"\\n\")"
+---
+◎─╮
+│ │ ●
+●─┼─┤
+│ ●─╯
+●─╯

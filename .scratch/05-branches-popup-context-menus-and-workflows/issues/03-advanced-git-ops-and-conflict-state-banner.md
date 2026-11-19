@@ -27,7 +27,7 @@ Milestone: M5 — 分支浮窗、右键菜单与高阶操作
 - [ ] **Cherry-Pick 与 Revert 工作流**：
   - 支持单选或多选历史提交（自动按拓扑由旧到新排序）依次执行 `git cherry-pick`；以及 `git revert`。遇冲突时自动引导进入冲突解决视图并激活顶部状态横幅。
 - [ ] **可视化与快捷历史改写（`Reword` / `Squash` / `Fixup` / `Drop` / `Interactive Rebase`）**：
-  - 实现 `jgit` 内置非交互式 `GIT_SEQUENCE_EDITOR` / `GIT_EDITOR` 回调机制：
+  - 实现 `jbgit` 内置非交互式 `GIT_SEQUENCE_EDITOR` / `GIT_EDITOR` 回调机制：
     - **Reword**：在任意未推送（或用户确认强推）历史提交弹出编辑框修改说明，后台自动完成变基改写（若是 `HEAD` 则直接走极速 `commit --amend --only -m`）；
     - **Drop / Squash / Fixup**：一键丢弃或压缩选中提交；
     - **Interactive Rebase Modal**：以可视化表格列出 `base..HEAD` 提交序列，支持 `Alt+Up/Down` 调整顺序、单键切换 `pick / reword / squash / fixup / drop`，回车一键执行！
@@ -52,4 +52,4 @@ Milestone: M5 — 分支浮窗、右键菜单与高阶操作
 
 ## Comments
 
-- 2026-11-18 (agent): Implemented. `GitOp` catalogue + failure classifier in `crates/jgit-core/src/git_ops.rs`; conflict parser & 3-pane merge model in `crates/jgit-core/src/conflict.rs`; executor in `crates/jgit-engine/src/ops.rs` (console-streamed steps, Smart stash→op→pop, editor-free interactive rebase using a shell-builtin `GIT_SEQUENCE_EDITOR` and `exec git commit --amend -F` rewording); comparison & conflict loaders in `details.rs` / `pool.rs`. Reset 4 modes (Hard double-confirmed), Uncommit, Cherry-pick/Revert, Reword/Squash/Fixup/Drop/Interactive rebase, Fetch/Pull/Push (+ force-with-lease, Push up to here), Accept Yours/Theirs, `git mergetool` / `$EDITOR`, built-in three-pane conflict merge modal (`views/conflict_merge.rs`), ongoing banner (`views/banner.rs`), and `[3 Stash]` tab (`views/stash.rs`, reusing `CommitChangesBrowser` + `DiffPreview`).
+- 2026-11-18 (agent): Implemented. `GitOp` catalogue + failure classifier in `crates/jbgit-core/src/git_ops.rs`; conflict parser & 3-pane merge model in `crates/jbgit-core/src/conflict.rs`; executor in `crates/jbgit-engine/src/ops.rs` (console-streamed steps, Smart stash→op→pop, editor-free interactive rebase using a shell-builtin `GIT_SEQUENCE_EDITOR` and `exec git commit --amend -F` rewording); comparison & conflict loaders in `details.rs` / `pool.rs`. Reset 4 modes (Hard double-confirmed), Uncommit, Cherry-pick/Revert, Reword/Squash/Fixup/Drop/Interactive rebase, Fetch/Pull/Push (+ force-with-lease, Push up to here), Accept Yours/Theirs, `git mergetool` / `$EDITOR`, built-in three-pane conflict merge modal (`views/conflict_merge.rs`), ongoing banner (`views/banner.rs`), and `[3 Stash]` tab (`views/stash.rs`, reusing `CommitChangesBrowser` + `DiffPreview`).

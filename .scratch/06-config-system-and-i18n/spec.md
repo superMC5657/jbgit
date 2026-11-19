@@ -6,7 +6,7 @@
   - [`02-i18n-localization-engine-and-cjk-support.md`](./issues/02-i18n-localization-engine-and-cjk-support.md)
   - [`03-theme-flavors-and-dynamic-keymaps.md`](./issues/03-theme-flavors-and-dynamic-keymaps.md)
 - **设计共识文档**：
-  - `jgit-i18n-config-design.md`（经用户确认批准的设计架构）
+  - `jbgit-i18n-config-design.md`（经用户确认批准的设计架构）
 - **参考架构**：
   - [Yazi Configuration](https://yazi-rs.github.io/docs/configuration/overview)（`yazi.toml`、`theme.toml`、`keymap.toml`、`include_str!` 内置默认配置与用户分层覆盖机制）
 
@@ -17,8 +17,8 @@
 将原先硬编码于代码内部的配置项（文字文案、配色方案、快捷键映射、显示模式）解耦为基于 TOML 的配置引擎与多语言（i18n）系统：
 
 ```
-~/.config/jgit/ (或 %APPDATA%/jgit/config/)
-├── jgit.toml          # 通用与行为配置 (语言/图表后端/Diff行为)
+~/.config/jbgit/ (或 %APPDATA%/jbgit/config/)
+├── jbgit.toml         # 通用与行为配置 (语言/图表后端/Diff行为)
 ├── theme.toml         # 主题配色 (Flavors: darcula/catppuccin/gruvbox + 语义覆写)
 ├── keymap.toml        # 快捷键映射 (Yazi 格式的 key_bindings 数组)
 └── locales/           # [可选] 用户自定义语言扩展包
@@ -31,13 +31,13 @@
 
 ### 2.1 配置发现与多层覆盖 (`01-config-discovery-and-yazi-multi-file-system`)
 1. **优先级链**：
-   - `JGIT_CONFIG_DIR` 环境变量
-   - `.jgit/jgit.toml`（仓库根目录局部配置）
-   - 全局用户配置（Windows: `%APPDATA%\jgit\config`，Unix: `~/.config/jgit`）
+   - `JBGIT_CONFIG_DIR` 环境变量
+   - `.jbgit/jbgit.toml`（仓库根目录局部配置）
+   - 全局用户配置（Windows: `%APPDATA%\jbgit\config`，Unix: `~/.config/jbgit`）
    - 二进制嵌入的默认配置（`include_str!`）
 2. **CLI 命令**：
-   - `jgit --print-default-config [file]`
-   - `jgit --init-config`
+   - `jbgit --print-default-config [file]`
+   - `jbgit --init-config`
 
 ### 2.2 国际化引擎与 CJK 支持 (`02-i18n-localization-engine-and-cjk-support`)
 1. **多语言词条**：

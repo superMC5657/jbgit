@@ -72,7 +72,7 @@ impl BranchColorManager {
 
 ### 2026-11-18 — implemented
 
-- 代码：`crates/jgit-tui/src/theme/{mod,color,glyphs,branch_colors}.rs`；稳定哈希 `branch_color_id` 位于 `crates/jgit-core/src/refs.rs`（供 Spec 02 图布局复用）。
+- 代码：`crates/jbgit-tui/src/theme/{mod,color,glyphs,branch_colors}.rs`；稳定哈希 `branch_color_id` 位于 `crates/jbgit-core/src/refs.rs`（供 Spec 02 图布局复用）。
 - **偏离 spec**：Indigo 轨道色 `#7B6FF6` 对 `#1E1F22` 仅 4.27:1，不满足本 issue 的 ≥4.5 验收；保持色相、略降饱和度改为 `#8176F6`（4.60:1）。其余 13 色原样保留。
 - ANSI-256 降级为真正的 CIE76（sRGB→Lab，仅匹配 16..=255，避开用户可改的 0..15）；TrueColor 按 `COLORTERM`、`WT_SESSION`、`TERM_PROGRAM` 自动检测。
 - `BranchColorManager::get_track_color` 为 `&self` 且无缓存（槽位查表 O(1)，渲染期只持有 `&AppState`）；`BranchColorId` 封装分支颜色 id，行级撞色顺移与 >14 轨 HSB 回退在 `assign_visible`。

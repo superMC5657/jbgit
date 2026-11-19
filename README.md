@@ -1,4 +1,4 @@
-# jGit
+# jbgit
 
 <p align="center">
   <strong>JetBrains 风格的高性能现代终端 Git 客户端</strong>
@@ -17,9 +17,9 @@
 
 ## 📖 简介 (Introduction)
 
-**jGit** 是一款深度致敬 IntelliJ IDEA / JetBrains 系列 IDE 版本控制体验的终端 Git 客户端。
+**jbgit** 是一款深度致敬 IntelliJ IDEA / JetBrains 系列 IDE 版本控制体验的终端 Git 客户端。
 
-在享受终端轻量、跨平台与极速响应的同时，jGit 将 JetBrains 经典的 **VCS Log 三屏拓扑图谱**、**双栏暂存工作台**、**行级局部暂存**、**分支快速速查浮窗 (`<C-~>`)** 以及**冲突三方合并工作流**完整复刻至终端之中。项目采用 Rust 编写，结合 `libgit2` 异步线程池与原生 Git CLI 混合执行引擎，在 50,000+ 提交的超大仓库中依然能够提供丝滑流畅的虚拟化滚动与毫秒级交互。
+在享受终端轻量、跨平台与极速响应的同时，jbgit 将 JetBrains 经典的 **VCS Log 三屏拓扑图谱**、**双栏暂存工作台**、**行级局部暂存**、**分支快速速查浮窗 (`<C-~>`)** 以及**冲突三方合并工作流**完整复刻至终端之中。项目采用 Rust 编写，结合 `libgit2` 异步线程池与原生 Git CLI 混合执行引擎，在 50,000+ 提交的超大仓库中依然能够提供丝滑流畅的虚拟化滚动与毫秒级交互。
 
 ---
 
@@ -64,11 +64,11 @@
 
 ### 5. ⚙️ Yazi 风格配置体系与多语言国际化 (i18n)
 - **多文件配置规范**：
-  - `jgit.toml`：通用设置、布局栏位比例、图谱渲染模式。
+  - `jbgit.toml`：通用设置、布局栏位比例、图谱渲染模式。
   - `theme.toml`：主题预设 (Flavors) 与 16 进制颜色微调。
   - `keymap.toml`：自定义快捷键映射与连续按键序列。
 - **4 级层级覆盖机制**：
-  `JGIT_CONFIG_DIR` 环境变量 > 仓库级 `.jgit/` > 全局用户配置 > 内置默认值。
+  `JBGIT_CONFIG_DIR` 环境变量 > 仓库级 `.jbgit/` > 全局用户配置 > 内置默认值。
 - **全量多语言支持**：原生内置简体中文 (`zh-CN`) 与英文 (`en-US`)，支持根据系统环境自动切换。
 
 ---
@@ -76,14 +76,14 @@
 ## 🏗️ 架构拓扑 (Architecture)
 
 ```text
-jGit/
+jbgit/
 ├── Cargo.toml                  # Workspace 配置
 ├── crates/
-│   ├── jgit-core/              # 核心算法库：DAG 拓扑、Permanent Graph、BEK 排序、
+│   ├── jbgit-core/             # 核心算法库：DAG 拓扑、Permanent Graph、BEK 排序、
 │   │                           # 三态文档行追踪器、分支树模型、多维过滤器
-│   ├── jgit-engine/            # 混合 Git 引擎：libgit2 异步线程池 + 原生 Git CLI 执行器 +
+│   ├── jbgit-engine/           # 混合 Git 引擎：libgit2 异步线程池 + 原生 Git CLI 执行器 +
 │   │                           # notify 文件变动防抖监听与锁竞争自动重试
-│   └── jgit-tui/               # 终端用户界面：Ratatui + Crossterm、主题/字体光栅化、
+│   └── jbgit-tui/              # 终端用户界面：Ratatui + Crossterm、主题/字体光栅化、
 │                               # 窗口拆分器 (Splitter)、Hit-Test 交互路由与多语言引擎
 ├── docs/                       # Agent 协作与工作流指引 (docs/agents/)
 └── .scratch/                   # 各里程碑功能规约 (Specs) 与 Issue 拆解
@@ -100,20 +100,20 @@ jGit/
 ### 1. 源码编译与安装
 ```bash
 # 克隆仓库
-git clone https://github.com/superMC5657/jGit.git
-cd jGit
+git clone https://github.com/superMC5657/jbgit.git
+cd jbgit
 
 # 编译并在本地安装二进制
-cargo install --path crates/jgit-tui
+cargo install --path crates/jbgit-tui
 
 # 验证安装
-jgit --help
+jbgit --help
 ```
 
 ### 2. 启用 Kitty / Sixel 矢量图后端 (可选)
 如果希望在 Kitty、WezTerm 等现代终端中体验像素级平滑抗锯齿矢量图谱，可启用 `graphics-protocol` 特性（默认已启用）：
 ```bash
-cargo build --release -p jgit-tui --features graphics-protocol
+cargo build --release -p jbgit-tui --features graphics-protocol
 ```
 
 ---
@@ -123,18 +123,18 @@ cargo build --release -p jgit-tui --features graphics-protocol
 ### 命令行运行
 ```bash
 # 在当前 Git 仓库中启动
-jgit
+jbgit
 
 # 打开指定目录的 Git 仓库
-jgit /path/to/repo
+jbgit /path/to/repo
 
 # 在用户配置目录下生成全套带有中文注释的配置模板文件
-jgit --init-config
+jbgit --init-config
 
 # 查看内置的默认配置内容
-jgit --print-default-config jgit      # 查看 jgit.toml 默认项
-jgit --print-default-config theme     # 查看 theme.toml 默认项
-jgit --print-default-config keymap    # 查看 keymap.toml 默认项
+jbgit --print-default-config jbgit     # 查看 jbgit.toml 默认项
+jbgit --print-default-config theme     # 查看 theme.toml 默认项
+jbgit --print-default-config keymap    # 查看 keymap.toml 默认项
 ```
 
 ---
@@ -144,7 +144,7 @@ jgit --print-default-config keymap    # 查看 keymap.toml 默认项
 ### 全局操作 (Global)
 | 快捷键 | 功能描述 |
 | :--- | :--- |
-| `q` / `<Ctrl-c>` | 退出 jGit |
+| `q` / `<Ctrl-c>` | 退出 jbgit |
 | `?` | 打开交互式快捷键帮助视窗 |
 | `r` | 强制刷新 Git 仓库状态 |
 | `1` / `2` / `3` / `4` | 按标签栏顺序切换视图：**Commit (`1`)** / **Log (`2`)** / **Stash (`3`)** / **Console (`4`)** |
@@ -219,13 +219,13 @@ jgit --print-default-config keymap    # 查看 keymap.toml 默认项
 
 ## 🛠️ 配置体系指南 (Configuration)
 
-运行 `jgit --init-config` 即可在系统的用户配置目录下生成带详尽注释的配置模板：
-- **Windows**: `%APPDATA%\jgit\config\`
-- **Linux / macOS**: `~/.config/jgit/`
+运行 `jbgit --init-config` 即可在系统的用户配置目录下生成带详尽注释的配置模板：
+- **Windows**: `%APPDATA%\jbgit\config\`
+- **Linux / macOS**: `~/.config/jbgit/`
 
 配置由三个互相独立的文件构成：
 
-### 1. `jgit.toml` (通用行为与布局比例)
+### 1. `jbgit.toml` (通用行为与布局比例)
 ```toml
 [general]
 # 界面语言: "zh-CN" (简体中文), "en-US" (English), "auto" (自动跟随环境变量)
@@ -280,7 +280,7 @@ mode = "nerd_font"
 ```toml
 [global]
 key_bindings = [
-    { on = [ "q" ], run = "quit", desc = "退出 jGit" },
+    { on = [ "q" ], run = "quit", desc = "退出 jbgit" },
     { on = [ "<F5>" ], run = "refresh", desc = "刷新仓库状态" },
 ]
 ```
