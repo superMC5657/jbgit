@@ -13,7 +13,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use unicode_width::UnicodeWidthStr;
 
-use crate::app::{AppState, RenderContext};
+use crate::app::{AppState, RenderContext, ScrollPane};
 use crate::config::KeymapScope;
 use crate::hit_test::{ChangesToolbarButton, DiffToolbarButton, HitTarget};
 use crate::keymap::KeyAction;
@@ -74,6 +74,15 @@ fn render_toolbar<T: Copy>(
 pub enum DiffHost {
     Log,
     Stash,
+}
+
+impl DiffHost {
+    const fn scroll_pane(self) -> ScrollPane {
+        match self {
+            Self::Log => ScrollPane::LogDiff,
+            Self::Stash => ScrollPane::StashDiff,
+        }
+    }
 }
 
 // ───────────────────────────── Changes browser ─────────────────────────────
@@ -544,7 +553,9 @@ pub fn render_diff_preview(
         },
     );
 
+    let h = body.height as usize;
     let Some(change) = d.selected_change() else {
+        ctx.record_scroll_bound(host.scroll_pane(), h, 0);
         let msg = if d.current_bundle().is_none() {
             ctx.t("common.loading")
         } else {
@@ -554,6 +565,7 @@ pub fn render_diff_preview(
         return;
     };
     let Some(diff) = d.current_diff() else {
+        ctx.record_scroll_bound(host.scroll_pane(), h, 0);
         if change.is_binary {
             frame.render_widget(muted_line(ctx, ctx.t("view.log_details.binary_diff")), body);
         } else {
@@ -562,10 +574,12 @@ pub fn render_diff_preview(
         return;
     };
     if diff.is_binary {
+        ctx.record_scroll_bound(host.scroll_pane(), h, 0);
         frame.render_widget(muted_line(ctx, ctx.t("view.log_details.binary_diff")), body);
         return;
     }
     if diff.hunks.is_empty() {
+        ctx.record_scroll_bound(host.scroll_pane(), h, 0);
         frame.render_widget(
             muted_line(ctx, ctx.t("view.log_details.no_text_diff")),
             body,
@@ -578,8 +592,9 @@ pub fn render_diff_preview(
     if diff.is_truncated {
         total += 1;
     }
-    let h = body.height as usize;
-    let scroll = d.diff_scroll.min(total.saturating_sub(h));
+    let max_scroll = total.saturating_sub(h);
+    ctx.record_scroll_bound(host.scroll_pane(), h, max_scroll);
+    let scroll = d.diff_scroll.min(max_scroll);
     let theme = ctx.theme;
     let num_w = 4usize;
     let tab_size = ctx.diff_tab_size();
@@ -759,8 +774,10 @@ fn render_commit_details(
         return;
     }
     ctx.hit_registry.register(area, 1, HitTarget::DetailsArea);
+    let h = area.height as usize;
     let details = &state.details;
     let Some(key) = &details.current_key else {
+        ctx.record_scroll_bound(ScrollPane::LogDetails, h, 0);
         frame.render_widget(muted_line(ctx, ctx.t("view.log_details.no_commit_selected")), area);
         return;
     };
@@ -795,8 +812,11 @@ fn render_commit_details(
                     Style::default().fg(ctx.theme.fg_muted),
                 )),
             ];
+            let fallback_max = lines.len().saturating_sub(h);
             frame.render_widget(Paragraph::new(lines), area);
+            ctx.record_scroll_bound(ScrollPane::LogDetails, h, fallback_max);
         } else {
+            ctx.record_scroll_bound(ScrollPane::LogDetails, h, 0);
             frame.render_widget(muted_line(ctx, ctx.t("view.log_details.loading_details")), area);
         }
         return;
@@ -839,8 +859,9 @@ fn render_commit_details(
         build_single_details(d, state, ctx, width, &mut lines, &mut hits);
     }
 
-    let h = area.height as usize;
-    let scroll = details.details_scroll.min(lines.len().saturating_sub(h));
+    let max_scroll = lines.len().saturating_sub(h);
+    ctx.record_scroll_bound(ScrollPane::LogDetails, h, max_scroll);
+    let scroll = details.details_scroll.min(max_scroll);
     for (vis_y, idx) in (scroll..lines.len()).take(h).enumerate() {
         let rect = Rect::new(area.x, area.y + vis_y as u16, area.width, 1);
         frame.render_widget(Paragraph::new(lines[idx].clone()), rect);

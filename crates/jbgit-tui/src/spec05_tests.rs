@@ -1569,6 +1569,7 @@ fn zh_cn_reset_dialog_and_collapsed_branches_stripe_align_cjk_widths() {
         graph_renderer: None,
         i18n: Some(&state.i18n),
         config: Some(&state.config),
+        scroll_metrics: None,
     };
     term.draw(|frame| {
         crate::views::log_branches::render_branches_stripe(

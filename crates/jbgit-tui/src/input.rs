@@ -483,12 +483,15 @@ fn route_key(key: KeyEvent, state: &mut AppState) -> Vec<Action> {
             KeyCode::Enter => vec![Action::FocusPane(PaneId::ConsoleOutputDetail)],
             _ => Vec::new(),
         },
-        PaneId::ConsoleOutputDetail => match key.code {
-            KeyCode::PageDown => vec![Action::ScrollConsoleOutput(10)],
-            KeyCode::PageUp => vec![Action::ScrollConsoleOutput(-10)],
-            KeyCode::Esc => vec![Action::FocusPane(PaneId::ConsoleCommandList)],
-            _ => Vec::new(),
-        },
+        PaneId::ConsoleOutputDetail => {
+            let page_step = state.console_page_step();
+            match key.code {
+                KeyCode::PageDown => vec![Action::ScrollConsoleOutput(page_step)],
+                KeyCode::PageUp => vec![Action::ScrollConsoleOutput(-page_step)],
+                KeyCode::Esc => vec![Action::FocusPane(PaneId::ConsoleCommandList)],
+                _ => Vec::new(),
+            }
+        }
         PaneId::CommitChangesTree => route_commit_changes_tree_key(&key, state),
         PaneId::CommitDiffPreview => crate::input_stage::route_commit_diff_fallback_key(&key, state),
         PaneId::StashList | PaneId::StashDiffPreview => {
@@ -585,8 +588,8 @@ fn route_diff_zoomed_fallback(key: &KeyEvent, page: isize) -> Vec<Action> {
         KeyCode::PageDown => vec![Action::ScrollDiff(page)],
         KeyCode::Char(' ') => vec![Action::ScrollDiff(page)],
         KeyCode::PageUp => vec![Action::ScrollDiff(-page)],
-        KeyCode::Home => vec![Action::ScrollDiff(isize::MIN / 2)],
-        KeyCode::End => vec![Action::ScrollDiff(isize::MAX / 2)],
+        KeyCode::Home => vec![Action::ScrollDiff(crate::app::SCROLL_GOTO_TOP)],
+        KeyCode::End => vec![Action::ScrollDiff(crate::app::SCROLL_GOTO_BOTTOM)],
         KeyCode::Char('P') => vec![Action::SwitchMergeParent],
         KeyCode::Enter if ctrl => vec![Action::ZoomDiff(false)],
         KeyCode::Esc => vec![Action::ZoomDiff(false)],

@@ -517,8 +517,33 @@ impl DetailsPaneState {
         self.diff_preview || self.diff_zoomed
     }
 
+    /// Fallback upper scroll bound used before the diff pane has rendered a frame.
+    pub fn fallback_diff_max_scroll(&self) -> usize {
+        self.current_diff()
+            .map_or(usize::MAX, |_| self.diff_total_rows().saturating_sub(1))
+    }
+
     pub fn next_deadline(&self) -> Option<Instant> {
         self.pending.as_ref().map(|(_, at)| *at)
+    }
+
+    pub fn diff_total_rows(&self) -> usize {
+        let Some(diff) = self.current_diff() else {
+            return 0;
+        };
+        if diff.is_binary || diff.hunks.is_empty() {
+            return 0;
+        }
+        let mut row = usize::from(diff.is_truncated);
+        for hunk in &diff.hunks {
+            row += 1;
+            if self.diff_side_by_side {
+                row += jbgit_core::side_by_side_rows(hunk).len();
+            } else {
+                row += hunk.lines.len();
+            }
+        }
+        row
     }
 
     pub fn hunk_header_offsets(&self) -> Vec<usize> {

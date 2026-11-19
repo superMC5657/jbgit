@@ -431,8 +431,7 @@ impl AppState {
                 self.stash.details.select_next_file(*delta);
             }
             Action::StashDiffScroll(delta) => {
-                self.stash.details.diff_scroll =
-                    (self.stash.details.diff_scroll as isize + delta).max(0) as usize;
+                self.scroll_pane(crate::app::ScrollPane::StashDiff, *delta);
             }
             _ => return false,
         }

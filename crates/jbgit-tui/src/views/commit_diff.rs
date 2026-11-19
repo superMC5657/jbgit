@@ -11,7 +11,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use unicode_width::UnicodeWidthStr;
 
-use crate::app::{AppState, RenderContext};
+use crate::app::{AppState, RenderContext, ScrollPane};
 use crate::config::KeymapScope;
 use crate::hit_test::{DiffHunkActionKind, HitTarget, StageDiffToolbarButton};
 use crate::keymap::KeyAction;
@@ -76,7 +76,9 @@ pub fn render_stage_diff_workbench(
         return;
     }
 
+    let h = diff_area.height as usize;
     let Some(diff) = &sw.current_diff else {
+        ctx.record_scroll_bound(ScrollPane::StageDiff, h, 0);
         let msg = if sw.current_diff_key.is_some() {
             state.i18n.t("view.commit.diff_loading")
         } else {
@@ -87,10 +89,12 @@ pub fn render_stage_diff_workbench(
     };
 
     if diff.is_binary {
+        ctx.record_scroll_bound(ScrollPane::StageDiff, h, 0);
         frame.render_widget(muted_line(ctx, state.i18n.t("view.commit.diff_binary")), diff_area);
         return;
     }
     if diff.hunks.is_empty() {
+        ctx.record_scroll_bound(ScrollPane::StageDiff, h, 0);
         frame.render_widget(
             muted_line(ctx, state.i18n.t("view.commit.diff_no_text")),
             diff_area,
@@ -100,8 +104,9 @@ pub fn render_stage_diff_workbench(
 
     let rows = sw.diff_rows();
     let total = rows.len() + usize::from(diff.is_truncated);
-    let h = diff_area.height as usize;
-    let scroll = sw.diff_scroll.min(total.saturating_sub(h));
+    let max_scroll = total.saturating_sub(h);
+    ctx.record_scroll_bound(ScrollPane::StageDiff, h, max_scroll);
+    let scroll = sw.diff_scroll.min(max_scroll);
     let theme = ctx.theme;
     let focused = ctx.focused_pane == PaneId::CommitDiffPreview;
     let visual_bounds = sw.selected_visual_bounds();

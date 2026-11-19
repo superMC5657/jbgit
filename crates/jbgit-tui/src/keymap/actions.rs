@@ -8,6 +8,7 @@ use jbgit_engine::StageDiffSide;
 
 use crate::app::{
     Action, AppState, ContextMenuAction, ContextMenuEntryKind, ContextMenuItem, PopupKind,
+    SCROLL_GOTO_BOTTOM, SCROLL_GOTO_TOP,
 };
 use crate::config::keymap_config::{KeyBindingConfig, KeymapScope};
 use crate::hit_test::StashButton;
@@ -129,7 +130,7 @@ pub fn scopes_for_context(state: &AppState) -> Vec<KeymapScope> {
             }
             WorkspaceTab::Commit => scopes.push(KeymapScope::Commit),
             WorkspaceTab::Stash => scopes.push(KeymapScope::Stash),
-            WorkspaceTab::Console => {}
+            WorkspaceTab::Console => scopes.push(KeymapScope::Console),
         }
         scopes.push(KeymapScope::Global);
     }
@@ -230,9 +231,11 @@ pub fn is_action_applicable(run: &KeyAction, state: &AppState) -> bool {
         | KeyAction::CompareVersions
         | KeyAction::GotoRevision
         | KeyAction::FocusFilter
-        | KeyAction::ToggleBranchesPane
-        | KeyAction::PageDownHalf
-        | KeyAction::PageUpHalf => state.active_tab == WorkspaceTab::Log,
+        | KeyAction::ToggleBranchesPane => state.active_tab == WorkspaceTab::Log,
+        KeyAction::PageDownHalf | KeyAction::PageUpHalf => {
+            state.active_tab == WorkspaceTab::Log
+                || state.focused_pane == PaneId::ConsoleOutputDetail
+        }
 
         KeyAction::BranchSearch
         | KeyAction::ToggleFavorite
@@ -282,6 +285,7 @@ pub fn is_action_applicable(run: &KeyAction, state: &AppState) -> bool {
                 | PaneId::CommitDiffPreview
                 | PaneId::StashList
                 | PaneId::StashDiffPreview
+                | PaneId::ConsoleOutputDetail
         ),
     }
 }
@@ -393,36 +397,58 @@ pub fn execute_action(run: &KeyAction, state: &mut AppState) -> Option<Vec<Actio
             PaneId::LogBranchesTree => Some(vec![Action::SelectBranchRow(0)]),
             PaneId::LogChangesTree => Some(vec![Action::ChangesSelectRow(0)]),
             PaneId::LogDetailsDiff if state.details.diff_visible() => {
-                Some(vec![Action::ScrollDiff(isize::MIN / 2)])
+                Some(vec![Action::ScrollDiff(SCROLL_GOTO_TOP)])
             }
-            PaneId::LogDetailsDiff => Some(vec![Action::ScrollDetails(isize::MIN / 2)]),
+            PaneId::LogDetailsDiff => Some(vec![Action::ScrollDetails(SCROLL_GOTO_TOP)]),
             PaneId::CommitChangesTree => Some(vec![Action::SelectCommitStageRow(0)]),
-            PaneId::CommitDiffPreview => Some(vec![Action::StageDiffMoveCursor(isize::MIN / 2)]),
+            PaneId::CommitDiffPreview => Some(vec![Action::StageDiffMoveCursor(SCROLL_GOTO_TOP)]),
             PaneId::StashList => Some(vec![Action::StashSelect(0)]),
             PaneId::StashDiffPreview => Some(vec![Action::StashChangesSelect(0)]),
+            PaneId::ConsoleOutputDetail => Some(vec![Action::ScrollConsoleOutput(SCROLL_GOTO_TOP)]),
             _ => Some(vec![Action::LogEdge { bottom: false }]),
         },
         KeyAction::GotoBottom => match state.focused_pane {
             PaneId::LogBranchesTree => Some(vec![Action::SelectBranchRow(usize::MAX)]),
             PaneId::LogChangesTree => Some(vec![Action::ChangesSelectRow(usize::MAX)]),
             PaneId::LogDetailsDiff if state.details.diff_visible() => {
-                Some(vec![Action::ScrollDiff(isize::MAX / 2)])
+                Some(vec![Action::ScrollDiff(SCROLL_GOTO_BOTTOM)])
             }
-            PaneId::LogDetailsDiff => Some(vec![Action::ScrollDetails(isize::MAX / 2)]),
+            PaneId::LogDetailsDiff => Some(vec![Action::ScrollDetails(SCROLL_GOTO_BOTTOM)]),
             PaneId::CommitChangesTree => Some(vec![Action::SelectCommitStageRow(usize::MAX)]),
-            PaneId::CommitDiffPreview => Some(vec![Action::StageDiffMoveCursor(isize::MAX / 2)]),
+            PaneId::CommitDiffPreview => {
+                Some(vec![Action::StageDiffMoveCursor(SCROLL_GOTO_BOTTOM)])
+            }
             PaneId::StashList => Some(vec![Action::StashSelect(usize::MAX)]),
             PaneId::StashDiffPreview => Some(vec![Action::StashChangesSelect(usize::MAX)]),
+            PaneId::ConsoleOutputDetail => {
+                Some(vec![Action::ScrollConsoleOutput(SCROLL_GOTO_BOTTOM)])
+            }
             _ => Some(vec![Action::LogEdge { bottom: true }]),
         },
-        KeyAction::PageDownHalf => Some(vec![Action::LogPage {
-            half: true,
-            down: true,
-        }]),
-        KeyAction::PageUpHalf => Some(vec![Action::LogPage {
-            half: true,
-            down: false,
-        }]),
+        KeyAction::PageDownHalf => {
+            if state.focused_pane == PaneId::ConsoleOutputDetail {
+                Some(vec![Action::ScrollConsoleOutput(
+                    state.console_half_page_step(),
+                )])
+            } else {
+                Some(vec![Action::LogPage {
+                    half: true,
+                    down: true,
+                }])
+            }
+        }
+        KeyAction::PageUpHalf => {
+            if state.focused_pane == PaneId::ConsoleOutputDetail {
+                Some(vec![Action::ScrollConsoleOutput(
+                    -state.console_half_page_step(),
+                )])
+            } else {
+                Some(vec![Action::LogPage {
+                    half: true,
+                    down: false,
+                }])
+            }
+        }
 
         // ── Log ──
         KeyAction::CompareOrDiff | KeyAction::CompareVersions => {

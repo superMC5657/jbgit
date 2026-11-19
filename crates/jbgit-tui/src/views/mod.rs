@@ -20,7 +20,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Paragraph};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
-use crate::app::{AppState, RenderContext};
+use crate::app::{AppState, RenderContext, ViewportScrollMetrics};
 use crate::hit_test::HitTarget;
 use crate::theme::ThemePalette;
 use crate::widgets::OneCellSplitter;
@@ -123,6 +123,7 @@ pub fn render_app(frame: &mut Frame<'_>, state: &mut AppState) {
     let mut splitter_containers = Vec::new();
     let mut hit_registry = std::mem::take(&mut state.hit_registry);
     let mut graph_renderer = std::mem::take(&mut state.graph_renderer);
+    let mut scroll_metrics = ViewportScrollMetrics::default();
     graph_renderer.begin_frame();
 
     {
@@ -137,6 +138,7 @@ pub fn render_app(frame: &mut Frame<'_>, state: &mut AppState) {
             graph_renderer: Some(&mut graph_renderer),
             i18n: Some(&state.i18n),
             config: Some(&state.config),
+            scroll_metrics: Some(&mut scroll_metrics),
         };
 
         header::render_top_header(frame, header_rect, state, &mut ctx);
@@ -189,6 +191,7 @@ pub fn render_app(frame: &mut Frame<'_>, state: &mut AppState) {
 
     state.hit_registry = hit_registry;
     state.graph_renderer = graph_renderer;
+    state.clamp_scroll_metrics(scroll_metrics);
     for (id, axis, rect) in splitter_containers {
         state.splitter_containers.insert(id, (axis, rect));
     }

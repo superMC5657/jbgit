@@ -514,10 +514,10 @@ mod tests {
             started_at: Local::now(),
             duration_ms: Some(5),
             command_line: "git status".into(),
-            output_lines: (0..30)
+            output_lines: (0..20)
                 .map(|i| ConsoleLine {
                     stream: ConsoleStream::Stdout,
-                    text: format!("line {i}"),
+                    text: format!("short line {i}"),
                 })
                 .collect(),
             exit_code: Some(0),
@@ -526,9 +526,30 @@ mod tests {
         let backend = TestBackend::new(120, 40);
         let mut terminal = Terminal::new(backend).unwrap();
 
-        // In Console tab, focus stays on ConsoleCommandList while wheel over ConsoleOutputDetail scrolls output!
+        // Non-overflowing output must stay at scroll 0 when wheeling down.
         state.dispatch(Action::SwitchTab(WorkspaceTab::Console));
         assert_eq!(state.focused_pane, PaneId::ConsoleCommandList);
+        terminal.draw(|f| render_app(f, &mut state)).unwrap();
+        for a in route_terminal_event(
+            Event::Mouse(MouseEvent {
+                kind: MouseEventKind::ScrollDown,
+                column: 90,
+                row: 10,
+                modifiers: KeyModifiers::NONE,
+            }),
+            &mut state,
+        ) {
+            state.dispatch(a);
+        }
+        assert_eq!(state.console_output_scroll, 0);
+
+        // Expand output so it overflows viewport; wheel over ConsoleOutputDetail scrolls while focus stays on list.
+        state.console_entries[0].output_lines = (0..60)
+            .map(|i| ConsoleLine {
+                stream: ConsoleStream::Stdout,
+                text: format!("line {i}"),
+            })
+            .collect();
         terminal.draw(|f| render_app(f, &mut state)).unwrap();
         let actions = route_terminal_event(
             Event::Mouse(MouseEvent {
@@ -1670,5 +1691,244 @@ stash_preview_ratio = [1, 1]
                 state.splitters.ratio(splitter_id)
             );
         }
+    }
+
+    #[test]
+    fn console_overscroll_clamps_reverses_and_resizes_cleanly() {
+        use std::path::PathBuf;
+        use chrono::Local;
+        use jbgit_core::{ConsoleLine, ConsoleStream, GitConsoleEntry};
+
+        let mut state = AppState::new_with_config(
+            PathBuf::from("."),
+            None,
+            crate::config::AppConfig::load_defaults(),
+        );
+        state.console_entries.push(GitConsoleEntry {
+            id: 1,
+            started_at: Local::now(),
+            duration_ms: Some(12),
+            command_line: "git pull".into(),
+            output_lines: (0..120)
+                .map(|i| ConsoleLine {
+                    stream: ConsoleStream::Stdout,
+                    text: format!("create mode 100644 file_{i}.rs"),
+                })
+                .collect(),
+            exit_code: Some(0),
+        });
+        state.dispatch(Action::SwitchTab(WorkspaceTab::Console));
+
+        let mut terminal = Terminal::new(TestBackend::new(120, 30)).unwrap();
+        terminal.draw(|f| render_app(f, &mut state)).unwrap();
+        let bound = state.scroll_metrics.console_output.expect("console bound recorded");
+        assert!(bound.max_scroll > 0);
+
+        // Scroll down 100 times past bottom: must stay clamped at max_scroll.
+        for _ in 0..100 {
+            state.dispatch(Action::ScrollConsoleOutput(3));
+        }
+        assert_eq!(state.console_output_scroll, bound.max_scroll);
+
+        // First upward scroll must respond immediately with zero dead-zone.
+        state.dispatch(Action::ScrollConsoleOutput(-3));
+        assert_eq!(state.console_output_scroll, bound.max_scroll.saturating_sub(3));
+
+        // Scroll back to bottom, then resize taller and re-render: scroll must clamp down.
+        state.dispatch(Action::ScrollConsoleOutput(isize::MAX / 2));
+        assert_eq!(state.console_output_scroll, bound.max_scroll);
+        terminal.backend_mut().resize(120, 50);
+        terminal.draw(|f| render_app(f, &mut state)).unwrap();
+        let taller_bound = state.scroll_metrics.console_output.expect("taller bound recorded");
+        assert!(taller_bound.max_scroll < bound.max_scroll);
+        assert_eq!(state.console_output_scroll, taller_bound.max_scroll);
+    }
+
+    #[test]
+    fn log_diff_double_goto_bottom_no_overflow_and_reverses_immediately() {
+        use std::path::PathBuf;
+        use std::sync::Arc;
+        use jbgit_core::Oid;
+
+        let mut state = AppState::new_with_config(
+            PathBuf::from("."),
+            None,
+            crate::config::AppConfig::load_defaults(),
+        );
+        let oid = Oid::from_bytes([1u8; 20]);
+        let changes = vec![jbgit_core::FileChange {
+            path: "lib.rs".into(),
+            old_path: None,
+            kind: jbgit_core::FileStatusKind::Modified,
+            additions: 60,
+            deletions: 0,
+            is_binary: false,
+        }];
+        let details = jbgit_core::CommitDetails {
+            oid,
+            parents: vec![],
+            author: jbgit_core::PersonStamp {
+                name: "Dev".into(),
+                email: "dev@example.com".into(),
+                time: 1_700_000_000,
+                offset_minutes: 0,
+            },
+            committer: jbgit_core::PersonStamp {
+                name: "Dev".into(),
+                email: "dev@example.com".into(),
+                time: 1_700_000_000,
+                offset_minutes: 0,
+            },
+            message: "feat: sample".into(),
+            signature: jbgit_core::SignatureStatus::Unsigned,
+        };
+        let key = jbgit_core::DetailsKey::single(oid);
+        state.details.cache.insert(
+            key.clone(),
+            Arc::new(jbgit_core::CommitChangesBundle {
+                key: key.clone(),
+                details: vec![details],
+                changes,
+            }),
+        );
+        let diff_key = jbgit_core::FileDiffKey {
+            details: key.clone(),
+            path: "lib.rs".into(),
+            old_path: None,
+            context: state.details.diff_context,
+        };
+        let lines: Vec<jbgit_core::DiffLine> = (0..80)
+            .map(|i| jbgit_core::DiffLine {
+                kind: jbgit_core::DiffLineKind::Added,
+                old_lineno: None,
+                new_lineno: Some(i + 1),
+                text: format!("let v{i} = {i};"),
+                word_ranges: vec![],
+            })
+            .collect();
+        state.details.diff_cache.insert(
+            diff_key.clone(),
+            Arc::new(jbgit_core::FileDiff {
+                key: diff_key,
+                is_binary: false,
+                is_truncated: false,
+                hunks: vec![jbgit_core::DiffHunk {
+                    header: "@@ -0,0 +1,80 @@".into(),
+                    lines,
+                }],
+            }),
+        );
+        state.details.current_key = Some(key);
+        state.details.diff_preview = true;
+        state.active_tab = WorkspaceTab::Log;
+        state.focused_pane = PaneId::LogDetailsDiff;
+
+        let mut terminal = Terminal::new(TestBackend::new(120, 30)).unwrap();
+        terminal.draw(|f| render_app(f, &mut state)).unwrap();
+        let bound = state.scroll_metrics.log_diff.expect("log_diff bound recorded");
+        assert!(bound.max_scroll > 0);
+
+        // Trigger GotoBottom (`isize::MAX / 2`) twice: must not overflow and must clamp to max_scroll.
+        state.dispatch(Action::ScrollDiff(isize::MAX / 2));
+        state.dispatch(Action::ScrollDiff(isize::MAX / 2));
+        assert_eq!(state.details.diff_scroll, bound.max_scroll);
+
+        // Immediately scrolling up 1 line must take effect on the very first action.
+        state.dispatch(Action::ScrollDiff(-1));
+        assert_eq!(state.details.diff_scroll, bound.max_scroll - 1);
+    }
+
+    #[test]
+    fn console_output_detail_navigation_keys_work() {
+        use std::path::PathBuf;
+        use chrono::Local;
+        use jbgit_core::{ConsoleLine, ConsoleStream, GitConsoleEntry};
+
+        let mut state = AppState::new_with_config(
+            PathBuf::from("."),
+            None,
+            crate::config::AppConfig::load_defaults(),
+        );
+        state.console_entries.push(GitConsoleEntry {
+            id: 1,
+            started_at: Local::now(),
+            duration_ms: Some(10),
+            command_line: "git log".into(),
+            output_lines: (0..100)
+                .map(|i| ConsoleLine {
+                    stream: ConsoleStream::Stdout,
+                    text: format!("commit {i}"),
+                })
+                .collect(),
+            exit_code: Some(0),
+        });
+        state.dispatch(Action::SwitchTab(WorkspaceTab::Console));
+        state.dispatch(Action::FocusPane(PaneId::ConsoleOutputDetail));
+
+        let mut terminal = Terminal::new(TestBackend::new(120, 30)).unwrap();
+        terminal.draw(|f| render_app(f, &mut state)).unwrap();
+        let bound = state.scroll_metrics.console_output.expect("console bound recorded");
+        assert!(bound.viewport_h > 10);
+        assert!(bound.max_scroll > bound.viewport_h);
+
+        let send_key = |state: &mut AppState, code: KeyCode, modifiers: KeyModifiers| {
+            let actions = route_terminal_event(
+                Event::Key(KeyEvent::new(code, modifiers)),
+                state,
+            );
+            for a in actions {
+                state.dispatch(a);
+            }
+        };
+
+        // PageDown uses viewport_h - 1
+        send_key(&mut state, KeyCode::PageDown, KeyModifiers::NONE);
+        let expected_page = bound.viewport_h.saturating_sub(1);
+        assert_eq!(state.console_output_scroll, expected_page);
+
+        // PageUp brings back to 0
+        send_key(&mut state, KeyCode::PageUp, KeyModifiers::NONE);
+        assert_eq!(state.console_output_scroll, 0);
+
+        // Ctrl+d / Ctrl+u move half a page
+        send_key(&mut state, KeyCode::Char('d'), KeyModifiers::CONTROL);
+        let expected_half = (bound.viewport_h / 2).max(1);
+        assert_eq!(state.console_output_scroll, expected_half);
+        send_key(&mut state, KeyCode::Char('u'), KeyModifiers::CONTROL);
+        assert_eq!(state.console_output_scroll, 0);
+
+        // `G` jumps to bottom, `gg` jumps to top
+        send_key(&mut state, KeyCode::Char('G'), KeyModifiers::SHIFT);
+        assert_eq!(state.console_output_scroll, bound.max_scroll);
+        send_key(&mut state, KeyCode::Char('g'), KeyModifiers::NONE);
+        send_key(&mut state, KeyCode::Char('g'), KeyModifiers::NONE);
+        assert_eq!(state.console_output_scroll, 0);
+
+        // `End` jumps to bottom, `Home` jumps to top
+        send_key(&mut state, KeyCode::End, KeyModifiers::NONE);
+        assert_eq!(state.console_output_scroll, bound.max_scroll);
+        send_key(&mut state, KeyCode::Home, KeyModifiers::NONE);
+        assert_eq!(state.console_output_scroll, 0);
+
+        // `gg` routes via `[console]` dynamic keymap (works even when `g b` is unbound, and respects `noop` override).
+        let unbind_gb: crate::config::KeymapConfigOverlay =
+            toml::from_str("[global]\nprepend_keymap = [{ on = [\"g\", \"b\"], run = \"noop\" }]\n")
+                .unwrap();
+        state.config.keymap.merge_overlay(&unbind_gb);
+        send_key(&mut state, KeyCode::End, KeyModifiers::NONE);
+        assert_eq!(state.console_output_scroll, bound.max_scroll);
+        send_key(&mut state, KeyCode::Char('g'), KeyModifiers::NONE);
+        send_key(&mut state, KeyCode::Char('g'), KeyModifiers::NONE);
+        assert_eq!(state.console_output_scroll, 0);
+
+        let unbind_gg: crate::config::KeymapConfigOverlay =
+            toml::from_str("[console]\nprepend_keymap = [{ on = [\"g\", \"g\"], run = \"noop\" }]\n")
+                .unwrap();
+        state.config.keymap.merge_overlay(&unbind_gg);
+        send_key(&mut state, KeyCode::End, KeyModifiers::NONE);
+        assert_eq!(state.console_output_scroll, bound.max_scroll);
+        send_key(&mut state, KeyCode::Char('g'), KeyModifiers::NONE);
+        send_key(&mut state, KeyCode::Char('g'), KeyModifiers::NONE);
+        assert_eq!(state.console_output_scroll, bound.max_scroll);
     }
 }

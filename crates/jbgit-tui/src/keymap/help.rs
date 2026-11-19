@@ -103,6 +103,7 @@ fn scope_label_key(scope: KeymapScope) -> &'static str {
         KeymapScope::Branch => "help.scope.branch",
         KeymapScope::Diff => "help.scope.diff",
         KeymapScope::Stash => "help.scope.stash",
+        KeymapScope::Console => "help.scope.console",
     }
 }
 
@@ -243,6 +244,7 @@ fn advanced_tool_rows(state: &AppState) -> Vec<HelpRow> {
         KeymapScope::Branch,
         KeymapScope::Diff,
         KeymapScope::Stash,
+        KeymapScope::Console,
     ];
     let key_or = |run: &KeyAction, default_key: &str| -> String {
         km.primary_key_for(all_scopes, run)
@@ -318,6 +320,12 @@ pub fn build_help_rows(state: &AppState, query: &str) -> Vec<HelpRow> {
         i18n.t("help.scope.stash"),
         false,
     );
+    let console_rows = collect_merged_entries(
+        state,
+        &km.console.key_bindings,
+        i18n.t("help.scope.console"),
+        false,
+    );
     let adv_rows = advanced_tool_rows(state);
     let other_rows = vec![
         HelpRow::Entry {
@@ -350,6 +358,7 @@ pub fn build_help_rows(state: &AppState, query: &str) -> Vec<HelpRow> {
             (i18n.t("help.section_branch"), branch_rows),
             (i18n.t("help.section_diff"), diff_rows),
             (i18n.t("help.section_stash"), stash_rows),
+            (i18n.t("help.section_console"), console_rows),
             (i18n.t("help.section_advanced"), adv_rows),
             (i18n.t("help.section_other"), other_rows),
         ] {
@@ -371,6 +380,7 @@ pub fn build_help_rows(state: &AppState, query: &str) -> Vec<HelpRow> {
         .chain(branch_rows)
         .chain(diff_rows)
         .chain(stash_rows)
+        .chain(console_rows)
         .chain(adv_rows)
         .chain(other_rows)
     {

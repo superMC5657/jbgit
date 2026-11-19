@@ -153,3 +153,13 @@ key_bindings = [
     { on = [ "C" ], run = "stash_clear", desc = "清空所有贮藏" },
     { on = [ "v" ], run = "toggle_group", desc = "切换按目录树分组" },
 ]
+
+[console]
+key_bindings = [
+    { on = [ "g", "g" ], run = "goto_top", desc = "跳转至顶部" },
+    { on = [ "<Home>" ], run = "goto_top", desc = "跳转至顶部" },
+    { on = [ "G" ], run = "goto_bottom", desc = "跳转至底部" },
+    { on = [ "<End>" ], run = "goto_bottom", desc = "跳转至底部" },
+    { on = [ "<C-d>" ], run = "page_down_half", desc = "向下半页" },
+    { on = [ "<C-u>" ], run = "page_up_half", desc = "向上半页" },
+]

@@ -282,23 +282,28 @@ impl AppState {
             Action::StageDiffMoveCursor(delta) => {
                 let len = self.stage_workbench.diff_rows().len();
                 if len > 0 {
-                    self.stage_workbench.diff_cursor_row =
-                        (self.stage_workbench.diff_cursor_row as isize + *delta)
-                            .clamp(0, len as isize - 1) as usize;
+                    self.stage_workbench.diff_cursor_row = crate::app::apply_scroll_delta(
+                        self.stage_workbench.diff_cursor_row,
+                        *delta,
+                        len - 1,
+                    );
+                    let viewport_h = self
+                        .scroll_metrics
+                        .stage_diff
+                        .map(|b| b.viewport_h)
+                        .filter(|&h| h > 0)
+                        .unwrap_or(18);
                     let c = self.stage_workbench.diff_cursor_row;
                     if c < self.stage_workbench.diff_scroll {
                         self.stage_workbench.diff_scroll = c;
-                    } else if c >= self.stage_workbench.diff_scroll + 18 {
-                        self.stage_workbench.diff_scroll = c.saturating_sub(17);
+                    } else if c >= self.stage_workbench.diff_scroll + viewport_h {
+                        self.stage_workbench.diff_scroll =
+                            c.saturating_sub(viewport_h.saturating_sub(1));
                     }
                 }
             }
             Action::StageDiffScroll(delta) => {
-                let len = self.stage_workbench.diff_rows().len();
-                self.stage_workbench.diff_scroll = (self.stage_workbench.diff_scroll as isize
-                    + *delta)
-                    .clamp(0, len.saturating_sub(1) as isize)
-                    as usize;
+                self.scroll_pane(crate::app::ScrollPane::StageDiff, *delta);
             }
             Action::StageDiffJumpHunk(dir) => {
                 let headers = self.stage_workbench.hunk_header_rows();

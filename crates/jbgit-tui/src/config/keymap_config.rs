@@ -50,6 +50,7 @@ pub enum KeymapScope {
     Branch,
     Diff,
     Stash,
+    Console,
 }
 
 fn deserialize_key_seq<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
@@ -87,6 +88,8 @@ pub struct KeymapConfig {
     pub diff: KeyBindingsList,
     #[serde(default)]
     pub stash: KeyBindingsList,
+    #[serde(default)]
+    pub console: KeyBindingsList,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -118,6 +121,7 @@ pub struct KeymapConfigOverlay {
     pub branch: Option<KeyBindingsList>,
     pub diff: Option<KeyBindingsList>,
     pub stash: Option<KeyBindingsList>,
+    pub console: Option<KeyBindingsList>,
 }
 
 fn keys_equal(a: &[String], b: &[String]) -> bool {
@@ -321,6 +325,9 @@ impl KeymapConfig {
         if let Some(s) = &overlay.stash {
             merge_section(&mut self.stash.key_bindings, s);
         }
+        if let Some(c) = &overlay.console {
+            merge_section(&mut self.console.key_bindings, c);
+        }
     }
 
     pub fn bindings_for(&self, scope: KeymapScope) -> &[KeyBindingConfig] {
@@ -331,6 +338,7 @@ impl KeymapConfig {
             KeymapScope::Branch => &self.branch.key_bindings,
             KeymapScope::Diff => &self.diff.key_bindings,
             KeymapScope::Stash => &self.stash.key_bindings,
+            KeymapScope::Console => &self.console.key_bindings,
         }
     }
 

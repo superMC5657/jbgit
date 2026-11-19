@@ -29,6 +29,75 @@ use crate::syntax::HighlightedDiff;
 use crate::theme::{BranchColorManager, GlyphMode, ThemePalette};
 use crate::widgets::SplitterState;
 
+/// Large negative delta used by `GotoTop` / `Home` scroll actions.
+pub const SCROLL_GOTO_TOP: isize = isize::MIN / 2;
+/// Large positive delta used by `GotoBottom` / `End` scroll actions.
+pub const SCROLL_GOTO_BOTTOM: isize = isize::MAX / 2;
+
+/// Applies a signed scroll delta within `[0, max_scroll]` without integer
+/// overflow and without overscroll dead-zone when reversing direction.
+pub fn apply_scroll_delta(current: usize, delta: isize, max_scroll: usize) -> usize {
+    let clamped = current.min(max_scroll);
+    if delta >= 0 {
+        clamped.saturating_add(delta as usize).min(max_scroll)
+    } else {
+        clamped.saturating_sub(delta.unsigned_abs())
+    }
+}
+
+/// Identifies each bounded scrollable viewport tracked by `ViewportScrollMetrics`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScrollPane {
+    ConsoleOutput,
+    LogDiff,
+    LogDetails,
+    StashDiff,
+    StageDiff,
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct PaneScrollBound {
+    pub viewport_h: usize,
+    pub max_scroll: usize,
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct ViewportScrollMetrics {
+    pub console_output: Option<PaneScrollBound>,
+    pub log_diff: Option<PaneScrollBound>,
+    pub log_details: Option<PaneScrollBound>,
+    pub stash_diff: Option<PaneScrollBound>,
+    pub stage_diff: Option<PaneScrollBound>,
+}
+
+impl ViewportScrollMetrics {
+    /// Returns the last recorded scroll bound for `pane`, if rendered.
+    pub fn bound(&self, pane: ScrollPane) -> Option<PaneScrollBound> {
+        match pane {
+            ScrollPane::ConsoleOutput => self.console_output,
+            ScrollPane::LogDiff => self.log_diff,
+            ScrollPane::LogDetails => self.log_details,
+            ScrollPane::StashDiff => self.stash_diff,
+            ScrollPane::StageDiff => self.stage_diff,
+        }
+    }
+
+    /// Records the rendered viewport height and maximum scroll offset for `pane`.
+    pub fn record(&mut self, pane: ScrollPane, viewport_h: usize, max_scroll: usize) {
+        let bound = Some(PaneScrollBound {
+            viewport_h,
+            max_scroll,
+        });
+        match pane {
+            ScrollPane::ConsoleOutput => self.console_output = bound,
+            ScrollPane::LogDiff => self.log_diff = bound,
+            ScrollPane::LogDetails => self.log_details = bound,
+            ScrollPane::StashDiff => self.stash_diff = bound,
+            ScrollPane::StageDiff => self.stage_diff = bound,
+        }
+    }
+}
+
 pub struct RenderContext<'a> {
     pub theme: &'a ThemePalette,
     pub glyph_mode: GlyphMode,
@@ -41,6 +110,7 @@ pub struct RenderContext<'a> {
     pub graph_renderer: Option<&'a mut crate::graph::GraphRenderer>,
     pub i18n: Option<&'a crate::i18n::I18n>,
     pub config: Option<&'a crate::config::AppConfig>,
+    pub scroll_metrics: Option<&'a mut ViewportScrollMetrics>,
 }
 
 impl<'a> RenderContext<'a> {
@@ -61,6 +131,7 @@ impl<'a> RenderContext<'a> {
             graph_renderer: None,
             i18n: None,
             config: None,
+            scroll_metrics: None,
         }
     }
 
@@ -79,6 +150,7 @@ impl<'a> RenderContext<'a> {
             graph_renderer: None,
             i18n: self.i18n,
             config: self.config,
+            scroll_metrics: None,
         }
     }
 
@@ -88,6 +160,13 @@ impl<'a> RenderContext<'a> {
 
     pub fn cancel(&self) -> &str {
         self.i18n.map_or("Cancel", |i| i.cancel())
+    }
+
+    /// Records the rendered scroll geometry for `pane` into this frame's metrics.
+    pub fn record_scroll_bound(&mut self, pane: ScrollPane, viewport_h: usize, max_scroll: usize) {
+        if let Some(m) = self.scroll_metrics.as_deref_mut() {
+            m.record(pane, viewport_h, max_scroll);
+        }
     }
 
     pub fn t<'s>(&'s self, key: &'s str) -> &'s str {
@@ -733,6 +812,7 @@ pub struct AppState {
     pub console_entries: Vec<GitConsoleEntry>,
     pub console_selected_idx: usize,
     pub console_output_scroll: usize,
+    pub scroll_metrics: ViewportScrollMetrics,
 
     pub next_cli_id: u64,
     pub loading_snapshot: bool,
@@ -853,6 +933,7 @@ impl AppState {
             console_entries: Vec::new(),
             console_selected_idx: 0,
             console_output_scroll: 0,
+            scroll_metrics: ViewportScrollMetrics::default(),
             next_cli_id: 1,
             loading_snapshot: false,
             status_notice: None,
@@ -889,6 +970,87 @@ impl AppState {
     pub fn log_commit_at(&self, visible_row: usize) -> Option<&CommitSummary> {
         self.log_graph
             .commit_at(self.repo_snapshot.as_ref(), visible_row)
+    }
+
+    pub fn console_output_max_scroll(&self) -> usize {
+        let Some(entry) = self.console_entries.get(self.console_selected_idx) else {
+            return 0;
+        };
+        let total_lines = crate::views::console::console_entry_total_lines(entry);
+        match self.scroll_metrics.console_output {
+            Some(bound) if bound.viewport_h > 0 => total_lines.saturating_sub(bound.viewport_h),
+            _ => total_lines.saturating_sub(1),
+        }
+    }
+
+    pub fn console_page_step(&self) -> isize {
+        self.scroll_metrics
+            .console_output
+            .filter(|b| b.viewport_h > 0)
+            .map(|b| b.viewport_h.saturating_sub(1).max(1) as isize)
+            .unwrap_or(10)
+    }
+
+    pub fn console_half_page_step(&self) -> isize {
+        self.scroll_metrics
+            .console_output
+            .filter(|b| b.viewport_h > 0)
+            .map(|b| (b.viewport_h / 2).max(1) as isize)
+            .unwrap_or(10)
+    }
+
+    /// Scrolls `pane` by signed `delta`, clamped to its recorded or fallback upper bound.
+    pub fn scroll_pane(&mut self, pane: ScrollPane, delta: isize) {
+        let recorded = self.scroll_metrics.bound(pane).map(|b| b.max_scroll);
+        match pane {
+            ScrollPane::ConsoleOutput => {
+                let max_scroll = self.console_output_max_scroll();
+                self.console_output_scroll =
+                    apply_scroll_delta(self.console_output_scroll, delta, max_scroll);
+            }
+            ScrollPane::LogDiff => {
+                let max_scroll = recorded.unwrap_or_else(|| self.details.fallback_diff_max_scroll());
+                self.details.diff_scroll =
+                    apply_scroll_delta(self.details.diff_scroll, delta, max_scroll);
+            }
+            ScrollPane::LogDetails => {
+                let max_scroll = recorded.unwrap_or(usize::MAX);
+                self.details.details_scroll =
+                    apply_scroll_delta(self.details.details_scroll, delta, max_scroll);
+            }
+            ScrollPane::StashDiff => {
+                let max_scroll =
+                    recorded.unwrap_or_else(|| self.stash.details.fallback_diff_max_scroll());
+                self.stash.details.diff_scroll =
+                    apply_scroll_delta(self.stash.details.diff_scroll, delta, max_scroll);
+            }
+            ScrollPane::StageDiff => {
+                let max_scroll = recorded
+                    .unwrap_or_else(|| self.stage_workbench.diff_rows().len().saturating_sub(1));
+                self.stage_workbench.diff_scroll =
+                    apply_scroll_delta(self.stage_workbench.diff_scroll, delta, max_scroll);
+            }
+        }
+    }
+
+    /// Stores the latest frame's `metrics` and clamps all tracked scroll offsets.
+    pub fn clamp_scroll_metrics(&mut self, metrics: ViewportScrollMetrics) {
+        self.scroll_metrics = metrics;
+        if let Some(b) = metrics.console_output {
+            self.console_output_scroll = self.console_output_scroll.min(b.max_scroll);
+        }
+        if let Some(b) = metrics.log_diff {
+            self.details.diff_scroll = self.details.diff_scroll.min(b.max_scroll);
+        }
+        if let Some(b) = metrics.log_details {
+            self.details.details_scroll = self.details.details_scroll.min(b.max_scroll);
+        }
+        if let Some(b) = metrics.stash_diff {
+            self.stash.details.diff_scroll = self.stash.details.diff_scroll.min(b.max_scroll);
+        }
+        if let Some(b) = metrics.stage_diff {
+            self.stage_workbench.diff_scroll = self.stage_workbench.diff_scroll.min(b.max_scroll);
+        }
     }
 
     pub fn has_active_tasks(&self) -> bool {
@@ -1630,12 +1792,10 @@ impl AppState {
                 );
             }
             Action::ScrollDiff(delta) => {
-                self.details.diff_scroll =
-                    (self.details.diff_scroll as isize + delta).max(0) as usize;
+                self.scroll_pane(ScrollPane::LogDiff, delta);
             }
             Action::ScrollDetails(delta) => {
-                self.details.details_scroll =
-                    (self.details.details_scroll as isize + delta).max(0) as usize;
+                self.scroll_pane(ScrollPane::LogDetails, delta);
             }
             Action::CopyText(text) => {
                 self.status_notice = Some(self.i18n.t_fmt("toast.copied_text", &[("text", &text)]));
@@ -1675,8 +1835,7 @@ impl AppState {
                 }
             }
             Action::ScrollConsoleOutput(delta) => {
-                let next = (self.console_output_scroll as isize + delta).max(0) as usize;
-                self.console_output_scroll = next;
+                self.scroll_pane(ScrollPane::ConsoleOutput, delta);
             }
             Action::RunCliProbe(args) => {
                 effects.push(Effect::RunCli {
@@ -2140,5 +2299,29 @@ pub fn execute_effects(effects: Vec<Effect>, state: &mut AppState, engine: Optio
             }
             Effect::CopyToClipboard(_) | Effect::Quit => {}
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::apply_scroll_delta;
+
+    #[test]
+    fn apply_scroll_delta_clamps_without_overflow_or_dead_zone() {
+        assert_eq!(apply_scroll_delta(0, isize::MAX, 42), 42);
+        assert_eq!(apply_scroll_delta(42, isize::MAX / 2, 42), 42);
+        let after_twice = apply_scroll_delta(apply_scroll_delta(10, isize::MAX / 2, 42), isize::MAX / 2, 42);
+        assert_eq!(after_twice, 42);
+
+        assert_eq!(apply_scroll_delta(42, isize::MIN, 42), 0);
+        assert_eq!(apply_scroll_delta(42, isize::MIN / 2, 42), 0);
+
+        // If `current` exceeded `max_scroll` (e.g. before a resize), scrolling up by 1
+        // immediately moves to `max_scroll - 1` instead of staying stuck.
+        assert_eq!(apply_scroll_delta(500, -1, 42), 41);
+        assert_eq!(apply_scroll_delta(500, 0, 42), 42);
+        assert_eq!(apply_scroll_delta(500, 5, 42), 42);
+        assert_eq!(apply_scroll_delta(5, -10, 0), 0);
+        assert_eq!(apply_scroll_delta(0, 10, 0), 0);
     }
 }

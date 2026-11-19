@@ -682,6 +682,7 @@ mod tests {
             crate::config::KeymapScope::Branch,
             crate::config::KeymapScope::Diff,
             crate::config::KeymapScope::Stash,
+            crate::config::KeymapScope::Console,
         ] {
             for b in cfg.keymap.bindings_for(scope) {
                 assert!(
