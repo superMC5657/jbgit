@@ -1,4 +1,6 @@
-use jbgit_core::WorkspaceTab;
+use jbgit_core::{PaneId, WorkspaceTab};
+
+use crate::config::KeymapScope;
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
@@ -439,18 +441,532 @@ pub fn render_footer_bar(
         return;
     }
 
-    let hint = match state.active_tab {
-        WorkspaceTab::Commit => state.i18n.t("view.footer.commit_hint"),
-        WorkspaceTab::Log => state.i18n.t("view.footer.log_hint"),
-        WorkspaceTab::Console => state.i18n.t("view.footer.console_hint"),
-        WorkspaceTab::Stash => state.i18n.t("view.footer.stash_hint"),
+    render_dynamic_footer_hints(frame, area, state, ctx);
+}
+
+fn footer_key_pair(a: Option<String>, b: Option<String>) -> Option<String> {
+    match (a, b) {
+        (Some(k1), Some(k2)) => Some(format!("{k1}/{k2}")),
+        (Some(k1), None) => Some(k1),
+        (None, Some(k2)) => Some(k2),
+        (None, None) => None,
+    }
+}
+
+fn push_footer_key(
+    pills: &mut Vec<(String, String)>,
+    ctx: &RenderContext<'_>,
+    key: Option<String>,
+    i18n_key: &str,
+) {
+    if let Some(k) = key {
+        pills.push((k, ctx.t(i18n_key).to_string()));
+    }
+}
+
+fn push_footer_lit(
+    pills: &mut Vec<(String, String)>,
+    ctx: &RenderContext<'_>,
+    key: &str,
+    i18n_key: &str,
+) {
+    pills.push((key.to_string(), ctx.t(i18n_key).to_string()));
+}
+
+fn render_dynamic_footer_hints(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    state: &AppState,
+    ctx: &RenderContext<'_>,
+) {
+    use unicode_width::UnicodeWidthStr;
+
+    let km = &state.config.keymap;
+    let mut pills: Vec<(String, String)> = Vec::new();
+    let mut include_help_pill = true;
+
+    if state.active_tab == WorkspaceTab::Log && state.log_filter.editing_text {
+        include_help_pill = false;
+        push_footer_lit(&mut pills, ctx, "Enter", "view.footer.pill.apply");
+        push_footer_lit(&mut pills, ctx, "Esc", "view.footer.pill.cancel");
+        push_footer_lit(&mut pills, ctx, "Alt+R", "view.footer.pill.regex");
+        push_footer_lit(&mut pills, ctx, "Alt+C", "view.footer.pill.case");
+    } else if state.active_tab == WorkspaceTab::Log
+        && state.focused_pane == PaneId::LogBranchesTree
+        && state.branches.searching
+    {
+        include_help_pill = false;
+        push_footer_lit(
+            &mut pills,
+            ctx,
+            ctx.t("view.footer.pill.type_key"),
+            "view.footer.pill.filter",
+        );
+        push_footer_lit(&mut pills, ctx, "Enter", "view.footer.pill.apply");
+        push_footer_lit(&mut pills, ctx, "Esc", "view.footer.pill.cancel");
+    } else if state.details.diff_zoomed {
+        let diff_scopes = &[KeymapScope::Diff];
+        push_footer_key(
+            &mut pills,
+            ctx,
+            footer_key_pair(
+                km.primary_key_for(diff_scopes, "prev_hunk"),
+                km.primary_key_for(diff_scopes, "next_hunk"),
+            ),
+            "view.footer.pill.hunk",
+        );
+        push_footer_key(
+            &mut pills,
+            ctx,
+            footer_key_pair(
+                km.primary_key_for(diff_scopes, "prev_file"),
+                km.primary_key_for(diff_scopes, "next_file"),
+            ),
+            "view.footer.pill.file",
+        );
+        push_footer_key(
+            &mut pills,
+            ctx,
+            km.primary_key_for(diff_scopes, "toggle_side_by_side"),
+            "view.footer.pill.side_by_side",
+        );
+        push_footer_key(
+            &mut pills,
+            ctx,
+            km.primary_key_for(diff_scopes, "cycle_diff_context"),
+            "view.footer.pill.context",
+        );
+        let zoom_key = match km.primary_key_for(diff_scopes, "zoom_diff") {
+            Some(k) if k != "Esc" => format!("{k}/Esc"),
+            _ => "Esc".to_string(),
+        };
+        pills.push((zoom_key, ctx.t("view.footer.pill.exit_zoom").to_string()));
+    } else {
+        match (state.active_tab, state.focused_pane) {
+            (WorkspaceTab::Commit, PaneId::CommitChangesTree) => {
+                let scopes = &[KeymapScope::Commit, KeymapScope::Global];
+                push_footer_key(
+                    &mut pills,
+                    ctx,
+                    km.primary_key_for(scopes, "toggle_stage"),
+                    "view.footer.pill.stage",
+                );
+                push_footer_key(
+                    &mut pills,
+                    ctx,
+                    km.primary_key_for(scopes, "discard_changes"),
+                    "view.footer.pill.discard",
+                );
+                push_footer_key(
+                    &mut pills,
+                    ctx,
+                    km.primary_key_for(scopes, "focus_commit_msg"),
+                    "view.footer.pill.msg",
+                );
+                push_footer_key(
+                    &mut pills,
+                    ctx,
+                    km.primary_key_for(scopes, "toggle_amend"),
+                    "view.footer.pill.amend",
+                );
+                push_footer_key(
+                    &mut pills,
+                    ctx,
+                    km.primary_key_for(&[KeymapScope::Global], "context_menu"),
+                    "view.footer.pill.menu",
+                );
+                push_footer_key(
+                    &mut pills,
+                    ctx,
+                    km.primary_key_for(scopes, "edit_file"),
+                    "view.footer.pill.edit",
+                );
+                push_footer_key(
+                    &mut pills,
+                    ctx,
+                    km.primary_key_for(&[KeymapScope::Global], "toggle_branches_popup"),
+                    "view.footer.pill.branches",
+                );
+            }
+            (WorkspaceTab::Commit, PaneId::CommitMessageEditor) => {
+                include_help_pill = false;
+                push_footer_lit(
+                    &mut pills,
+                    ctx,
+                    "Ctrl+S / Ctrl+Enter",
+                    "view.footer.pill.commit",
+                );
+                push_footer_lit(&mut pills, ctx, "Alt+A", "view.footer.pill.amend");
+                push_footer_lit(&mut pills, ctx, "Ctrl+M", "view.footer.pill.history");
+                push_footer_lit(&mut pills, ctx, "Esc", "view.footer.pill.back");
+            }
+            (WorkspaceTab::Commit, PaneId::CommitDiffPreview) => {
+                let scopes = &[KeymapScope::Diff];
+                push_footer_key(
+                    &mut pills,
+                    ctx,
+                    km.primary_key_for(scopes, "toggle_stage"),
+                    "view.footer.pill.stage",
+                );
+                push_footer_key(
+                    &mut pills,
+                    ctx,
+                    km.primary_key_for(scopes, "rollback_selection"),
+                    "view.footer.pill.rollback",
+                );
+                push_footer_key(
+                    &mut pills,
+                    ctx,
+                    km.primary_key_for(scopes, "toggle_visual"),
+                    "view.footer.pill.visual",
+                );
+                push_footer_key(
+                    &mut pills,
+                    ctx,
+                    footer_key_pair(
+                        km.primary_key_for(scopes, "prev_hunk"),
+                        km.primary_key_for(scopes, "next_hunk"),
+                    ),
+                    "view.footer.pill.hunk",
+                );
+                push_footer_key(
+                    &mut pills,
+                    ctx,
+                    km.primary_key_for(scopes, "toggle_side_by_side"),
+                    "view.footer.pill.side_by_side",
+                );
+                push_footer_key(
+                    &mut pills,
+                    ctx,
+                    km.primary_key_for(scopes, "switch_diff_side"),
+                    "view.footer.pill.switch_side",
+                );
+                push_footer_key(
+                    &mut pills,
+                    ctx,
+                    km.primary_key_for(scopes, "three_way_inspector"),
+                    "view.footer.pill.three_way",
+                );
+            }
+            (WorkspaceTab::Log, PaneId::LogBranchesTree) => {
+                let scopes = &[KeymapScope::Branch, KeymapScope::Log, KeymapScope::Global];
+                let global = &[KeymapScope::Global];
+                push_footer_key(
+                    &mut pills,
+                    ctx,
+                    km.primary_key_for(scopes, "branch_search"),
+                    "view.footer.pill.search",
+                );
+                push_footer_key(
+                    &mut pills,
+                    ctx,
+                    km.primary_key_for(scopes, "checkout"),
+                    "view.footer.pill.checkout",
+                );
+                push_footer_key(
+                    &mut pills,
+                    ctx,
+                    km.primary_key_for(scopes, "new_branch"),
+                    "view.footer.pill.new_branch",
+                );
+                push_footer_key(
+                    &mut pills,
+                    ctx,
+                    km.primary_key_for(scopes, "toggle_favorite"),
+                    "view.footer.pill.favorite",
+                );
+                push_footer_key(
+                    &mut pills,
+                    ctx,
+                    km.primary_key_for(global, "git_fetch"),
+                    "view.footer.pill.fetch",
+                );
+                push_footer_key(
+                    &mut pills,
+                    ctx,
+                    km.primary_key_for(global, "git_pull"),
+                    "view.footer.pill.pull",
+                );
+                push_footer_key(
+                    &mut pills,
+                    ctx,
+                    km.primary_key_for(global, "git_push"),
+                    "view.footer.pill.push",
+                );
+                push_footer_key(
+                    &mut pills,
+                    ctx,
+                    km.primary_key_for(global, "context_menu"),
+                    "view.footer.pill.menu",
+                );
+            }
+            (WorkspaceTab::Log, PaneId::LogCommitTable) => {
+                let scopes = &[KeymapScope::Log, KeymapScope::Global];
+                let global = &[KeymapScope::Global];
+                push_footer_key(
+                    &mut pills,
+                    ctx,
+                    km.primary_key_for(scopes, "focus_filter"),
+                    "view.footer.pill.filter",
+                );
+                push_footer_key(
+                    &mut pills,
+                    ctx,
+                    km.primary_key_for(scopes, "checkout"),
+                    "view.footer.pill.checkout",
+                );
+                push_footer_key(
+                    &mut pills,
+                    ctx,
+                    km.primary_key_for(scopes, "compare_or_diff"),
+                    "view.footer.pill.diff",
+                );
+                push_footer_key(
+                    &mut pills,
+                    ctx,
+                    km.primary_key_for(scopes, "new_branch"),
+                    "view.footer.pill.new_branch",
+                );
+                push_footer_key(
+                    &mut pills,
+                    ctx,
+                    km.primary_key_for(scopes, "copy_hash"),
+                    "view.footer.pill.copy_hash",
+                );
+                push_footer_key(
+                    &mut pills,
+                    ctx,
+                    km.primary_key_for(global, "toggle_branches_popup"),
+                    "view.footer.pill.branches",
+                );
+                push_footer_key(
+                    &mut pills,
+                    ctx,
+                    km.primary_key_for(global, "git_pull"),
+                    "view.footer.pill.pull",
+                );
+                push_footer_key(
+                    &mut pills,
+                    ctx,
+                    km.primary_key_for(global, "git_push"),
+                    "view.footer.pill.push",
+                );
+            }
+            (WorkspaceTab::Log, PaneId::LogChangesTree) => {
+                let scopes = &[KeymapScope::Log, KeymapScope::Global];
+                push_footer_key(
+                    &mut pills,
+                    ctx,
+                    km.primary_key_for(scopes, "compare_or_diff"),
+                    "view.footer.pill.diff_toggle",
+                );
+                push_footer_key(
+                    &mut pills,
+                    ctx,
+                    km.primary_key_for(&[KeymapScope::Commit, KeymapScope::Log], "toggle_group"),
+                    "view.footer.pill.group",
+                );
+                push_footer_key(
+                    &mut pills,
+                    ctx,
+                    km.primary_key_for(&[KeymapScope::Global], "context_menu"),
+                    "view.footer.pill.menu",
+                );
+                push_footer_lit(&mut pills, ctx, "Esc", "view.footer.pill.back");
+            }
+            (WorkspaceTab::Log, PaneId::LogDetailsDiff) => {
+                let scopes = &[KeymapScope::Diff, KeymapScope::Log, KeymapScope::Global];
+                push_footer_key(
+                    &mut pills,
+                    ctx,
+                    km.primary_key_for(scopes, "zoom_diff"),
+                    "view.footer.pill.zoom",
+                );
+                push_footer_key(
+                    &mut pills,
+                    ctx,
+                    km.primary_key_for(scopes, "toggle_side_by_side"),
+                    "view.footer.pill.side_by_side",
+                );
+                push_footer_key(
+                    &mut pills,
+                    ctx,
+                    km.primary_key_for(scopes, "cycle_diff_context"),
+                    "view.footer.pill.context",
+                );
+                push_footer_key(
+                    &mut pills,
+                    ctx,
+                    footer_key_pair(
+                        km.primary_key_for(scopes, "prev_hunk"),
+                        km.primary_key_for(scopes, "next_hunk"),
+                    ),
+                    "view.footer.pill.hunk",
+                );
+                push_footer_key(
+                    &mut pills,
+                    ctx,
+                    footer_key_pair(
+                        km.primary_key_for(scopes, "prev_file"),
+                        km.primary_key_for(scopes, "next_file"),
+                    ),
+                    "view.footer.pill.file",
+                );
+                push_footer_lit(&mut pills, ctx, "Esc", "view.footer.pill.back");
+            }
+            (WorkspaceTab::Stash, PaneId::StashList) => {
+                let scopes = &[KeymapScope::Stash, KeymapScope::Global];
+                push_footer_lit(&mut pills, ctx, "Enter", "view.footer.pill.inspect");
+                push_footer_key(
+                    &mut pills,
+                    ctx,
+                    km.primary_key_for(scopes, "stash_apply"),
+                    "view.footer.pill.apply",
+                );
+                push_footer_key(
+                    &mut pills,
+                    ctx,
+                    km.primary_key_for(scopes, "stash_pop"),
+                    "view.footer.pill.pop",
+                );
+                push_footer_key(
+                    &mut pills,
+                    ctx,
+                    km.primary_key_for(scopes, "stash_new"),
+                    "view.footer.pill.stash_new",
+                );
+                push_footer_key(
+                    &mut pills,
+                    ctx,
+                    km.primary_key_for(scopes, "stash_drop"),
+                    "view.footer.pill.drop",
+                );
+                push_footer_key(
+                    &mut pills,
+                    ctx,
+                    km.primary_key_for(scopes, "stash_branch"),
+                    "view.footer.pill.new_branch",
+                );
+                push_footer_key(
+                    &mut pills,
+                    ctx,
+                    km.primary_key_for(&[KeymapScope::Global], "context_menu"),
+                    "view.footer.pill.menu",
+                );
+            }
+            (WorkspaceTab::Stash, PaneId::StashDiffPreview) => {
+                let scopes = &[KeymapScope::Diff, KeymapScope::Stash, KeymapScope::Global];
+                push_footer_key(
+                    &mut pills,
+                    ctx,
+                    km.primary_key_for(scopes, "zoom_diff"),
+                    "view.footer.pill.zoom",
+                );
+                push_footer_key(
+                    &mut pills,
+                    ctx,
+                    km.primary_key_for(scopes, "toggle_side_by_side"),
+                    "view.footer.pill.side_by_side",
+                );
+                push_footer_key(
+                    &mut pills,
+                    ctx,
+                    km.primary_key_for(scopes, "cycle_diff_context"),
+                    "view.footer.pill.context",
+                );
+                push_footer_key(
+                    &mut pills,
+                    ctx,
+                    km.primary_key_for(&[KeymapScope::Commit, KeymapScope::Stash], "toggle_group"),
+                    "view.footer.pill.group",
+                );
+                push_footer_lit(&mut pills, ctx, "Esc", "view.footer.pill.back");
+            }
+            (WorkspaceTab::Console, PaneId::ConsoleCommandList) => {
+                let global = &[KeymapScope::Global];
+                push_footer_key(
+                    &mut pills,
+                    ctx,
+                    km.primary_key_for(global, "focus_next"),
+                    "view.footer.pill.detail",
+                );
+                push_footer_lit(&mut pills, ctx, "p", "view.footer.pill.status_probe");
+                push_footer_key(
+                    &mut pills,
+                    ctx,
+                    km.primary_key_for(global, "refresh"),
+                    "view.footer.pill.refresh",
+                );
+            }
+            (WorkspaceTab::Console, PaneId::ConsoleOutputDetail) => {
+                let global = &[KeymapScope::Global];
+                push_footer_lit(&mut pills, ctx, "Esc", "view.footer.pill.back");
+                push_footer_key(
+                    &mut pills,
+                    ctx,
+                    km.primary_key_for(global, "refresh"),
+                    "view.footer.pill.refresh",
+                );
+            }
+            _ => {}
+        }
+    }
+
+    let help_pill = if include_help_pill {
+        km.primary_key_for(&[KeymapScope::Global], "help")
+            .map(|k| (k, ctx.t("view.footer.pill.help").to_string()))
+    } else {
+        None
     };
 
-    let footer = Paragraph::new(Line::from(Span::styled(
-        hint,
-        Style::default().fg(ctx.theme.fg_muted),
-    )))
-    .style(Style::default().bg(ctx.theme.bg_panel));
+    let pill_badge_style = Style::default()
+        .bg(ctx.theme.bg_elevated)
+        .fg(ctx.theme.fg_bright)
+        .add_modifier(Modifier::BOLD);
+    let pill_label_style = Style::default()
+        .bg(ctx.theme.bg_panel)
+        .fg(ctx.theme.fg_muted);
+
+    let total_w = area.width as usize;
+    let help_w = help_pill
+        .as_ref()
+        .map_or(0, |(k, l)| 2 + k.width() + 2 + l.width() + 1);
+    let max_left_w = total_w.saturating_sub(help_w + 1);
+
+    let mut spans: Vec<Span<'static>> = Vec::new();
+    spans.push(Span::styled(" ", pill_label_style));
+    let mut used_w = 1usize;
+
+    for (key, label) in pills {
+        let badge = format!(" {key} ");
+        let lbl = format!(" {label}  ");
+        let w = badge.width() + lbl.width();
+        if used_w + w > max_left_w {
+            break;
+        }
+        used_w += w;
+        spans.push(Span::styled(badge, pill_badge_style));
+        spans.push(Span::styled(lbl, pill_label_style));
+    }
+
+    if let Some((hk, hl)) = help_pill
+        && used_w + help_w <= total_w
+    {
+        let gap = total_w.saturating_sub(used_w + help_w);
+        if gap > 0 {
+            spans.push(Span::styled(" ".repeat(gap), pill_label_style));
+        }
+        spans.push(Span::styled(
+            format!(" {hk} "),
+            Style::default()
+                .bg(ctx.theme.bg_elevated)
+                .fg(ctx.theme.fg_accent_link)
+                .add_modifier(Modifier::BOLD),
+        ));
+        spans.push(Span::styled(format!(" {hl} "), pill_label_style));
+    }
+
+    let footer = Paragraph::new(Line::from(spans)).style(Style::default().bg(ctx.theme.bg_panel));
     frame.render_widget(footer, area);
 }
 

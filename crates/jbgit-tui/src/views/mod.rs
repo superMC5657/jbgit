@@ -178,6 +178,7 @@ pub fn render_app(frame: &mut Frame<'_>, state: &mut AppState) {
 
         header::render_footer_bar(frame, footer_rect, state, &mut ctx);
         overlays::render_hover_tooltip(frame, area, state, &ctx);
+        overlays::render_which_key_popup(frame, area, state, &ctx);
         overlays::render_modals(frame, area, state, &mut ctx);
 
         // Vector graph images go out only after every overlay is known.

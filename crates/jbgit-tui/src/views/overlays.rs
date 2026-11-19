@@ -3,7 +3,7 @@ use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
+use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph, Wrap};
 use unicode_width::UnicodeWidthStr;
 
 use crate::app::{
@@ -291,6 +291,130 @@ pub fn render_modals(
     }
 }
 
+pub fn render_which_key_popup(
+    frame: &mut Frame<'_>,
+    screen: Rect,
+    state: &AppState,
+    ctx: &RenderContext<'_>,
+) {
+    if !state.modal_stack.is_empty() || screen.width < 24 || screen.height < 6 {
+        return;
+    }
+    let completions = crate::keymap::pending_completions(state);
+    if completions.is_empty() {
+        return;
+    }
+
+    let prefix = crate::keymap::pending_prefix_display(state);
+    let title_str = format!(" {prefix} + … ");
+    let visible: Vec<&(String, String)> = completions.iter().take(10).collect();
+
+    let max_key_w = visible
+        .iter()
+        .map(|(k, _)| k.width())
+        .max()
+        .unwrap_or(2)
+        .clamp(2, 12);
+    let max_desc_w = visible
+        .iter()
+        .map(|(_, d)| d.width())
+        .max()
+        .unwrap_or(8)
+        .clamp(8, 36);
+    let cancel_hint = format!(" {}", ctx.t("help.which_key_cancel"));
+
+    let content_w = (2 + max_key_w + 5 + max_desc_w + 1)
+        .max(title_str.width() + 2)
+        .max(cancel_hint.width() + 2);
+    let w = ((content_w + 2) as u16)
+        .clamp(30, 58)
+        .min(screen.width.saturating_sub(2));
+    let h = ((visible.len() + 3) as u16).min(screen.height.saturating_sub(2));
+    if w < 16 || h < 5 {
+        return;
+    }
+
+    let x = screen.x + screen.width.saturating_sub(w + 2);
+    let y = screen.y + screen.height.saturating_sub(h + 2);
+    let rect = Rect::new(x, y, w, h);
+
+    draw_shadow(frame, screen, rect);
+    frame.render_widget(Clear, rect);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(ctx.theme.border_focused))
+        .style(Style::default().bg(ctx.theme.bg_elevated))
+        .title(Span::styled(
+            title_str,
+            Style::default()
+                .fg(ctx.theme.fg_accent_link)
+                .add_modifier(Modifier::BOLD),
+        ));
+    let inner = block.inner(rect);
+    frame.render_widget(block, rect);
+
+    let mut lines: Vec<Line<'_>> = Vec::with_capacity(visible.len() + 1);
+    let desc_budget = (inner.width as usize).saturating_sub(2 + max_key_w + 5 + 1);
+    for (k, d) in visible {
+        let key_pad = " ".repeat(max_key_w.saturating_sub(k.width()));
+        let trimmed_desc = truncate_display_width(d, desc_budget);
+        lines.push(Line::from(vec![
+            Span::styled(" ", Style::default().bg(ctx.theme.bg_elevated)),
+            Span::styled(
+                k.clone(),
+                Style::default()
+                    .fg(ctx.theme.fg_accent_link)
+                    .bg(ctx.theme.bg_elevated)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!("{key_pad}  →  "),
+                Style::default()
+                    .fg(ctx.theme.fg_muted)
+                    .bg(ctx.theme.bg_elevated),
+            ),
+            Span::styled(
+                trimmed_desc,
+                Style::default()
+                    .fg(ctx.theme.fg_primary)
+                    .bg(ctx.theme.bg_elevated),
+            ),
+        ]));
+    }
+    lines.push(Line::from(Span::styled(
+        truncate_display_width(&cancel_hint, inner.width as usize),
+        Style::default()
+            .fg(ctx.theme.fg_muted)
+            .bg(ctx.theme.bg_elevated),
+    )));
+
+    frame.render_widget(Paragraph::new(lines), inner);
+}
+
+fn truncate_display_width(text: &str, max_w: usize) -> String {
+    if text.width() <= max_w {
+        return text.to_string();
+    }
+    if max_w == 0 {
+        return String::new();
+    }
+    let mut out = String::new();
+    let mut w = 0usize;
+    let limit = max_w.saturating_sub(1);
+    for ch in text.chars() {
+        let cw = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
+        if w + cw > limit {
+            break;
+        }
+        out.push(ch);
+        w += cw;
+    }
+    out.push('…');
+    out
+}
+
 #[allow(clippy::too_many_arguments)]
 fn render_floating_popup(
     frame: &mut Frame<'_>,
@@ -312,7 +436,7 @@ fn render_floating_popup(
     }
     let (max_w, max_h) = match kind {
         PopupKind::PalettePreview => (100, 38),
-        PopupKind::ShortcutsHelp => (84, 38),
+        PopupKind::ShortcutsHelp => (90, 38),
         PopupKind::GoToRevision => (64, 7),
         PopupKind::ChooseParent => (68, 12),
         PopupKind::CommitHistory => (76, 18),
@@ -377,112 +501,233 @@ fn render_floating_popup(
             render_palette_preview(frame, inner, ctx);
         }
         PopupKind::ShortcutsHelp => {
-            let mut lines: Vec<Line<'_>> = Vec::new();
+            if inner.width < 12 || inner.height < 4 {
+                return;
+            }
+            let search_rect = Rect::new(inner.x, inner.y, inner.width, 1);
+            let div_rect = Rect::new(inner.x, inner.y + 1, inner.width, 1);
+            let list_h = inner.height.saturating_sub(3);
+            let list_rect = Rect::new(inner.x, inner.y + 2, inner.width, list_h);
+            let foot_rect = Rect::new(inner.x, inner.y + inner.height - 1, inner.width, 1);
 
-            let add_section = |lines: &mut Vec<Line<'_>>, title: &str| {
-                if !lines.is_empty() {
-                    lines.push(Line::from(""));
-                }
-                lines.push(Line::from(Span::styled(
-                    format!(" {title}"),
+            // Search bar header
+            let prompt_prefix = " > ";
+            let esc_hint = " [Esc] ";
+            let avail_query_w = (inner.width as usize)
+                .saturating_sub(prompt_prefix.width() + esc_hint.width() + 2);
+            let mut search_spans: Vec<Span<'_>> = vec![Span::styled(
+                prompt_prefix,
+                Style::default()
+                    .fg(ctx.theme.fg_accent_link)
+                    .bg(ctx.theme.bg_panel)
+                    .add_modifier(Modifier::BOLD),
+            )];
+            let mut used_search_w = prompt_prefix.width();
+            if query.is_empty() {
+                let placeholder =
+                    truncate_display_width(ctx.t("help.search_placeholder"), avail_query_w);
+                used_search_w += placeholder.width();
+                search_spans.push(Span::styled(
+                    placeholder,
+                    Style::default()
+                        .fg(ctx.theme.fg_muted)
+                        .bg(ctx.theme.bg_panel),
+                ));
+            } else {
+                let q_disp = truncate_display_width(query, avail_query_w);
+                used_search_w += q_disp.width() + 1;
+                search_spans.push(Span::styled(
+                    q_disp,
+                    Style::default()
+                        .fg(ctx.theme.fg_bright)
+                        .bg(ctx.theme.bg_panel),
+                ));
+                search_spans.push(Span::styled(
+                    "▏",
                     Style::default()
                         .fg(ctx.theme.fg_accent_link)
-                        .add_modifier(Modifier::BOLD),
-                )));
-            };
+                        .bg(ctx.theme.bg_panel),
+                ));
+            }
+            let search_gap =
+                (inner.width as usize).saturating_sub(used_search_w + esc_hint.width());
+            if search_gap > 0 {
+                search_spans.push(Span::styled(
+                    " ".repeat(search_gap),
+                    Style::default().bg(ctx.theme.bg_panel),
+                ));
+            }
+            search_spans.push(Span::styled(
+                esc_hint,
+                Style::default()
+                    .fg(ctx.theme.fg_muted)
+                    .bg(ctx.theme.bg_panel),
+            ));
+            frame.render_widget(
+                Paragraph::new(Line::from(search_spans))
+                    .style(Style::default().bg(ctx.theme.bg_panel)),
+                search_rect,
+            );
 
-            let add_row = |lines: &mut Vec<Line<'_>>, key_str: String, desc: String| {
-                let padded = format!(" {key_str}{}", " ".repeat(22usize.saturating_sub(key_str.width())));
-                lines.push(Line::from(vec![
-                    Span::styled(padded, Style::default().fg(ctx.theme.fg_bright)),
-                    Span::styled(desc, Style::default().fg(ctx.theme.fg_primary)),
-                ]));
-            };
+            // Divider
+            frame.render_widget(
+                Paragraph::new(Line::from(Span::styled(
+                    "─".repeat(inner.width as usize),
+                    Style::default().fg(ctx.theme.border_splitter),
+                )))
+                .style(Style::default().bg(ctx.theme.bg_elevated)),
+                div_rect,
+            );
 
-            if let Some(config) = ctx.config {
-                let render_bindings = |lines: &mut Vec<Line<'_>>,
-                                       section_title: &str,
-                                       bindings: &[crate::config::keymap_config::KeyBindingConfig]| {
-                    if bindings.is_empty() {
-                        return;
-                    }
-                    add_section(lines, section_title);
-                    for b in bindings {
-                        let key_str = if let Some(seq) = crate::keymap::KeySequence::parse(&b.on) {
-                            seq.to_display_string()
-                        } else {
-                            b.on.join(" ")
-                        };
-                        let i18n_key = format!("help.action.{}", b.run);
-                        let loc = ctx.t(&i18n_key);
-                        let desc = if loc != i18n_key {
-                            loc.to_string()
-                        } else {
-                            b.desc.clone().unwrap_or_else(|| b.run.clone())
-                        };
-                        add_row(lines, key_str, desc);
-                    }
-                };
+            // Command palette rows
+            let rows = crate::keymap::build_help_rows(state, query);
+            let resolved = crate::keymap::resolve_help_selection(&rows, selected);
+            let show_scope = !query.trim().is_empty();
 
-                render_bindings(
-                    &mut lines,
-                    ctx.t("help.section_global"),
-                    &config.keymap.global.key_bindings,
-                );
-                render_bindings(
-                    &mut lines,
-                    ctx.t("help.section_log"),
-                    &config.keymap.log.key_bindings,
-                );
-                render_bindings(
-                    &mut lines,
-                    ctx.t("help.section_commit"),
-                    &config.keymap.commit.key_bindings,
-                );
-                render_bindings(
-                    &mut lines,
-                    ctx.t("help.section_branch"),
-                    &config.keymap.branch.key_bindings,
-                );
-                render_bindings(
-                    &mut lines,
-                    ctx.t("help.section_diff"),
-                    &config.keymap.diff.key_bindings,
-                );
-
-                add_section(&mut lines, ctx.t("help.section_other"));
-                add_row(
-                    &mut lines,
-                    "Tab / Shift+Tab".to_string(),
-                    ctx.t("help.action.cycle_focus").to_string(),
-                );
-                add_row(
-                    &mut lines,
-                    ctx.t("help.mouse_drag_key").to_string(),
-                    ctx.t("help.mouse_drag").to_string(),
-                );
-                add_row(
-                    &mut lines,
-                    ctx.t("help.right_click_key").to_string(),
-                    ctx.t("help.right_click").to_string(),
+            if !rows
+                .iter()
+                .any(crate::keymap::HelpRow::is_selectable)
+            {
+                let empty_msg = Line::from(Span::styled(
+                    format!("  {}", ctx.t("help.no_match")),
+                    Style::default().fg(ctx.theme.fg_muted),
+                ));
+                frame.render_widget(
+                    Paragraph::new(empty_msg).style(Style::default().bg(ctx.theme.bg_elevated)),
+                    list_rect,
                 );
             } else {
-                let help_rows = [
-                    ("1 / 2 / 3 / 4", ctx.t("help.fallback.tabs")),
-                    ("Tab / Shift+Tab", ctx.t("help.fallback.focus")),
-                    (ctx.t("help.mouse_drag_key"), ctx.t("help.fallback.drag")),
-                    (ctx.t("help.right_click_key"), ctx.t("help.fallback.right_click")),
-                    ("r / p", ctx.t("help.fallback.refresh")),
-                    ("F12", ctx.t("help.fallback.glyphs")),
-                    ("q / Ctrl+C", ctx.t("help.fallback.quit")),
-                ];
-                for (k, v) in help_rows {
-                    add_row(&mut lines, k.to_string(), v.to_string());
+                let vis_h = list_h as usize;
+                let scroll_y = if resolved >= vis_h {
+                    (resolved + 1).saturating_sub(vis_h)
+                } else {
+                    0
+                };
+                let key_col_w = 22usize;
+                let mut lines: Vec<Line<'_>> = Vec::with_capacity(vis_h);
+
+                for (idx, row) in rows
+                    .iter()
+                    .enumerate()
+                    .skip(scroll_y)
+                    .take(vis_h)
+                {
+                    match row {
+                        crate::keymap::HelpRow::Section(title) => {
+                            lines.push(Line::from(Span::styled(
+                                truncate_display_width(
+                                    &format!(" {title}"),
+                                    inner.width as usize,
+                                ),
+                                Style::default()
+                                    .fg(ctx.theme.fg_accent_link)
+                                    .bg(ctx.theme.bg_elevated)
+                                    .add_modifier(Modifier::BOLD),
+                            )));
+                        }
+                        crate::keymap::HelpRow::Entry {
+                            keys,
+                            desc,
+                            scope_tag,
+                            run,
+                        } => {
+                            let is_sel = idx == resolved;
+                            let row_bg = if is_sel {
+                                ctx.theme.bg_selection_focused
+                            } else {
+                                ctx.theme.bg_elevated
+                            };
+                            let key_bg = if is_sel {
+                                ctx.theme.bg_selection_focused
+                            } else {
+                                ctx.theme.bg_panel
+                            };
+                            let key_fg = if is_sel {
+                                ctx.theme.fg_accent_link
+                            } else {
+                                ctx.theme.fg_bright
+                            };
+                            let desc_fg = if is_sel {
+                                ctx.theme.fg_bright
+                            } else {
+                                ctx.theme.fg_primary
+                            };
+
+                            let key_badge = format!(" {keys} ");
+                            let pad_after = key_col_w.saturating_sub(2 + key_badge.width()).max(2);
+                            let right_scope = if show_scope {
+                                format!(" [{scope_tag}]")
+                            } else {
+                                String::new()
+                            };
+                            let enter_tag = if is_sel && run.is_some() {
+                                " ↵ "
+                            } else {
+                                "  "
+                            };
+                            let left_fixed = 2 + key_badge.width() + pad_after;
+                            let right_w = right_scope.width() + enter_tag.width();
+                            let desc_budget =
+                                (inner.width as usize).saturating_sub(left_fixed + right_w);
+                            let desc_disp = truncate_display_width(desc, desc_budget);
+                            let mid_gap = (inner.width as usize)
+                                .saturating_sub(left_fixed + desc_disp.width() + right_w);
+
+                            let mut row_spans = vec![
+                                Span::styled("  ", Style::default().bg(row_bg)),
+                                Span::styled(
+                                    key_badge,
+                                    Style::default()
+                                        .fg(key_fg)
+                                        .bg(key_bg)
+                                        .add_modifier(Modifier::BOLD),
+                                ),
+                                Span::styled(" ".repeat(pad_after), Style::default().bg(row_bg)),
+                                Span::styled(desc_disp, Style::default().fg(desc_fg).bg(row_bg)),
+                            ];
+                            if mid_gap > 0 {
+                                row_spans.push(Span::styled(
+                                    " ".repeat(mid_gap),
+                                    Style::default().bg(row_bg),
+                                ));
+                            }
+                            if !right_scope.is_empty() {
+                                row_spans.push(Span::styled(
+                                    right_scope,
+                                    Style::default().fg(ctx.theme.fg_muted).bg(row_bg),
+                                ));
+                            }
+                            row_spans.push(Span::styled(
+                                enter_tag,
+                                Style::default()
+                                    .fg(ctx.theme.fg_accent_link)
+                                    .bg(row_bg)
+                                    .add_modifier(Modifier::BOLD),
+                            ));
+                            lines.push(Line::from(row_spans));
+                        }
+                    }
                 }
+                frame.render_widget(
+                    Paragraph::new(lines).style(Style::default().bg(ctx.theme.bg_elevated)),
+                    list_rect,
+                );
             }
 
-            let scroll_y = (selected as u16).min(lines.len().saturating_sub(1) as u16);
-            frame.render_widget(Paragraph::new(lines).scroll((scroll_y, 0)), inner);
+            // Bottom hint bar
+            let foot_line = Line::from(Span::styled(
+                truncate_display_width(
+                    &format!(" {}", ctx.t("help.footer_hint")),
+                    inner.width as usize,
+                ),
+                Style::default()
+                    .fg(ctx.theme.fg_muted)
+                    .bg(ctx.theme.bg_panel),
+            ));
+            frame.render_widget(
+                Paragraph::new(foot_line).style(Style::default().bg(ctx.theme.bg_panel)),
+                foot_rect,
+            );
         }
         PopupKind::FilterEditor(field) => {
             let mut lines = vec![

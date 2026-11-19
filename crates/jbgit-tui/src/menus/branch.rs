@@ -1,6 +1,7 @@
 use jbgit_core::{GitOp, OngoingKind, OngoingStep, RefKind};
 
 use crate::app::{Action, AppState, ContextMenuItem};
+use crate::config::KeymapScope;
 use crate::dialogs::{
     ChoiceDialog, Dialog, InputDialog, InputIntent, InputValidation, new_branch_dialog,
 };
@@ -13,6 +14,18 @@ pub fn branch_menu_items(state: &AppState, name: &str, kind: RefKind) -> Vec<Con
         return Vec::new();
     };
     let i18n = &state.i18n;
+    let km = &state.config.keymap;
+    let checkout_sc = km.primary_key_for(&[KeymapScope::Branch], "checkout");
+    let new_branch_sc = km.primary_key_for(&[KeymapScope::Branch], "new_branch");
+    let pull_sc = km.primary_key_for(&[KeymapScope::Global], "git_pull");
+    let push_sc = km.primary_key_for(&[KeymapScope::Global], "git_push");
+    let rename_sc = km.primary_key_for(&[KeymapScope::Branch], "rename_branch");
+    let delete_sc = km
+        .all_keys_for(&[KeymapScope::Branch], "delete_branch")
+        .join(" / ");
+    let delete_sc = (!delete_sc.is_empty()).then_some(delete_sc);
+    let fav_sc = km.primary_key_for(&[KeymapScope::Branch], "toggle_favorite");
+
     let current = snap.head_branch.clone();
     let cur = current.clone().unwrap_or_else(|| "HEAD".to_string());
     let no_ongoing = state.require_no_ongoing();
@@ -26,7 +39,7 @@ pub fn branch_menu_items(state: &AppState, name: &str, kind: RefKind) -> Vec<Con
                 i18n.t("menu.branch.mark_favorite")
             },
             Some('f'),
-            None,
+            fav_sc.as_deref(),
             vec![Action::ToggleFavoriteRef {
                 full: full.to_string(),
                 short: short.to_string(),
@@ -49,7 +62,7 @@ pub fn branch_menu_items(state: &AppState, name: &str, kind: RefKind) -> Vec<Con
                 run(
                     i18n.t("menu.branch.checkout"),
                     Some('c'),
-                    None,
+                    checkout_sc.as_deref(),
                     op(GitOp::Checkout {
                         target: name.clone(),
                         detach: false,
@@ -63,7 +76,7 @@ pub fn branch_menu_items(state: &AppState, name: &str, kind: RefKind) -> Vec<Con
                 run(
                     i18n.t_fmt("menu.branch.new_branch_from", &[("name", &ellipsize(&name, 24))]),
                     Some('n'),
-                    None,
+                    new_branch_sc.as_deref(),
                     dialog(new_branch_dialog(&name, &name, local_names(state), "", i18n)),
                 )
                 .icon("+"),
@@ -148,7 +161,12 @@ pub fn branch_menu_items(state: &AppState, name: &str, kind: RefKind) -> Vec<Con
                 }
             };
             items.push(
-                run(i18n.t("menu.branch.update"), Some('u'), None, update)
+                run(
+                    i18n.t("menu.branch.update"),
+                    Some('u'),
+                    if is_current { pull_sc.as_deref() } else { None },
+                    update,
+                )
                     .icon("↓")
                     .enabled_if(
                         upstream.is_some(),
@@ -164,7 +182,7 @@ pub fn branch_menu_items(state: &AppState, name: &str, kind: RefKind) -> Vec<Con
                 run(
                     i18n.t("menu.branch.push"),
                     Some('p'),
-                    Some("Ctrl+Shift+K"),
+                    if is_current { push_sc.as_deref() } else { None },
                     vec![Action::PromptPush {
                         branch: name.clone(),
                         up_to: None,
@@ -178,7 +196,7 @@ pub fn branch_menu_items(state: &AppState, name: &str, kind: RefKind) -> Vec<Con
             items.push(run(
                 i18n.t("menu.branch.rename"),
                 Some('e'),
-                Some("F2"),
+                rename_sc.as_deref(),
                 dialog(Dialog::Input(InputDialog::new(
                     i18n.t_fmt("dialog.rename_branch.title", &[("name", &name)]),
                     i18n.t("dialog.rename_branch.prompt"),
@@ -194,7 +212,7 @@ pub fn branch_menu_items(state: &AppState, name: &str, kind: RefKind) -> Vec<Con
                 run(
                     i18n.t("menu.branch.delete"),
                     Some('d'),
-                    Some("Del"),
+                    delete_sc.as_deref(),
                     vec![Action::PromptDeleteBranch { name: name.clone() }],
                 )
                 .icon("✕")
@@ -215,7 +233,7 @@ pub fn branch_menu_items(state: &AppState, name: &str, kind: RefKind) -> Vec<Con
                 run(
                     i18n.t("menu.branch.checkout"),
                     Some('c'),
-                    None,
+                    checkout_sc.as_deref(),
                     vec![Action::CheckoutRemoteBranch {
                         remote_ref: name.to_string(),
                     }],
@@ -227,7 +245,7 @@ pub fn branch_menu_items(state: &AppState, name: &str, kind: RefKind) -> Vec<Con
                 run(
                     i18n.t_fmt("menu.branch.new_branch_from", &[("name", &ellipsize(name, 24))]),
                     Some('n'),
-                    None,
+                    new_branch_sc.as_deref(),
                     dialog(new_branch_dialog(name, name, local_names(state), short, i18n)),
                 )
                 .icon("+"),

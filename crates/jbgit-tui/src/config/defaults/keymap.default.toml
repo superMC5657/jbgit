@@ -1,17 +1,43 @@
 # jbgit 快捷键映射配置文件 (keymap.toml)
-# 对标 Yazi 体系的 key_bindings 规范: on = ["按键序列"], run = "动作名", desc = "操作描述"
+# 对标 Yazi 体系规范:
+#   - 单键或序列: on = "r" 或 on = ["g", "g"]
+#   - 增量覆写 (推荐): 在对应区块使用 prepend_keymap，只覆盖特定按键而保留同动作的其他别名
+#   - 解绑按键: 设置 run = "noop" 即可禁用某条默认快捷键
+
+# 快捷键预设风格:
+#   - "default"   : 极简零冲突推荐预设（新手友好，全局单键直觉映射，分支树用 / 进入搜索）
+#   - "jetbrains" : 贴近 IntelliJ IDEA 习惯（开启分支树直接打字速查，保留 Ctrl+K / Ctrl+T / Ctrl+Shift+K / Alt+M）
+#   - "vim"       : Vim / Lazygit 风格（Ctrl+D/U 半页翻滚，Diff 中 s/u 暂存/取消，c 切换上下文）
+preset = "default"
+
+# 分支树面板是否直接打字触发模糊速查（false = 按 / 或 Ctrl+F 进入搜索，不吞掉 j/k/c/q/r 等快捷键）
+tree_speed_search = false
 
 [global]
 key_bindings = [
     { on = [ "q" ], run = "quit", desc = "退出 jbgit" },
-    { on = [ "?" ], run = "help", desc = "打开快捷键帮助视窗" },
-    { on = [ "r" ], run = "refresh", desc = "强制刷新 Git 仓库状态" },
-    { on = [ "<A-1>" ], run = "tab_log", desc = "切换至提交日志 (Log) 视图" },
-    { on = [ "<A-2>" ], run = "tab_commit", desc = "切换至提交工作台 (Commit) 视图" },
-    { on = [ "<A-3>" ], run = "tab_branches", desc = "切换至分支树 (Branches) 视图" },
-    { on = [ "<A-4>" ], run = "tab_stash", desc = "切换至贮藏箱 (Stash) 视图" },
-    { on = [ "<C-`>" ], run = "toggle_branches_popup", desc = "呼出/关闭全局分支速查浮窗" },
-    { on = [ "<F9>" ], run = "palette", desc = "打开全局调色板预览" },
+    { on = [ "?" ], run = "help", desc = "打开可搜索快捷键帮助 / 命令面板" },
+    { on = [ "." ], run = "context_menu", desc = "打开当前选中项的操作菜单" },
+    { on = [ "<S-F10>" ], run = "context_menu", desc = "打开当前选中项的操作菜单" },
+    { on = [ "1" ], run = "tab_commit", desc = "切换至 [1] 提交工作台" },
+    { on = [ "<A-1>" ], run = "tab_commit", desc = "切换至 [1] 提交工作台" },
+    { on = [ "2" ], run = "tab_log", desc = "切换至 [2] 历史日志" },
+    { on = [ "<A-2>" ], run = "tab_log", desc = "切换至 [2] 历史日志" },
+    { on = [ "3" ], run = "tab_stash", desc = "切换至 [3] 贮藏箱" },
+    { on = [ "<A-3>" ], run = "tab_stash", desc = "切换至 [3] 贮藏箱" },
+    { on = [ "4" ], run = "tab_console", desc = "切换至 [4] 控制台" },
+    { on = [ "<A-4>" ], run = "tab_console", desc = "切换至 [4] 控制台" },
+    { on = [ "<Tab>" ], run = "focus_next", desc = "切换到下一个面板" },
+    { on = [ "<BackTab>" ], run = "focus_prev", desc = "切换到上一个面板" },
+    { on = [ "b" ], run = "toggle_branches_popup", desc = "呼出全局分支速查浮窗" },
+    { on = [ "<C-`>" ], run = "toggle_branches_popup", desc = "呼出全局分支速查浮窗" },
+    { on = [ "<C-~>" ], run = "toggle_branches_popup", desc = "呼出全局分支速查浮窗" },
+    { on = [ "g", "b" ], run = "toggle_branches_popup", desc = "呼出全局分支速查浮窗" },
+    { on = [ "r" ], run = "refresh", desc = "刷新 Git 仓库状态" },
+    { on = [ "<F5>" ], run = "refresh", desc = "刷新 Git 仓库状态" },
+    { on = [ "f" ], run = "git_fetch", desc = "获取远程更新 (Fetch)" },
+    { on = [ "p" ], run = "git_pull", desc = "拉取当前分支更新 (Pull)" },
+    { on = [ "P" ], run = "git_push", desc = "推送当前分支 (Push…)" },
 ]
 
 [log]
@@ -20,42 +46,107 @@ key_bindings = [
     { on = [ "<Down>" ], run = "cursor_down", desc = "向下移动一行" },
     { on = [ "k" ], run = "cursor_up", desc = "向上移动一行" },
     { on = [ "<Up>" ], run = "cursor_up", desc = "向上移动一行" },
-    { on = [ "<C-d>" ], run = "compare_versions", desc = "版本对比 Diff" },
-    { on = [ "<C-g>" ], run = "goto_revision", desc = "按哈希/分支/Tag快速跳转" },
+    { on = [ "g", "g" ], run = "goto_top", desc = "跳转至列表顶部" },
+    { on = [ "<Home>" ], run = "goto_top", desc = "跳转至列表顶部" },
+    { on = [ "G" ], run = "goto_bottom", desc = "跳转至列表底部" },
+    { on = [ "<End>" ], run = "goto_bottom", desc = "跳转至列表底部" },
+    { on = [ "g", "r" ], run = "goto_revision", desc = "按哈希 / 分支 / 标签跳转" },
+    { on = [ "<C-g>" ], run = "goto_revision", desc = "按哈希 / 分支 / 标签跳转" },
+    { on = [ "/" ], run = "focus_filter", desc = "聚焦分支 / 提交筛选框" },
+    { on = [ "<C-f>" ], run = "focus_filter", desc = "聚焦分支 / 提交筛选框" },
+    { on = [ "<C-l>" ], run = "focus_filter", desc = "聚焦分支 / 提交筛选框" },
+    { on = [ "<C-b>" ], run = "toggle_branches_pane", desc = "折叠 / 展开左侧分支栏" },
+    { on = [ "<A-b>" ], run = "toggle_branches_pane", desc = "折叠 / 展开左侧分支栏" },
+    { on = [ "<C-d>" ], run = "compare_or_diff", desc = "对比选中两个提交 / 开关差异预览" },
+    { on = [ "<F4>" ], run = "zoom_diff", desc = "切换全屏差异预览" },
+    { on = [ "y" ], run = "copy_hash", desc = "复制提交哈希" },
     { on = [ "c" ], run = "checkout", desc = "检出选中的分支或提交" },
-    { on = [ "g", "g" ], run = "goto_top", desc = "跳转至提交图顶部" },
-    { on = [ "G" ], run = "goto_bottom", desc = "跳转至提交图底部" },
-    { on = [ "/" ], run = "focus_filter", desc = "聚焦分支/提交筛选输入框" },
-    { on = [ "u" ], run = "uncommit", desc = "撤销最近一次提交 (保留变更)" },
-    { on = [ "<F2>" ], run = "reword", desc = "修改选中的提交说明 (Reword)" },
-    { on = [ "<Del>" ], run = "drop_commit", desc = "删除提交 (交互式变基 Drop)" },
-]
-
-[commit]
-key_bindings = [
-    { on = [ "<Space>" ], run = "toggle_stage", desc = "暂存 / 取消暂存当前文件或代码块" },
-    { on = [ "<C-Enter>" ], run = "commit", desc = "执行提交" },
-    { on = [ "<A-a>" ], run = "toggle_amend", desc = "切换追加至上一提交 (Amend)" },
-    { on = [ "<C-a>" ], run = "select_all", desc = "全选变更文件" },
-    { on = [ "<Del>" ], run = "discard_changes", desc = "放弃选中文件的本地变更" },
-    { on = [ "v" ], run = "toggle_group", desc = "切换按目录树分组展示" },
-    { on = [ "e" ], run = "edit_file", desc = "在外部编辑器中打开该文件" },
+    { on = [ "n" ], run = "new_branch", desc = "在此提交新建分支" },
+    { on = [ "u" ], run = "uncommit", desc = "撤回最近一次提交 (保留变更)" },
+    { on = [ "<F2>" ], run = "reword", desc = "修改提交说明 (Reword)" },
+    { on = [ "<Del>" ], run = "drop_commit", desc = "丢弃提交 (Drop)" },
+    { on = [ "m" ], run = "choose_parent", desc = "选择 / 切换合并父提交" },
 ]
 
 [branch]
 key_bindings = [
-    { on = [ "f" ], run = "toggle_favorite", desc = "添加/取消收藏当前分支" },
+    { on = [ "/" ], run = "branch_search", desc = "在分支树中模糊搜索" },
+    { on = [ "<C-f>" ], run = "branch_search", desc = "在分支树中模糊搜索" },
+    { on = [ "<Space>" ], run = "toggle_favorite", desc = "添加 / 取消收藏分支" },
     { on = [ "c" ], run = "checkout", desc = "检出选中分支" },
+    { on = [ "n" ], run = "new_branch", desc = "从当前分支新建分支" },
     { on = [ "<F2>" ], run = "rename_branch", desc = "重命名分支" },
+    { on = [ "d" ], run = "delete_branch", desc = "删除分支" },
     { on = [ "<Del>" ], run = "delete_branch", desc = "删除分支" },
+    { on = [ "J" ], run = "navigate_branch", desc = "定位到日志中的分支顶端" },
+]
+
+[commit]
+key_bindings = [
+    { on = [ "j" ], run = "cursor_down", desc = "向下移动一行" },
+    { on = [ "<Down>" ], run = "cursor_down", desc = "向下移动一行" },
+    { on = [ "k" ], run = "cursor_up", desc = "向上移动一行" },
+    { on = [ "<Up>" ], run = "cursor_up", desc = "向上移动一行" },
+    { on = [ "g", "g" ], run = "goto_top", desc = "跳转至顶部" },
+    { on = [ "<Home>" ], run = "goto_top", desc = "跳转至顶部" },
+    { on = [ "G" ], run = "goto_bottom", desc = "跳转至底部" },
+    { on = [ "<End>" ], run = "goto_bottom", desc = "跳转至底部" },
+    { on = [ "<Space>" ], run = "toggle_stage", desc = "暂存 / 取消暂存当前文件或代码块" },
+    { on = [ "c" ], run = "focus_commit_msg", desc = "聚焦提交说明输入框" },
+    { on = [ "<C-s>" ], run = "commit", desc = "执行提交" },
+    { on = [ "<C-Enter>" ], run = "commit", desc = "执行提交" },
+    { on = [ "<A-Enter>" ], run = "commit", desc = "执行提交" },
+    { on = [ "<C-A-k>" ], run = "commit_and_push", desc = "提交并推送…" },
+    { on = [ "A" ], run = "toggle_amend", desc = "切换追加至上一提交 (Amend)" },
+    { on = [ "<A-a>" ], run = "toggle_amend", desc = "切换追加至上一提交 (Amend)" },
+    { on = [ "<A-s>" ], run = "toggle_signoff", desc = "切换 Signed-off-by 签名" },
+    { on = [ "<C-m>" ], run = "commit_history", desc = "选择历史提交说明" },
+    { on = [ "<C-a>" ], run = "select_all", desc = "全选变更文件" },
+    { on = [ "d" ], run = "discard_changes", desc = "放弃选中文件的本地更改" },
+    { on = [ "<Del>" ], run = "discard_changes", desc = "放弃选中文件的本地更改" },
+    { on = [ "v" ], run = "toggle_group", desc = "切换按目录树分组" },
+    { on = [ "e" ], run = "edit_file", desc = "在外部编辑器中打开该文件" },
 ]
 
 [diff]
 key_bindings = [
-    { on = [ "s" ], run = "toggle_side_by_side", desc = "切换单列 / 并排差异对比" },
-    { on = [ "c" ], run = "cycle_diff_context", desc = "切换上下文保留行数 (3 / 10 / 全量)" },
-    { on = [ "m" ], run = "cycle_diff_dock", desc = "切换 Diff 预览停靠位置" },
-    { on = [ "[" ], run = "prev_file", desc = "跳转至上一个变更文件" },
-    { on = [ "]" ], run = "next_file", desc = "跳转至下一个变更文件" },
-    { on = [ "<F4>" ], run = "zoom_diff", desc = "切换全屏 Diff 预览" },
+    { on = [ "j" ], run = "cursor_down", desc = "向下移动一行" },
+    { on = [ "<Down>" ], run = "cursor_down", desc = "向下移动一行" },
+    { on = [ "k" ], run = "cursor_up", desc = "向上移动一行" },
+    { on = [ "<Up>" ], run = "cursor_up", desc = "向上移动一行" },
+    { on = [ "[" ], run = "prev_hunk", desc = "跳转至上一个 Hunk 代码块" },
+    { on = [ "]" ], run = "next_hunk", desc = "跳转至下一个 Hunk 代码块" },
+    { on = [ "{" ], run = "prev_file", desc = "跳转至上一个变更文件" },
+    { on = [ "}" ], run = "next_file", desc = "跳转至下一个变更文件" },
+    { on = [ "S" ], run = "toggle_side_by_side", desc = "切换单列 / 并排差异对比" },
+    { on = [ "w" ], run = "cycle_diff_context", desc = "切换上下文保留行数 (3 / 10 / 全量)" },
+    { on = [ "m" ], run = "cycle_diff_dock", desc = "切换差异预览停靠位置" },
+    { on = [ "z" ], run = "zoom_diff", desc = "切换全屏差异预览" },
+    { on = [ "<F4>" ], run = "zoom_diff", desc = "切换全屏差异预览" },
+    { on = [ "<Space>" ], run = "toggle_stage", desc = "暂存 / 取消暂存代码块或选中行" },
+    { on = [ "v" ], run = "toggle_visual", desc = "切换逐行选择模式" },
+    { on = [ "d" ], run = "rollback_selection", desc = "回滚代码块或选中行 (Ctrl+Z 撤销)" },
+    { on = [ "<Del>" ], run = "rollback_selection", desc = "回滚代码块或选中行 (Ctrl+Z 撤销)" },
+    { on = [ "<C-z>" ], run = "undo_rollback", desc = "撤销上一次行级回滚" },
+    { on = [ "x" ], run = "switch_diff_side", desc = "切换未暂存 / 已暂存侧对比" },
+    { on = [ "i" ], run = "three_way_inspector", desc = "打开三方变更检视 (HEAD/暂存/本地)" },
+]
+
+[stash]
+key_bindings = [
+    { on = [ "j" ], run = "cursor_down", desc = "向下移动一行" },
+    { on = [ "<Down>" ], run = "cursor_down", desc = "向下移动一行" },
+    { on = [ "k" ], run = "cursor_up", desc = "向上移动一行" },
+    { on = [ "<Up>" ], run = "cursor_up", desc = "向上移动一行" },
+    { on = [ "g", "g" ], run = "goto_top", desc = "跳转至顶部" },
+    { on = [ "<Home>" ], run = "goto_top", desc = "跳转至顶部" },
+    { on = [ "G" ], run = "goto_bottom", desc = "跳转至底部" },
+    { on = [ "<End>" ], run = "goto_bottom", desc = "跳转至底部" },
+    { on = [ "n" ], run = "stash_new", desc = "新建贮藏" },
+    { on = [ "a" ], run = "stash_apply", desc = "应用选中贮藏" },
+    { on = [ "o" ], run = "stash_pop", desc = "应用并弹出贮藏 (Pop)" },
+    { on = [ "d" ], run = "stash_drop", desc = "删除选中贮藏" },
+    { on = [ "<Del>" ], run = "stash_drop", desc = "删除选中贮藏" },
+    { on = [ "B" ], run = "stash_branch", desc = "从选中贮藏创建分支" },
+    { on = [ "C" ], run = "stash_clear", desc = "清空所有贮藏" },
 ]

@@ -36,6 +36,8 @@ pub struct BranchesPaneState {
     pub multi: Vec<String>,
     /// Inline speed-search query.
     pub query: String,
+    /// Explicit search input mode in the Branches pane (`/` or `Ctrl+F`).
+    pub searching: bool,
     /// `Alt+B` / `[«]` collapse on a wide terminal.
     pub hidden_by_user: bool,
     /// `Alt+B` on a narrow terminal re-opens the auto-collapsed pane.
@@ -517,6 +519,57 @@ impl DetailsPaneState {
 
     pub fn next_deadline(&self) -> Option<Instant> {
         self.pending.as_ref().map(|(_, at)| *at)
+    }
+
+    pub fn hunk_header_offsets(&self) -> Vec<usize> {
+        let Some(diff) = self.current_diff() else {
+            return Vec::new();
+        };
+        let mut offsets = Vec::with_capacity(diff.hunks.len());
+        let mut row = 0usize;
+        for hunk in &diff.hunks {
+            offsets.push(row);
+            row += 1;
+            if self.diff_side_by_side {
+                row += jbgit_core::side_by_side_rows(hunk).len();
+            } else {
+                row += hunk.lines.len();
+            }
+        }
+        offsets
+    }
+
+    pub fn jump_diff_hunk(&mut self, delta: isize) {
+        let offsets = self.hunk_header_offsets();
+        if offsets.is_empty() {
+            return;
+        }
+        let cur = self.diff_scroll;
+        let target = if delta >= 0 {
+            offsets.iter().copied().find(|&o| o > cur).unwrap_or(offsets[0])
+        } else {
+            offsets
+                .iter()
+                .copied()
+                .rev()
+                .find(|&o| o < cur)
+                .unwrap_or(*offsets.last().unwrap())
+        };
+        self.diff_scroll = target;
+    }
+
+    pub fn select_next_file(&mut self, delta: isize) {
+        let files = self.file_row_positions();
+        if files.is_empty() {
+            return;
+        }
+        let cur = files
+            .iter()
+            .position(|&p| p == self.changes_selected)
+            .map_or(0, |i| i as isize + delta);
+        let next = cur.clamp(0, files.len() as isize - 1) as usize;
+        self.changes_selected = files[next];
+        self.diff_scroll = 0;
     }
 }
 

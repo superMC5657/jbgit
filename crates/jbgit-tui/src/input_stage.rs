@@ -1,6 +1,6 @@
 //! Key, mouse, and context-menu routing for the `[1 Commit]` staging workbench.
 
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use jbgit_core::PaneId;
@@ -23,29 +23,32 @@ pub(crate) fn route_commit_priority_key(
     let alt = key.modifiers.contains(KeyModifiers::ALT);
     let shift = key.modifiers.contains(KeyModifiers::SHIFT);
 
-    // Tab-wide commit shortcuts
-    match key.code {
-        KeyCode::Char('m') if alt => return Some(vec![Action::CommitToggleAmend]),
-        KeyCode::Char('s') if alt => return Some(vec![Action::CommitToggleSignoff]),
-        KeyCode::Char('k') if ctrl && alt => {
-            return Some(vec![Action::SubmitCommit { and_push: true }]);
-        }
-        KeyCode::Enter if ctrl => {
-            return Some(vec![Action::SubmitCommit { and_push: false }]);
-        }
-        KeyCode::Char('m') if ctrl => {
-            return Some(vec![Action::OpenPopup {
-                kind: PopupKind::CommitHistory,
-                initial_query: String::new(),
-            }]);
-        }
-        _ => {}
-    }
-
     if state.focused_pane == PaneId::CommitMessageEditor {
         match key.code {
             KeyCode::Tab => return Some(vec![Action::CycleFocus { reverse: false }]),
             KeyCode::BackTab => return Some(vec![Action::CycleFocus { reverse: true }]),
+            KeyCode::Char(d @ ('1' | '2' | '3' | '4')) if alt => {
+                if let Some(tab) = jbgit_core::WorkspaceTab::from_digit(d) {
+                    return Some(vec![Action::SwitchTab(tab)]);
+                }
+            }
+            KeyCode::Char('s') if ctrl => {
+                return Some(vec![Action::SubmitCommit { and_push: false }]);
+            }
+            KeyCode::Enter if ctrl || alt => {
+                return Some(vec![Action::SubmitCommit { and_push: false }]);
+            }
+            KeyCode::Char('k') if ctrl && alt => {
+                return Some(vec![Action::SubmitCommit { and_push: true }]);
+            }
+            KeyCode::Char('a' | 'm') if alt => return Some(vec![Action::CommitToggleAmend]),
+            KeyCode::Char('s') if alt => return Some(vec![Action::CommitToggleSignoff]),
+            KeyCode::Char('m') if ctrl => {
+                return Some(vec![Action::OpenPopup {
+                    kind: PopupKind::CommitHistory,
+                    initial_query: String::new(),
+                }]);
+            }
             KeyCode::Char('e') if ctrl => return Some(vec![Action::OpenExternalEditorMessage]),
             _ => {}
         }
@@ -59,7 +62,6 @@ pub(crate) fn route_commit_priority_key(
         }
         return Some(match key.code {
             KeyCode::Esc => vec![Action::FocusPane(PaneId::CommitChangesTree)],
-            KeyCode::Enter if alt => vec![Action::SubmitCommit { and_push: false }],
             KeyCode::Enter => vec![Action::CommitEditorNewline],
             KeyCode::Backspace if alt => vec![Action::CommitEditorDeleteWord],
             KeyCode::Backspace => vec![Action::CommitEditorBackspace],
@@ -80,14 +82,7 @@ pub(crate) fn route_commit_priority_key(
     }
 
     if state.focused_pane == PaneId::CommitDiffPreview {
-        let side = state
-            .stage_workbench
-            .current_diff_key
-            .as_ref()
-            .map(|k| k.side);
-        let is_amend_ref = side == Some(StageDiffSide::AmendCommit);
-
-        // Support `]c` / `[c` hunk jump sequence without accidentally cycling diff context on `c`.
+        // Support `]c` / `[c` hunk jump sequence without accidentally triggering `c` shortcuts.
         if key.code == KeyCode::Char('c')
             && !ctrl
             && !alt
@@ -102,90 +97,51 @@ pub(crate) fn route_commit_priority_key(
         if !matches!(key.code, KeyCode::Char(']') | KeyCode::Char('[')) {
             state.stage_workbench.bracket_jump_at = None;
         }
-
-        match key.code {
-            KeyCode::Down | KeyCode::Char('j') if !ctrl && !alt => {
-                return Some(vec![Action::StageDiffMoveCursor(1)]);
-            }
-            KeyCode::Up | KeyCode::Char('k') if !ctrl && !alt => {
-                return Some(vec![Action::StageDiffMoveCursor(-1)]);
-            }
-            KeyCode::PageDown => return Some(vec![Action::StageDiffMoveCursor(10)]),
-            KeyCode::PageUp => return Some(vec![Action::StageDiffMoveCursor(-10)]),
-            KeyCode::Char(']') if !ctrl && !alt => {
-                state.stage_workbench.bracket_jump_at = Some(Instant::now());
-                return Some(vec![Action::StageDiffJumpHunk(1)]);
-            }
-            KeyCode::Char('[') if !ctrl && !alt => {
-                state.stage_workbench.bracket_jump_at = Some(Instant::now());
-                return Some(vec![Action::StageDiffJumpHunk(-1)]);
-            }
-            KeyCode::Char('n') if !ctrl && !alt => {
-                return Some(vec![Action::StageDiffJumpHunk(1)]);
-            }
-            KeyCode::Char('p') if !ctrl && !alt => {
-                return Some(vec![Action::StageDiffJumpHunk(-1)]);
-            }
-            KeyCode::Char('v') if !ctrl && !alt && !is_amend_ref => {
-                return Some(vec![Action::StageDiffToggleVisual]);
-            }
-            KeyCode::Char('s') | KeyCode::Char(' ') if !ctrl && !alt && !is_amend_ref => {
-                return Some(vec![if side == Some(StageDiffSide::Staged) {
-                    Action::StageDiffUnstageSelection
-                } else {
-                    Action::StageDiffStageSelection
-                }]);
-            }
-            KeyCode::Char('u') if !ctrl && !alt && !is_amend_ref => {
-                return Some(vec![Action::StageDiffUnstageSelection]);
-            }
-            KeyCode::Char('r') if !ctrl && !alt && !is_amend_ref => {
-                return Some(vec![Action::StageDiffRollbackSelection]);
-            }
-            KeyCode::Char('z') if ctrl && !is_amend_ref => {
-                return Some(vec![Action::StageDiffUndoRollback]);
-            }
-            KeyCode::Char('i') if !ctrl && !alt && !is_amend_ref => {
-                return Some(vec![Action::OpenThreeWayInspector {
-                    row_idx: None,
-                    range_idx: None,
-                }]);
-            }
-            KeyCode::Char('x') if !ctrl && !alt && !is_amend_ref => {
-                return Some(vec![Action::StageDiffSwitchSide]);
-            }
-            KeyCode::Char('c') if !ctrl && !alt => {
-                return Some(vec![Action::StageDiffCycleContext]);
-            }
-            KeyCode::Char('S') if !ctrl && !alt => {
-                return Some(vec![Action::StageDiffToggleSideBySide]);
-            }
-            KeyCode::Char('e') if !ctrl && !alt => {
-                return Some(vec![Action::OpenExternalEditorFile(None)]);
-            }
-            KeyCode::Esc => {
-                if state.stage_workbench.visual_anchor_row.is_some() {
-                    return Some(vec![Action::StageDiffToggleVisual]);
-                }
-                return Some(vec![Action::FocusPane(PaneId::CommitChangesTree)]);
-            }
-            _ => {}
-        }
     }
 
     None
+}
+
+pub(crate) fn route_commit_diff_fallback_key(key: &KeyEvent, state: &AppState) -> Vec<Action> {
+    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    let alt = key.modifiers.contains(KeyModifiers::ALT);
+    let side = state
+        .stage_workbench
+        .current_diff_key
+        .as_ref()
+        .map(|k| k.side);
+    let is_amend_ref = side == Some(StageDiffSide::AmendCommit);
+
+    match key.code {
+        KeyCode::PageDown => vec![Action::StageDiffMoveCursor(10)],
+        KeyCode::PageUp => vec![Action::StageDiffMoveCursor(-10)],
+        KeyCode::Char('s' | '+') if !ctrl && !alt && !is_amend_ref => {
+            vec![if side == Some(StageDiffSide::Staged) {
+                Action::StageDiffUnstageSelection
+            } else {
+                Action::StageDiffStageSelection
+            }]
+        }
+        KeyCode::Char('u' | '-') if !ctrl && !alt && !is_amend_ref => {
+            vec![Action::StageDiffUnstageSelection]
+        }
+        KeyCode::Esc => {
+            if state.stage_workbench.visual_anchor_row.is_some() {
+                vec![Action::StageDiffToggleVisual]
+            } else {
+                vec![Action::FocusPane(PaneId::CommitChangesTree)]
+            }
+        }
+        _ => Vec::new(),
+    }
 }
 
 pub(crate) fn route_commit_changes_tree_key(key: &KeyEvent, state: &AppState) -> Vec<Action> {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     let alt = key.modifiers.contains(KeyModifiers::ALT);
     match key.code {
-        KeyCode::Down | KeyCode::Char('j') => vec![Action::ScrollCommitStage(1)],
-        KeyCode::Up | KeyCode::Char('k') => vec![Action::ScrollCommitStage(-1)],
         KeyCode::PageDown => vec![Action::ScrollCommitStage(10)],
         KeyCode::PageUp => vec![Action::ScrollCommitStage(-10)],
-        KeyCode::Home | KeyCode::Char('g') => vec![Action::SelectCommitStageRow(0)],
-        KeyCode::End | KeyCode::Char('G') => vec![Action::SelectCommitStageRow(usize::MAX)],
         KeyCode::Right => vec![Action::StageExpand(true)],
         KeyCode::Left => vec![Action::StageExpand(false)],
         KeyCode::Enter => {
@@ -201,27 +157,11 @@ pub(crate) fn route_commit_changes_tree_key(key: &KeyEvent, state: &AppState) ->
                 None => Vec::new(),
             }
         }
-        KeyCode::Char(' ') => {
-            let row = state
-                .stage_workbench
-                .rows
-                .get(state.commit_stage_selected_idx);
-            match row {
-                Some(r) if r.group_kind().can_stage() => vec![Action::StageActionSelected],
-                Some(r) if r.group_kind().can_unstage() => vec![Action::UnstageActionSelected],
-                Some(r) if r.is_container() => {
-                    vec![Action::StageToggleRow(state.commit_stage_selected_idx)]
-                }
-                _ => Vec::new(),
-            }
-        }
-        KeyCode::Char('s') | KeyCode::Char('+') => vec![Action::StageActionSelected],
-        KeyCode::Char('u') | KeyCode::Char('-') => vec![Action::UnstageActionSelected],
-        KeyCode::Char('d') if !ctrl => vec![Action::DiscardPromptSelected],
+        KeyCode::Char('s' | '+') if !ctrl && !alt => vec![Action::StageActionSelected],
+        KeyCode::Char('u' | '-') if !ctrl && !alt => vec![Action::UnstageActionSelected],
         KeyCode::Char('z') if ctrl && alt => vec![Action::DiscardPromptSelected],
-        KeyCode::Char('a') if ctrl => vec![Action::StageSelectAll],
-        KeyCode::Char('v') => vec![Action::StageToggleGroupByDir],
-        KeyCode::Char('e') => vec![Action::OpenExternalEditorFile(None)],
+        KeyCode::Char('m') if alt => vec![Action::CommitToggleAmend],
+        KeyCode::Char('s') if alt => vec![Action::CommitToggleSignoff],
         _ => Vec::new(),
     }
 }
@@ -364,6 +304,10 @@ pub(crate) fn stage_tree_context_menu_items(
         actions.push(Action::SelectCommitStageRow(idx));
     }
     let mut items = crate::menus::stage_tree_menu_items(state, idx);
+    let refresh_sc = state
+        .config
+        .keymap
+        .primary_key_for(&[crate::config::KeymapScope::Global], "refresh");
     items.push(ContextMenuItem::separator());
     items.push(ContextMenuItem::submenu(
         state.i18n.t("menu.stage.view_options"),
@@ -373,7 +317,7 @@ pub(crate) fn stage_tree_context_menu_items(
     items.push(ContextMenuItem::action(
         state.i18n.t("menu.stage.refresh_status"),
         Some('r'),
-        Some("r"),
+        refresh_sc.as_deref(),
         ContextMenuAction::RefreshRepo,
     ));
     items
@@ -382,6 +326,10 @@ pub(crate) fn stage_tree_context_menu_items(
 pub(crate) fn stage_options_menu_items(state: &AppState) -> Vec<ContextMenuItem> {
     let check = |on: bool| if on { "✓" } else { " " };
     let i18n = &state.i18n;
+    let group_sc = state
+        .config
+        .keymap
+        .primary_key_for(&[crate::config::KeymapScope::Commit], "toggle_group");
     vec![
         ContextMenuItem::action(
             format!(
@@ -390,7 +338,7 @@ pub(crate) fn stage_options_menu_items(state: &AppState) -> Vec<ContextMenuItem>
                 i18n.t("menu.stage.opt_group_by_dir")
             ),
             Some('g'),
-            Some("v"),
+            group_sc.as_deref(),
             ContextMenuAction::StageToggleGroupByDir,
         ),
         ContextMenuItem::action(

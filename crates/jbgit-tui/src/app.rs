@@ -482,6 +482,9 @@ pub enum Action {
     BranchesApplyFilter,
     BranchesNavigate,
     BranchesToggleFavorite,
+    BranchesSearchStart,
+    BranchesSearchDone,
+    BranchesSearchClear,
     BranchesSearchInput(char),
     BranchesSearchBackspace,
     BranchesEscape,
@@ -542,6 +545,7 @@ pub enum Action {
     DiffCycleDock,
     ZoomDiff(bool),
     DiffNextFile(isize),
+    DiffJumpHunk(isize),
     DiffToggleSideBySide,
     DiffCycleContext,
     ScrollDiff(isize),
@@ -571,6 +575,7 @@ pub enum Action {
     StageDiffMoveCursor(isize),
     StageDiffScroll(isize),
     StageDiffJumpHunk(isize),
+    StageDiffNextFile(isize),
     StageDiffToggleVisual,
     StageDiffToggleSideBySide,
     StageDiffCycleContext,
@@ -677,6 +682,8 @@ pub enum Action {
     StashChangesExpandAll(bool),
     StashDiffToggleSideBySide,
     StashDiffCycleContext,
+    StashDiffJumpHunk(isize),
+    StashDiffNextFile(isize),
     StashDiffScroll(isize),
 }
 
@@ -891,13 +898,19 @@ impl AppState {
             || self.console_entries.iter().any(GitConsoleEntry::is_running)
     }
 
-    /// Next instant the main loop must wake up for (details debounce).
+    /// Next instant the main loop must wake up for (details debounce, menu hover, or key chord timeout).
     pub fn next_deadline(&self) -> Option<Instant> {
-        let hover = self.menu_hover.map(|h| h.due);
-        match (self.details.next_deadline(), hover) {
-            (Some(a), Some(b)) => Some(a.min(b)),
-            (a, b) => a.or(b),
-        }
+        let chord = self
+            .pending_key_at
+            .map(|t| t + crate::keymap::KEY_CHORD_WINDOW);
+        [
+            self.details.next_deadline(),
+            self.menu_hover.map(|h| h.due),
+            chord,
+        ]
+        .into_iter()
+        .flatten()
+        .min()
     }
 
     pub fn spinner_char(&self) -> &'static str {
@@ -992,6 +1005,8 @@ impl AppState {
             Action::SwitchTab(tab) => {
                 self.active_tab = tab;
                 self.focused_pane = tab.default_pane();
+                self.log_filter.editing_text = false;
+                self.branches.searching = false;
                 if tab == WorkspaceTab::Commit {
                     effects.push(Effect::RequestCommitPrecheck);
                 }
@@ -1009,10 +1024,16 @@ impl AppState {
                     self.focused_pane = first;
                 }
                 self.log_filter.editing_text = false;
+                if self.focused_pane != PaneId::LogBranchesTree {
+                    self.branches.searching = false;
+                }
             }
             Action::FocusPane(pane) => {
                 self.focused_pane = pane;
                 self.log_filter.editing_text = false;
+                if self.focused_pane != PaneId::LogBranchesTree {
+                    self.branches.searching = false;
+                }
             }
             Action::ToggleGlyphMode => {
                 self.glyph_mode = self.glyph_mode.toggle();
@@ -1220,6 +1241,17 @@ impl AppState {
                     ));
                 }
             }
+            Action::BranchesSearchStart => {
+                self.focused_pane = PaneId::LogBranchesTree;
+                self.branches.searching = true;
+            }
+            Action::BranchesSearchDone => {
+                self.branches.searching = false;
+            }
+            Action::BranchesSearchClear => {
+                self.branches.query.clear();
+                self.branches.refresh_rows();
+            }
             Action::BranchesSearchInput(ch) => {
                 self.branches.query.push(ch);
                 self.branches.refresh_rows();
@@ -1232,6 +1264,7 @@ impl AppState {
                 self.branches.refresh_rows();
             }
             Action::BranchesEscape => {
+                self.branches.searching = false;
                 if !self.branches.query.is_empty() {
                     let key = self.branches.selected_node().map(|n| n.key.clone());
                     self.branches.query.clear();
@@ -1580,16 +1613,10 @@ impl AppState {
                 self.details.diff_scroll = 0;
             }
             Action::DiffNextFile(delta) => {
-                let files = self.details.file_row_positions();
-                if !files.is_empty() {
-                    let cur = files
-                        .iter()
-                        .position(|&p| p == self.details.changes_selected)
-                        .map_or(0, |i| i as isize + delta);
-                    let next = cur.clamp(0, files.len() as isize - 1) as usize;
-                    self.details.changes_selected = files[next];
-                    self.details.diff_scroll = 0;
-                }
+                self.details.select_next_file(delta);
+            }
+            Action::DiffJumpHunk(delta) => {
+                self.details.jump_diff_hunk(delta);
             }
             Action::DiffToggleSideBySide => {
                 self.details.diff_side_by_side = !self.details.diff_side_by_side;
@@ -1615,6 +1642,13 @@ impl AppState {
                 effects.push(Effect::CopyToClipboard(text));
             }
             Action::FlushPendingDetails => {
+                if self
+                    .pending_key_at
+                    .is_some_and(|t| t.elapsed() >= crate::keymap::KEY_CHORD_WINDOW)
+                {
+                    self.pending_keys.clear();
+                    self.pending_key_at = None;
+                }
                 crate::input_menus::flush_menu_hover(self, Instant::now());
                 if let Some((key, _)) = self.details.pending.take()
                     && !self.details.cache.contains(&key)

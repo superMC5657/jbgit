@@ -14,7 +14,7 @@ pub use jbgit_config::{
     DefaultTab, GlyphModePref, GraphBackendPref, JbgitConfig, JbgitConfigOverlay, LanguagePref,
     LayoutSection, PairRatio, ThemeFlavor, TripleRatio,
 };
-pub use keymap_config::{KeyBindingConfig, KeymapConfig, KeymapConfigOverlay};
+pub use keymap_config::{KeyBindingConfig, KeymapConfig, KeymapConfigOverlay, KeymapPreset, KeymapScope};
 pub use theme_config::{ThemeConfig, ThemeConfigOverlay};
 
 pub const DEFAULT_JBGIT_TOML: &str = include_str!("defaults/jbgit.default.toml");
@@ -57,7 +57,7 @@ impl AppConfig {
     pub fn load_defaults() -> Self {
         let jbgit: JbgitConfig = toml::from_str(DEFAULT_JBGIT_TOML).unwrap_or_default();
         let theme: ThemeConfig = toml::from_str(DEFAULT_THEME_TOML).unwrap_or_default();
-        let keymap: KeymapConfig = toml::from_str(DEFAULT_KEYMAP_TOML).unwrap_or_default();
+        let keymap = KeymapConfig::for_preset(KeymapPreset::Default);
         Self { jbgit, theme, keymap }
     }
 
@@ -258,8 +258,8 @@ key_bindings = [
 "#;
         let keymap_ov: KeymapConfigOverlay = toml::from_str(keymap_str).unwrap();
         cfg.keymap.merge_overlay(&keymap_ov);
-        // Preserves existing bindings while replacing `refresh` (`r` -> `<F5>`)
-        assert_eq!(cfg.keymap.global.key_bindings.len(), initial_global_len);
+        // Preserves existing bindings while replacing `refresh` (`r` + `<F5>` -> `<F5>`)
+        assert_eq!(cfg.keymap.global.key_bindings.len(), initial_global_len - 1);
         assert!(cfg.keymap.global.key_bindings.iter().any(|b| b.run == "quit"));
         assert!(!cfg.keymap.global.key_bindings.iter().any(|b| b.run == "refresh" && b.on == ["r"]));
         assert!(cfg.keymap.global.key_bindings.iter().any(|b| b.run == "refresh" && b.on == ["<F5>"]));
@@ -435,5 +435,80 @@ log_ratio = [1, 0, 0]
         // Layer 3 same-layer theme.toml wins over same-layer jbgit.toml
         cfg.apply_dir_overlays(layer3.path(), false);
         assert_eq!(cfg.theme.flavor, ThemeFlavor::CatppuccinMocha);
+    }
+
+    #[test]
+    fn test_keymap_presets_jetbrains_and_vim() {
+        let mut jb_cfg = AppConfig::load_defaults();
+        let jb_ov: KeymapConfigOverlay = toml::from_str("preset = \"jetbrains\"\n").unwrap();
+        jb_cfg.keymap.merge_overlay(&jb_ov);
+        assert_eq!(jb_cfg.keymap.preset, KeymapPreset::Jetbrains);
+        assert!(jb_cfg.keymap.tree_speed_search);
+        assert_eq!(
+            jb_cfg.keymap.primary_key_for(&[KeymapScope::Global], "git_push").as_deref(),
+            Some("Ctrl+Shift+K")
+        );
+        assert_eq!(
+            jb_cfg.keymap.primary_key_for(&[KeymapScope::Global], "tab_commit").as_deref(),
+            Some("Ctrl+K")
+        );
+        assert_eq!(
+            jb_cfg.keymap.primary_key_for(&[KeymapScope::Global], "git_pull").as_deref(),
+            Some("Ctrl+T")
+        );
+        assert_eq!(
+            jb_cfg.keymap.primary_key_for(&[KeymapScope::Global], "new_branch").as_deref(),
+            Some("Ctrl+Alt+N")
+        );
+
+        let mut vim_cfg = AppConfig::load_defaults();
+        let vim_ov: KeymapConfigOverlay = toml::from_str("preset = \"vim\"\n").unwrap();
+        vim_cfg.keymap.merge_overlay(&vim_ov);
+        assert_eq!(vim_cfg.keymap.preset, KeymapPreset::Vim);
+        assert!(!vim_cfg.keymap.tree_speed_search);
+        assert_eq!(
+            vim_cfg.keymap.primary_key_for(&[KeymapScope::Log], "page_down_half").as_deref(),
+            Some("Ctrl+D")
+        );
+        assert_eq!(
+            vim_cfg.keymap.primary_key_for(&[KeymapScope::Diff], "stage_selection").as_deref(),
+            Some("s")
+        );
+        assert_eq!(
+            vim_cfg.keymap.primary_key_for(&[KeymapScope::Diff], "unstage_selection").as_deref(),
+            Some("u")
+        );
+    }
+
+    #[test]
+    fn test_keymap_prepend_noop_and_string_on() {
+        let mut cfg = AppConfig::load_defaults();
+        let ov_toml = r#"
+[global]
+prepend_keymap = [
+    { on = "r", run = "noop" },
+]
+
+[log]
+prepend_keymap = [
+    { on = "<Down>", run = "noop" },
+    { on = "K", run = "cursor_up", desc = "Up" },
+]
+"#;
+        let ov: KeymapConfigOverlay = toml::from_str(ov_toml).unwrap();
+        cfg.keymap.merge_overlay(&ov);
+
+        let global_refresh = cfg.keymap.all_keys_for(&[KeymapScope::Global], "refresh");
+        assert!(!global_refresh.contains(&"r".to_string()), "{global_refresh:?}");
+        assert!(global_refresh.contains(&"F5".to_string()), "{global_refresh:?}");
+
+        let log_down = cfg.keymap.all_keys_for(&[KeymapScope::Log], "cursor_down");
+        assert!(!log_down.contains(&"↓".to_string()), "{log_down:?}");
+        assert!(log_down.contains(&"j".to_string()), "{log_down:?}");
+
+        assert_eq!(
+            cfg.keymap.primary_key_for(&[KeymapScope::Log], "cursor_up").as_deref(),
+            Some("K")
+        );
     }
 }

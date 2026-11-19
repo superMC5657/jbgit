@@ -307,8 +307,17 @@ fn text_regex_filter_hides_rows_and_speed_search_finds_branches() {
     key(&mut state, KeyCode::Esc, KeyModifiers::NONE);
     assert!(!state.log_filter.editing_text);
 
-    // Branch speed search: typing in the tree filters to matching leaves.
+    // Branch search (`tree_speed_search = false` by default): `j`/`k` navigate without
+    // triggering search, while `/` starts explicit search filtering.
     state.dispatch(Action::FocusPane(PaneId::LogBranchesTree));
+    let before_row = state.branches.selected;
+    key(&mut state, KeyCode::Char('j'), KeyModifiers::NONE);
+    assert!(!state.branches.searching);
+    assert!(state.branches.query.is_empty());
+    assert!(state.branches.selected >= before_row);
+
+    key(&mut state, KeyCode::Char('/'), KeyModifiers::NONE);
+    assert!(state.branches.searching);
     for c in "oau".chars() {
         key(&mut state, KeyCode::Char(c), KeyModifiers::NONE);
     }
@@ -320,6 +329,23 @@ fn text_regex_filter_hides_rows_and_speed_search_finds_branches() {
         .map(|r| state.branches.model.nodes[r.node].label.clone())
         .collect();
     assert_eq!(leaves, vec!["oauth"]);
+    key(&mut state, KeyCode::Esc, KeyModifiers::NONE);
+    assert!(state.branches.query.is_empty());
+    assert!(!state.branches.searching);
+
+    // Enabling `tree_speed_search = true` restores direct typing speed search.
+    state.config.keymap.tree_speed_search = true;
+    for c in "oau".chars() {
+        key(&mut state, KeyCode::Char(c), KeyModifiers::NONE);
+    }
+    let leaves_ss: Vec<_> = state
+        .branches
+        .rows
+        .iter()
+        .filter(|r| r.expanded.is_none())
+        .map(|r| state.branches.model.nodes[r.node].label.clone())
+        .collect();
+    assert_eq!(leaves_ss, vec!["oauth"]);
     key(&mut state, KeyCode::Esc, KeyModifiers::NONE);
     assert!(state.branches.query.is_empty());
 }
@@ -698,9 +724,9 @@ fn mouse_drag_select_parent_chooser_and_lru_recency() {
     run(&mut state, a3);
     assert_eq!(state.log_graph.selected_range(), 0..=2);
 
-    // Parent chooser popup: `P` on merge M, then `2` jumps to second parent O1.
+    // Parent chooser popup: `m` on merge M, then `2` jumps to second parent O1.
     state.dispatch(Action::SelectLogRow(row_of(&state, M)));
-    key(&mut state, KeyCode::Char('P'), KeyModifiers::SHIFT);
+    key(&mut state, KeyCode::Char('m'), KeyModifiers::NONE);
     assert!(matches!(
         state.modal_stack.last(),
         Some(ModalLayer::FloatingPopup {

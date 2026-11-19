@@ -1,6 +1,7 @@
 use jbgit_core::{GitOp, Oid, RefKind, TodoAction};
 
 use crate::app::{Action, AppState, ContextMenuAction, ContextMenuItem};
+use crate::config::KeymapScope;
 use crate::dialogs::{
     ChoiceDialog, Dialog, InputDialog, InputIntent, InputValidation, MessageDialog, MessageIntent,
     RebaseTodoDialog, new_branch_dialog, reset_dialog,
@@ -26,6 +27,14 @@ pub fn log_commit_menu_items(state: &AppState) -> Vec<ContextMenuItem> {
     let cur = branch.clone().unwrap_or_else(|| "HEAD".into());
     let no_ongoing = state.require_no_ongoing();
     let i18n = &state.i18n;
+    let km = &state.config.keymap;
+    let checkout_sc = km.primary_key_for(&[KeymapScope::Log], "checkout");
+    let compare_sc = km.primary_key_for(&[KeymapScope::Log], "compare_or_diff");
+    let uncommit_sc = km.primary_key_for(&[KeymapScope::Log], "uncommit");
+    let reword_sc = km.primary_key_for(&[KeymapScope::Log], "reword");
+    let new_branch_sc = km.primary_key_for(&[KeymapScope::Log], "new_branch");
+    let copy_sc = km.primary_key_for(&[KeymapScope::Log], "copy_hash");
+    let goto_sc = km.primary_key_for(&[KeymapScope::Log], "goto_revision");
     let need_single = |what: &str| i18n.t_fmt("menu.log.need_single", &[("what", what)]);
     let mut items = Vec::new();
 
@@ -41,7 +50,7 @@ pub fn log_commit_menu_items(state: &AppState) -> Vec<ContextMenuItem> {
         run(
             checkout_label,
             Some('c'),
-            None,
+            checkout_sc.as_deref(),
             op(GitOp::Checkout {
                 target: primary.oid.to_string(),
                 detach: true,
@@ -85,7 +94,7 @@ pub fn log_commit_menu_items(state: &AppState) -> Vec<ContextMenuItem> {
         run(
             compare_local_lbl,
             Some('d'),
-            Some("d"),
+            None,
             vec![Action::CompareWithLocal {
                 target: primary.oid,
             }],
@@ -100,8 +109,13 @@ pub fn log_commit_menu_items(state: &AppState) -> Vec<ContextMenuItem> {
         _ => Vec::new(),
     };
     items.push(
-        run(i18n.t("menu.log.compare_versions"), None, Some("Ctrl+D"), compare_versions)
-            .enabled_if(n == 2, i18n.t("menu.log.compare_need_two")),
+        run(
+            i18n.t("menu.log.compare_versions"),
+            None,
+            compare_sc.as_deref(),
+            compare_versions,
+        )
+        .enabled_if(n == 2, i18n.t("menu.log.compare_need_two")),
     );
     items.push(ContextMenuItem::separator());
 
@@ -115,7 +129,7 @@ pub fn log_commit_menu_items(state: &AppState) -> Vec<ContextMenuItem> {
                 i18n.t_fmt("menu.log.cherry_pick_many", &[("count", &n_str)])
             },
             Some('p'),
-            Some("p"),
+            None,
             op(GitOp::CherryPick { oids: oids.clone() }),
         )
         .icon("🍒")
@@ -136,7 +150,7 @@ pub fn log_commit_menu_items(state: &AppState) -> Vec<ContextMenuItem> {
                 i18n.t_fmt("menu.log.revert_many", &[("count", &n_str)])
             },
             Some('v'),
-            Some("v"),
+            None,
             op(GitOp::Revert { oids: newest_first }),
         )
         .enabled_if(
@@ -150,7 +164,7 @@ pub fn log_commit_menu_items(state: &AppState) -> Vec<ContextMenuItem> {
         run(
             reset_lbl,
             Some('r'),
-            Some("r"),
+            None,
             dialog(reset_dialog(primary.oid, &primary.subject, &cur, i18n)),
         )
         .enabled_if(single, need_single(reset_lbl))
@@ -158,7 +172,12 @@ pub fn log_commit_menu_items(state: &AppState) -> Vec<ContextMenuItem> {
     );
     let is_head = single && head == Some(primary.oid);
     items.push(
-        run(i18n.t("menu.log.uncommit"), Some('u'), Some("u"), vec![Action::UncommitHead])
+        run(
+            i18n.t("menu.log.uncommit"),
+            Some('u'),
+            uncommit_sc.as_deref(),
+            vec![Action::UncommitHead],
+        )
             .enabled_if(is_head, i18n.t("menu.log.uncommit_only_head"))
             .enabled_if(
                 !primary.parents.is_empty(),
@@ -172,13 +191,13 @@ pub fn log_commit_menu_items(state: &AppState) -> Vec<ContextMenuItem> {
     let reword_lbl = i18n.t("menu.log.reword");
     let reword_title = i18n.t_fmt("menu.log.reword_title", &[("short", &short)]);
     let reword = if !single {
-        run(reword_lbl, Some('w'), Some("F2"), Vec::new())
+        run(reword_lbl, Some('w'), reword_sc.as_deref(), Vec::new())
             .enabled_if(false, need_single(reword_lbl))
     } else if is_head {
         run(
             reword_lbl,
             Some('w'),
-            Some("F2"),
+            reword_sc.as_deref(),
             dialog(Dialog::Message(MessageDialog::new(
                 reword_title,
                 primary.full_message(),
@@ -194,7 +213,7 @@ pub fn log_commit_menu_items(state: &AppState) -> Vec<ContextMenuItem> {
                 run(
                     reword_lbl,
                     Some('w'),
-                    Some("F2"),
+                    reword_sc.as_deref(),
                     dialog(Dialog::Message(MessageDialog::new(
                         reword_title,
                         plan.messages[0].clone(),
@@ -206,7 +225,8 @@ pub fn log_commit_menu_items(state: &AppState) -> Vec<ContextMenuItem> {
                     ))),
                 )
             }
-            Err(e) => run(reword_lbl, Some('w'), Some("F2"), Vec::new()).enabled_if(false, e),
+            Err(e) => run(reword_lbl, Some('w'), reword_sc.as_deref(), Vec::new())
+                .enabled_if(false, e),
         }
     };
     items.push(reword.icon("✎"));
@@ -216,7 +236,7 @@ pub fn log_commit_menu_items(state: &AppState) -> Vec<ContextMenuItem> {
         run(
             fixup_lbl,
             Some('f'),
-            Some("f"),
+            None,
             op(GitOp::FixupCommit {
                 target: primary.oid,
                 base: primary.parents.first().copied(),
@@ -229,7 +249,7 @@ pub fn log_commit_menu_items(state: &AppState) -> Vec<ContextMenuItem> {
         )
         .require(state.rewrite_plan(primary.oid, "fixup").map(|_| ()))
     } else {
-        run(fixup_lbl, Some('f'), Some("f"), Vec::new()).enabled_if(false, need_single(fixup_lbl))
+        run(fixup_lbl, Some('f'), None, Vec::new()).enabled_if(false, need_single(fixup_lbl))
     };
     items.push(fixup);
     items.push(drop_item(state, &oids));
@@ -238,7 +258,7 @@ pub fn log_commit_menu_items(state: &AppState) -> Vec<ContextMenuItem> {
         Ok(plan) if single => run(
             rebase_lbl,
             Some('i'),
-            Some("i"),
+            None,
             dialog(Dialog::RebaseTodo(RebaseTodoDialog {
                 base: plan.base,
                 entries: plan.entries,
@@ -246,9 +266,9 @@ pub fn log_commit_menu_items(state: &AppState) -> Vec<ContextMenuItem> {
                 messages: plan.messages,
             })),
         ),
-        Ok(_) => run(rebase_lbl, Some('i'), Some("i"), Vec::new())
+        Ok(_) => run(rebase_lbl, Some('i'), None, Vec::new())
             .enabled_if(false, need_single(rebase_lbl)),
-        Err(e) => run(rebase_lbl, Some('i'), Some("i"), Vec::new()).enabled_if(false, e),
+        Err(e) => run(rebase_lbl, Some('i'), None, Vec::new()).enabled_if(false, e),
     };
     items.push(interactive);
     let push_up_lbl = i18n.t("menu.log.push_up_to");
@@ -298,7 +318,7 @@ pub fn log_commit_menu_items(state: &AppState) -> Vec<ContextMenuItem> {
         run(
             new_branch_lbl,
             Some('n'),
-            Some("Ctrl+Alt+N"),
+            new_branch_sc.as_deref(),
             dialog(new_branch_dialog(
                 &primary.oid.to_string(),
                 &short,
@@ -316,7 +336,7 @@ pub fn log_commit_menu_items(state: &AppState) -> Vec<ContextMenuItem> {
         run(
             new_tag_lbl,
             Some('t'),
-            Some("t"),
+            None,
             dialog(Dialog::Input(
                 InputDialog::new(
                     i18n.t_fmt("menu.log.new_tag_title", &[("short", &short)]),
@@ -342,7 +362,7 @@ pub fn log_commit_menu_items(state: &AppState) -> Vec<ContextMenuItem> {
     items.push(run(
         i18n.t("menu.log.copy_revision"),
         Some('y'),
-        Some("y"),
+        copy_sc.as_deref(),
         vec![Action::CopyText(
             oids.iter()
                 .rev()
@@ -401,7 +421,7 @@ pub fn log_commit_menu_items(state: &AppState) -> Vec<ContextMenuItem> {
     items.push(ContextMenuItem::action(
         i18n.t("menu.log.goto_revision"),
         Some('g'),
-        Some("Ctrl+G"),
+        goto_sc.as_deref(),
         ContextMenuAction::OpenGoTo,
     ));
     items.push(run(i18n.t("menu.log.go_to_child"), None, Some("←"), vec![Action::GoToChild]));
@@ -427,7 +447,7 @@ fn squash_item(state: &AppState, oids: &[Oid]) -> ContextMenuItem {
     } else {
         i18n.t("menu.log.squash_commits").to_string()
     };
-    let base = run(label.clone(), Some('s'), Some("s"), Vec::new());
+    let base = run(label.clone(), Some('s'), None, Vec::new());
     if oids.len() < 2 {
         return base.enabled_if(false, i18n.t("menu.log.squash_need_two"));
     }
@@ -458,7 +478,7 @@ fn squash_item(state: &AppState, oids: &[Oid]) -> ContextMenuItem {
     ContextMenuItem::run(
         label,
         Some('s'),
-        Some("s"),
+        None,
         dialog(Dialog::Message(MessageDialog::new(
             i18n.t_fmt("menu.log.squash_title", &[("count", &count_s)]),
             combined,
@@ -473,6 +493,12 @@ fn squash_item(state: &AppState, oids: &[Oid]) -> ContextMenuItem {
 
 fn drop_item(state: &AppState, oids: &[Oid]) -> ContextMenuItem {
     let i18n = &state.i18n;
+    let drop_sc = state
+        .config
+        .keymap
+        .all_keys_for(&[KeymapScope::Log], "drop_commit")
+        .join(" / ");
+    let drop_sc = (!drop_sc.is_empty()).then_some(drop_sc);
     let count_s = oids.len().to_string();
     let label = if oids.len() > 1 {
         i18n.t_fmt("menu.log.drop_many", &[("count", &count_s)])
@@ -480,7 +506,7 @@ fn drop_item(state: &AppState, oids: &[Oid]) -> ContextMenuItem {
         i18n.t("menu.log.drop_commit").to_string()
     };
     let Some(&oldest) = oids.first() else {
-        return run(label, Some('x'), Some("Del"), Vec::new())
+        return run(label, Some('x'), drop_sc.as_deref(), Vec::new())
             .enabled_if(false, i18n.t("menu.log.drop_no_selection"));
     };
     match state.rewrite_plan(oldest, "drop") {
@@ -498,7 +524,7 @@ fn drop_item(state: &AppState, oids: &[Oid]) -> ContextMenuItem {
                 }
             }
             if subjects.len() != oids.len() {
-                return run(label, Some('x'), Some("Del"), Vec::new())
+                return run(label, Some('x'), drop_sc.as_deref(), Vec::new())
                     .enabled_if(false, i18n.t("menu.log.drop_not_reachable"));
             }
             let mut body = vec![i18n.t_fmt("menu.log.drop_confirm_body", &[("count", &count_s)])];
@@ -506,7 +532,7 @@ fn drop_item(state: &AppState, oids: &[Oid]) -> ContextMenuItem {
             run(
                 label,
                 Some('x'),
-                Some("Del"),
+                drop_sc.as_deref(),
                 dialog(Dialog::Choice(ChoiceDialog::confirm(
                     i18n.t("menu.log.drop_confirm_title"),
                     body,
@@ -520,13 +546,17 @@ fn drop_item(state: &AppState, oids: &[Oid]) -> ContextMenuItem {
             )
             .icon("✕")
         }
-        Err(e) => run(label, Some('x'), Some("Del"), Vec::new()).enabled_if(false, e),
+        Err(e) => run(label, Some('x'), drop_sc.as_deref(), Vec::new()).enabled_if(false, e),
     }
 }
 
 /// Right-click on the Log diff preview.
 pub fn log_diff_menu_items(state: &AppState) -> Vec<ContextMenuItem> {
     let i18n = &state.i18n;
+    let km = &state.config.keymap;
+    let sbs_sc = km.primary_key_for(&[KeymapScope::Diff], "toggle_side_by_side");
+    let ctx_sc = km.primary_key_for(&[KeymapScope::Diff], "cycle_diff_context");
+    let zoom_sc = km.primary_key_for(&[KeymapScope::Diff], "zoom_diff");
     let change = state.details.selected_change().map(|c| c.path.clone());
     let oids = state
         .details
@@ -549,13 +579,13 @@ pub fn log_diff_menu_items(state: &AppState) -> Vec<ContextMenuItem> {
         run(
             i18n.t("menu.log.toggle_side_by_side"),
             Some('s'),
-            Some("s"),
+            sbs_sc.as_deref(),
             vec![Action::DiffToggleSideBySide],
         ),
         run(
             i18n.t("menu.log.cycle_context"),
             Some('c'),
-            Some("c"),
+            ctx_sc.as_deref(),
             vec![Action::DiffCycleContext],
         ),
         run(
@@ -570,7 +600,7 @@ pub fn log_diff_menu_items(state: &AppState) -> Vec<ContextMenuItem> {
         run(
             i18n.t("menu.log.fullscreen_diff"),
             Some('z'),
-            Some("F4"),
+            zoom_sc.as_deref(),
             vec![Action::ZoomDiff(!state.details.diff_zoomed)],
         ),
     ]

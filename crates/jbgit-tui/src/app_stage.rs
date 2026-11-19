@@ -322,6 +322,41 @@ impl AppState {
                     self.stage_workbench.diff_scroll = target;
                 }
             }
+            Action::StageDiffNextFile(delta) => {
+                self.stage_workbench.sync_rows(self.stage_status.as_deref());
+                let file_indices: Vec<usize> = self
+                    .stage_workbench
+                    .rows
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, r)| {
+                        matches!(
+                            r.kind,
+                            StageTreeRowKind::File { .. } | StageTreeRowKind::AmendFile { .. }
+                        )
+                    })
+                    .map(|(i, _)| i)
+                    .collect();
+                if !file_indices.is_empty() {
+                    let next_pos = match file_indices
+                        .iter()
+                        .position(|&i| i == self.commit_stage_selected_idx)
+                    {
+                        Some(pos) => (pos as isize + *delta)
+                            .clamp(0, file_indices.len() as isize - 1) as usize,
+                        None if *delta >= 0 => file_indices
+                            .iter()
+                            .position(|&i| i > self.commit_stage_selected_idx)
+                            .unwrap_or(0),
+                        None => file_indices
+                            .iter()
+                            .rposition(|&i| i < self.commit_stage_selected_idx)
+                            .unwrap_or(file_indices.len() - 1),
+                    };
+                    self.commit_stage_selected_idx = file_indices[next_pos];
+                    self.stage_workbench.multi_selected.clear();
+                }
+            }
             Action::StageDiffToggleVisual => {
                 if self.stage_workbench.visual_anchor_row.is_some() {
                     self.stage_workbench.visual_anchor_row = None;

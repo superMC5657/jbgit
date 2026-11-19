@@ -85,7 +85,9 @@ jbgit/
 │   │                           # notify 文件变动防抖监听与锁竞争自动重试
 │   └── jbgit-tui/              # 终端用户界面：Ratatui + Crossterm、主题/字体光栅化、
 │                               # 窗口拆分器 (Splitter)、Hit-Test 交互路由与多语言引擎
-├── docs/                       # Agent 协作与工作流指引 (docs/agents/)
+├── docs/
+│   ├── manual.md               # 操作与配置手册（快捷键速查与 TOML 配置详解）
+│   └── agents/                 # Agent 协作与工作流指引
 └── .scratch/                   # 各里程碑功能规约 (Specs) 与 Issue 拆解
 ```
 
@@ -118,9 +120,8 @@ cargo build --release -p jbgit-tui --features graphics-protocol
 
 ---
 
-## 💻 快速开始与使用 (Quick Start)
+## 💻 快速开始 (Quick Start)
 
-### 命令行运行
 ```bash
 # 在当前 Git 仓库中启动
 jbgit
@@ -128,162 +129,23 @@ jbgit
 # 打开指定目录的 Git 仓库
 jbgit /path/to/repo
 
-# 在用户配置目录下生成全套带有中文注释的配置模板文件
+# 在用户配置目录下生成默认配置文件（jbgit.toml / theme.toml / keymap.toml）
 jbgit --init-config
 
-# 查看内置的默认配置内容
-jbgit --print-default-config jbgit     # 查看 jbgit.toml 默认项
-jbgit --print-default-config theme     # 查看 theme.toml 默认项
-jbgit --print-default-config keymap    # 查看 keymap.toml 默认项
+# 查看内置默认配置或命令行帮助
+jbgit --print-default-config jbgit     # 可选: jbgit | theme | keymap
+jbgit --help
 ```
+
+> 启动后在任意界面按 `?` 即可打开可搜索的快捷键与命令面板，按 `.` 或右键可打开当前项的操作菜单。
 
 ---
 
-## ⌨️ 快捷键速查表 (Keybindings)
+## 📖 操作与配置手册 (Manual)
 
-### 全局操作 (Global)
-| 快捷键 | 功能描述 |
-| :--- | :--- |
-| `q` / `<Ctrl-c>` | 退出 jbgit |
-| `?` | 打开交互式快捷键帮助视窗 |
-| `r` | 强制刷新 Git 仓库状态 |
-| `1` / `2` / `3` / `4` | 按标签栏顺序切换视图：**Commit (`1`)** / **Log (`2`)** / **Stash (`3`)** / **Console (`4`)** |
-| `<Alt-1>` – `<Alt-4>` | 快捷切页（默认依次为 **Log** / **Commit** / **Log 分支树** / **Stash**，可在 `keymap.toml` 自定义） |
-| `<Tab>` / `<Shift-Tab>` | 在当前视图各面板之间循环切换焦点 |
-| `<Ctrl-~>` / `` <Ctrl-`> `` | 呼出全局分支速查浮窗（非 Log 页亦可用 `<Alt-b>`；`<Esc>` 关闭） |
-| `<F9>` | 在 Log 视图打开快速跳转（Go To Revision）；在其他视图打开调色板与配色预览 |
+完整的**快捷键速查表**、**各视图交互说明**以及**配置文件详解**（4 级覆盖规则、主题配色、自定义按键映射等），请参阅：
 
-### 提交日志视图 (Log View)
-| 快捷键 | 功能描述 |
-| :--- | :--- |
-| `j` / `k` 或 `<Down>` / `<Up>` | 上下移动光标浏览提交记录 |
-| `g g` / `G` | 快速跳转至提交历史顶部 / 底部 |
-| `/` | 聚焦分支与提交过滤输入框 |
-| `c` | 检出 (Checkout) 选中的提交或分支 |
-| `<Ctrl-d>` | 版本差异对比 (Diff with Previous / Selection) |
-| `<Ctrl-g>` | 按提交哈希、分支名或 Tag 快速定位跳转 |
-| `u` | 撤销选中提交 (Uncommit / Reset Mixed) |
-| `<F2>` | 修改提交说明 (Reword Commit) |
-| `<Del>` | 删除提交 (Interactive Rebase Drop) |
-| `鼠标右键` | 弹出上下文菜单 (Cherry-pick, Revert, Reset, Squash 等) |
-
-### 提交工作台 (Commit View)
-| 快捷键 | 功能描述 |
-| :--- | :--- |
-| `<Space>` | **暂存 / 取消暂存** 当前选中的文件、差异块 (Hunk) 或指定代码行 |
-| `<Ctrl-Enter>` | 执行提交 |
-| `<Alt-a>` / `<Alt-m>` | 切换追加至上一提交 (`Amend`) 模式 |
-| `<Ctrl-a>` | 全选变更文件 |
-| `<Del>` / `d` | 放弃选中文件或代码块的本地修改 (Discard Changes) |
-| `v` | 切换按目录层级树展示 / 扁平列表展示 |
-| `e` | 在外部系统编辑器中打开当前文件 |
-
-### 分支树面板 (Log Branches Pane)
-| 快捷键 | 功能描述 |
-| :--- | :--- |
-| `直接打字` / `<Esc>` | Speed Search 模糊速查过滤分支 / 清除筛选 |
-| `<Space>` | 添加 / 取消收藏当前分支（置顶显示） |
-| `<Enter>` | 按选中分支过滤提交日志 |
-| `J` | 跳转至选中分支对应的提交记录 |
-| `<F2>` | 重命名选中的分支 |
-| `<Del>` | 安全删除选中的分支 |
-| `鼠标右键` / `<Shift-F10>` | 打开分支上下文菜单（检出、新建、合并、变基、对比等） |
-
-### 全局分支浮窗 (Branches Popup)
-| 快捷键 | 功能描述 |
-| :--- | :--- |
-| `直接打字` / `<Ctrl-u>` | Speed Search 模糊速查过滤分支 / 清空输入 |
-| `<Enter>` / `<Right>` | 打开选中分支的操作子菜单（检出、新建、重命名、删除、对比等） |
-| `<Alt-f>` / `<Esc>` | 执行远程 Fetch / 关闭浮窗 |
-
-### 差异对比 (Diff View)
-**Log / Stash Diff 预览**：
-| 快捷键 | 功能描述 |
-| :--- | :--- |
-| `s` | 切换单列统一对比 (Unified) / 双列并排对比 (Side-by-Side) |
-| `c` | 循环切换上下文行数 (3 行 / 10 行 / 全量代码) |
-| `m` | 切换 Log Diff 预览停靠位置 |
-| `[` / `]` | 在 Log 中快速跳转至上一个 / 下一个变更文件 |
-| `<F4>` / `<Ctrl-Enter>` | 切换 Log 全屏放大预览 Diff |
-
-**Commit 工作台 Diff 预览**：
-| 快捷键 | 功能描述 |
-| :--- | :--- |
-| `S` | 切换单列统一对比 / 双列并排对比 |
-| `c` | 循环切换上下文行数 (3 行 / 10 行 / 全量代码) |
-| `[` / `]` 或 `p` / `n` | 跳转至上一个 / 下一个 Hunk 差异块 |
-| `s` / `<Space>` / `u` | 暂存或取消暂存当前行 / 选区；`r` 回滚本地修改 |
-| `v` / `x` / `i` | 切换行选区 (Visual) / 切换 Staged 与 Unstaged 侧 / 打开三方合并视图 |
-
----
-
-## 🛠️ 配置体系指南 (Configuration)
-
-运行 `jbgit --init-config` 即可在系统的用户配置目录下生成带详尽注释的配置模板：
-- **Windows**: `%APPDATA%\jbgit\config\`
-- **Linux / macOS**: `~/.config/jbgit/`
-
-配置由三个互相独立的文件构成：
-
-### 1. `jbgit.toml` (通用行为与布局比例)
-```toml
-[general]
-# 界面语言: "zh-CN" (简体中文), "en-US" (English), "auto" (自动跟随环境变量)
-language = "zh-CN"
-
-# 启动时默认打开的标签页: "log", "commit", "branches", "stash", "console"
-default_tab = "log"
-
-# 主题预设: "darcula", "catppuccin-mocha", "gruvbox-dark"
-flavor = "darcula"
-
-[graph]
-# 提交图渲染引擎: "auto", "vector" (Kitty/Sixel), "cell" (字符网格)
-backend = "auto"
-# 图标模式: "nerd_font" 或 "unicode"
-glyph_mode = "nerd_font"
-
-[diff]
-syntax_highlight = true
-tab_size = 4
-context_lines = 3
-
-[layout]
-# Log 日志主视图栏位比例: [左侧分支树, 中间提交图谱, 右侧详情/Diff] (默认 [1, 3, 2])
-log_ratio = [ 1, 3, 2 ]
-# Commit 提交工作台比例: [左侧文件变更树, 右侧 Diff 预览] (默认 [1, 2])
-commit_ratio = [ 1, 2 ]
-# Stash 贮藏箱比例: [左侧贮藏条目, 右侧差异预览] (默认 [2, 3])
-stash_ratio = [ 2, 3 ]
-# Console 控制台比例: [左侧命令历史, 右侧执行输出] (默认 [2, 3])
-console_ratio = [ 2, 3 ]
-```
-
-### 2. `theme.toml` (配色微调)
-```toml
-flavor = "darcula"
-
-[glyphs]
-mode = "nerd_font"
-
-[palette]
-# 可取消注释单独微调特定语义颜色 (十六进制 RGB: #RRGGBB)
-# bg_canvas = "#1E1F22"
-# bg_selection_focused = "#2E436E"
-# fg_accent_link = "#548AF7"
-# status_modified = "#6897BB"
-# status_added = "#629755"
-```
-
-### 3. `keymap.toml` (按键绑定)
-对标 Yazi 的按键映射体系，支持单键、组合键（`<C-x>`, `<A-x>`）及连续按键（如 `["g", "g"]`）：
-```toml
-[global]
-key_bindings = [
-    { on = [ "q" ], run = "quit", desc = "退出 jbgit" },
-    { on = [ "<F5>" ], run = "refresh", desc = "刷新仓库状态" },
-]
-```
+- 👉 **[jbgit 操作与配置手册](docs/manual.md)**
 
 ---
 

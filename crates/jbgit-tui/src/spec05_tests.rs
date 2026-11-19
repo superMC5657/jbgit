@@ -20,7 +20,9 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::Modifier;
 
-use crate::app::{Action, AppState, ContextMenuEntryKind, ContextMenuItem, Effect, ModalLayer};
+use crate::app::{
+    Action, AppState, ContextMenuEntryKind, ContextMenuItem, Effect, ModalLayer, PopupKind,
+};
 use crate::branches_popup::{PopupRow, build_popup_rows};
 use crate::dialogs::Dialog;
 use crate::hit_test::{HitTarget, OngoingButton};
@@ -207,8 +209,8 @@ fn menu_item_idx(items: &[ContextMenuItem], label: &str) -> usize {
 fn branches_popup_fuzzy_search_highlights_and_opens_branch_actions() {
     let mut state = state_with(snapshot());
     state.dispatch(Action::SwitchTab(WorkspaceTab::Commit));
-    // Alt+B opens the popup outside the Log tab; Ctrl+` everywhere.
-    key(&mut state, KeyCode::Char('b'), KeyModifiers::ALT);
+    // `b` opens the global Branches popup everywhere; `Ctrl+`` also works everywhere.
+    key(&mut state, KeyCode::Char('b'), KeyModifiers::NONE);
     assert!(matches!(
         state.modal_stack.last(),
         Some(ModalLayer::FloatingPopup { .. })
@@ -643,11 +645,7 @@ fn rewrite_is_disabled_for_commits_on_protected_remote() {
 #[test]
 fn new_branch_dialog_validates_name_inline_and_blocks_confirm() {
     let mut state = state_with(snapshot());
-    key(
-        &mut state,
-        KeyCode::Char('n'),
-        KeyModifiers::CONTROL | KeyModifiers::ALT,
-    );
+    key(&mut state, KeyCode::Char('n'), KeyModifiers::NONE);
     assert!(matches!(
         state.modal_stack.last(),
         Some(ModalLayer::Dialog(_))
@@ -687,7 +685,7 @@ fn new_branch_dialog_validates_name_inline_and_blocks_confirm() {
         git_ops(&effects),
         vec![GitOp::CheckoutNewBranch {
             name: "feature/ok".into(),
-            start: "HEAD".into(),
+            start: oid(12).to_string(),
             track: false,
         }]
     );
@@ -997,15 +995,16 @@ fn stash_tab_lists_stashes_and_keys_run_operations() {
 
     key(&mut state, KeyCode::Down, KeyModifiers::NONE);
     assert_eq!(state.stash.selected, 1);
-    let effects = key(&mut state, KeyCode::Char('p'), KeyModifiers::NONE);
-    assert_eq!(
-        git_ops(&effects),
-        vec![GitOp::StashApply {
-            index: 1,
-            pop: true
-        }]
-    );
+
+    // Enter safely opens diff preview rather than mutating/applying the stash.
     let effects = key(&mut state, KeyCode::Enter, KeyModifiers::NONE);
+    assert!(git_ops(&effects).is_empty());
+    assert_eq!(state.focused_pane, PaneId::StashDiffPreview);
+    key(&mut state, KeyCode::Esc, KeyModifiers::NONE);
+    assert_eq!(state.focused_pane, PaneId::StashList);
+
+    // `a` applies (keep), `o` pops.
+    let effects = key(&mut state, KeyCode::Char('a'), KeyModifiers::NONE);
     assert_eq!(
         git_ops(&effects),
         vec![GitOp::StashApply {
@@ -1013,6 +1012,15 @@ fn stash_tab_lists_stashes_and_keys_run_operations() {
             pop: false
         }]
     );
+    let effects = key(&mut state, KeyCode::Char('o'), KeyModifiers::NONE);
+    assert_eq!(
+        git_ops(&effects),
+        vec![GitOp::StashApply {
+            index: 1,
+            pop: true
+        }]
+    );
+
     key(&mut state, KeyCode::Char('d'), KeyModifiers::NONE);
     assert!(matches!(
         state.modal_stack.last(),
@@ -1022,8 +1030,8 @@ fn stash_tab_lists_stashes_and_keys_run_operations() {
     let effects = key(&mut state, KeyCode::Enter, KeyModifiers::NONE);
     assert_eq!(git_ops(&effects), vec![GitOp::StashDrop { index: 1 }]);
 
-    // Unstash as branch validates the name.
-    key(&mut state, KeyCode::Char('b'), KeyModifiers::NONE);
+    // Shift+B opens unstash-as-branch dialog and validates the name.
+    key(&mut state, KeyCode::Char('B'), KeyModifiers::SHIFT);
     type_str(&mut state, "from-stash");
     let effects = key(&mut state, KeyCode::Enter, KeyModifiers::NONE);
     assert_eq!(
@@ -1033,6 +1041,17 @@ fn stash_tab_lists_stashes_and_keys_run_operations() {
             name: "from-stash".into(),
         }]
     );
+
+    // Plain `b` triggers the global Branches popup even from the Stash tab.
+    key(&mut state, KeyCode::Char('b'), KeyModifiers::NONE);
+    assert!(matches!(
+        state.modal_stack.last(),
+        Some(ModalLayer::FloatingPopup {
+            kind: PopupKind::BranchesQuickView,
+            ..
+        })
+    ));
+    state.dispatch(Action::PopModal);
 }
 
 #[test]
@@ -1313,4 +1332,94 @@ fn non_contiguous_squash_rejected_compare_views_stash_reuse_and_conflict_modal()
         Effect::SaveConflictResolution { path, content, stage: true }
             if path == "src/c.rs" && content == b"ours\n"
     )));
+}
+
+#[test]
+fn dynamic_footer_tracks_focus_and_keymap_overrides() {
+    let mut state = state_with(snapshot());
+    state.dispatch(Action::SwitchTab(WorkspaceTab::Log));
+    state.dispatch(Action::FocusPane(PaneId::LogCommitTable));
+    let term = render(&mut state, 140, 40);
+    let log_footer = screen_text(term.backend().buffer());
+    assert!(log_footer.contains("Filter"), "{log_footer}");
+    assert!(log_footer.contains("Checkout"), "{log_footer}");
+    assert!(log_footer.contains("Help"), "{log_footer}");
+
+    state.dispatch(Action::SwitchTab(WorkspaceTab::Commit));
+    state.dispatch(Action::FocusPane(PaneId::CommitChangesTree));
+    let term = render(&mut state, 140, 40);
+    let commit_footer = screen_text(term.backend().buffer());
+    assert!(commit_footer.contains("Space"), "{commit_footer}");
+    assert!(commit_footer.contains("Stage"), "{commit_footer}");
+
+    let ov: crate::config::keymap_config::KeymapConfigOverlay = toml::from_str(
+        r#"
+[commit]
+prepend_keymap = [
+    { on = "S", run = "toggle_stage" },
+]
+"#,
+    )
+    .unwrap();
+    state.config.keymap.merge_overlay(&ov);
+    let term = render(&mut state, 140, 40);
+    let updated_footer = screen_text(term.backend().buffer());
+    assert!(updated_footer.contains(" S "), "{updated_footer}");
+}
+
+#[test]
+fn which_key_popup_appears_on_prefix_and_dismisses() {
+    let mut state = state_with(snapshot());
+    state.dispatch(Action::SwitchTab(WorkspaceTab::Log));
+    state.dispatch(Action::FocusPane(PaneId::LogCommitTable));
+
+    key(&mut state, KeyCode::Char('g'), KeyModifiers::NONE);
+    assert_eq!(state.pending_keys.len(), 1);
+    let term = render(&mut state, 140, 40);
+    let txt = screen_text(term.backend().buffer());
+    assert!(txt.contains("g +"), "{txt}");
+    assert!(txt.contains("Esc cancel"), "{txt}");
+
+    // Second key completes the sequence and closes Which-Key.
+    key(&mut state, KeyCode::Char('g'), KeyModifiers::NONE);
+    assert!(state.pending_keys.is_empty());
+    let term = render(&mut state, 140, 40);
+    let txt_after = screen_text(term.backend().buffer());
+    assert!(!txt_after.contains("g +"), "{txt_after}");
+
+    // Pressing Esc cancels a pending chord cleanly.
+    key(&mut state, KeyCode::Char('g'), KeyModifiers::NONE);
+    assert_eq!(state.pending_keys.len(), 1);
+    key(&mut state, KeyCode::Esc, KeyModifiers::NONE);
+    assert!(state.pending_keys.is_empty());
+}
+
+#[test]
+fn shortcuts_help_palette_filters_and_executes_selected_action() {
+    let mut state = state_with(snapshot());
+    state.dispatch(Action::SwitchTab(WorkspaceTab::Log));
+    state.dispatch(Action::FocusPane(PaneId::LogCommitTable));
+
+    key(&mut state, KeyCode::Char('?'), KeyModifiers::SHIFT);
+    assert!(matches!(
+        state.modal_stack.last(),
+        Some(ModalLayer::FloatingPopup {
+            kind: PopupKind::ShortcutsHelp,
+            ..
+        })
+    ));
+
+    type_str(&mut state, "palette");
+    let term = render(&mut state, 120, 40);
+    let txt = screen_text(term.backend().buffer());
+    assert!(txt.contains("palette"), "{txt}");
+
+    key(&mut state, KeyCode::Enter, KeyModifiers::NONE);
+    assert!(matches!(
+        state.modal_stack.last(),
+        Some(ModalLayer::FloatingPopup {
+            kind: PopupKind::PalettePreview,
+            ..
+        })
+    ));
 }

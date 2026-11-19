@@ -149,16 +149,22 @@ pub fn render_branches_pane(
             list_area.height.saturating_sub(1),
         );
     }
-    if !pane.query.is_empty() {
+    if pane.searching || !pane.query.is_empty() {
         let bar = Rect::new(list_area.x, list_area.y, list_area.width, 1);
         let matches = pane.rows.iter().filter(|r| r.expanded.is_none()).count();
-        let text = format!(" ⌕ {}  ({matches})", pane.query);
+        let cursor = if pane.searching { "▏" } else { "" };
+        let text = format!(" ⌕ {}{cursor}  ({matches})", pane.query);
+        let bar_bg = if pane.searching {
+            ctx.theme.bg_selection_focused
+        } else {
+            ctx.theme.bg_elevated
+        };
         frame.render_widget(
             Paragraph::new(Span::styled(
                 truncate_to_width(&text, list_area.width as usize),
                 Style::default().fg(ctx.theme.fg_bright),
             ))
-            .style(Style::default().bg(ctx.theme.bg_selection_focused)),
+            .style(Style::default().bg(bar_bg)),
             bar,
         );
         list_area = Rect::new(

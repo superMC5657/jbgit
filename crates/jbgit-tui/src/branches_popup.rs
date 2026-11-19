@@ -230,7 +230,7 @@ pub fn popup_layout(screen: Rect, rows: usize, selected: usize) -> PopupLayout {
     let width = screen
         .width
         .saturating_sub(4)
-        .clamp(20.min(screen.width), 72);
+        .clamp(20.min(screen.width), 68);
     let height = (rows as u16 + 4)
         .clamp(8, 26)
         .min(screen.height.saturating_sub(2).max(5));
@@ -550,16 +550,29 @@ pub fn render_branches_popup(
                     vec![Span::styled("▸ ", Style::default().fg(ctx.theme.fg_muted))],
                 )
             }
-            PopupRow::NewBranch => (
-                vec![Span::styled(
-                    state.i18n.t("view.branches_popup.new_branch_btn").to_string(),
-                    Style::default().fg(fg),
-                )],
-                vec![Span::styled(
-                    "Ctrl+Alt+N ",
-                    Style::default().fg(ctx.theme.fg_muted),
-                )],
-            ),
+            PopupRow::NewBranch => {
+                let nb_key = state
+                    .config
+                    .keymap
+                    .primary_key_for(
+                        &[
+                            crate::config::KeymapScope::Branch,
+                            crate::config::KeymapScope::Log,
+                        ],
+                        "new_branch",
+                    )
+                    .unwrap_or_else(|| "Ctrl+Alt+N".to_string());
+                (
+                    vec![Span::styled(
+                        state.i18n.t("view.branches_popup.new_branch_btn").to_string(),
+                        Style::default().fg(fg),
+                    )],
+                    vec![Span::styled(
+                        format!("{nb_key} "),
+                        Style::default().fg(ctx.theme.fg_muted),
+                    )],
+                )
+            }
             PopupRow::CheckoutRevision => (
                 vec![Span::styled(
                     state.i18n.t("view.branches_popup.checkout_rev_btn").to_string(),

@@ -424,6 +424,12 @@ impl AppState {
             Action::StashDiffCycleContext => {
                 self.stash.details.diff_context = self.stash.details.diff_context.next();
             }
+            Action::StashDiffJumpHunk(delta) => {
+                self.stash.details.jump_diff_hunk(*delta);
+            }
+            Action::StashDiffNextFile(delta) => {
+                self.stash.details.select_next_file(*delta);
+            }
             Action::StashDiffScroll(delta) => {
                 self.stash.details.diff_scroll =
                     (self.stash.details.diff_scroll as isize + delta).max(0) as usize;

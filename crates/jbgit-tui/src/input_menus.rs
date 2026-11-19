@@ -17,7 +17,7 @@ use crate::branches_popup::activate_row;
 use crate::dialogs::{Dialog, DialogKey, route_dialog_key};
 use crate::hit_test::{
     ChangesToolbarButton, ConflictMergeButtonKind, DialogButtonKind, DiffToolbarButton, HitTarget,
-    OngoingButton, StashButton,
+    OngoingButton,
 };
 use crate::menus;
 use crate::views::overlays::{context_menu_rect, menu_item_row_y};
@@ -153,10 +153,12 @@ pub fn route_context_menu_key(key: KeyEvent, state: &mut AppState) -> Vec<Action
             return activate_top_menu_item(state, idx);
         }
         KeyCode::Delete => {
-            if let Some(idx) = items
-                .iter()
-                .position(|i| i.is_enabled() && i.shortcut.as_deref() == Some("Del"))
-            {
+            if let Some(idx) = items.iter().position(|i| {
+                i.is_enabled()
+                    && i.shortcut
+                        .as_deref()
+                        .is_some_and(|s| s == "Del" || s.split(" / ").any(|p| p == "Del"))
+            }) {
                 return activate_top_menu_item(state, idx);
             }
             Vec::new()
@@ -554,49 +556,33 @@ pub fn route_spec05_click(
     Some(actions)
 }
 
-/// Stash tab keys (take priority over global single-letter shortcuts).
-pub fn route_stash_key(key: &KeyEvent, state: &AppState) -> Option<Vec<Action>> {
+/// Stash tab structural fallbacks (after dynamic keymap routing).
+pub fn route_stash_fallback_key(key: &KeyEvent, state: &AppState) -> Vec<Action> {
     if state.active_tab != WorkspaceTab::Stash
         || key.modifiers.contains(KeyModifiers::CONTROL)
         || key.modifiers.contains(KeyModifiers::ALT)
     {
-        return None;
+        return Vec::new();
     }
     match state.focused_pane {
-        PaneId::StashList => Some(match key.code {
-            KeyCode::Down | KeyCode::Char('j') => vec![Action::StashMove(1)],
-            KeyCode::Up | KeyCode::Char('k') => vec![Action::StashMove(-1)],
-            KeyCode::Home => vec![Action::StashSelect(0)],
-            KeyCode::End => vec![Action::StashSelect(usize::MAX)],
-            KeyCode::Enter | KeyCode::Char('a') => {
-                menus::stash_button_actions(state, StashButton::Apply)
-            }
-            KeyCode::Char('p') => menus::stash_button_actions(state, StashButton::Pop),
-            KeyCode::Char('b') => menus::stash_button_actions(state, StashButton::Branch),
-            KeyCode::Char('n') => menus::stash_button_actions(state, StashButton::New),
-            KeyCode::Char('d') | KeyCode::Delete => {
-                menus::stash_button_actions(state, StashButton::Drop)
-            }
-            KeyCode::Char('C') => menus::stash_button_actions(state, StashButton::Clear),
-            KeyCode::Right => vec![Action::FocusPane(PaneId::StashDiffPreview)],
-            _ => return None,
-        }),
-        PaneId::StashDiffPreview => Some(match key.code {
-            KeyCode::Down | KeyCode::Char('j') => vec![Action::StashChangesMove(1)],
-            KeyCode::Up | KeyCode::Char('k') => vec![Action::StashChangesMove(-1)],
+        PaneId::StashList => match key.code {
+            KeyCode::PageDown => vec![Action::StashMove(10)],
+            KeyCode::PageUp => vec![Action::StashMove(-10)],
+            KeyCode::Enter | KeyCode::Right => vec![Action::FocusPane(PaneId::StashDiffPreview)],
+            _ => Vec::new(),
+        },
+        PaneId::StashDiffPreview => match key.code {
             KeyCode::Right => vec![Action::StashChangesExpand(true)],
             KeyCode::Left => vec![Action::StashChangesExpand(false)],
             KeyCode::Char('v') => vec![Action::StashChangesToggleGroupByDir],
             KeyCode::Char('e') => vec![Action::StashChangesExpandAll(true)],
             KeyCode::Char('E') => vec![Action::StashChangesExpandAll(false)],
-            KeyCode::Char('s') => vec![Action::StashDiffToggleSideBySide],
-            KeyCode::Char('c') => vec![Action::StashDiffCycleContext],
             KeyCode::PageDown | KeyCode::Char(' ') => vec![Action::StashDiffScroll(10)],
             KeyCode::PageUp => vec![Action::StashDiffScroll(-10)],
             KeyCode::Esc => vec![Action::FocusPane(PaneId::StashList)],
-            _ => return None,
-        }),
-        _ => None,
+            _ => Vec::new(),
+        },
+        _ => Vec::new(),
     }
 }
 

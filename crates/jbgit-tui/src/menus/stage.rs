@@ -2,6 +2,7 @@ use jbgit_core::{GitOp, PaneId, StageNodeKind};
 use jbgit_engine::StageDiffSide;
 
 use crate::app::{Action, AppState, ContextMenuAction, ContextMenuItem};
+use crate::config::KeymapScope;
 use crate::dialogs::{ChoiceDialog, Dialog};
 use crate::hit_test::DiffHunkActionKind;
 
@@ -10,6 +11,13 @@ use super::{dialog, diff_patch_args, op, run};
 /// `Git.Stage.Tree.Menu` for the stage tree row `idx` (plus selection).
 pub fn stage_tree_menu_items(state: &AppState, idx: usize) -> Vec<ContextMenuItem> {
     let i18n = &state.i18n;
+    let km = &state.config.keymap;
+    let stage_sc = km.primary_key_for(&[KeymapScope::Commit], "toggle_stage");
+    let discard_sc = km
+        .all_keys_for(&[KeymapScope::Commit], "discard_changes")
+        .join(" / ");
+    let discard_sc = (!discard_sc.is_empty()).then_some(discard_sc);
+    let edit_sc = km.primary_key_for(&[KeymapScope::Commit], "edit_file");
     let row = state.stage_workbench.rows.get(idx);
     let group = row.map(|r| r.group_kind());
     let targets = state
@@ -80,7 +88,7 @@ pub fn stage_tree_menu_items(state: &AppState, idx: usize) -> Vec<ContextMenuIte
                 ContextMenuItem::action(
                     i18n.t("menu.stage.stage"),
                     Some('s'),
-                    Some("+"),
+                    stage_sc.as_deref(),
                     ContextMenuAction::StageSelected,
                 )
                 .icon("+"),
@@ -89,7 +97,7 @@ pub fn stage_tree_menu_items(state: &AppState, idx: usize) -> Vec<ContextMenuIte
                 ContextMenuItem::action(
                     i18n.t("menu.stage.discard_changes"),
                     Some('d'),
-                    Some("d"),
+                    discard_sc.as_deref(),
                     ContextMenuAction::DiscardSelected,
                 )
                 .icon("↶"),
@@ -110,7 +118,7 @@ pub fn stage_tree_menu_items(state: &AppState, idx: usize) -> Vec<ContextMenuIte
                 ContextMenuItem::action(
                     i18n.t("menu.stage.unstage"),
                     Some('u'),
-                    Some("-"),
+                    stage_sc.as_deref(),
                     ContextMenuAction::UnstageSelected,
                 )
                 .icon("−"),
@@ -206,7 +214,7 @@ pub fn stage_tree_menu_items(state: &AppState, idx: usize) -> Vec<ContextMenuIte
         items.push(ContextMenuItem::action(
             i18n.t("menu.stage.open_external_editor"),
             Some('e'),
-            Some("e"),
+            edit_sc.as_deref(),
             ContextMenuAction::OpenExternalEditorFile(p.clone()),
         ));
     }
@@ -249,6 +257,10 @@ fn stage_diff_common_items(
     path: Option<String>,
 ) -> Vec<ContextMenuItem> {
     let i18n = &state.i18n;
+    let km = &state.config.keymap;
+    let sbs_sc = km.primary_key_for(&[KeymapScope::Diff], "toggle_side_by_side");
+    let three_sc = km.primary_key_for(&[KeymapScope::Diff], "three_way_inspector");
+    let edit_sc = km.primary_key_for(&[KeymapScope::Commit], "edit_file");
     let staged = side == Some(StageDiffSide::Staged);
     let paths: Vec<String> = path.iter().cloned().collect();
     let patch = diff_patch_args(staged, &paths);
@@ -263,13 +275,13 @@ fn stage_diff_common_items(
         run(
             i18n.t("menu.stage.toggle_side_by_side"),
             Some('t'),
-            Some("S"),
+            sbs_sc.as_deref(),
             vec![Action::StageDiffToggleSideBySide],
         ),
         run(
             i18n.t("menu.stage.inspect_three_way"),
             Some('i'),
-            Some("i"),
+            three_sc.as_deref(),
             vec![Action::OpenThreeWayInspector {
                 row_idx: None,
                 range_idx: None,
@@ -282,7 +294,7 @@ fn stage_diff_common_items(
         run(
             i18n.t("menu.stage.open_external_editor"),
             Some('e'),
-            Some("e"),
+            edit_sc.as_deref(),
             vec![Action::OpenExternalEditorFile(None)],
         ),
     ]
@@ -291,6 +303,12 @@ fn stage_diff_common_items(
 /// Right-click on the Commit tab's diff (hunk / line) view.
 pub fn stage_diff_menu_items(state: &AppState) -> Vec<ContextMenuItem> {
     let i18n = &state.i18n;
+    let km = &state.config.keymap;
+    let stage_sc = km.primary_key_for(&[KeymapScope::Diff], "toggle_stage");
+    let rollback_sc = km
+        .all_keys_for(&[KeymapScope::Diff], "rollback_selection")
+        .join(" / ");
+    let rollback_sc = (!rollback_sc.is_empty()).then_some(rollback_sc);
     let (side, path) = diff_side_and_path(state);
     let editable = matches!(side, Some(StageDiffSide::Staged | StageDiffSide::Unstaged));
     let staged = side == Some(StageDiffSide::Staged);
@@ -298,7 +316,7 @@ pub fn stage_diff_menu_items(state: &AppState) -> Vec<ContextMenuItem> {
         run(
             i18n.t("menu.stage.stage_selection"),
             Some('s'),
-            Some("s"),
+            stage_sc.as_deref(),
             vec![Action::StageDiffStageSelection],
         )
         .enabled_if(
@@ -312,7 +330,7 @@ pub fn stage_diff_menu_items(state: &AppState) -> Vec<ContextMenuItem> {
         run(
             i18n.t("menu.stage.unstage_selection"),
             Some('u'),
-            Some("u"),
+            stage_sc.as_deref(),
             vec![Action::StageDiffUnstageSelection],
         )
         .enabled_if(
@@ -326,7 +344,7 @@ pub fn stage_diff_menu_items(state: &AppState) -> Vec<ContextMenuItem> {
         run(
             i18n.t("menu.stage.rollback_selection"),
             Some('r'),
-            Some("r"),
+            rollback_sc.as_deref(),
             vec![Action::StageDiffRollbackSelection],
         )
         .enabled_if(editable && !staged, i18n.t("menu.stage.only_unstaged_rollback")),
