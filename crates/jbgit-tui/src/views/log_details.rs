@@ -14,9 +14,7 @@ use ratatui::widgets::Paragraph;
 use unicode_width::UnicodeWidthStr;
 
 use crate::app::{AppState, RenderContext, ScrollPane};
-use crate::config::KeymapScope;
 use crate::hit_test::{ChangesToolbarButton, DiffToolbarButton, HitTarget};
-use crate::keymap::KeyAction;
 use crate::log_view::{DetailsPaneState, DiffPreviewDock, format_absolute_time};
 use crate::syntax::{HighlightedDiff, render_diff_line_spans_with_tab};
 use crate::views::{
@@ -54,17 +52,23 @@ fn render_toolbar<T: Copy>(
             break;
         }
         let rect = Rect::new(x, area.y, w, 1);
+        let target = make_target(*id);
+        let hovered = ctx.hover_target == Some(&target);
         let style = if *active {
             Style::default()
                 .fg(ctx.theme.fg_bright)
                 .bg(ctx.theme.bg_selection_unfocused)
+        } else if hovered {
+            Style::default()
+                .fg(ctx.theme.fg_bright)
+                .bg(ctx.theme.bg_hover)
         } else {
             Style::default()
                 .fg(ctx.theme.fg_muted)
                 .bg(ctx.theme.bg_panel)
         };
         frame.render_widget(Paragraph::new(Span::styled(text.clone(), style)), rect);
-        ctx.hit_registry.register(rect, 3, make_target(*id));
+        ctx.hit_registry.register(rect, 3, target);
         x += w + 1;
     }
     x
@@ -158,14 +162,23 @@ pub fn render_changes_browser(
         .filter(|b| b.key.mode == DetailsMode::Commits && b.key.oids.len() == 1)
         .and_then(|b| b.details.first())
         .map_or(0, |d| d.parents.len());
+    let (all_expanded, all_collapsed) = details.changes_expand_state();
     let mut buttons = vec![
         (
             ctx.t("view.log_details.toolbar_dir").to_string(),
             details.changes_group_by_dir,
             ChangesToolbarButton::GroupByDir,
         ),
-        (" ⊕ ".to_string(), false, ChangesToolbarButton::ExpandAll),
-        (" ⊖ ".to_string(), false, ChangesToolbarButton::CollapseAll),
+        (
+            " ⊕ ".to_string(),
+            all_expanded,
+            ChangesToolbarButton::ExpandAll,
+        ),
+        (
+            " ⊖ ".to_string(),
+            all_collapsed,
+            ChangesToolbarButton::CollapseAll,
+        ),
     ];
     if host == DiffHost::Log {
         buttons.push((
@@ -374,42 +387,12 @@ pub fn render_zoomed_diff(
         .selected_change()
         .map(|c| c.path.clone())
         .unwrap_or_default();
-    let km = &state.config.keymap;
-    let diff_scopes = &[KeymapScope::Diff];
-    let pair = |a: KeyAction, b: KeyAction, fallback: &str| -> String {
-        match (
-            km.primary_key_for(diff_scopes, &a),
-            km.primary_key_for(diff_scopes, &b),
-        ) {
-            (Some(k1), Some(k2)) => format!("{k1} / {k2}"),
-            (Some(k1), None) => k1,
-            (None, Some(k2)) => k2,
-            (None, None) => fallback.to_string(),
-        }
-    };
-    let hunk_k = pair(KeyAction::PrevHunk, KeyAction::NextHunk, "[ / ]");
-    let file_k = pair(KeyAction::PrevFile, KeyAction::NextFile, "{ / }");
-    let split_k = km
-        .primary_key_for(diff_scopes, &KeyAction::ToggleSideBySide)
-        .unwrap_or_else(|| "S".to_string());
-    let ctx_k = km
-        .primary_key_for(diff_scopes, &KeyAction::CycleDiffContext)
-        .unwrap_or_else(|| "w".to_string());
-    let zoom_k = match km.primary_key_for(diff_scopes, &KeyAction::ZoomDiff) {
-        Some(k) if k != "Esc" => format!("{k}/Esc"),
-        _ => "Esc".to_string(),
-    };
     let header = ctx.t_fmt(
         "view.log_details.zoom_header",
         &[
             ("path", &path),
             ("pos", &pos.to_string()),
             ("total", &files.len().to_string()),
-            ("hunk", &hunk_k),
-            ("file", &file_k),
-            ("split", &split_k),
-            ("context", &ctx_k),
-            ("zoom", &zoom_k),
         ],
     );
     frame.render_widget(
@@ -494,40 +477,22 @@ pub fn render_diff_preview(
         ),
     ];
     if host == DiffHost::Log {
+        let zoom_label = if zoomed {
+            ctx.t("view.log_details.restore_btn").to_string()
+        } else {
+            ctx.t("view.log_details.zoom_btn").to_string()
+        };
+        buttons.push((zoom_label, zoomed, DiffToolbarButton::Zoom));
         if !zoomed {
-            let dock_k = ctx
-                .config
-                .and_then(|c| {
-                    c.keymap.primary_key_for(
-                        &[KeymapScope::Diff, KeymapScope::Log, KeymapScope::Global],
-                        &KeyAction::CycleDiffDock,
-                    )
-                })
-                .unwrap_or_else(|| "m".to_string());
             buttons.push((
                 ctx.t_fmt(
                     "view.log_details.dock_btn",
-                    &[("dock", ctx.diff_dock_label(d.diff_dock)), ("key", &dock_k)],
+                    &[("dock", ctx.diff_dock_label(d.diff_dock))],
                 ),
                 d.diff_dock != DiffPreviewDock::Details,
                 DiffToolbarButton::Dock,
             ));
         }
-        let zoom_label = if zoomed {
-            ctx.t("view.log_details.restore_btn").to_string()
-        } else {
-            let zoom_k = ctx
-                .config
-                .and_then(|c| {
-                    c.keymap.primary_key_for(
-                        &[KeymapScope::Diff, KeymapScope::Log, KeymapScope::Global],
-                        &KeyAction::ZoomDiff,
-                    )
-                })
-                .unwrap_or_else(|| "z".to_string());
-            ctx.t_fmt("view.log_details.zoom_btn", &[("key", &zoom_k)])
-        };
-        buttons.push((zoom_label, zoomed, DiffToolbarButton::Zoom));
         buttons.push((" × ".to_string(), false, DiffToolbarButton::Close));
     }
     render_toolbar(

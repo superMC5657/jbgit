@@ -830,3 +830,136 @@ fn render_50k_commits_viewport_virtualized() {
     let per_frame = start.elapsed() / frames as u32;
     eprintln!("50k-commit render_app per frame: {per_frame:?}");
 }
+
+#[test]
+fn changes_toolbar_expand_collapse_buttons_reflect_tree_state() {
+    let mut state = fixture_state();
+    let key0 = DetailsKey::single(oid(M));
+    state.apply_engine_event(EngineEvent::CommitDetailsLoaded {
+        bundle: bundle_for(
+            key0,
+            vec![
+                change("src/a.rs", FileStatusKind::Modified),
+                change("src/nested/b.rs", FileStatusKind::Added),
+                change("tests/c.rs", FileStatusKind::Modified),
+            ],
+        ),
+        epoch: 1,
+    });
+
+    let find_glyph = |buf: &Buffer, glyph: &str| -> (u16, u16) {
+        let lines = screen_text(buf);
+        for (y, line) in lines.iter().enumerate() {
+            if let Some(byte) = line.find(glyph) {
+                let x = unicode_width::UnicodeWidthStr::width(&line[..byte]) as u16;
+                return (x, y as u16);
+            }
+        }
+        panic!("glyph {glyph} not found in:\n{}", lines.join("\n"));
+    };
+
+    // Initial state: all directories expanded -> ⊕ active, ⊖ inactive.
+    let t = render(&mut state, 140, 40);
+    let buf = t.backend().buffer();
+    let (ex_x, ex_y) = find_glyph(buf, "⊕");
+    let (co_x, co_y) = find_glyph(buf, "⊖");
+    assert_eq!(buf[(ex_x, ex_y)].fg, state.theme.fg_bright);
+    assert_eq!(buf[(ex_x, ex_y)].bg, state.theme.bg_selection_unfocused);
+    assert_eq!(buf[(co_x, co_y)].fg, state.theme.fg_muted);
+    assert_eq!(buf[(co_x, co_y)].bg, state.theme.bg_panel);
+
+    // Click ⊖ -> all root dirs collapsed -> ⊕ inactive, ⊖ active.
+    let acts = route_terminal_event(
+        Event::Mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: co_x,
+            row: co_y,
+            modifiers: KeyModifiers::NONE,
+        }),
+        &mut state,
+    );
+    run(&mut state, acts);
+    let t = render(&mut state, 140, 40);
+    let buf = t.backend().buffer();
+    assert_eq!(buf[(ex_x, ex_y)].fg, state.theme.fg_muted);
+    assert_eq!(buf[(ex_x, ex_y)].bg, state.theme.bg_panel);
+    assert_eq!(buf[(co_x, co_y)].fg, state.theme.fg_bright);
+    assert_eq!(buf[(co_x, co_y)].bg, state.theme.bg_selection_unfocused);
+
+    // Expand only `src` -> mixed state -> neither ⊕ nor ⊖ active.
+    state.details.changes_collapsed.remove("src");
+    let t = render(&mut state, 140, 40);
+    let buf = t.backend().buffer();
+    assert_eq!(buf[(ex_x, ex_y)].fg, state.theme.fg_muted);
+    assert_eq!(buf[(ex_x, ex_y)].bg, state.theme.bg_panel);
+    assert_eq!(buf[(co_x, co_y)].fg, state.theme.fg_muted);
+    assert_eq!(buf[(co_x, co_y)].bg, state.theme.bg_panel);
+
+    // Click ⊕ -> all expanded again -> ⊕ active, ⊖ inactive.
+    let acts = route_terminal_event(
+        Event::Mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: ex_x,
+            row: ex_y,
+            modifiers: KeyModifiers::NONE,
+        }),
+        &mut state,
+    );
+    run(&mut state, acts);
+    let t = render(&mut state, 140, 40);
+    let buf = t.backend().buffer();
+    assert_eq!(buf[(ex_x, ex_y)].fg, state.theme.fg_bright);
+    assert_eq!(buf[(ex_x, ex_y)].bg, state.theme.bg_selection_unfocused);
+    assert_eq!(buf[(co_x, co_y)].fg, state.theme.fg_muted);
+    assert_eq!(buf[(co_x, co_y)].bg, state.theme.bg_panel);
+
+    // Collapse only a nested dir (`src/nested`) -> mixed state -> neither active.
+    state.details.changes_collapsed.insert("src/nested".into());
+    assert_eq!(state.details.changes_expand_state(), (false, false));
+
+    // Flat mode (`GroupByDir` off) -> neither active.
+    state.details.changes_collapsed.clear();
+    state.dispatch(Action::ChangesToggleGroupByDir);
+    assert_eq!(state.details.changes_expand_state(), (false, false));
+}
+
+#[test]
+fn changes_tree_enter_on_file_opens_and_focuses_diff_without_toggling_off() {
+    let mut state = fixture_state();
+    let key0 = DetailsKey::single(oid(M));
+    state.apply_engine_event(EngineEvent::CommitDetailsLoaded {
+        bundle: bundle_for(key0, vec![change("src/lib.rs", FileStatusKind::Modified)]),
+        epoch: 1,
+    });
+    state.dispatch(Action::FocusPane(PaneId::LogChangesTree));
+    // Row 0 is `src`, Row 1 is `lib.rs`.
+    key(&mut state, KeyCode::Enter, KeyModifiers::NONE);
+    assert!(!state.details.diff_preview, "Enter on dir only collapses dir");
+    assert_eq!(state.focused_pane, PaneId::LogChangesTree);
+    key(&mut state, KeyCode::Enter, KeyModifiers::NONE); // re-expand `src`
+
+    let file_row = state
+        .details
+        .change_rows()
+        .iter()
+        .position(|r| r.label == "lib.rs")
+        .unwrap();
+    state.dispatch(Action::ChangesSelectRow(file_row));
+
+    // Enter on file opens diff preview AND focuses LogDetailsDiff.
+    key(&mut state, KeyCode::Enter, KeyModifiers::NONE);
+    assert!(state.details.diff_preview);
+    assert_eq!(state.focused_pane, PaneId::LogDetailsDiff);
+
+    // Go back to LogChangesTree while keeping diff_preview open (e.g. via Tab/click),
+    // pressing Enter on a file again keeps diff_preview open and focuses LogDetailsDiff.
+    state.dispatch(Action::FocusPane(PaneId::LogChangesTree));
+    key(&mut state, KeyCode::Enter, KeyModifiers::NONE);
+    assert!(state.details.diff_preview);
+    assert_eq!(state.focused_pane, PaneId::LogDetailsDiff);
+
+    // Esc from LogDetailsDiff closes diff_preview and returns focus to LogChangesTree.
+    key(&mut state, KeyCode::Esc, KeyModifiers::NONE);
+    assert!(!state.details.diff_preview);
+    assert_eq!(state.focused_pane, PaneId::LogChangesTree);
+}

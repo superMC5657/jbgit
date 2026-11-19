@@ -444,14 +444,22 @@ fn route_key(key: KeyEvent, state: &mut AppState) -> Vec<Action> {
             KeyCode::Left => vec![Action::ChangesExpand(false)],
             KeyCode::Enter if ctrl => vec![Action::ZoomDiff(true)],
             KeyCode::Enter => {
-                let is_dir = state
+                let row = state
                     .details
                     .change_rows()
                     .get(state.details.changes_selected)
                     .map(|r| (matches!(r.kind, ChangeRowKind::Dir { .. }), r.expanded));
-                match is_dir {
+                match row {
                     Some((true, expanded)) => vec![Action::ChangesExpand(!expanded)],
-                    _ => vec![Action::ToggleDiffPreview],
+                    Some((false, _)) => {
+                        let mut acts = Vec::new();
+                        if !state.details.diff_preview {
+                            acts.push(Action::ToggleDiffPreview);
+                        }
+                        acts.push(Action::FocusPane(PaneId::LogDetailsDiff));
+                        acts
+                    }
+                    None => Vec::new(),
                 }
             }
             KeyCode::Esc => vec![Action::FocusPane(PaneId::LogCommitTable)],

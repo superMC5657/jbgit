@@ -920,14 +920,14 @@ fn render_dynamic_footer_hints(
                     push_footer_key(
                         &mut pills,
                         ctx,
-                        km.primary_key_for(scopes, &KeyAction::CycleDiffDock),
-                        "view.footer.pill.dock",
+                        km.primary_key_for(scopes, &KeyAction::ZoomDiff),
+                        "view.footer.pill.zoom",
                     );
                     push_footer_key(
                         &mut pills,
                         ctx,
-                        km.primary_key_for(scopes, &KeyAction::ZoomDiff),
-                        "view.footer.pill.zoom",
+                        km.primary_key_for(scopes, &KeyAction::CycleDiffDock),
+                        "view.footer.pill.dock",
                     );
                     push_diff_toggle_pills(&mut pills, ctx, km, scopes);
                     push_diff_nav_pills(&mut pills, ctx, km, scopes, true);

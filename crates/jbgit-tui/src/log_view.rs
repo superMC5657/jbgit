@@ -474,6 +474,38 @@ impl DetailsPaneState {
         })
     }
 
+    /// Returns `(all_expanded, all_collapsed)` for the current changes tree.
+    /// Both are `false` when flat-listed, unloaded, without directory rows, or
+    /// in a mixed state where only some directories are collapsed.
+    pub fn changes_expand_state(&self) -> (bool, bool) {
+        if !self.changes_group_by_dir {
+            return (false, false);
+        }
+        let Some(bundle) = self.current_bundle() else {
+            return (false, false);
+        };
+        let all = build_change_rows(&bundle.changes, true, &FxHashSet::default());
+        let mut has_dirs = false;
+        let mut all_expanded = true;
+        let mut all_collapsed = true;
+        for row in &all {
+            if matches!(row.kind, ChangeRowKind::Dir { .. }) {
+                has_dirs = true;
+                let collapsed = self.changes_collapsed.contains(&row.key);
+                if collapsed {
+                    all_expanded = false;
+                } else if row.depth == 0 {
+                    all_collapsed = false;
+                }
+            }
+        }
+        if !has_dirs {
+            (false, false)
+        } else {
+            (all_expanded, all_collapsed)
+        }
+    }
+
     /// Selected changed file, if the selected row is a file.
     pub fn selected_change(&self) -> Option<&FileChange> {
         let bundle = self.current_bundle()?;
