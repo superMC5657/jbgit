@@ -9,7 +9,7 @@ use crossterm::event::{
 use jbgit_core::{
     CommitChangesBundle, CommitDetails, CommitSummary, DetailsKey, DiffContext, DiffHunk, DiffLine,
     DiffLineKind, FileChange, FileDiff, FileDiffKey, FileStatusKind, Oid, PaneId, PersonStamp,
-    RefInfo, RefKind, RepoSnapshot, SplitterId, apply_word_diff,
+    RefInfo, RefKind, RepoSnapshot, SplitterId, WorkspaceTab, apply_word_diff,
 };
 use jbgit_engine::EngineEvent;
 use ratatui::Terminal;
@@ -17,7 +17,9 @@ use ratatui::backend::TestBackend;
 use ratatui::buffer::Buffer;
 
 use crate::app::{Action, AppState, Effect, ModalLayer, PopupKind};
+use crate::hit_test::{HitTarget, StageToolbarButton};
 use crate::input::route_terminal_event;
+use crate::log_view::ChangesExpandState;
 use crate::views::render_app;
 
 fn oid(n: u8) -> Oid {
@@ -913,14 +915,25 @@ fn changes_toolbar_expand_collapse_buttons_reflect_tree_state() {
     assert_eq!(buf[(co_x, co_y)].fg, state.theme.fg_muted);
     assert_eq!(buf[(co_x, co_y)].bg, state.theme.bg_panel);
 
+    assert_eq!(
+        state.details.changes_expand_state(),
+        ChangesExpandState::AllExpanded
+    );
+
     // Collapse only a nested dir (`src/nested`) -> mixed state -> neither active.
     state.details.changes_collapsed.insert("src/nested".into());
-    assert_eq!(state.details.changes_expand_state(), (false, false));
+    assert_eq!(
+        state.details.changes_expand_state(),
+        ChangesExpandState::Mixed
+    );
 
     // Flat mode (`GroupByDir` off) -> neither active.
     state.details.changes_collapsed.clear();
     state.dispatch(Action::ChangesToggleGroupByDir);
-    assert_eq!(state.details.changes_expand_state(), (false, false));
+    assert_eq!(
+        state.details.changes_expand_state(),
+        ChangesExpandState::Unavailable
+    );
 }
 
 #[test]
@@ -962,4 +975,37 @@ fn changes_tree_enter_on_file_opens_and_focuses_diff_without_toggling_off() {
     key(&mut state, KeyCode::Esc, KeyModifiers::NONE);
     assert!(!state.details.diff_preview);
     assert_eq!(state.focused_pane, PaneId::LogChangesTree);
+}
+
+#[test]
+fn commit_stage_toolbar_highlights_on_hover() {
+    let mut state = fixture_state();
+    state.dispatch(Action::SwitchTab(WorkspaceTab::Commit));
+    let tracked = state.i18n.t("view.commit.toolbar_tracked").to_string();
+    let t = render(&mut state, 140, 40);
+    let buf = t.backend().buffer();
+    let lines = screen_text(buf);
+    let (rx, ry) = lines
+        .iter()
+        .enumerate()
+        .find_map(|(y, line)| {
+            if !line.contains(&tracked) {
+                return None;
+            }
+            line.find("↻").map(|byte| {
+                (
+                    unicode_width::UnicodeWidthStr::width(&line[..byte]) as u16,
+                    y as u16,
+                )
+            })
+        })
+        .expect("stage toolbar refresh button not found");
+    assert_eq!(buf[(rx, ry)].fg, state.theme.fg_muted);
+    assert_eq!(buf[(rx, ry)].bg, state.theme.bg_panel);
+
+    state.hover_target = Some(HitTarget::StageToolbar(StageToolbarButton::Refresh));
+    let t = render(&mut state, 140, 40);
+    let buf = t.backend().buffer();
+    assert_eq!(buf[(rx, ry)].fg, state.theme.fg_bright);
+    assert_eq!(buf[(rx, ry)].bg, state.theme.bg_hover);
 }

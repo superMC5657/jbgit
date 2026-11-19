@@ -13,7 +13,7 @@ use crate::hit_test::{CommitOptionKind, HitTarget, StageToolbarButton};
 use crate::views::commit_diff::render_stage_diff_workbench;
 use crate::views::{
     fit_left_right_spans, list_viewport, render_pane_frame, render_splitter_divider,
-    row_background, truncate_to_width,
+    render_toolbar, row_background, truncate_to_width,
 };
 
 pub fn render_commit_tab(
@@ -396,11 +396,6 @@ fn render_stage_toolbar(
     ctx: &mut RenderContext<'_>,
 ) {
     let sw = &state.stage_workbench;
-    frame.render_widget(
-        Paragraph::new("").style(Style::default().bg(ctx.theme.bg_panel)),
-        area,
-    );
-
     let tracked_btn = state.i18n.t("view.commit.toolbar_tracked");
     let stash_btn = state.i18n.t("view.commit.toolbar_stash");
     let dir_btn = state.i18n.t("view.commit.toolbar_dir");
@@ -422,27 +417,7 @@ fn render_stage_toolbar(
         (" ⚙ ", sw.tree_opts.show_ignored, StageToolbarButton::Options),
     ];
 
-    let mut x = area.x;
-    for (label, active, btn) in buttons {
-        let w = label.width() as u16;
-        if x + w > area.right() {
-            break;
-        }
-        let rect = Rect::new(x, area.y, w, 1);
-        let style = if active {
-            Style::default()
-                .fg(ctx.theme.fg_bright)
-                .bg(ctx.theme.bg_selection_unfocused)
-        } else {
-            Style::default()
-                .fg(ctx.theme.fg_muted)
-                .bg(ctx.theme.bg_panel)
-        };
-        frame.render_widget(Paragraph::new(Span::styled(label, style)), rect);
-        ctx.hit_registry
-            .register(rect, 3, HitTarget::StageToolbar(btn));
-        x += w + 1;
-    }
+    render_toolbar(frame, area, ctx, 3, &buttons, HitTarget::StageToolbar);
 }
 
 fn render_commit_panel(

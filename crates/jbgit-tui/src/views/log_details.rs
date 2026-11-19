@@ -15,11 +15,13 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::app::{AppState, RenderContext, ScrollPane};
 use crate::hit_test::{ChangesToolbarButton, DiffToolbarButton, HitTarget};
-use crate::log_view::{DetailsPaneState, DiffPreviewDock, format_absolute_time};
+use crate::log_view::{
+    ChangesExpandState, DetailsPaneState, DiffPreviewDock, format_absolute_time,
+};
 use crate::syntax::{HighlightedDiff, render_diff_line_spans_with_tab};
 use crate::views::{
-    fit_left_right_spans, highlight_spans, list_viewport, render_pane_frame, row_background,
-    truncate_to_width, wrap_text,
+    fit_left_right_spans, highlight_spans, list_viewport, render_pane_frame, render_toolbar,
+    row_background, truncate_to_width, wrap_text,
 };
 
 fn muted_line(ctx: &RenderContext<'_>, text: &str) -> Paragraph<'static> {
@@ -31,47 +33,6 @@ fn muted_line(ctx: &RenderContext<'_>, text: &str) -> Paragraph<'static> {
 
 fn pad_label(s: &str, width: usize) -> String {
     format!(" {s}{}", " ".repeat(width.saturating_sub(s.width())))
-}
-
-/// Renders a row of clickable toolbar buttons; returns the x after the last one.
-fn render_toolbar<T: Copy>(
-    frame: &mut Frame<'_>,
-    area: Rect,
-    ctx: &mut RenderContext<'_>,
-    buttons: &[(String, bool, T)],
-    make_target: impl Fn(T) -> HitTarget,
-) -> u16 {
-    frame.render_widget(
-        Paragraph::new("").style(Style::default().bg(ctx.theme.bg_panel)),
-        area,
-    );
-    let mut x = area.x;
-    for (text, active, id) in buttons {
-        let w = text.width() as u16;
-        if x + w > area.right() {
-            break;
-        }
-        let rect = Rect::new(x, area.y, w, 1);
-        let target = make_target(*id);
-        let hovered = ctx.hover_target == Some(&target);
-        let style = if *active {
-            Style::default()
-                .fg(ctx.theme.fg_bright)
-                .bg(ctx.theme.bg_selection_unfocused)
-        } else if hovered {
-            Style::default()
-                .fg(ctx.theme.fg_bright)
-                .bg(ctx.theme.bg_hover)
-        } else {
-            Style::default()
-                .fg(ctx.theme.fg_muted)
-                .bg(ctx.theme.bg_panel)
-        };
-        frame.render_widget(Paragraph::new(Span::styled(text.clone(), style)), rect);
-        ctx.hit_registry.register(rect, 3, target);
-        x += w + 1;
-    }
-    x
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -162,7 +123,7 @@ pub fn render_changes_browser(
         .filter(|b| b.key.mode == DetailsMode::Commits && b.key.oids.len() == 1)
         .and_then(|b| b.details.first())
         .map_or(0, |d| d.parents.len());
-    let (all_expanded, all_collapsed) = details.changes_expand_state();
+    let expand_state = details.changes_expand_state();
     let mut buttons = vec![
         (
             ctx.t("view.log_details.toolbar_dir").to_string(),
@@ -171,12 +132,12 @@ pub fn render_changes_browser(
         ),
         (
             " ⊕ ".to_string(),
-            all_expanded,
+            expand_state == ChangesExpandState::AllExpanded,
             ChangesToolbarButton::ExpandAll,
         ),
         (
             " ⊖ ".to_string(),
-            all_collapsed,
+            expand_state == ChangesExpandState::AllCollapsed,
             ChangesToolbarButton::CollapseAll,
         ),
     ];
@@ -204,6 +165,7 @@ pub fn render_changes_browser(
         frame,
         Rect::new(body.x, body.y, body.width, 1),
         ctx,
+        3,
         &buttons,
         |b| match host {
             DiffHost::Log => HitTarget::ChangesToolbar(b),
@@ -499,6 +461,7 @@ pub fn render_diff_preview(
         frame,
         Rect::new(area.x, area.y, area.width, 1),
         ctx,
+        3,
         &buttons,
         |b| match host {
             DiffHost::Log => HitTarget::DiffToolbar(b),

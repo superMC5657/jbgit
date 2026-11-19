@@ -448,3 +448,46 @@ pub fn fit_left_right_spans(
     spans.extend(right);
     spans
 }
+
+/// Renders a row of clickable, hover-highlighted toolbar buttons; returns the x after the last one.
+pub(crate) fn render_toolbar<S: AsRef<str>, T: Copy>(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    ctx: &mut RenderContext<'_>,
+    layer: u8,
+    buttons: &[(S, bool, T)],
+    make_target: impl Fn(T) -> HitTarget,
+) -> u16 {
+    frame.render_widget(
+        Paragraph::new("").style(Style::default().bg(ctx.theme.bg_panel)),
+        area,
+    );
+    let mut x = area.x;
+    for (text, active, id) in buttons {
+        let label = text.as_ref();
+        let w = label.width() as u16;
+        if x + w > area.right() {
+            break;
+        }
+        let rect = Rect::new(x, area.y, w, 1);
+        let target = make_target(*id);
+        let hovered = ctx.hover_target == Some(&target);
+        let style = if *active {
+            Style::default()
+                .fg(ctx.theme.fg_bright)
+                .bg(ctx.theme.bg_selection_unfocused)
+        } else if hovered {
+            Style::default()
+                .fg(ctx.theme.fg_bright)
+                .bg(ctx.theme.bg_hover)
+        } else {
+            Style::default()
+                .fg(ctx.theme.fg_muted)
+                .bg(ctx.theme.bg_panel)
+        };
+        frame.render_widget(Paragraph::new(Span::styled(label.to_string(), style)), rect);
+        ctx.hit_registry.register(rect, layer, target);
+        x += w + 1;
+    }
+    x
+}

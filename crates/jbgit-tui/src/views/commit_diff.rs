@@ -13,9 +13,29 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::app::{AppState, RenderContext, ScrollPane};
 use crate::hit_test::{DiffHunkActionKind, HitTarget, StageDiffToolbarButton};
-use crate::stage_view::StageDiffRow;
+use crate::stage_view::{StageDiffRow, StageWorkbenchState};
 use crate::syntax::{HighlightedDiff, render_diff_line_spans_with_tab};
-use crate::views::{fit_left_right_spans, render_pane_frame, truncate_to_width};
+use crate::views::{fit_left_right_spans, render_pane_frame, render_toolbar, truncate_to_width};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DiffHintMode {
+    Amend,
+    VisualLine,
+}
+
+fn diff_hint_mode(sw: &StageWorkbenchState) -> Option<DiffHintMode> {
+    if sw
+        .current_diff_key
+        .as_ref()
+        .is_some_and(|k| k.side == StageDiffSide::AmendCommit)
+    {
+        Some(DiffHintMode::Amend)
+    } else if sw.visual_anchor_row.is_some() {
+        Some(DiffHintMode::VisualLine)
+    } else {
+        None
+    }
+}
 
 fn muted_line(ctx: &RenderContext<'_>, text: &str) -> Paragraph<'static> {
     Paragraph::new(Span::styled(
@@ -56,12 +76,8 @@ pub fn render_stage_diff_workbench(
     render_stage_diff_toolbar(frame, toolbar_rect, state, ctx);
 
     // Reserve bottom mode bar when in Amend reference or Visual line mode
-    let is_amend_ref = sw
-        .current_diff_key
-        .as_ref()
-        .is_some_and(|k| k.side == StageDiffSide::AmendCommit);
-    let show_hints = body.height >= 4 && (is_amend_ref || sw.visual_anchor_row.is_some());
-    let content_h = if show_hints {
+    let hint_mode = diff_hint_mode(sw).filter(|_| body.height >= 4);
+    let content_h = if hint_mode.is_some() {
         body.height.saturating_sub(2)
     } else {
         body.height.saturating_sub(1)
@@ -69,9 +85,9 @@ pub fn render_stage_diff_workbench(
     let diff_area = Rect::new(body.x, body.y + 1, body.width, content_h);
     ctx.hit_registry.register(diff_area, 2, HitTarget::DiffArea);
 
-    if show_hints {
+    if let Some(mode) = hint_mode {
         let hint_rect = Rect::new(body.x, body.y + 1 + content_h, body.width, 1);
-        render_diff_hint_bar(frame, hint_rect, state, ctx);
+        render_diff_hint_bar(frame, hint_rect, mode, state, ctx);
     }
 
     if diff_area.height == 0 {
@@ -495,55 +511,30 @@ fn render_stage_diff_toolbar(
     }
     buttons.push((" × ".to_string(), false, StageDiffToolbarButton::Close));
 
-    let mut x = area.x;
-    for (text, active, btn) in buttons {
-        let w = text.width() as u16;
-        if x + w > area.right() {
-            break;
-        }
-        let rect = Rect::new(x, area.y, w, 1);
-        let style = if active {
-            Style::default()
-                .fg(ctx.theme.fg_bright)
-                .bg(ctx.theme.bg_selection_unfocused)
-        } else {
-            Style::default()
-                .fg(ctx.theme.fg_muted)
-                .bg(ctx.theme.bg_panel)
-        };
-        frame.render_widget(Paragraph::new(Span::styled(text, style)), rect);
-        ctx.hit_registry
-            .register(rect, 4, HitTarget::StageDiffToolbar(btn));
-        x += w + 1;
-    }
+    render_toolbar(frame, area, ctx, 4, &buttons, HitTarget::StageDiffToolbar);
 }
 
 fn render_diff_hint_bar(
     frame: &mut Frame<'_>,
     area: Rect,
+    mode: DiffHintMode,
     state: &AppState,
     ctx: &RenderContext<'_>,
 ) {
-    let sw = &state.stage_workbench;
-    let is_amend_ref = sw
-        .current_diff_key
-        .as_ref()
-        .is_some_and(|k| k.side == StageDiffSide::AmendCommit);
-    let text = if is_amend_ref {
-        state.i18n.t("view.commit.diff_hint_amend").to_string()
-    } else if sw.visual_anchor_row.is_some() {
-        format!(" {}", state.i18n.t("view.commit.diff_visual_line"))
-    } else {
-        return;
+    let (text, fg) = match mode {
+        DiffHintMode::Amend => (
+            state.i18n.t("view.commit.diff_hint_amend").to_string(),
+            ctx.theme.fg_muted,
+        ),
+        DiffHintMode::VisualLine => (
+            format!(" {}", state.i18n.t("view.commit.diff_visual_line")),
+            ctx.theme.ref_head.icon,
+        ),
     };
     frame.render_widget(
         Paragraph::new(Span::styled(
             truncate_to_width(&text, area.width as usize),
-            Style::default().fg(if sw.visual_anchor_row.is_some() {
-                ctx.theme.ref_head.icon
-            } else {
-                ctx.theme.fg_muted
-            }),
+            Style::default().fg(fg),
         ))
         .style(Style::default().bg(ctx.theme.bg_panel)),
         area,

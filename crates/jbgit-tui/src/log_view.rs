@@ -400,6 +400,14 @@ impl DiffPreviewDock {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChangesExpandState {
+    AllExpanded,
+    AllCollapsed,
+    Mixed,
+    Unavailable,
+}
+
 #[derive(Debug)]
 pub struct DetailsPaneState {
     pub cache: LruCache<DetailsKey, Arc<CommitChangesBundle>>,
@@ -474,15 +482,13 @@ impl DetailsPaneState {
         })
     }
 
-    /// Returns `(all_expanded, all_collapsed)` for the current changes tree.
-    /// Both are `false` when flat-listed, unloaded, without directory rows, or
-    /// in a mixed state where only some directories are collapsed.
-    pub fn changes_expand_state(&self) -> (bool, bool) {
+    /// Returns the expansion state for the current changes tree's root directories.
+    pub fn changes_expand_state(&self) -> ChangesExpandState {
         if !self.changes_group_by_dir {
-            return (false, false);
+            return ChangesExpandState::Unavailable;
         }
         let Some(bundle) = self.current_bundle() else {
-            return (false, false);
+            return ChangesExpandState::Unavailable;
         };
         let all = build_change_rows(&bundle.changes, true, &FxHashSet::default());
         let mut has_dirs = false;
@@ -499,10 +505,11 @@ impl DetailsPaneState {
                 }
             }
         }
-        if !has_dirs {
-            (false, false)
-        } else {
-            (all_expanded, all_collapsed)
+        match (has_dirs, all_expanded, all_collapsed) {
+            (false, _, _) => ChangesExpandState::Unavailable,
+            (true, true, false) => ChangesExpandState::AllExpanded,
+            (true, false, true) => ChangesExpandState::AllCollapsed,
+            _ => ChangesExpandState::Mixed,
         }
     }
 
