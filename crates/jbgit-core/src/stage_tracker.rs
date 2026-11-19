@@ -379,6 +379,25 @@ impl StageLineTracker {
         })
     }
 
+    fn extend_selected(
+        out: &mut Vec<SlicedLine>,
+        lines: &[SlicedLine],
+        range: Range<usize>,
+        selected: &FxHashSet<usize>,
+        keep_selected: bool,
+    ) {
+        if range.is_empty() {
+            return;
+        }
+        out.extend(
+            lines[range.clone()]
+                .iter()
+                .enumerate()
+                .filter(|(offset, _)| selected.contains(&(range.start + offset)) == keep_selected)
+                .map(|(_, line)| line.clone()),
+        );
+    }
+
     fn splice_blocks(
         base_doc: &SlicedDocument,
         other_doc: &SlicedDocument,
@@ -395,32 +414,40 @@ impl StageLineTracker {
                     out.lines
                         .extend(base_doc.lines[cursor..block.start1].iter().cloned());
                 }
-                for idx in block.start1..block.end1 {
-                    if !sel_before.contains(&idx) {
-                        out.lines.push(base_doc.lines[idx].clone());
-                    }
-                }
-                for idx in block.start2..block.end2 {
-                    if sel_after.contains(&idx) {
-                        out.lines.push(other_doc.lines[idx].clone());
-                    }
-                }
+                Self::extend_selected(
+                    &mut out.lines,
+                    &base_doc.lines,
+                    block.start1..block.end1,
+                    sel_before,
+                    false,
+                );
+                Self::extend_selected(
+                    &mut out.lines,
+                    &other_doc.lines,
+                    block.start2..block.end2,
+                    sel_after,
+                    true,
+                );
                 cursor = block.end1;
             } else {
                 if block.start2 > cursor {
                     out.lines
                         .extend(base_doc.lines[cursor..block.start2].iter().cloned());
                 }
-                for idx in block.start1..block.end1 {
-                    if sel_before.contains(&idx) {
-                        out.lines.push(other_doc.lines[idx].clone());
-                    }
-                }
-                for idx in block.start2..block.end2 {
-                    if !sel_after.contains(&idx) {
-                        out.lines.push(base_doc.lines[idx].clone());
-                    }
-                }
+                Self::extend_selected(
+                    &mut out.lines,
+                    &other_doc.lines,
+                    block.start1..block.end1,
+                    sel_before,
+                    true,
+                );
+                Self::extend_selected(
+                    &mut out.lines,
+                    &base_doc.lines,
+                    block.start2..block.end2,
+                    sel_after,
+                    false,
+                );
                 cursor = block.end2;
             }
         }
@@ -581,7 +608,13 @@ impl StageLineTracker {
                 if truncated {
                     break;
                 }
-                for b_idx in b.start1..b.end1 {
+                for (b_idx, line) in doc_before
+                    .lines
+                    .iter()
+                    .enumerate()
+                    .take(b.end1)
+                    .skip(b.start1)
+                {
                     if budget == 0 {
                         truncated = true;
                         break;
@@ -591,7 +624,7 @@ impl StageLineTracker {
                         kind: DiffLineKind::Deleted,
                         old_lineno: Some(b_idx as u32 + 1),
                         new_lineno: None,
-                        text: doc_before.lines[b_idx].display_text(),
+                        text: line.display_text(),
                         word_ranges: Vec::new(),
                     });
                     let sr_idx = if staged_side {
@@ -625,7 +658,13 @@ impl StageLineTracker {
                         staged_range_idx: sr_idx,
                     });
                 }
-                for a_idx in b.start2..b.end2 {
+                for (a_idx, line) in doc_after
+                    .lines
+                    .iter()
+                    .enumerate()
+                    .take(b.end2)
+                    .skip(b.start2)
+                {
                     if budget == 0 {
                         truncated = true;
                         break;
@@ -635,7 +674,7 @@ impl StageLineTracker {
                         kind: DiffLineKind::Added,
                         old_lineno: None,
                         new_lineno: Some(a_idx as u32 + 1),
-                        text: doc_after.lines[a_idx].display_text(),
+                        text: line.display_text(),
                         word_ranges: Vec::new(),
                     });
                     let sr_idx = if staged_side {
