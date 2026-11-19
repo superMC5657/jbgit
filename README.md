@@ -1,4 +1,8 @@
-# jbgit
+<p align="center">
+  <img src="assets/icon.png" width="128" height="128" alt="jbgit logo" />
+</p>
+
+<h1 align="center">jbgit</h1>
 
 <p align="center">
   <strong>JetBrains 风格的高性能现代终端 Git 客户端</strong>
