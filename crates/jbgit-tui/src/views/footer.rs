@@ -11,7 +11,7 @@ use unicode_width::UnicodeWidthStr;
 use crate::app::{AppState, ModalLayer, Notification, RenderContext};
 use crate::config::KeymapScope;
 use crate::hit_test::{GraphHitKind, HitTarget};
-use crate::keymap::actions::is_action_applicable;
+use crate::keymap::actions::{is_action_applicable, is_log_diff_zoomed};
 use crate::keymap::resolve::{
     KeyResolveCtx, collect_claimed_keys, push_unique_seq, resolve_key_in_scopes,
 };
@@ -295,7 +295,7 @@ fn footer_pill_label(state: &AppState, run: &KeyAction, fallback_desc: Option<&s
         {
             Some("view.footer.pill.diff_toggle")
         }
-        KeyAction::ZoomDiff if state.details.diff_zoomed => Some("view.footer.pill.exit_zoom"),
+        KeyAction::ZoomDiff if is_log_diff_zoomed(state) => Some("view.footer.pill.exit_zoom"),
         _ => run.footer_pill_key(),
     };
     match key {
@@ -441,7 +441,7 @@ fn collect_footer_hints(state: &AppState) -> FooterHints {
         };
     }
 
-    if state.details.diff_zoomed {
+    if is_log_diff_zoomed(state) {
         let diff_scopes = [KeymapScope::Diff];
         let mut claimed_keys = Vec::new();
         let mut seen_actions = Vec::new();

@@ -126,6 +126,10 @@ key_bindings = [
     { on = [ "<Down>" ], run = "cursor_down", desc = "向下移动一行" },
     { on = [ "k" ], run = "cursor_up", desc = "向上移动一行" },
     { on = [ "<Up>" ], run = "cursor_up", desc = "向上移动一行" },
+    { on = [ "g", "g" ], run = "goto_top", desc = "跳转至顶部" },
+    { on = [ "<Home>" ], run = "goto_top", desc = "跳转至顶部" },
+    { on = [ "G" ], run = "goto_bottom", desc = "跳转至底部" },
+    { on = [ "<End>" ], run = "goto_bottom", desc = "跳转至底部" },
     { on = [ "<Space>" ], run = "toggle_stage", desc = "暂存 / 取消暂存代码块或选中行", show_hint = true },
     { on = [ "d" ], run = "rollback_selection", desc = "回滚代码块或选中行 (Ctrl+Z 撤销)", show_hint = true },
     { on = [ "v" ], run = "toggle_visual", desc = "切换逐行选择模式", show_hint = true },
@@ -166,6 +170,10 @@ key_bindings = [
 
 [console]
 key_bindings = [
+    { on = [ "j" ], run = "cursor_down", desc = "向下移动一行" },
+    { on = [ "<Down>" ], run = "cursor_down", desc = "向下移动一行" },
+    { on = [ "k" ], run = "cursor_up", desc = "向上移动一行" },
+    { on = [ "<Up>" ], run = "cursor_up", desc = "向上移动一行" },
     { on = [ "g", "g" ], run = "goto_top", desc = "跳转至顶部" },
     { on = [ "<Home>" ], run = "goto_top", desc = "跳转至顶部" },
     { on = [ "G" ], run = "goto_bottom", desc = "跳转至底部" },

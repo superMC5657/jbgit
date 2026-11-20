@@ -15,6 +15,9 @@
   - [提交工作台 (Commit View)](#提交工作台-commit-view)
   - [统一差异对比 (Diff View — Log / Commit / Stash)](#统一差异对比-diff-view--log--commit--stash)
   - [贮藏箱 (Stash View)](#贮藏箱-stash-view)
+  - [控制台 (Console View)](#控制台-console-view)
+  - [文件历史与冲突合并 (File History & Conflict Merge)](#文件历史与冲突合并-file-history--conflict-merge)
+  - [菜单、命令面板与交互对话框 (Menus, Command Palette & Dialogs)](#菜单命令面板与交互对话框-menus-command-palette--dialogs)
 - [三、配置体系指南 (Configuration)](#三配置体系指南-configuration)
   - [1. 配置文件生成与查看](#1-配置文件生成与查看)
   - [2. 配置文件路径与 4 级覆盖优先级](#2-配置文件路径与-4-级覆盖优先级)
@@ -47,25 +50,36 @@ jbgit 默认采用**零冲突统一键位（`preset = "default"`）**，并通�
 | :--- | :--- |
 | `q` / `<Ctrl-c>` | 退出 jbgit |
 | `?` | 打开可搜索快捷键帮助 / 命令面板（按 `Enter` 可直接执行当前命令） |
-| `.` / `<Shift-F10>` / `鼠标右键` | 打开当前选中项的操作菜单 |
+| `.` / `<Shift-F10>` / `<Menu>` / `鼠标右键` | 打开当前选中项的操作菜单 |
 | `r` / `<F5>` | 强制刷新 Git 仓库状态 |
 | `1` / `2` / `3` / `4`（或 `<Alt-1>` – `<Alt-4>`） | 按标签栏顺序切换视图：**Commit (`1`)** / **Log (`2`)** / **Stash (`3`)** / **Console (`4`)** |
 | `<Tab>` / `<Shift-Tab>` | 在当前视图各面板之间循环切换焦点 |
-| `b` / `g b` / `` <Ctrl-`> `` / `<Ctrl-~>` | 呼出全局分支速查浮窗（`<Esc>` 关闭） |
+| `b` / `g b` / `` <Ctrl-`> `` / `<Ctrl-~>` / `<Alt-b>`*(非 Log 页)* | 呼出全局分支速查浮窗（`<Esc>` 关闭） |
 | `f` / `p` / `P` | 远程同步：**Fetch (`f`)** / **Pull (`p`)** / **Push… (`P`)** |
+| `<Ctrl-Alt-n>` | 从当前 HEAD 新建分支 |
+| `<Alt-z>` / `<Alt-x>` | 触发当前底部通知栏的快捷动作 / 关闭通知 |
+| `<F8>` / `<F12>` | 循环切换图谱渲染引擎（Auto / Vector / Cell） / 切换图标模式（Nerd Font / Unicode） |
 
 ### 提交日志视图 (Log View)
 
 | 快捷键 | 功能描述 |
 | :--- | :--- |
 | `j` / `k` 或 `<Down>` / `<Up>` | 上下移动光标浏览提交记录 |
-| `g g` / `G`（或 `<Home>` / `<End>`） | 快速跳转至提交历史顶部 / 底部 |
-| `/` / `<Ctrl-f>` / `<Ctrl-l>` | 聚焦分支与提交过滤输入框（搜索框内支持 `<Alt-r>` 正则、`<Alt-c>` 大小写敏感） |
+| `<Shift-Up>` / `<Shift-Down>` | 扩展多选提交记录（`<Esc>` 取消多选） |
+| `<PageUp>` / `<PageDown>` | 整页翻滚提交列表 / 变更树 |
+| `g g` / `G`（或 `<Home>` / `<End>`） | 快速跳转至列表顶部 / 底部 |
+| `<Left>` / `<Right>` / `<Shift-Right>` | *(提交表)* 跳转至子提交 / 第 1 父提交 / 第 2 父提交（多父时弹出选择） |
+| `<Alt-Left>` / `<Alt-Right>` | *(提交表)* 导航历史后退 / 前进 |
+| `<Enter>` / `<Esc>` | 提交表 → 右侧变更树 → Diff 预览逐级进入，`<Esc>` 逐级返回 |
+| `/` / `<Ctrl-f>` / `<Ctrl-l>` | 聚焦分支与提交过滤输入框（搜索框内支持 `<Alt-r>` 正则、`<Alt-c>` 大小写敏感、`<Ctrl-u>` 清空） |
 | `<Ctrl-b>` / `<Alt-b>` | 折叠 / 展开左侧分支树栏位 |
 | `c` | 检出 (Checkout) 选中的提交或分支 |
 | `n` | 在当前提交创建新分支 |
 | `y` | 复制选中提交哈希 |
 | `<Ctrl-d>` | 版本差异对比（选中两个提交时对比两者；单选时开关差异预览） |
+| `<F4>` / `<Ctrl-Enter>` | *(变更树 / Diff)* 切换全屏差异预览 |
+| `v` / `e` / `E` | *(变更树)* 切换按目录树分组 (`v`) / 全部展开 (`e`) / 全部折叠 (`E`) |
+| `H` | *(变更树)* 查看选中文件的完整提交历史（File History） |
 | `g r` / `<Ctrl-g>` | 按提交哈希、分支名或 Tag 快速定位跳转 |
 | `m` | 为合并提交选择 / 切换父提交 |
 | `u` / `<F2>` / `<Del>` | 撤回最近提交 (Uncommit) / 修改说明 (Reword) / 丢弃提交 (Drop) |
@@ -75,10 +89,11 @@ jbgit 默认采用**零冲突统一键位（`preset = "default"`）**，并通�
 | 快捷键 | 功能描述 |
 | :--- | :--- |
 | `/` / `<Ctrl-f>`（`<Esc>` 退出） | 进入分支树模糊搜索（可在 `keymap.toml` 设为 `tree_speed_search = true` 开启直接打字速查） |
+| `<Left>` / `<Right>` / `<PageUp>` / `<PageDown>` | 折叠或展开分组节点 / 翻页滚动 |
 | `<Space>` | 添加 / 取消收藏当前分支（置顶显示） |
 | `<Enter>` | 按选中分支过滤提交日志 |
 | `J` | 跳转至选中分支对应的提交记录 |
-| `c` / `n` / `<F2>` / `d` / `<Del>` | 检出 (`c`) / 新建分支 (`n`) / 重命名 (`F2`) / 删除分支 (`d`/`Del`) |
+| `c` / `n` / `<Ctrl-Alt-n>` / `<F2>` / `d` / `<Del>` | 检出 (`c`) / 新建分支 (`n`/`Ctrl+Alt+N`) / 重命名 (`F2`) / 删除分支 (`d`/`Del`) |
 
 ### 全局分支浮窗 (Branches Popup)
 
@@ -86,40 +101,90 @@ jbgit 默认采用**零冲突统一键位（`preset = "default"`）**，并通�
 | :--- | :--- |
 | `直接打字` / `<Ctrl-u>` | Speed Search 模糊速查过滤分支 / 清空输入 |
 | `<Enter>` / `<Right>` | 打开选中分支的操作子菜单（检出、新建、重命名、删除、对比等） |
+| `<Ctrl-Alt-n>` | 从当前 HEAD 新建分支（跟随 `new_branch` 修饰键配置） |
 | `<Alt-f>` / `<Esc>` | 执行远程 Fetch / 关闭浮窗 |
 
 ### 提交工作台 (Commit View)
 
 | 快捷键 | 功能描述 |
 | :--- | :--- |
-| `<Space>` | **暂存 / 取消暂存** 当前选中的文件或代码块 |
+| `<Space>`（或 `s`/`+`、`u`/`-`） | **暂存 / 取消暂存** 当前选中的文件或代码块 |
+| `<Enter>` / `<Left>` / `<Right>` | 折叠/展开目录容器，或在文件上聚焦右侧 Diff 预览 |
 | `c` | 聚焦提交说明编辑器（编辑区内按 `<Esc>` 返回变更树） |
 | `<Ctrl-s>` / `<Ctrl-Enter>` / `<Alt-Enter>` | 执行提交（编辑区内 `<Ctrl-Alt-k>` 提交并推送） |
 | `A`（或编辑区内 `<Alt-a>` / `<Alt-m>`） | 切换追加至上一提交 (`Amend`) 模式 |
 | `<Alt-s>` / `<Ctrl-m>` | 切换 Signed-off-by 签名 / 打开历史提交说明选择器 |
 | `<Ctrl-a>` | 全选变更文件 |
-| `d` / `<Del>` | 放弃选中文件或代码块的本地修改 (Discard Changes) |
-| `v` / `e` | 切换按目录层级树展示 (`v`) / 在外部编辑器打开 (`e`) |
+| `d` / `<Del>` / `<Ctrl-Alt-z>` | 放弃选中文件或代码块的本地修改 (Discard Changes) |
+| `v` / `e` / `H` | 按目录树分组 (`v`) / 在外部编辑器打开 (`e`) / 查看文件提交历史 (`H`) |
+| `<Ctrl-e>` / `<Ctrl-z>` / `<Ctrl-y>` / `<Ctrl-w>` | *(提交说明编辑器内)* 外部编辑器编辑说明 / 撤销 / 重做（亦支持 `<Ctrl-Shift-z>`）/ 删词（亦支持 `<Alt-Backspace>`） |
 
 ### 统一差异对比 (Diff View — Log / Commit / Stash)
 
 | 快捷键 | 功能描述 |
 | :--- | :--- |
+| `j` / `k` / `<PageUp>` / `<PageDown>` / `g g` / `G`（或 `<Home>` / `<End>`） | 上下移动、翻页及跳转顶部 / 底部（含全屏 Diff 模式） |
 | `[` / `]` | 跳转至上一个 / 下一个 Hunk 代码块 |
 | `{` / `}` | 跳转至上一个 / 下一个变更文件 |
 | `S` | 切换单列统一对比 (Unified) / 双列并排对比 (Side-by-Side) |
 | `w` | 循环切换上下文保留行数 (3 行 / 10 行 / 全量) |
-| `m` / `z`（或 `<F4>`） | 切换 Log Diff 停靠位置 (`m`) / 全屏差异预览 (`z`/`F4`/`Esc`) |
-| `<Space>` / `v` / `d` | *(Commit Diff)* 暂存/取消 (`Space`) · 行级可视选择 (`v`) · 回滚选区 (`d`/`Del`，`<Ctrl-z>` 撤销) |
-| `x` / `i` | *(Commit Diff)* 切换未暂存与已暂存侧 (`x`) · 打开三方检视 (`i`) |
+| `m` / `z`（或 `<F4>` / `<Ctrl-Enter>`） | *(Log Diff)* 切换停靠位置 (`m`) / 全屏差异预览 (`z`/`F4`/`Esc`)；全屏下按 `P` 切换合并父提交 |
+| `<Space>` / `v` / `d` | *(Commit Diff)* 暂存/取消 (`Space`/`s`/`u`) · 行级可视选择 (`v`) · 回滚选区 (`d`/`Del`，`<Ctrl-z>` 撤销) |
+| `x` / `i` / `<Esc>` | *(Commit Diff)* 切换未暂存与已暂存侧 (`x`) · 三方检视 (`i`) · 退出可视选择或返回变更树 (`Esc`) |
 
 ### 贮藏箱 (Stash View)
 
 | 快捷键 | 功能描述 |
 | :--- | :--- |
-| `<Enter>` | 安全切换焦点至右侧差异预览（不会误操作应用贮藏） |
+| `<Enter>` / `<Right>` / `<Esc>` | 安全切换焦点至右侧差异预览（不会误操作应用贮藏），`<Esc>` 返回贮藏列表 |
 | `a` / `o` | 应用选中贮藏 (`a`) / 应用并弹出 (`o`) |
 | `n` / `B` / `d` / `C` | 新建贮藏 (`n`) / 从贮藏创建分支 (`B`) / 删除 (`d`/`Del`) / 清空 (`C`) |
+| `v` / `e` / `E` / `<Left>` / `<Right>` | *(右侧变更树)* 按目录分组 (`v`) / 全展开 (`e`) / 全折叠 (`E`) / 单项折叠展开 |
+
+### 控制台 (Console View)
+
+| 快捷键 | 功能描述 |
+| :--- | :--- |
+| `j` / `k` 或 `<Down>` / `<Up>` | 在命令列表切换命令，或在输出详情逐行滚动 |
+| `g g` / `G`（或 `<Home>` / `<End>`） | 快速跳转至顶部 / 底部 |
+| `<Ctrl-d>` / `<Ctrl-u>` / `<PageDown>` / `<PageUp>` | *(输出详情)* 半页 / 整页滚动输出日志（命令列表支持 `<PageUp>`/`<PageDown>` 翻 10 行） |
+| `<Enter>` / `<Esc>` | 进入右侧输出详情面板 / 返回左侧命令历史列表 |
+| `p` | *(命令列表)* 执行 `git status --short --branch` 状态探测（可通过 `git_status_probe` 重绑） |
+
+### 文件历史与冲突合并 (File History & Conflict Merge)
+
+**文件历史浮窗**（在 Log 或 Commit 变更树按 `H` 打开）：
+
+| 快捷键 | 功能描述 |
+| :--- | :--- |
+| `<Tab>` / `<Shift-Tab>` | 在提交列表与差异预览之间切换焦点 |
+| `j` / `k` / `<PageUp>` / `<PageDown>` / `g g` / `G`（或 `<Home>` / `<End>`） | 上下移动、翻页及跳转顶部 / 底部 |
+| `<Shift-Up>` / `<Shift-Down>` | 扩展多选两个提交区间进行对比 |
+| `<Enter>` | 跳转并在主 Log 视图定位到当前选中提交 |
+| `f` / `l` | 切换追踪重命名 / 对比当前提交与本地工作区 |
+| `S` / `w` / `z`（或 `<F4>`） | 切换并排对比 (`S`) / 循环上下文行数 (`w`) / 全屏差异预览 (`z`/`F4`) |
+| `<Esc>` | 退出全屏 Diff 或关闭文件历史浮窗 |
+
+**三栏冲突合并浮窗**（在冲突文件上下文菜单或横幅进入）：
+
+| 快捷键 | 功能描述 |
+| :--- | :--- |
+| `j` / `k` / `<PageUp>` / `<PageDown>` | 滚动冲突视图 |
+| `n` / `<Tab>`、`p` / `<Shift-Tab>` | 跳转至下一个 / 上一个冲突块 |
+| `1` / `y`、`2` / `t`、`3` / `b`、`0` / `x` | 当前冲突块：采纳己方 (Ours) / 采纳对方 (Theirs) / 保留双方 / 重置为未解决 |
+| `Y` / `T` | 全部冲突块一键采纳己方 / 采纳对方 |
+| `m` / `e` | 在外部 Mergetool / 外部编辑器中打开冲突文件 |
+| `<Enter>` / `<Ctrl-s>` / `<Esc>` | 保存解决结果并暂存 / 取消关闭 |
+
+### 菜单、命令面板与交互对话框 (Menus, Command Palette & Dialogs)
+
+| 组件 | 常用快捷键 |
+| :--- | :--- |
+| **上下文级联菜单** | `j`/`k`/`↑`/`↓`/`Home`/`End` 选择；`→` 展开子菜单；`←`/`Esc` 关闭当前层；`<Enter>`/`<Space>` 确认；`<Del>` 触发删除项；按高亮助记字母直达 |
+| **快捷键命令面板 (`?`)** | 直接打字模糊搜索；`↑`/`↓`/`PgUp`/`PgDn` 选行；`<Enter>` 执行高亮命令；`<Ctrl-u>` 清空；`<Esc>`（或空查询按 `?`）关闭 |
+| **交互式变基待办 (Rebase Todo)** | `j`/`k`/`↑`/`↓` 选行；`J`/`K` 或 `<Alt/Shift-Up/Down>` 调整提交顺序；`<Space>` 循环动词；`p` pick / `r` 或 `w` reword / `s` squash / `f` fixup / `d` drop；`<Enter>` 执行；`<Esc>` 取消 |
+| **输入 / 消息 / 选择 / 危险确认弹窗** | 单行输入：`<Tab>`/`↑`/`↓` 切复选框、`<Ctrl-u>` 清空、`<Enter>` 确认；多行消息：`<Enter>` 换行、`<Ctrl-s>`/`<Ctrl-Enter>`/`<Alt-Enter>` 确认；单选/确认：`↑`/`↓`/`←`/`→`/`<Tab>` 切换、助记键或 `y`/`n`/`q` 快速响应、`<Esc>` 取消 |
+| **筛选与跳转浮窗** | `FilterEditor` 支持 `<Tab>` 自动补全候选；`ChooseParent` 支持 `1`–`9` 数字键直选父提交 |
 
 ---
 
@@ -316,9 +381,9 @@ prepend_keymap = [
 | 作用域 | 可用 `run` 动作标识符 |
 | :--- | :--- |
 | `global` | `quit`, `help`, `context_menu`, `refresh`, `tab_commit`, `tab_log`, `tab_branches`, `tab_stash`, `tab_console`, `focus_next`, `focus_prev`, `toggle_branches_popup`, `toggle_branches_pane`, `git_fetch`, `git_pull`, `git_push`, `goto_revision`, `palette`, `toggle_glyph_mode`, `cycle_graph_renderer`, `git_status_probe`, `noop` |
-| `log` | `cursor_down`, `cursor_up`, `goto_top`, `goto_bottom`, `page_down_half`, `page_up_half`, `goto_revision`, `focus_filter`, `toggle_branches_pane`, `compare_or_diff`, `zoom_diff`, `copy_hash`, `checkout`, `new_branch`, `uncommit`, `reword`, `drop_commit`, `choose_parent`, `toggle_group` |
+| `log` | `cursor_down`, `cursor_up`, `goto_top`, `goto_bottom`, `page_down_half`, `page_up_half`, `goto_revision`, `focus_filter`, `toggle_branches_pane`, `compare_or_diff`, `zoom_diff`, `copy_hash`, `checkout`, `new_branch`, `uncommit`, `reword`, `drop_commit`, `choose_parent`, `toggle_group`, `file_history` |
 | `branch` | `branch_search`, `toggle_favorite`, `checkout`, `new_branch`, `rename_branch`, `delete_branch`, `navigate_branch` |
-| `commit` | `cursor_down`, `cursor_up`, `goto_top`, `goto_bottom`, `toggle_stage`, `stage_selection`, `unstage_selection`, `focus_commit_msg`, `commit`, `commit_and_push`, `toggle_amend`, `toggle_signoff`, `commit_history`, `select_all`, `discard_changes`, `toggle_group`, `edit_file` |
-| `diff` | `cursor_down`, `cursor_up`, `prev_hunk`, `next_hunk`, `prev_file`, `next_file`, `toggle_side_by_side`, `cycle_diff_context`, `cycle_diff_dock`, `zoom_diff`, `toggle_stage`, `stage_selection`, `unstage_selection`, `toggle_visual`, `rollback_selection`, `undo_rollback`, `switch_diff_side`, `three_way_inspector` |
+| `commit` | `cursor_down`, `cursor_up`, `goto_top`, `goto_bottom`, `toggle_stage`, `stage_selection`, `unstage_selection`, `focus_commit_msg`, `commit`, `commit_and_push`, `toggle_amend`, `toggle_signoff`, `commit_history`, `select_all`, `discard_changes`, `toggle_group`, `edit_file`, `file_history` |
+| `diff` | `cursor_down`, `cursor_up`, `goto_top`, `goto_bottom`, `prev_hunk`, `next_hunk`, `prev_file`, `next_file`, `toggle_side_by_side`, `cycle_diff_context`, `cycle_diff_dock`, `zoom_diff`, `toggle_stage`, `stage_selection`, `unstage_selection`, `toggle_visual`, `rollback_selection`, `undo_rollback`, `switch_diff_side`, `three_way_inspector` |
 | `stash` | `cursor_down`, `cursor_up`, `goto_top`, `goto_bottom`, `stash_new`, `stash_apply`, `stash_pop`, `stash_drop`, `stash_branch`, `stash_clear`, `toggle_group` |
-| `console` | `goto_top`, `goto_bottom`, `page_down_half`, `page_up_half` |
+| `console` | `cursor_down`, `cursor_up`, `goto_top`, `goto_bottom`, `page_down_half`, `page_up_half` |

@@ -105,6 +105,10 @@ fn branch_menu_action_by_mnemonic(state: &AppState, mnemonic: char) -> Option<Ve
     find_action_by_mnemonic(items, mnemonic)
 }
 
+pub fn is_log_diff_zoomed(state: &AppState) -> bool {
+    state.active_tab == WorkspaceTab::Log && state.details.diff_zoomed
+}
+
 pub fn is_diff_focused(state: &AppState) -> bool {
     match state.active_tab {
         WorkspaceTab::Log => {
@@ -123,7 +127,7 @@ pub fn scopes_for_context(state: &AppState) -> Vec<KeymapScope> {
     if is_diff_focused(state) {
         scopes.push(KeymapScope::Diff);
     }
-    if !state.details.diff_zoomed {
+    if !is_log_diff_zoomed(state) {
         match state.active_tab {
             WorkspaceTab::Log => {
                 if state.focused_pane == PaneId::LogBranchesTree {
@@ -144,7 +148,7 @@ pub fn is_action_applicable(run: &KeyAction, state: &AppState) -> bool {
     if !run.is_active() {
         return false;
     }
-    if state.details.diff_zoomed {
+    if is_log_diff_zoomed(state) {
         return matches!(
             run,
             KeyAction::Quit
@@ -293,6 +297,7 @@ pub fn is_action_applicable(run: &KeyAction, state: &AppState) -> bool {
                 | PaneId::CommitDiffPreview
                 | PaneId::StashList
                 | PaneId::StashDiffPreview
+                | PaneId::ConsoleCommandList
                 | PaneId::ConsoleOutputDetail
         ),
     }
@@ -369,6 +374,7 @@ pub fn execute_action(run: &KeyAction, state: &mut AppState) -> Option<Vec<Actio
         }]),
 
         // ── Navigation ──
+        KeyAction::CursorDown if is_log_diff_zoomed(state) => Some(vec![Action::ScrollDiff(1)]),
         KeyAction::CursorDown => match state.focused_pane {
             PaneId::LogBranchesTree => Some(vec![Action::ScrollBranches(1)]),
             PaneId::LogCommitTable => Some(vec![Action::ScrollLog(1)]),
@@ -385,6 +391,7 @@ pub fn execute_action(run: &KeyAction, state: &mut AppState) -> Option<Vec<Actio
             PaneId::ConsoleOutputDetail => Some(vec![Action::ScrollConsoleOutput(1)]),
             PaneId::CommitMessageEditor => None,
         },
+        KeyAction::CursorUp if is_log_diff_zoomed(state) => Some(vec![Action::ScrollDiff(-1)]),
         KeyAction::CursorUp => match state.focused_pane {
             PaneId::LogBranchesTree => Some(vec![Action::ScrollBranches(-1)]),
             PaneId::LogCommitTable => Some(vec![Action::ScrollLog(-1)]),
@@ -401,6 +408,9 @@ pub fn execute_action(run: &KeyAction, state: &mut AppState) -> Option<Vec<Actio
             PaneId::ConsoleOutputDetail => Some(vec![Action::ScrollConsoleOutput(-1)]),
             PaneId::CommitMessageEditor => None,
         },
+        KeyAction::GotoTop if is_log_diff_zoomed(state) => {
+            Some(vec![Action::ScrollDiff(SCROLL_GOTO_TOP)])
+        }
         KeyAction::GotoTop => match state.focused_pane {
             PaneId::LogBranchesTree => Some(vec![Action::SelectBranchRow(0)]),
             PaneId::LogChangesTree => Some(vec![Action::ChangesSelectRow(0)]),
@@ -412,9 +422,13 @@ pub fn execute_action(run: &KeyAction, state: &mut AppState) -> Option<Vec<Actio
             PaneId::CommitDiffPreview => Some(vec![Action::StageDiffMoveCursor(SCROLL_GOTO_TOP)]),
             PaneId::StashList => Some(vec![Action::StashSelect(0)]),
             PaneId::StashDiffPreview => Some(vec![Action::StashChangesSelect(0)]),
+            PaneId::ConsoleCommandList => Some(vec![Action::SelectConsoleRow(0)]),
             PaneId::ConsoleOutputDetail => Some(vec![Action::ScrollConsoleOutput(SCROLL_GOTO_TOP)]),
             _ => Some(vec![Action::LogEdge { bottom: false }]),
         },
+        KeyAction::GotoBottom if is_log_diff_zoomed(state) => {
+            Some(vec![Action::ScrollDiff(SCROLL_GOTO_BOTTOM)])
+        }
         KeyAction::GotoBottom => match state.focused_pane {
             PaneId::LogBranchesTree => Some(vec![Action::SelectBranchRow(usize::MAX)]),
             PaneId::LogChangesTree => Some(vec![Action::ChangesSelectRow(usize::MAX)]),
@@ -428,6 +442,7 @@ pub fn execute_action(run: &KeyAction, state: &mut AppState) -> Option<Vec<Actio
             }
             PaneId::StashList => Some(vec![Action::StashSelect(usize::MAX)]),
             PaneId::StashDiffPreview => Some(vec![Action::StashChangesSelect(usize::MAX)]),
+            PaneId::ConsoleCommandList => Some(vec![Action::SelectConsoleRow(usize::MAX)]),
             PaneId::ConsoleOutputDetail => {
                 Some(vec![Action::ScrollConsoleOutput(SCROLL_GOTO_BOTTOM)])
             }
@@ -549,10 +564,12 @@ pub fn execute_action(run: &KeyAction, state: &mut AppState) -> Option<Vec<Actio
             ))])
         }
         KeyAction::ChooseParent => {
-            if matches!(
-                state.focused_pane,
-                PaneId::LogChangesTree | PaneId::LogDetailsDiff
-            ) {
+            if is_log_diff_zoomed(state)
+                || matches!(
+                    state.focused_pane,
+                    PaneId::LogChangesTree | PaneId::LogDetailsDiff
+                )
+            {
                 Some(vec![Action::SwitchMergeParent])
             } else {
                 let parents = state
@@ -818,7 +835,7 @@ where
         }
     }
 
-    if state.details.diff_zoomed {
+    if is_log_diff_zoomed(state) {
         return match_bindings_filtered(&keymap.global.key_bindings, events, |b| {
             matches!(b.run, KeyAction::Quit | KeyAction::Help) && extra_allow(b)
         });

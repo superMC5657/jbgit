@@ -492,6 +492,8 @@ pub(crate) fn route_key(key: KeyEvent, state: &mut AppState) -> Vec<Action> {
             _ => Vec::new(),
         },
         PaneId::ConsoleCommandList => match key.code {
+            KeyCode::PageDown => vec![Action::ScrollConsoleList(10)],
+            KeyCode::PageUp => vec![Action::ScrollConsoleList(-10)],
             KeyCode::Enter => vec![Action::FocusPane(PaneId::ConsoleOutputDetail)],
             _ => Vec::new(),
         },

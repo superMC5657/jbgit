@@ -666,8 +666,8 @@ dock_btn = " ◧ 停靠：{dock} "
 
 [view.file_history]
 title = " 文件历史：{path}{follow} · {count} "
-follow_badge = " (--follow)"
-btn_follow = " ⇵ 追踪重命名 (--follow) "
+follow_badge = " (追踪重命名)"
+btn_follow = " ⇵ 追踪重命名 "
 btn_compare_local = " ⇄ 对比本地 "
 btn_locate_log = " ⌖ 在日志中定位 "
 commits_header = " 提交记录 "
@@ -679,7 +679,7 @@ diff_compare_versions = " 对比版本 {older} ↔ {newer} · {path} "
 diff_compare_versions_renamed = " 对比版本 {older} ↔ {newer} · {old} → {path} "
 diff_renamed = " {oid} · {old} → {path} "
 diff_single = " {oid} · {path} "
-footer_hint = " ↑↓/jk 移动 · Shift+↑↓/点击 对比两版本 · f --follow · l 对比本地 · Tab 切焦点 · S 并排 · w 上下文 · z/F4 全屏 · Enter/g 定位 · Esc 关闭"
+footer_hint = " ↑↓/jk 移动 · Shift+↑↓/点击 对比两版本 · f 追踪重命名 · l 对比本地 · Tab 切焦点 · S 并排 · w 上下文 · z/F4 全屏 · Enter/g 定位 · Esc 关闭"
 
 [view.stash]
 count = "{count} 条贮藏"

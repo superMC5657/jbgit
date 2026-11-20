@@ -666,8 +666,8 @@ dock_btn = " ◧ {dock} "
 
 [view.file_history]
 title = " File History: {path}{follow} · {count} "
-follow_badge = " (--follow)"
-btn_follow = " ⇵ Follow Renames (--follow) "
+follow_badge = " (Follow Renames)"
+btn_follow = " ⇵ Follow Renames "
 btn_compare_local = " ⇄ Compare Local "
 btn_locate_log = " ⌖ Locate in Log "
 commits_header = " Commits "
@@ -679,7 +679,7 @@ diff_compare_versions = " Compare {older} ↔ {newer} · {path} "
 diff_compare_versions_renamed = " Compare {older} ↔ {newer} · {old} → {path} "
 diff_renamed = " {oid} · {old} → {path} "
 diff_single = " {oid} · {path} "
-footer_hint = " ↑↓/jk Move · Shift+↑↓/Click Compare 2 revisions · f --follow · l Local diff · Tab Focus · S Split · w Context · z/F4 Zoom · Enter/g Locate · Esc Close"
+footer_hint = " ↑↓/jk Move · Shift+↑↓/Click Compare 2 revisions · f Follow renames · l Local diff · Tab Focus · S Split · w Context · z/F4 Zoom · Enter/g Locate · Esc Close"
 
 [view.stash]
 count = "{count} stash(es)"

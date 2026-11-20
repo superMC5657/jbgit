@@ -945,4 +945,164 @@ prepend_keymap = [
             HelpRow::Entry { run: Some(run), .. } if *run == KeyAction::Palette
         )));
     }
+
+    #[test]
+    fn console_default_navigation_and_context_help() {
+        let mut state = AppState::new_with_config(PathBuf::from("."), None, AppConfig::default());
+        state.active_tab = WorkspaceTab::Console;
+        state.focused_pane = PaneId::ConsoleCommandList;
+
+        let ev_j = KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE);
+        let ev_k = KeyEvent::new(KeyCode::Char('k'), KeyModifiers::NONE);
+        let ev_down = KeyEvent::new(KeyCode::Down, KeyModifiers::NONE);
+        let ev_up = KeyEvent::new(KeyCode::Up, KeyModifiers::NONE);
+        let ev_g = KeyEvent::new(KeyCode::Char('g'), KeyModifiers::NONE);
+        let ev_upper_g = KeyEvent::new(KeyCode::Char('G'), KeyModifiers::SHIFT);
+
+        assert!(matches!(
+            route_dynamic_key(&ev_j, &mut state).as_deref(),
+            Some([Action::ScrollConsoleList(1)])
+        ));
+        assert!(matches!(
+            route_dynamic_key(&ev_k, &mut state).as_deref(),
+            Some([Action::ScrollConsoleList(-1)])
+        ));
+        assert!(matches!(
+            route_dynamic_key(&ev_down, &mut state).as_deref(),
+            Some([Action::ScrollConsoleList(1)])
+        ));
+        assert!(matches!(
+            route_dynamic_key(&ev_up, &mut state).as_deref(),
+            Some([Action::ScrollConsoleList(-1)])
+        ));
+        assert!(matches!(
+            route_dynamic_key(&ev_upper_g, &mut state).as_deref(),
+            Some([Action::SelectConsoleRow(usize::MAX)])
+        ));
+        assert!(matches!(
+            route_dynamic_key(&ev_g, &mut state).as_deref(),
+            Some([])
+        ));
+        assert!(matches!(
+            route_dynamic_key(&ev_g, &mut state).as_deref(),
+            Some([Action::SelectConsoleRow(0)])
+        ));
+        assert!(matches!(
+            crate::input::route_terminal_event(
+                crossterm::event::Event::Key(KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE)),
+                &mut state,
+            )
+            .as_slice(),
+            [Action::ScrollConsoleList(10)]
+        ));
+        assert!(matches!(
+            crate::input::route_terminal_event(
+                crossterm::event::Event::Key(KeyEvent::new(KeyCode::PageUp, KeyModifiers::NONE)),
+                &mut state,
+            )
+            .as_slice(),
+            [Action::ScrollConsoleList(-10)]
+        ));
+
+        let list_help = build_help_rows(&state, "");
+        let list_ctx: Vec<&HelpRow> = list_help
+            .iter()
+            .skip(1)
+            .take_while(|r| !matches!(r, HelpRow::Section(_)))
+            .collect();
+        assert!(list_ctx.iter().any(|r| matches!(
+            r,
+            HelpRow::Entry { run: Some(KeyAction::GitStatusProbe), .. }
+        )));
+        assert!(list_ctx.iter().any(|r| matches!(
+            r,
+            HelpRow::Entry { run: Some(KeyAction::CursorDown), .. }
+        )));
+        assert!(list_ctx.iter().any(|r| matches!(
+            r,
+            HelpRow::Entry { run: Some(KeyAction::GotoTop), .. }
+        )));
+
+        state.focused_pane = PaneId::ConsoleOutputDetail;
+        assert!(matches!(
+            route_dynamic_key(&ev_j, &mut state).as_deref(),
+            Some([Action::ScrollConsoleOutput(1)])
+        ));
+        assert!(matches!(
+            route_dynamic_key(&ev_k, &mut state).as_deref(),
+            Some([Action::ScrollConsoleOutput(-1)])
+        ));
+
+        let detail_help = build_help_rows(&state, "");
+        let detail_ctx: Vec<&HelpRow> = detail_help
+            .iter()
+            .skip(1)
+            .take_while(|r| !matches!(r, HelpRow::Section(_)))
+            .collect();
+        assert!(!detail_ctx.iter().any(|r| matches!(
+            r,
+            HelpRow::Entry { run: Some(KeyAction::GitStatusProbe), .. }
+        )));
+        assert!(detail_ctx.iter().any(|r| matches!(
+            r,
+            HelpRow::Entry { run: Some(KeyAction::CursorDown), .. }
+        )));
+        assert!(detail_ctx.iter().any(|r| matches!(
+            r,
+            HelpRow::Entry { run: Some(KeyAction::PageDownHalf), .. }
+        )));
+        assert!(detail_ctx.iter().any(|r| matches!(
+            r,
+            HelpRow::Entry { keys, run: None, .. } if keys == "Esc"
+        )));
+    }
+
+    #[test]
+    fn zoomed_diff_routes_cursor_and_goto_to_diff_even_from_log_table_focus() {
+        let mut state = AppState::new_with_config(PathBuf::from("."), None, AppConfig::default());
+        state.active_tab = WorkspaceTab::Log;
+        state.focused_pane = PaneId::LogCommitTable;
+        state.details.diff_zoomed = true;
+
+        let ev_j = KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE);
+        let ev_k = KeyEvent::new(KeyCode::Char('k'), KeyModifiers::NONE);
+        let ev_g = KeyEvent::new(KeyCode::Char('g'), KeyModifiers::NONE);
+        let ev_upper_g = KeyEvent::new(KeyCode::Char('G'), KeyModifiers::SHIFT);
+
+        assert!(matches!(
+            route_dynamic_key(&ev_j, &mut state).as_deref(),
+            Some([Action::ScrollDiff(1)])
+        ));
+        assert!(matches!(
+            route_dynamic_key(&ev_k, &mut state).as_deref(),
+            Some([Action::ScrollDiff(-1)])
+        ));
+        assert!(matches!(
+            route_dynamic_key(&ev_upper_g, &mut state).as_deref(),
+            Some([Action::ScrollDiff(crate::app::SCROLL_GOTO_BOTTOM)])
+        ));
+        assert!(matches!(
+            route_dynamic_key(&ev_g, &mut state).as_deref(),
+            Some([])
+        ));
+        assert!(matches!(
+            route_dynamic_key(&ev_g, &mut state).as_deref(),
+            Some([Action::ScrollDiff(crate::app::SCROLL_GOTO_TOP)])
+        ));
+
+        // Switching away from Log clears diff_zoomed and never hijacks the destination tab.
+        state.dispatch(Action::SwitchTab(WorkspaceTab::Commit));
+        assert!(!state.details.diff_zoomed);
+        assert!(matches!(
+            route_dynamic_key(&ev_j, &mut state).as_deref(),
+            Some([Action::ScrollCommitStage(1)])
+        ));
+
+        // Even if diff_zoomed is set directly while on another tab, it must not hijack routing.
+        state.details.diff_zoomed = true;
+        assert!(matches!(
+            route_dynamic_key(&ev_j, &mut state).as_deref(),
+            Some([Action::ScrollCommitStage(1)])
+        ));
+    }
 }

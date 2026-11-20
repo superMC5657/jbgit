@@ -1228,6 +1228,9 @@ impl AppState {
                 self.focused_pane = tab.default_pane();
                 self.log_filter.editing_text = false;
                 self.branches.searching = false;
+                if tab != WorkspaceTab::Log {
+                    self.details.diff_zoomed = false;
+                }
                 if tab == WorkspaceTab::Commit {
                     effects.push(Effect::RequestCommitPrecheck);
                 }
