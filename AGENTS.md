@@ -13,3 +13,7 @@ Canonical 5-role triage label vocabulary (`needs-triage`, `needs-info`, `ready-f
 ### Domain docs
 
 Single-context (`GLOSSARY.md` + `docs/adr/` at the repo root). See `docs/agents/domain.md`.
+
+### Exploratory TUI testing
+
+Interactive ConPTY + `vt100` testing driver (`tools/jbgit-pilot`) for AI exploratory QA. See `docs/agents/ai-exploratory-testing.md`.

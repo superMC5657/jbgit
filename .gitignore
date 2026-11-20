@@ -2,6 +2,7 @@
 # Rust & Cargo Build Artifacts
 # ==============================================================================
 /target/
+tools/jbgit-pilot/target/
 **/*.rs.bk
 *.pdb
 
