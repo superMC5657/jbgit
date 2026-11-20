@@ -1096,6 +1096,7 @@ fn route_mouse(mouse: MouseEvent, state: &mut AppState) -> Vec<Action> {
                     | HitTarget::DialogOption(_)
                     | HitTarget::DialogButton(_)
                     | HitTarget::DialogCheckbox
+                    | HitTarget::ModalButton(_)
                     | HitTarget::BranchPopupStar(_)
                     | HitTarget::BranchPopupFetch
                     | HitTarget::BranchPopupSettings

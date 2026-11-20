@@ -13,8 +13,10 @@ use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph};
 use unicode_width::UnicodeWidthStr;
 
 use crate::app::{Action, AppState, MenuParent, ModalLayer, PopupKind, RenderContext};
+use crate::config::KeymapScope;
 use crate::dialogs::{Dialog, InputDialog, InputIntent, InputValidation, new_branch_from_head_dialog};
 use crate::hit_test::HitTarget;
+use crate::keymap::{KeyAction, KeySequence};
 use crate::menus::{branch_menu_items, ongoing_menu_items};
 use crate::views::truncate_to_width;
 
@@ -310,8 +312,26 @@ pub fn activate_row(state: &AppState, query: &str, idx: usize) -> Vec<Action> {
     }
 }
 
+/// Resolves the active, unshadowed single-key editor chord for `KeyAction::NewBranch`
+/// inside the branches popup.
+fn popup_new_branch_seq(state: &AppState) -> Option<KeySequence> {
+    state.config.keymap.primary_single_editor_seq_for(
+        &[KeymapScope::Branch, KeymapScope::Log, KeymapScope::Global],
+        &KeyAction::NewBranch,
+    )
+}
+
 /// Keyboard routing while the popup is the topmost layer.
 pub fn route_branches_popup_key(key: &KeyEvent, state: &mut AppState) -> Vec<Action> {
+    if popup_new_branch_seq(state).is_some_and(|seq| seq.matches_exact(&[*key])) {
+        return vec![
+            Action::PopModal,
+            Action::OpenDialog(Box::new(new_branch_from_head_dialog(
+                state.repo_snapshot.as_deref(),
+                &state.i18n,
+            ))),
+        ];
+    }
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     let alt = key.modifiers.contains(KeyModifiers::ALT);
     let (query, selected) = match state.modal_stack.last() {
@@ -474,10 +494,9 @@ pub fn render_branches_popup(
         0,
     );
     spans.truncate(spans.len());
-    frame.render_widget(
-        Paragraph::new(Line::from(spans)),
-        Rect::new(rect.x + 1, rect.y + 1, rect.width.saturating_sub(2), 1),
-    );
+    let search_rect = Rect::new(rect.x + 1, rect.y + 1, rect.width.saturating_sub(2), 1);
+    frame.render_widget(Paragraph::new(Line::from(spans)), search_rect);
+    crate::views::register_right_esc_cancel(ctx, search_rect, esc, z + 2);
     frame.render_widget(
         Paragraph::new(Span::styled(
             format!("├{}┤", "─".repeat(inner_w)),
@@ -551,26 +570,19 @@ pub fn render_branches_popup(
                 )
             }
             PopupRow::NewBranch => {
-                let nb_key = state
-                    .config
-                    .keymap
-                    .primary_key_for(
-                        &[
-                            crate::config::KeymapScope::Branch,
-                            crate::config::KeymapScope::Log,
-                        ],
-                        &crate::keymap::KeyAction::NewBranch,
-                    )
-                    .unwrap_or_else(|| "Ctrl+Alt+N".to_string());
+                let right = match popup_new_branch_seq(state) {
+                    Some(seq) => vec![Span::styled(
+                        format!("{} ", seq.to_display_string()),
+                        Style::default().fg(ctx.theme.fg_muted),
+                    )],
+                    None => Vec::new(),
+                };
                 (
                     vec![Span::styled(
                         state.i18n.t("view.branches_popup.new_branch_btn").to_string(),
                         Style::default().fg(fg),
                     )],
-                    vec![Span::styled(
-                        format!("{nb_key} "),
-                        Style::default().fg(ctx.theme.fg_muted),
-                    )],
+                    right,
                 )
             }
             PopupRow::CheckoutRevision => (

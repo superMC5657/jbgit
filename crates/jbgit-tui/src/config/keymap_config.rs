@@ -516,4 +516,35 @@ impl KeymapConfig {
     pub fn primary_editor_key_for(&self, scopes: &[KeymapScope], run: &KeyAction) -> Option<String> {
         self.editor_keys_for(scopes, run).into_iter().next()
     }
+
+    /// Returns the primary non-shadowed single-stroke editor-chord sequence for `run` across `scopes`.
+    pub fn primary_single_editor_seq_for(
+        &self,
+        scopes: &[KeymapScope],
+        run: &KeyAction,
+    ) -> Option<crate::keymap::KeySequence> {
+        let mut shadowed = Vec::new();
+        for &scope in scopes {
+            for b in self.bindings_for(scope) {
+                if !b.run.is_active() {
+                    continue;
+                }
+                let Some(seq) = crate::keymap::KeySequence::parse(&b.on) else {
+                    continue;
+                };
+                if !seq.starts_with_editor_chord() {
+                    continue;
+                }
+                let first = &seq.strokes[0];
+                if &b.run == run && seq.strokes.len() == 1 {
+                    if !shadowed.contains(first) {
+                        return Some(seq);
+                    }
+                } else if !shadowed.contains(first) {
+                    shadowed.push(first.clone());
+                }
+            }
+        }
+        None
+    }
 }

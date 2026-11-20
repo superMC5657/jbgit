@@ -1636,7 +1636,7 @@ fn footer_and_help_respect_amend_readonly_author_edit_speed_search_and_console_d
     let term = render(&mut state, 160, 40);
     let amend_footer = row_text(term.backend().buffer(), 39);
     assert!(amend_footer.contains("Hunk"), "{amend_footer}");
-    assert!(amend_footer.contains("Context"), "{amend_footer}");
+    assert!(amend_footer.contains("File"), "{amend_footer}");
     assert!(amend_footer.contains("Esc"), "{amend_footer}");
     assert!(!amend_footer.contains("Stage"), "{amend_footer}");
     assert!(!amend_footer.contains("Rollback"), "{amend_footer}");
@@ -1664,6 +1664,7 @@ fn footer_and_help_respect_amend_readonly_author_edit_speed_search_and_console_d
     assert!(!has_ctx_action(KeyAction::ThreeWayInspector));
     assert!(!has_ctx_action(KeyAction::SwitchDiffSide));
     assert!(has_ctx_action(KeyAction::NextHunk));
+    assert!(has_ctx_action(KeyAction::CycleDiffContext));
 
     // 2. CommitMessageEditor with editing_author = true shows Enter/Esc Apply instead of Esc Back
     state.dispatch(Action::FocusPane(PaneId::CommitMessageEditor));
@@ -1987,4 +1988,241 @@ append_keymap = [
         .collect::<Vec<_>>()
         .join("\n");
     assert!(above_footer.contains("g +"), "{above_footer}");
+}
+
+#[test]
+fn qa_bugfixes_stash_braces_popup_interior_click_esc_btn_and_new_branch_key() {
+    use crate::config::{KeymapConfig, KeymapConfigOverlay, KeymapPreset};
+    use jbgit_core::ModalButton;
+
+    // 1. Stash i18n formatting renders single braces `stash@{0}`, never `stash@{{0}}`.
+    let zh = crate::i18n::I18n::load("zh-CN", None);
+    let en = crate::i18n::I18n::load("en-US", None);
+    assert_eq!(
+        zh.git_op_label(&GitOp::StashApply {
+            index: 0,
+            pop: false
+        }),
+        "应用 stash@{0}"
+    );
+    assert_eq!(
+        en.git_op_label(&GitOp::StashApply {
+            index: 2,
+            pop: true
+        }),
+        "Pop stash@{2}"
+    );
+    assert_eq!(
+        zh.git_op_label(&GitOp::StashDrop { index: 1 }),
+        "删除 stash@{1}"
+    );
+
+    // 2. Clicking inside ShortcutsHelp popup (e.g. search bar / empty body) does NOT dismiss it,
+    //    while clicking `[Esc]` or outside backdrop DOES dismiss it.
+    let mut state = state_with(snapshot());
+    key(&mut state, KeyCode::Char('?'), KeyModifiers::NONE);
+    assert!(matches!(
+        state.modal_stack.last(),
+        Some(ModalLayer::FloatingPopup {
+            kind: PopupKind::ShortcutsHelp,
+            ..
+        })
+    ));
+    let _ = render(&mut state, 120, 40);
+    let body_rect = region_of(&state, |t| matches!(t, HitTarget::DialogBody));
+    mouse(
+        &mut state,
+        MouseEventKind::Down(MouseButton::Left),
+        body_rect.x + 2,
+        body_rect.y + 1,
+    );
+    assert!(
+        matches!(
+            state.modal_stack.last(),
+            Some(ModalLayer::FloatingPopup {
+                kind: PopupKind::ShortcutsHelp,
+                ..
+            })
+        ),
+        "clicking inside ShortcutsHelp must not close it"
+    );
+    let esc_rect = region_of(&state, |t| matches!(t, HitTarget::ModalButton(ModalButton::Cancel)));
+    mouse(
+        &mut state,
+        MouseEventKind::Down(MouseButton::Left),
+        esc_rect.x + 1,
+        esc_rect.y,
+    );
+    assert!(
+        state.modal_stack.is_empty(),
+        "clicking [Esc] button should close ShortcutsHelp"
+    );
+
+    // 3. BranchesQuickView: `[Esc]` button closes it, backdrop outside closes it,
+    //    and rebound NewBranch shortcut (`F7`) works directly inside the popup.
+    let mut bp_state = state_with(snapshot());
+    bp_state.config.keymap = KeymapConfig::for_preset(KeymapPreset::Default);
+    let ov: KeymapConfigOverlay = toml::from_str(
+        r#"
+[branch]
+prepend_keymap = [
+    { on = [ "n" ], run = "noop" },
+    { on = [ "<F7>" ], run = "new_branch", show_hint = true },
+]
+"#,
+    )
+    .unwrap();
+    bp_state.config.keymap.merge_overlay(&ov);
+    key(&mut bp_state, KeyCode::Char('b'), KeyModifiers::NONE);
+    let term = render(&mut bp_state, 140, 40);
+    let screen = screen_text(term.backend().buffer());
+    assert!(screen.contains("F7"), "popup should show F7 hint:\n{screen}");
+
+    // Clicking outside the popup closes it
+    mouse(
+        &mut bp_state,
+        MouseEventKind::Down(MouseButton::Left),
+        130,
+        20,
+    );
+    assert!(
+        bp_state.modal_stack.is_empty(),
+        "clicking backdrop outside BranchesQuickView should close it"
+    );
+
+    // Clicking [Esc] closes it
+    key(&mut bp_state, KeyCode::Char('b'), KeyModifiers::NONE);
+    let _ = render(&mut bp_state, 140, 40);
+    let bp_esc = region_of(&bp_state, |t| {
+        matches!(t, HitTarget::ModalButton(ModalButton::Cancel))
+    });
+    mouse(
+        &mut bp_state,
+        MouseEventKind::Down(MouseButton::Left),
+        bp_esc.x + 1,
+        bp_esc.y,
+    );
+    assert!(
+        bp_state.modal_stack.is_empty(),
+        "clicking [Esc] inside BranchesQuickView should close it"
+    );
+
+    // Pressing F7 inside BranchesQuickView opens NewBranch dialog directly
+    key(&mut bp_state, KeyCode::Char('b'), KeyModifiers::NONE);
+    key(&mut bp_state, KeyCode::F(7), KeyModifiers::NONE);
+    assert!(
+        matches!(bp_state.modal_stack.last(), Some(ModalLayer::Dialog(_))),
+        "pressing F7 in BranchesQuickView should open NewBranch dialog: {:?}",
+        bp_state.modal_stack
+    );
+
+    // 4. Cross-scope shadowing: [branch] binds <F7> to rename_branch while [log] binds <F7> to new_branch.
+    //    Popup should fall back to Ctrl+Alt+N (not F7) and pressing F7 must not open NewBranch.
+    let mut shadow_state = state_with(snapshot());
+    shadow_state.config.keymap = KeymapConfig::for_preset(KeymapPreset::Default);
+    let shadow_ov: KeymapConfigOverlay = toml::from_str(
+        r#"
+[branch]
+prepend_keymap = [
+    { on = [ "<F7>" ], run = "rename_branch" },
+]
+[log]
+prepend_keymap = [
+    { on = [ "<F7>" ], run = "new_branch", show_hint = true },
+]
+"#,
+    )
+    .unwrap();
+    shadow_state.config.keymap.merge_overlay(&shadow_ov);
+    key(&mut shadow_state, KeyCode::Char('b'), KeyModifiers::NONE);
+    let term = render(&mut shadow_state, 140, 40);
+    let shadow_screen = screen_text(term.backend().buffer());
+    let shadow_new_branch_line = shadow_screen
+        .lines()
+        .find(|l| l.contains("New Branch"))
+        .unwrap_or_default();
+    assert!(
+        shadow_new_branch_line.contains("Ctrl+Alt+N"),
+        "shadowed F7 should fall back to Ctrl+Alt+N:\n{shadow_screen}"
+    );
+    assert!(
+        !shadow_new_branch_line.contains("F7"),
+        "shadowed F7 must not be advertised on New Branch:\n{shadow_screen}"
+    );
+    key(&mut shadow_state, KeyCode::F(7), KeyModifiers::NONE);
+    assert!(
+        !matches!(shadow_state.modal_stack.last(), Some(ModalLayer::Dialog(_))),
+        "shadowed F7 must not open NewBranch dialog: {:?}",
+        shadow_state.modal_stack
+    );
+
+    // 5. Unbinding <C-A-n> via noop hides Ctrl+Alt+N and disables it in BranchesQuickView.
+    let mut unbind_state = state_with(snapshot());
+    unbind_state.config.keymap = KeymapConfig::for_preset(KeymapPreset::Default);
+    let unbind_ov: KeymapConfigOverlay = toml::from_str(
+        r#"
+[branch]
+prepend_keymap = [
+    { on = [ "<C-A-n>" ], run = "noop" },
+]
+"#,
+    )
+    .unwrap();
+    unbind_state.config.keymap.merge_overlay(&unbind_ov);
+    key(&mut unbind_state, KeyCode::Char('b'), KeyModifiers::NONE);
+    let term = render(&mut unbind_state, 140, 40);
+    let unbind_screen = screen_text(term.backend().buffer());
+    assert!(
+        !unbind_screen.contains("Ctrl+Alt+N"),
+        "unbound Ctrl+Alt+N must not be shown:\n{unbind_screen}"
+    );
+    key(
+        &mut unbind_state,
+        KeyCode::Char('n'),
+        KeyModifiers::CONTROL | KeyModifiers::ALT,
+    );
+    assert!(
+        !matches!(unbind_state.modal_stack.last(), Some(ModalLayer::Dialog(_))),
+        "unbound Ctrl+Alt+N must not open NewBranch dialog: {:?}",
+        unbind_state.modal_stack
+    );
+
+    // 6. CriticalDialog interior clicks do not dismiss it, while clicking Cancel closes it.
+    let mut crit_state = state_with(snapshot());
+    crit_state.modal_stack.push(ModalLayer::CriticalDialog {
+        title: "Force Push".into(),
+        body: "Overwrite remote history?".into(),
+        confirm_label: "Force Push".into(),
+        cancel_label: "Cancel".into(),
+        selected_button: ModalButton::Cancel,
+        confirm_effect: None,
+    });
+    let _ = render(&mut crit_state, 120, 40);
+    let crit_body = region_of(&crit_state, |t| matches!(t, HitTarget::DialogBody));
+    mouse(
+        &mut crit_state,
+        MouseEventKind::Down(MouseButton::Left),
+        crit_body.x + 1,
+        crit_body.y + 1,
+    );
+    assert!(
+        matches!(
+            crit_state.modal_stack.last(),
+            Some(ModalLayer::CriticalDialog { .. })
+        ),
+        "clicking inside CriticalDialog must not close it"
+    );
+    let crit_cancel = region_of(&crit_state, |t| {
+        matches!(t, HitTarget::ModalButton(ModalButton::Cancel))
+    });
+    mouse(
+        &mut crit_state,
+        MouseEventKind::Down(MouseButton::Left),
+        crit_cancel.x + 1,
+        crit_cancel.y,
+    );
+    assert!(
+        crit_state.modal_stack.is_empty(),
+        "clicking Cancel on CriticalDialog should close it"
+    );
 }

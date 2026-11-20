@@ -504,3 +504,25 @@ pub(crate) fn render_toolbar<S: AsRef<str>, T: Copy>(
     }
     x
 }
+
+/// Registers a clickable `ModalButton::Cancel` hit target for a right-aligned `[Esc]` hint inside `row_rect`.
+pub(crate) fn register_right_esc_cancel(
+    ctx: &mut RenderContext<'_>,
+    row_rect: Rect,
+    esc_label: &str,
+    z: u8,
+) {
+    let esc_w = esc_label.width() as u16;
+    if row_rect.width >= esc_w {
+        ctx.hit_registry.register(
+            Rect::new(
+                row_rect.right().saturating_sub(esc_w),
+                row_rect.y,
+                esc_w,
+                1,
+            ),
+            z,
+            HitTarget::ModalButton(jbgit_core::ModalButton::Cancel),
+        );
+    }
+}

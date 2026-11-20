@@ -495,8 +495,7 @@ fn render_floating_popup(
     let inner = block.inner(rect);
     frame.render_widget(block, rect);
     // Block clicks inside popup from triggering backdrop close
-    ctx.hit_registry
-        .register(rect, z + 1, HitTarget::ModalBackdrop { layer_z: z });
+    ctx.hit_registry.register(rect, z + 1, HitTarget::DialogBody);
 
     match kind {
         PopupKind::PalettePreview => {
@@ -570,6 +569,7 @@ fn render_floating_popup(
                     .style(Style::default().bg(ctx.theme.bg_panel)),
                 search_rect,
             );
+            crate::views::register_right_esc_cancel(ctx, search_rect, esc_hint, z + 2);
 
             // Divider
             frame.render_widget(
@@ -1260,6 +1260,7 @@ fn render_critical_dialog(
 
     let inner = block.inner(rect);
     frame.render_widget(block, rect);
+    ctx.hit_registry.register(rect, z + 1, HitTarget::DialogBody);
 
     let body_h = inner.height.saturating_sub(2);
     let body_rect = Rect::new(inner.x, inner.y, inner.width, body_h);
@@ -1310,12 +1311,12 @@ fn render_critical_dialog(
         frame.render_widget(Paragraph::new(Span::styled(btn1, s1)), btn1_rect);
         ctx.hit_registry.register(
             btn0_rect,
-            z + 1,
+            z + 2,
             HitTarget::ModalButton(ModalButton::Confirm),
         );
         ctx.hit_registry.register(
             btn1_rect,
-            z + 1,
+            z + 2,
             HitTarget::ModalButton(ModalButton::Cancel),
         );
     }
