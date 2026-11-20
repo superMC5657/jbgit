@@ -17,10 +17,10 @@ Binary path: `.\tools\jbgit-pilot\target\debug\jbgit-pilot.exe`
 
 ## 2. Pre-built Sandbox Scenarios (Zero Git Setup Needed)
 
-Launch the PTY server **with `IsDaemon: true`** so it persists across tool calls (all runtime/sandbox files live under `target/pilot/`, keeping `.scratch/` untouched):
+Launch the PTY server **with `IsDaemon: true`** so it persists across tool calls (all runtime/sandbox files live under `.pilot/`, keeping `.scratch/` untouched):
 
 ### Scenario A: Full Sandbox (`--sandbox` / `--scenario full`, default)
-Creates `target/pilot/sandbox-repo` + bare remote `target/pilot/sandbox-remote.git` with:
+Creates `.pilot/sandbox-repo` + bare remote `.pilot/sandbox-remote.git` with:
 - Multi-branch DAG with merge commit (`main` ahead of `origin/main` by 3 commits, `feature/login`, `feature/ui-cards`, `bugfix/scroll-edge`, remote-only `origin/feature/remote-only`, tag `v0.1.0`)
 - **Remote sync branches**:
   - `feature/pull-me` (remote `origin/feature/pull-me` has 2 un-fetched peer commits → test `f` Fetch showing `↓2`, then checkout & `p` Pull)
@@ -34,14 +34,14 @@ Creates `target/pilot/sandbox-repo` + bare remote `target/pilot/sandbox-remote.g
 ```
 
 ### Scenario B: Merge Conflict (`--scenario conflict`)
-Creates `target/pilot/sandbox-repo` in an active **`git merge` conflict** state (`conflict_app.txt` has real `<<<<<<<` / `=======` / `>>>>>>>` conflict markers) for testing the ongoing conflict banner and 3-way conflict resolver:
+Creates `.pilot/sandbox-repo` in an active **`git merge` conflict** state (`conflict_app.txt` has real `<<<<<<<` / `=======` / `>>>>>>>` conflict markers) for testing the ongoing conflict banner and 3-way conflict resolver:
 
 ```powershell
 .\tools\jbgit-pilot\target\debug\jbgit-pilot.exe serve --scenario conflict --cols 140 --rows 40
 ```
 
 ### Scenario C: Custom Theme & Keymap Config (`--custom-config`)
-Can be combined with `--sandbox` (or `--repo <dir>`) to auto-generate `target/pilot/custom-config/` (`jbgit.toml`, `theme.toml`, `keymap.toml`) and launch with `JBGIT_CONFIG_DIR`:
+Can be combined with `--sandbox` (or `--repo <dir>`) to auto-generate `.pilot/custom-config/` (`jbgit.toml`, `theme.toml`, `keymap.toml`) and launch with `JBGIT_CONFIG_DIR`:
 - `jbgit.toml`: `language = "en-US"`, `default_tab = "log"`
 - `theme.toml`: `flavor = "catppuccin-mocha"`, `glyphs.mode = "unicode"`, `bg_canvas = "#112233"`, `bg_panel = "#223344"`, `border_focused = "#FF6600"`
 - `keymap.toml`: `footer_max_lines = 2`, unbinds `r`/`b`/`n`/`<C-s>` via `noop`, rebinds `refresh -> <F8>`, `toggle_branches_popup -> <F6>`, `new_branch -> <F7>`, `commit -> <F9>`, and adds custom chord `["g", "x"] -> refresh`
@@ -86,16 +86,16 @@ Every action command injects real PTY input, waits for screen output to settle, 
 .\tools\jbgit-pilot\target\debug\jbgit-pilot.exe stop
 ```
 
-Raw PTY output (including any stderr panic backtrace) is saved at `target/pilot/pty_raw.log`.
+Raw PTY output (including any stderr panic backtrace) is saved at `.pilot/pty_raw.log`.
 
 ## 4. Exploratory QA Checklist for AI Agents
 
-When asked to find bugs or unimplemented features interactively, explore systematically and verify **both the UI screen AND the underlying `git` repository on disk** (`target/pilot/sandbox-repo`):
+When asked to find bugs or unimplemented features interactively, explore systematically and verify **both the UI screen AND the underlying `git` repository on disk** (`.pilot/sandbox-repo`):
 
 1. **Log Tab (`2`)**:
    - Navigate commits (`j`/`k`), toggle Diff Preview (`Ctrl+D`), inspect commit details and file diffs, click parent commit links, filter by text/regex/branch/user/date/paths, open context menu (`.`) and test actions (New Branch, Checkout, Reset, Reword, Drop, Cherry-pick, Merge, Rebase).
 2. **Commit / Stage Tab (`1`)**:
-   - Stage/unstage files (`Space`), expand/collapse directory tree, enter Diff pane (`Tab`), test multi-hunk navigation (`[`/`]`), hunk/line staging (`Space`), visual mode (`v`), 3-way inspector (`i` on `staged_partial.txt`), rollback (`d`), undo rollback (`Ctrl+Z`), commit message editor (`c`), Amend (`A`), Sign-off (`Alt+s`), Commit (`Ctrl+S`), and verify `git -C target/pilot/sandbox-repo log -1` / `status`.
+   - Stage/unstage files (`Space`), expand/collapse directory tree, enter Diff pane (`Tab`), test multi-hunk navigation (`[`/`]`), hunk/line staging (`Space`), visual mode (`v`), 3-way inspector (`i` on `staged_partial.txt`), rollback (`d`), undo rollback (`Ctrl+Z`), commit message editor (`c`), Amend (`A`), Sign-off (`Alt+s`), Commit (`Ctrl+S`), and verify `git -C .pilot/sandbox-repo log -1` / `status`.
 3. **Branches Popup (`b` / `Ctrl+~`) & Branch Tree**:
    - Speed-search filtering, favorite toggle (`Space`), branch submenu (`Enter`), checkout, create branch, rename (`F2`), delete (`d`/`Del`), compare with current, remote fetch/pull/push.
 4. **Stash Tab (`3`) & Console Tab (`4`)**:
@@ -110,4 +110,4 @@ When asked to find bugs or unimplemented features interactively, explore systema
 
 ## 5. Recording Findings
 
-Report discovered unimplemented features or bugs (with exact `jbgit-pilot` reproduction steps and screen captures) directly in your response or save a report under `target/pilot/qa-report.md` (only create files in `.scratch/` if the user explicitly asks to file formal issue tickets per [issue-tracker.md](./issue-tracker.md)).
+Report discovered unimplemented features or bugs (with exact `jbgit-pilot` reproduction steps and screen captures) directly in your response or save a report under `.pilot/qa-report.md` (only create files in `.scratch/` if the user explicitly asks to file formal issue tickets per [issue-tracker.md](./issue-tracker.md)).

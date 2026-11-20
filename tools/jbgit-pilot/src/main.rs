@@ -13,7 +13,7 @@ use crate::protocol::{CellPos, MouseBtn, PilotAction};
 use crate::server::{SandboxScenario, ServeOptions, run_serve};
 
 fn default_session_dir() -> PathBuf {
-    PathBuf::from("target").join("pilot")
+    PathBuf::from(".pilot")
 }
 
 fn default_jbgit_bin() -> PathBuf {
