@@ -104,7 +104,7 @@ fn fixture_state() -> AppState {
         user_email: Some("alice@x.io".into()),
         ..Default::default()
     };
-    let mut state = AppState::new(".".into(), None);
+    let mut state = AppState::new_with_config(".".into(), None, crate::config::AppConfig::default());
     state.i18n = Arc::new(crate::i18n::I18n::load("en-US", None));
     state.apply_engine_event(EngineEvent::RepoSnapshotLoaded {
         snapshot: Arc::new(snap),
@@ -819,7 +819,7 @@ fn render_50k_commits_viewport_virtualized() {
         commits,
         ..Default::default()
     };
-    let mut state = AppState::new(".".into(), None);
+    let mut state = AppState::new_with_config(".".into(), None, crate::config::AppConfig::default());
     state.apply_engine_event(EngineEvent::RepoSnapshotLoaded {
         snapshot: Arc::new(snap),
         epoch: 1,

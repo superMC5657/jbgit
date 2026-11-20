@@ -101,7 +101,7 @@ fn snapshot() -> RepoSnapshot {
 }
 
 fn state_with(snap: RepoSnapshot) -> AppState {
-    let mut state = AppState::new(".".into(), None);
+    let mut state = AppState::new_with_config(".".into(), None, crate::config::AppConfig::default());
     state.i18n = Arc::new(crate::i18n::I18n::load("en-US", None));
     state.apply_engine_event(EngineEvent::RepoSnapshotLoaded {
         snapshot: Arc::new(snap),

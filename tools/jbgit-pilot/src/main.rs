@@ -18,15 +18,36 @@ fn default_session_dir() -> PathBuf {
 
 fn default_jbgit_bin() -> PathBuf {
     let exe_name = if cfg!(windows) { "jbgit.exe" } else { "jbgit" };
-    let debug = PathBuf::from("target").join("debug").join(exe_name);
-    if debug.is_file() {
-        return debug;
+    let root_debug = PathBuf::from("target").join("debug").join(exe_name);
+    let pilot_debug = PathBuf::from("tools")
+        .join("jbgit-pilot")
+        .join("target")
+        .join("debug")
+        .join(exe_name);
+    match (root_debug.is_file(), pilot_debug.is_file()) {
+        (true, true) => {
+            let root_mtime = std::fs::metadata(&root_debug)
+                .and_then(|m| m.modified())
+                .ok();
+            let pilot_mtime = std::fs::metadata(&pilot_debug)
+                .and_then(|m| m.modified())
+                .ok();
+            if pilot_mtime > root_mtime {
+                pilot_debug
+            } else {
+                root_debug
+            }
+        }
+        (true, false) => root_debug,
+        (false, true) => pilot_debug,
+        (false, false) => {
+            let release = PathBuf::from("target").join("release").join(exe_name);
+            if release.is_file() {
+                return release;
+            }
+            root_debug
+        }
     }
-    let release = PathBuf::from("target").join("release").join(exe_name);
-    if release.is_file() {
-        return release;
-    }
-    debug
 }
 
 fn print_help() {
@@ -47,11 +68,13 @@ CLIENT COMMANDS:
   type <text> [--settle-ms 200]
   click <col> <row> [--button left|right|middle] [--settle-ms 200]
   rclick <col> <row> [--settle-ms 200]
+  hover <col> <row> [--settle-ms 200]
   scroll <up|down> <col> <row> [--steps 3] [--settle-ms 200]
   resize <cols> <rows> [--settle-ms 200]
   find <needle>
   inspect-row <row>
   colors
+  clipboard
   wait-idle [--quiet-ms 250] [--timeout-ms 4000]
   stop"
     );
@@ -217,6 +240,19 @@ fn main() -> Result<()> {
                 6000,
             )?;
         }
+        "hover" => {
+            let col: u16 = req_arg(&args, &mut idx, "col")?.parse()?;
+            let row: u16 = req_arg(&args, &mut idx, "row")?.parse()?;
+            let settle_ms = parse_opt_u64(&args, idx, "--settle-ms")?.unwrap_or(200);
+            run_client(
+                &session_dir,
+                PilotAction::Hover {
+                    pos: CellPos { col, row },
+                    settle_ms,
+                },
+                6000,
+            )?;
+        }
         "scroll" => {
             let dir = req_arg(&args, &mut idx, "up|down")?;
             let up = match dir.as_str() {
@@ -276,6 +312,9 @@ fn main() -> Result<()> {
         }
         "colors" => {
             run_client(&session_dir, PilotAction::PaletteSummary, 5000)?;
+        }
+        "clipboard" => {
+            run_client(&session_dir, PilotAction::Clipboard, 5000)?;
         }
         "wait-idle" => {
             let mut quiet_ms = 250u64;

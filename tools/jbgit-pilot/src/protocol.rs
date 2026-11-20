@@ -45,6 +45,12 @@ pub enum PilotAction {
         steps: u16,
         settle_ms: u64,
     },
+    Hover {
+        #[serde(flatten)]
+        pos: CellPos,
+        settle_ms: u64,
+    },
+    Clipboard,
     Resize {
         cols: u16,
         rows: u16,
@@ -86,6 +92,8 @@ pub struct ResponseEnvelope {
     pub matches: Vec<TextMatch>,
     pub row_spans: Vec<RowSpanInfo>,
     pub palette: Vec<ColorCount>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub clipboard: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

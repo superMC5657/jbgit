@@ -101,7 +101,44 @@ fn encode_modified_key(ctrl: bool, alt: bool, shift: bool, base: &str) -> Result
         "left" => return Ok(format!("\x1b[1;{xterm_mod}D").into_bytes()),
         "home" => return Ok(format!("\x1b[1;{xterm_mod}H").into_bytes()),
         "end" => return Ok(format!("\x1b[1;{xterm_mod}F").into_bytes()),
-        "f10" => return Ok(format!("\x1b[21;{xterm_mod}~").into_bytes()),
+        "f1" | "f2" | "f3" | "f4" => {
+            let suffix = match lower.as_str() {
+                "f1" => 'P',
+                "f2" => 'Q',
+                "f3" => 'R',
+                "f4" => 'S',
+                _ => unreachable!(),
+            };
+            return Ok(format!("\x1b[1;{xterm_mod}{suffix}").into_bytes());
+        }
+        "insert" | "ins" | "del" | "delete" | "pgup" | "pageup" | "pgdn" | "pagedown"
+        | "f5" | "f6" | "f7" | "f8" | "f9" | "f10" | "f11" | "f12" => {
+            let code = match lower.as_str() {
+                "insert" | "ins" => 2,
+                "del" | "delete" => 3,
+                "pgup" | "pageup" => 5,
+                "pgdn" | "pagedown" => 6,
+                "f5" => 15,
+                "f6" => 17,
+                "f7" => 18,
+                "f8" => 19,
+                "f9" => 20,
+                "f10" => 21,
+                "f11" => 23,
+                "f12" => 24,
+                _ => unreachable!(),
+            };
+            return Ok(format!("\x1b[{code};{xterm_mod}~").into_bytes());
+        }
+        "backspace" | "bs" => {
+            if alt {
+                return Ok(b"\x1b\x7f".to_vec());
+            }
+            if ctrl {
+                return Ok(vec![0x08]);
+            }
+            return Ok(vec![0x7f]);
+        }
         "enter" | "return" => {
             if ctrl {
                 // CSI u encoding for Ctrl+Enter; fallback LF if raw
@@ -170,4 +207,33 @@ pub fn encode_sgr_scroll(col: u16, row: u16, up: bool, steps: u16) -> Vec<u8> {
         out.extend_from_slice(format!("\x1b[<{code};{c1};{r1}M").as_bytes());
     }
     out
+}
+
+/// Encodes an SGR mouse hover / motion event (no button pressed) at 0-based `(col, row)`.
+pub fn encode_sgr_hover(col: u16, row: u16) -> Vec<u8> {
+    let c1 = col.saturating_add(1);
+    let r1 = row.saturating_add(1);
+    format!("\x1b[<35;{c1};{r1}M").into_bytes()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn encodes_modified_function_and_nav_keys() {
+        assert_eq!(encode_key("<S-F10>").unwrap(), b"\x1b[21;2~");
+        assert_eq!(encode_key("Shift+F10").unwrap(), b"\x1b[21;2~");
+        assert_eq!(encode_key("Ctrl+F1").unwrap(), b"\x1b[1;5P");
+        assert_eq!(encode_key("Shift+Up").unwrap(), b"\x1b[1;2A");
+        assert_eq!(encode_key("Shift+Down").unwrap(), b"\x1b[1;2B");
+        assert_eq!(encode_key("Ctrl+PageDown").unwrap(), b"\x1b[6;5~");
+        assert_eq!(encode_key("<C-A-n>").unwrap(), b"\x1b\x0e");
+        assert_eq!(encode_key("Alt+Backspace").unwrap(), b"\x1b\x7f");
+    }
+
+    #[test]
+    fn encodes_sgr_hover_coordinates() {
+        assert_eq!(encode_sgr_hover(10, 5), b"\x1b[<35;11;6M");
+    }
 }

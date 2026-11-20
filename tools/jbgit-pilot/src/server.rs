@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result, bail};
 use portable_pty::{CommandBuilder, PtySize, native_pty_system};
 
-use crate::keys::{encode_key, encode_sgr_click, encode_sgr_scroll};
+use crate::keys::{encode_key, encode_sgr_click, encode_sgr_hover, encode_sgr_scroll};
 use crate::protocol::{
     CellPos, ColorCount, ColorPair, CommandEnvelope, PilotAction, ResponseEnvelope, RowSpanInfo,
     TextMatch,
@@ -64,9 +64,14 @@ pub fn run_serve(opts: ServeOptions) -> Result<()> {
     let cmd_path = opts.session_dir.join("cmd.json");
     let resp_path = opts.session_dir.join("resp.json");
     let ready_path = opts.session_dir.join("ready.json");
+    let starting_path = opts.session_dir.join("starting.json");
     let _ = fs::remove_file(&cmd_path);
     let _ = fs::remove_file(&resp_path);
     let _ = fs::remove_file(&ready_path);
+    fs::write(
+        &starting_path,
+        serde_json::to_string(&serde_json::json!({ "pid": std::process::id() }))?,
+    )?;
 
     let repo_path = if opts.sandbox {
         let sandbox_dir = std::path::absolute(opts.session_dir.join("sandbox-repo"))?;
@@ -122,6 +127,10 @@ pub fn run_serve(opts: ServeOptions) -> Result<()> {
     }
     if let Some(cfg) = &resolved_config_dir {
         cmd.env("JBGIT_CONFIG_DIR", cfg);
+        if !opts.use_user_config {
+            cmd.env("APPDATA", cfg);
+            cmd.env("XDG_CONFIG_HOME", cfg);
+        }
     }
 
     let mut child = pair
@@ -145,9 +154,10 @@ pub fn run_serve(opts: ServeOptions) -> Result<()> {
     }));
 
     let log_path = opts.session_dir.join("pty_raw.log");
+    let reader_log_path = log_path.clone();
     let shared_reader = Arc::clone(&shared);
     thread::spawn(move || {
-        let mut log_file = fs::File::create(&log_path).ok();
+        let mut log_file = fs::File::create(&reader_log_path).ok();
         let mut buf = [0u8; 8192];
         loop {
             match reader.read(&mut buf) {
@@ -171,8 +181,8 @@ pub fn run_serve(opts: ServeOptions) -> Result<()> {
         }
     });
 
-    // Wait briefly for initial TUI paint
-    wait_quiet(&shared, 250, 2500);
+    // Wait for initial TUI paint
+    wait_for_initial_paint(&shared, 300, 8000);
 
     let ready_info = serde_json::json!({
         "pid": std::process::id(),
@@ -184,6 +194,7 @@ pub fn run_serve(opts: ServeOptions) -> Result<()> {
         "rows": opts.rows,
     });
     fs::write(&ready_path, serde_json::to_string_pretty(&ready_info)?)?;
+    let _ = fs::remove_file(&starting_path);
     eprintln!(
         "jbgit-pilot serving (repo={}, config={}, size={}x{}, session={})",
         repo_path.display(),
@@ -232,6 +243,7 @@ pub fn run_serve(opts: ServeOptions) -> Result<()> {
                 &shared,
                 &mut child,
                 &mut exit_code,
+                &log_path,
             );
             write_resp_atomic(&opts.session_dir, &resp_path, &resp)?;
 
@@ -244,6 +256,7 @@ pub fn run_serve(opts: ServeOptions) -> Result<()> {
     }
 
     let _ = fs::remove_file(&ready_path);
+    let _ = fs::remove_file(&starting_path);
     Ok(())
 }
 
@@ -264,6 +277,7 @@ fn handle_action(
     shared: &Arc<Mutex<SharedPtyState>>,
     child: &mut Box<dyn portable_pty::Child + Send + Sync>,
     exit_code: &mut Option<i32>,
+    log_path: &Path,
 ) -> ResponseEnvelope {
     let id = env.id;
     let res: Result<ResponseEnvelope> = (|| match env.action {
@@ -316,6 +330,23 @@ fn handle_action(
             wait_after_input(shared, sent_at, settle_ms, 2500);
             refresh_exit(child, exit_code);
             Ok(build_screen_resp(id, shared, *exit_code))
+        }
+        PilotAction::Hover { pos, settle_ms } => {
+            let sent_at = Instant::now();
+            let bytes = encode_sgr_hover(pos.col, pos.row);
+            writer.write_all(&bytes)?;
+            writer.flush()?;
+            wait_after_input(shared, sent_at, settle_ms, 2500);
+            refresh_exit(child, exit_code);
+            Ok(build_screen_resp(id, shared, *exit_code))
+        }
+        PilotAction::Clipboard => {
+            let raw = fs::read(log_path).unwrap_or_default();
+            let clip = extract_latest_osc52_clipboard(&raw).unwrap_or_default();
+            let mut resp = build_screen_resp(id, shared, *exit_code);
+            resp.screen = None;
+            resp.clipboard = Some(clip);
+            Ok(resp)
         }
         PilotAction::Resize {
             cols,
@@ -438,6 +469,33 @@ fn wait_after_input(
     wait_quiet(shared, settle_ms, max_wait_ms);
 }
 
+fn screen_has_content(screen: &vt100::Screen, cols: u16, rows: u16) -> bool {
+    (0..rows).any(|r| !render_row_text(screen, r, cols).trim().is_empty())
+}
+
+fn wait_for_initial_paint(
+    shared: &Arc<Mutex<SharedPtyState>>,
+    settle_ms: u64,
+    max_wait_ms: u64,
+) {
+    let start = Instant::now();
+    let max_wait = Duration::from_millis(max_wait_ms);
+    loop {
+        let (painted, eof) = {
+            let g = shared.lock().unwrap();
+            (
+                screen_has_content(g.parser.screen(), g.cols, g.rows),
+                g.eof,
+            )
+        };
+        if painted || eof || start.elapsed() >= max_wait {
+            break;
+        }
+        thread::sleep(Duration::from_millis(20));
+    }
+    wait_quiet(shared, settle_ms, 2500);
+}
+
 fn wait_quiet(shared: &Arc<Mutex<SharedPtyState>>, settle_ms: u64, max_wait_ms: u64) {
     if settle_ms == 0 {
         return;
@@ -482,6 +540,7 @@ fn build_screen_resp(
         matches: Vec::new(),
         row_spans: Vec::new(),
         palette: Vec::new(),
+        clipboard: None,
     }
 }
 
@@ -663,6 +722,12 @@ fn write_custom_test_config(dir: &Path) -> Result<()> {
 [general]
 language = "en-US"
 default_tab = "log"
+
+[layout]
+log_ratio = [ 1, 3, 2 ]
+commit_ratio = [ 1, 2 ]
+file_history_ratio = [ 1, 2 ]
+file_history_vertical_ratio = [ 1, 2 ]
 "#,
     )?;
 
@@ -793,16 +858,34 @@ pub fn init_sandbox_repo(dir: &Path, remote_dir: &Path, scenario: SandboxScenari
             run_git(remote_dir, &["init", "--bare", "-b", "main"])?;
 
             fs::write(dir.join("README.md"), "# jbgit Full QA Sandbox\n\nline 1\n")?;
-            fs::create_dir_all(dir.join("src"))?;
+            fs::create_dir_all(dir.join("src/components"))?;
             let mut src_lines = Vec::new();
             for i in 1..=30 {
                 src_lines.push(format!("fn step_{i:02}() {{ println!(\"step {i}\"); }}"));
             }
             fs::write(dir.join("src/main.rs"), format!("{}\n", src_lines.join("\n")))?;
+            fs::write(
+                dir.join("src/legacy_auth.rs"),
+                "pub fn verify_user(user: &str) -> bool {\n    !user.is_empty()\n}\n",
+            )?;
+            fs::write(
+                dir.join("src/components/header.rs"),
+                "pub fn title() -> &'static str { \"jbgit\" }\n",
+            )?;
+            fs::write(dir.join(".gitignore"), "*.log\n")?;
             fs::write(dir.join("staged_partial.txt"), "alpha\nbeta\ngamma\ndelta\n")?;
             run_git(dir, &["add", "."])?;
             run_git(dir, &["commit", "-m", "initial project scaffold"])?;
             run_git(dir, &["tag", "v0.1.0"])?;
+
+            // Evolve and rename src/legacy_auth.rs -> src/auth.rs for --follow File History testing
+            fs::write(
+                dir.join("src/legacy_auth.rs"),
+                "pub fn verify_user(user: &str) -> bool {\n    !user.is_empty()\n}\n\npub fn token_ttl() -> u64 {\n    3600\n}\n",
+            )?;
+            run_git(dir, &["commit", "-am", "feat: add token_ttl to legacy_auth"])?;
+            run_git(dir, &["mv", "src/legacy_auth.rs", "src/auth.rs"])?;
+            run_git(dir, &["commit", "-m", "refactor: rename legacy_auth.rs to auth.rs"])?;
 
             // Push initial main + create a remote-only branch
             run_git(dir, &["remote", "add", "origin", &remote_dir.to_string_lossy()])?;
@@ -827,7 +910,10 @@ pub fn init_sandbox_repo(dir: &Path, remote_dir: &Path, scenario: SandboxScenari
 
             // 3. Unmerged feature + bugfix branches
             run_git(dir, &["checkout", "-b", "feature/login"])?;
-            fs::write(dir.join("src/auth.rs"), "pub fn login() -> bool { true }\n")?;
+            fs::write(
+                dir.join("src/auth.rs"),
+                "pub fn verify_user(user: &str) -> bool {\n    !user.is_empty()\n}\n\npub fn token_ttl() -> u64 {\n    3600\n}\n\npub fn login() -> bool {\n    true\n}\n",
+            )?;
             run_git(dir, &["add", "src/auth.rs"])?;
             run_git(dir, &["commit", "-m", "feat: implement oauth login"])?;
 
@@ -884,7 +970,15 @@ pub fn init_sandbox_repo(dir: &Path, remote_dir: &Path, scenario: SandboxScenari
 
             // Local main is ahead of origin/main
             fs::write(dir.join("README.md"), "# jbgit Full QA Sandbox\n\nline 1\nupdated on main\n")?;
-            run_git(dir, &["commit", "-am", "docs: update README on main"])?;
+            fs::write(
+                dir.join("src/auth.rs"),
+                "pub fn verify_user(user: &str) -> bool {\n    !user.trim().is_empty()\n}\n\npub fn token_ttl() -> u64 {\n    3600\n}\n",
+            )?;
+            fs::write(
+                dir.join("src/components/header.rs"),
+                "pub fn title() -> &'static str { \"jbgit TUI\" }\n",
+            )?;
+            run_git(dir, &["commit", "-am", "feat: refine auth, header, and README on main"])?;
 
             // 4. Create two real Stashes for Stash tab testing
             fs::write(dir.join("README.md"), "# jbgit Full QA Sandbox\n\nstash one edit\n")?;
@@ -902,11 +996,83 @@ pub fn init_sandbox_repo(dir: &Path, remote_dir: &Path, scenario: SandboxScenari
             src_lines[26] = "fn step_27() { println!(\"step 27 modified hunk B\"); }".to_string();
             fs::write(dir.join("src/main.rs"), format!("{}\n", src_lines.join("\n")))?;
 
-            // 7. Untracked file
+            // 7. Untracked and ignored files
             fs::write(dir.join("scratch_note.txt"), "untracked qa file\n")?;
+            fs::write(dir.join("debug_trace.log"), "ignored debug log\n")?;
         }
     }
     Ok(())
+}
+
+fn extract_latest_osc52_clipboard(raw: &[u8]) -> Option<String> {
+    const PREFIX: &[u8] = b"\x1b]52;";
+    let mut latest = None;
+    let mut i = 0;
+    while i + PREFIX.len() <= raw.len() {
+        if raw[i..].starts_with(PREFIX) {
+            let after_prefix = &raw[i + PREFIX.len()..];
+            if let Some(semi) = after_prefix.iter().take(16).position(|&b| b == b';') {
+                let payload = &after_prefix[semi + 1..];
+                let end = find_osc_terminator(payload);
+                if let Some((term_idx, term_len)) = end {
+                    let b64 = &payload[..term_idx];
+                    if b64 != b"?"
+                        && let Some(decoded) = base64_decode(b64)
+                        && let Ok(text) = String::from_utf8(decoded)
+                    {
+                        latest = Some(text);
+                    }
+                    i += PREFIX.len() + semi + 1 + term_idx + term_len;
+                    continue;
+                }
+            }
+        }
+        i += 1;
+    }
+    latest
+}
+
+fn find_osc_terminator(bytes: &[u8]) -> Option<(usize, usize)> {
+    let mut j = 0;
+    while j < bytes.len() {
+        if bytes[j] == 0x07 {
+            return Some((j, 1));
+        }
+        if bytes[j] == 0x1b && bytes.get(j + 1) == Some(&b'\\') {
+            return Some((j, 2));
+        }
+        j += 1;
+    }
+    None
+}
+
+fn base64_decode(input: &[u8]) -> Option<Vec<u8>> {
+    let mut out = Vec::with_capacity((input.len() * 3) / 4);
+    let mut acc: u32 = 0;
+    let mut bits: u8 = 0;
+    for &b in input {
+        if b.is_ascii_whitespace() {
+            continue;
+        }
+        if b == b'=' {
+            break;
+        }
+        let val = match b {
+            b'A'..=b'Z' => b - b'A',
+            b'a'..=b'z' => b - b'a' + 26,
+            b'0'..=b'9' => b - b'0' + 52,
+            b'+' | b'-' => 62,
+            b'/' | b'_' => 63,
+            _ => return None,
+        };
+        acc = (acc << 6) | u32::from(val);
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            out.push(((acc >> bits) & 0xff) as u8);
+        }
+    }
+    Some(out)
 }
 
 fn run_git(dir: &Path, args: &[&str]) -> Result<()> {
@@ -926,4 +1092,25 @@ fn run_git(dir: &Path, args: &[&str]) -> Result<()> {
         );
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn decodes_latest_osc52_clipboard_sequence() {
+        assert_eq!(
+            extract_latest_osc52_clipboard(b"\x1b]52;c;YWJj\x07"),
+            Some("abc".to_string())
+        );
+        assert_eq!(
+            extract_latest_osc52_clipboard(b"noise\x1b]52;c;Zmlyc3Q=\x07more\x1b]52;c;c2Vjb25k\x1b\\"),
+            Some("second".to_string())
+        );
+        assert_eq!(
+            extract_latest_osc52_clipboard(b"\x1b]52;c;?\x07"),
+            None
+        );
+    }
 }

@@ -9,8 +9,16 @@ use crate::protocol::{CommandEnvelope, PilotAction, ResponseEnvelope};
 
 pub fn send_action(session_dir: &Path, action: PilotAction, timeout_ms: u64) -> Result<ResponseEnvelope> {
     let ready_path = session_dir.join("ready.json");
+    let starting_path = session_dir.join("starting.json");
     let cmd_path = session_dir.join("cmd.json");
     let resp_path = session_dir.join("resp.json");
+
+    if !ready_path.is_file() && starting_path.is_file() {
+        let start_deadline = Instant::now() + Duration::from_millis(15_000);
+        while !ready_path.is_file() && starting_path.is_file() && Instant::now() < start_deadline {
+            thread::sleep(Duration::from_millis(40));
+        }
+    }
 
     if !ready_path.is_file() {
         bail!(
@@ -79,5 +87,8 @@ pub fn print_response(resp: &ResponseEnvelope) {
                 c.cells, c.colors.fg, c.colors.bg
             );
         }
+    }
+    if let Some(clip) = &resp.clipboard {
+        println!("CLIPBOARD: {clip}");
     }
 }
