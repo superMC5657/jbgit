@@ -1,6 +1,6 @@
 # jbgit Feature Specs & Issue Tracker 目录索引
 
-> 本目录为 `jbgit` 项目的本地需求工单与技术规格索引（遵循 [`docs/agents/issue-tracker.md`](../docs/agents/issue-tracker.md) 与 [`AGENTS.md`](../AGENTS.md)），按执行时序汇总 **9 个特性与治理专题（共 24 个原子工单）** 及其架构演进取舍。
+> 本目录为 `jbgit` 项目的本地需求工单与技术规格索引（遵循 [`docs/agents/issue-tracker.md`](../docs/agents/issue-tracker.md) 与 [`AGENTS.md`](../AGENTS.md)），按执行时序汇总 **10 个特性与治理专题（共 27 个原子工单）** 及其架构演进取舍。
 
 ---
 
@@ -27,6 +27,7 @@
 | **#06** | Phase 3: 配置体系与国际化扩展 | [`06-config-system-and-i18n`](./06-config-system-and-i18n/spec.md) | Yazi 风格四层配置体系、中英 i18n 国际化、主题 Flavors 与预设/动态键位系统 | 2026-11-19 | `b03c75a`, `334d605`, `76be594` | M6 (`tui`) | 3 / 3 Resolved |
 | **#07** | Phase 4: 控制台治理与视口体验加固 | [`07-console-output-stream-and-severity`](./07-console-output-stream-and-severity/spec.md) | Git 控制台保序输出流重构与 `git4idea` 风格行级语义分级渲染 | 2026-11-19 | `aa00fcf` | M6+ (`core` / `engine` / `tui`) | 2 / 2 Resolved |
 | **#08** | Phase 4: 控制台治理与视口体验加固 | [`08-viewport-scroll-clamping-and-console-navigation`](./08-viewport-scroll-clamping-and-console-navigation/spec.md) | 全视图滚动上界双端夹紧（防 Overscroll 卡死）与控制台键盘导航/位置指示 | 2026-11-19 | `4248b7d` | M6+ (`tui`) | 2 / 2 Resolved |
+| **#09** | Phase 4: 控制台治理与视口体验加固 | [`09-log-changes-context-menu-and-file-history`](./09-log-changes-context-menu-and-file-history/spec.md) | 变更文件上下文菜单、单文件历史（`--follow` 重命名追踪）与联动 Diff 检视 | 2026-11-20 | — | M6+ (`core` / `engine` / `tui`) | 3 / 3 Resolved |
 
 ---
 
@@ -116,6 +117,13 @@
   - [`01-bounded-viewport-scroll-and-overscroll-fix.md`](./08-viewport-scroll-clamping-and-console-navigation/issues/01-bounded-viewport-scroll-and-overscroll-fix.md) — 引入 `apply_scroll_delta` 饱和算术与 `ViewportScrollMetrics` 每帧几何回写机制，在事件派发与渲染收尾阶段双端夹紧全部 5 个文本/Diff 视口（`console_output`、`log_diff`、`log_details`、`stash_diff`、`stage_diff`）。
   - [`02-console-navigation-keybindings-and-scroll-indicator.md`](./08-viewport-scroll-clamping-and-console-navigation/issues/02-console-navigation-keybindings-and-scroll-indicator.md) — 为 `PaneId::ConsoleOutputDetail` 补齐 `gg` / `G` / `Home` / `End` / 半页滚动与按真实视口高度的 `PageUp` / `PageDown`，并增加标题栏行范围/百分比与右边缘细滚动条指示。
 
+#### #09 · `09-log-changes-context-menu-and-file-history`
+- **定位**：对齐 IDEA `VcsLogChangesBrowser` 的变更文件上下文菜单、文件级操作与跨重命名追踪单文件历史检视器（3 / 3 Resolved）。
+- **原子工单**：
+  - [`01-file-history-engine-and-follow-rename.md`](./09-log-changes-context-menu-and-file-history/issues/01-file-history-engine-and-follow-rename.md) — 在 `jbgit-core` / `jbgit-engine` 新增 `FileHistoryKey`/`FileHistoryBundle`、`-z --raw --numstat` `git log --follow` 异步可取消加载管线与 `GitOp::CheckoutPaths` 单文件版本恢复。
+  - [`02-log-changes-context-menu-and-file-ops.md`](./09-log-changes-context-menu-and-file-history/issues/02-log-changes-context-menu-and-file-ops.md) — 为 `PaneId::LogChangesTree` / `HitTarget::LogChangeRow` 接入右键与键盘上下文菜单（单文件历史、路径筛选、自动定位的本地对比、`Get Version`、`$EDITOR`、复制路径/补丁），并在 `[1 Commit]` 暂存树复用文件历史入口。
+  - [`03-file-history-view-and-diff-inspector.md`](./09-log-changes-context-menu-and-file-history/issues/03-file-history-view-and-diff-inspector.md) — 实现 `PopupKind::FileHistory` 双分屏覆盖视图（重命名路径徽标、30ms 防抖语法高亮 Diff 联动、`--follow`/对比本地/双版本对比、`Enter`/`g` 跳回主日志、`Esc` 无损返回与 `ScrollPane::FileHistoryDiff` 滚动夹紧）。
+
 ---
 
 ## 架构演进与取舍清单 (Superseded, Pruned & Trade-offs)
@@ -150,7 +158,7 @@ jbgit/
 ├── docs/
 │   ├── manual.md               # 用户操作与 TOML 配置手册
 │   └── agents/                 # Agent 协作指引（issue-tracker / triage-labels / domain / ai-exploratory-testing）
-└── .scratch/                   # 按执行时序组织的 Feature Specs (#00 ~ #08) 与原子 Issues
+└── .scratch/                   # 按执行时序组织的 Feature Specs (#00 ~ #09) 与原子 Issues
 ```
 
 ---

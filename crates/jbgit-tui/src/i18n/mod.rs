@@ -444,6 +444,21 @@ impl I18n {
             }
             GitOp::CreatePatchFiles { .. } => self.t("git_op.create_patch").to_string(),
             GitOp::PatchToClipboard { .. } => self.t("git_op.patch_to_clipboard").to_string(),
+            GitOp::CheckoutPaths { rev, paths } => {
+                let short_rev = jbgit_core::short_rev(rev);
+                if paths.len() == 1 {
+                    self.t_fmt(
+                        "git_op.checkout_paths",
+                        &[("path", &paths[0]), ("rev", short_rev)],
+                    )
+                } else {
+                    let count = paths.len().to_string();
+                    self.t_fmt(
+                        "git_op.checkout_paths_many",
+                        &[("count", &count), ("rev", short_rev)],
+                    )
+                }
+            }
             GitOp::Smart(inner) => {
                 let inner_lbl = self.git_op_label(inner);
                 self.t_fmt("git_op.smart", &[("label", &inner_lbl)])

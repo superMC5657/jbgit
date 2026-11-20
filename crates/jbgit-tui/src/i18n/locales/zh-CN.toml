@@ -164,6 +164,22 @@ copy_patch_need_file = "请选择单个提交与文件"
 fullscreen_diff = "全屏查看差异"
 show_log_for = "查看 {name} 的日志"
 
+[menu.log_change]
+toggle_diff = "切换差异预览"
+fullscreen_diff = "全屏查看差异"
+compare_local = "与本地工作区对比"
+show_file_history = "显示选中文件的历史…"
+show_dir_history = "显示选中目录的历史"
+filter_by_path = "仅显示此路径的日志"
+restore_version = "恢复工作区文件到此版本…"
+open_editor = "在外部编辑器中打开"
+copy_path = "复制相对路径"
+copy_patch = "复制此文件的补丁"
+need_file = "请先选中一个文件"
+need_single_commit = "仅支持单个提交"
+cannot_restore_deleted = "无法恢复已删除的文件"
+not_in_workdir = "工作区中不存在该文件"
+
 [menu.stage]
 stage = "暂存"
 unstage = "取消暂存"
@@ -222,6 +238,8 @@ git_probes = "Git 诊断命令"
 probe_status = "运行 git status --short --branch"
 probe_branch = "运行 git branch -vv"
 probe_log = "运行 git log -n 10 --oneline"
+file_history = "显示文件历史…"
+only_tracked_history = "未跟踪或已忽略文件暂无提交历史"
 
 [menu.stash]
 apply = "应用贮藏"
@@ -394,6 +412,11 @@ body = "检测到另一个 Git 进程正在占用索引锁：\n{path}\n\n{messag
 [dialog.checkbox]
 tab_hint = "Tab 切换"
 
+[dialog.restore_file]
+title = "恢复文件到指定版本"
+body = "确定将工作区文件 {path} 恢复至提交 {short} 的版本吗？\n未暂存的本地修改将被覆盖。"
+confirm_btn = "恢复"
+
 [banner]
 rebasing_prefix = "变基中"
 onto = " 到 {onto}"
@@ -507,6 +530,7 @@ next_hunk = "下一块"
 prev_file = "上文件"
 next_file = "下文件"
 stash_clear = "清空"
+file_history = "文件历史"
 
 [view.common]
 terminal_too_small = "终端窗口过小"
@@ -639,6 +663,23 @@ bin_badge = "二进制 "
 zoom_header = " ⤢ {path}   ({pos}/{total})"
 ctx_btn = " 上下文 {ctx} "
 dock_btn = " ◧ 停靠：{dock} "
+
+[view.file_history]
+title = " 文件历史：{path}{follow} · {count} "
+follow_badge = " (--follow)"
+btn_follow = " ⇵ 追踪重命名 (--follow) "
+btn_compare_local = " ⇄ 对比本地 "
+btn_locate_log = " ⌖ 在日志中定位 "
+commits_header = " 提交记录 "
+truncated_hint = "(仅显示最近 500 条)"
+loading = " 正在加载文件历史…"
+empty = " 未找到该文件的提交历史"
+diff_compare_local = " 对比 {oid} ↔ 本地工作区 · {path} "
+diff_compare_versions = " 对比版本 {older} ↔ {newer} · {path} "
+diff_compare_versions_renamed = " 对比版本 {older} ↔ {newer} · {old} → {path} "
+diff_renamed = " {oid} · {old} → {path} "
+diff_single = " {oid} · {path} "
+footer_hint = " ↑↓/jk 移动 · Shift+↑↓/点击 对比两版本 · f --follow · l 对比本地 · Tab 切焦点 · S 并排 · w 上下文 · z/F4 全屏 · Enter/g 定位 · Esc 关闭"
 
 [view.stash]
 count = "{count} 条贮藏"
@@ -794,6 +835,8 @@ repo_not_loaded = "仓库尚未加载完成"
 presentation_toggle = "{label}：{state}"
 op_running = "{label}…"
 op_done = "✔ {label}"
+path_filter_set = "已按路径筛选日志：{path}"
+compare_local_no_diff = "{path} 与本地工作区无差异"
 
 [git_op]
 checkout = "检出 '{target}'"
@@ -836,6 +879,8 @@ add_to_ignore = "添加忽略规则"
 delete_files = "删除 {count} 个文件"
 create_patch = "创建补丁"
 patch_to_clipboard = "复制补丁"
+checkout_paths = "恢复 '{path}' 到 {rev}"
+checkout_paths_many = "恢复 {count} 个文件到 {rev}"
 smart = "智能{label}"
 
 [rewrite]
@@ -1021,6 +1066,7 @@ action.stash_pop = "应用并弹出贮藏 (Pop)"
 action.stash_drop = "删除选中贮藏"
 action.stash_branch = "从选中贮藏创建分支"
 action.stash_clear = "清空所有贮藏"
+action.file_history = "查看选中文件或目录的提交历史"
 
 [cli]
 tagline = "jbgit - JetBrains 风格的终端 Git 客户端"

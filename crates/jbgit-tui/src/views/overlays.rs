@@ -436,6 +436,10 @@ fn render_floating_popup(
         crate::views::conflict_merge::render_conflict_merge_modal(frame, screen, state, ctx, z);
         return;
     }
+    if kind == PopupKind::FileHistory {
+        crate::views::file_history::render_file_history_modal(frame, screen, state, ctx, z);
+        return;
+    }
     let (max_w, max_h) = match kind {
         PopupKind::PalettePreview => (100, 38),
         PopupKind::ShortcutsHelp => (90, 38),
@@ -478,6 +482,7 @@ fn render_floating_popup(
         PopupKind::CommitHistory => ctx.t("popup.commit_history_title").to_string(),
         PopupKind::ThreeWayInspector => ctx.t("popup.three_way_title").to_string(),
         PopupKind::ConflictMerge => format!(" {} ", ctx.t("menu.stage.resolve_conflicts")),
+        PopupKind::FileHistory => String::new(),
         PopupKind::HookError => ctx.t("popup.hook_error_title").to_string(),
     };
 
@@ -862,7 +867,7 @@ fn render_floating_popup(
             }
             frame.render_widget(Paragraph::new(lines), inner);
         }
-        PopupKind::BranchesQuickView | PopupKind::ConflictMerge => {}
+        PopupKind::BranchesQuickView | PopupKind::ConflictMerge | PopupKind::FileHistory => {}
         PopupKind::CommitHistory => {
             let candidates = state.commit_history_candidates();
             let q_low = query.to_ascii_lowercase();

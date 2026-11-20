@@ -10,8 +10,9 @@ use git2::{Delta, DiffFindOptions, DiffOptions, Repository};
 use imara_diff::{Algorithm, Diff, InternedInput};
 use jbgit_core::{
     CommitChangesBundle, CommitDetails, DetailsKey, DetailsMode, DiffHunk, DiffLine, DiffLineKind,
-    EpochToken, FileChange, FileDiff, FileDiffKey, FileStatusKind, Oid, PersonStamp, RepoSnapshot,
-    SignatureStatus, apply_word_diff,
+    EpochToken, FileChange, FileDiff, FileDiffKey, FileHistoryBundle, FileHistoryEntry,
+    FileHistoryKey, FileStatusKind, Oid, PersonStamp, RepoSnapshot, SignatureStatus,
+    apply_word_diff,
 };
 
 use crate::error::EngineError;
@@ -22,6 +23,8 @@ use crate::probe::{RepoLocation, to_core_oid};
 const MAX_STAT_FILES: usize = 2_000;
 /// Diff preview line budget before truncation.
 const MAX_DIFF_LINES: usize = 20_000;
+/// Default max commits loaded for a single-file history query.
+pub const DEFAULT_FILE_HISTORY_LIMIT: usize = 500;
 
 fn to_git2_oid(oid: &Oid) -> Result<git2::Oid, EngineError> {
     git2::Oid::from_bytes(oid.as_bytes()).map_err(EngineError::from)
@@ -314,6 +317,26 @@ fn read_new_bytes(repo: &Repository, key: &DetailsKey, item: &ResolvedChange) ->
     read_blob_bytes(repo, item.new_oid)
 }
 
+fn read_tree_path_bytes(repo: &Repository, tree: &git2::Tree<'_>, path: &str) -> (Vec<u8>, bool) {
+    let Ok(entry) = tree.get_path(Path::new(path)) else {
+        return (Vec::new(), false);
+    };
+    read_blob_bytes(repo, entry.id())
+}
+
+fn read_workdir_path_bytes(repo: &Repository, path: &str) -> (Vec<u8>, bool) {
+    let Some(workdir) = repo.workdir() else {
+        return (Vec::new(), false);
+    };
+    match std::fs::read(workdir.join(path)) {
+        Ok(bytes) => {
+            let is_bin = bytes.contains(&0);
+            (bytes, is_bin)
+        }
+        Err(_) => (Vec::new(), false),
+    }
+}
+
 fn imara_line_stats(old: &[u8], new: &[u8]) -> (usize, usize) {
     let old_s = String::from_utf8_lossy(old);
     let new_s = String::from_utf8_lossy(new);
@@ -508,6 +531,7 @@ pub fn load_commit_details_sync(
             })
             .collect();
 
+        let workdir = repo.workdir();
         let mut changes = Vec::with_capacity(resolved.len());
         for (idx, item) in resolved.into_iter().enumerate() {
             if idx % 64 == 0 && token.is_stale() {
@@ -524,6 +548,7 @@ pub fn load_commit_details_sync(
                     (additions, deletions) = imara_line_stats(&old_bytes, &new_bytes);
                 }
             }
+            let exists_in_workdir = workdir.is_some_and(|w| w.join(&item.path).is_file());
             changes.push(FileChange {
                 path: item.path,
                 old_path: item.old_path,
@@ -531,6 +556,7 @@ pub fn load_commit_details_sync(
                 additions,
                 deletions,
                 is_binary,
+                exists_in_workdir,
             });
         }
 
@@ -540,6 +566,25 @@ pub fn load_commit_details_sync(
             changes,
         })
     })
+}
+
+fn populate_file_diff(
+    mut out: FileDiff,
+    old_bytes: &[u8],
+    old_bin: bool,
+    new_bytes: &[u8],
+    new_bin: bool,
+    context_lines: u32,
+    token: &EpochToken,
+) -> Result<FileDiff, EngineError> {
+    if old_bin || new_bin {
+        out.is_binary = true;
+        return Ok(out);
+    }
+    let (hunks, is_truncated) = build_imara_hunks(old_bytes, new_bytes, context_lines, token)?;
+    out.hunks = hunks;
+    out.is_truncated = is_truncated;
+    Ok(out)
 }
 
 pub fn load_file_diff_sync(
@@ -552,13 +597,53 @@ pub fn load_file_diff_sync(
     }
 
     with_thread_repo(&location.git_dir, |repo| {
-        let (resolved, _) = resolve_changes(repo, &key.details, token)?;
         let mut out = FileDiff {
             key: key.clone(),
             hunks: Vec::new(),
             is_binary: false,
             is_truncated: false,
         };
+        let context_lines = key.context.lines();
+
+        if let Some(old_path) = key.old_path.as_deref().filter(|old| *old != key.path) {
+            match key.details.mode {
+                DetailsMode::CompareVersions if key.details.oids.len() >= 2 => {
+                    let base = repo.find_commit(to_git2_oid(&key.details.oids[0])?)?;
+                    let target = repo.find_commit(to_git2_oid(&key.details.oids[1])?)?;
+                    let base_tree = base.tree()?;
+                    let target_tree = target.tree()?;
+                    let (old_bytes, old_bin) = read_tree_path_bytes(repo, &base_tree, old_path);
+                    let (new_bytes, new_bin) = read_tree_path_bytes(repo, &target_tree, &key.path);
+                    return populate_file_diff(
+                        out,
+                        &old_bytes,
+                        old_bin,
+                        &new_bytes,
+                        new_bin,
+                        context_lines,
+                        token,
+                    );
+                }
+                DetailsMode::CompareWithLocal if !key.details.oids.is_empty() => {
+                    let base = repo.find_commit(to_git2_oid(&key.details.oids[0])?)?;
+                    let base_tree = base.tree()?;
+                    let (old_bytes, old_bin) = read_tree_path_bytes(repo, &base_tree, old_path);
+                    let (new_bytes, new_bin) = read_workdir_path_bytes(repo, &key.path);
+                    return populate_file_diff(
+                        out,
+                        &old_bytes,
+                        old_bin,
+                        &new_bytes,
+                        new_bin,
+                        context_lines,
+                        token,
+                    );
+                }
+                _ => {}
+            }
+        }
+
+        let (resolved, commits) = resolve_changes(repo, &key.details, token)?;
         let Some(item) = resolved.into_iter().find(|c| c.path == key.path) else {
             return Ok(out);
         };
@@ -566,17 +651,29 @@ pub fn load_file_diff_sync(
             out.is_binary = true;
             return Ok(out);
         }
-        let (old_bytes, old_bin) = read_blob_bytes(repo, item.old_oid);
+        let (old_bytes, old_bin) = if item.old_oid.is_zero()
+            && key.details.mode == DetailsMode::Commits
+            && commits.len() == 1
+            && let Some(old_path) = key.old_path.as_deref().filter(|old| *old != key.path)
+            && let Some(parent_tree) = commits[0]
+                .parent(key.details.parent_index)
+                .ok()
+                .and_then(|p| p.tree().ok())
+        {
+            read_tree_path_bytes(repo, &parent_tree, old_path)
+        } else {
+            read_blob_bytes(repo, item.old_oid)
+        };
         let (new_bytes, new_bin) = read_new_bytes(repo, &key.details, &item);
-        if old_bin || new_bin {
-            out.is_binary = true;
-            return Ok(out);
-        }
-        let (hunks, is_truncated) =
-            build_imara_hunks(&old_bytes, &new_bytes, key.context.lines(), token)?;
-        out.hunks = hunks;
-        out.is_truncated = is_truncated;
-        Ok(out)
+        populate_file_diff(
+            out,
+            &old_bytes,
+            old_bin,
+            &new_bytes,
+            new_bin,
+            context_lines,
+            token,
+        )
     })
 }
 
@@ -626,4 +723,426 @@ pub fn load_path_matches_sync(
         }
         Ok(out)
     })
+}
+
+fn trim_leading_newlines(mut bytes: &[u8]) -> &[u8] {
+    while let Some(&b) = bytes.first() {
+        if b == b'\n' || b == b'\r' {
+            bytes = &bytes[1..];
+        } else {
+            break;
+        }
+    }
+    bytes
+}
+
+fn decode_git_path(bytes: &[u8]) -> String {
+    String::from_utf8_lossy(bytes).replace('\\', "/")
+}
+
+fn status_kind_from_code(code: &str) -> FileStatusKind {
+    if code.starts_with('R') {
+        FileStatusKind::Renamed
+    } else if code.starts_with('C') {
+        FileStatusKind::Copied
+    } else if code.starts_with('A') {
+        FileStatusKind::Added
+    } else if code.starts_with('D') {
+        FileStatusKind::Deleted
+    } else if code.starts_with('T') {
+        FileStatusKind::Typechange
+    } else {
+        FileStatusKind::Modified
+    }
+}
+
+fn set_path_if_empty(target: &mut String, bytes: &[u8]) {
+    if target.is_empty() {
+        let s = decode_git_path(bytes);
+        if !s.is_empty() {
+            *target = s;
+        }
+    }
+}
+
+fn take_rename_paths(
+    tokens: &[&[u8]],
+    idx: usize,
+    old_path: &mut Option<String>,
+    path_at_commit: &mut String,
+) -> usize {
+    if let Some(old_b) = tokens.get(idx + 1) {
+        let old_s = decode_git_path(old_b);
+        if old_path.is_none() && !old_s.is_empty() {
+            *old_path = Some(old_s);
+        }
+    }
+    if let Some(new_b) = tokens.get(idx + 2) {
+        set_path_if_empty(path_at_commit, new_b);
+    }
+    idx + 3
+}
+
+/// Parses NUL-delimited `git log -z --raw --numstat --format=%x1e%H%x1f%an%x1f%at%x1f%s%x1f`
+/// output into [`FileHistoryEntry`] items and a truncation flag.
+pub fn parse_file_history_z(raw: &[u8], max_entries: usize) -> (Vec<FileHistoryEntry>, bool) {
+    let mut entries: Vec<FileHistoryEntry> = Vec::new();
+    let mut truncated = false;
+
+    for rec in raw.split(|&b| b == 0x1E) {
+        if rec.is_empty() {
+            continue;
+        }
+        let mut fields = rec.splitn(5, |&b| b == 0x1F);
+        let (Some(hash_b), Some(author_b), Some(time_b), Some(summary_b)) =
+            (fields.next(), fields.next(), fields.next(), fields.next())
+        else {
+            continue;
+        };
+        let Ok(oid) = String::from_utf8_lossy(hash_b).trim().parse::<Oid>() else {
+            continue;
+        };
+        if entries.len() >= max_entries {
+            truncated = true;
+            break;
+        }
+
+        let author_name = String::from_utf8_lossy(author_b).into_owned();
+        let author_time = String::from_utf8_lossy(time_b)
+            .trim()
+            .parse::<i64>()
+            .unwrap_or(0);
+        let summary = String::from_utf8_lossy(summary_b).into_owned();
+        let rest = fields.next().unwrap_or(&[]);
+
+        let mut path_at_commit = String::new();
+        let mut old_path: Option<String> = None;
+        let mut kind = FileStatusKind::Modified;
+        let mut kind_set = false;
+        let mut additions = 0usize;
+        let mut deletions = 0usize;
+        let mut is_binary = false;
+
+        let tokens: Vec<&[u8]> = rest.split(|&b| b == 0).collect();
+        let mut idx = 0usize;
+        while idx < tokens.len() {
+            let tok = trim_leading_newlines(tokens[idx]);
+            if tok.is_empty() {
+                idx += 1;
+                continue;
+            }
+            if tok.starts_with(b":") {
+                let header = String::from_utf8_lossy(tok);
+                let code = header.split_ascii_whitespace().last().unwrap_or("M");
+                if !kind_set {
+                    kind = status_kind_from_code(code);
+                    kind_set = true;
+                }
+                if code.starts_with('R') || code.starts_with('C') {
+                    idx = take_rename_paths(&tokens, idx, &mut old_path, &mut path_at_commit);
+                } else {
+                    if let Some(p_b) = tokens.get(idx + 1) {
+                        set_path_if_empty(&mut path_at_commit, p_b);
+                    }
+                    idx += 2;
+                }
+                continue;
+            }
+
+            let mut parts = tok.splitn(3, |&b| b == b'\t');
+            if let (Some(add_b), Some(del_b), Some(path_part)) =
+                (parts.next(), parts.next(), parts.next())
+                && let (Ok(add_s), Ok(del_s)) =
+                    (std::str::from_utf8(add_b), std::str::from_utf8(del_b))
+            {
+                let add_s = add_s.trim();
+                let del_s = del_s.trim();
+                let parsed = if add_s == "-" && del_s == "-" {
+                    is_binary = true;
+                    additions = 0;
+                    deletions = 0;
+                    true
+                } else if let (Ok(a), Ok(d)) = (add_s.parse::<usize>(), del_s.parse::<usize>()) {
+                    additions = a;
+                    deletions = d;
+                    is_binary = false;
+                    true
+                } else {
+                    false
+                };
+                if parsed {
+                    if path_part.is_empty() {
+                        // Git `-z --numstat` emits `add\tdel\t\0old_path\0new_path\0` for renames/copies.
+                        idx = take_rename_paths(&tokens, idx, &mut old_path, &mut path_at_commit);
+                    } else {
+                        set_path_if_empty(&mut path_at_commit, path_part);
+                        idx += 1;
+                    }
+                    continue;
+                }
+            }
+
+            idx += 1;
+        }
+
+        entries.push(FileHistoryEntry {
+            oid,
+            path_at_commit,
+            old_path,
+            kind,
+            additions,
+            deletions,
+            is_binary,
+            author_name,
+            author_time,
+            summary,
+        });
+    }
+
+    // Backfill empty `path_at_commit` (e.g. merge commits without diff body) from neighbors.
+    let mut tracked: Option<String> = None;
+    for e in &mut entries {
+        if e.path_at_commit.is_empty() {
+            if let Some(p) = &tracked {
+                e.path_at_commit = p.clone();
+            }
+        } else {
+            tracked = e
+                .old_path
+                .clone()
+                .or_else(|| Some(e.path_at_commit.clone()));
+        }
+    }
+    let mut next_path: Option<String> = None;
+    for e in entries.iter_mut().rev() {
+        if e.path_at_commit.is_empty() {
+            if let Some(p) = &next_path {
+                e.path_at_commit = p.clone();
+            }
+        } else {
+            next_path = Some(e.path_at_commit.clone());
+        }
+    }
+
+    (entries, truncated)
+}
+
+fn is_empty_or_unborn_log_error(stderr: &str) -> bool {
+    let low = stderr.to_ascii_lowercase();
+    low.contains("does not have any commits yet")
+        || low.contains("your current branch") && low.contains("does not have any commits")
+        || low.contains("unknown revision")
+        || low.contains("bad revision")
+        || low.contains("ambiguous argument")
+}
+
+/// Loads commit history for a single file using read-only `git log [--follow] -z --raw --numstat`.
+pub fn load_file_history_sync(
+    location: &RepoLocation,
+    key: &FileHistoryKey,
+    token: &EpochToken,
+) -> Result<FileHistoryBundle, EngineError> {
+    if token.is_stale() {
+        return Err(EngineError::Cancelled);
+    }
+    if key.path.trim().is_empty() {
+        return Ok(FileHistoryBundle {
+            key: key.clone(),
+            entries: Vec::new(),
+            truncated: false,
+        });
+    }
+
+    let start_rev = key
+        .start_oid
+        .map(|o| o.to_string())
+        .unwrap_or_else(|| "HEAD".to_string());
+    let max_count_arg = format!("--max-count={}", DEFAULT_FILE_HISTORY_LIMIT + 1);
+
+    let mut cmd = Command::new("git");
+    cmd.arg("--git-dir")
+        .arg(&location.git_dir)
+        .args(["-c", "core.quotepath=false", "log", &max_count_arg]);
+    if key.follow_renames {
+        cmd.arg("--follow");
+    }
+    cmd.args([
+        "-z",
+        "--raw",
+        "--numstat",
+        "--format=%x1e%H%x1f%an%x1f%at%x1f%s%x1f",
+        &start_rev,
+        "--",
+        &key.path,
+    ])
+    .current_dir(&location.workdir)
+    .env("GIT_OPTIONAL_LOCKS", "0")
+    .env("GIT_TERMINAL_PROMPT", "0")
+    .env("GIT_PAGER", "cat")
+    .env("LC_ALL", "C.UTF-8")
+    .stdin(Stdio::null());
+
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    }
+
+    let output = cmd.output().map_err(|e| {
+        if e.kind() == std::io::ErrorKind::NotFound {
+            EngineError::GitNotFound
+        } else {
+            EngineError::Io(e)
+        }
+    })?;
+
+    if token.is_stale() {
+        return Err(EngineError::Cancelled);
+    }
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        if is_empty_or_unborn_log_error(&stderr) {
+            return Ok(FileHistoryBundle {
+                key: key.clone(),
+                entries: Vec::new(),
+                truncated: false,
+            });
+        }
+        return Err(EngineError::Other(if stderr.is_empty() {
+            format!("git log failed with exit {:?}", output.status.code())
+        } else {
+            stderr
+        }));
+    }
+
+    let (mut entries, truncated) = parse_file_history_z(&output.stdout, DEFAULT_FILE_HISTORY_LIMIT);
+    if token.is_stale() {
+        return Err(EngineError::Cancelled);
+    }
+    for entry in &mut entries {
+        if entry.path_at_commit.is_empty() {
+            entry.path_at_commit = key.path.clone();
+        }
+    }
+
+    Ok(FileHistoryBundle {
+        key: key.clone(),
+        entries,
+        truncated,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn hex_oid(fill: u8) -> (String, Oid) {
+        let oid = Oid::from_bytes([fill; 20]);
+        (oid.to_string(), oid)
+    }
+
+    #[test]
+    fn parses_added_modified_deleted_typechange_and_spaces_cjk() {
+        let (h1, o1) = hex_oid(0x11);
+        let (h2, o2) = hex_oid(0x22);
+        let (h3, o3) = hex_oid(0x33);
+        let (h4, o4) = hex_oid(0x44);
+        let mut raw = Vec::new();
+        raw.extend_from_slice(
+            format!(
+                "\x1e{h4}\x1fAlice\x1f400\x1fdelete file\x1f\x00\n:100644 000000 1111111 0000000 D\x00dir with space/中文 文件.rs\x000\t5\tdir with space/中文 文件.rs\x00"
+            )
+            .as_bytes(),
+        );
+        raw.extend_from_slice(
+            format!(
+                "\x1e{h3}\x1fBob\x1f300\x1ftypechange\x1f\x00\n:100644 120000 1111111 2222222 T\x00dir with space/中文 文件.rs\x000\t0\tdir with space/中文 文件.rs\x00"
+            )
+            .as_bytes(),
+        );
+        raw.extend_from_slice(
+            format!(
+                "\x1e{h2}\x1fCarol\x1f200\x1fmodify\x1f\x00\n:100644 100644 1111111 2222222 M\x00dir with space/中文 文件.rs\x003\t1\tdir with space/中文 文件.rs\x00"
+            )
+            .as_bytes(),
+        );
+        raw.extend_from_slice(
+            format!(
+                "\x1e{h1}\x1fDave\x1f100\x1fadd\x1f\x00\n:000000 100644 0000000 1111111 A\x00dir with space/中文 文件.rs\x005\t0\tdir with space/中文 文件.rs\x00"
+            )
+            .as_bytes(),
+        );
+
+        let (entries, truncated) = parse_file_history_z(&raw, 50);
+        assert!(!truncated);
+        assert_eq!(entries.len(), 4);
+        assert_eq!(entries[0].oid, o4);
+        assert_eq!(entries[0].kind, FileStatusKind::Deleted);
+        assert_eq!(entries[0].deletions, 5);
+        assert_eq!(entries[0].path_at_commit, "dir with space/中文 文件.rs");
+
+        assert_eq!(entries[1].oid, o3);
+        assert_eq!(entries[1].kind, FileStatusKind::Typechange);
+        assert_eq!(entries[1].additions, 0);
+        assert_eq!(entries[1].deletions, 0);
+
+        assert_eq!(entries[2].oid, o2);
+        assert_eq!(entries[2].kind, FileStatusKind::Modified);
+        assert_eq!((entries[2].additions, entries[2].deletions), (3, 1));
+
+        assert_eq!(entries[3].oid, o1);
+        assert_eq!(entries[3].kind, FileStatusKind::Added);
+        assert_eq!((entries[3].additions, entries[3].deletions), (5, 0));
+    }
+
+    #[test]
+    fn parses_rename_binary_merge_and_truncation() {
+        let (h1, o1) = hex_oid(0xaa);
+        let (h2, o2) = hex_oid(0xbb);
+        let (h3, o3) = hex_oid(0xcc);
+        let (h4, _o4) = hex_oid(0xdd);
+        let mut raw = Vec::new();
+        // Record 1: binary
+        raw.extend_from_slice(
+            format!(
+                "\x1e{h1}\x1fAlice\x1f40\x1fbin\x1f\x00\n:100644 100644 111 222 M\x00sub/new name.bin\x00-\t-\tsub/new name.bin\x00"
+            )
+            .as_bytes(),
+        );
+        // Record 2: merge without diff body
+        raw.extend_from_slice(
+            format!("\x1e{h2}\x1fAlice\x1f30\x1fmerge\x1f\x00").as_bytes(),
+        );
+        // Record 3: rename with R092 and `-z --numstat` empty path field
+        raw.extend_from_slice(
+            format!(
+                "\x1e{h3}\x1fAlice\x1f20\x1frename\x1f\x00\n:100644 100644 111 222 R092\x00old name.txt\x00sub/new name.bin\x001\t2\t\x00old name.txt\x00sub/new name.bin\x00"
+            )
+            .as_bytes(),
+        );
+        // Record 4: extra record to trigger truncation when max_entries == 3
+        raw.extend_from_slice(
+            format!(
+                "\x1e{h4}\x1fAlice\x1f10\x1finit\x1f\x00\n:000000 100644 000 111 A\x00old name.txt\x0010\t0\told name.txt\x00"
+            )
+            .as_bytes(),
+        );
+
+        let (entries, truncated) = parse_file_history_z(&raw, 3);
+        assert!(truncated);
+        assert_eq!(entries.len(), 3);
+        assert_eq!(entries[0].oid, o1);
+        assert!(entries[0].is_binary);
+        assert_eq!((entries[0].additions, entries[0].deletions), (0, 0));
+
+        assert_eq!(entries[1].oid, o2);
+        assert_eq!(entries[1].path_at_commit, "sub/new name.bin");
+
+        assert_eq!(entries[2].oid, o3);
+        assert_eq!(entries[2].kind, FileStatusKind::Renamed);
+        assert_eq!(entries[2].old_path.as_deref(), Some("old name.txt"));
+        assert_eq!(entries[2].path_at_commit, "sub/new name.bin");
+        assert_eq!((entries[2].additions, entries[2].deletions), (1, 2));
+    }
 }

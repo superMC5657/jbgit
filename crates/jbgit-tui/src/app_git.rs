@@ -5,8 +5,9 @@
 use std::collections::HashSet;
 
 use jbgit_core::{
-    ChangeRowKind, DetailsKey, GitFailure, GitOp, GitOpOutcome, Oid, OngoingKind, PaneId, RefKind,
-    RepoSnapshot, RewritePlan, StageNodeKind, StageTreeRowKind, WorkspaceTab, is_protected_branch,
+    ChangeRowKind, DetailsKey, GitFailure, GitOp, GitOpOutcome, Oid, OngoingKind, PaneId,
+    RefKind, RepoSnapshot, RewritePlan, StageNodeKind, StageTreeRowKind, WorkspaceTab,
+    is_protected_branch,
 };
 
 use crate::app::{
@@ -212,6 +213,7 @@ impl AppState {
                 self.active_tab = WorkspaceTab::Log;
                 self.focused_pane = PaneId::LogChangesTree;
                 self.details.diff_preview = true;
+                self.details.pending_select_path = None;
                 self.details.compare_override = Some(DetailsKey::compare_versions(*base, *target));
                 let b_s = base.short();
                 let t_s = target.short();
@@ -221,15 +223,10 @@ impl AppState {
                 ));
             }
             Action::CompareWithLocal { target } => {
-                self.active_tab = WorkspaceTab::Log;
-                self.focused_pane = PaneId::LogChangesTree;
-                self.details.diff_preview = true;
-                self.details.compare_override = Some(DetailsKey::compare_with_local(*target));
-                let t_s = target.short();
-                self.status_notice = Some(self.i18n.t_fmt(
-                    "toast.comparing_local",
-                    &[("target", &t_s)],
-                ));
+                self.start_compare_with_local(*target, None);
+            }
+            Action::CompareFileWithLocal { target, path } => {
+                self.start_compare_with_local(*target, Some(path.clone()));
             }
             Action::OpenConflictResolver(path) => {
                 self.conflict_merge = Some(ConflictMergeState {
@@ -436,6 +433,19 @@ impl AppState {
             _ => return false,
         }
         true
+    }
+
+    fn start_compare_with_local(&mut self, target: Oid, select_path: Option<String>) {
+        self.active_tab = WorkspaceTab::Log;
+        self.focused_pane = PaneId::LogChangesTree;
+        self.details.diff_preview = true;
+        self.details.pending_select_path = select_path;
+        self.details.compare_override = Some(DetailsKey::compare_with_local(target));
+        let t_s = target.short();
+        self.status_notice = Some(self.i18n.t_fmt(
+            "toast.comparing_local",
+            &[("target", &t_s)],
+        ));
     }
 
     fn checkout_remote(&mut self, remote_ref: &str, effects: &mut Vec<Effect>) {

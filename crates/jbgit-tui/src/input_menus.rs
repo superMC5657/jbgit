@@ -706,6 +706,18 @@ pub fn context_menu_for_target(
             let kind = state.ongoing_kind()?;
             menus::ongoing_menu_items(state, kind)
         }
+        HitTarget::LogChangeRow { idx } => {
+            actions.push(Action::FocusPane(PaneId::LogChangesTree));
+            if state.details.changes_selected != *idx {
+                state.details.changes_selected = *idx;
+                actions.push(Action::ChangesSelectRow(*idx));
+            }
+            menus::log_change_menu_items(state)
+        }
+        HitTarget::Pane(PaneId::LogChangesTree) => {
+            actions.push(Action::FocusPane(PaneId::LogChangesTree));
+            menus::log_change_menu_items(state)
+        }
         _ => return None,
     };
     Some(items)
@@ -746,6 +758,11 @@ pub fn keyboard_menu_target(state: &AppState) -> Option<(HitTarget, (u16, u16))>
             let sel = state.stage_workbench.diff_cursor_row;
             pick(&|t| matches!(t, HitTarget::StageDiffLine { row_idx } if *row_idx == sel))
                 .or_else(|| pick(&|t| matches!(t, HitTarget::Pane(PaneId::CommitDiffPreview))))
+        }
+        PaneId::LogChangesTree => {
+            let sel = state.details.changes_selected;
+            pick(&|t| matches!(t, HitTarget::LogChangeRow { idx } if *idx == sel))
+                .or_else(|| pick(&|t| matches!(t, HitTarget::Pane(PaneId::LogChangesTree))))
         }
         PaneId::LogDetailsDiff => pick(&|t| matches!(t, HitTarget::DiffArea)),
         PaneId::StashList => {

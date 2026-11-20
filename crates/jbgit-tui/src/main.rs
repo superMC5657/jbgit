@@ -15,6 +15,8 @@ pub mod keymap;
 mod log_tests;
 #[cfg(test)]
 mod spec05_tests;
+#[cfg(test)]
+mod spec09_tests;
 mod log_view;
 mod menus;
 mod stage_view;
@@ -1260,6 +1262,7 @@ mod tests {
                     additions: 1,
                     deletions: 0,
                     is_binary: false,
+                    exists_in_workdir: true,
                 }],
             }),
         });
@@ -1330,6 +1333,7 @@ mod tests {
                     additions: 1,
                     deletions: 1,
                     is_binary: false,
+                    exists_in_workdir: true,
                 }],
             }),
         });
@@ -1763,6 +1767,7 @@ stash_preview_ratio = [1, 1]
             additions: 60,
             deletions: 0,
             is_binary: false,
+            exists_in_workdir: true,
         }];
         let details = jbgit_core::CommitDetails {
             oid,

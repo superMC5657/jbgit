@@ -26,8 +26,9 @@ pub use console::{
 pub use details::{
     ChangeRowKind, ChangeTreeRow, CommitChangesBundle, CommitDetails, DetailsKey, DetailsMode,
     DiffContext, DiffHunk, DiffLine, DiffLineKind, FileChange, FileDiff, FileDiffKey,
-    MessageLineKind, PersonStamp, SideBySideRow, SignatureStatus, apply_word_diff,
-    build_change_rows, classify_message_line, issue_ref_ranges, side_by_side_rows, word_diff,
+    FileHistoryBundle, FileHistoryEntry, FileHistoryKey, MessageLineKind, PersonStamp,
+    SideBySideRow, SignatureStatus, apply_word_diff, build_change_rows, classify_message_line,
+    issue_ref_ranges, side_by_side_rows, word_diff,
 };
 pub use epoch::{EpochToken, EpochTracker, RequestEpoch};
 pub use filter::{
@@ -37,8 +38,8 @@ pub use filter::{
 pub use git_ops::{
     GitFailure, GitOp, GitOpOutcome, GitStep, OngoingKind, OngoingStep, RefNameError, ResetMode,
     RewritePlan, StashEntry, TodoAction, TodoEntry, classify_failure, default_squash_messages,
-    fuzzy_indices, is_protected_branch, parse_recent_checkouts, render_todo, validate_ref_name,
-    validate_ref_name_typed,
+    fuzzy_indices, is_protected_branch, parse_recent_checkouts, render_todo, short_rev,
+    validate_ref_name, validate_ref_name_typed,
 };
 pub use lru::LruCache;
 pub use oid::Oid;

@@ -8,11 +8,13 @@ use crossbeam_channel::{Sender, bounded};
 use git2::{BranchType, Delta, Repository, Sort, Status, StatusOptions};
 use jbgit_core::{
     AmendCommitPreview, CommitChangesBundle, CommitSummary, ConflictDocument, DetailsKey,
-    EpochToken, FileDiff, FileDiffKey, FileStatusKind, Oid, RefInfo, RefKind, RepoSnapshot,
-    StageEntry, StageNodeKind, StageStatusSnapshot, StageTarget,
+    EpochToken, FileDiff, FileDiffKey, FileHistoryBundle, FileHistoryKey, FileStatusKind, Oid,
+    RefInfo, RefKind, RepoSnapshot, StageEntry, StageNodeKind, StageStatusSnapshot, StageTarget,
 };
 
-use crate::details::{load_commit_details_sync, load_file_diff_sync, load_path_matches_sync};
+use crate::details::{
+    load_commit_details_sync, load_file_diff_sync, load_file_history_sync, load_path_matches_sync,
+};
 use crate::error::EngineError;
 use crate::probe::{RepoLocation, probe_repo_state, to_core_oid};
 use crate::stage::{
@@ -136,6 +138,16 @@ impl Git2WorkerPool {
         token: EpochToken,
     ) -> Result<Arc<FileDiff>, EngineError> {
         self.run(move || load_file_diff_sync(&location, &key, &token).map(Arc::new))
+            .await
+    }
+
+    pub async fn load_file_history(
+        &self,
+        location: RepoLocation,
+        key: FileHistoryKey,
+        token: EpochToken,
+    ) -> Result<Arc<FileHistoryBundle>, EngineError> {
+        self.run(move || load_file_history_sync(&location, &key, &token).map(Arc::new))
             .await
     }
 

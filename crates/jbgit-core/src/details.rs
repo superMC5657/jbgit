@@ -100,6 +100,40 @@ impl CommitDetails {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct FileHistoryKey {
+    /// Query relative path from repository root (POSIX `/` separated).
+    pub path: String,
+    /// Starting commit (`None` starts from `HEAD`).
+    pub start_oid: Option<Oid>,
+    /// Whether to track renames with `git log --follow`.
+    pub follow_renames: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FileHistoryEntry {
+    pub oid: Oid,
+    /// Path of the file at this commit (may differ from `key.path` prior to rename).
+    pub path_at_commit: String,
+    /// Previous path if this commit renamed or copied the file.
+    pub old_path: Option<String>,
+    pub kind: FileStatusKind,
+    pub additions: usize,
+    pub deletions: usize,
+    pub is_binary: bool,
+    pub author_name: String,
+    pub author_time: i64,
+    pub summary: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FileHistoryBundle {
+    pub key: FileHistoryKey,
+    pub entries: Vec<FileHistoryEntry>,
+    /// True when the result hit the max entry limit (e.g. 500).
+    pub truncated: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FileChange {
     pub path: String,
@@ -108,6 +142,7 @@ pub struct FileChange {
     pub additions: usize,
     pub deletions: usize,
     pub is_binary: bool,
+    pub exists_in_workdir: bool,
 }
 
 /// Result of a details load: metadata for every selected commit plus the
@@ -547,6 +582,7 @@ mod tests {
             additions: 1,
             deletions: 0,
             is_binary: false,
+            exists_in_workdir: kind != FileStatusKind::Deleted,
         }
     }
 

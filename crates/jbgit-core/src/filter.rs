@@ -337,6 +337,19 @@ pub struct PathFilter {
 }
 
 impl PathFilter {
+    pub fn single(path: &str) -> Self {
+        let norm = path
+            .replace('\\', "/")
+            .trim_start_matches("./")
+            .trim_end_matches('/')
+            .to_string();
+        if norm.is_empty() {
+            Self::default()
+        } else {
+            Self { paths: vec![norm] }
+        }
+    }
+
     pub fn parse(expr: &str) -> Self {
         let mut paths: Vec<String> = Vec::new();
         for tok in expr
@@ -685,6 +698,16 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(bits.count_ones(..), 2);
+    }
+
+    #[test]
+    fn path_filter_single_preserves_spaces_and_normalizes() {
+        let pf = PathFilter::single("dir with space/a.rs");
+        assert_eq!(pf.paths, vec!["dir with space/a.rs".to_string()]);
+        let pf2 = PathFilter::single("./sub dir/中文.txt/");
+        assert_eq!(pf2.paths, vec!["sub dir/中文.txt".to_string()]);
+        assert!(PathFilter::single("").is_empty());
+        assert!(PathFilter::single("./").is_empty());
     }
 
     #[test]

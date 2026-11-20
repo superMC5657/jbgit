@@ -557,4 +557,26 @@ async fn root_commit_fixup_patch_compare_and_conflict_resolution() {
     assert_eq!(fs::read_to_string(d.join("root.txt")).unwrap(), "side-edit\n");
     let porcelain = git(d, &["status", "--porcelain"]);
     assert!(porcelain.contains("M  root.txt"), "{porcelain}");
+
+    // GitOp::CheckoutPaths restores an older file revision without touching unrelated files.
+    git(d, &["commit", "-m", "resolved"]);
+    fs::create_dir_all(d.join("sub dir")).unwrap();
+    commit_file(d, "sub dir/note name.txt", "old version\n", "add note");
+    let old_oid = rev(d, "HEAD");
+    commit_file(d, "sub dir/note name.txt", "new version\n", "update note");
+    let unrelated_before = fs::read_to_string(d.join("root.txt")).unwrap();
+    let restore = run(
+        d,
+        GitOp::CheckoutPaths {
+            rev: old_oid.to_string(),
+            paths: vec!["sub dir/note name.txt".into()],
+        },
+    )
+    .await;
+    assert!(restore.success, "CheckoutPaths failed: {restore:?}");
+    assert_eq!(
+        fs::read_to_string(d.join("sub dir/note name.txt")).unwrap(),
+        "old version\n"
+    );
+    assert_eq!(fs::read_to_string(d.join("root.txt")).unwrap(), unrelated_before);
 }

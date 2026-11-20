@@ -5,6 +5,15 @@
 
 use crate::{Oid, RepositoryState};
 
+/// Returns a 7-char prefix when `rev` is a full 40-hex SHA-1 hash, otherwise `rev` as-is.
+pub fn short_rev(rev: &str) -> &str {
+    if rev.len() == 40 && rev.bytes().all(|b| b.is_ascii_hexdigit()) {
+        &rev[..7]
+    } else {
+        rev
+    }
+}
+
 /// `git reset` mode of the four-mode Reset dialog (`GitResetDialog`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ResetMode {
@@ -433,6 +442,11 @@ pub enum GitOp {
     PatchToClipboard {
         args: Vec<String>,
     },
+    /// `git checkout <rev> -- <paths...>` (Vcs.GetVersion: restore files from revision).
+    CheckoutPaths {
+        rev: String,
+        paths: Vec<String>,
+    },
     /// Stash local changes (incl. untracked) → run `inner` → pop them back.
     Smart(Box<GitOp>),
 }
@@ -523,6 +537,14 @@ impl GitOp {
             Self::DeleteFiles { paths } => format!("Delete {} file(s)", paths.len()),
             Self::CreatePatchFiles { .. } => "Create patch".to_string(),
             Self::PatchToClipboard { .. } => "Copy patch".to_string(),
+            Self::CheckoutPaths { rev, paths } => {
+                let short_rev = short_rev(rev);
+                if let [one] = paths.as_slice() {
+                    format!("Restore '{one}' from {short_rev}")
+                } else {
+                    format!("Restore {} file(s) from {short_rev}", paths.len())
+                }
+            }
             Self::Smart(inner) => format!("Smart {}", inner.label()),
         }
     }
@@ -780,6 +802,17 @@ impl GitOp {
                 vec![GitStep::new(args)]
             }
             Self::PatchToClipboard { args } => vec![GitStep::new(args.clone())],
+            Self::CheckoutPaths { rev, paths } => {
+                if paths.is_empty() {
+                    Vec::new()
+                } else if paths.len() <= 32 {
+                    let mut args = vec!["checkout".to_string(), rev.clone(), "--".to_string()];
+                    args.extend(paths.iter().cloned());
+                    vec![GitStep::new(args)]
+                } else {
+                    return None;
+                }
+            }
             Self::RewordHead { .. }
             | Self::RewriteHistory { .. }
             | Self::AddToIgnore { .. }
@@ -1311,5 +1344,27 @@ mod tests {
             root_patch.simple_steps().unwrap()[0].args,
             vec!["format-patch", "-o", ".", "--root", &oid(2).to_string()]
         );
+
+        let restore = GitOp::CheckoutPaths {
+            rev: oid(3).to_string(),
+            paths: vec!["src/main.rs".into(), "dir with space/a.txt".into()],
+        };
+        assert!(!restore.is_read_only());
+        assert_eq!(
+            restore.simple_steps().unwrap()[0].args,
+            vec![
+                "checkout",
+                &oid(3).to_string(),
+                "--",
+                "src/main.rs",
+                "dir with space/a.txt"
+            ]
+        );
+        let many_paths: Vec<String> = (0..35).map(|i| format!("f{i}.txt")).collect();
+        let restore_many = GitOp::CheckoutPaths {
+            rev: "HEAD~1".into(),
+            paths: many_paths,
+        };
+        assert!(restore_many.simple_steps().is_none());
     }
 }

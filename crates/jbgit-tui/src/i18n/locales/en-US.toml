@@ -164,6 +164,22 @@ copy_patch_need_file = "Select a single commit and a file"
 fullscreen_diff = "Full-Screen Diff"
 show_log_for = "Show log for {name}"
 
+[menu.log_change]
+toggle_diff = "Toggle Diff Preview"
+fullscreen_diff = "Full-Screen Diff"
+compare_local = "Compare with Local"
+show_file_history = "Show History for Selected File…"
+show_dir_history = "Show History for Selected Directory"
+filter_by_path = "Filter Log by Path"
+restore_version = "Get Version (Restore File)…"
+open_editor = "Open in External Editor"
+copy_path = "Copy Relative Path"
+copy_patch = "Copy Patch of File"
+need_file = "Select a file"
+need_single_commit = "Works on a single commit"
+cannot_restore_deleted = "Cannot restore a deleted file"
+not_in_workdir = "File does not exist in working tree"
+
 [menu.stage]
 stage = "Stage"
 unstage = "Unstage"
@@ -222,6 +238,8 @@ git_probes = "Git Probes"
 probe_status = "Run git status --short --branch"
 probe_branch = "Run git branch -vv"
 probe_log = "Run git log -n 10 --oneline"
+file_history = "Show File History…"
+only_tracked_history = "Untracked or ignored files have no commit history"
 
 [menu.stash]
 apply = "Apply Stash"
@@ -394,6 +412,11 @@ body = "Another Git process appears to hold:\n{path}\n\n{message}"
 [dialog.checkbox]
 tab_hint = "Tab"
 
+[dialog.restore_file]
+title = "Restore File to Selected Version"
+body = "Restore {path} in the working tree to commit {short}?\nUnstaged local modifications will be overwritten."
+confirm_btn = "Restore"
+
 [banner]
 rebasing_prefix = "REBASING"
 onto = " onto {onto}"
@@ -507,6 +530,7 @@ next_hunk = "Next hunk"
 prev_file = "Prev file"
 next_file = "Next file"
 stash_clear = "Clear"
+file_history = "History"
 
 [view.common]
 terminal_too_small = "Terminal too small"
@@ -639,6 +663,23 @@ bin_badge = "bin "
 zoom_header = " ⤢ {path}   ({pos}/{total})"
 ctx_btn = " ctx {ctx} "
 dock_btn = " ◧ {dock} "
+
+[view.file_history]
+title = " File History: {path}{follow} · {count} "
+follow_badge = " (--follow)"
+btn_follow = " ⇵ Follow Renames (--follow) "
+btn_compare_local = " ⇄ Compare Local "
+btn_locate_log = " ⌖ Locate in Log "
+commits_header = " Commits "
+truncated_hint = "(showing latest 500)"
+loading = " Loading file history…"
+empty = " No commits found for this file"
+diff_compare_local = " Compare {oid} ↔ Working Tree · {path} "
+diff_compare_versions = " Compare {older} ↔ {newer} · {path} "
+diff_compare_versions_renamed = " Compare {older} ↔ {newer} · {old} → {path} "
+diff_renamed = " {oid} · {old} → {path} "
+diff_single = " {oid} · {path} "
+footer_hint = " ↑↓/jk Move · Shift+↑↓/Click Compare 2 revisions · f --follow · l Local diff · Tab Focus · S Split · w Context · z/F4 Zoom · Enter/g Locate · Esc Close"
 
 [view.stash]
 count = "{count} stash(es)"
@@ -794,6 +835,8 @@ repo_not_loaded = "Repository not loaded"
 presentation_toggle = "{label}: {state}"
 op_running = "{label}…"
 op_done = "✔ {label}"
+path_filter_set = "Log filtered by path: {path}"
+compare_local_no_diff = "{path} has no differences from working tree"
 
 [git_op]
 checkout = "Checkout '{target}'"
@@ -836,6 +879,8 @@ add_to_ignore = "Add to ignore"
 delete_files = "Delete {count} file(s)"
 create_patch = "Create patch"
 patch_to_clipboard = "Copy patch"
+checkout_paths = "Restore '{path}' to {rev}"
+checkout_paths_many = "Restore {count} file(s) to {rev}"
 smart = "Smart {label}"
 
 [rewrite]
@@ -1021,6 +1066,7 @@ action.stash_pop = "Apply & drop stash (Pop)"
 action.stash_drop = "Drop selected stash"
 action.stash_branch = "Create branch from selected stash"
 action.stash_clear = "Clear all stashes"
+action.file_history = "Show commit history for selected file or directory"
 
 [cli]
 tagline = "jbgit - JetBrains-style Terminal Git Client"

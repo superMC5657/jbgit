@@ -5,9 +5,9 @@ use std::time::{Duration, Instant};
 use jbgit_core::graph::SortType;
 use jbgit_core::{
     BranchFilter, BranchNodeKind, ChangeRowKind, CommitSummary, ConflictChoice, ConflictDocument,
-    DetailsKey, FileDiffKey, GitConsoleEntry, GitOp, ModalButton, Oid, PaneId, RefKind,
-    RefreshScope, RepoSnapshot, SplitAxis, SplitterId, StageStatusSnapshot, StageTarget,
-    StageTreeRowKind, WorkspaceTab,
+    DetailsKey, FileDiffKey, FileHistoryKey, GitConsoleEntry, GitOp, ModalButton, Oid, PaneId,
+    PathFilter, RefKind, RefreshScope, RepoSnapshot, SplitAxis, SplitterId, StageStatusSnapshot,
+    StageTarget, StageTreeRowKind, WorkspaceTab,
 };
 use jbgit_engine::{
     CommitRequest, EngineEvent, EngineHandle, StageDiffKey, TaskRequest,
@@ -20,8 +20,9 @@ use crate::graph::LogGraphState;
 use crate::graph::state::FilterInputs;
 use crate::hit_test::{DiffHunkActionKind, HitTarget, HitTestRegistry};
 use crate::log_view::{
-    BranchesPaneState, DETAILS_DEBOUNCE, DetailsPaneState, DiffPreviewDock, FilterBarState,
-    FilterField, LogPresentation, PathMatches, PathRequest, PresentationToggle,
+    BranchesPaneState, DETAILS_DEBOUNCE, DetailsPaneState, DiffPreviewDock,
+    FILE_HISTORY_G_WINDOW, FileHistoryFocus, FileHistoryState, FilterBarState, FilterField,
+    LogPresentation, PathMatches, PathRequest, PresentationToggle,
 };
 use crate::stage_view::StageWorkbenchState;
 use crate::stash_view::StashTabState;
@@ -53,6 +54,7 @@ pub enum ScrollPane {
     LogDetails,
     StashDiff,
     StageDiff,
+    FileHistoryDiff,
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -68,6 +70,7 @@ pub struct ViewportScrollMetrics {
     pub log_details: Option<PaneScrollBound>,
     pub stash_diff: Option<PaneScrollBound>,
     pub stage_diff: Option<PaneScrollBound>,
+    pub file_history_diff: Option<PaneScrollBound>,
 }
 
 impl ViewportScrollMetrics {
@@ -79,6 +82,7 @@ impl ViewportScrollMetrics {
             ScrollPane::LogDetails => self.log_details,
             ScrollPane::StashDiff => self.stash_diff,
             ScrollPane::StageDiff => self.stage_diff,
+            ScrollPane::FileHistoryDiff => self.file_history_diff,
         }
     }
 
@@ -94,6 +98,7 @@ impl ViewportScrollMetrics {
             ScrollPane::LogDetails => self.log_details = bound,
             ScrollPane::StashDiff => self.stash_diff = bound,
             ScrollPane::StageDiff => self.stage_diff = bound,
+            ScrollPane::FileHistoryDiff => self.file_history_diff = bound,
         }
     }
 }
@@ -391,6 +396,8 @@ pub enum PopupKind {
     ThreeWayInspector,
     /// Built-in three-pane conflict merge resolver (`Ours | Result | Theirs`).
     ConflictMerge,
+    /// Single-file commit history inspector (`--follow` rename tracking + diff).
+    FileHistory,
     /// Hook or commit failure output dialog.
     HookError,
 }
@@ -484,6 +491,7 @@ pub enum Effect {
     RefreshScope(RefreshScope),
     RequestCommitDetails(DetailsKey),
     RequestFileDiff(FileDiffKey),
+    RequestFileHistory(FileHistoryKey),
     RequestPathMatches(Vec<String>, Arc<RepoSnapshot>),
     RequestStageFileDiff(StageDiffKey),
     RequestAmendPreview,
@@ -764,6 +772,36 @@ pub enum Action {
     StashDiffJumpHunk(isize),
     StashDiffNextFile(isize),
     StashDiffScroll(isize),
+
+    // ── Spec 09: log changes operations & single-file history ──
+    FilterLogByPath(String),
+    CompareFileWithLocal {
+        target: Oid,
+        path: String,
+    },
+    OpenFileHistory {
+        path: String,
+        start_oid: Option<Oid>,
+        follow_renames: bool,
+    },
+    FileHistoryMove {
+        delta: isize,
+        extend: bool,
+    },
+    FileHistorySelect {
+        idx: usize,
+        extend: bool,
+    },
+    FileHistoryToggleFollow,
+    FileHistoryToggleCompareLocal,
+    FileHistoryToggleSideBySide,
+    FileHistoryCycleContext,
+    FileHistoryToggleZoom,
+    FileHistorySetFocus(FileHistoryFocus),
+    FileHistoryToggleFocus,
+    FileHistoryScrollDiff(isize),
+    FileHistoryJumpToLog,
+    FileHistoryEscape,
 }
 
 pub struct AppState {
@@ -804,6 +842,7 @@ pub struct AppState {
     pub latest_stage_diff_epoch: u64,
     pub latest_commit_details_epoch: u64,
     pub latest_file_diff_epoch: u64,
+    pub latest_file_history_epoch: u64,
     pub latest_path_epoch: u64,
 
     pub commit_stage_selected_idx: usize,
@@ -829,6 +868,7 @@ pub struct AppState {
     pub git_ops_running: usize,
     pub stash: StashTabState,
     pub conflict_merge: Option<ConflictMergeState>,
+    pub file_history: Option<FileHistoryState>,
     #[allow(dead_code)]
     pub config: crate::config::AppConfig,
     pub i18n: std::sync::Arc<crate::i18n::I18n>,
@@ -927,6 +967,7 @@ impl AppState {
             latest_stage_diff_epoch: 0,
             latest_commit_details_epoch: 0,
             latest_file_diff_epoch: 0,
+            latest_file_history_epoch: 0,
             latest_path_epoch: 0,
             commit_stage_selected_idx: 0,
             hook_error_output: None,
@@ -945,6 +986,7 @@ impl AppState {
             git_ops_running: 0,
             stash,
             conflict_merge: None,
+            file_history: None,
             config,
             i18n,
             pending_keys: Vec::new(),
@@ -1030,6 +1072,16 @@ impl AppState {
                 self.stage_workbench.diff_scroll =
                     apply_scroll_delta(self.stage_workbench.diff_scroll, delta, max_scroll);
             }
+            ScrollPane::FileHistoryDiff => {
+                let max_scroll = recorded.unwrap_or_else(|| {
+                    self.file_history
+                        .as_ref()
+                        .map_or(usize::MAX, |fh| fh.fallback_diff_max_scroll(&self.details.diff_cache))
+                });
+                if let Some(fh) = &mut self.file_history {
+                    fh.diff_scroll = apply_scroll_delta(fh.diff_scroll, delta, max_scroll);
+                }
+            }
         }
     }
 
@@ -1051,12 +1103,18 @@ impl AppState {
         if let Some(b) = metrics.stage_diff {
             self.stage_workbench.diff_scroll = self.stage_workbench.diff_scroll.min(b.max_scroll);
         }
+        if let Some(b) = metrics.file_history_diff
+            && let Some(fh) = &mut self.file_history
+        {
+            fh.diff_scroll = fh.diff_scroll.min(b.max_scroll);
+        }
     }
 
     pub fn has_active_tasks(&self) -> bool {
         self.loading_snapshot
             || self.stage_workbench.commit_in_progress
             || self.git_ops_running > 0
+            || self.file_history.as_ref().is_some_and(|fh| fh.loading)
             || self.console_entries.iter().any(GitConsoleEntry::is_running)
     }
 
@@ -1067,6 +1125,7 @@ impl AppState {
             .map(|t| t + crate::keymap::KEY_CHORD_WINDOW);
         [
             self.details.next_deadline(),
+            self.file_history.as_ref().and_then(FileHistoryState::next_deadline),
             self.menu_hover.map(|h| h.due),
             chord,
         ]
@@ -1122,7 +1181,7 @@ impl AppState {
             .collect()
     }
 
-    fn on_filter_changed(&mut self) {
+    pub(crate) fn on_filter_changed(&mut self) {
         self.log_graph.filter_generation = self.log_graph.filter_generation.wrapping_add(1);
         self.ensure_graph_cache();
         if let Some(err) = &self.log_graph.filter_error {
@@ -1255,6 +1314,12 @@ impl AppState {
                         ..
                     }) => {
                         self.conflict_merge = None;
+                    }
+                    Some(ModalLayer::FloatingPopup {
+                        kind: PopupKind::FileHistory,
+                        ..
+                    }) => {
+                        self.file_history = None;
                     }
                     _ => {}
                 }
@@ -1508,6 +1573,17 @@ impl AppState {
                 field.clear(&mut self.log_filter.spec);
                 self.on_filter_changed();
             }
+            Action::FilterLogByPath(path) => {
+                self.active_tab = WorkspaceTab::Log;
+                self.log_filter.spec.paths = PathFilter::single(&path);
+                self.log_filter.path_matches = None;
+                self.log_filter.path_requested = None;
+                self.on_filter_changed();
+                if let Some(p) = self.log_filter.spec.paths.paths.first() {
+                    self.status_notice =
+                        Some(self.i18n.t_fmt("toast.path_filter_set", &[("path", p)]));
+                }
+            }
             Action::ClearAllFilters => {
                 self.log_filter.spec = Default::default();
                 self.on_filter_changed();
@@ -1585,22 +1661,27 @@ impl AppState {
             // ── Commit table ──
             Action::SelectLogRow(idx) => {
                 self.details.compare_override = None;
+                self.details.pending_select_path = None;
                 self.log_graph.select_row(idx);
             }
             Action::ExtendLogSelectionTo(idx) => {
                 self.details.compare_override = None;
+                self.details.pending_select_path = None;
                 self.log_graph.extend_selection_to(idx);
             }
             Action::ScrollLog(delta) => {
                 self.details.compare_override = None;
+                self.details.pending_select_path = None;
                 self.log_graph.scroll_by(delta, false);
             }
             Action::ExtendLogSelection(delta) => {
                 self.details.compare_override = None;
+                self.details.pending_select_path = None;
                 self.log_graph.scroll_by(delta, true);
             }
             Action::LogPage { half, down } => {
                 self.details.compare_override = None;
+                self.details.pending_select_path = None;
                 let vh = self.log_graph.last_viewport_h.max(2);
                 let step = if half { vh / 2 } else { vh.saturating_sub(1) }.max(1) as isize;
                 self.log_graph
@@ -1608,6 +1689,7 @@ impl AppState {
             }
             Action::LogEdge { bottom } => {
                 self.details.compare_override = None;
+                self.details.pending_select_path = None;
                 let len = self.log_graph.visible_count();
                 self.log_graph.jump_to(
                     snap.as_ref(),
@@ -1617,10 +1699,12 @@ impl AppState {
             }
             Action::JumpToLogRow { row, center } => {
                 self.details.compare_override = None;
+                self.details.pending_select_path = None;
                 self.log_graph.jump_to(snap.as_ref(), row, center);
             }
             Action::GoToParent(idx) => {
                 self.details.compare_override = None;
+                self.details.pending_select_path = None;
                 match self.log_graph.parent_row(snap.as_ref(), idx) {
                     Some(row) => self.log_graph.jump_to(snap.as_ref(), row, false),
                     None => {
@@ -1635,6 +1719,7 @@ impl AppState {
             }
             Action::GoToChild => {
                 self.details.compare_override = None;
+                self.details.pending_select_path = None;
                 match self.log_graph.child_row() {
                     Some(row) => self.log_graph.jump_to(snap.as_ref(), row, false),
                     None => {
@@ -1644,6 +1729,7 @@ impl AppState {
             }
             Action::GoToRevision(expr) => {
                 self.details.compare_override = None;
+                self.details.pending_select_path = None;
                 let expr = expr.trim().to_string();
                 match snap.as_ref().and_then(|s| s.resolve_revision(&expr)) {
                     Some(oid) => {
@@ -1669,6 +1755,7 @@ impl AppState {
             }
             Action::JumpToCommit(oid) => {
                 self.details.compare_override = None;
+                self.details.pending_select_path = None;
                 if self.log_graph.jump_to_oid(snap.as_ref(), &oid) {
                     self.focused_pane = PaneId::LogCommitTable;
                 } else {
@@ -1681,10 +1768,12 @@ impl AppState {
             }
             Action::NavLogBack => {
                 self.details.compare_override = None;
+                self.details.pending_select_path = None;
                 self.log_graph.nav_back(snap.as_ref());
             }
             Action::NavLogForward => {
                 self.details.compare_override = None;
+                self.details.pending_select_path = None;
                 self.log_graph.nav_forward(snap.as_ref());
             }
 
@@ -1815,6 +1904,28 @@ impl AppState {
                 {
                     effects.push(Effect::RequestCommitDetails(key));
                 }
+                if let Some(fh) = &mut self.file_history
+                    && fh
+                        .pending_g
+                        .is_some_and(|t| t.elapsed() >= FILE_HISTORY_G_WINDOW)
+                {
+                    fh.pending_g = None;
+                    self.jump_file_history_to_log(&mut effects);
+                }
+                if let Some(fh) = &mut self.file_history
+                    && let Some((key, at)) = fh.pending_diff.take()
+                {
+                    if at <= Instant::now() {
+                        if !self.details.diff_cache.contains(&key)
+                            && fh.requested_diff.as_ref() != Some(&key)
+                        {
+                            fh.requested_diff = Some(key.clone());
+                            effects.push(Effect::RequestFileDiff(key));
+                        }
+                    } else {
+                        fh.pending_diff = Some((key, at));
+                    }
+                }
             }
 
             Action::SelectConsoleRow(idx) => {
@@ -1851,13 +1962,16 @@ impl AppState {
                 }
             }
             other => {
-                if !self.dispatch_git_action(&other, &mut effects) {
+                if !self.dispatch_file_history_action(&other, &mut effects)
+                    && !self.dispatch_git_action(&other, &mut effects)
+                {
                     let _ = self.dispatch_stage_action(&other, &mut effects);
                 }
             }
         }
 
         self.reconcile_log_requests(Instant::now(), &mut effects);
+        self.reconcile_file_history_requests(Instant::now());
         self.reconcile_stage_requests(&mut effects);
         self.stash.reconcile_requests(
             self.repo_snapshot.as_ref(),
@@ -1927,6 +2041,15 @@ impl AppState {
             }
         }
 
+        if let Some((path, found)) = self.details.try_select_pending_path()
+            && !found
+        {
+            self.status_notice = Some(
+                self.i18n
+                    .t_fmt("toast.compare_local_no_diff", &[("path", &path)]),
+            );
+        }
+
         // Containing branches / tags (once the selection settles).
         if self.details.pending.is_none()
             && let Some(key) = &self.details.current_key
@@ -1960,6 +2083,154 @@ impl AppState {
                 self.details.requested_diff = Some(key.clone());
                 effects.push(Effect::RequestFileDiff(key));
             }
+        }
+    }
+
+    fn close_file_history(&mut self) {
+        self.file_history = None;
+        if matches!(
+            self.modal_stack.last(),
+            Some(ModalLayer::FloatingPopup {
+                kind: PopupKind::FileHistory,
+                ..
+            })
+        ) {
+            self.modal_stack.pop();
+        }
+    }
+
+    fn jump_file_history_to_log(&mut self, effects: &mut Vec<Effect>) {
+        let target_oid = self
+            .file_history
+            .as_ref()
+            .and_then(|fh| fh.selected_entry())
+            .map(|e| e.oid);
+        if let Some(oid) = target_oid {
+            self.close_file_history();
+            self.active_tab = WorkspaceTab::Log;
+            effects.extend(self.dispatch(Action::JumpToCommit(oid)));
+        }
+    }
+
+    fn dispatch_file_history_action(
+        &mut self,
+        action: &Action,
+        effects: &mut Vec<Effect>,
+    ) -> bool {
+        match action {
+            Action::OpenFileHistory {
+                path,
+                start_oid,
+                follow_renames,
+            } => {
+                let norm = path.replace('\\', "/");
+                if norm.is_empty() {
+                    return true;
+                }
+                let key = FileHistoryKey {
+                    path: norm,
+                    start_oid: *start_oid,
+                    follow_renames: *follow_renames,
+                };
+                let mut fh = FileHistoryState::new(key.clone(), self.details.diff_context);
+                fh.diff_side_by_side = self.details.diff_side_by_side;
+                self.file_history = Some(fh);
+                self.modal_stack.retain(|l| {
+                    !matches!(
+                        l,
+                        ModalLayer::ContextMenu { .. }
+                            | ModalLayer::FloatingPopup {
+                                kind: PopupKind::FileHistory,
+                                ..
+                            }
+                    )
+                });
+                self.modal_stack.push(ModalLayer::FloatingPopup {
+                    kind: PopupKind::FileHistory,
+                    query: String::new(),
+                    selected: 0,
+                });
+                effects.push(Effect::RequestFileHistory(key));
+            }
+            Action::FileHistoryMove { delta, extend } => {
+                if let Some(fh) = &mut self.file_history {
+                    fh.move_selection(*delta, *extend);
+                }
+            }
+            Action::FileHistorySelect { idx, extend } => {
+                if let Some(fh) = &mut self.file_history {
+                    fh.select_row(*idx, *extend);
+                }
+            }
+            Action::FileHistoryToggleFollow => {
+                if let Some(fh) = &mut self.file_history {
+                    effects.push(Effect::RequestFileHistory(fh.toggle_follow()));
+                }
+            }
+            Action::FileHistoryToggleCompareLocal => {
+                if let Some(fh) = &mut self.file_history {
+                    fh.toggle_compare_local();
+                }
+            }
+            Action::FileHistoryToggleSideBySide => {
+                if let Some(fh) = &mut self.file_history {
+                    fh.toggle_side_by_side();
+                }
+            }
+            Action::FileHistoryCycleContext => {
+                if let Some(fh) = &mut self.file_history {
+                    fh.cycle_context();
+                }
+            }
+            Action::FileHistoryToggleZoom => {
+                if let Some(fh) = &mut self.file_history {
+                    fh.toggle_zoom();
+                }
+            }
+            Action::FileHistorySetFocus(focus) => {
+                if let Some(fh) = &mut self.file_history {
+                    fh.set_focus(*focus);
+                }
+            }
+            Action::FileHistoryToggleFocus => {
+                if let Some(fh) = &mut self.file_history {
+                    fh.toggle_focus();
+                }
+            }
+            Action::FileHistoryScrollDiff(delta) => {
+                self.scroll_pane(ScrollPane::FileHistoryDiff, *delta);
+            }
+            Action::FileHistoryJumpToLog => self.jump_file_history_to_log(effects),
+            Action::FileHistoryEscape => {
+                if self.file_history.as_ref().is_some_and(|fh| fh.diff_zoomed) {
+                    if let Some(fh) = &mut self.file_history {
+                        fh.toggle_zoom();
+                    }
+                } else {
+                    self.close_file_history();
+                }
+            }
+            _ => return false,
+        }
+        true
+    }
+
+    /// Schedules debounced diff fetches (0 ms on LRU cache hit) for `PopupKind::FileHistory`.
+    pub fn reconcile_file_history_requests(&mut self, now: Instant) {
+        let Some(fh) = &mut self.file_history else {
+            return;
+        };
+        let Some(key) = fh.desired_diff_key() else {
+            fh.pending_diff = None;
+            return;
+        };
+        if self.details.diff_cache.get(&key).is_some() {
+            let _ = self.details.diff_syntax.get(&key);
+            fh.pending_diff = None;
+        } else if fh.requested_diff.as_ref() != Some(&key)
+            && fh.pending_diff.as_ref().map(|(k, _)| k) != Some(&key)
+        {
+            fh.pending_diff = Some((key, now + DETAILS_DEBOUNCE));
         }
     }
 
@@ -2028,6 +2299,11 @@ impl AppState {
                 if self.stash.details.requested_diff.as_ref() == Some(&diff.key) {
                     self.stash.details.requested_diff = None;
                 }
+                if let Some(fh) = &mut self.file_history
+                    && fh.requested_diff.as_ref() == Some(&diff.key)
+                {
+                    fh.requested_diff = None;
+                }
                 let hl = (self.config.jbgit.diff.syntax_highlight
                     && !diff.is_binary
                     && !diff.hunks.is_empty())
@@ -2048,6 +2324,35 @@ impl AppState {
                     self.details.diff_syntax.insert(diff.key.clone(), h);
                 }
                 self.details.diff_cache.insert(diff.key.clone(), diff);
+            }
+            EngineEvent::FileHistoryLoaded { bundle, epoch } => {
+                if epoch < self.latest_file_history_epoch {
+                    return effects;
+                }
+                self.latest_file_history_epoch = epoch;
+                if let Some(fh) = &mut self.file_history
+                    && fh.key == bundle.key
+                {
+                    fh.loading = false;
+                    fh.error = None;
+                    fh.anchor = None;
+                    fh.diff_scroll = 0;
+                    fh.pending_diff = None;
+                    fh.selected = fh
+                        .key
+                        .start_oid
+                        .and_then(|start| bundle.entries.iter().position(|e| e.oid == start))
+                        .unwrap_or(0);
+                    fh.bundle = Some(bundle);
+                    if let Some(key) = fh.desired_diff_key() {
+                        if self.details.diff_cache.get(&key).is_some() {
+                            let _ = self.details.diff_syntax.get(&key);
+                        } else if fh.requested_diff.as_ref() != Some(&key) {
+                            fh.requested_diff = Some(key.clone());
+                            effects.push(Effect::RequestFileDiff(key));
+                        }
+                    }
+                }
             }
             EngineEvent::PathMatchesLoaded {
                 paths,
@@ -2144,11 +2449,19 @@ impl AppState {
                 self.details.requested_diff = None;
                 self.stage_workbench.requested_diff = None;
                 self.stage_workbench.commit_in_progress = false;
+                if let Some(fh) = &mut self.file_history {
+                    fh.loading = false;
+                    fh.requested_diff = None;
+                    if fh.bundle.is_none() {
+                        fh.error = Some(msg.clone());
+                    }
+                }
                 self.status_notice = Some(self.i18n.t_fmt("toast.engine_error", &[("msg", &msg)]));
             }
         }
 
         self.reconcile_log_requests(Instant::now(), &mut effects);
+        self.reconcile_file_history_requests(Instant::now());
         self.reconcile_stage_requests(&mut effects);
         self.stash.reconcile_requests(
             self.repo_snapshot.as_ref(),
@@ -2198,6 +2511,11 @@ pub fn execute_effects(effects: Vec<Effect>, state: &mut AppState, engine: Optio
                 state.latest_file_diff_epoch = state
                     .latest_file_diff_epoch
                     .max(handle.request_file_diff(key));
+            }
+            Effect::RequestFileHistory(key) => {
+                state.latest_file_history_epoch = state
+                    .latest_file_history_epoch
+                    .max(handle.request_file_history(key));
             }
             Effect::RequestPathMatches(paths, snapshot) => {
                 state.latest_path_epoch = state

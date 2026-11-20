@@ -1295,6 +1295,7 @@ fn non_contiguous_squash_rejected_compare_views_stash_reuse_and_conflict_modal()
                 additions: 2,
                 deletions: 1,
                 is_binary: false,
+                exists_in_workdir: true,
             }],
         }),
         epoch: 1,

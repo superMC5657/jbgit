@@ -3,7 +3,10 @@
 use std::time::Instant;
 
 use crossterm::event::{KeyCode, KeyEvent};
-use jbgit_core::{BranchNodeKind, GitOp, PaneId, WorkspaceTab};
+use jbgit_core::{
+    BranchNodeKind, ChangeRowKind, DetailsMode, FileStatusKind, GitOp, PaneId, StageNodeKind,
+    WorkspaceTab,
+};
 use jbgit_engine::StageDiffSide;
 
 use crate::app::{
@@ -232,6 +235,11 @@ pub fn is_action_applicable(run: &KeyAction, state: &AppState) -> bool {
         | KeyAction::GotoRevision
         | KeyAction::FocusFilter
         | KeyAction::ToggleBranchesPane => state.active_tab == WorkspaceTab::Log,
+        KeyAction::FileHistory => {
+            (state.active_tab == WorkspaceTab::Log && state.focused_pane == PaneId::LogChangesTree)
+                || (state.active_tab == WorkspaceTab::Commit
+                    && state.focused_pane == PaneId::CommitChangesTree)
+        }
         KeyAction::PageDownHalf | KeyAction::PageUpHalf => {
             state.active_tab == WorkspaceTab::Log
                 || state.focused_pane == PaneId::ConsoleOutputDetail
@@ -561,6 +569,57 @@ pub fn execute_action(run: &KeyAction, state: &mut AppState) -> Option<Vec<Actio
             }
         }
         KeyAction::FocusFilter => Some(vec![Action::FocusFilterText]),
+        KeyAction::FileHistory => {
+            if state.active_tab == WorkspaceTab::Log && state.focused_pane == PaneId::LogChangesTree
+            {
+                let rows = state.details.change_rows();
+                let Some(row) = rows.get(state.details.changes_selected) else {
+                    return Some(Vec::new());
+                };
+                match row.kind {
+                    ChangeRowKind::File { change_idx } => {
+                        let bundle = state.details.current_bundle()?;
+                        let change = bundle.changes.get(change_idx)?;
+                        let start_oid = (bundle.key.mode == DetailsMode::Commits
+                            && bundle.key.oids.len() == 1)
+                            .then(|| bundle.key.oids[0]);
+                        Some(vec![Action::OpenFileHistory {
+                            path: change.path.clone(),
+                            start_oid,
+                            follow_renames: true,
+                        }])
+                    }
+                    ChangeRowKind::Dir { .. } => {
+                        Some(vec![Action::FilterLogByPath(row.key.clone())])
+                    }
+                }
+            } else if state.active_tab == WorkspaceTab::Commit
+                && state.focused_pane == PaneId::CommitChangesTree
+            {
+                let idx = state.commit_stage_selected_idx;
+                let group = state.stage_workbench.rows.get(idx).map(|r| r.group_kind());
+                let Some(entry) = state.stage_entry_at(idx) else {
+                    return Some(Vec::new());
+                };
+                let untracked = group == Some(StageNodeKind::Untracked)
+                    || entry.kind == FileStatusKind::Untracked;
+                let ignored =
+                    group == Some(StageNodeKind::Ignored) || entry.kind == FileStatusKind::Ignored;
+                if untracked || ignored {
+                    Some(vec![Action::Notice(
+                        state.i18n.t("menu.stage.only_tracked_history").to_string(),
+                    )])
+                } else {
+                    Some(vec![Action::OpenFileHistory {
+                        path: entry.path,
+                        start_oid: None,
+                        follow_renames: true,
+                    }])
+                }
+            } else {
+                Some(Vec::new())
+            }
+        }
         KeyAction::Uncommit => {
             let items = crate::menus::log_commit_menu_items(state);
             find_action_by_mnemonic(items, 'u')

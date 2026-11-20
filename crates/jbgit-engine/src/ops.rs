@@ -206,6 +206,17 @@ impl Runner<'_> {
                 }
                 GitOpOutcome::ok(op)
             }
+            GitOp::CheckoutPaths { rev, paths } => {
+                if paths.is_empty() {
+                    return GitOpOutcome::ok(op);
+                }
+                let (args, stdin) =
+                    crate::cli::prepare_pathspec_args(vec!["checkout".to_string(), rev], &paths);
+                let res = self
+                    .step(&GitStep::new(args), stdin.as_deref(), false)
+                    .await;
+                finish(op, res)
+            }
             GitOp::Smart(inner) => Box::pin(self.run_smart(*inner)).await,
             _ => GitOpOutcome::failed(op, GitFailure::Other("unsupported operation".into())),
         }

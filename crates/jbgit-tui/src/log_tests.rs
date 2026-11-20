@@ -197,6 +197,7 @@ fn change(path: &str, kind: FileStatusKind) -> FileChange {
         additions: 3,
         deletions: 1,
         is_binary: false,
+        exists_in_workdir: kind != FileStatusKind::Deleted,
     }
 }
 

@@ -806,3 +806,205 @@ fn amend_commit_side_loads_head_parent_diff_even_when_clean() {
             .any(|l| l.kind == DiffLineKind::Added && l.text == "after line")
     );
 }
+
+#[tokio::test]
+async fn file_history_follow_renames_cjk_diffs_and_supervisor_epoch_cancellation() {
+    use jbgit_core::{
+        DetailsKey, DiffContext, FileDiffKey, FileHistoryKey, FileStatusKind, Oid,
+    };
+    use jbgit_engine::{load_file_diff_sync, load_file_history_sync};
+
+    // 1. Unborn repo gracefully returns empty entries
+    let empty_tmp = TempDir::new().unwrap();
+    git(empty_tmp.path(), &["init", "-b", "main"]);
+    let empty_loc = RepoLocation::discover(empty_tmp.path()).unwrap();
+    let token = RequestEpoch::new().issue();
+    let empty_hist = load_file_history_sync(
+        &empty_loc,
+        &FileHistoryKey {
+            path: "missing.txt".into(),
+            start_oid: None,
+            follow_renames: true,
+        },
+        &token,
+    )
+    .unwrap();
+    assert!(empty_hist.entries.is_empty());
+    assert!(!empty_hist.truncated);
+
+    // 2. Rename chain with spaces + CJK filename
+    let tmp = TempDir::new().unwrap();
+    let dir = tmp.path();
+    git(dir, &["init", "-b", "main"]);
+    git(dir, &["config", "user.name", "Tester"]);
+    git(dir, &["config", "user.email", "tester@example.com"]);
+    git(dir, &["config", "core.autocrlf", "false"]);
+
+    let base_lines = "line 1\nline 2\nline 3\nline 4\nline 5\nline 6\nline 7\n";
+    fs::write(dir.join("a.txt"), base_lines).unwrap();
+    git(dir, &["add", "a.txt"]);
+    git(dir, &["commit", "-m", "c1: add a.txt"]);
+
+    fs::write(dir.join("a.txt"), format!("{base_lines}line 8\n")).unwrap();
+    git(dir, &["add", "a.txt"]);
+    git(dir, &["commit", "-m", "c2: edit a.txt"]);
+
+    fs::create_dir_all(dir.join("sub")).unwrap();
+    git(dir, &["mv", "a.txt", "sub/b 中文.txt"]);
+    git(dir, &["commit", "-m", "c3: rename to sub/b 中文.txt"]);
+
+    fs::write(
+        dir.join("sub/b 中文.txt"),
+        format!("{base_lines}line 8\nline 9\n"),
+    )
+    .unwrap();
+    git(dir, &["add", "sub/b 中文.txt"]);
+    git(dir, &["commit", "-m", "c4: edit sub/b 中文.txt"]);
+
+    let loc = RepoLocation::discover(dir).unwrap();
+    let follow = load_file_history_sync(
+        &loc,
+        &FileHistoryKey {
+            path: "sub/b 中文.txt".into(),
+            start_oid: None,
+            follow_renames: true,
+        },
+        &token,
+    )
+    .unwrap();
+    assert!(!follow.truncated);
+    assert_eq!(follow.entries.len(), 4);
+    assert_eq!(follow.entries[0].summary, "c4: edit sub/b 中文.txt");
+    assert_eq!(follow.entries[0].path_at_commit, "sub/b 中文.txt");
+    assert_eq!(follow.entries[0].kind, FileStatusKind::Modified);
+
+    assert_eq!(follow.entries[1].summary, "c3: rename to sub/b 中文.txt");
+    assert_eq!(follow.entries[1].kind, FileStatusKind::Renamed);
+    assert_eq!(follow.entries[1].old_path.as_deref(), Some("a.txt"));
+    assert_eq!(follow.entries[1].path_at_commit, "sub/b 中文.txt");
+
+    assert_eq!(follow.entries[2].summary, "c2: edit a.txt");
+    assert_eq!(follow.entries[2].path_at_commit, "a.txt");
+    assert_eq!(follow.entries[2].kind, FileStatusKind::Modified);
+
+    assert_eq!(follow.entries[3].summary, "c1: add a.txt");
+    assert_eq!(follow.entries[3].path_at_commit, "a.txt");
+    assert_eq!(follow.entries[3].kind, FileStatusKind::Added);
+
+    // Every entry in the chain loads its single-commit diff cleanly
+    for entry in &follow.entries {
+        let diff = load_file_diff_sync(
+            &loc,
+            &FileDiffKey {
+                details: DetailsKey::single(entry.oid),
+                path: entry.path_at_commit.clone(),
+                old_path: entry.old_path.clone(),
+                context: DiffContext::Three,
+            },
+            &token,
+        )
+        .unwrap();
+        if entry.kind != FileStatusKind::Renamed {
+            assert!(
+                !diff.hunks.is_empty(),
+                "expected diff hunks for {} ({})",
+                entry.summary,
+                entry.path_at_commit
+            );
+        }
+    }
+
+    // Cross-rename CompareVersions (c1 vs c4) and CompareWithLocal (c1 vs worktree)
+    let cmp_versions = load_file_diff_sync(
+        &loc,
+        &FileDiffKey {
+            details: DetailsKey::compare_versions(follow.entries[3].oid, follow.entries[0].oid),
+            path: follow.entries[0].path_at_commit.clone(),
+            old_path: Some(follow.entries[3].path_at_commit.clone()),
+            context: DiffContext::Three,
+        },
+        &token,
+    )
+    .unwrap();
+    assert!(!cmp_versions.hunks.is_empty());
+
+    fs::write(
+        dir.join("sub/b 中文.txt"),
+        format!("{base_lines}line 8\nline 9\nlocal edit\n"),
+    )
+    .unwrap();
+    let cmp_local = load_file_diff_sync(
+        &loc,
+        &FileDiffKey {
+            details: DetailsKey::compare_with_local(follow.entries[3].oid),
+            path: "sub/b 中文.txt".into(),
+            old_path: Some(follow.entries[3].path_at_commit.clone()),
+            context: DiffContext::Three,
+        },
+        &token,
+    )
+    .unwrap();
+    assert!(!cmp_local.hunks.is_empty());
+
+    // follow_renames = false stops at rename
+    let no_follow = load_file_history_sync(
+        &loc,
+        &FileHistoryKey {
+            path: "sub/b 中文.txt".into(),
+            start_oid: None,
+            follow_renames: false,
+        },
+        &token,
+    )
+    .unwrap();
+    assert_eq!(no_follow.entries.len(), 2);
+
+    // Non-existent path returns empty gracefully
+    let missing = load_file_history_sync(
+        &loc,
+        &FileHistoryKey {
+            path: "does/not/exist.txt".into(),
+            start_oid: Some(Oid::from_bytes(follow.entries[0].oid.as_bytes().to_owned())),
+            follow_renames: true,
+        },
+        &token,
+    )
+    .unwrap();
+    assert!(missing.entries.is_empty());
+
+    // Supervisor rapid requests drop stale epochs and do not pollute Console
+    let (handle, mut rx) = EngineSupervisor::start(loc, false).unwrap();
+    let e1 = handle.request_file_history(FileHistoryKey {
+        path: "sub/b 中文.txt".into(),
+        start_oid: None,
+        follow_renames: true,
+    });
+    let e2 = handle.request_file_history(FileHistoryKey {
+        path: "sub/b 中文.txt".into(),
+        start_oid: None,
+        follow_renames: false,
+    });
+    assert!(e2 > e1);
+
+    let latest;
+    let deadline = tokio::time::sleep(Duration::from_secs(5));
+    tokio::pin!(deadline);
+    loop {
+        tokio::select! {
+            Some(ev) = rx.recv() => {
+                match ev {
+                    EngineEvent::ConsoleStarted(_) => {
+                        panic!("read-only file history must not emit ConsoleStarted");
+                    }
+                    EngineEvent::FileHistoryLoaded { bundle, epoch } if epoch == e2 => {
+                        latest = Some(bundle);
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+            _ = &mut deadline => panic!("timed out waiting for FileHistoryLoaded epoch {e2}"),
+        }
+    }
+    assert_eq!(latest.unwrap().entries.len(), 2);
+}

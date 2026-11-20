@@ -4,8 +4,9 @@ use std::sync::Arc;
 
 use jbgit_core::{
     AmendCommitPreview, CommitChangesBundle, ConflictDocument, ConsoleStream, DetailsKey,
-    EpochToken, EpochTracker, FileDiff, FileDiffKey, GitConsoleEntry, GitOp, GitOpOutcome, Oid,
-    RefreshScope, RepoSnapshot, StageStatusSnapshot, StageTarget,
+    EpochToken, EpochTracker, FileDiff, FileDiffKey, FileHistoryBundle, FileHistoryKey,
+    GitConsoleEntry, GitOp, GitOpOutcome, Oid, RefreshScope, RepoSnapshot, StageStatusSnapshot,
+    StageTarget,
 };
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 
@@ -34,6 +35,11 @@ pub enum TaskRequest {
     /// Line diff of one file of a details selection (diff preview).
     LoadFileDiff {
         key: FileDiffKey,
+        epoch: u64,
+    },
+    /// Commit history of a single file (`--follow` rename tracking).
+    LoadFileHistory {
+        key: FileHistoryKey,
         epoch: u64,
     },
     /// Commits of `snapshot` touching any of `paths` (log `Paths` filter).
@@ -110,6 +116,10 @@ pub enum EngineEvent {
     },
     FileDiffLoaded {
         diff: Arc<FileDiff>,
+        epoch: u64,
+    },
+    FileHistoryLoaded {
+        bundle: Arc<FileHistoryBundle>,
         epoch: u64,
     },
     PathMatchesLoaded {
@@ -199,6 +209,12 @@ impl EngineHandle {
     pub fn request_file_diff(&self, key: FileDiffKey) -> u64 {
         let epoch = self.epochs.file_diff.next_epoch();
         self.send(TaskRequest::LoadFileDiff { key, epoch });
+        epoch
+    }
+
+    pub fn request_file_history(&self, key: FileHistoryKey) -> u64 {
+        let epoch = self.epochs.file_history.next_epoch();
+        self.send(TaskRequest::LoadFileHistory { key, epoch });
         epoch
     }
 
@@ -328,6 +344,16 @@ impl EngineSupervisor {
                             &event_tx,
                             async move { pool.load_file_diff(loc, key, token).await },
                             move |diff| EngineEvent::FileDiffLoaded { diff, epoch },
+                        );
+                    }
+                    TaskRequest::LoadFileHistory { key, epoch } => {
+                        let pool = Arc::clone(&pool);
+                        let loc = sup_location.clone();
+                        let token = EpochToken::new(sup_epochs.file_history.clone(), epoch);
+                        spawn_epoch_task(
+                            &event_tx,
+                            async move { pool.load_file_history(loc, key, token).await },
+                            move |bundle| EngineEvent::FileHistoryLoaded { bundle, epoch },
                         );
                     }
                     TaskRequest::LoadPathMatches {

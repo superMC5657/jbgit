@@ -4,6 +4,7 @@ pub mod commit_diff;
 pub mod conflict_merge;
 pub mod console;
 pub mod dialogs;
+pub mod file_history;
 pub mod footer;
 pub mod header;
 pub mod log;
@@ -397,36 +398,45 @@ pub fn highlight_spans(
     spans
 }
 
-/// Greedy display-width-aware wrapping (breaks on spaces when possible).
+/// Greedy display-width-aware wrapping (splits on `\n`, breaks on spaces when possible).
 pub fn wrap_text(text: &str, width: usize) -> Vec<String> {
     let width = width.max(1);
     let mut out = Vec::new();
-    let mut line = String::new();
-    let mut line_w = 0usize;
-    for word in text.split_inclusive(' ') {
-        let w = word.width();
-        if line_w + w > width && !line.is_empty() {
-            out.push(line.trim_end().to_string());
-            line.clear();
-            line_w = 0;
+    for para in text.split('\n') {
+        if para.is_empty() {
+            out.push(String::new());
+            continue;
         }
-        if w > width {
-            for ch in word.chars() {
-                let cw = ch.width().unwrap_or(0);
-                if line_w + cw > width && !line.is_empty() {
-                    out.push(std::mem::take(&mut line));
-                    line_w = 0;
-                }
-                line.push(ch);
-                line_w += cw;
+        let mut line = String::new();
+        let mut line_w = 0usize;
+        for word in para.split_inclusive(' ') {
+            let w = word.width();
+            if line_w + w > width && !line.is_empty() {
+                out.push(line.trim_end().to_string());
+                line.clear();
+                line_w = 0;
             }
-        } else {
-            line.push_str(word);
-            line_w += w;
+            if w > width {
+                for ch in word.chars() {
+                    let cw = ch.width().unwrap_or(0);
+                    if line_w + cw > width && !line.is_empty() {
+                        out.push(std::mem::take(&mut line));
+                        line_w = 0;
+                    }
+                    line.push(ch);
+                    line_w += cw;
+                }
+            } else {
+                line.push_str(word);
+                line_w += w;
+            }
+        }
+        if !line.is_empty() {
+            out.push(line.trim_end().to_string());
         }
     }
-    if !line.is_empty() || out.is_empty() {
-        out.push(line.trim_end().to_string());
+    if out.is_empty() {
+        out.push(String::new());
     }
     out
 }

@@ -9,7 +9,8 @@ use crate::app::{
 };
 use crate::graph::GraphRendererMode;
 use crate::hit_test::{
-    BranchesToolbarButton, ChangesToolbarButton, DiffToolbarButton, GraphHitKind, HitTarget,
+    BranchesToolbarButton, ChangesToolbarButton, DiffToolbarButton, FileHistoryToolbarButton,
+    GraphHitKind, HitTarget,
 };
 use crate::input_stage::{
     route_commit_changes_tree_key, route_commit_priority_key, route_stage_left_click,
@@ -165,7 +166,7 @@ fn plain_char(key: &KeyEvent) -> Option<char> {
     }
 }
 
-fn route_key(key: KeyEvent, state: &mut AppState) -> Vec<Action> {
+pub(crate) fn route_key(key: KeyEvent, state: &mut AppState) -> Vec<Action> {
     if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
         return vec![Action::Quit];
     }
@@ -231,6 +232,9 @@ fn route_key(key: KeyEvent, state: &mut AppState) -> Vec<Action> {
                 }
                 if kind == PopupKind::ShortcutsHelp {
                     return route_shortcuts_help_key(&key, state);
+                }
+                if kind == PopupKind::FileHistory {
+                    return route_file_history_key(&key, state);
                 }
                 return match key.code {
                     KeyCode::Esc => vec![Action::PopModal],
@@ -683,7 +687,7 @@ pub(crate) fn keyboard_context_menu(state: &mut AppState) -> Option<Vec<Action>>
     Some(actions)
 }
 
-fn route_mouse(mouse: MouseEvent, state: &mut AppState) -> Vec<Action> {
+pub(crate) fn route_mouse(mouse: MouseEvent, state: &mut AppState) -> Vec<Action> {
     let col = mouse.column;
     let row = mouse.row;
 
@@ -819,6 +823,15 @@ fn route_mouse(mouse: MouseEvent, state: &mut AppState) -> Vec<Action> {
                     }
                     HitTarget::StashChangeRow(_) | HitTarget::Pane(PaneId::StashDiffPreview) => {
                         return vec![Action::StashDiffScroll(delta)];
+                    }
+                    HitTarget::FileHistoryRow { .. } | HitTarget::FileHistoryListArea => {
+                        return vec![Action::FileHistoryMove {
+                            delta: delta / 3,
+                            extend: false,
+                        }];
+                    }
+                    HitTarget::FileHistoryDiffArea => {
+                        return vec![Action::FileHistoryScrollDiff(delta)];
                     }
                     _ => {}
                 }
@@ -1070,6 +1083,34 @@ fn route_mouse(mouse: MouseEvent, state: &mut AppState) -> Vec<Action> {
                 HitTarget::ConsoleOutputArea => {
                     vec![Action::FocusPane(PaneId::ConsoleOutputDetail)]
                 }
+                HitTarget::FileHistoryRow { idx } => {
+                    let mut actions = vec![
+                        Action::FileHistorySetFocus(crate::log_view::FileHistoryFocus::Commits),
+                        Action::FileHistorySelect { idx, extend: shift },
+                    ];
+                    if is_double && !shift {
+                        actions.push(Action::FileHistoryJumpToLog);
+                    }
+                    actions
+                }
+                HitTarget::FileHistoryListArea => {
+                    vec![Action::FileHistorySetFocus(crate::log_view::FileHistoryFocus::Commits)]
+                }
+                HitTarget::FileHistoryDiffArea => {
+                    vec![Action::FileHistorySetFocus(crate::log_view::FileHistoryFocus::Diff)]
+                }
+                HitTarget::FileHistoryToolbar(btn) => match btn {
+                    FileHistoryToolbarButton::FollowRenames => vec![Action::FileHistoryToggleFollow],
+                    FileHistoryToolbarButton::CompareLocal => {
+                        vec![Action::FileHistoryToggleCompareLocal]
+                    }
+                    FileHistoryToolbarButton::SideBySide => {
+                        vec![Action::FileHistoryToggleSideBySide]
+                    }
+                    FileHistoryToolbarButton::Context => vec![Action::FileHistoryCycleContext],
+                    FileHistoryToolbarButton::Zoom => vec![Action::FileHistoryToggleZoom],
+                    FileHistoryToolbarButton::LocateInLog => vec![Action::FileHistoryJumpToLog],
+                },
                 HitTarget::Pane(pane) => vec![Action::FocusPane(pane)],
                 other => {
                     if let Some(actions) = route_spec05_click(&other, state, is_double) {
@@ -1100,6 +1141,10 @@ fn route_mouse(mouse: MouseEvent, state: &mut AppState) -> Vec<Action> {
                     | HitTarget::BranchPopupStar(_)
                     | HitTarget::BranchPopupFetch
                     | HitTarget::BranchPopupSettings
+                    | HitTarget::FileHistoryRow { .. }
+                    | HitTarget::FileHistoryToolbar(_)
+                    | HitTarget::FileHistoryListArea
+                    | HitTarget::FileHistoryDiffArea
             ) {
                 return Vec::new();
             }
@@ -1472,4 +1517,126 @@ pub fn presentation_menu_items(state: &AppState) -> Vec<ContextMenuItem> {
                 .collect(),
         ),
     ]
+}
+
+fn route_file_history_key(key: &KeyEvent, state: &mut AppState) -> Vec<Action> {
+    let Some(fh) = state.file_history.as_mut() else {
+        return vec![Action::FileHistoryEscape];
+    };
+    let pending_g = fh
+        .pending_g
+        .take()
+        .is_some_and(|t| t.elapsed() <= crate::log_view::FILE_HISTORY_G_WINDOW);
+    let diff_zoomed = fh.diff_zoomed;
+    let diff_focused =
+        fh.focus == crate::log_view::FileHistoryFocus::Diff || diff_zoomed;
+
+    if key.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) {
+        return match key.code {
+            KeyCode::Esc => vec![Action::FileHistoryEscape],
+            KeyCode::Tab | KeyCode::BackTab => vec![Action::FileHistoryToggleFocus],
+            _ => Vec::new(),
+        };
+    }
+
+    let shift = key.modifiers.contains(KeyModifiers::SHIFT);
+    if pending_g {
+        if key.code == KeyCode::Esc {
+            state.needs_redraw = true;
+            return Vec::new();
+        }
+        if key.code == KeyCode::Char('g') && !shift {
+            return if diff_focused {
+                vec![Action::FileHistoryScrollDiff(crate::app::SCROLL_GOTO_TOP)]
+            } else {
+                vec![Action::FileHistorySelect {
+                    idx: 0,
+                    extend: false,
+                }]
+            };
+        }
+    }
+
+    match key.code {
+        KeyCode::Esc => vec![Action::FileHistoryEscape],
+        KeyCode::Tab | KeyCode::BackTab => vec![Action::FileHistoryToggleFocus],
+        KeyCode::Enter => vec![Action::FileHistoryJumpToLog],
+        KeyCode::Char('g') if !shift => {
+            if let Some(fh) = state.file_history.as_mut() {
+                fh.pending_g = Some(std::time::Instant::now());
+            }
+            state.needs_redraw = true;
+            Vec::new()
+        }
+        KeyCode::Char('f') => vec![Action::FileHistoryToggleFollow],
+        KeyCode::Char('l') => vec![Action::FileHistoryToggleCompareLocal],
+        KeyCode::Char('S') => vec![Action::FileHistoryToggleSideBySide],
+        KeyCode::Char('w') => vec![Action::FileHistoryCycleContext],
+        KeyCode::Char('z') | KeyCode::F(4) => vec![Action::FileHistoryToggleZoom],
+        KeyCode::Up if shift && !diff_zoomed => {
+            vec![Action::FileHistoryMove {
+                delta: -1,
+                extend: true,
+            }]
+        }
+        KeyCode::Down if shift && !diff_zoomed => {
+            vec![Action::FileHistoryMove {
+                delta: 1,
+                extend: true,
+            }]
+        }
+        KeyCode::Down | KeyCode::Char('j') if diff_focused => {
+            vec![Action::FileHistoryScrollDiff(1)]
+        }
+        KeyCode::Up | KeyCode::Char('k') if diff_focused => {
+            vec![Action::FileHistoryScrollDiff(-1)]
+        }
+        KeyCode::PageDown if diff_focused => {
+            vec![Action::FileHistoryScrollDiff(10)]
+        }
+        KeyCode::PageUp if diff_focused => vec![Action::FileHistoryScrollDiff(-10)],
+        KeyCode::Home if diff_focused => {
+            vec![Action::FileHistoryScrollDiff(crate::app::SCROLL_GOTO_TOP)]
+        }
+        KeyCode::End | KeyCode::Char('G') if diff_focused => {
+            vec![Action::FileHistoryScrollDiff(crate::app::SCROLL_GOTO_BOTTOM)]
+        }
+        KeyCode::Down | KeyCode::Char('j') if !diff_zoomed => {
+            vec![Action::FileHistoryMove {
+                delta: 1,
+                extend: false,
+            }]
+        }
+        KeyCode::Up | KeyCode::Char('k') if !diff_zoomed => {
+            vec![Action::FileHistoryMove {
+                delta: -1,
+                extend: false,
+            }]
+        }
+        KeyCode::PageDown if !diff_zoomed => {
+            vec![Action::FileHistoryMove {
+                delta: 10,
+                extend: false,
+            }]
+        }
+        KeyCode::PageUp if !diff_zoomed => {
+            vec![Action::FileHistoryMove {
+                delta: -10,
+                extend: false,
+            }]
+        }
+        KeyCode::Home if !diff_zoomed => {
+            vec![Action::FileHistorySelect {
+                idx: 0,
+                extend: false,
+            }]
+        }
+        KeyCode::End | KeyCode::Char('G') if !diff_zoomed => {
+            vec![Action::FileHistorySelect {
+                idx: usize::MAX,
+                extend: false,
+            }]
+        }
+        _ => Vec::new(),
+    }
 }

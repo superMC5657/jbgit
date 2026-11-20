@@ -9,7 +9,10 @@ pub mod supervisor;
 pub mod watcher;
 
 pub use cli::{GitCliExecutor, GitExecutableInfo, prepare_pathspec_args};
-pub use details::{load_commit_details_sync, load_file_diff_sync, load_path_matches_sync};
+pub use details::{
+    DEFAULT_FILE_HISTORY_LIMIT, load_commit_details_sync, load_file_diff_sync,
+    load_file_history_sync, load_path_matches_sync, parse_file_history_z,
+};
 pub use error::EngineError;
 pub use ops::run_git_op;
 pub use pool::Git2WorkerPool;

@@ -407,107 +407,54 @@ fn render_diff_view(
     render_diff_preview(frame, area, &state.details, DiffHost::Log, zoomed, ctx);
 }
 
-pub fn render_diff_preview(
+pub fn file_diff_total_rows(diff: &FileDiff, side_by_side: bool) -> usize {
+    if diff.is_binary || diff.hunks.is_empty() {
+        return 0;
+    }
+    let mut total = usize::from(diff.is_truncated);
+    for hunk in &diff.hunks {
+        total += 1;
+        if side_by_side {
+            total += side_by_side_rows(hunk).len();
+        } else {
+            total += hunk.lines.len();
+        }
+    }
+    total
+}
+
+pub struct FileDiffRenderProps<'a> {
+    pub diff: &'a FileDiff,
+    pub cached_syntax: Option<&'a HighlightedDiff>,
+    pub side_by_side: bool,
+    pub diff_scroll: usize,
+    pub scroll_pane: ScrollPane,
+}
+
+pub fn render_file_diff_body(
     frame: &mut Frame<'_>,
-    area: Rect,
-    d: &DetailsPaneState,
-    host: DiffHost,
-    zoomed: bool,
+    body: Rect,
+    props: FileDiffRenderProps<'_>,
     ctx: &mut RenderContext<'_>,
 ) {
-    if area.width == 0 || area.height == 0 {
+    let FileDiffRenderProps {
+        diff,
+        cached_syntax,
+        side_by_side,
+        diff_scroll,
+        scroll_pane,
+    } = props;
+    if body.width == 0 || body.height == 0 {
         return;
     }
-    let mut buttons = vec![
-        (
-            if d.diff_side_by_side {
-                ctx.t("view.log_details.side_by_side_btn")
-            } else {
-                ctx.t("view.log_details.unified_btn")
-            }
-            .to_string(),
-            d.diff_side_by_side,
-            DiffToolbarButton::SideBySide,
-        ),
-        (
-            ctx.t_fmt(
-                "view.log_details.ctx_btn",
-                &[("ctx", ctx.diff_context_label(d.diff_context))],
-            ),
-            false,
-            DiffToolbarButton::Context,
-        ),
-    ];
-    if host == DiffHost::Log {
-        let zoom_label = if zoomed {
-            ctx.t("view.log_details.restore_btn").to_string()
-        } else {
-            ctx.t("view.log_details.zoom_btn").to_string()
-        };
-        buttons.push((zoom_label, zoomed, DiffToolbarButton::Zoom));
-        if !zoomed {
-            buttons.push((
-                ctx.t_fmt(
-                    "view.log_details.dock_btn",
-                    &[("dock", ctx.diff_dock_label(d.diff_dock))],
-                ),
-                d.diff_dock != DiffPreviewDock::Details,
-                DiffToolbarButton::Dock,
-            ));
-        }
-        buttons.push((" × ".to_string(), false, DiffToolbarButton::Close));
-    }
-    render_toolbar(
-        frame,
-        Rect::new(area.x, area.y, area.width, 1),
-        ctx,
-        3,
-        &buttons,
-        |b| match host {
-            DiffHost::Log => HitTarget::DiffToolbar(b),
-            DiffHost::Stash => HitTarget::StashDiffToolbar(b),
-        },
-    );
-    let body = Rect::new(area.x, area.y + 1, area.width, area.height - 1);
-    if body.height == 0 {
-        return;
-    }
-    ctx.hit_registry.register(
-        body,
-        2,
-        match host {
-            DiffHost::Log => HitTarget::DiffArea,
-            DiffHost::Stash => HitTarget::Pane(PaneId::StashDiffPreview),
-        },
-    );
-
     let h = body.height as usize;
-    let Some(change) = d.selected_change() else {
-        ctx.record_scroll_bound(host.scroll_pane(), h, 0);
-        let msg = if d.current_bundle().is_none() {
-            ctx.t("common.loading")
-        } else {
-            ctx.t("view.log_details.select_file_diff")
-        };
-        frame.render_widget(muted_line(ctx, msg), body);
-        return;
-    };
-    let Some(diff) = d.current_diff() else {
-        ctx.record_scroll_bound(host.scroll_pane(), h, 0);
-        if change.is_binary {
-            frame.render_widget(muted_line(ctx, ctx.t("view.log_details.binary_diff")), body);
-        } else {
-            frame.render_widget(muted_line(ctx, ctx.t("view.log_details.loading_diff")), body);
-        }
-        return;
-    };
     if diff.is_binary {
-        ctx.record_scroll_bound(host.scroll_pane(), h, 0);
+        ctx.record_scroll_bound(scroll_pane, h, 0);
         frame.render_widget(muted_line(ctx, ctx.t("view.log_details.binary_diff")), body);
         return;
     }
     if diff.hunks.is_empty() {
-        ctx.record_scroll_bound(host.scroll_pane(), h, 0);
+        ctx.record_scroll_bound(scroll_pane, h, 0);
         frame.render_widget(
             muted_line(ctx, ctx.t("view.log_details.no_text_diff")),
             body,
@@ -515,14 +462,14 @@ pub fn render_diff_preview(
         return;
     }
 
-    let rows = diff_rows(diff, d.diff_side_by_side);
+    let rows = diff_rows(diff, side_by_side);
     let mut total = rows.len();
     if diff.is_truncated {
         total += 1;
     }
     let max_scroll = total.saturating_sub(h);
-    ctx.record_scroll_bound(host.scroll_pane(), h, max_scroll);
-    let scroll = d.diff_scroll.min(max_scroll);
+    ctx.record_scroll_bound(scroll_pane, h, max_scroll);
+    let scroll = diff_scroll.min(max_scroll);
     let theme = ctx.theme;
     let num_w = 4usize;
     let tab_size = ctx.diff_tab_size();
@@ -532,7 +479,7 @@ pub fn render_diff_preview(
         empty_hl = HighlightedDiff::default();
         &empty_hl
     } else {
-        match d.current_diff_syntax() {
+        match cached_syntax {
             Some(cached) => cached,
             None => {
                 computed_hl = HighlightedDiff::build(diff);
@@ -664,6 +611,114 @@ pub fn render_diff_preview(
         };
         frame.render_widget(Paragraph::new(line), rect);
     }
+}
+
+pub fn render_diff_preview(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    d: &DetailsPaneState,
+    host: DiffHost,
+    zoomed: bool,
+    ctx: &mut RenderContext<'_>,
+) {
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+    let mut buttons = vec![
+        (
+            if d.diff_side_by_side {
+                ctx.t("view.log_details.side_by_side_btn")
+            } else {
+                ctx.t("view.log_details.unified_btn")
+            }
+            .to_string(),
+            d.diff_side_by_side,
+            DiffToolbarButton::SideBySide,
+        ),
+        (
+            ctx.t_fmt(
+                "view.log_details.ctx_btn",
+                &[("ctx", ctx.diff_context_label(d.diff_context))],
+            ),
+            false,
+            DiffToolbarButton::Context,
+        ),
+    ];
+    if host == DiffHost::Log {
+        let zoom_label = if zoomed {
+            ctx.t("view.log_details.restore_btn").to_string()
+        } else {
+            ctx.t("view.log_details.zoom_btn").to_string()
+        };
+        buttons.push((zoom_label, zoomed, DiffToolbarButton::Zoom));
+        if !zoomed {
+            buttons.push((
+                ctx.t_fmt(
+                    "view.log_details.dock_btn",
+                    &[("dock", ctx.diff_dock_label(d.diff_dock))],
+                ),
+                d.diff_dock != DiffPreviewDock::Details,
+                DiffToolbarButton::Dock,
+            ));
+        }
+        buttons.push((" × ".to_string(), false, DiffToolbarButton::Close));
+    }
+    render_toolbar(
+        frame,
+        Rect::new(area.x, area.y, area.width, 1),
+        ctx,
+        3,
+        &buttons,
+        |b| match host {
+            DiffHost::Log => HitTarget::DiffToolbar(b),
+            DiffHost::Stash => HitTarget::StashDiffToolbar(b),
+        },
+    );
+    let body = Rect::new(area.x, area.y + 1, area.width, area.height - 1);
+    if body.height == 0 {
+        return;
+    }
+    ctx.hit_registry.register(
+        body,
+        2,
+        match host {
+            DiffHost::Log => HitTarget::DiffArea,
+            DiffHost::Stash => HitTarget::Pane(PaneId::StashDiffPreview),
+        },
+    );
+
+    let h = body.height as usize;
+    let Some(change) = d.selected_change() else {
+        ctx.record_scroll_bound(host.scroll_pane(), h, 0);
+        let msg = if d.current_bundle().is_none() {
+            ctx.t("common.loading")
+        } else {
+            ctx.t("view.log_details.select_file_diff")
+        };
+        frame.render_widget(muted_line(ctx, msg), body);
+        return;
+    };
+    let Some(diff) = d.current_diff() else {
+        ctx.record_scroll_bound(host.scroll_pane(), h, 0);
+        if change.is_binary {
+            frame.render_widget(muted_line(ctx, ctx.t("view.log_details.binary_diff")), body);
+        } else {
+            frame.render_widget(muted_line(ctx, ctx.t("view.log_details.loading_diff")), body);
+        }
+        return;
+    };
+    render_file_diff_body(
+        frame,
+        body,
+        FileDiffRenderProps {
+            diff,
+            cached_syntax: d.current_diff_syntax().map(std::sync::Arc::as_ref),
+            side_by_side: d.diff_side_by_side,
+            diff_scroll: d.diff_scroll,
+            scroll_pane: host.scroll_pane(),
+        },
+        ctx,
+    );
 }
 
 fn person_line(label: &str, p: &jbgit_core::PersonStamp, ctx: &RenderContext<'_>) -> Line<'static> {

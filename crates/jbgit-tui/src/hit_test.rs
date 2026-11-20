@@ -112,6 +112,16 @@ pub enum ConflictMergeButtonKind {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FileHistoryToolbarButton {
+    FollowRenames,
+    CompareLocal,
+    SideBySide,
+    Context,
+    Zoom,
+    LocateInLog,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GraphHitKind {
     Node {
         commit_oid: Oid,
@@ -247,6 +257,12 @@ pub enum HitTarget {
     StashDiffToolbar(DiffToolbarButton),
     ConflictMergeBlock(usize),
     ConflictMergeButton(ConflictMergeButtonKind),
+    FileHistoryRow {
+        idx: usize,
+    },
+    FileHistoryToolbar(FileHistoryToolbarButton),
+    FileHistoryListArea,
+    FileHistoryDiffArea,
     ModalBackdrop {
         layer_z: u8,
     },

@@ -41,6 +41,13 @@ pub fn stage_tree_menu_items(state: &AppState, idx: usize) -> Vec<ContextMenuIte
         || targets
             .iter()
             .any(|t| t.group_kind == StageNodeKind::Untracked);
+    let ignored = group == Some(StageNodeKind::Ignored)
+        || entry
+            .as_ref()
+            .is_some_and(|e| e.kind == jbgit_core::FileStatusKind::Ignored)
+        || targets
+            .iter()
+            .any(|t| t.group_kind == StageNodeKind::Ignored);
     let file_path = entry.map(|e| e.path);
     let has_paths = !paths.is_empty();
     let mut items = Vec::new();
@@ -130,7 +137,7 @@ pub fn stage_tree_menu_items(state: &AppState, idx: usize) -> Vec<ContextMenuIte
     items.push(
         run(
             i18n.t("menu.stage.stash_changes"),
-            Some('h'),
+            Some('k'),
             None,
             op(GitOp::StashPush {
                 message: Some(i18n.t_fmt("menu.stage.stash_selected_msg", &[("count", &paths_count_s)])),
@@ -190,6 +197,27 @@ pub fn stage_tree_menu_items(state: &AppState, idx: usize) -> Vec<ContextMenuIte
             }],
         )
         .enabled_if(file_path.is_some(), i18n.t("menu.stage.select_file")),
+    );
+    let history_sc = km.primary_key_for(&[KeymapScope::Commit], &KeyAction::FileHistory);
+    let history_action = file_path
+        .as_ref()
+        .map(|p| {
+            vec![Action::OpenFileHistory {
+                path: p.clone(),
+                start_oid: None,
+                follow_renames: true,
+            }]
+        })
+        .unwrap_or_default();
+    items.push(
+        run(
+            i18n.t("menu.stage.file_history"),
+            Some('h'),
+            history_sc.as_deref(),
+            history_action,
+        )
+        .enabled_if(file_path.is_some(), i18n.t("menu.stage.select_file"))
+        .enabled_if(!untracked && !ignored, i18n.t("menu.stage.only_tracked_history")),
     );
     let patch_args = diff_patch_args(group == Some(StageNodeKind::Staged), &paths);
     items.push(

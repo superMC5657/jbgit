@@ -566,6 +566,7 @@ pub fn load_amend_preview_sync(
         let mut diff = repo.diff_tree_to_tree(base.as_ref(), Some(&target), None)?;
         diff.find_similar(Some(DiffFindOptions::new().renames(true)))?;
 
+        let workdir = repo.workdir();
         let mut files = Vec::new();
         for delta in diff.deltas() {
             let Some(kind) = delta_to_kind(delta.status()) else {
@@ -582,6 +583,7 @@ pub fn load_amend_preview_sync(
                 .path()
                 .map(|p| p.to_string_lossy().replace('\\', "/"))
                 .filter(|o| matches!(kind, FileStatusKind::Renamed | FileStatusKind::Copied) && *o != path);
+            let exists_in_workdir = workdir.is_some_and(|w| w.join(&path).is_file());
             files.push(FileChange {
                 path,
                 old_path,
@@ -589,6 +591,7 @@ pub fn load_amend_preview_sync(
                 additions: 0,
                 deletions: 0,
                 is_binary: delta.flags().is_binary(),
+                exists_in_workdir,
             });
         }
 
