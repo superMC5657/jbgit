@@ -1,7 +1,7 @@
 //! Modal dual-split single-file history inspector (`--follow` rename tracking
 //! + syntax-highlighted diff preview).
 
-use jbgit_core::FileStatusKind;
+use jbgit_core::{FileStatusKind, SplitAxis, SplitterId};
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
@@ -15,7 +15,8 @@ use crate::log_view::{FileHistoryFocus, FileHistoryState};
 use crate::views::log_details::{FileDiffRenderProps, render_file_diff_body};
 use crate::views::overlays::draw_shadow;
 use crate::views::{
-    fit_left_right_spans, list_viewport, render_toolbar, row_background, truncate_to_width,
+    fit_left_right_spans, list_viewport, render_splitter_divider_z, render_toolbar,
+    row_background, truncate_to_width,
 };
 
 pub fn render_file_history_modal(
@@ -161,54 +162,19 @@ pub fn render_file_history_modal(
     if content.height >= 2 && content.width >= 8 {
         if fh.diff_zoomed {
             render_diff_pane(frame, content, state, fh, ctx, z + 2);
-        } else if content.width >= 100 {
-            let list_w = ((u32::from(content.width) * 42) / 100)
-                .max(24)
-                .min(u32::from(content.width.saturating_sub(12))) as u16;
-            let list_rect = Rect::new(content.x, content.y, list_w, content.height);
-            let div_rect = Rect::new(content.x + list_w, content.y, 1, content.height);
-            let diff_rect = Rect::new(
-                content.x + list_w + 1,
-                content.y,
-                content.width.saturating_sub(list_w + 1),
-                content.height,
-            );
-            render_list_pane(frame, list_rect, state, fh, ctx, z + 2);
-            let div_lines: Vec<Line<'static>> = (0..div_rect.height)
-                .map(|_| {
-                    Line::from(Span::styled(
-                        "│",
-                        Style::default().fg(ctx.theme.border_splitter),
-                    ))
-                })
-                .collect();
-            frame.render_widget(
-                Paragraph::new(div_lines).style(Style::default().bg(ctx.theme.bg_canvas)),
-                div_rect,
-            );
-            render_diff_pane(frame, diff_rect, state, fh, ctx, z + 2);
         } else {
-            let list_h = ((u32::from(content.height) * 42) / 100)
-                .max(3)
-                .min(u32::from(content.height.saturating_sub(3))) as u16;
-            let list_rect = Rect::new(content.x, content.y, content.width, list_h);
-            let div_rect = Rect::new(content.x, content.y + list_h, content.width, 1);
-            let diff_rect = Rect::new(
-                content.x,
-                content.y + list_h + 1,
-                content.width,
-                content.height.saturating_sub(list_h + 1),
-            );
-            render_list_pane(frame, list_rect, state, fh, ctx, z + 2);
-            frame.render_widget(
-                Paragraph::new(Span::styled(
-                    "─".repeat(div_rect.width as usize),
-                    Style::default().fg(ctx.theme.border_splitter),
-                ))
-                .style(Style::default().bg(ctx.theme.bg_canvas)),
-                div_rect,
-            );
-            render_diff_pane(frame, diff_rect, state, fh, ctx, z + 2);
+            let (splitter_id, axis) = if content.width >= 100 {
+                (SplitterId::FileHistoryHorizontal, SplitAxis::Horizontal)
+            } else {
+                (SplitterId::FileHistoryVertical, SplitAxis::Vertical)
+            };
+            let split = state.splitters.split(content, splitter_id, axis);
+            ctx.record_splitter_container(splitter_id, axis, split.container);
+            render_list_pane(frame, split.first, state, fh, ctx, z + 2);
+            if !split.collapsed {
+                render_splitter_divider_z(frame, split.divider, splitter_id, axis, ctx, z + 3);
+                render_diff_pane(frame, split.second, state, fh, ctx, z + 2);
+            }
         }
     }
 

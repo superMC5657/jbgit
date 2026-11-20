@@ -1067,3 +1067,215 @@ fn file_history_modal_end_to_end_renames_compare_navigation_and_scroll() {
     assert_eq!(state.focused_pane, PaneId::LogCommitTable);
     assert_eq!(state.log_graph.selected_oids(state.repo_snapshot.as_ref()), vec![c1]);
 }
+
+#[test]
+fn file_history_modal_uses_configured_layout_ratios_and_supports_splitter_drag_reset() {
+    use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+    use jbgit_core::{SplitAxis, SplitterId};
+
+    let dir = tempfile::tempdir().unwrap();
+    let workdir = dir.path().to_path_buf();
+    let mut cfg = crate::config::AppConfig::load_defaults();
+    let ov: crate::config::JbgitConfigOverlay = toml::from_str(
+        r#"
+[layout]
+file_history_ratio = [1, 3]
+file_history_vertical_ratio = [1, 2]
+"#,
+    )
+    .unwrap();
+    cfg.jbgit.merge_overlay(&ov);
+
+    let mut state = AppState::new_with_config(workdir, None, cfg);
+    let _ = state.dispatch(Action::OpenFileHistory {
+        path: "src/lib.rs".into(),
+        start_oid: None,
+        follow_renames: true,
+    });
+
+    // Wide terminal: uses FileHistoryHorizontal (0.25 ratio from [1, 3]).
+    let _ = render_to_buffer(&mut state, 140, 40);
+    let list_area = state
+        .hit_registry
+        .find(|t| matches!(t, HitTarget::FileHistoryListArea))
+        .expect("FileHistoryListArea hit region")
+        .rect;
+    let diff_area = state
+        .hit_registry
+        .find(|t| matches!(t, HitTarget::FileHistoryDiffArea))
+        .expect("FileHistoryDiffArea hit region")
+        .rect;
+    let (_, container) = state
+        .splitter_containers
+        .get(&SplitterId::FileHistoryHorizontal)
+        .copied()
+        .expect("FileHistoryHorizontal container recorded");
+    assert_eq!(
+        list_area.width,
+        ((f32::from(container.width) * 0.25).round() as u16).max(24)
+    );
+    assert_eq!(list_area.width + 1 + diff_area.width, container.width);
+
+    // Hit-test directly on the divider column must resolve to Splitter (not DialogBody).
+    let div_col = list_area.right();
+    let div_row = list_area.y + 2;
+    let hit = state.hit_registry.hit_test(div_col, div_row).unwrap();
+    assert_eq!(
+        hit.target,
+        HitTarget::Splitter {
+            id: SplitterId::FileHistoryHorizontal,
+            axis: SplitAxis::Horizontal,
+        }
+    );
+
+    // Drag divider rightward, verify list pane widens, then double-click to reset to [1, 3].
+    let drag_target = container.x + (container.width * 3) / 5;
+    let _ = crate::input::route_mouse(
+        MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: div_col,
+            row: div_row,
+            modifiers: KeyModifiers::NONE,
+        },
+        &mut state,
+    );
+    let _ = crate::input::route_mouse(
+        MouseEvent {
+            kind: MouseEventKind::Drag(MouseButton::Left),
+            column: drag_target,
+            row: div_row,
+            modifiers: KeyModifiers::NONE,
+        },
+        &mut state,
+    );
+    let _ = crate::input::route_mouse(
+        MouseEvent {
+            kind: MouseEventKind::Up(MouseButton::Left),
+            column: drag_target,
+            row: div_row,
+            modifiers: KeyModifiers::NONE,
+        },
+        &mut state,
+    );
+    let _ = render_to_buffer(&mut state, 140, 40);
+    let dragged_list = state
+        .hit_registry
+        .find(|t| matches!(t, HitTarget::FileHistoryListArea))
+        .unwrap()
+        .rect;
+    assert!(dragged_list.width > list_area.width);
+
+    // Double-click the new divider position to reset to configured [1, 3].
+    state.last_click = None;
+    let new_div_col = dragged_list.right();
+    for _ in 0..2 {
+        let actions = crate::input::route_mouse(
+            MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column: new_div_col,
+                row: div_row,
+                modifiers: KeyModifiers::NONE,
+            },
+            &mut state,
+        );
+        for a in actions {
+            let _ = state.dispatch(a);
+        }
+    }
+    let _ = render_to_buffer(&mut state, 140, 40);
+    let reset_list = state
+        .hit_registry
+        .find(|t| matches!(t, HitTarget::FileHistoryListArea))
+        .unwrap()
+        .rect;
+    assert_eq!(reset_list.width, list_area.width);
+
+    // Narrow terminal (<100 content width): uses FileHistoryVertical (1/3 ratio from [1, 2]).
+    let _ = render_to_buffer(&mut state, 80, 32);
+    let v_list = state
+        .hit_registry
+        .find(|t| matches!(t, HitTarget::FileHistoryListArea))
+        .unwrap()
+        .rect;
+    let v_diff = state
+        .hit_registry
+        .find(|t| matches!(t, HitTarget::FileHistoryDiffArea))
+        .unwrap()
+        .rect;
+    let (_, v_container) = state
+        .splitter_containers
+        .get(&SplitterId::FileHistoryVertical)
+        .copied()
+        .expect("FileHistoryVertical container recorded");
+    assert_eq!(
+        v_list.height,
+        ((f32::from(v_container.height) / 3.0).round() as u16).max(3)
+    );
+    assert_eq!(v_list.height + 1 + v_diff.height, v_container.height);
+
+    // Hit-test directly on the vertical divider row must resolve to Splitter (not DialogBody).
+    let v_div_col = v_container.x + 2;
+    let v_div_row = v_list.bottom();
+    let v_hit = state.hit_registry.hit_test(v_div_col, v_div_row).unwrap();
+    assert_eq!(
+        v_hit.target,
+        HitTarget::Splitter {
+            id: SplitterId::FileHistoryVertical,
+            axis: SplitAxis::Vertical,
+        }
+    );
+
+    // Drag vertical divider downward, verify list pane grows, then double-click to reset to [1, 2].
+    let v_drag_target = v_container.y + (v_container.height * 2) / 3;
+    for kind in [
+        MouseEventKind::Down(MouseButton::Left),
+        MouseEventKind::Drag(MouseButton::Left),
+        MouseEventKind::Up(MouseButton::Left),
+    ] {
+        let row = if matches!(kind, MouseEventKind::Down(_)) {
+            v_div_row
+        } else {
+            v_drag_target
+        };
+        let _ = crate::input::route_mouse(
+            MouseEvent {
+                kind,
+                column: v_div_col,
+                row,
+                modifiers: KeyModifiers::NONE,
+            },
+            &mut state,
+        );
+    }
+    let _ = render_to_buffer(&mut state, 80, 32);
+    let dragged_v_list = state
+        .hit_registry
+        .find(|t| matches!(t, HitTarget::FileHistoryListArea))
+        .unwrap()
+        .rect;
+    assert!(dragged_v_list.height > v_list.height);
+
+    state.last_click = None;
+    let new_v_div_row = dragged_v_list.bottom();
+    for _ in 0..2 {
+        let actions = crate::input::route_mouse(
+            MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column: v_div_col,
+                row: new_v_div_row,
+                modifiers: KeyModifiers::NONE,
+            },
+            &mut state,
+        );
+        for a in actions {
+            let _ = state.dispatch(a);
+        }
+    }
+    let _ = render_to_buffer(&mut state, 80, 32);
+    let reset_v_list = state
+        .hit_registry
+        .find(|t| matches!(t, HitTarget::FileHistoryListArea))
+        .unwrap()
+        .rect;
+    assert_eq!(reset_v_list.height, v_list.height);
+}

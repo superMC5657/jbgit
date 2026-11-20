@@ -406,6 +406,10 @@ pub struct LayoutSection {
     pub stash_preview_ratio: PairRatio,
     #[serde(default = "default_pair::<2, 3>")]
     pub console_ratio: PairRatio,
+    #[serde(default = "default_pair::<2, 3>")]
+    pub file_history_ratio: PairRatio,
+    #[serde(default = "default_pair::<2, 3>")]
+    pub file_history_vertical_ratio: PairRatio,
 }
 
 fn default_log_ratio() -> TripleRatio {
@@ -428,12 +432,14 @@ impl Default for LayoutSection {
             stash_ratio: default_pair::<2, 3>(),
             stash_preview_ratio: default_pair::<1, 2>(),
             console_ratio: default_pair::<2, 3>(),
+            file_history_ratio: default_pair::<2, 3>(),
+            file_history_vertical_ratio: default_pair::<2, 3>(),
         }
     }
 }
 
 impl LayoutSection {
-    pub fn splitter_defaults(&self) -> [(jbgit_core::SplitterId, f32); 10] {
+    pub fn splitter_defaults(&self) -> [(jbgit_core::SplitterId, f32); 12] {
         let (log_left, log_right) = self.log_ratio.split_ratios();
         [
             (jbgit_core::SplitterId::LogLeftHorizontal, log_left),
@@ -469,6 +475,14 @@ impl LayoutSection {
             (
                 jbgit_core::SplitterId::ConsoleMainHorizontal,
                 self.console_ratio.first_ratio(),
+            ),
+            (
+                jbgit_core::SplitterId::FileHistoryHorizontal,
+                self.file_history_ratio.first_ratio(),
+            ),
+            (
+                jbgit_core::SplitterId::FileHistoryVertical,
+                self.file_history_vertical_ratio.first_ratio(),
             ),
         ]
     }
@@ -532,6 +546,11 @@ impl JbgitConfig {
                     lo.stash_preview_ratio,
                 ),
                 (&mut self.layout.console_ratio, lo.console_ratio),
+                (&mut self.layout.file_history_ratio, lo.file_history_ratio),
+                (
+                    &mut self.layout.file_history_vertical_ratio,
+                    lo.file_history_vertical_ratio,
+                ),
             ] {
                 if let Some(r) = src {
                     *dst = r;
@@ -595,4 +614,8 @@ pub struct LayoutSectionOverlay {
     pub stash_preview_ratio: Option<PairRatio>,
     #[serde(default, deserialize_with = "deserialize_opt_pair_ratio")]
     pub console_ratio: Option<PairRatio>,
+    #[serde(default, deserialize_with = "deserialize_opt_pair_ratio")]
+    pub file_history_ratio: Option<PairRatio>,
+    #[serde(default, deserialize_with = "deserialize_opt_pair_ratio")]
+    pub file_history_vertical_ratio: Option<PairRatio>,
 }

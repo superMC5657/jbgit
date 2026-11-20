@@ -327,6 +327,8 @@ default_tab = "branches"
         assert_eq!(cfg.jbgit.layout.stash_ratio.weights(), [2, 3]);
         assert_eq!(cfg.jbgit.layout.stash_preview_ratio.weights(), [1, 2]);
         assert_eq!(cfg.jbgit.layout.console_ratio.weights(), [2, 3]);
+        assert_eq!(cfg.jbgit.layout.file_history_ratio.weights(), [2, 3]);
+        assert_eq!(cfg.jbgit.layout.file_history_vertical_ratio.weights(), [2, 3]);
 
         let overlay_toml = r#"
 [layout]
@@ -337,6 +339,8 @@ log_diff_bottom_ratio = [2, 1]
 commit_ratio = [2, 5]
 commit_left_ratio = [4, 1]
 stash_preview_ratio = [2, 3]
+file_history_ratio = [1, 3]
+file_history_vertical_ratio = [1, 2]
 "#;
         let overlay: JbgitConfigOverlay = toml::from_str(overlay_toml).unwrap();
         cfg.jbgit.merge_overlay(&overlay);
@@ -348,6 +352,8 @@ stash_preview_ratio = [2, 3]
         assert_eq!(cfg.jbgit.layout.commit_ratio.weights(), [2, 5]);
         assert_eq!(cfg.jbgit.layout.commit_left_ratio.weights(), [4, 1]);
         assert_eq!(cfg.jbgit.layout.stash_preview_ratio.weights(), [2, 3]);
+        assert_eq!(cfg.jbgit.layout.file_history_ratio.weights(), [1, 3]);
+        assert_eq!(cfg.jbgit.layout.file_history_vertical_ratio.weights(), [1, 2]);
         // Unspecified ratios keep defaults
         assert_eq!(cfg.jbgit.layout.stash_ratio.weights(), [2, 3]);
         assert_eq!(cfg.jbgit.layout.console_ratio.weights(), [2, 3]);
@@ -441,6 +447,8 @@ log_ratio = [1, 0, 0]
         assert!((state.ratio(SplitterId::StashMainHorizontal) - 0.4).abs() < 1e-4);
         assert!((state.ratio(SplitterId::StashPreviewVertical) - (1.0 / 3.0)).abs() < 1e-4);
         assert!((state.ratio(SplitterId::ConsoleMainHorizontal) - 0.4).abs() < 1e-4);
+        assert!((state.ratio(SplitterId::FileHistoryHorizontal) - 0.4).abs() < 1e-4);
+        assert!((state.ratio(SplitterId::FileHistoryVertical) - 0.4).abs() < 1e-4);
 
         // Reset restores the layout-configured default (not hardcoded SplitterState::default)
         state.reset(SplitterId::LogLeftHorizontal);
@@ -464,6 +472,8 @@ log_ratio = [1, 0, 0]
             stash_ratio: PairRatio::new(3, 2).unwrap(),
             stash_preview_ratio: PairRatio::new(1, 1).unwrap(),
             console_ratio: PairRatio::new(1, 1).unwrap(),
+            file_history_ratio: PairRatio::new(1, 3).unwrap(),
+            file_history_vertical_ratio: PairRatio::new(3, 5).unwrap(),
         };
         let mut custom_state = SplitterState::with_default_ratios(custom.splitter_defaults());
         assert!((custom_state.ratio(SplitterId::LogLeftHorizontal) - 0.125).abs() < 1e-4);
@@ -476,6 +486,8 @@ log_ratio = [1, 0, 0]
         assert!((custom_state.ratio(SplitterId::StashMainHorizontal) - 0.60).abs() < 1e-4);
         assert!((custom_state.ratio(SplitterId::StashPreviewVertical) - 0.50).abs() < 1e-4);
         assert!((custom_state.ratio(SplitterId::ConsoleMainHorizontal) - 0.50).abs() < 1e-4);
+        assert!((custom_state.ratio(SplitterId::FileHistoryHorizontal) - 0.25).abs() < 1e-4);
+        assert!((custom_state.ratio(SplitterId::FileHistoryVertical) - 0.375).abs() < 1e-4);
 
         // Mutating then resetting vertical & dock splitters restores custom configured defaults
         custom_state.update_from_pointer(

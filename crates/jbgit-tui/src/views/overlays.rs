@@ -1,4 +1,6 @@
-use jbgit_core::{GroupOptions, ModalButton, RefInfo, group_refs_for_table, word_diff};
+use jbgit_core::{
+    GroupOptions, ModalButton, RefInfo, group_refs_for_table, word_diff,
+};
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};

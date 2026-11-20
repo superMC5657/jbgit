@@ -64,3 +64,10 @@ stash_preview_ratio = [ 1, 2 ]
 # --- Console 控制台 ---
 # 横向两栏比例: [左侧命令历史, 右侧执行输出] (默认 [2, 3])
 console_ratio = [ 2, 3 ]
+
+# --- File History 文件历史窗口 ---
+# 宽屏横向两栏比例: [左侧提交列表, 右侧 Diff 预览] (默认 [2, 3])
+file_history_ratio = [ 2, 3 ]
+
+# 窄屏上下两栏比例: [上方提交列表, 下方 Diff 预览] (默认 [2, 3])
+file_history_vertical_ratio = [ 2, 3 ]

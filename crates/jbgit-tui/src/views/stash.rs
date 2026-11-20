@@ -23,7 +23,6 @@ pub fn render_stash_tab(
     area: Rect,
     state: &AppState,
     ctx: &mut RenderContext<'_>,
-    splitter_containers: &mut Vec<(SplitterId, SplitAxis, Rect)>,
 ) {
     if area.width == 0 || area.height == 0 {
         return;
@@ -32,11 +31,11 @@ pub fn render_stash_tab(
     let split = state
         .splitters
         .split(area, SplitterId::StashMainHorizontal, SplitAxis::Horizontal);
-    splitter_containers.push((
+    ctx.record_splitter_container(
         SplitterId::StashMainHorizontal,
         SplitAxis::Horizontal,
         split.container,
-    ));
+    );
 
     let stashes = state
         .repo_snapshot
@@ -56,7 +55,7 @@ pub fn render_stash_tab(
             SplitAxis::Horizontal,
             ctx,
         );
-        render_stash_preview(frame, split.second, state, ctx, splitter_containers);
+        render_stash_preview(frame, split.second, state, ctx);
     }
 }
 
@@ -177,7 +176,6 @@ fn render_stash_preview(
     area: Rect,
     state: &AppState,
     ctx: &mut RenderContext<'_>,
-    splitter_containers: &mut Vec<(SplitterId, SplitAxis, Rect)>,
 ) {
     if area.height == 0 || area.width == 0 {
         return;
@@ -204,11 +202,11 @@ fn render_stash_preview(
         SplitterId::StashPreviewVertical,
         SplitAxis::Vertical,
     );
-    splitter_containers.push((
+    ctx.record_splitter_container(
         SplitterId::StashPreviewVertical,
         SplitAxis::Vertical,
         preview_split.container,
-    ));
+    );
     render_changes_browser(
         frame,
         preview_split.first,

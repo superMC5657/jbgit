@@ -25,7 +25,7 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 use crate::app::{AppState, RenderContext, ViewportScrollMetrics};
 use crate::hit_test::HitTarget;
 use crate::theme::ThemePalette;
-use crate::widgets::OneCellSplitter;
+use crate::widgets::{DividerProps, OneCellSplitter};
 
 pub fn render_app(frame: &mut Frame<'_>, state: &mut AppState) {
     let area = frame.area();
@@ -153,6 +153,7 @@ pub fn render_app(frame: &mut Frame<'_>, state: &mut AppState) {
             i18n: Some(&state.i18n),
             config: Some(&state.config),
             scroll_metrics: Some(&mut scroll_metrics),
+            splitter_containers: Some(&mut splitter_containers),
         };
 
         header::render_top_header(frame, header_rect, state, &mut ctx);
@@ -161,34 +162,16 @@ pub fn render_app(frame: &mut Frame<'_>, state: &mut AppState) {
 
         match state.active_tab {
             WorkspaceTab::Commit => {
-                commit::render_commit_tab(
-                    frame,
-                    body_rect,
-                    state,
-                    &mut ctx,
-                    &mut splitter_containers,
-                );
+                commit::render_commit_tab(frame, body_rect, state, &mut ctx);
             }
             WorkspaceTab::Log => {
-                log::render_log_tab(frame, body_rect, state, &mut ctx, &mut splitter_containers);
+                log::render_log_tab(frame, body_rect, state, &mut ctx);
             }
             WorkspaceTab::Stash => {
-                stash::render_stash_tab(
-                    frame,
-                    body_rect,
-                    state,
-                    &mut ctx,
-                    &mut splitter_containers,
-                );
+                stash::render_stash_tab(frame, body_rect, state, &mut ctx);
             }
             WorkspaceTab::Console => {
-                console::render_console_tab(
-                    frame,
-                    body_rect,
-                    state,
-                    &mut ctx,
-                    &mut splitter_containers,
-                );
+                console::render_console_tab(frame, body_rect, state, &mut ctx);
             }
         }
 
@@ -284,6 +267,17 @@ pub fn render_splitter_divider(
     axis: SplitAxis,
     ctx: &mut RenderContext<'_>,
 ) {
+    render_splitter_divider_z(frame, divider, id, axis, ctx, 2);
+}
+
+pub fn render_splitter_divider_z(
+    frame: &mut Frame<'_>,
+    divider: Rect,
+    id: SplitterId,
+    axis: SplitAxis,
+    ctx: &mut RenderContext<'_>,
+    z_index: u8,
+) {
     let active = ctx.dragging_splitter == Some(id)
         || matches!(
             ctx.hover_target,
@@ -292,9 +286,12 @@ pub fn render_splitter_divider(
     OneCellSplitter::render_divider(
         frame,
         divider,
-        id,
-        axis,
-        active,
+        DividerProps {
+            id,
+            axis,
+            active,
+            z_index,
+        },
         ctx.theme,
         ctx.hit_registry,
     );

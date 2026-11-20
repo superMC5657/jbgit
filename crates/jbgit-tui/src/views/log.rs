@@ -30,7 +30,6 @@ pub fn render_log_tab(
     area: Rect,
     state: &AppState,
     ctx: &mut RenderContext<'_>,
-    splitter_containers: &mut Vec<(SplitterId, SplitAxis, Rect)>,
 ) {
     if area.width == 0 || area.height == 0 {
         return;
@@ -48,11 +47,11 @@ pub fn render_log_tab(
             state
                 .splitters
                 .split(area, SplitterId::LogDiffBottomVertical, SplitAxis::Vertical);
-        splitter_containers.push((
+        ctx.record_splitter_container(
             SplitterId::LogDiffBottomVertical,
             SplitAxis::Vertical,
             bottom_split.container,
-        ));
+        );
         main_area = bottom_split.first;
         if !bottom_split.collapsed {
             render_splitter_divider(
@@ -85,11 +84,11 @@ pub fn render_log_tab(
             state
                 .splitters
                 .split(main_area, SplitterId::LogLeftHorizontal, SplitAxis::Horizontal);
-        splitter_containers.push((
+        ctx.record_splitter_container(
             SplitterId::LogLeftHorizontal,
             SplitAxis::Horizontal,
             left_split.container,
-        ));
+        );
         if left_split.collapsed {
             left_split.first
         } else {
@@ -112,11 +111,11 @@ pub fn render_log_tab(
             SplitterId::LogDiffRightHorizontal,
             SplitAxis::Horizontal,
         );
-        splitter_containers.push((
+        ctx.record_splitter_container(
             SplitterId::LogDiffRightHorizontal,
             SplitAxis::Horizontal,
             dock_split.container,
-        ));
+        );
         mid_right_area = dock_split.first;
         if !dock_split.collapsed {
             render_splitter_divider(
@@ -135,11 +134,11 @@ pub fn render_log_tab(
         SplitterId::LogRightHorizontal,
         SplitAxis::Horizontal,
     );
-    splitter_containers.push((
+    ctx.record_splitter_container(
         SplitterId::LogRightHorizontal,
         SplitAxis::Horizontal,
         right_split.container,
-    ));
+    );
 
     let commits_sub = state
         .repo_snapshot
@@ -202,11 +201,11 @@ pub fn render_log_tab(
             SplitterId::LogDetailsVertical,
             SplitAxis::Vertical,
         );
-        splitter_containers.push((
+        ctx.record_splitter_container(
             SplitterId::LogDetailsVertical,
             SplitAxis::Vertical,
             details_split.container,
-        ));
+        );
         render_changes_pane(frame, details_split.first, state, ctx);
         if !details_split.collapsed {
             render_splitter_divider(

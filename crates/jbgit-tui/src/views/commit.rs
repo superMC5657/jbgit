@@ -21,7 +21,6 @@ pub fn render_commit_tab(
     area: Rect,
     state: &AppState,
     ctx: &mut RenderContext<'_>,
-    splitter_containers: &mut Vec<(SplitterId, SplitAxis, Rect)>,
 ) {
     if area.width == 0 || area.height == 0 {
         return;
@@ -36,11 +35,11 @@ pub fn render_commit_tab(
             SplitterId::CommitMainHorizontal,
             SplitAxis::Horizontal,
         );
-        splitter_containers.push((
+        ctx.record_splitter_container(
             SplitterId::CommitMainHorizontal,
             SplitAxis::Horizontal,
             main_split.container,
-        ));
+        );
         (
             main_split.first,
             main_split.second,
@@ -56,11 +55,11 @@ pub fn render_commit_tab(
         SplitterId::CommitLeftVertical,
         SplitAxis::Vertical,
     );
-    splitter_containers.push((
+    ctx.record_splitter_container(
         SplitterId::CommitLeftVertical,
         SplitAxis::Vertical,
         left_split.container,
-    ));
+    );
 
     // Left-top: GitStageTree
     let total_changes = state.stage_status.as_ref().map_or(0, |s| s.total_changes());

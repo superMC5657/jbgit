@@ -284,6 +284,13 @@ stash_preview_ratio = [ 1, 2 ]
 # --- Console 控制台 ---
 # 横向两栏权重: [左侧命令历史, 右侧执行输出]
 console_ratio = [ 2, 3 ]
+
+# --- File History 文件历史窗口 ---
+# 宽屏横向两栏权重: [左侧提交列表, 右侧 Diff 预览]
+file_history_ratio = [ 2, 3 ]
+
+# 窄屏上下两栏权重: [上方提交列表, 下方 Diff 预览]
+file_history_vertical_ratio = [ 2, 3 ]
 ```
 
 > 提示：若在同一配置层中同时存在 `jbgit.toml` 和 `theme.toml`，且 `theme.toml` 未显式设置 `flavor` 或 `[glyphs].mode`，则会继承该层 `jbgit.toml` 中的 `[general].flavor` 与 `[graph].glyph_mode`。

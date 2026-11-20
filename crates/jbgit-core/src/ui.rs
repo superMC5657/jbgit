@@ -124,6 +124,10 @@ pub enum SplitterId {
     /// Right pane of Stash: changed files browser (top) / diff preview (bottom).
     StashPreviewVertical,
     ConsoleMainHorizontal,
+    /// File history modal: commit list (left) / diff preview (right).
+    FileHistoryHorizontal,
+    /// File history modal (narrow terminal): commit list (top) / diff preview (bottom).
+    FileHistoryVertical,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

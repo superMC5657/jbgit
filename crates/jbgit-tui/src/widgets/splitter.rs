@@ -112,6 +112,22 @@ impl Default for SplitterState {
                 min_second: 24,
             },
         );
+        specs.insert(
+            SplitterId::FileHistoryHorizontal,
+            SplitterSpec {
+                default_ratio: 0.40,
+                min_first: 24,
+                min_second: 12,
+            },
+        );
+        specs.insert(
+            SplitterId::FileHistoryVertical,
+            SplitterSpec {
+                default_ratio: 0.40,
+                min_first: 3,
+                min_second: 3,
+            },
+        );
 
         let ratios = specs.iter().map(|(&id, s)| (id, s.default_ratio)).collect();
         Self { ratios, specs }
@@ -193,6 +209,15 @@ impl SplitterState {
         let new_ratio = (clamped as f32) / (total as f32);
         self.ratios.insert(id, new_ratio.clamp(0.05, 0.95));
     }
+}
+
+/// Visual and hit-test metadata for rendering a one-cell splitter divider.
+#[derive(Debug, Clone, Copy)]
+pub struct DividerProps {
+    pub id: SplitterId,
+    pub axis: SplitAxis,
+    pub active: bool,
+    pub z_index: u8,
 }
 
 pub struct OneCellSplitter;
@@ -279,9 +304,7 @@ impl OneCellSplitter {
     pub fn render_divider(
         frame: &mut Frame<'_>,
         divider: Rect,
-        id: SplitterId,
-        axis: SplitAxis,
-        active: bool,
+        props: DividerProps,
         theme: &ThemePalette,
         hit_registry: &mut HitTestRegistry,
     ) {
@@ -289,13 +312,13 @@ impl OneCellSplitter {
             return;
         }
 
-        let fg = if active {
+        let fg = if props.active {
             theme.border_focused
         } else {
             theme.border_splitter
         };
         let style = Style::default().fg(fg).bg(theme.bg_canvas);
-        let ch = match axis {
+        let ch = match props.axis {
             SplitAxis::Horizontal => "│",
             SplitAxis::Vertical => "─",
         };
@@ -309,7 +332,14 @@ impl OneCellSplitter {
             }
         }
 
-        hit_registry.register(divider, 2, HitTarget::Splitter { id, axis });
+        hit_registry.register(
+            divider,
+            props.z_index,
+            HitTarget::Splitter {
+                id: props.id,
+                axis: props.axis,
+            },
+        );
     }
 }
 
@@ -343,6 +373,8 @@ mod tests {
             (SplitterId::StashMainHorizontal, 0.01),   // clamped to 0.05
             (SplitterId::StashPreviewVertical, 0.45),
             (SplitterId::ConsoleMainHorizontal, 0.99), // clamped to 0.90
+            (SplitterId::FileHistoryHorizontal, 0.30),
+            (SplitterId::FileHistoryVertical, 0.55),
         ]);
 
         assert!((state.ratio(SplitterId::LogLeftHorizontal) - 0.125).abs() < 1e-4);
@@ -355,6 +387,8 @@ mod tests {
         assert!((state.ratio(SplitterId::StashMainHorizontal) - 0.05).abs() < 1e-4);
         assert!((state.ratio(SplitterId::StashPreviewVertical) - 0.45).abs() < 1e-4);
         assert!((state.ratio(SplitterId::ConsoleMainHorizontal) - 0.90).abs() < 1e-4);
+        assert!((state.ratio(SplitterId::FileHistoryHorizontal) - 0.30).abs() < 1e-4);
+        assert!((state.ratio(SplitterId::FileHistoryVertical) - 0.55).abs() < 1e-4);
 
         // Test reset restores configured default ratio (including clamped values)
         state.ratios.insert(SplitterId::CommitMainHorizontal, 0.88);

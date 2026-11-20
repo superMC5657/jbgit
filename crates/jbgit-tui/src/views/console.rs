@@ -56,7 +56,6 @@ pub fn render_console_tab(
     area: Rect,
     state: &AppState,
     ctx: &mut RenderContext<'_>,
-    splitter_containers: &mut Vec<(SplitterId, SplitAxis, Rect)>,
 ) {
     if area.width == 0 || area.height == 0 {
         return;
@@ -67,11 +66,11 @@ pub fn render_console_tab(
         SplitterId::ConsoleMainHorizontal,
         SplitAxis::Horizontal,
     );
-    splitter_containers.push((
+    ctx.record_splitter_container(
         SplitterId::ConsoleMainHorizontal,
         SplitAxis::Horizontal,
         split.container,
-    ));
+    );
 
     let count_s = state.console_entries.len().to_string();
     let list_sub = state
@@ -392,8 +391,7 @@ mod tests {
 
     fn render_output_with_theme(state: &AppState, theme: &ThemePalette, w: u16, h: u16) -> Buffer {
         render_with_theme(theme, w, h, |f, area, ctx| {
-            let mut splitters = Vec::new();
-            render_console_tab(f, area, state, ctx, &mut splitters);
+            render_console_tab(f, area, state, ctx);
         })
     }
 

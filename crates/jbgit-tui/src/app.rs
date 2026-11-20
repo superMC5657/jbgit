@@ -116,6 +116,7 @@ pub struct RenderContext<'a> {
     pub i18n: Option<&'a crate::i18n::I18n>,
     pub config: Option<&'a crate::config::AppConfig>,
     pub scroll_metrics: Option<&'a mut ViewportScrollMetrics>,
+    pub splitter_containers: Option<&'a mut Vec<(SplitterId, SplitAxis, Rect)>>,
 }
 
 impl<'a> RenderContext<'a> {
@@ -137,6 +138,7 @@ impl<'a> RenderContext<'a> {
             i18n: None,
             config: None,
             scroll_metrics: None,
+            splitter_containers: None,
         }
     }
 
@@ -156,6 +158,7 @@ impl<'a> RenderContext<'a> {
             i18n: self.i18n,
             config: self.config,
             scroll_metrics: None,
+            splitter_containers: None,
         }
     }
 
@@ -171,6 +174,13 @@ impl<'a> RenderContext<'a> {
     pub fn record_scroll_bound(&mut self, pane: ScrollPane, viewport_h: usize, max_scroll: usize) {
         if let Some(m) = self.scroll_metrics.as_deref_mut() {
             m.record(pane, viewport_h, max_scroll);
+        }
+    }
+
+    /// Records the container rect of a rendered splitter for mouse drag calculations.
+    pub fn record_splitter_container(&mut self, id: SplitterId, axis: SplitAxis, rect: Rect) {
+        if let Some(containers) = self.splitter_containers.as_deref_mut() {
+            containers.push((id, axis, rect));
         }
     }
 
