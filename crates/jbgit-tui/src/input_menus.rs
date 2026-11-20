@@ -306,10 +306,14 @@ pub fn route_conflict_merge_key(key: &KeyEvent, state: &AppState) -> Vec<Action>
         KeyCode::Char('s') if ctrl => vec![Action::ConflictSaveAndStage],
         KeyCode::Down | KeyCode::Char('j') if !ctrl && !alt => vec![Action::ConflictScroll(1)],
         KeyCode::Up | KeyCode::Char('k') if !ctrl && !alt => vec![Action::ConflictScroll(-1)],
+        KeyCode::Char('d') if ctrl && !alt => vec![Action::ConflictScroll(10)],
+        KeyCode::Char('u') if ctrl && !alt => vec![Action::ConflictScroll(-10)],
         KeyCode::PageDown => vec![Action::ConflictScroll(10)],
         KeyCode::PageUp => vec![Action::ConflictScroll(-10)],
-        KeyCode::Char('n') | KeyCode::Tab if !ctrl && !alt => vec![Action::ConflictSelectBlock(1)],
-        KeyCode::Char('p') | KeyCode::BackTab if !ctrl && !alt => {
+        KeyCode::Char('n' | ']') | KeyCode::Tab if !ctrl && !alt => {
+            vec![Action::ConflictSelectBlock(1)]
+        }
+        KeyCode::Char('p' | '[') | KeyCode::BackTab if !ctrl && !alt => {
             vec![Action::ConflictSelectBlock(-1)]
         }
         KeyCode::Char('1' | 'y') if !ctrl && !alt => {
@@ -566,19 +570,11 @@ pub fn route_stash_fallback_key(key: &KeyEvent, state: &AppState) -> Vec<Action>
     }
     match state.focused_pane {
         PaneId::StashList => match key.code {
-            KeyCode::PageDown => vec![Action::StashMove(10)],
-            KeyCode::PageUp => vec![Action::StashMove(-10)],
-            KeyCode::Enter | KeyCode::Right => vec![Action::FocusPane(PaneId::StashDiffPreview)],
+            KeyCode::Enter => vec![Action::FocusPane(PaneId::StashDiffPreview)],
             _ => Vec::new(),
         },
         PaneId::StashDiffPreview => match key.code {
-            KeyCode::Right => vec![Action::StashChangesExpand(true)],
-            KeyCode::Left => vec![Action::StashChangesExpand(false)],
-            KeyCode::Char('v') => vec![Action::StashChangesToggleGroupByDir],
-            KeyCode::Char('e') => vec![Action::StashChangesExpandAll(true)],
-            KeyCode::Char('E') => vec![Action::StashChangesExpandAll(false)],
-            KeyCode::PageDown | KeyCode::Char(' ') => vec![Action::StashDiffScroll(10)],
-            KeyCode::PageUp => vec![Action::StashDiffScroll(-10)],
+            KeyCode::Char(' ') => vec![Action::StashDiffScroll(10)],
             KeyCode::Esc => vec![Action::FocusPane(PaneId::StashList)],
             _ => Vec::new(),
         },

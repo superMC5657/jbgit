@@ -18,8 +18,9 @@ pub use actions::{
     route_editor_dynamic_key, scopes_for_context,
 };
 pub use help::{
-    HelpRow, build_help_rows, first_help_entry, localized_action_desc, pending_completions,
-    pending_prefix_display, resolve_help_selection, step_help_selection,
+    HelpRow, WhichKeyEntry, build_help_rows, completions_for_prefix_char, first_help_entry,
+    localized_action_desc, pending_completion_entries, pending_completions, pending_prefix_display,
+    resolve_help_selection, step_help_selection,
 };
 
 pub const KEY_CHORD_WINDOW: Duration = Duration::from_millis(1200);
@@ -51,10 +52,18 @@ pub enum KeyAction {
     GotoRevision,
     CursorDown,
     CursorUp,
+    TreeCollapse,
+    TreeExpand,
     GotoTop,
     GotoBottom,
     PageDownHalf,
     PageUpHalf,
+    PageDown,
+    PageUp,
+    ExpandAll,
+    CollapseAll,
+    NavBack,
+    NavForward,
     CompareOrDiff,
     CompareVersions,
     CopyHash,
@@ -133,10 +142,18 @@ impl KeyAction {
             "goto_revision" => Self::GotoRevision,
             "cursor_down" => Self::CursorDown,
             "cursor_up" => Self::CursorUp,
+            "tree_collapse" => Self::TreeCollapse,
+            "tree_expand" => Self::TreeExpand,
             "goto_top" => Self::GotoTop,
             "goto_bottom" => Self::GotoBottom,
             "page_down_half" => Self::PageDownHalf,
             "page_up_half" => Self::PageUpHalf,
+            "page_down" => Self::PageDown,
+            "page_up" => Self::PageUp,
+            "expand_all" => Self::ExpandAll,
+            "collapse_all" => Self::CollapseAll,
+            "nav_back" => Self::NavBack,
+            "nav_forward" => Self::NavForward,
             "compare_or_diff" => Self::CompareOrDiff,
             "compare_versions" => Self::CompareVersions,
             "copy_hash" => Self::CopyHash,
@@ -215,10 +232,18 @@ impl KeyAction {
             Self::GotoRevision => "goto_revision",
             Self::CursorDown => "cursor_down",
             Self::CursorUp => "cursor_up",
+            Self::TreeCollapse => "tree_collapse",
+            Self::TreeExpand => "tree_expand",
             Self::GotoTop => "goto_top",
             Self::GotoBottom => "goto_bottom",
             Self::PageDownHalf => "page_down_half",
             Self::PageUpHalf => "page_up_half",
+            Self::PageDown => "page_down",
+            Self::PageUp => "page_up",
+            Self::ExpandAll => "expand_all",
+            Self::CollapseAll => "collapse_all",
+            Self::NavBack => "nav_back",
+            Self::NavForward => "nav_forward",
             Self::CompareOrDiff => "compare_or_diff",
             Self::CompareVersions => "compare_versions",
             Self::CopyHash => "copy_hash",
@@ -302,10 +327,18 @@ impl KeyAction {
             Self::GotoRevision => "view.footer.pill.goto",
             Self::CursorDown => "view.footer.pill.cursor_down",
             Self::CursorUp => "view.footer.pill.cursor_up",
+            Self::TreeCollapse => "view.footer.pill.tree_collapse",
+            Self::TreeExpand => "view.footer.pill.tree_expand",
             Self::GotoTop => "view.footer.pill.goto_top",
             Self::GotoBottom => "view.footer.pill.goto_bottom",
             Self::PageDownHalf => "view.footer.pill.page_down_half",
             Self::PageUpHalf => "view.footer.pill.page_up_half",
+            Self::PageDown => "view.footer.pill.page_down",
+            Self::PageUp => "view.footer.pill.page_up",
+            Self::ExpandAll => "view.footer.pill.expand_all",
+            Self::CollapseAll => "view.footer.pill.collapse_all",
+            Self::NavBack => "view.footer.pill.nav_back",
+            Self::NavForward => "view.footer.pill.nav_forward",
             Self::CompareOrDiff | Self::CompareVersions => "view.footer.pill.diff",
             Self::CopyHash => "view.footer.pill.copy_hash",
             Self::Checkout => "view.footer.pill.checkout",
@@ -796,9 +829,9 @@ mod tests {
         let config = AppConfig::default();
         let mut state = AppState::new_with_config(PathBuf::from("."), None, config);
 
-        // 1. Default routing: "r" refreshes
-        let ev_r = KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE);
-        let actions = route_dynamic_key(&ev_r, &mut state);
+        // 1. Default routing: "R" refreshes
+        let ev_r_upper = KeyEvent::new(KeyCode::Char('R'), KeyModifiers::SHIFT);
+        let actions = route_dynamic_key(&ev_r_upper, &mut state);
         assert!(matches!(actions.as_deref(), Some([Action::RefreshAll])));
 
         // 2. Default routing: multi-key sequence "g" then "g" + Which-Key completions
@@ -814,6 +847,18 @@ mod tests {
             second.as_deref(),
             Some([Action::LogEdge { bottom: false }])
         ));
+
+        // 2a. Default routing: "z" view prefix exposes Which-Key completions
+        let ev_z = KeyEvent::new(KeyCode::Char('z'), KeyModifiers::NONE);
+        let z_first = route_dynamic_key(&ev_z, &mut state);
+        assert!(matches!(z_first.as_deref(), Some([])));
+        let z_completions = pending_completions(&state);
+        assert!(z_completions.iter().any(|(k, _)| k == "z"));
+        assert!(z_completions.iter().any(|(k, _)| k == "b"));
+        assert!(z_completions.iter().any(|(k, _)| k == "g"));
+        assert!(z_completions.iter().any(|(k, _)| k == "i"));
+        assert!(z_completions.iter().any(|(k, _)| k == "p"));
+        route_dynamic_key(&KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), &mut state);
 
         // 2b. Esc cancels pending chord cleanly
         let first_esc = route_dynamic_key(&ev_g, &mut state);
@@ -847,10 +892,10 @@ mod tests {
             Some([Action::RunGitOp(GitOp::Fetch)])
         ));
 
-        // 4. Commit Diff: 'r' refreshes (does NOT rollback), while 'd' rolls back!
+        // 4. Commit Diff: 'R' refreshes (does NOT rollback), while 'd' rolls back!
         state.active_tab = WorkspaceTab::Commit;
         state.focused_pane = PaneId::CommitDiffPreview;
-        let actions_r_diff = route_dynamic_key(&ev_r, &mut state);
+        let actions_r_diff = route_dynamic_key(&ev_r_upper, &mut state);
         assert!(matches!(actions_r_diff.as_deref(), Some([Action::RefreshAll])));
         let ev_d = KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE);
         let actions_d_diff = route_dynamic_key(&ev_d, &mut state);
@@ -882,14 +927,79 @@ key_bindings = [{ on = ["<F5>"], run = "refresh" }]
         let actions_f5 = route_dynamic_key(&ev_f5, &mut state_custom);
         assert!(matches!(actions_f5.as_deref(), Some([Action::RefreshAll])));
 
-        // Pressing r does NOT refresh when replaced via key_bindings
-        let actions_r = route_dynamic_key(&ev_r, &mut state_custom);
+        // Pressing R does NOT refresh when replaced via key_bindings
+        let actions_r = route_dynamic_key(&ev_r_upper, &mut state_custom);
         assert!(actions_r.is_none());
 
         // Existing global bindings like 'q' are preserved
         let ev_q = KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE);
         let actions_q = route_dynamic_key(&ev_q, &mut state_custom);
         assert!(matches!(actions_q.as_deref(), Some([Action::Quit])));
+    }
+
+    #[test]
+    fn default_keymap_has_zero_global_to_local_key_collisions() {
+        use std::collections::HashMap;
+        use crate::config::KeymapScope;
+
+        let cfg = AppConfig::default();
+        let global_seqs: Vec<(KeySequence, &KeyAction)> = cfg
+            .keymap
+            .bindings_for(KeymapScope::Global)
+            .iter()
+            .filter_map(|b| KeySequence::parse(&b.on).map(|s| (s, &b.run)))
+            .collect();
+
+        for scope in [
+            KeymapScope::Log,
+            KeymapScope::Branch,
+            KeymapScope::Commit,
+            KeymapScope::Diff,
+            KeymapScope::Stash,
+            KeymapScope::Console,
+        ] {
+            for b in cfg.keymap.bindings_for(scope) {
+                let seq = KeySequence::parse(&b.on).expect("valid key sequence");
+                for (g_seq, g_act) in &global_seqs {
+                    assert!(
+                        g_seq != &seq || *g_act == &b.run,
+                        "default keymap collision: {:?} ({:?}) shadows Global {:?}",
+                        seq.to_display_string(),
+                        scope,
+                        g_act
+                    );
+                }
+            }
+        }
+
+        // Verify all `z *` and `g *` chords across all scopes map to distinct actions per subkey.
+        let mut z_subkeys: HashMap<String, KeyAction> = HashMap::new();
+        let mut g_subkeys: HashMap<String, KeyAction> = HashMap::new();
+        for scope in [
+            KeymapScope::Global,
+            KeymapScope::Log,
+            KeymapScope::Branch,
+            KeymapScope::Commit,
+            KeymapScope::Diff,
+            KeymapScope::Stash,
+            KeymapScope::Console,
+        ] {
+            for b in cfg.keymap.bindings_for(scope) {
+                if b.on.len() == 2 {
+                    if b.on[0] == "z" {
+                        if let Some(prev) = z_subkeys.insert(b.on[1].clone(), b.run.clone()) {
+                            assert_eq!(prev, b.run, "z {} conflict: {:?} vs {:?}", b.on[1], prev, b.run);
+                        }
+                    } else if b.on[0] == "g"
+                        && let Some(prev) = g_subkeys.insert(b.on[1].clone(), b.run.clone())
+                    {
+                        assert_eq!(prev, b.run, "g {} conflict: {:?} vs {:?}", b.on[1], prev, b.run);
+                    }
+                }
+            }
+        }
+        assert!(z_subkeys.len() >= 10, "expected full z view family: {z_subkeys:?}");
+        assert!(g_subkeys.len() >= 5, "expected full g goto family: {g_subkeys:?}");
     }
 
     #[test]

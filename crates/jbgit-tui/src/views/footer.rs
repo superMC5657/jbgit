@@ -1,4 +1,5 @@
-//! Dynamic footer bar layout, status overrides, and hint pill rendering.
+//! Dynamic footer bar layout, status overrides, clickable hint pills,
+//! and reusable modal pill-strip renderer.
 
 use jbgit_core::{Oid, PaneId, WorkspaceTab};
 use ratatui::Frame;
@@ -13,9 +14,9 @@ use crate::config::KeymapScope;
 use crate::hit_test::{GraphHitKind, HitTarget};
 use crate::keymap::actions::is_action_applicable;
 use crate::keymap::resolve::{
-    KeyResolveCtx, collect_claimed_keys, push_unique_seq, resolve_key_in_scopes,
+    KeyResolveCtx, collect_claimed_keys, resolve_key_in_scopes,
 };
-use crate::keymap::{KeyAction, KeySequence, scopes_for_context};
+use crate::keymap::{KeyAction, KeySequence, completions_for_prefix_char, scopes_for_context};
 use crate::views::truncate_to_width;
 
 enum FooterOverride<'a> {
@@ -189,7 +190,7 @@ fn render_graph_arrow_footer(
     frame: &mut Frame<'_>,
     area: Rect,
     state: &AppState,
-    ctx: &RenderContext<'_>,
+    ctx: &mut RenderContext<'_>,
     target_row: usize,
     target_oid: Oid,
     is_down: bool,
@@ -228,22 +229,67 @@ fn render_graph_arrow_footer(
     );
 }
 
-struct RawPill {
-    action: Option<KeyAction>,
-    key: String,
-    label: String,
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FooterPillKind {
+    Action(KeyAction),
+    Prefix(char),
+    Help,
+    Static,
 }
 
-struct FooterPill {
-    key: String,
-    label: String,
+#[derive(Debug, Clone)]
+pub struct FooterPill {
+    pub key: String,
+    pub label: String,
+    pub kind: FooterPillKind,
 }
 
 impl FooterPill {
-    fn new(key: impl Into<String>, label: impl Into<String>) -> Self {
+    pub fn new(key: impl Into<String>, label: impl Into<String>) -> Self {
         Self {
             key: key.into(),
             label: label.into(),
+            kind: FooterPillKind::Static,
+        }
+    }
+
+    pub fn help(key: impl Into<String>, label: impl Into<String>) -> Self {
+        Self {
+            key: key.into(),
+            label: label.into(),
+            kind: FooterPillKind::Help,
+        }
+    }
+
+    fn from_action(action: KeyAction, key: impl Into<String>, label: impl Into<String>) -> Self {
+        Self {
+            key: key.into(),
+            label: label.into(),
+            kind: FooterPillKind::Action(action),
+        }
+    }
+
+    fn prefix(key: impl Into<String>, label: impl Into<String>, ch: char) -> Self {
+        Self {
+            key: key.into(),
+            label: label.into(),
+            kind: FooterPillKind::Prefix(ch),
+        }
+    }
+
+    fn action(&self) -> Option<&KeyAction> {
+        match &self.kind {
+            FooterPillKind::Action(act) => Some(act),
+            _ => None,
+        }
+    }
+
+    fn hit_target(&self) -> Option<HitTarget> {
+        match &self.kind {
+            FooterPillKind::Action(act) => Some(HitTarget::FooterPillAction(act.clone())),
+            FooterPillKind::Prefix(ch) => Some(HitTarget::FooterPrefix(*ch)),
+            FooterPillKind::Help => Some(HitTarget::FooterHelp),
+            FooterPillKind::Static => None,
         }
     }
 
@@ -289,6 +335,12 @@ fn footer_pill_label(state: &AppState, run: &KeyAction, fallback_desc: Option<&s
     let key = match run {
         KeyAction::CompareOrDiff | KeyAction::CompareVersions
             if state.active_tab == WorkspaceTab::Log
+                && state.selected_commits_oldest_first().len() == 2 =>
+        {
+            Some("view.footer.pill.compare_two")
+        }
+        KeyAction::CompareOrDiff | KeyAction::CompareVersions
+            if state.active_tab == WorkspaceTab::Log
                 && (state.focused_pane == PaneId::LogChangesTree
                     || (state.focused_pane == PaneId::LogDetailsDiff
                         && !state.details.diff_preview)) =>
@@ -326,7 +378,7 @@ fn resolve_help_pill(
             && b.show_hint == Some(true)
             && let Some(k) = resolve_key_in_scopes(&ctx, &global_scopes, 0, idx, b)
         {
-            return Some(FooterPill::new(
+            return Some(FooterPill::help(
                 k,
                 state.i18n.t("view.footer.pill.help").to_string(),
             ));
@@ -336,50 +388,109 @@ fn resolve_help_pill(
 }
 
 fn fuse_pair(
-    pills: &mut Vec<RawPill>,
+    pills: &mut Vec<FooterPill>,
     first_action: KeyAction,
     second_action: KeyAction,
     merged_label: String,
 ) {
-    let Some(i) = pills
-        .iter()
-        .position(|p| p.action.as_ref() == Some(&first_action))
-    else {
+    let Some(i) = pills.iter().position(|p| p.action() == Some(&first_action)) else {
         return;
     };
     let Some(j) = pills
         .iter()
-        .position(|p| p.action.as_ref() == Some(&second_action))
+        .position(|p| p.action() == Some(&second_action))
     else {
         return;
     };
     let keep = i.min(j);
     let drop = i.max(j);
     let combined_key = format!("{}/{}", pills[i].key, pills[j].key);
-    pills[keep] = RawPill {
-        action: None,
-        key: combined_key,
-        label: merged_label,
-    };
+    pills[keep] = FooterPill::new(combined_key, merged_label);
     pills.remove(drop);
 }
 
-fn merge_paired_pills(mut raw: Vec<RawPill>, state: &AppState) -> Vec<FooterPill> {
-    fuse_pair(
-        &mut raw,
-        KeyAction::PrevHunk,
-        KeyAction::NextHunk,
-        state.i18n.t("view.footer.pill.hunk").to_string(),
-    );
-    fuse_pair(
-        &mut raw,
-        KeyAction::PrevFile,
-        KeyAction::NextFile,
-        state.i18n.t("view.footer.pill.file").to_string(),
-    );
-    raw.into_iter()
-        .map(|p| FooterPill::new(p.key, p.label))
-        .collect()
+fn merge_paired_pills(mut pills: Vec<FooterPill>, state: &AppState) -> Vec<FooterPill> {
+    let t = |k: &str| state.i18n.t(k).to_string();
+    if state.config.keymap.footer_compact_pairs {
+        fuse_pair(
+            &mut pills,
+            KeyAction::PrevHunk,
+            KeyAction::NextHunk,
+            t("view.footer.pill.hunk"),
+        );
+        fuse_pair(
+            &mut pills,
+            KeyAction::PrevFile,
+            KeyAction::NextFile,
+            t("view.footer.pill.file"),
+        );
+        fuse_pair(
+            &mut pills,
+            KeyAction::StageSelection,
+            KeyAction::UnstageSelection,
+            t("view.footer.pill.stage_pair"),
+        );
+        fuse_pair(
+            &mut pills,
+            KeyAction::StashApply,
+            KeyAction::StashPop,
+            t("view.footer.pill.apply_pop"),
+        );
+        fuse_pair(
+            &mut pills,
+            KeyAction::StashDrop,
+            KeyAction::StashClear,
+            t("view.footer.pill.drop_clear"),
+        );
+        fuse_pair(
+            &mut pills,
+            KeyAction::GitPull,
+            KeyAction::GitPush,
+            t("view.footer.pill.pull_push"),
+        );
+        fuse_pair(
+            &mut pills,
+            KeyAction::PageDownHalf,
+            KeyAction::PageUpHalf,
+            t("view.footer.pill.half_page"),
+        );
+        fuse_pair(
+            &mut pills,
+            KeyAction::GotoTop,
+            KeyAction::GotoBottom,
+            t("view.footer.pill.top_bottom"),
+        );
+        fuse_pair(
+            &mut pills,
+            KeyAction::CursorDown,
+            KeyAction::CursorUp,
+            t("view.footer.pill.move_line"),
+        );
+    }
+    pills
+}
+
+fn selected_log_is_merge(state: &AppState) -> bool {
+    state
+        .log_commit_at(state.log_graph.selected_idx)
+        .is_some_and(|c| c.parents.len() >= 2)
+}
+
+fn push_dynamic_action_pill(
+    pills: &mut Vec<FooterPill>,
+    seen_actions: &mut Vec<KeyAction>,
+    state: &AppState,
+    scopes: &[KeymapScope],
+    action: KeyAction,
+) {
+    if seen_actions.contains(&action) || !is_action_applicable(&action, state) {
+        return;
+    }
+    if let Some(key) = state.config.keymap.primary_key_for(scopes, &action) {
+        let label = footer_pill_label(state, &action, None);
+        pills.push(FooterPill::from_action(action.clone(), key, label));
+        seen_actions.push(action);
+    }
 }
 
 fn collect_scope_pills(
@@ -388,7 +499,7 @@ fn collect_scope_pills(
     scope_idx: usize,
     skip_help: bool,
     seen_actions: &mut Vec<KeyAction>,
-    raw_pills: &mut Vec<RawPill>,
+    pills: &mut Vec<FooterPill>,
 ) {
     let bindings = ctx.state.config.keymap.bindings_for(scopes[scope_idx]);
     for (idx, b) in bindings.iter().enumerate() {
@@ -400,13 +511,36 @@ fn collect_scope_pills(
             continue;
         }
         if let Some(key_disp) = resolve_key_in_scopes(ctx, scopes, scope_idx, idx, b) {
-            raw_pills.push(RawPill {
-                action: Some(b.run.clone()),
-                key: key_disp,
-                label: footer_pill_label(ctx.state, &b.run, b.desc.as_deref()),
-            });
+            pills.push(FooterPill::from_action(
+                b.run.clone(),
+                key_disp,
+                footer_pill_label(ctx.state, &b.run, b.desc.as_deref()),
+            ));
             seen_actions.push(b.run.clone());
         }
+    }
+}
+
+fn maybe_push_prefix_pills(
+    state: &AppState,
+    filter_speed_search: bool,
+    pills: &mut Vec<FooterPill>,
+) {
+    if filter_speed_search {
+        return;
+    }
+    let t = |k: &str| state.i18n.t(k).to_string();
+    let g_items = completions_for_prefix_char(state, 'g');
+    let has_interesting_g = g_items.len() >= 2
+        || g_items
+            .iter()
+            .any(|e| e.action != KeyAction::GotoTop);
+    if has_interesting_g {
+        pills.push(FooterPill::prefix("g", t("view.footer.pill.prefix_g"), 'g'));
+    }
+    let z_items = completions_for_prefix_char(state, 'z');
+    if !z_items.is_empty() {
+        pills.push(FooterPill::prefix("z", t("view.footer.pill.prefix_z"), 'z'));
     }
 }
 
@@ -418,9 +552,10 @@ fn collect_footer_hints(state: &AppState) -> FooterHints {
         return FooterHints {
             pills: vec![
                 FooterPill::new("Enter", t("view.footer.pill.apply")),
-                FooterPill::new("Esc", t("view.footer.pill.cancel")),
                 FooterPill::new("Alt+R", t("view.footer.pill.regex")),
                 FooterPill::new("Alt+C", t("view.footer.pill.case")),
+                FooterPill::new("Ctrl+U", t("view.footer.pill.clear")),
+                FooterPill::new("Esc", t("view.footer.pill.cancel")),
             ],
             help: None,
         };
@@ -435,6 +570,7 @@ fn collect_footer_hints(state: &AppState) -> FooterHints {
             pills: vec![
                 FooterPill::new(t("view.footer.pill.type_key"), t("view.footer.pill.filter")),
                 FooterPill::new("Enter", t("view.footer.pill.apply")),
+                FooterPill::new("Ctrl+U", t("view.footer.pill.clear")),
                 FooterPill::new("Esc", t("view.footer.pill.cancel")),
             ],
             help: None,
@@ -452,6 +588,20 @@ fn collect_footer_hints(state: &AppState) -> FooterHints {
             editor_only: false,
             claimed_keys: &claimed_keys,
         };
+        push_dynamic_action_pill(
+            &mut raw_pills,
+            &mut seen_actions,
+            state,
+            &[KeymapScope::Global],
+            KeyAction::PageDownHalf,
+        );
+        push_dynamic_action_pill(
+            &mut raw_pills,
+            &mut seen_actions,
+            state,
+            &[KeymapScope::Global],
+            KeyAction::PageUpHalf,
+        );
         collect_scope_pills(
             &ctx,
             &diff_scopes,
@@ -460,8 +610,17 @@ fn collect_footer_hints(state: &AppState) -> FooterHints {
             &mut seen_actions,
             &mut raw_pills,
         );
+        if selected_log_is_merge(state) {
+            push_dynamic_action_pill(
+                &mut raw_pills,
+                &mut seen_actions,
+                state,
+                &[KeymapScope::Diff, KeymapScope::Log],
+                KeyAction::ChooseParent,
+            );
+        }
         for pill in &mut raw_pills {
-            if pill.action.as_ref() == Some(&KeyAction::ZoomDiff) && pill.key != "Esc" {
+            if pill.action() == Some(&KeyAction::ZoomDiff) && pill.key != "Esc" {
                 pill.key = format!("{}/Esc", pill.key);
             }
         }
@@ -497,22 +656,29 @@ fn collect_footer_hints(state: &AppState) -> FooterHints {
             &mut seen_actions,
             &mut raw_pills,
         );
-
+        for extra in [
+            KeyAction::CommitAndPush,
+            KeyAction::ToggleSignoff,
+            KeyAction::CommitHistory,
+        ] {
+            if !seen_actions.contains(&extra)
+                && let Some(k) = km.primary_editor_key_for(&commit_scopes, &extra)
+            {
+                raw_pills.push(FooterPill::from_action(
+                    extra.clone(),
+                    k,
+                    footer_pill_label(state, &extra, None),
+                ));
+                seen_actions.push(extra);
+            }
+        }
+        raw_pills.push(FooterPill::new("Ctrl+E", t("view.footer.pill.edit")));
         let (nav_key, nav_label) = if state.stage_workbench.editing_author {
             ("Enter/Esc", t("view.footer.pill.apply"))
         } else {
             ("Esc", t("view.footer.pill.back"))
         };
-        raw_pills.push(RawPill {
-            action: None,
-            key: nav_key.to_string(),
-            label: nav_label,
-        });
-        raw_pills.push(RawPill {
-            action: None,
-            key: "Ctrl+E".to_string(),
-            label: t("view.footer.pill.edit"),
-        });
+        raw_pills.push(FooterPill::new(nav_key, nav_label));
 
         return FooterHints {
             pills: merge_paired_pills(raw_pills, state),
@@ -520,13 +686,76 @@ fn collect_footer_hints(state: &AppState) -> FooterHints {
         };
     }
 
+    if state.active_tab == WorkspaceTab::Commit
+        && state.focused_pane == PaneId::CommitDiffPreview
+        && state.stage_workbench.visual_anchor_row.is_some()
+    {
+        let diff_scopes = [KeymapScope::Diff, KeymapScope::Commit];
+        let mut seen = Vec::new();
+        let mut raw_pills = vec![FooterPill::new("j/k", t("view.footer.pill.extend_sel"))];
+        for act in [
+            KeyAction::ToggleStage,
+            KeyAction::StageSelection,
+            KeyAction::UnstageSelection,
+            KeyAction::RollbackSelection,
+        ] {
+            push_dynamic_action_pill(&mut raw_pills, &mut seen, state, &diff_scopes, act);
+        }
+        raw_pills.push(FooterPill::new("Esc", t("view.footer.pill.exit_visual")));
+        return FooterHints {
+            pills: merge_paired_pills(raw_pills, state),
+            help: None,
+        };
+    }
+
+    if state.active_tab == WorkspaceTab::Log
+        && state.focused_pane == PaneId::LogCommitTable
+        && state.log_graph.anchor.is_some()
+    {
+        let log_scopes = [KeymapScope::Log, KeymapScope::Global];
+        let mut seen = Vec::new();
+        let mut raw_pills = Vec::new();
+        push_dynamic_action_pill(
+            &mut raw_pills,
+            &mut seen,
+            state,
+            &log_scopes,
+            KeyAction::CompareOrDiff,
+        );
+        push_dynamic_action_pill(
+            &mut raw_pills,
+            &mut seen,
+            state,
+            &log_scopes,
+            KeyAction::CopyHash,
+        );
+        raw_pills.push(FooterPill::new("Shift+↑/↓", t("view.footer.pill.extend_sel")));
+        raw_pills.push(FooterPill::new("Esc", t("view.footer.pill.clear_sel")));
+        push_dynamic_action_pill(
+            &mut raw_pills,
+            &mut seen,
+            state,
+            &[KeymapScope::Global],
+            KeyAction::ContextMenu,
+        );
+        return FooterHints {
+            pills: merge_paired_pills(raw_pills, state),
+            help: resolve_help_pill(state, false, &[]),
+        };
+    }
+
     let shadow_scopes = scopes_for_context(state);
     let in_branch_tree =
         state.active_tab == WorkspaceTab::Log && state.focused_pane == PaneId::LogBranchesTree;
+    let in_diff = crate::keymap::is_diff_focused(state);
     let filter_speed_search = in_branch_tree && km.tree_speed_search;
 
     let leading_lit = if filter_speed_search {
         Some((t("view.footer.pill.type_key"), t("view.footer.pill.search")))
+    } else if state.active_tab == WorkspaceTab::Log
+        && state.focused_pane == PaneId::LogChangesTree
+    {
+        Some(("Enter".to_string(), t("view.footer.pill.diff")))
     } else if state.active_tab == WorkspaceTab::Stash && state.focused_pane == PaneId::StashList {
         Some(("Enter".to_string(), t("view.footer.pill.inspect")))
     } else if state.active_tab == WorkspaceTab::Console
@@ -550,19 +779,75 @@ fn collect_footer_hints(state: &AppState) -> FooterHints {
     let mut claimed_keys: Vec<KeySequence> = Vec::new();
     let mut non_global_claimed_keys: Vec<KeySequence> = Vec::new();
     let mut seen_actions: Vec<KeyAction> = Vec::new();
-    let mut raw_pills: Vec<RawPill> = Vec::new();
+    let mut raw_pills: Vec<FooterPill> = Vec::new();
+    let mut inserted_prefixes = false;
 
     if let Some((k, l)) = leading_lit {
-        raw_pills.push(RawPill {
-            action: None,
-            key: k,
-            label: l,
-        });
+        raw_pills.push(FooterPill::new(k, l));
     }
 
     for (scope_idx, &scope) in shadow_scopes.iter().enumerate() {
         let bindings = km.bindings_for(scope);
-        let display_scope = !(in_branch_tree && scope == KeymapScope::Log);
+        let display_scope = !(in_branch_tree && scope == KeymapScope::Log)
+            && !(in_diff
+                && matches!(
+                    scope,
+                    KeymapScope::Log | KeymapScope::Commit | KeymapScope::Stash
+                ));
+
+        if scope == KeymapScope::Global && !inserted_prefixes {
+            inserted_prefixes = true;
+            // Context-specific dynamic P0 extras before P1 prefixes
+            if state.active_tab == WorkspaceTab::Log
+                && matches!(
+                    state.focused_pane,
+                    PaneId::LogCommitTable | PaneId::LogChangesTree | PaneId::LogDetailsDiff
+                )
+                && selected_log_is_merge(state)
+            {
+                push_dynamic_action_pill(
+                    &mut raw_pills,
+                    &mut seen_actions,
+                    state,
+                    &[KeymapScope::Diff, KeymapScope::Log],
+                    KeyAction::ChooseParent,
+                );
+            }
+            if state.active_tab == WorkspaceTab::Console {
+                if state.focused_pane == PaneId::ConsoleOutputDetail {
+                    for nav in [
+                        KeyAction::CursorDown,
+                        KeyAction::CursorUp,
+                        KeyAction::PageDownHalf,
+                        KeyAction::PageUpHalf,
+                        KeyAction::GotoTop,
+                        KeyAction::GotoBottom,
+                    ] {
+                        push_dynamic_action_pill(
+                            &mut raw_pills,
+                            &mut seen_actions,
+                            state,
+                            &[KeymapScope::Console, KeymapScope::Global],
+                            nav,
+                        );
+                    }
+                } else {
+                    for nav in [KeyAction::CursorDown, KeyAction::CursorUp] {
+                        push_dynamic_action_pill(
+                            &mut raw_pills,
+                            &mut seen_actions,
+                            state,
+                            &[KeymapScope::Console, KeymapScope::Global],
+                            nav,
+                        );
+                    }
+                }
+            }
+            if let Some((k, l)) = after_primary_lit.take() {
+                raw_pills.push(FooterPill::new(k, l));
+            }
+            maybe_push_prefix_pills(state, filter_speed_search, &mut raw_pills);
+        }
 
         if display_scope {
             let ctx = KeyResolveCtx {
@@ -588,33 +873,6 @@ fn collect_footer_hints(state: &AppState) -> FooterHints {
                 {
                     seen_actions.push(b.run.clone());
                 }
-            }
-
-            if scope == KeymapScope::Console
-                && state.active_tab == WorkspaceTab::Console
-                && state.focused_pane == PaneId::ConsoleCommandList
-                && km
-                    .primary_key_for(&[KeymapScope::Global], &KeyAction::GitStatusProbe)
-                    .is_none()
-            {
-                let probe_key = crate::keymap::actions::DEFAULT_CONSOLE_PROBE_CHAR.to_string();
-                raw_pills.push(RawPill {
-                    action: Some(KeyAction::GitStatusProbe),
-                    key: probe_key.clone(),
-                    label: t("view.footer.pill.status_probe"),
-                });
-                if let Some(seq) = KeySequence::parse(&[probe_key]) {
-                    push_unique_seq(&mut claimed_keys, seq.clone());
-                    push_unique_seq(&mut non_global_claimed_keys, seq);
-                }
-            }
-
-            if let Some((k, l)) = after_primary_lit.take() {
-                raw_pills.push(RawPill {
-                    action: None,
-                    key: k,
-                    label: l,
-                });
             }
         }
 
@@ -694,78 +952,153 @@ fn layout_footer_pills(
     (rows, pills.len() - idx)
 }
 
-fn render_dynamic_footer_hints(
+/// Reusable styled pill-strip renderer used by both the main footer bar and modals.
+pub fn render_pill_strip(
     frame: &mut Frame<'_>,
     area: Rect,
-    state: &AppState,
-    ctx: &RenderContext<'_>,
+    pills: &[FooterPill],
+    right_pill: Option<&FooterPill>,
+    ctx: &mut RenderContext<'_>,
+    z_index: u8,
+    register_hits: bool,
 ) {
-    if state.config.keymap.footer_max_lines == 0 || area.height == 0 || area.width == 0 {
+    if area.height == 0 || area.width == 0 {
         return;
     }
-
-    let hints = collect_footer_hints(state);
     let total_w = area.width as usize;
-    let (rows, hidden) = layout_footer_pills(
-        &hints.pills,
-        hints.help.as_ref(),
-        total_w,
-        area.height as usize,
-    );
+    let (rows, hidden) = layout_footer_pills(pills, right_pill, total_w, area.height as usize);
 
     let pill_badge_style = Style::default()
         .bg(ctx.theme.bg_elevated)
         .fg(ctx.theme.fg_bright)
         .add_modifier(Modifier::BOLD);
+    let prefix_badge_style = Style::default()
+        .bg(ctx.theme.bg_elevated)
+        .fg(ctx.theme.fg_accent_link)
+        .add_modifier(Modifier::BOLD);
+    let hover_badge_style = Style::default()
+        .bg(ctx.theme.border_focused)
+        .fg(ctx.theme.fg_bright)
+        .add_modifier(Modifier::BOLD);
     let pill_label_style = Style::default()
         .bg(ctx.theme.bg_panel)
         .fg(ctx.theme.fg_muted);
+    let hover_label_style = Style::default()
+        .bg(ctx.theme.bg_panel)
+        .fg(ctx.theme.fg_bright);
 
     let row_count = rows.len();
     let mut lines: Vec<Line<'static>> = Vec::with_capacity(row_count);
 
     for (row_idx, pill_indices) in rows.into_iter().enumerate() {
         let is_last_row = row_idx + 1 == row_count;
+        let row_y = area.y + row_idx as u16;
         let mut spans: Vec<Span<'static>> = Vec::new();
         spans.push(Span::styled(" ", pill_label_style));
         let mut used_w = 1usize;
 
         for pill_idx in pill_indices {
-            let pill = &hints.pills[pill_idx];
-            used_w += pill.display_width();
-            spans.push(Span::styled(pill.key_badge(), pill_badge_style));
-            spans.push(Span::styled(pill.label_text(), pill_label_style));
+            let pill = &pills[pill_idx];
+            let pw = pill.display_width();
+            let target = if register_hits {
+                pill.hit_target()
+            } else {
+                None
+            };
+            let hovered = target
+                .as_ref()
+                .is_some_and(|t| ctx.hover_target == Some(t));
+            if let Some(t) = target {
+                ctx.hit_registry.register(
+                    Rect::new(area.x + used_w as u16, row_y, pw.saturating_sub(1) as u16, 1),
+                    z_index,
+                    t,
+                );
+            }
+            let badge_style = if hovered {
+                hover_badge_style
+            } else if matches!(pill.kind, FooterPillKind::Prefix(_)) {
+                prefix_badge_style
+            } else {
+                pill_badge_style
+            };
+            let lbl_style = if hovered {
+                hover_label_style
+            } else {
+                pill_label_style
+            };
+            used_w += pw;
+            spans.push(Span::styled(pill.key_badge(), badge_style));
+            spans.push(Span::styled(pill.label_text(), lbl_style));
         }
 
         if is_last_row && hidden > 0 {
             let ow = overflow_display_width(hidden);
             if used_w + ow <= total_w {
+                let badge = overflow_badge(hidden);
+                let bw = badge.width() as u16;
+                let hovered = register_hits && ctx.hover_target == Some(&HitTarget::FooterOverflow);
+                if register_hits {
+                    ctx.hit_registry.register(
+                        Rect::new(area.x + used_w as u16, row_y, bw, 1),
+                        z_index,
+                        HitTarget::FooterOverflow,
+                    );
+                }
                 used_w += ow;
                 spans.push(Span::styled(
-                    overflow_badge(hidden),
-                    Style::default()
-                        .bg(ctx.theme.bg_elevated)
-                        .fg(ctx.theme.fg_muted),
+                    badge,
+                    if hovered {
+                        hover_badge_style
+                    } else {
+                        Style::default()
+                            .bg(ctx.theme.bg_elevated)
+                            .fg(ctx.theme.fg_muted)
+                    },
                 ));
                 spans.push(Span::styled(" ", pill_label_style));
             }
         }
 
-        if is_last_row && let Some(help) = &hints.help {
+        if is_last_row && let Some(help) = right_pill {
             let help_w = help.help_display_width();
             if used_w + help_w <= total_w {
                 let gap = total_w.saturating_sub(used_w + help_w);
                 if gap > 0 {
                     spans.push(Span::styled(" ".repeat(gap), pill_label_style));
                 }
+                let hx = area.x + (used_w + gap) as u16;
+                let target = if register_hits {
+                    help.hit_target()
+                } else {
+                    None
+                };
+                let hovered = target
+                    .as_ref()
+                    .is_some_and(|t| ctx.hover_target == Some(t));
+                if let Some(t) = target {
+                    ctx.hit_registry
+                        .register(Rect::new(hx, row_y, help_w as u16, 1), z_index, t);
+                }
                 spans.push(Span::styled(
                     help.key_badge(),
-                    Style::default()
-                        .bg(ctx.theme.bg_elevated)
-                        .fg(ctx.theme.fg_accent_link)
-                        .add_modifier(Modifier::BOLD),
+                    if hovered {
+                        hover_badge_style
+                    } else {
+                        Style::default()
+                            .bg(ctx.theme.bg_elevated)
+                            .fg(ctx.theme.fg_accent_link)
+                            .add_modifier(Modifier::BOLD)
+                    },
                 ));
-                spans.push(Span::styled(help.help_label_text(), pill_label_style));
+                spans.push(Span::styled(
+                    help.help_label_text(),
+                    if hovered {
+                        hover_label_style
+                    } else {
+                        pill_label_style
+                    },
+                ));
             }
         }
 
@@ -774,4 +1107,26 @@ fn render_dynamic_footer_hints(
 
     let footer = Paragraph::new(lines).style(Style::default().bg(ctx.theme.bg_panel));
     frame.render_widget(footer, area);
+}
+
+fn render_dynamic_footer_hints(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    state: &AppState,
+    ctx: &mut RenderContext<'_>,
+) {
+    if state.config.keymap.footer_max_lines == 0 || area.height == 0 || area.width == 0 {
+        return;
+    }
+
+    let hints = collect_footer_hints(state);
+    render_pill_strip(
+        frame,
+        area,
+        &hints.pills,
+        hints.help.as_ref(),
+        ctx,
+        6,
+        state.modal_stack.is_empty(),
+    );
 }

@@ -611,7 +611,7 @@ log_ratio = [1, 0, 0]
         assert_eq!(
             vim_cfg
                 .keymap
-                .primary_key_for(&[KeymapScope::Log], &KeyAction::PageDownHalf)
+                .primary_key_for(&[KeymapScope::Log, KeymapScope::Global], &KeyAction::PageDownHalf)
                 .as_deref(),
             Some("Ctrl+D")
         );
@@ -620,7 +620,7 @@ log_ratio = [1, 0, 0]
                 .keymap
                 .primary_key_for(&[KeymapScope::Log], &KeyAction::CompareOrDiff)
                 .as_deref(),
-            Some("d")
+            Some("D")
         );
         assert_eq!(
             vim_cfg
@@ -646,11 +646,7 @@ log_ratio = [1, 0, 0]
         let ov_toml = r#"
 [global]
 prepend_keymap = [
-    { on = "r", run = "noop" },
-]
-
-[log]
-prepend_keymap = [
+    { on = "R", run = "noop" },
     { on = "<Down>", run = "noop" },
     { on = "K", run = "cursor_up", desc = "Up" },
 ]
@@ -659,16 +655,18 @@ prepend_keymap = [
         cfg.keymap.merge_overlay(&ov);
 
         let global_refresh = cfg.keymap.all_keys_for(&[KeymapScope::Global], &KeyAction::Refresh);
-        assert!(!global_refresh.contains(&"r".to_string()), "{global_refresh:?}");
+        assert!(!global_refresh.contains(&"R".to_string()), "{global_refresh:?}");
         assert!(global_refresh.contains(&"F5".to_string()), "{global_refresh:?}");
 
-        let log_down = cfg.keymap.all_keys_for(&[KeymapScope::Log], &KeyAction::CursorDown);
-        assert!(!log_down.contains(&"↓".to_string()), "{log_down:?}");
-        assert!(log_down.contains(&"j".to_string()), "{log_down:?}");
+        let global_down = cfg
+            .keymap
+            .all_keys_for(&[KeymapScope::Global], &KeyAction::CursorDown);
+        assert!(!global_down.contains(&"↓".to_string()), "{global_down:?}");
+        assert!(global_down.contains(&"j".to_string()), "{global_down:?}");
 
         assert_eq!(
             cfg.keymap
-                .primary_key_for(&[KeymapScope::Log], &KeyAction::CursorUp)
+                .primary_key_for(&[KeymapScope::Global], &KeyAction::CursorUp)
                 .as_deref(),
             Some("K")
         );
@@ -679,8 +677,12 @@ prepend_keymap = [
         use crate::keymap::KeyAction;
 
         assert_eq!(KeymapConfig::default().footer_max_lines, 1);
+        assert!(KeymapConfig::default().footer_compact_pairs);
+        assert!(KeymapConfig::default().show_inline_key_badges);
         let mut cfg = AppConfig::load_defaults();
         assert_eq!(cfg.keymap.footer_max_lines, 1);
+        assert!(cfg.keymap.footer_compact_pairs);
+        assert!(cfg.keymap.show_inline_key_badges);
 
         // Parsing footer_max_lines (0, 2, 3) and preserving across preset switch
         for lines in [0u16, 2, 3] {
@@ -690,20 +692,35 @@ prepend_keymap = [
             assert_eq!(cfg.keymap.footer_max_lines, lines);
         }
 
+        let toggle_ov: KeymapConfigOverlay =
+            toml::from_str("footer_compact_pairs = false\nshow_inline_key_badges = false\n")
+                .unwrap();
+        cfg.keymap.merge_overlay(&toggle_ov);
         let preset_ov: KeymapConfigOverlay = toml::from_str("preset = \"vim\"\n").unwrap();
         cfg.keymap.merge_overlay(&preset_ov);
         assert_eq!(cfg.keymap.preset, KeymapPreset::Vim);
         assert_eq!(cfg.keymap.footer_max_lines, 3);
+        assert!(!cfg.keymap.footer_compact_pairs);
+        assert!(!cfg.keymap.show_inline_key_badges);
 
-        // Vim [log] replaces <C-d> with page_down_half while `d` inherits show_hint = Some(true)
+        // Vim [diff] explicitly promotes `s`/`u` as hints while hiding `<Space>`
         assert!(
             cfg.keymap
-                .log
+                .diff
                 .key_bindings
                 .iter()
-                .any(|b| b.run == KeyAction::CompareOrDiff
-                    && b.on == ["d"]
+                .any(|b| b.run == KeyAction::StageSelection
+                    && b.on == ["s"]
                     && b.show_hint == Some(true))
+        );
+        assert!(
+            cfg.keymap
+                .diff
+                .key_bindings
+                .iter()
+                .any(|b| b.run == KeyAction::ToggleStage
+                    && b.on == ["<Space>"]
+                    && b.show_hint == Some(false))
         );
 
         // Prepending rebind without show_hint inherits Some(true) and demotes base binding,
@@ -939,7 +956,7 @@ prepend_keymap = [
             r#"
 [global]
 prepend_keymap = [
-    { on = "r", run = "noop" },
+    { on = "R", run = "noop" },
 ]
 "#,
         )
@@ -960,7 +977,6 @@ prepend_keymap = [
         )
         .unwrap();
         cfg_noop_disabled.keymap.merge_overlay(&ov_hide_then_unbind);
-        // Re-enable `r` first? No, `<F5>` is `Some(false)`, so unbinding `r` must NOT promote `<F5>`.
         cfg_noop_disabled.keymap.merge_overlay(&ov_unbind_r);
         assert!(
             !cfg_noop_disabled
@@ -976,7 +992,7 @@ prepend_keymap = [
             r#"
 [global]
 prepend_keymap = [
-    { on = "r", run = "noop" },
+    { on = "R", run = "noop" },
     { on = "<F5>", run = "noop" },
 ]
 "#,

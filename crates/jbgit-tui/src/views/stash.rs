@@ -8,14 +8,15 @@ use ratatui::layout::Rect;
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
-use unicode_width::UnicodeWidthStr;
 
 use crate::app::{AppState, RenderContext};
+use crate::config::KeymapScope;
 use crate::hit_test::{HitTarget, StashButton};
+use crate::keymap::KeyAction;
 use crate::views::log_details::{DiffHost, render_changes_browser, render_diff_preview};
 use crate::views::{
-    fit_left_right_spans, list_viewport, render_pane_frame, render_splitter_divider,
-    row_background,
+    ToolbarButton, fit_left_right_spans, inline_key_for, list_viewport, render_pane_frame,
+    render_splitter_divider, render_toolbar_with_keys, row_background,
 };
 
 pub fn render_stash_tab(
@@ -69,35 +70,51 @@ fn render_stash_list(
     if area.height == 0 {
         return;
     }
-    let buttons = [
-        (state.i18n.t("view.stash.apply_btn"), StashButton::Apply),
-        (state.i18n.t("view.stash.pop_btn"), StashButton::Pop),
-        (state.i18n.t("view.stash.branch_btn"), StashButton::Branch),
-        (state.i18n.t("view.stash.drop_btn"), StashButton::Drop),
-        (state.i18n.t("view.stash.new_btn"), StashButton::New),
-        (state.i18n.t("view.stash.clear_btn"), StashButton::Clear),
+    let buttons = vec![
+        ToolbarButton::new(
+            state.i18n.t("view.stash.apply_btn"),
+            inline_key_for(ctx, &[KeymapScope::Stash], &KeyAction::StashApply),
+            false,
+            StashButton::Apply,
+        ),
+        ToolbarButton::new(
+            state.i18n.t("view.stash.pop_btn"),
+            inline_key_for(ctx, &[KeymapScope::Stash], &KeyAction::StashPop),
+            false,
+            StashButton::Pop,
+        ),
+        ToolbarButton::new(
+            state.i18n.t("view.stash.branch_btn"),
+            inline_key_for(ctx, &[KeymapScope::Stash], &KeyAction::StashBranch),
+            false,
+            StashButton::Branch,
+        ),
+        ToolbarButton::new(
+            state.i18n.t("view.stash.drop_btn"),
+            inline_key_for(ctx, &[KeymapScope::Stash], &KeyAction::StashDrop),
+            false,
+            StashButton::Drop,
+        ),
+        ToolbarButton::new(
+            state.i18n.t("view.stash.new_btn"),
+            inline_key_for(ctx, &[KeymapScope::Stash], &KeyAction::StashNew),
+            false,
+            StashButton::New,
+        ),
+        ToolbarButton::new(
+            state.i18n.t("view.stash.clear_btn"),
+            inline_key_for(ctx, &[KeymapScope::Stash], &KeyAction::StashClear),
+            false,
+            StashButton::Clear,
+        ),
     ];
-    let mut x = area.x;
-    let mut spans = Vec::new();
-    for (label, btn) in buttons {
-        let w = label.width() as u16;
-        if x + w > area.right() {
-            break;
-        }
-        spans.push(Span::styled(
-            label,
-            Style::default()
-                .fg(ctx.theme.fg_primary)
-                .bg(ctx.theme.bg_elevated),
-        ));
-        spans.push(Span::raw(" "));
-        ctx.hit_registry
-            .register(Rect::new(x, area.y, w, 1), 2, HitTarget::StashToolbar(btn));
-        x += w + 1;
-    }
-    frame.render_widget(
-        Paragraph::new(Line::from(spans)).style(Style::default().bg(ctx.theme.bg_panel)),
+    render_toolbar_with_keys(
+        frame,
         Rect::new(area.x, area.y, area.width, 1),
+        ctx,
+        2,
+        &buttons,
+        HitTarget::StashToolbar,
     );
     let list = Rect::new(
         area.x,

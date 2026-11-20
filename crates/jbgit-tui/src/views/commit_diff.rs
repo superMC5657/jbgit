@@ -12,10 +12,15 @@ use ratatui::widgets::Paragraph;
 use unicode_width::UnicodeWidthStr;
 
 use crate::app::{AppState, RenderContext, ScrollPane};
+use crate::config::KeymapScope;
 use crate::hit_test::{DiffHunkActionKind, HitTarget, StageDiffToolbarButton};
+use crate::keymap::KeyAction;
 use crate::stage_view::{StageDiffRow, StageWorkbenchState};
 use crate::syntax::{HighlightedDiff, render_diff_line_spans_with_tab};
-use crate::views::{fit_left_right_spans, render_pane_frame, render_toolbar, truncate_to_width};
+use crate::views::{
+    ToolbarButton, fit_left_right_spans, inline_key_for, render_pane_frame,
+    render_toolbar_with_keys, truncate_to_width,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum DiffHintMode {
@@ -468,32 +473,41 @@ fn render_stage_diff_toolbar(
         area,
     );
 
-    let mut buttons: Vec<(String, bool, StageDiffToolbarButton)> = vec![
-        (
+    let sbs_key = inline_key_for(ctx, &[KeymapScope::Diff], &KeyAction::ToggleSideBySide);
+    let ctx_key = inline_key_for(ctx, &[KeymapScope::Diff], &KeyAction::CycleDiffContext);
+    let prev_key = inline_key_for(ctx, &[KeymapScope::Diff], &KeyAction::PrevHunk);
+    let next_key = inline_key_for(ctx, &[KeymapScope::Diff], &KeyAction::NextHunk);
+    let side_key = inline_key_for(ctx, &[KeymapScope::Diff], &KeyAction::SwitchDiffSide);
+
+    let mut buttons = vec![
+        ToolbarButton::new(
             if sw.diff_side_by_side {
                 state.i18n.t("view.commit.diff_split_btn")
             } else {
                 state.i18n.t("view.commit.diff_unified_btn")
-            }
-            .to_string(),
+            },
+            sbs_key,
             sw.diff_side_by_side,
             StageDiffToolbarButton::SideBySide,
         ),
-        (
+        ToolbarButton::new(
             state.i18n.t_fmt(
                 "view.commit.diff_context_btn",
                 &[("ctx", state.i18n.diff_context_label(sw.diff_context))],
             ),
+            ctx_key,
             false,
             StageDiffToolbarButton::Context,
         ),
-        (
-            state.i18n.t("view.commit.diff_prev_hunk_btn").to_string(),
+        ToolbarButton::new(
+            state.i18n.t("view.commit.diff_prev_hunk_btn"),
+            prev_key,
             false,
             StageDiffToolbarButton::PrevHunk,
         ),
-        (
-            state.i18n.t("view.commit.diff_next_hunk_btn").to_string(),
+        ToolbarButton::new(
+            state.i18n.t("view.commit.diff_next_hunk_btn"),
+            next_key,
             false,
             StageDiffToolbarButton::NextHunk,
         ),
@@ -507,11 +521,16 @@ fn render_stage_diff_toolbar(
         } else {
             state.i18n.t("view.commit.diff_view_staged_btn")
         };
-        buttons.push((label.to_string(), true, StageDiffToolbarButton::SwitchSide));
+        buttons.push(ToolbarButton::new(
+            label,
+            side_key,
+            true,
+            StageDiffToolbarButton::SwitchSide,
+        ));
     }
-    buttons.push((" × ".to_string(), false, StageDiffToolbarButton::Close));
+    buttons.push(ToolbarButton::new(" × ", None, false, StageDiffToolbarButton::Close));
 
-    render_toolbar(frame, area, ctx, 4, &buttons, HitTarget::StageDiffToolbar);
+    render_toolbar_with_keys(frame, area, ctx, 4, &buttons, HitTarget::StageDiffToolbar);
 }
 
 fn render_diff_hint_bar(

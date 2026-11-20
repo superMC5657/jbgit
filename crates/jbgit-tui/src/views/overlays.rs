@@ -296,29 +296,29 @@ pub fn render_which_key_popup(
     screen: Rect,
     footer_h: u16,
     state: &AppState,
-    ctx: &RenderContext<'_>,
+    ctx: &mut RenderContext<'_>,
 ) {
     if !state.modal_stack.is_empty() || screen.width < 24 || screen.height < 6 {
         return;
     }
-    let completions = crate::keymap::pending_completions(state);
+    let completions = crate::keymap::pending_completion_entries(state);
     if completions.is_empty() {
         return;
     }
 
     let prefix = crate::keymap::pending_prefix_display(state);
     let title_str = format!(" {prefix} + … ");
-    let visible: Vec<&(String, String)> = completions.iter().take(10).collect();
+    let visible: Vec<&crate::keymap::WhichKeyEntry> = completions.iter().take(12).collect();
 
     let max_key_w = visible
         .iter()
-        .map(|(k, _)| k.width())
+        .map(|e| e.next_key.width())
         .max()
         .unwrap_or(2)
         .clamp(2, 12);
     let max_desc_w = visible
         .iter()
-        .map(|(_, d)| d.width())
+        .map(|e| e.desc.width())
         .max()
         .unwrap_or(8)
         .clamp(8, 36);
@@ -359,30 +359,49 @@ pub fn render_which_key_popup(
 
     let mut lines: Vec<Line<'_>> = Vec::with_capacity(visible.len() + 1);
     let desc_budget = (inner.width as usize).saturating_sub(2 + max_key_w + 5 + 1);
-    for (k, d) in visible {
-        let key_pad = " ".repeat(max_key_w.saturating_sub(k.width()));
-        let trimmed_desc = truncate_display_width(d, desc_budget);
+    for (row_idx, entry) in visible.iter().enumerate() {
+        let target = HitTarget::WhichKeyItem(entry.action.clone());
+        let hovered = ctx.hover_target == Some(&target);
+        let row_bg = if hovered {
+            ctx.theme.bg_selection_focused
+        } else {
+            ctx.theme.bg_elevated
+        };
+        if (row_idx as u16) < inner.height.saturating_sub(1) {
+            ctx.hit_registry.register(
+                Rect::new(inner.x, inner.y + row_idx as u16, inner.width, 1),
+                20,
+                target,
+            );
+        }
+        let key_pad = " ".repeat(max_key_w.saturating_sub(entry.next_key.width()));
+        let trimmed_desc = truncate_display_width(&entry.desc, desc_budget);
+        let pad_right = (inner.width as usize)
+            .saturating_sub(1 + entry.next_key.width() + key_pad.len() + 5 + trimmed_desc.width());
         lines.push(Line::from(vec![
-            Span::styled(" ", Style::default().bg(ctx.theme.bg_elevated)),
+            Span::styled(" ", Style::default().bg(row_bg)),
             Span::styled(
-                k.clone(),
+                entry.next_key.clone(),
                 Style::default()
                     .fg(ctx.theme.fg_accent_link)
-                    .bg(ctx.theme.bg_elevated)
+                    .bg(row_bg)
                     .add_modifier(Modifier::BOLD),
             ),
             Span::styled(
                 format!("{key_pad}  →  "),
-                Style::default()
-                    .fg(ctx.theme.fg_muted)
-                    .bg(ctx.theme.bg_elevated),
+                Style::default().fg(ctx.theme.fg_muted).bg(row_bg),
             ),
             Span::styled(
                 trimmed_desc,
                 Style::default()
-                    .fg(ctx.theme.fg_primary)
-                    .bg(ctx.theme.bg_elevated),
+                    .fg(if hovered {
+                        ctx.theme.fg_bright
+                    } else {
+                        ctx.theme.fg_primary
+                    })
+                    .bg(row_bg),
             ),
+            Span::styled(" ".repeat(pad_right), Style::default().bg(row_bg)),
         ]));
     }
     lines.push(Line::from(Span::styled(
@@ -722,18 +741,20 @@ fn render_floating_popup(
             }
 
             // Bottom hint bar
-            let foot_line = Line::from(Span::styled(
-                truncate_display_width(
-                    &format!(" {}", ctx.t("help.footer_hint")),
-                    inner.width as usize,
-                ),
-                Style::default()
-                    .fg(ctx.theme.fg_muted)
-                    .bg(ctx.theme.bg_panel),
-            ));
-            frame.render_widget(
-                Paragraph::new(foot_line).style(Style::default().bg(ctx.theme.bg_panel)),
+            let help_pills = vec![
+                crate::views::footer::FooterPill::new("↑/↓", ctx.t("view.footer.pill.move_line")),
+                crate::views::footer::FooterPill::new("Enter", ctx.t("view.footer.pill.run")),
+                crate::views::footer::FooterPill::new("Ctrl+U", ctx.t("view.footer.pill.clear")),
+                crate::views::footer::FooterPill::new("?/Esc", ctx.t("view.footer.pill.close")),
+            ];
+            crate::views::footer::render_pill_strip(
+                frame,
                 foot_rect,
+                &help_pills,
+                None,
+                ctx,
+                z + 2,
+                false,
             );
         }
         PopupKind::FilterEditor(field) => {

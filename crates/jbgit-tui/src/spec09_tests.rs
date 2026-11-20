@@ -277,7 +277,7 @@ fn log_changes_context_menu_right_click_keyboard_dot_and_enablement() {
     assert!(menu_item_by_label(&items, "Toggle Diff Preview").is_enabled());
     let fs_diff = menu_item_by_label(&items, "Full-Screen Diff");
     assert!(fs_diff.is_enabled());
-    assert_eq!(fs_diff.shortcut.as_deref(), Some("F4"));
+    assert_eq!(fs_diff.shortcut.as_deref(), Some("z z"));
     assert!(menu_item_by_label(&items, "Compare with Local").is_enabled());
     assert!(menu_item_by_label(&items, "Show History for Selected File").is_enabled());
     assert!(menu_item_by_label(&items, "Filter Log by Path").is_enabled());

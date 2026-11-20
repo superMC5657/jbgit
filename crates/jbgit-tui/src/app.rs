@@ -1025,6 +1025,14 @@ impl AppState {
         }
     }
 
+    pub fn clear_pending_keys(&mut self) {
+        if !self.pending_keys.is_empty() || self.pending_key_at.is_some() {
+            self.pending_keys.clear();
+            self.pending_key_at = None;
+            self.needs_redraw = true;
+        }
+    }
+
     pub fn console_page_step(&self) -> isize {
         self.scroll_metrics
             .console_output
@@ -1895,8 +1903,7 @@ impl AppState {
                     .pending_key_at
                     .is_some_and(|t| t.elapsed() >= crate::keymap::KEY_CHORD_WINDOW)
                 {
-                    self.pending_keys.clear();
-                    self.pending_key_at = None;
+                    self.clear_pending_keys();
                 }
                 crate::input_menus::flush_menu_hover(self, Instant::now());
                 if let Some((key, _)) = self.details.pending.take()

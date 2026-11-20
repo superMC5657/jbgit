@@ -363,6 +363,21 @@ pub fn route_branches_popup_key(key: &KeyEvent, state: &mut AppState) -> Vec<Act
             set(state, query, move_selection(&rows, selected, 1));
             Vec::new()
         }
+        KeyCode::Char('p') if ctrl && !alt => {
+            set(state, query, move_selection(&rows, selected, -1));
+            Vec::new()
+        }
+        KeyCode::Char('n') if ctrl && !alt => {
+            set(state, query, move_selection(&rows, selected, 1));
+            Vec::new()
+        }
+        KeyCode::Char('n') if alt && !ctrl => vec![
+            Action::PopModal,
+            Action::OpenDialog(Box::new(new_branch_from_head_dialog(
+                state.repo_snapshot.as_deref(),
+                &state.i18n,
+            ))),
+        ],
         KeyCode::PageUp | KeyCode::PageDown => {
             let mut sel = selected;
             let d = if key.code == KeyCode::PageUp { -1 } else { 1 };

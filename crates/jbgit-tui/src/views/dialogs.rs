@@ -12,6 +12,7 @@ use unicode_width::UnicodeWidthStr;
 use crate::app::RenderContext;
 use crate::dialogs::{ChoiceDialog, Dialog, InputDialog, MessageDialog, RebaseTodoDialog};
 use crate::hit_test::{DialogButtonKind, HitTarget};
+use crate::views::footer::{FooterPill, render_pill_strip};
 use crate::views::overlays::{draw_shadow, mnemonic_spans};
 use crate::views::{truncate_to_width, wrap_text};
 
@@ -425,12 +426,19 @@ fn render_message(
             .style(Style::default().bg(ctx.theme.bg_panel)),
         text_area,
     );
-    frame.render_widget(
-        Paragraph::new(Span::styled(
-            ctx.t("dialog.message.hint").to_string(),
-            Style::default().fg(ctx.theme.fg_muted),
-        )),
+    let msg_pills = vec![
+        FooterPill::new("Ctrl+S/Ctrl+Enter", ctx.t("view.footer.pill.apply")),
+        FooterPill::new("Enter", ctx.t("view.footer.pill.newline")),
+        FooterPill::new("Esc", ctx.t("view.footer.pill.cancel")),
+    ];
+    render_pill_strip(
+        frame,
         Rect::new(inner.x, inner.bottom().saturating_sub(2), inner.width, 1),
+        &msg_pills,
+        None,
+        ctx,
+        z + 2,
+        false,
     );
     render_buttons(
         frame,
@@ -543,20 +551,29 @@ fn render_rebase(
     }
     let hint_y = inner.bottom().saturating_sub(3);
     let err = ctx.i18n.and_then(|i| d.error(i));
-    let (hint, color) = match &err {
-        Some(e) => (format!(" ✕ {e}"), ctx.theme.status_conflicted),
-        None => (
-            ctx.t("dialog.rebase.hint").to_string(),
-            ctx.theme.fg_muted,
-        ),
-    };
-    frame.render_widget(
-        Paragraph::new(Span::styled(
-            truncate_to_width(&hint, inner.width as usize),
-            Style::default().fg(color),
-        )),
-        Rect::new(inner.x, hint_y + 1, inner.width, 1),
-    );
+    let hint_rect = Rect::new(inner.x, hint_y + 1, inner.width, 1);
+    if let Some(e) = &err {
+        frame.render_widget(
+            Paragraph::new(Span::styled(
+                truncate_to_width(&format!(" ✕ {e}"), inner.width as usize),
+                Style::default().fg(ctx.theme.status_conflicted),
+            )),
+            hint_rect,
+        );
+    } else {
+        let rebase_pills = vec![
+            FooterPill::new("p", ctx.todo_action_label(TodoAction::Pick)),
+            FooterPill::new("r", ctx.todo_action_label(TodoAction::Reword)),
+            FooterPill::new("s", ctx.todo_action_label(TodoAction::Squash)),
+            FooterPill::new("f", ctx.todo_action_label(TodoAction::Fixup)),
+            FooterPill::new("d", ctx.todo_action_label(TodoAction::Drop)),
+            FooterPill::new("Space", ctx.t("view.footer.pill.cycle")),
+            FooterPill::new("J/K", ctx.t("view.footer.pill.reorder")),
+            FooterPill::new("Enter", ctx.t("view.footer.pill.apply")),
+            FooterPill::new("Esc", ctx.t("view.footer.pill.cancel")),
+        ];
+        render_pill_strip(frame, hint_rect, &rebase_pills, None, ctx, z + 2, false);
+    }
     render_buttons(
         frame,
         ctx,

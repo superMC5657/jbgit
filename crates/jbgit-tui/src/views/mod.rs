@@ -194,7 +194,7 @@ pub fn render_app(frame: &mut Frame<'_>, state: &mut AppState) {
 
         footer::render_footer_bar(frame, footer_rect, state, &mut ctx);
         overlays::render_hover_tooltip(frame, area, state, &ctx);
-        overlays::render_which_key_popup(frame, area, footer_h, state, &ctx);
+        overlays::render_which_key_popup(frame, area, footer_h, state, &mut ctx);
         overlays::render_modals(frame, area, state, &mut ctx);
 
         // Vector graph images go out only after every overlay is known.
@@ -472,45 +472,153 @@ pub fn fit_left_right_spans(
     spans
 }
 
-/// Renders a row of clickable, hover-highlighted toolbar buttons; returns the x after the last one.
-pub(crate) fn render_toolbar<S: AsRef<str>, T: Copy>(
+/// Resolves the primary key display for `action` across `scopes` when inline key badges are enabled.
+pub(crate) fn inline_key_for(
+    ctx: &RenderContext<'_>,
+    scopes: &[crate::config::KeymapScope],
+    action: &crate::keymap::KeyAction,
+) -> Option<String> {
+    let cfg = ctx.config?;
+    if !cfg.keymap.show_inline_key_badges {
+        return None;
+    }
+    cfg.keymap.primary_key_for(scopes, action)
+}
+
+/// Resolves the primary editor-safe chord key for `action` when inline key badges are enabled.
+pub(crate) fn inline_editor_key_for(
+    ctx: &RenderContext<'_>,
+    scopes: &[crate::config::KeymapScope],
+    action: &crate::keymap::KeyAction,
+) -> Option<String> {
+    let cfg = ctx.config?;
+    if !cfg.keymap.show_inline_key_badges {
+        return None;
+    }
+    cfg.keymap.primary_editor_key_for(scopes, action)
+}
+
+/// A clickable toolbar button rendered with an optional inline `[key]` badge.
+pub(crate) struct ToolbarButton<T> {
+    pub label: String,
+    pub key: Option<String>,
+    pub active: bool,
+    pub id: T,
+}
+
+impl<T> ToolbarButton<T> {
+    pub(crate) fn new(
+        label: impl Into<String>,
+        key: Option<String>,
+        active: bool,
+        id: T,
+    ) -> Self {
+        Self {
+            label: label.into(),
+            key,
+            active,
+            id,
+        }
+    }
+}
+
+/// Splits `label` into `(head, key_suffix, trailing_pad)` for inline `[key]` badge rendering.
+fn split_label_with_key<'a>(label: &'a str, key: Option<&str>) -> (&'a str, String, &'static str) {
+    let Some(k) = key.filter(|k| !k.is_empty()) else {
+        return (label, String::new(), "");
+    };
+    let trimmed_end = label.trim_end_matches(' ');
+    let trailing_pad = if label.len() > trimmed_end.len() {
+        " "
+    } else {
+        ""
+    };
+    (trimmed_end, format!(" [{k}]"), trailing_pad)
+}
+
+/// Returns a button label with an optional `[key]` suffix if inline key badges are enabled and fit.
+pub(crate) fn format_label_with_key(label: &str, key: Option<&str>) -> String {
+    let (head, key_suffix, pad) = split_label_with_key(label, key);
+    if key_suffix.is_empty() {
+        head.to_string()
+    } else {
+        format!("{head}{key_suffix}{pad}")
+    }
+}
+
+/// Renders a row of clickable toolbar buttons with adaptive inline `[key]` badges.
+/// When the total row width with key badges exceeds `area.width`, badges are dropped
+/// automatically so every button label still fits cleanly.
+pub(crate) fn render_toolbar_with_keys<T: Copy>(
     frame: &mut Frame<'_>,
     area: Rect,
     ctx: &mut RenderContext<'_>,
     layer: u8,
-    buttons: &[(S, bool, T)],
+    buttons: &[ToolbarButton<T>],
     make_target: impl Fn(T) -> HitTarget,
 ) -> u16 {
     frame.render_widget(
         Paragraph::new("").style(Style::default().bg(ctx.theme.bg_panel)),
         area,
     );
+    let badges_enabled = ctx
+        .config
+        .is_none_or(|c| c.keymap.show_inline_key_badges);
+    let total_with_keys: usize = buttons
+        .iter()
+        .enumerate()
+        .map(|(idx, btn)| {
+            let key_ref = badges_enabled.then_some(btn.key.as_deref()).flatten();
+            let (head, key_suffix, pad) = split_label_with_key(&btn.label, key_ref);
+            head.width() + key_suffix.width() + pad.width() + usize::from(idx > 0)
+        })
+        .sum();
+    let show_keys = badges_enabled && total_with_keys <= area.width as usize;
+
     let mut x = area.x;
-    for (text, active, id) in buttons {
-        let label = text.as_ref();
-        let w = label.width() as u16;
-        if x + w > area.right() {
+    for btn in buttons {
+        let key_ref = show_keys.then_some(btn.key.as_deref()).flatten();
+        let (head, key_suffix, trailing_pad) = split_label_with_key(&btn.label, key_ref);
+        let total_w = (head.width() + key_suffix.width() + trailing_pad.width()) as u16;
+        if x + total_w > area.right() {
             break;
         }
-        let rect = Rect::new(x, area.y, w, 1);
-        let target = make_target(*id);
+        let rect = Rect::new(x, area.y, total_w, 1);
+        let target = make_target(btn.id);
         let hovered = ctx.hover_target == Some(&target);
-        let style = if *active {
-            Style::default()
-                .fg(ctx.theme.fg_bright)
-                .bg(ctx.theme.bg_selection_unfocused)
+        let bg = if btn.active {
+            ctx.theme.bg_selection_unfocused
         } else if hovered {
-            Style::default()
-                .fg(ctx.theme.fg_bright)
-                .bg(ctx.theme.bg_hover)
+            ctx.theme.bg_hover
         } else {
-            Style::default()
-                .fg(ctx.theme.fg_muted)
-                .bg(ctx.theme.bg_panel)
+            ctx.theme.bg_panel
         };
-        frame.render_widget(Paragraph::new(Span::styled(label.to_string(), style)), rect);
+        let fg = if btn.active || hovered {
+            ctx.theme.fg_bright
+        } else {
+            ctx.theme.fg_muted
+        };
+        let key_fg = if hovered || btn.active {
+            ctx.theme.fg_accent_link
+        } else {
+            ctx.theme.fg_muted
+        };
+        let mut spans = vec![Span::styled(
+            head.to_string(),
+            Style::default().fg(fg).bg(bg),
+        )];
+        if !key_suffix.is_empty() {
+            spans.push(Span::styled(key_suffix, Style::default().fg(key_fg).bg(bg)));
+        }
+        if !trailing_pad.is_empty() {
+            spans.push(Span::styled(
+                trailing_pad.to_string(),
+                Style::default().fg(fg).bg(bg),
+            ));
+        }
+        frame.render_widget(Paragraph::new(Line::from(spans)), rect);
         ctx.hit_registry.register(rect, layer, target);
-        x += w + 1;
+        x += total_w + 1;
     }
     x
 }

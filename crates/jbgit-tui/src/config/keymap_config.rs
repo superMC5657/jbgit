@@ -74,6 +74,10 @@ fn default_footer_max_lines() -> u16 {
     1
 }
 
+fn default_true() -> bool {
+    true
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct KeymapConfig {
     #[serde(default)]
@@ -82,6 +86,10 @@ pub struct KeymapConfig {
     pub tree_speed_search: bool,
     #[serde(default = "default_footer_max_lines")]
     pub footer_max_lines: u16,
+    #[serde(default = "default_true")]
+    pub footer_compact_pairs: bool,
+    #[serde(default = "default_true")]
+    pub show_inline_key_badges: bool,
     #[serde(default)]
     pub global: KeyBindingsList,
     #[serde(default)]
@@ -104,6 +112,8 @@ impl Default for KeymapConfig {
             preset: KeymapPreset::default(),
             tree_speed_search: false,
             footer_max_lines: default_footer_max_lines(),
+            footer_compact_pairs: true,
+            show_inline_key_badges: true,
             global: KeyBindingsList::default(),
             log: KeyBindingsList::default(),
             commit: KeyBindingsList::default(),
@@ -141,6 +151,8 @@ pub struct KeymapConfigOverlay {
     pub preset: Option<KeymapPreset>,
     pub tree_speed_search: Option<bool>,
     pub footer_max_lines: Option<u16>,
+    pub footer_compact_pairs: Option<bool>,
+    pub show_inline_key_badges: Option<bool>,
     pub global: Option<KeyBindingsList>,
     pub log: Option<KeyBindingsList>,
     pub commit: Option<KeyBindingsList>,
@@ -363,21 +375,27 @@ impl KeymapConfig {
                         ..Default::default()
                     }),
                     log: Some(KeyBindingsList {
-                        prepend_keymap: vec![kb(&["<C-l>"], KeyAction::FocusFilter, None)],
+                        prepend_keymap: vec![
+                            kb(&["<C-l>"], KeyAction::FocusFilter, None),
+                            kb(&["<C-d>"], KeyAction::CompareOrDiff, None),
+                            kb(&["<F2>"], KeyAction::Reword, None),
+                        ],
+                        ..Default::default()
+                    }),
+                    branch: Some(KeyBindingsList {
+                        prepend_keymap: vec![kb(&["<F2>"], KeyAction::RenameBranch, None)],
                         ..Default::default()
                     }),
                     commit: Some(KeyBindingsList {
                         prepend_keymap: vec![
                             kb(&["<A-m>"], KeyAction::ToggleAmend, None),
                             kb(&["<C-Enter>"], KeyAction::Commit, None),
+                            kb(&["<C-A-k>"], KeyAction::CommitAndPush, None),
                         ],
                         ..Default::default()
                     }),
                     diff: Some(KeyBindingsList {
-                        prepend_keymap: vec![
-                            kb(&["<F4>"], KeyAction::ZoomDiff, None),
-                            kb(&["c"], KeyAction::CycleDiffContext, None),
-                        ],
+                        prepend_keymap: vec![kb(&["<F4>"], KeyAction::ZoomDiff, None)],
                         ..Default::default()
                     }),
                     ..Default::default()
@@ -391,17 +409,8 @@ impl KeymapConfig {
                 let overlay = KeymapConfigOverlay {
                     preset: None,
                     tree_speed_search: Some(false),
-                    log: Some(KeyBindingsList {
-                        prepend_keymap: vec![
-                            kb(&["<C-d>"], KeyAction::PageDownHalf, None),
-                            kb(&["<C-u>"], KeyAction::PageUpHalf, None),
-                            kb(&["d"], KeyAction::CompareOrDiff, None),
-                        ],
-                        ..Default::default()
-                    }),
                     diff: Some(KeyBindingsList {
                         prepend_keymap: vec![
-                            kb(&["c"], KeyAction::CycleDiffContext, None),
                             kb_hint(&["s"], KeyAction::StageSelection, None, Some(true)),
                             kb_hint(&["u"], KeyAction::UnstageSelection, None, Some(true)),
                             kb_hint(&["<Space>"], KeyAction::ToggleStage, None, Some(false)),
@@ -421,14 +430,24 @@ impl KeymapConfig {
             && p != self.preset
         {
             let prev_footer_lines = self.footer_max_lines;
+            let prev_compact = self.footer_compact_pairs;
+            let prev_badges = self.show_inline_key_badges;
             *self = Self::for_preset(p);
             self.footer_max_lines = prev_footer_lines;
+            self.footer_compact_pairs = prev_compact;
+            self.show_inline_key_badges = prev_badges;
         }
         if let Some(tss) = overlay.tree_speed_search {
             self.tree_speed_search = tss;
         }
         if let Some(lines) = overlay.footer_max_lines {
             self.footer_max_lines = lines;
+        }
+        if let Some(compact) = overlay.footer_compact_pairs {
+            self.footer_compact_pairs = compact;
+        }
+        if let Some(badges) = overlay.show_inline_key_badges {
+            self.show_inline_key_badges = badges;
         }
         if let Some(g) = &overlay.global {
             merge_section(&mut self.global.key_bindings, g);

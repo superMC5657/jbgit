@@ -1,6 +1,6 @@
 //! Which-Key prefix completion hints and searchable/executable command-help rows.
 
-use crossterm::event::KeyModifiers;
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use jbgit_core::{PaneId, WorkspaceTab};
 
 use crate::app::AppState;
@@ -8,6 +8,13 @@ use crate::config::keymap_config::{KeyBindingConfig, KeymapScope};
 
 use super::actions::{is_action_applicable, scopes_for_context};
 use super::{KEY_CHORD_WINDOW, KeyAction, KeySequence, KeyStroke};
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WhichKeyEntry {
+    pub next_key: String,
+    pub desc: String,
+    pub action: KeyAction,
+}
 
 pub fn localized_action_desc(
     state: &AppState,
@@ -25,8 +32,58 @@ pub fn localized_action_desc(
     }
 }
 
+/// Collects Which-Key completions for an arbitrary pending key prefix in the current context.
+pub fn completions_for_events(state: &AppState, prefix: &[KeyEvent]) -> Vec<WhichKeyEntry> {
+    if prefix.is_empty() {
+        return Vec::new();
+    }
+    let km = &state.config.keymap;
+    let prefix_len = prefix.len();
+    let mut scopes = scopes_for_context(state);
+    if state.details.diff_zoomed && !scopes.contains(&KeymapScope::Global) {
+        scopes.push(KeymapScope::Global);
+    }
+    let mut out: Vec<WhichKeyEntry> = Vec::new();
+    for scope in scopes {
+        for b in km.bindings_for(scope) {
+            if !is_action_applicable(&b.run, state) {
+                continue;
+            }
+            if let Some(seq) = KeySequence::parse(&b.on)
+                && seq.matches_prefix(prefix)
+                && let Some(next_stroke) = seq.strokes.get(prefix_len)
+            {
+                let next_disp = next_stroke.to_display_string();
+                if !out.iter().any(|e| e.next_key == next_disp) {
+                    let desc = localized_action_desc(state, &b.run, b.desc.as_deref());
+                    out.push(WhichKeyEntry {
+                        next_key: next_disp,
+                        desc,
+                        action: b.run.clone(),
+                    });
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Returns completion entries for a single plain character prefix (e.g. `'z'` or `'g'`).
+pub fn completions_for_prefix_char(state: &AppState, ch: char) -> Vec<WhichKeyEntry> {
+    let ev = KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE);
+    completions_for_events(state, &[ev])
+}
+
 /// Returns `(next_key_display, description)` pairs for the currently pending prefix sequence.
 pub fn pending_completions(state: &AppState) -> Vec<(String, String)> {
+    pending_completion_entries(state)
+        .into_iter()
+        .map(|e| (e.next_key, e.desc))
+        .collect()
+}
+
+/// Returns structured Which-Key entries (including executable `KeyAction`) for the pending prefix.
+pub fn pending_completion_entries(state: &AppState) -> Vec<WhichKeyEntry> {
     if state.pending_keys.is_empty() {
         return Vec::new();
     }
@@ -36,28 +93,7 @@ pub fn pending_completions(state: &AppState) -> Vec<(String, String)> {
     {
         return Vec::new();
     }
-
-    let km = &state.config.keymap;
-    let prefix_len = state.pending_keys.len();
-    let mut out: Vec<(String, String)> = Vec::new();
-    for scope in scopes_for_context(state) {
-        for b in km.bindings_for(scope) {
-            if !is_action_applicable(&b.run, state) {
-                continue;
-            }
-            if let Some(seq) = KeySequence::parse(&b.on)
-                && seq.matches_prefix(&state.pending_keys)
-                && let Some(next_stroke) = seq.strokes.get(prefix_len)
-            {
-                let next_disp = next_stroke.to_display_string();
-                if !out.iter().any(|(k, _)| k == &next_disp) {
-                    let desc = localized_action_desc(state, &b.run, b.desc.as_deref());
-                    out.push((next_disp, desc));
-                }
-            }
-        }
-    }
-    out
+    completions_for_events(state, &state.pending_keys)
 }
 
 pub fn pending_prefix_display(state: &AppState) -> String {
@@ -187,14 +223,35 @@ fn current_context_rows(state: &AppState) -> Vec<HelpRow> {
     }
 
     if state.active_tab == WorkspaceTab::Console {
-        if state.focused_pane == PaneId::ConsoleCommandList {
-            out.push(HelpRow::Entry {
-                keys: super::actions::console_status_probe_key(km),
-                desc: localized_action_desc(state, &KeyAction::GitStatusProbe, None),
-                scope_tag: pane_title.to_string(),
-                run: Some(KeyAction::GitStatusProbe),
-            });
-        } else {
+        out.extend(collect_merged_entries(
+            state,
+            km.bindings_for(KeymapScope::Console),
+            i18n.t(scope_label_key(KeymapScope::Console)),
+            true,
+        ));
+        for nav in [
+            KeyAction::CursorDown,
+            KeyAction::CursorUp,
+            KeyAction::PageDownHalf,
+            KeyAction::PageUpHalf,
+            KeyAction::GotoTop,
+            KeyAction::GotoBottom,
+            KeyAction::TreeExpand,
+            KeyAction::TreeCollapse,
+        ] {
+            if is_action_applicable(&nav, state) {
+                let keys = km.all_keys_for(&[KeymapScope::Console, KeymapScope::Global], &nav);
+                if !keys.is_empty() {
+                    out.push(HelpRow::Entry {
+                        keys: keys.join(" / "),
+                        desc: localized_action_desc(state, &nav, None),
+                        scope_tag: pane_title.to_string(),
+                        run: Some(nav),
+                    });
+                }
+            }
+        }
+        if state.focused_pane == PaneId::ConsoleOutputDetail {
             out.push(HelpRow::Entry {
                 keys: "Esc".to_string(),
                 desc: i18n.t("help.action.back_to_commands").to_string(),
@@ -252,25 +309,25 @@ fn advanced_tool_rows(state: &AppState) -> Vec<HelpRow> {
     };
     vec![
         HelpRow::Entry {
-            keys: key_or(&KeyAction::Palette, "—"),
+            keys: key_or(&KeyAction::Palette, "z p"),
             desc: localized_action_desc(state, &KeyAction::Palette, None),
             scope_tag: scope.clone(),
             run: Some(KeyAction::Palette),
         },
         HelpRow::Entry {
-            keys: key_or(&KeyAction::ToggleGlyphMode, "F12"),
+            keys: key_or(&KeyAction::ToggleGlyphMode, "z i / F12"),
             desc: localized_action_desc(state, &KeyAction::ToggleGlyphMode, None),
             scope_tag: scope.clone(),
             run: Some(KeyAction::ToggleGlyphMode),
         },
         HelpRow::Entry {
-            keys: key_or(&KeyAction::CycleGraphRenderer, "F8"),
+            keys: key_or(&KeyAction::CycleGraphRenderer, "z g / F8"),
             desc: localized_action_desc(state, &KeyAction::CycleGraphRenderer, None),
             scope_tag: scope.clone(),
             run: Some(KeyAction::CycleGraphRenderer),
         },
         HelpRow::Entry {
-            keys: key_or(&KeyAction::GitStatusProbe, "Console: p"),
+            keys: key_or(&KeyAction::GitStatusProbe, "Console: s"),
             desc: localized_action_desc(state, &KeyAction::GitStatusProbe, None),
             scope_tag: scope,
             run: Some(KeyAction::GitStatusProbe),

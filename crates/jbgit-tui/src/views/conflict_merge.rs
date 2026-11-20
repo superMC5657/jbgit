@@ -10,8 +10,9 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::app::{AppState, RenderContext};
 use crate::hit_test::{ConflictMergeButtonKind, HitTarget};
+use crate::views::footer::{FooterPill, render_pill_strip};
 use crate::views::overlays::draw_shadow;
-use crate::views::truncate_to_width;
+use crate::views::{format_label_with_key, truncate_to_width};
 
 pub fn render_conflict_merge_modal(
     frame: &mut Frame<'_>,
@@ -184,43 +185,88 @@ pub fn render_conflict_merge_modal(
     }
 
     let hint_y = inner.bottom().saturating_sub(2);
-    frame.render_widget(
-        Paragraph::new(Span::styled(
-            truncate_to_width(i18n.t("conflict_merge.hint"), inner.width as usize),
-            Style::default().fg(ctx.theme.fg_muted),
-        ))
-        .style(Style::default().bg(ctx.theme.bg_panel)),
+    let cm_pills = vec![
+        FooterPill::new("[/]", i18n.t("view.footer.pill.switch_conflict")),
+        FooterPill::new("Ctrl+D/U", i18n.t("view.footer.pill.half_page")),
+        FooterPill::new("1/2/3/0", i18n.t("view.footer.pill.pick_conflict")),
+        FooterPill::new("Y/T", i18n.t("view.footer.pill.accept_all")),
+        FooterPill::new("m", i18n.t("view.footer.pill.mergetool")),
+        FooterPill::new("e", i18n.t("view.footer.pill.edit")),
+        FooterPill::new("Ctrl+S", i18n.t("view.footer.pill.save_stage")),
+        FooterPill::new("Esc", i18n.t("view.footer.pill.close")),
+    ];
+    render_pill_strip(
+        frame,
         Rect::new(inner.x, hint_y, inner.width, 1),
+        &cm_pills,
+        None,
+        ctx,
+        z + 2,
+        false,
     );
 
+    struct MergeButton<'a> {
+        label: &'a str,
+        key: &'a str,
+        kind: ConflictMergeButtonKind,
+        primary: bool,
+    }
+    impl<'a> MergeButton<'a> {
+        const fn new(
+            label: &'a str,
+            key: &'a str,
+            kind: ConflictMergeButtonKind,
+            primary: bool,
+        ) -> Self {
+            Self {
+                label,
+                key,
+                kind,
+                primary,
+            }
+        }
+    }
+
     let btn_y = inner.bottom().saturating_sub(1);
-    let buttons = [
-        (i18n.t("conflict_merge.btn_ours"), ConflictMergeButtonKind::AcceptOurs, false),
-        (i18n.t("conflict_merge.btn_theirs"), ConflictMergeButtonKind::AcceptTheirs, false),
-        (i18n.t("conflict_merge.btn_both"), ConflictMergeButtonKind::AcceptBoth, false),
-        (i18n.t("conflict_merge.btn_all_ours"), ConflictMergeButtonKind::AcceptAllOurs, false),
-        (i18n.t("conflict_merge.btn_all_theirs"), ConflictMergeButtonKind::AcceptAllTheirs, false),
-        (i18n.t("conflict_merge.btn_mergetool"), ConflictMergeButtonKind::Mergetool, false),
-        (i18n.t("conflict_merge.btn_editor"), ConflictMergeButtonKind::ExternalEditor, false),
-        (
+    let show_keys = state.config.keymap.show_inline_key_badges;
+    let raw_buttons = [
+        MergeButton::new(i18n.t("conflict_merge.btn_ours"), "1", ConflictMergeButtonKind::AcceptOurs, false),
+        MergeButton::new(i18n.t("conflict_merge.btn_theirs"), "2", ConflictMergeButtonKind::AcceptTheirs, false),
+        MergeButton::new(i18n.t("conflict_merge.btn_both"), "3", ConflictMergeButtonKind::AcceptBoth, false),
+        MergeButton::new(i18n.t("conflict_merge.btn_all_ours"), "Y", ConflictMergeButtonKind::AcceptAllOurs, false),
+        MergeButton::new(i18n.t("conflict_merge.btn_all_theirs"), "T", ConflictMergeButtonKind::AcceptAllTheirs, false),
+        MergeButton::new(i18n.t("conflict_merge.btn_mergetool"), "m", ConflictMergeButtonKind::Mergetool, false),
+        MergeButton::new(i18n.t("conflict_merge.btn_editor"), "e", ConflictMergeButtonKind::ExternalEditor, false),
+        MergeButton::new(
             if doc.unresolved_count() == 0 {
                 i18n.t("conflict_merge.btn_save_stage")
             } else {
                 i18n.t("conflict_merge.btn_save")
             },
+            "Ctrl+S",
             ConflictMergeButtonKind::SaveAndStage,
             true,
         ),
-        (i18n.t("conflict_merge.btn_close"), ConflictMergeButtonKind::Cancel, false),
+        MergeButton::new(i18n.t("conflict_merge.btn_close"), "Esc", ConflictMergeButtonKind::Cancel, false),
     ];
+    let total_with_keys: usize = raw_buttons
+        .iter()
+        .map(|btn| format_label_with_key(btn.label, Some(btn.key)).width() + 1)
+        .sum();
+    let use_keys = show_keys && total_with_keys <= inner.width.saturating_sub(1) as usize;
     let mut bx = inner.x + 1;
-    for (label, kind, primary) in buttons {
+    for btn in raw_buttons {
+        let label = if use_keys {
+            format_label_with_key(btn.label, Some(btn.key))
+        } else {
+            btn.label.to_string()
+        };
         let w = label.width() as u16;
         if bx + w > inner.right() {
             break;
         }
         let r = Rect::new(bx, btn_y, w, 1);
-        let style = if primary {
+        let style = if btn.primary {
             Style::default()
                 .fg(ctx.theme.fg_bright)
                 .bg(ctx.theme.border_focused)
@@ -232,7 +278,7 @@ pub fn render_conflict_merge_modal(
         };
         frame.render_widget(Paragraph::new(Span::styled(label, style)), r);
         ctx.hit_registry
-            .register(r, z + 2, HitTarget::ConflictMergeButton(kind));
+            .register(r, z + 2, HitTarget::ConflictMergeButton(btn.kind));
         bx += w + 1;
     }
 }

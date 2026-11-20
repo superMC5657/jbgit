@@ -20,11 +20,14 @@ use super::{
     KEY_CHORD_WINDOW, KeyAction, KeySequence, MatchResult, match_bindings_filtered,
 };
 
-pub const DEFAULT_CONSOLE_PROBE_CHAR: char = 'p';
+pub const DEFAULT_CONSOLE_PROBE_CHAR: char = 's';
 
 pub fn console_status_probe_key(keymap: &crate::config::KeymapConfig) -> String {
     keymap
-        .primary_key_for(&[KeymapScope::Global], &KeyAction::GitStatusProbe)
+        .primary_key_for(
+            &[KeymapScope::Console, KeymapScope::Global],
+            &KeyAction::GitStatusProbe,
+        )
         .unwrap_or_else(|| DEFAULT_CONSOLE_PROBE_CHAR.to_string())
 }
 
@@ -37,7 +40,7 @@ pub fn git_status_probe_action() -> Action {
 }
 
 pub fn is_branch_speed_search_char(c: char) -> bool {
-    (c.is_alphabetic() || matches!(c, '-' | '_' | '/' | '0' | '5'..='9')) && c != 'J'
+    c.is_alphabetic() || matches!(c, '-' | '_' | '/' | '0' | '5'..='9')
 }
 
 pub fn is_amend_diff(state: &AppState) -> bool {
@@ -151,6 +154,10 @@ pub fn is_action_applicable(run: &KeyAction, state: &AppState) -> bool {
                 | KeyAction::Help
                 | KeyAction::CursorDown
                 | KeyAction::CursorUp
+                | KeyAction::PageDownHalf
+                | KeyAction::PageUpHalf
+                | KeyAction::PageDown
+                | KeyAction::PageUp
                 | KeyAction::GotoTop
                 | KeyAction::GotoBottom
                 | KeyAction::PrevHunk
@@ -240,9 +247,21 @@ pub fn is_action_applicable(run: &KeyAction, state: &AppState) -> bool {
                 || (state.active_tab == WorkspaceTab::Commit
                     && state.focused_pane == PaneId::CommitChangesTree)
         }
-        KeyAction::PageDownHalf | KeyAction::PageUpHalf => {
-            state.active_tab == WorkspaceTab::Log
-                || state.focused_pane == PaneId::ConsoleOutputDetail
+        KeyAction::CursorDown
+        | KeyAction::CursorUp
+        | KeyAction::PageDownHalf
+        | KeyAction::PageUpHalf
+        | KeyAction::PageDown
+        | KeyAction::PageUp
+        | KeyAction::GotoTop
+        | KeyAction::GotoBottom
+        | KeyAction::TreeCollapse
+        | KeyAction::TreeExpand
+        | KeyAction::ExpandAll
+        | KeyAction::CollapseAll => PaneNav::from_key_action(run)
+            .is_some_and(|nav| dispatch_pane_nav(nav, state).is_some()),
+        KeyAction::NavBack | KeyAction::NavForward => {
+            state.active_tab == WorkspaceTab::Log && state.focused_pane == PaneId::LogCommitTable
         }
 
         KeyAction::BranchSearch
@@ -279,22 +298,166 @@ pub fn is_action_applicable(run: &KeyAction, state: &AppState) -> bool {
         | KeyAction::StashDrop
         | KeyAction::StashBranch
         | KeyAction::StashClear => state.active_tab == WorkspaceTab::Stash,
+    }
+}
 
-        KeyAction::CursorDown | KeyAction::CursorUp => {
-            state.focused_pane != PaneId::CommitMessageEditor
+#[derive(Clone, Copy)]
+enum PaneNav {
+    Step(isize),
+    Page { down: bool, half: bool },
+    Edge { bottom: bool },
+    Expand(bool),
+    ExpandAll(bool),
+}
+
+impl PaneNav {
+    fn from_key_action(run: &KeyAction) -> Option<Self> {
+        match run {
+            KeyAction::CursorDown => Some(Self::Step(1)),
+            KeyAction::CursorUp => Some(Self::Step(-1)),
+            KeyAction::PageDownHalf => Some(Self::Page {
+                down: true,
+                half: true,
+            }),
+            KeyAction::PageUpHalf => Some(Self::Page {
+                down: false,
+                half: true,
+            }),
+            KeyAction::PageDown => Some(Self::Page {
+                down: true,
+                half: false,
+            }),
+            KeyAction::PageUp => Some(Self::Page {
+                down: false,
+                half: false,
+            }),
+            KeyAction::GotoTop => Some(Self::Edge { bottom: false }),
+            KeyAction::GotoBottom => Some(Self::Edge { bottom: true }),
+            KeyAction::TreeCollapse => Some(Self::Expand(false)),
+            KeyAction::TreeExpand => Some(Self::Expand(true)),
+            KeyAction::ExpandAll => Some(Self::ExpandAll(true)),
+            KeyAction::CollapseAll => Some(Self::ExpandAll(false)),
+            _ => None,
         }
-        KeyAction::GotoTop | KeyAction::GotoBottom => matches!(
-            state.focused_pane,
-            PaneId::LogBranchesTree
-                | PaneId::LogCommitTable
-                | PaneId::LogChangesTree
-                | PaneId::LogDetailsDiff
-                | PaneId::CommitChangesTree
-                | PaneId::CommitDiffPreview
-                | PaneId::StashList
-                | PaneId::StashDiffPreview
-                | PaneId::ConsoleOutputDetail
-        ),
+    }
+}
+
+fn dispatch_pane_nav(nav: PaneNav, state: &AppState) -> Option<Action> {
+    let page_sign = |down: bool| if down { 1isize } else { -1isize };
+    let edge_row = |bottom: bool| if bottom { usize::MAX } else { 0 };
+    let edge_scroll = |bottom: bool| {
+        if bottom {
+            SCROLL_GOTO_BOTTOM
+        } else {
+            SCROLL_GOTO_TOP
+        }
+    };
+
+    if state.details.diff_zoomed {
+        return match nav {
+            PaneNav::Step(d) => Some(Action::ScrollDiff(d)),
+            PaneNav::Page { down, .. } => {
+                let step = (state.terminal_area.height.max(6) as isize / 2).max(1);
+                Some(Action::ScrollDiff(page_sign(down) * step))
+            }
+            PaneNav::Edge { bottom } => Some(Action::ScrollDiff(edge_scroll(bottom))),
+            PaneNav::Expand(_) | PaneNav::ExpandAll(_) => None,
+        };
+    }
+
+    match state.focused_pane {
+        PaneId::LogBranchesTree => match nav {
+            PaneNav::Step(d) => Some(Action::ScrollBranches(d)),
+            PaneNav::Page { down, .. } => Some(Action::ScrollBranches(page_sign(down) * 10)),
+            PaneNav::Edge { bottom } => Some(Action::SelectBranchRow(edge_row(bottom))),
+            PaneNav::Expand(expand) => Some(Action::BranchesExpand(expand)),
+            PaneNav::ExpandAll(_) => None,
+        },
+        PaneId::LogCommitTable => match nav {
+            PaneNav::Step(d) => Some(Action::ScrollLog(d)),
+            PaneNav::Page { down, half } => Some(Action::LogPage { half, down }),
+            PaneNav::Edge { bottom } => Some(Action::LogEdge { bottom }),
+            PaneNav::Expand(false) => Some(Action::GoToChild),
+            PaneNav::Expand(true) => Some(Action::GoToParent(0)),
+            PaneNav::ExpandAll(_) => None,
+        },
+        PaneId::LogChangesTree => match nav {
+            PaneNav::Step(d) => Some(Action::ChangesMove(d)),
+            PaneNav::Page { down, .. } => Some(Action::ChangesMove(page_sign(down) * 10)),
+            PaneNav::Edge { bottom } => Some(Action::ChangesSelectRow(edge_row(bottom))),
+            PaneNav::Expand(expand) => Some(Action::ChangesExpand(expand)),
+            PaneNav::ExpandAll(expand) => Some(Action::ChangesExpandAll(expand)),
+        },
+        PaneId::LogDetailsDiff => match nav {
+            PaneNav::Step(d) if state.details.diff_visible() => Some(Action::ScrollDiff(d)),
+            PaneNav::Step(d) => Some(Action::ScrollDetails(d)),
+            PaneNav::Page { down, .. } if state.details.diff_visible() => {
+                let step = (state.log_graph.last_viewport_h.max(4) as isize / 2).max(1);
+                Some(Action::ScrollDiff(page_sign(down) * step))
+            }
+            PaneNav::Page { down, .. } => Some(Action::ScrollDetails(page_sign(down) * 10)),
+            PaneNav::Edge { bottom } if state.details.diff_visible() => {
+                Some(Action::ScrollDiff(edge_scroll(bottom)))
+            }
+            PaneNav::Edge { bottom } => Some(Action::ScrollDetails(edge_scroll(bottom))),
+            PaneNav::Expand(_) | PaneNav::ExpandAll(_) => None,
+        },
+        PaneId::CommitChangesTree => match nav {
+            PaneNav::Step(d) => Some(Action::ScrollCommitStage(d)),
+            PaneNav::Page { down, .. } => Some(Action::ScrollCommitStage(page_sign(down) * 10)),
+            PaneNav::Edge { bottom } => Some(Action::SelectCommitStageRow(edge_row(bottom))),
+            PaneNav::Expand(expand) => Some(Action::StageExpand(expand)),
+            PaneNav::ExpandAll(expand) => Some(Action::StageExpandAll(expand)),
+        },
+        PaneId::CommitDiffPreview => match nav {
+            PaneNav::Step(d) => Some(Action::StageDiffMoveCursor(d)),
+            PaneNav::Page { down, .. } => Some(Action::StageDiffMoveCursor(page_sign(down) * 10)),
+            PaneNav::Edge { bottom } => Some(Action::StageDiffMoveCursor(edge_scroll(bottom))),
+            PaneNav::Expand(_) | PaneNav::ExpandAll(_) => None,
+        },
+        PaneId::StashList => match nav {
+            PaneNav::Step(d) => Some(Action::StashMove(d)),
+            PaneNav::Page { down, .. } => Some(Action::StashMove(page_sign(down) * 10)),
+            PaneNav::Edge { bottom } => Some(Action::StashSelect(edge_row(bottom))),
+            PaneNav::Expand(true) => Some(Action::FocusPane(PaneId::StashDiffPreview)),
+            PaneNav::Expand(false) | PaneNav::ExpandAll(_) => None,
+        },
+        PaneId::StashDiffPreview => match nav {
+            PaneNav::Step(d) => Some(Action::StashChangesMove(d)),
+            PaneNav::Page { down, .. } => Some(Action::StashDiffScroll(page_sign(down) * 10)),
+            PaneNav::Edge { bottom } => Some(Action::StashChangesSelect(edge_row(bottom))),
+            PaneNav::Expand(expand) => Some(Action::StashChangesExpand(expand)),
+            PaneNav::ExpandAll(expand) => Some(Action::StashChangesExpandAll(expand)),
+        },
+        PaneId::ConsoleCommandList => match nav {
+            PaneNav::Step(d) => Some(Action::ScrollConsoleList(d)),
+            PaneNav::Page { down, .. } => Some(Action::ScrollConsoleList(page_sign(down) * 10)),
+            PaneNav::Edge { bottom } => {
+                let row = if bottom {
+                    state.console_entries.len().saturating_sub(1)
+                } else {
+                    0
+                };
+                Some(Action::SelectConsoleRow(row))
+            }
+            PaneNav::Expand(true) => Some(Action::FocusPane(PaneId::ConsoleOutputDetail)),
+            PaneNav::Expand(false) | PaneNav::ExpandAll(_) => None,
+        },
+        PaneId::ConsoleOutputDetail => match nav {
+            PaneNav::Step(d) => Some(Action::ScrollConsoleOutput(d)),
+            PaneNav::Page { down, half } => {
+                let step = if half {
+                    state.console_half_page_step()
+                } else {
+                    state.console_page_step()
+                };
+                Some(Action::ScrollConsoleOutput(page_sign(down) * step))
+            }
+            PaneNav::Edge { bottom } => Some(Action::ScrollConsoleOutput(edge_scroll(bottom))),
+            PaneNav::Expand(false) => Some(Action::FocusPane(PaneId::ConsoleCommandList)),
+            PaneNav::Expand(true) | PaneNav::ExpandAll(_) => None,
+        },
+        PaneId::CommitMessageEditor => None,
     }
 }
 
@@ -369,94 +532,22 @@ pub fn execute_action(run: &KeyAction, state: &mut AppState) -> Option<Vec<Actio
         }]),
 
         // ── Navigation ──
-        KeyAction::CursorDown => match state.focused_pane {
-            PaneId::LogBranchesTree => Some(vec![Action::ScrollBranches(1)]),
-            PaneId::LogCommitTable => Some(vec![Action::ScrollLog(1)]),
-            PaneId::LogChangesTree => Some(vec![Action::ChangesMove(1)]),
-            PaneId::LogDetailsDiff if state.details.diff_visible() => {
-                Some(vec![Action::ScrollDiff(1)])
-            }
-            PaneId::LogDetailsDiff => Some(vec![Action::ScrollDetails(1)]),
-            PaneId::CommitChangesTree => Some(vec![Action::ScrollCommitStage(1)]),
-            PaneId::CommitDiffPreview => Some(vec![Action::StageDiffMoveCursor(1)]),
-            PaneId::StashList => Some(vec![Action::StashMove(1)]),
-            PaneId::StashDiffPreview => Some(vec![Action::StashChangesMove(1)]),
-            PaneId::ConsoleCommandList => Some(vec![Action::ScrollConsoleList(1)]),
-            PaneId::ConsoleOutputDetail => Some(vec![Action::ScrollConsoleOutput(1)]),
-            PaneId::CommitMessageEditor => None,
-        },
-        KeyAction::CursorUp => match state.focused_pane {
-            PaneId::LogBranchesTree => Some(vec![Action::ScrollBranches(-1)]),
-            PaneId::LogCommitTable => Some(vec![Action::ScrollLog(-1)]),
-            PaneId::LogChangesTree => Some(vec![Action::ChangesMove(-1)]),
-            PaneId::LogDetailsDiff if state.details.diff_visible() => {
-                Some(vec![Action::ScrollDiff(-1)])
-            }
-            PaneId::LogDetailsDiff => Some(vec![Action::ScrollDetails(-1)]),
-            PaneId::CommitChangesTree => Some(vec![Action::ScrollCommitStage(-1)]),
-            PaneId::CommitDiffPreview => Some(vec![Action::StageDiffMoveCursor(-1)]),
-            PaneId::StashList => Some(vec![Action::StashMove(-1)]),
-            PaneId::StashDiffPreview => Some(vec![Action::StashChangesMove(-1)]),
-            PaneId::ConsoleCommandList => Some(vec![Action::ScrollConsoleList(-1)]),
-            PaneId::ConsoleOutputDetail => Some(vec![Action::ScrollConsoleOutput(-1)]),
-            PaneId::CommitMessageEditor => None,
-        },
-        KeyAction::GotoTop => match state.focused_pane {
-            PaneId::LogBranchesTree => Some(vec![Action::SelectBranchRow(0)]),
-            PaneId::LogChangesTree => Some(vec![Action::ChangesSelectRow(0)]),
-            PaneId::LogDetailsDiff if state.details.diff_visible() => {
-                Some(vec![Action::ScrollDiff(SCROLL_GOTO_TOP)])
-            }
-            PaneId::LogDetailsDiff => Some(vec![Action::ScrollDetails(SCROLL_GOTO_TOP)]),
-            PaneId::CommitChangesTree => Some(vec![Action::SelectCommitStageRow(0)]),
-            PaneId::CommitDiffPreview => Some(vec![Action::StageDiffMoveCursor(SCROLL_GOTO_TOP)]),
-            PaneId::StashList => Some(vec![Action::StashSelect(0)]),
-            PaneId::StashDiffPreview => Some(vec![Action::StashChangesSelect(0)]),
-            PaneId::ConsoleOutputDetail => Some(vec![Action::ScrollConsoleOutput(SCROLL_GOTO_TOP)]),
-            _ => Some(vec![Action::LogEdge { bottom: false }]),
-        },
-        KeyAction::GotoBottom => match state.focused_pane {
-            PaneId::LogBranchesTree => Some(vec![Action::SelectBranchRow(usize::MAX)]),
-            PaneId::LogChangesTree => Some(vec![Action::ChangesSelectRow(usize::MAX)]),
-            PaneId::LogDetailsDiff if state.details.diff_visible() => {
-                Some(vec![Action::ScrollDiff(SCROLL_GOTO_BOTTOM)])
-            }
-            PaneId::LogDetailsDiff => Some(vec![Action::ScrollDetails(SCROLL_GOTO_BOTTOM)]),
-            PaneId::CommitChangesTree => Some(vec![Action::SelectCommitStageRow(usize::MAX)]),
-            PaneId::CommitDiffPreview => {
-                Some(vec![Action::StageDiffMoveCursor(SCROLL_GOTO_BOTTOM)])
-            }
-            PaneId::StashList => Some(vec![Action::StashSelect(usize::MAX)]),
-            PaneId::StashDiffPreview => Some(vec![Action::StashChangesSelect(usize::MAX)]),
-            PaneId::ConsoleOutputDetail => {
-                Some(vec![Action::ScrollConsoleOutput(SCROLL_GOTO_BOTTOM)])
-            }
-            _ => Some(vec![Action::LogEdge { bottom: true }]),
-        },
-        KeyAction::PageDownHalf => {
-            if state.focused_pane == PaneId::ConsoleOutputDetail {
-                Some(vec![Action::ScrollConsoleOutput(
-                    state.console_half_page_step(),
-                )])
-            } else {
-                Some(vec![Action::LogPage {
-                    half: true,
-                    down: true,
-                }])
-            }
-        }
-        KeyAction::PageUpHalf => {
-            if state.focused_pane == PaneId::ConsoleOutputDetail {
-                Some(vec![Action::ScrollConsoleOutput(
-                    -state.console_half_page_step(),
-                )])
-            } else {
-                Some(vec![Action::LogPage {
-                    half: true,
-                    down: false,
-                }])
-            }
-        }
+        KeyAction::CursorDown
+        | KeyAction::CursorUp
+        | KeyAction::PageDownHalf
+        | KeyAction::PageUpHalf
+        | KeyAction::PageDown
+        | KeyAction::PageUp
+        | KeyAction::GotoTop
+        | KeyAction::GotoBottom
+        | KeyAction::TreeCollapse
+        | KeyAction::TreeExpand
+        | KeyAction::ExpandAll
+        | KeyAction::CollapseAll => PaneNav::from_key_action(run)
+            .and_then(|nav| dispatch_pane_nav(nav, state))
+            .map(|a| vec![a]),
+        KeyAction::NavBack => Some(vec![Action::NavLogBack]),
+        KeyAction::NavForward => Some(vec![Action::NavLogForward]),
 
         // ── Log ──
         KeyAction::CompareOrDiff | KeyAction::CompareVersions => {
@@ -549,10 +640,12 @@ pub fn execute_action(run: &KeyAction, state: &mut AppState) -> Option<Vec<Actio
             ))])
         }
         KeyAction::ChooseParent => {
-            if matches!(
-                state.focused_pane,
-                PaneId::LogChangesTree | PaneId::LogDetailsDiff
-            ) {
+            if state.details.diff_zoomed
+                || matches!(
+                    state.focused_pane,
+                    PaneId::LogChangesTree | PaneId::LogDetailsDiff
+                )
+            {
                 Some(vec![Action::SwitchMergeParent])
             } else {
                 let parents = state
@@ -820,7 +913,7 @@ where
 
     if state.details.diff_zoomed {
         return match_bindings_filtered(&keymap.global.key_bindings, events, |b| {
-            matches!(b.run, KeyAction::Quit | KeyAction::Help) && extra_allow(b)
+            is_action_applicable(&b.run, state) && extra_allow(b)
         });
     }
 

@@ -92,16 +92,10 @@ pub(crate) fn route_commit_diff_fallback_key(key: &KeyEvent, state: &AppState) -
     let is_amend_ref = side == Some(StageDiffSide::AmendCommit);
 
     match key.code {
-        KeyCode::PageDown => vec![Action::StageDiffMoveCursor(10)],
-        KeyCode::PageUp => vec![Action::StageDiffMoveCursor(-10)],
-        KeyCode::Char('s' | '+') if !ctrl && !alt && !is_amend_ref => {
-            vec![if side == Some(StageDiffSide::Staged) {
-                Action::StageDiffUnstageSelection
-            } else {
-                Action::StageDiffStageSelection
-            }]
+        KeyCode::Char('+') if !ctrl && !alt && !is_amend_ref => {
+            vec![Action::StageDiffStageSelection]
         }
-        KeyCode::Char('u' | '-') if !ctrl && !alt && !is_amend_ref => {
+        KeyCode::Char('-') if !ctrl && !alt && !is_amend_ref => {
             vec![Action::StageDiffUnstageSelection]
         }
         KeyCode::Esc => {
@@ -119,10 +113,6 @@ pub(crate) fn route_commit_changes_tree_key(key: &KeyEvent, state: &AppState) ->
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     let alt = key.modifiers.contains(KeyModifiers::ALT);
     match key.code {
-        KeyCode::PageDown => vec![Action::ScrollCommitStage(10)],
-        KeyCode::PageUp => vec![Action::ScrollCommitStage(-10)],
-        KeyCode::Right => vec![Action::StageExpand(true)],
-        KeyCode::Left => vec![Action::StageExpand(false)],
         KeyCode::Enter => {
             let row = state
                 .stage_workbench
@@ -136,11 +126,9 @@ pub(crate) fn route_commit_changes_tree_key(key: &KeyEvent, state: &AppState) ->
                 None => Vec::new(),
             }
         }
-        KeyCode::Char('s' | '+') if !ctrl && !alt => vec![Action::StageActionSelected],
-        KeyCode::Char('u' | '-') if !ctrl && !alt => vec![Action::UnstageActionSelected],
+        KeyCode::Char('+') if !ctrl && !alt => vec![Action::StageActionSelected],
+        KeyCode::Char('-') if !ctrl && !alt => vec![Action::UnstageActionSelected],
         KeyCode::Char('z') if ctrl && alt => vec![Action::DiscardPromptSelected],
-        KeyCode::Char('m') if alt => vec![Action::CommitToggleAmend],
-        KeyCode::Char('s') if alt => vec![Action::CommitToggleSignoff],
         _ => Vec::new(),
     }
 }
@@ -309,6 +297,14 @@ pub(crate) fn stage_options_menu_items(state: &AppState) -> Vec<ContextMenuItem>
         .config
         .keymap
         .primary_key_for(&[crate::config::KeymapScope::Commit], &KeyAction::ToggleGroup);
+    let expand_sc = state
+        .config
+        .keymap
+        .primary_key_for(&[crate::config::KeymapScope::Commit], &KeyAction::ExpandAll);
+    let collapse_sc = state
+        .config
+        .keymap
+        .primary_key_for(&[crate::config::KeymapScope::Commit], &KeyAction::CollapseAll);
     vec![
         ContextMenuItem::action(
             format!(
@@ -333,13 +329,13 @@ pub(crate) fn stage_options_menu_items(state: &AppState) -> Vec<ContextMenuItem>
         ContextMenuItem::action(
             i18n.t("menu.stage.expand_all"),
             Some('e'),
-            None,
+            expand_sc.as_deref(),
             ContextMenuAction::StageExpandAll(true),
         ),
         ContextMenuItem::action(
             i18n.t("menu.stage.collapse_all"),
             Some('c'),
-            None,
+            collapse_sc.as_deref(),
             ContextMenuAction::StageExpandAll(false),
         ),
         ContextMenuItem::action(

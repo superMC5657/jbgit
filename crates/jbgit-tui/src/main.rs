@@ -1915,7 +1915,13 @@ stash_preview_ratio = [1, 1]
         send_key(&mut state, KeyCode::Home, KeyModifiers::NONE);
         assert_eq!(state.console_output_scroll, 0);
 
-        // `gg` routes via `[console]` dynamic keymap (works even when `g b` is unbound, and respects `noop` override).
+        // j / k scroll line by line in ConsoleOutputDetail
+        send_key(&mut state, KeyCode::Char('j'), KeyModifiers::NONE);
+        assert_eq!(state.console_output_scroll, 1);
+        send_key(&mut state, KeyCode::Char('k'), KeyModifiers::NONE);
+        assert_eq!(state.console_output_scroll, 0);
+
+        // `gg` routes via `[global]` dynamic keymap (works even when `g b` is unbound, and respects `noop` override).
         let unbind_gb: crate::config::KeymapConfigOverlay =
             toml::from_str("[global]\nprepend_keymap = [{ on = [\"g\", \"b\"], run = \"noop\" }]\n")
                 .unwrap();
@@ -1927,7 +1933,7 @@ stash_preview_ratio = [1, 1]
         assert_eq!(state.console_output_scroll, 0);
 
         let unbind_gg: crate::config::KeymapConfigOverlay =
-            toml::from_str("[console]\nprepend_keymap = [{ on = [\"g\", \"g\"], run = \"noop\" }]\n")
+            toml::from_str("[global]\nprepend_keymap = [{ on = [\"g\", \"g\"], run = \"noop\" }]\n")
                 .unwrap();
         state.config.keymap.merge_overlay(&unbind_gg);
         send_key(&mut state, KeyCode::End, KeyModifiers::NONE);

@@ -12,10 +12,12 @@ use unicode_width::UnicodeWidthStr;
 use crate::app::{AppState, RenderContext, ScrollPane};
 use crate::hit_test::{FileHistoryToolbarButton, HitTarget};
 use crate::log_view::{FileHistoryFocus, FileHistoryState};
+use crate::views::footer::{FooterPill, render_pill_strip};
 use crate::views::log_details::{FileDiffRenderProps, render_file_diff_body};
 use crate::views::overlays::draw_shadow;
 use crate::views::{
-    fit_left_right_spans, list_viewport, render_toolbar, row_background, truncate_to_width,
+    ToolbarButton, fit_left_right_spans, list_viewport, render_toolbar_with_keys, row_background,
+    truncate_to_width,
 };
 
 pub fn render_file_history_modal(
@@ -105,51 +107,55 @@ pub fn render_file_history_modal(
     );
 
     let buttons = vec![
-        (
-            ctx.t("view.file_history.btn_follow").to_string(),
+        ToolbarButton::new(
+            ctx.t("view.file_history.btn_follow"),
+            Some("f".to_string()),
             fh.key.follow_renames,
             FileHistoryToolbarButton::FollowRenames,
         ),
-        (
-            ctx.t("view.file_history.btn_compare_local").to_string(),
+        ToolbarButton::new(
+            ctx.t("view.file_history.btn_compare_local"),
+            Some("l".to_string()),
             fh.compare_with_local,
             FileHistoryToolbarButton::CompareLocal,
         ),
-        (
+        ToolbarButton::new(
             if fh.diff_side_by_side {
                 ctx.t("view.log_details.side_by_side_btn")
             } else {
                 ctx.t("view.log_details.unified_btn")
-            }
-            .to_string(),
+            },
+            Some("S".to_string()),
             fh.diff_side_by_side,
             FileHistoryToolbarButton::SideBySide,
         ),
-        (
+        ToolbarButton::new(
             ctx.t_fmt(
                 "view.log_details.ctx_btn",
                 &[("ctx", ctx.diff_context_label(fh.diff_context))],
             ),
+            Some("w".to_string()),
             false,
             FileHistoryToolbarButton::Context,
         ),
-        (
+        ToolbarButton::new(
             if fh.diff_zoomed {
                 ctx.t("view.log_details.restore_btn")
             } else {
                 ctx.t("view.log_details.zoom_btn")
-            }
-            .to_string(),
+            },
+            Some("z".to_string()),
             fh.diff_zoomed,
             FileHistoryToolbarButton::Zoom,
         ),
-        (
-            ctx.t("view.file_history.btn_locate_log").to_string(),
+        ToolbarButton::new(
+            ctx.t("view.file_history.btn_locate_log"),
+            Some("Enter".to_string()),
             false,
             FileHistoryToolbarButton::LocateInLog,
         ),
     ];
-    render_toolbar(
+    render_toolbar_with_keys(
         frame,
         toolbar_rect,
         ctx,
@@ -212,17 +218,18 @@ pub fn render_file_history_modal(
         }
     }
 
-    frame.render_widget(
-        Paragraph::new(Span::styled(
-            truncate_to_width(
-                ctx.t("view.file_history.footer_hint"),
-                footer_rect.width as usize,
-            ),
-            Style::default().fg(ctx.theme.fg_muted),
-        ))
-        .style(Style::default().bg(ctx.theme.bg_panel)),
-        footer_rect,
-    );
+    let fh_pills = vec![
+        FooterPill::new("Tab", ctx.t("view.footer.pill.switch_focus")),
+        FooterPill::new("Shift+↑/↓", ctx.t("view.footer.pill.compare_two")),
+        FooterPill::new("Enter", ctx.t("view.footer.pill.locate_log")),
+        FooterPill::new("f", ctx.t("view.footer.pill.follow_renames")),
+        FooterPill::new("l", ctx.t("view.footer.pill.compare_local")),
+        FooterPill::new("S", ctx.t("view.footer.pill.side_by_side")),
+        FooterPill::new("w", ctx.t("view.footer.pill.context")),
+        FooterPill::new("z/F4", ctx.t("view.footer.pill.zoom")),
+        FooterPill::new("Esc", ctx.t("view.footer.pill.close")),
+    ];
+    render_pill_strip(frame, footer_rect, &fh_pills, None, ctx, z + 2, false);
 }
 
 fn render_list_pane(

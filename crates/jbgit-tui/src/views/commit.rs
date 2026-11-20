@@ -9,11 +9,14 @@ use ratatui::widgets::Paragraph;
 use unicode_width::UnicodeWidthStr;
 
 use crate::app::{AppState, RenderContext};
+use crate::config::KeymapScope;
 use crate::hit_test::{CommitOptionKind, HitTarget, StageToolbarButton};
+use crate::keymap::KeyAction;
 use crate::views::commit_diff::render_stage_diff_workbench;
 use crate::views::{
-    fit_left_right_spans, list_viewport, render_pane_frame, render_splitter_divider,
-    render_toolbar, row_background, truncate_to_width,
+    ToolbarButton, fit_left_right_spans, format_label_with_key, inline_editor_key_for,
+    inline_key_for, list_viewport, render_pane_frame, render_splitter_divider,
+    render_toolbar_with_keys, row_background, truncate_to_width,
 };
 
 pub fn render_commit_tab(
@@ -396,28 +399,43 @@ fn render_stage_toolbar(
     ctx: &mut RenderContext<'_>,
 ) {
     let sw = &state.stage_workbench;
-    let tracked_btn = state.i18n.t("view.commit.toolbar_tracked");
-    let stash_btn = state.i18n.t("view.commit.toolbar_stash");
-    let dir_btn = state.i18n.t("view.commit.toolbar_dir");
-    let diff_btn = state.i18n.t("view.commit.toolbar_diff");
-    let buttons = [
-        (" ↻ ", false, StageToolbarButton::Refresh),
-        (tracked_btn, false, StageToolbarButton::StageAllTracked),
-        (stash_btn, false, StageToolbarButton::Stash),
-        (
-            dir_btn,
+    let refresh_key = inline_key_for(ctx, &[KeymapScope::Global], &KeyAction::Refresh);
+    let group_key = inline_key_for(ctx, &[KeymapScope::Commit], &KeyAction::ToggleGroup);
+    let buttons = vec![
+        ToolbarButton::new(" ↻ ", refresh_key, false, StageToolbarButton::Refresh),
+        ToolbarButton::new(
+            state.i18n.t("view.commit.toolbar_tracked"),
+            None,
+            false,
+            StageToolbarButton::StageAllTracked,
+        ),
+        ToolbarButton::new(
+            state.i18n.t("view.commit.toolbar_stash"),
+            None,
+            false,
+            StageToolbarButton::Stash,
+        ),
+        ToolbarButton::new(
+            state.i18n.t("view.commit.toolbar_dir"),
+            group_key,
             sw.tree_opts.group_by_dir,
             StageToolbarButton::GroupByDir,
         ),
-        (
-            diff_btn,
+        ToolbarButton::new(
+            state.i18n.t("view.commit.toolbar_diff"),
+            None,
             !sw.diff_collapsed,
             StageToolbarButton::ToggleDiff,
         ),
-        (" ⚙ ", sw.tree_opts.show_ignored, StageToolbarButton::Options),
+        ToolbarButton::new(
+            " ⚙ ",
+            None,
+            sw.tree_opts.show_ignored,
+            StageToolbarButton::Options,
+        ),
     ];
 
-    render_toolbar(frame, area, ctx, 3, &buttons, HitTarget::StageToolbar);
+    render_toolbar_with_keys(frame, area, ctx, 3, &buttons, HitTarget::StageToolbar);
 }
 
 fn render_commit_panel(
@@ -550,61 +568,54 @@ fn render_commit_options_row(
     sw: &crate::stage_view::StageWorkbenchState,
     ctx: &mut RenderContext<'_>,
 ) {
-    frame.render_widget(
-        Paragraph::new("").style(Style::default().bg(ctx.theme.bg_panel)),
-        area,
-    );
+    let in_editor = ctx.focused_pane == PaneId::CommitMessageEditor;
+    let amend_key = if in_editor {
+        inline_editor_key_for(ctx, &[KeymapScope::Commit], &KeyAction::ToggleAmend)
+    } else {
+        inline_key_for(ctx, &[KeymapScope::Commit], &KeyAction::ToggleAmend)
+    };
+    let signoff_key = inline_editor_key_for(ctx, &[KeymapScope::Commit], &KeyAction::ToggleSignoff);
+    let history_key = inline_editor_key_for(ctx, &[KeymapScope::Commit], &KeyAction::CommitHistory);
+    let ext_key = ctx
+        .config
+        .is_none_or(|c| c.keymap.show_inline_key_badges)
+        .then(|| "Ctrl+E".to_string());
     let chk = |on: bool| if on { "x" } else { " " };
-    let items = [
-        (
+    let items = vec![
+        ToolbarButton::new(
             format!(" [{}] {} ", chk(sw.amend), ctx.t("view.commit.amend_checkbox")),
+            amend_key,
             sw.amend,
             CommitOptionKind::Amend,
         ),
-        (
+        ToolbarButton::new(
             format!(" [{}] {} ", chk(sw.signoff), ctx.t("view.commit.sign_off")),
+            signoff_key,
             sw.signoff,
             CommitOptionKind::Signoff,
         ),
-        (
+        ToolbarButton::new(
             format!(" [{}] {} ", chk(sw.run_hooks), ctx.t("view.commit.hooks")),
+            None,
             sw.run_hooks,
             CommitOptionKind::RunHooks,
         ),
-        (
+        ToolbarButton::new(
             format!(" {} ", ctx.t("view.commit.author")),
+            None,
             sw.show_author_input,
             CommitOptionKind::AuthorToggle,
         ),
-        (" 🕘 ".to_string(), false, CommitOptionKind::History),
-        (
-            ctx.t("view.commit.external_editor_btn").to_string(),
+        ToolbarButton::new(" 🕘 ", history_key, false, CommitOptionKind::History),
+        ToolbarButton::new(
+            ctx.t("view.commit.external_editor_btn"),
+            ext_key,
             false,
             CommitOptionKind::ExternalEditor,
         ),
     ];
 
-    let mut x = area.x;
-    for (text, active, kind) in items {
-        let w = text.width() as u16;
-        if x + w > area.right() {
-            break;
-        }
-        let rect = Rect::new(x, area.y, w, 1);
-        let style = if active {
-            Style::default()
-                .fg(ctx.theme.fg_bright)
-                .bg(ctx.theme.bg_selection_unfocused)
-        } else {
-            Style::default()
-                .fg(ctx.theme.fg_muted)
-                .bg(ctx.theme.bg_panel)
-        };
-        frame.render_widget(Paragraph::new(Span::styled(text, style)), rect);
-        ctx.hit_registry
-            .register(rect, 3, HitTarget::CommitOption(kind));
-        x += w + 1;
-    }
+    render_toolbar_with_keys(frame, area, ctx, 3, &items, HitTarget::CommitOption);
 }
 
 fn render_commit_message_editor(
@@ -752,12 +763,30 @@ fn render_commit_buttons_row(
         area,
     );
     let sw = &state.stage_workbench;
-    let commit_label = if sw.amend {
+    let commit_base = if sw.amend {
         state.i18n.t("view.commit.amend_commit_btn")
     } else {
         state.i18n.t("view.commit.commit_btn")
     };
-    let push_label = state.i18n.t("view.commit.commit_push_btn");
+    let push_base = state.i18n.t("view.commit.commit_push_btn");
+    let commit_key = inline_editor_key_for(ctx, &[KeymapScope::Commit], &KeyAction::Commit);
+    let push_key = inline_editor_key_for(ctx, &[KeymapScope::Commit], &KeyAction::CommitAndPush);
+
+    let commit_with_key = format_label_with_key(commit_base, commit_key.as_deref());
+    let push_with_key = format_label_with_key(push_base, push_key.as_deref());
+    let avail = area.width.saturating_sub(1) as usize;
+    let use_keys = commit_with_key.width() + 1 + push_with_key.width() <= avail;
+
+    let commit_label = if use_keys {
+        commit_with_key
+    } else {
+        commit_base.to_string()
+    };
+    let push_label = if use_keys {
+        push_with_key
+    } else {
+        push_base.to_string()
+    };
 
     let mut x = area.x.saturating_add(1);
     let cw = commit_label.width() as u16;

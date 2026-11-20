@@ -1003,7 +1003,7 @@ fn stash_tab_lists_stashes_and_keys_run_operations() {
     key(&mut state, KeyCode::Esc, KeyModifiers::NONE);
     assert_eq!(state.focused_pane, PaneId::StashList);
 
-    // `a` applies (keep), `o` pops.
+    // `a` applies (keep), `A` pops.
     let effects = key(&mut state, KeyCode::Char('a'), KeyModifiers::NONE);
     assert_eq!(
         git_ops(&effects),
@@ -1012,7 +1012,7 @@ fn stash_tab_lists_stashes_and_keys_run_operations() {
             pop: false
         }]
     );
-    let effects = key(&mut state, KeyCode::Char('o'), KeyModifiers::NONE);
+    let effects = key(&mut state, KeyCode::Char('A'), KeyModifiers::SHIFT);
     assert_eq!(
         git_ops(&effects),
         vec![GitOp::StashApply {
@@ -1251,7 +1251,7 @@ fn non_contiguous_squash_rejected_compare_views_stash_reuse_and_conflict_modal()
     key(&mut state, KeyCode::Char('@'), KeyModifiers::CONTROL);
     assert!(state.modal_stack.is_empty());
 
-    // 2. Compare Versions (Ctrl+D with 2 selected commits) and Compare with Local.
+    // 2. Compare Versions (`D` with 2 selected commits) and Compare with Local.
     let mut state = state_with(snapshot());
     run(
         &mut state,
@@ -1261,7 +1261,7 @@ fn non_contiguous_squash_rejected_compare_views_stash_reuse_and_conflict_modal()
             Action::ExtendLogSelectionTo(1),
         ],
     );
-    let effects = key(&mut state, KeyCode::Char('d'), KeyModifiers::CONTROL);
+    let effects = key(&mut state, KeyCode::Char('D'), KeyModifiers::SHIFT);
     assert!(effects.iter().any(|e| matches!(
         e,
         Effect::RequestCommitDetails(k)
@@ -1391,17 +1391,16 @@ fn footer_hints_match_active_mode_dock_stash_and_console_probe() {
     assert!(!details_footer.contains("Hunk"), "{details_footer}");
 
     // 2. LogDetailsDiff in Diff Preview mode (diff_preview = true) shows core diff hints
-    //    (Hunk/File/Zoom) while keeping rarely used layout toggles (Dock/Split/Context) hidden
-    //    unless opted in via show_hint = true.
+    //    (Hunk/File/Split/Context/Zoom) while keeping dock tucked under `z` prefix unless opted in.
     state.details.diff_preview = true;
     let term = render(&mut state, 140, 40);
     let diff_footer = row_text(term.backend().buffer(), 39);
     assert!(diff_footer.contains("Hunk"), "{diff_footer}");
     assert!(diff_footer.contains("File"), "{diff_footer}");
+    assert!(diff_footer.contains("Split"), "{diff_footer}");
+    assert!(diff_footer.contains("Context"), "{diff_footer}");
     assert!(diff_footer.contains("Zoom"), "{diff_footer}");
     assert!(!diff_footer.contains("Dock"), "{diff_footer}");
-    assert!(!diff_footer.contains("Split"), "{diff_footer}");
-    assert!(!diff_footer.contains("Context"), "{diff_footer}");
 
     let dock_ov: KeymapConfigOverlay = toml::from_str(
         r#"
@@ -1423,7 +1422,7 @@ prepend_keymap = [
     assert!(opt_in_footer.contains(" m "), "{opt_in_footer}");
     assert!(opt_in_footer.contains("Dock"), "{opt_in_footer}");
 
-    // 3. CommitDiffPreview shows Stage / Hunk / Zoom / Back (`Esc`) without rare `Context`
+    // 3. CommitDiffPreview shows Stage / Hunk / Back (`Esc`) and View prefix
     state.dispatch(Action::SwitchTab(WorkspaceTab::Commit));
     state.dispatch(Action::FocusPane(PaneId::CommitDiffPreview));
     let term = render(&mut state, 160, 40);
@@ -1431,15 +1430,15 @@ prepend_keymap = [
     assert!(commit_diff_footer.contains("Stage"), "{commit_diff_footer}");
     assert!(commit_diff_footer.contains("Hunk"), "{commit_diff_footer}");
     assert!(commit_diff_footer.contains("Esc"), "{commit_diff_footer}");
-    assert!(!commit_diff_footer.contains("Context"), "{commit_diff_footer}");
 
-    // 4. CommitMessageEditor shows Commit / Amend / Esc without rare `Sign-off`
+    // 4. CommitMessageEditor shows Commit / Amend / Sign-off / History / Esc
     state.dispatch(Action::FocusPane(PaneId::CommitMessageEditor));
     let term = render(&mut state, 140, 40);
     let msg_footer = row_text(term.backend().buffer(), 39);
     assert!(msg_footer.contains("Commit"), "{msg_footer}");
     assert!(msg_footer.contains("Amend"), "{msg_footer}");
-    assert!(!msg_footer.contains("Sign-off"), "{msg_footer}");
+    assert!(msg_footer.contains("Sign-off"), "{msg_footer}");
+    assert!(msg_footer.contains("History"), "{msg_footer}");
 
     // 5. StashDiffPreview does NOT advertise ghost Zoom and shows Hunk / File without rare `Group`
     state.dispatch(Action::SwitchTab(WorkspaceTab::Stash));
@@ -1451,17 +1450,18 @@ prepend_keymap = [
     assert!(stash_footer.contains("File"), "{stash_footer}");
     assert!(!stash_footer.contains("Group"), "{stash_footer}");
     key(&mut state, KeyCode::Char('z'), KeyModifiers::NONE);
+    key(&mut state, KeyCode::Char('z'), KeyModifiers::NONE);
     assert!(!state.details.diff_zoomed);
 
-    // 6. ConsoleCommandList `p` actually triggers status probe instead of global git_pull
+    // 6. ConsoleCommandList `s` triggers status probe without shadowing global `p` (git_pull)
     state.dispatch(Action::SwitchTab(WorkspaceTab::Console));
     state.dispatch(Action::FocusPane(PaneId::ConsoleCommandList));
     let term = render(&mut state, 140, 40);
     let console_footer = row_text(term.backend().buffer(), 39);
-    assert!(console_footer.contains(" p "), "{console_footer}");
+    assert!(console_footer.contains(" s "), "{console_footer}");
     assert!(console_footer.contains("Status"), "{console_footer}");
     let actions = route_terminal_event(
-        Event::Key(KeyEvent::new(KeyCode::Char('p'), KeyModifiers::NONE)),
+        Event::Key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::NONE)),
         &mut state,
     );
     assert!(
@@ -1813,7 +1813,7 @@ fn footer_overflow_single_line_multiline_and_hidden() {
     assert!(row_23.contains("Help"), "{row_23}");
     // Items overflowing row 22 appear on row 23, and remaining overflow shows `+N`
     assert!(row_23.contains("Copy hash"), "{row_23}");
-    assert!(row_23.contains("Go to"), "{row_23}");
+    assert!(row_23.contains("Go…"), "{row_23}");
     assert!(row_23.contains(" +"), "expected +N on 2nd line: {row_23}");
 
     // 3. Multi-line footer (footer_max_lines = 3) at 60 cols: fits every Log + Global pill cleanly with no `+N`
@@ -1882,20 +1882,20 @@ prepend_keymap = [
 fn footer_console_probe_vim_diff_noop_append_and_which_key_non_overlap() {
     use crate::config::{KeymapConfig, KeymapPreset, keymap_config::KeymapConfigOverlay};
 
-    // 1. Default ConsoleCommandList shows `p Status` without `Pull`;
-    //    rebinding git_status_probe in [global] shows `g s Status` and unshadows `p Pull`.
+    // 1. Default ConsoleCommandList shows `s Status` WITHOUT shadowing global `Pull/Push`;
+    //    rebinding git_status_probe in [console] updates the footer pill dynamically.
     let mut console_state = state_with(snapshot());
     console_state.config.keymap = KeymapConfig::for_preset(KeymapPreset::Default);
     console_state.dispatch(Action::SwitchTab(WorkspaceTab::Console));
     console_state.dispatch(Action::FocusPane(PaneId::ConsoleCommandList));
     let term = render(&mut console_state, 160, 30);
     let default_console_footer = row_text(term.backend().buffer(), 29);
-    assert!(default_console_footer.contains(" p  Status"), "{default_console_footer}");
-    assert!(!default_console_footer.contains("Pull"), "{default_console_footer}");
+    assert!(default_console_footer.contains(" s  Status"), "{default_console_footer}");
+    assert!(default_console_footer.contains("p/P  Pull/Push"), "{default_console_footer}");
 
     let probe_ov: KeymapConfigOverlay = toml::from_str(
         r#"
-[global]
+[console]
 prepend_keymap = [
     { on = ["g", "s"], run = "git_status_probe", show_hint = true },
 ]
@@ -1906,19 +1906,21 @@ prepend_keymap = [
     let term = render(&mut console_state, 160, 30);
     let custom_console_footer = row_text(term.backend().buffer(), 29);
     assert!(custom_console_footer.contains(" g s  Status"), "{custom_console_footer}");
-    assert!(custom_console_footer.contains(" p  Pull"), "{custom_console_footer}");
+    assert!(custom_console_footer.contains("p/P  Pull/Push"), "{custom_console_footer}");
 
-    // 2. Vim CommitDiffPreview shows `s Stage` and `u Unstage` without duplicate `Space Stage`,
-    //    and <Space> still triggers staging.
+    // 2. Vim CommitDiffPreview shows fused `s/u Stage/Unstage` (or `s`/`u` when compact pairs disabled)
+    //    without duplicate `Space Stage`, and <Space> still triggers staging.
     let mut vim_state = state_with(snapshot());
     vim_state.config.keymap = KeymapConfig::for_preset(KeymapPreset::Vim);
     vim_state.dispatch(Action::SwitchTab(WorkspaceTab::Commit));
     vim_state.dispatch(Action::FocusPane(PaneId::CommitDiffPreview));
     let term = render(&mut vim_state, 160, 30);
     let vim_diff_footer = row_text(term.backend().buffer(), 29);
-    assert!(vim_diff_footer.contains(" s  Stage"), "{vim_diff_footer}");
-    assert!(vim_diff_footer.contains(" u  Unstage"), "{vim_diff_footer}");
-    assert_eq!(vim_diff_footer.matches("Stage").count(), 1, "{vim_diff_footer}");
+    assert!(
+        vim_diff_footer.contains(" s/u  Stage/Unstage"),
+        "{vim_diff_footer}"
+    );
+    assert!(!vim_diff_footer.contains(" Space "), "{vim_diff_footer}");
     let space_actions = route_terminal_event(
         Event::Key(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE)),
         &mut vim_state,
@@ -1930,14 +1932,14 @@ prepend_keymap = [
         "Space in Vim CommitDiffPreview should still stage: {space_actions:?}"
     );
 
-    // 3. Unbinding `r` via noop in [global] shows surviving `F5 Refresh` in footer.
+    // 3. Unbinding `R` via noop in [global] shows surviving `F5 Refresh` in footer.
     let mut noop_state = state_with(snapshot());
     noop_state.config.keymap = KeymapConfig::for_preset(KeymapPreset::Default);
     let noop_ov: KeymapConfigOverlay = toml::from_str(
         r#"
 [global]
 prepend_keymap = [
-    { on = "r", run = "noop" },
+    { on = "R", run = "noop" },
 ]
 "#,
     )
@@ -1968,8 +1970,8 @@ append_keymap = [
     let append_footer = row_text(term.backend().buffer(), 29);
     let new_branch_pos = append_footer.find("Branch").expect(&append_footer);
     let copy_pos = append_footer.find(" y  Copy hash").expect(&append_footer);
-    let goto_pos = append_footer.find("Go to").expect(&append_footer);
-    assert!(new_branch_pos < copy_pos && copy_pos < goto_pos, "{append_footer}");
+    let go_pos = append_footer.find("Go…").expect(&append_footer);
+    assert!(new_branch_pos < copy_pos && copy_pos < go_pos, "{append_footer}");
 
     // 5. Which-Key popup with footer_max_lines = 2 does NOT overwrite either footer row.
     let mut wk_state = state_with(snapshot());
@@ -1983,7 +1985,7 @@ append_keymap = [
     let row_22 = row_text(buf, 22);
     let row_23 = row_text(buf, 23);
     assert!(row_22.contains("Filter") && row_22.contains("Copy hash"), "{row_22}");
-    assert!(row_23.contains("Go to") && row_23.contains("Help"), "{row_23}");
+    assert!(row_23.contains("View…") && row_23.contains("Help"), "{row_23}");
     let above_footer = (0..22)
         .map(|y| row_text(buf, y))
         .collect::<Vec<_>>()
@@ -2226,4 +2228,162 @@ prepend_keymap = [
         crit_state.modal_stack.is_empty(),
         "clicking Cancel on CriticalDialog should close it"
     );
+}
+
+#[test]
+fn clickable_footer_pills_which_key_prefix_and_overflow_help() {
+    use crate::keymap::KeyAction;
+
+    let mut state = state_with(snapshot());
+    state.config.keymap = crate::config::KeymapConfig::for_preset(crate::config::KeymapPreset::Default);
+    state.dispatch(Action::SwitchTab(WorkspaceTab::Log));
+    state.dispatch(Action::FocusPane(PaneId::LogCommitTable));
+
+    // 1. Clicking `[z View…]` in the footer opens the Which-Key popup with clickable entries
+    let _ = render(&mut state, 160, 30);
+    let z_pill = region_of(&state, |t| matches!(t, HitTarget::FooterPrefix('z')));
+    mouse(
+        &mut state,
+        MouseEventKind::Down(MouseButton::Left),
+        z_pill.x + 1,
+        z_pill.y,
+    );
+    assert_eq!(state.pending_keys.len(), 1);
+    let _ = render(&mut state, 160, 30);
+
+    let wk_palette = region_of(&state, |t| {
+        matches!(t, HitTarget::WhichKeyItem(KeyAction::Palette))
+    });
+    mouse(
+        &mut state,
+        MouseEventKind::Down(MouseButton::Left),
+        wk_palette.x + 1,
+        wk_palette.y,
+    );
+    assert!(state.pending_keys.is_empty());
+    assert!(matches!(
+        state.modal_stack.last(),
+        Some(ModalLayer::FloatingPopup {
+            kind: PopupKind::PalettePreview,
+            ..
+        })
+    ));
+    state.dispatch(Action::PopModal);
+
+    // 2. Narrow width shows clickable `+N` overflow badge and `? Help` pill
+    let _ = render(&mut state, 80, 24);
+    let overflow = region_of(&state, |t| matches!(t, HitTarget::FooterOverflow));
+    mouse(
+        &mut state,
+        MouseEventKind::Down(MouseButton::Left),
+        overflow.x + 1,
+        overflow.y,
+    );
+    assert!(matches!(
+        state.modal_stack.last(),
+        Some(ModalLayer::FloatingPopup {
+            kind: PopupKind::ShortcutsHelp,
+            ..
+        })
+    ));
+    state.dispatch(Action::PopModal);
+
+    // 3. Clicking a direct action pill (`[b Branches]`) opens the Branches popup
+    let _ = render(&mut state, 200, 30);
+    let branches_pill = region_of(&state, |t| {
+        matches!(t, HitTarget::FooterPillAction(KeyAction::ToggleBranchesPopup))
+    });
+    mouse(
+        &mut state,
+        MouseEventKind::Down(MouseButton::Left),
+        branches_pill.x + 1,
+        branches_pill.y,
+    );
+    assert!(matches!(
+        state.modal_stack.last(),
+        Some(ModalLayer::FloatingPopup {
+            kind: PopupKind::BranchesQuickView,
+            ..
+        })
+    ));
+}
+
+#[test]
+fn inline_key_badges_adapt_to_width_and_toggle_flag() {
+    let mut state = state_with(snapshot());
+    state.config.keymap = crate::config::KeymapConfig::for_preset(crate::config::KeymapPreset::Default);
+    state.dispatch(Action::SwitchTab(WorkspaceTab::Stash));
+    state.dispatch(Action::FocusPane(PaneId::StashList));
+
+    // Wide terminal with show_inline_key_badges = true renders `[a]` / `[A]` / `[n]` on Stash toolbar
+    let term_wide = render(&mut state, 220, 30);
+    let wide_text = screen_text(term_wide.backend().buffer());
+    assert!(wide_text.contains("[a]"), "expected inline [a] badge on wide Stash toolbar:\n{wide_text}");
+    assert!(wide_text.contains("[A]"), "expected inline [A] badge on wide Stash toolbar:\n{wide_text}");
+
+    // Disabling show_inline_key_badges removes `[a]` / `[A]` while keeping button labels
+    state.config.keymap.show_inline_key_badges = false;
+    let term_no_badges = render(&mut state, 220, 30);
+    let no_badges_text = screen_text(term_no_badges.backend().buffer());
+    assert!(!no_badges_text.contains("[a]"), "{no_badges_text}");
+    assert!(!no_badges_text.contains("[A]"), "{no_badges_text}");
+
+    // Commit buttons show `[Ctrl+S]` when wide and `show_inline_key_badges = true`
+    state.config.keymap.show_inline_key_badges = true;
+    state.dispatch(Action::SwitchTab(WorkspaceTab::Commit));
+    let term_commit = render(&mut state, 180, 36);
+    let commit_text = screen_text(term_commit.backend().buffer());
+    assert!(commit_text.contains("[Ctrl+S]"), "expected [Ctrl+S] on Commit button:\n{commit_text}");
+}
+
+#[test]
+fn zoomed_diff_supports_gg_g_half_page_and_z_z_exit() {
+    let mut state = state_with(snapshot());
+    state.config.keymap = crate::config::KeymapConfig::for_preset(crate::config::KeymapPreset::Default);
+    state.dispatch(Action::SwitchTab(WorkspaceTab::Log));
+    let key_bundle = jbgit_core::DetailsKey::commits(vec![oid(12)], 0);
+    state.details.current_key = Some(key_bundle.clone());
+    state.details.cache.insert(
+        key_bundle.clone(),
+        Arc::new(jbgit_core::CommitChangesBundle {
+            key: key_bundle,
+            details: Vec::new(),
+            changes: vec![jbgit_core::FileChange {
+                path: "src/lib.rs".into(),
+                old_path: None,
+                kind: jbgit_core::FileStatusKind::Modified,
+                additions: 10,
+                deletions: 2,
+                is_binary: false,
+                exists_in_workdir: true,
+            }],
+        }),
+    );
+    state.details.changes_group_by_dir = false;
+    state.details.changes_selected = 0;
+    state.dispatch(Action::FocusPane(PaneId::LogDetailsDiff));
+    state.details.diff_preview = true;
+
+    // Enter zoomed diff via `z z`
+    key(&mut state, KeyCode::Char('z'), KeyModifiers::NONE);
+    key(&mut state, KeyCode::Char('z'), KeyModifiers::NONE);
+    assert!(state.details.diff_zoomed);
+
+    // `G` jumps to bottom (sets large scroll), `gg` jumps back to 0
+    key(&mut state, KeyCode::Char('G'), KeyModifiers::SHIFT);
+    assert!(state.details.diff_scroll > 0);
+    key(&mut state, KeyCode::Char('g'), KeyModifiers::NONE);
+    key(&mut state, KeyCode::Char('g'), KeyModifiers::NONE);
+    assert_eq!(state.details.diff_scroll, 0);
+
+    // `Ctrl+D` scrolls down half page, `Ctrl+U` scrolls back up
+    key(&mut state, KeyCode::Char('d'), KeyModifiers::CONTROL);
+    assert!(state.details.diff_scroll > 0);
+    key(&mut state, KeyCode::Char('u'), KeyModifiers::CONTROL);
+    assert_eq!(state.details.diff_scroll, 0);
+
+    // `z z` exits zoomed diff cleanly
+    key(&mut state, KeyCode::Char('z'), KeyModifiers::NONE);
+    key(&mut state, KeyCode::Char('z'), KeyModifiers::NONE);
+    assert!(!state.details.diff_zoomed);
 }
