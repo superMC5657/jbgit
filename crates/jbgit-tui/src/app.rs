@@ -845,6 +845,51 @@ pub enum Action {
     FileHistoryEscape,
 }
 
+#[derive(Debug)]
+pub struct SyntaxJobSlot<K> {
+    pub epoch: u64,
+    pub cancel: Option<Arc<AtomicBool>>,
+    pub in_flight: Option<K>,
+}
+
+impl<K> Default for SyntaxJobSlot<K> {
+    fn default() -> Self {
+        Self {
+            epoch: 0,
+            cancel: None,
+            in_flight: None,
+        }
+    }
+}
+
+impl<K: PartialEq + Clone> SyntaxJobSlot<K> {
+    pub fn invalidate(&mut self) {
+        if let Some(prev) = self.cancel.take() {
+            prev.store(true, Ordering::Relaxed);
+        }
+        self.epoch = self.epoch.wrapping_add(1);
+        self.in_flight = None;
+    }
+
+    pub fn begin(&mut self, key: &K) -> Option<(u64, Arc<AtomicBool>)> {
+        if self.in_flight.as_ref() == Some(key) {
+            return None;
+        }
+        self.invalidate();
+        let cancel = Arc::new(AtomicBool::new(false));
+        self.cancel = Some(Arc::clone(&cancel));
+        self.in_flight = Some(key.clone());
+        Some((self.epoch, cancel))
+    }
+
+    pub fn finish(&mut self, key: &K, epoch: u64) -> bool {
+        if self.in_flight.as_ref() == Some(key) && epoch == self.epoch {
+            self.in_flight = None;
+        }
+        epoch >= self.epoch
+    }
+}
+
 pub struct AppState {
     pub theme: ThemePalette,
     pub glyph_mode: GlyphMode,
@@ -886,12 +931,8 @@ pub struct AppState {
     pub latest_file_history_epoch: u64,
     pub latest_path_epoch: u64,
 
-    pub file_syntax_epoch: u64,
-    pub file_syntax_cancel: Option<Arc<AtomicBool>>,
-    pub file_syntax_in_flight: Option<FileDiffKey>,
-    pub stage_syntax_epoch: u64,
-    pub stage_syntax_cancel: Option<Arc<AtomicBool>>,
-    pub stage_syntax_in_flight: Option<StageDiffKey>,
+    pub file_syntax: SyntaxJobSlot<FileDiffKey>,
+    pub stage_syntax: SyntaxJobSlot<StageDiffKey>,
 
     pub commit_stage_selected_idx: usize,
     pub hook_error_output: Option<String>,
@@ -1017,12 +1058,8 @@ impl AppState {
             latest_file_diff_epoch: 0,
             latest_file_history_epoch: 0,
             latest_path_epoch: 0,
-            file_syntax_epoch: 0,
-            file_syntax_cancel: None,
-            file_syntax_in_flight: None,
-            stage_syntax_epoch: 0,
-            stage_syntax_cancel: None,
-            stage_syntax_in_flight: None,
+            file_syntax: SyntaxJobSlot::default(),
+            stage_syntax: SyntaxJobSlot::default(),
             commit_stage_selected_idx: 0,
             hook_error_output: None,
             console_entries: Vec::new(),
@@ -2081,22 +2118,14 @@ impl AppState {
         {
             return;
         }
-        if self.file_syntax_in_flight.as_ref() == Some(&diff.key) {
-            return;
+        if let Some((epoch, cancel)) = self.file_syntax.begin(&diff.key) {
+            effects.push(Effect::RequestSyntaxHighlight(SyntaxJob {
+                key: SyntaxJobKey::File(diff.key.clone()),
+                epoch,
+                target: SyntaxTarget::File(diff),
+                cancel,
+            }));
         }
-        if let Some(prev) = self.file_syntax_cancel.take() {
-            prev.store(true, Ordering::Relaxed);
-        }
-        self.file_syntax_epoch = self.file_syntax_epoch.wrapping_add(1);
-        let cancel = Arc::new(AtomicBool::new(false));
-        self.file_syntax_cancel = Some(Arc::clone(&cancel));
-        self.file_syntax_in_flight = Some(diff.key.clone());
-        effects.push(Effect::RequestSyntaxHighlight(SyntaxJob {
-            key: SyntaxJobKey::File(diff.key.clone()),
-            epoch: self.file_syntax_epoch,
-            target: SyntaxTarget::File(diff),
-            cancel,
-        }));
     }
 
     pub(crate) fn schedule_stage_syntax(
@@ -2111,22 +2140,14 @@ impl AppState {
         {
             return;
         }
-        if self.stage_syntax_in_flight.as_ref() == Some(&diff.key) {
-            return;
+        if let Some((epoch, cancel)) = self.stage_syntax.begin(&diff.key) {
+            effects.push(Effect::RequestSyntaxHighlight(SyntaxJob {
+                key: SyntaxJobKey::Stage(diff.key.clone()),
+                epoch,
+                target: SyntaxTarget::Stage(diff),
+                cancel,
+            }));
         }
-        if let Some(prev) = self.stage_syntax_cancel.take() {
-            prev.store(true, Ordering::Relaxed);
-        }
-        self.stage_syntax_epoch = self.stage_syntax_epoch.wrapping_add(1);
-        let cancel = Arc::new(AtomicBool::new(false));
-        self.stage_syntax_cancel = Some(Arc::clone(&cancel));
-        self.stage_syntax_in_flight = Some(diff.key.clone());
-        effects.push(Effect::RequestSyntaxHighlight(SyntaxJob {
-            key: SyntaxJobKey::Stage(diff.key.clone()),
-            epoch: self.stage_syntax_epoch,
-            target: SyntaxTarget::Stage(diff),
-            cancel,
-        }));
     }
 
     fn reconcile_stash_syntax(&mut self, effects: &mut Vec<Effect>) {
@@ -2150,12 +2171,7 @@ impl AppState {
                 epoch,
                 highlighted,
             } => {
-                if self.file_syntax_in_flight.as_ref() == Some(&fk)
-                    && epoch == self.file_syntax_epoch
-                {
-                    self.file_syntax_in_flight = None;
-                }
-                if epoch < self.file_syntax_epoch {
+                if !self.file_syntax.finish(&fk, epoch) {
                     return Vec::new();
                 }
                 let mut updated = false;
@@ -2178,12 +2194,7 @@ impl AppState {
                 epoch,
                 highlighted,
             } => {
-                if self.stage_syntax_in_flight.as_ref() == Some(&sk)
-                    && epoch == self.stage_syntax_epoch
-                {
-                    self.stage_syntax_in_flight = None;
-                }
-                if epoch < self.stage_syntax_epoch {
+                if !self.stage_syntax.finish(&sk, epoch) {
                     return Vec::new();
                 }
                 if self.stage_workbench.diff_cache.contains(&sk) {
@@ -2301,10 +2312,8 @@ impl AppState {
                     self.schedule_file_syntax(cached, effects);
                 }
             } else if self.details.requested_diff.as_ref() != Some(&key) {
-                if let Some(prev) = self.file_syntax_cancel.take() {
-                    prev.store(true, Ordering::Relaxed);
-                    self.file_syntax_epoch = self.file_syntax_epoch.wrapping_add(1);
-                    self.file_syntax_in_flight = None;
+                if self.file_syntax.cancel.is_some() {
+                    self.file_syntax.invalidate();
                 }
                 self.details.requested_diff = Some(key.clone());
                 effects.push(Effect::RequestFileDiff(key));

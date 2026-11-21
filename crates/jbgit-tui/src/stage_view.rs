@@ -15,7 +15,7 @@ use jbgit_engine::{CommitPrecheckInfo, StageDiffKey, StageDiffSide, ThreeDocStag
 use rustc_hash::FxHashSet;
 use unicode_width::UnicodeWidthChar;
 
-use crate::syntax::HighlightedDiff;
+use crate::syntax::{HighlightedDiff, LazyWordDiffCache};
 
 const MAX_COMMIT_HISTORY: usize = 20;
 const MAX_EDITOR_UNDO: usize = 128;
@@ -387,14 +387,26 @@ pub enum StageDiffRow {
     Split(usize, Option<usize>, Option<usize>),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub struct SyncRowsCacheKey {
-    status_ptr: Option<usize>,
+    status: Arc<StageStatusSnapshot>,
     amend: bool,
     amend_sha: Option<String>,
     tree_opts: StageTreeOptions,
     collapsed: FxHashSet<String>,
 }
+
+impl PartialEq for SyncRowsCacheKey {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.status, &other.status)
+            && self.amend == other.amend
+            && self.amend_sha == other.amend_sha
+            && self.tree_opts == other.tree_opts
+            && self.collapsed == other.collapsed
+    }
+}
+
+impl Eq for SyncRowsCacheKey {}
 
 pub type CachedStageDiffRowsEntry = (Arc<ThreeDocStageDiff>, bool, Arc<[StageDiffRow]>);
 
@@ -443,6 +455,7 @@ pub struct StageWorkbenchState {
 
     pub sync_rows_key: Option<SyncRowsCacheKey>,
     pub diff_rows_cache: RefCell<Option<CachedStageDiffRowsEntry>>,
+    pub word_diff_cache: LazyWordDiffCache<ThreeDocStageDiff>,
 }
 
 impl Default for StageWorkbenchState {
@@ -488,6 +501,7 @@ impl Default for StageWorkbenchState {
             last_commit_banner: None,
             sync_rows_key: None,
             diff_rows_cache: RefCell::new(None),
+            word_diff_cache: LazyWordDiffCache::default(),
         }
     }
 }
@@ -523,18 +537,17 @@ impl StageWorkbenchState {
             return;
         };
         let amend_sha = if self.amend {
-            self.amend_preview.as_ref().map(|p| p.short_sha.clone())
+            self.amend_preview.as_ref().map(|p| p.short_sha.as_str())
         } else {
             None
         };
-        let key = SyncRowsCacheKey {
-            status_ptr: Some(Arc::as_ptr(status) as usize),
-            amend: self.amend,
-            amend_sha,
-            tree_opts: self.tree_opts,
-            collapsed: self.collapsed.clone(),
-        };
-        if self.sync_rows_key.as_ref() == Some(&key) {
+        if let Some(prev) = &self.sync_rows_key
+            && Arc::ptr_eq(&prev.status, status)
+            && prev.amend == self.amend
+            && prev.amend_sha.as_deref() == amend_sha
+            && prev.tree_opts == self.tree_opts
+            && prev.collapsed == self.collapsed
+        {
             return;
         }
         let amend = if self.amend {
@@ -545,7 +558,13 @@ impl StageWorkbenchState {
         self.rows = build_stage_tree_rows(status, amend, self.tree_opts, &self.collapsed);
         let valid: FxHashSet<&str> = self.rows.iter().map(|r| r.key.as_str()).collect();
         self.multi_selected.retain(|k| valid.contains(k.as_str()));
-        self.sync_rows_key = Some(key);
+        self.sync_rows_key = Some(SyncRowsCacheKey {
+            status: Arc::clone(status),
+            amend: self.amend,
+            amend_sha: amend_sha.map(ToString::to_string),
+            tree_opts: self.tree_opts,
+            collapsed: self.collapsed.clone(),
+        });
     }
 
     pub fn load_draft(&mut self, path: PathBuf) {
@@ -897,6 +916,11 @@ impl StageWorkbenchState {
         old_rows: &[StageTreeRow],
         old_selected: usize,
     ) -> usize {
+        if let Some(old_row) = old_rows.get(old_selected)
+            && let Some(pos) = self.rows.iter().position(|r| r.key == old_row.key)
+        {
+            return pos;
+        }
         next_anchor_after_mutation(old_rows, old_selected, &self.rows)
     }
 }
@@ -960,6 +984,25 @@ mod tests {
             sw.rows.len(),
             2,
             "sync_rows must rebuild when options change"
+        );
+
+        // Replacing with a brand-new Arc<StageStatusSnapshot> rebuilds even if the
+        // old Arc was dropped first (retaining Arc in SyncRowsCacheKey prevents ABA).
+        let snap2 = Arc::new(StageStatusSnapshot {
+            unstaged: vec![jbgit_core::StageEntry {
+                path: "bar.rs".into(),
+                old_path: None,
+                kind: jbgit_core::FileStatusKind::Modified,
+            }],
+            ..Default::default()
+        });
+        drop(snap);
+        sw.rows.clear();
+        sw.sync_rows(Some(&snap2));
+        assert_eq!(
+            sw.rows.len(),
+            2,
+            "sync_rows must rebuild for a distinct StageStatusSnapshot Arc"
         );
     }
 

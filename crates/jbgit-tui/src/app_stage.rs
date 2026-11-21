@@ -2,7 +2,6 @@
 //! Amend workflow, Commit & Push confirmation, and draft/history persistence.
 
 use std::sync::Arc;
-use std::sync::atomic::Ordering;
 use std::time::Instant;
 
 use jbgit_core::{
@@ -842,11 +841,7 @@ impl AppState {
             .desired_diff_key(self.commit_stage_selected_idx, self.stage_status.as_deref());
 
         if desired != self.stage_workbench.current_diff_key {
-            if let Some(prev) = self.stage_syntax_cancel.take() {
-                prev.store(true, Ordering::Relaxed);
-            }
-            self.stage_syntax_epoch = self.stage_syntax_epoch.wrapping_add(1);
-            self.stage_syntax_in_flight = None;
+            self.stage_syntax.invalidate();
             self.stage_workbench.current_diff_key = desired.clone();
             self.stage_workbench.diff_scroll = 0;
             self.stage_workbench.diff_cursor_row = 0;
@@ -938,12 +933,18 @@ impl AppState {
                 self.latest_stage_epoch = epoch;
 
                 let changed = self.stage_status.as_ref() != Some(&status);
+                let had_status = self.stage_status.is_some();
                 let old_rows = self.stage_workbench.rows.clone();
                 let old_sel = self.commit_stage_selected_idx;
                 self.stage_status = Some(status);
                 if changed {
                     self.stage_workbench.invalidate_all_diff_caches();
                     self.stage_workbench.current_diff_key = None;
+                    self.stage_workbench.pending_select_immediate = true;
+                } else if had_status {
+                    // External worktree edits to an already-modified file keep the same
+                    // StageStatusSnapshot; clear cached diffs and reload the active view.
+                    self.stage_workbench.invalidate_all_diff_caches();
                     self.stage_workbench.pending_select_immediate = true;
                 }
                 self.stage_workbench.sync_rows(self.stage_status.as_ref());

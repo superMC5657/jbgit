@@ -419,56 +419,37 @@ impl PixelVectorGraphBackend {
             && self.strip.len() == total_bytes
             && self.strip_size == (w, h);
 
-        let geom = self.geometry;
         let mut rasterized_count = 0;
 
-        if can_incremental {
-            for (i, row) in self.rows.iter().take(rows).enumerate() {
-                if self.row_hashes[i] != row.row_hash {
-                    let bg = Rgb::from_color(row.row_bg, Rgb(0, 0, 0));
-                    let bytes = &mut self.strip[i * row_bytes..(i + 1) * row_bytes];
-                    let Some(mut pixmap) = PixmapMut::from_bytes(bytes, w, row_h) else {
-                        continue;
-                    };
-                    pixmap.fill(bg.to_skia());
-                    self.painter.paint_row(
-                        &mut pixmap,
-                        &geom,
-                        &row.elements,
-                        &row.colors,
-                        bg,
-                        hover_outline,
-                    );
-                    self.row_hashes[i] = row.row_hash;
-                    rasterized_count += 1;
-                }
-            }
-        } else {
+        if !can_incremental {
             self.strip.resize(total_bytes, 0);
             self.strip_size = (w, h);
             self.row_hashes.clear();
-            self.row_hashes.reserve(rows);
+            self.row_hashes.resize(rows, 0);
+            self.raster_layout_key = Some(layout_key);
+        }
 
-            for (i, row) in self.rows.iter().take(rows).enumerate() {
-                let bg = Rgb::from_color(row.row_bg, Rgb(0, 0, 0));
-                let bytes = &mut self.strip[i * row_bytes..(i + 1) * row_bytes];
-                let Some(mut pixmap) = PixmapMut::from_bytes(bytes, w, row_h) else {
-                    self.row_hashes.push(row.row_hash);
-                    continue;
-                };
+        for (i, row) in self.rows.iter().take(rows).enumerate() {
+            if can_incremental && self.row_hashes[i] == row.row_hash {
+                continue;
+            }
+            let bg = Rgb::from_color(row.row_bg, Rgb(0, 0, 0));
+            let bytes = &mut self.strip[i * row_bytes..(i + 1) * row_bytes];
+            if let Some(mut pixmap) = PixmapMut::from_bytes(bytes, w, row_h) {
                 pixmap.fill(bg.to_skia());
                 self.painter.paint_row(
                     &mut pixmap,
-                    &geom,
+                    &self.geometry,
                     &row.elements,
                     &row.colors,
                     bg,
                     hover_outline,
                 );
-                self.row_hashes.push(row.row_hash);
+                self.row_hashes[i] = row.row_hash;
                 rasterized_count += 1;
+            } else if !can_incremental {
+                self.row_hashes[i] = row.row_hash;
             }
-            self.raster_layout_key = Some(layout_key);
         }
 
         self.last_rasterized_rows = rasterized_count;

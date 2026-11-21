@@ -2538,5 +2538,23 @@ stash_preview_ratio = [1, 1]
             &coalesced[1],
             Effect::CopyToClipboard(s) if s == "keep-me"
         ));
+
+        // 5. External worktree edit keeps identical StageStatusSnapshot; StageStatusLoaded must
+        // still invalidate diff_cache and reload the active diff (`b.rs`).
+        state.dispatch(Action::SelectCommitStageRow(2));
+        assert!(state.stage_workbench.diff_cache.contains(&key_b));
+        let same_status = Arc::clone(state.stage_status.as_ref().unwrap());
+        let reload_effs = state.apply_engine_event(EngineEvent::StageStatusLoaded {
+            status: Arc::new((*same_status).clone()),
+            epoch: 4,
+        });
+        assert!(
+            !state.stage_workbench.diff_cache.contains(&key_b),
+            "identical StageStatusLoaded must still invalidate cached diffs after external edits"
+        );
+        assert!(reload_effs.iter().any(|e| matches!(
+            e,
+            Effect::RequestStageFileDiff(k) if k.path == "b.rs"
+        )));
     }
 }

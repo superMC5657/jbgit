@@ -354,7 +354,8 @@ pub fn render_stage_diff_workbench(
                 }
             }
             Some(StageDiffRow::Unified(hh, l)) => {
-                let dl = &diff.hunks[*hh].hunk.lines[*l];
+                let hunk_lines = &diff.hunks[*hh].hunk.lines;
+                let dl = &hunk_lines[*l];
                 let meta = diff.hunks[*hh].line_meta.get(*l);
                 let mark = meta.map_or(LineGutterMark::None, |m| m.gutter_mark);
                 let sr_idx = meta.and_then(|m| m.staged_range_idx);
@@ -374,10 +375,12 @@ pub fn render_stage_diff_workbench(
                     Span::styled(marker.to_string(), base),
                 ];
                 let text_w = width.saturating_sub(num_w * 2 + 4);
+                let lazy_wr = sw.word_diff_cache.unified_ranges(diff, *hh, *l, hunk_lines);
+                let wr = lazy_wr.as_deref().unwrap_or(&dl.word_ranges);
                 spans.extend(render_diff_line_spans_with_tab(
                     &dl.text,
                     toks,
-                    &dl.word_ranges,
+                    wr,
                     text_w,
                     tab_size,
                     base,
@@ -403,24 +406,13 @@ pub fn render_stage_diff_workbench(
                 }
             }
             Some(StageDiffRow::Split(hh, left, right)) => {
-                let (lazy_l, lazy_r) = match (*left, *right) {
-                    (Some(li), Some(ri)) => {
-                        let l = &diff.hunks[*hh].hunk.lines[li];
-                        let r = &diff.hunks[*hh].hunk.lines[ri];
-                        if l.word_ranges.is_empty()
-                            && r.word_ranges.is_empty()
-                            && l.text != r.text
-                            && l.text.len() <= jbgit_core::MAX_WORD_DIFF_LINE_BYTES
-                            && r.text.len() <= jbgit_core::MAX_WORD_DIFF_LINE_BYTES
-                        {
-                            let (lw, rw) = jbgit_core::word_diff(&l.text, &r.text);
-                            (Some(lw), Some(rw))
-                        } else {
-                            (None, None)
-                        }
-                    }
-                    _ => (None, None),
-                };
+                let (lazy_l, lazy_r) = sw.word_diff_cache.split_ranges(
+                    diff,
+                    *hh,
+                    *left,
+                    *right,
+                    &diff.hunks[*hh].hunk.lines,
+                );
                 let half = width / 2;
                 let mut spans = side_cell(
                     *hh,

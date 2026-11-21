@@ -549,6 +549,7 @@ fn render_diff_pane(
         body,
         FileDiffRenderProps {
             diff,
+            rows_cache: &fh.diff_rows_cache,
             cached_syntax,
             side_by_side: fh.diff_side_by_side,
             diff_scroll: fh.diff_scroll,

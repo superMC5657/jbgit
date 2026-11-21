@@ -17,7 +17,7 @@ use jbgit_core::{
 };
 use rustc_hash::FxHashSet;
 
-use crate::syntax::HighlightedDiff;
+use crate::syntax::{HighlightedDiff, LazyWordDiffCache};
 
 /// Terminal width below which the Branches pane auto-collapses.
 pub const NARROW_WIDTH: u16 = 110;
@@ -475,6 +475,7 @@ struct CachedFileDiffRows {
 #[derive(Debug, Default)]
 pub(crate) struct FileDiffRowsCache {
     entry: RefCell<Option<CachedFileDiffRows>>,
+    pub(crate) word_cache: LazyWordDiffCache<FileDiff>,
 }
 
 impl Clone for FileDiffRowsCache {
@@ -1000,8 +1001,11 @@ impl FileHistoryState {
         self.desired_diff_key()
             .and_then(|k| diff_cache.peek(&k))
             .map_or(usize::MAX, |d| {
-                crate::views::log_details::file_diff_total_rows(d, self.diff_side_by_side)
-                    .saturating_sub(1)
+                if d.is_too_large || d.is_binary || d.hunks.is_empty() {
+                    0
+                } else {
+                    (self.diff_rows_for(d).len() + usize::from(d.is_truncated)).saturating_sub(1)
+                }
             })
     }
 }

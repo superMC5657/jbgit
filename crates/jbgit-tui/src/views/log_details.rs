@@ -1,10 +1,12 @@
 //! Right pane: `CommitChangesBrowser` (top), `CommitDetailsPanel` or inline
 //! diff preview (bottom), and the full-screen zoomed diff.
 
+use std::sync::Arc;
+
 use jbgit_core::{
     ChangeRowKind, ChangeTreeRow, CommitChangesBundle, CommitDetails, DetailsMode, DiffLine,
     DiffLineKind, FileDiff, MessageLineKind, PaneId, RefKind, SignatureStatus,
-    classify_message_line, issue_ref_ranges, side_by_side_rows,
+    classify_message_line, issue_ref_ranges,
 };
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -16,7 +18,8 @@ use unicode_width::UnicodeWidthStr;
 use crate::app::{AppState, RenderContext, ScrollPane};
 use crate::hit_test::{ChangesToolbarButton, DiffToolbarButton, HitTarget};
 use crate::log_view::{
-    ChangesExpandState, DetailsPaneState, DiffPreviewDock, format_absolute_time,
+    ChangesExpandState, DetailsPaneState, DiffPreviewDock, DiffRow, FileDiffRowsCache,
+    format_absolute_time,
 };
 use crate::syntax::{HighlightedDiff, render_diff_line_spans_with_tab};
 use crate::views::{
@@ -373,30 +376,6 @@ pub fn render_zoomed_diff(
     render_diff_view(frame, body, state, ctx, true);
 }
 
-#[derive(Clone, Copy)]
-enum DiffRow {
-    Header(usize),
-    Unified(usize, usize),
-    Split(usize, Option<usize>, Option<usize>),
-}
-
-fn diff_rows(diff: &FileDiff, side_by_side: bool) -> Vec<DiffRow> {
-    let mut rows = Vec::new();
-    for (h, hunk) in diff.hunks.iter().enumerate() {
-        rows.push(DiffRow::Header(h));
-        if side_by_side {
-            rows.extend(
-                side_by_side_rows(hunk)
-                    .into_iter()
-                    .map(|r| DiffRow::Split(h, r.left, r.right)),
-            );
-        } else {
-            rows.extend((0..hunk.lines.len()).map(|l| DiffRow::Unified(h, l)));
-        }
-    }
-    rows
-}
-
 fn render_diff_view(
     frame: &mut Frame<'_>,
     area: Rect,
@@ -407,24 +386,9 @@ fn render_diff_view(
     render_diff_preview(frame, area, &state.details, DiffHost::Log, zoomed, ctx);
 }
 
-pub fn file_diff_total_rows(diff: &FileDiff, side_by_side: bool) -> usize {
-    if diff.is_too_large || diff.is_binary || diff.hunks.is_empty() {
-        return 0;
-    }
-    let mut total = usize::from(diff.is_truncated);
-    for hunk in &diff.hunks {
-        total += 1;
-        if side_by_side {
-            total += side_by_side_rows(hunk).len();
-        } else {
-            total += hunk.lines.len();
-        }
-    }
-    total
-}
-
 pub struct FileDiffRenderProps<'a> {
-    pub diff: &'a FileDiff,
+    pub diff: &'a Arc<FileDiff>,
+    pub rows_cache: &'a FileDiffRowsCache,
     pub cached_syntax: Option<&'a HighlightedDiff>,
     pub side_by_side: bool,
     pub diff_scroll: usize,
@@ -439,6 +403,7 @@ pub fn render_file_diff_body(
 ) {
     let FileDiffRenderProps {
         diff,
+        rows_cache,
         cached_syntax,
         side_by_side,
         diff_scroll,
@@ -470,7 +435,7 @@ pub fn render_file_diff_body(
         return;
     }
 
-    let rows = diff_rows(diff, side_by_side);
+    let rows = rows_cache.rows_for(diff, side_by_side);
     let mut total = rows.len();
     if diff.is_truncated {
         total += 1;
@@ -579,7 +544,8 @@ pub fn render_file_diff_body(
             ))
             .style(Style::default().bg(theme.diff_mod_bg)),
             Some(DiffRow::Unified(hh, l)) => {
-                let dl = &diff.hunks[*hh].lines[*l];
+                let hunk_lines = &diff.hunks[*hh].lines;
+                let dl = &hunk_lines[*l];
                 let toks = hl_diff
                     .hunks
                     .get(*hh)
@@ -595,10 +561,12 @@ pub fn render_file_diff_body(
                     Span::styled(marker.to_string(), base),
                 ];
                 let text_w = width.saturating_sub(num_w * 2 + 3);
+                let lazy_wr = rows_cache.word_cache.unified_ranges(diff, *hh, *l, hunk_lines);
+                let wr = lazy_wr.as_deref().unwrap_or(&dl.word_ranges);
                 spans.extend(render_diff_line_spans_with_tab(
                     &dl.text,
                     toks,
-                    &dl.word_ranges,
+                    wr,
                     text_w,
                     tab_size,
                     base,
@@ -608,24 +576,13 @@ pub fn render_file_diff_body(
                 Line::from(spans).style(base)
             }
             Some(DiffRow::Split(hh, left, right)) => {
-                let (lazy_l, lazy_r) = match (*left, *right) {
-                    (Some(li), Some(ri)) => {
-                        let l = &diff.hunks[*hh].lines[li];
-                        let r = &diff.hunks[*hh].lines[ri];
-                        if l.word_ranges.is_empty()
-                            && r.word_ranges.is_empty()
-                            && l.text != r.text
-                            && l.text.len() <= jbgit_core::MAX_WORD_DIFF_LINE_BYTES
-                            && r.text.len() <= jbgit_core::MAX_WORD_DIFF_LINE_BYTES
-                        {
-                            let (lw, rw) = jbgit_core::word_diff(&l.text, &r.text);
-                            (Some(lw), Some(rw))
-                        } else {
-                            (None, None)
-                        }
-                    }
-                    _ => (None, None),
-                };
+                let (lazy_l, lazy_r) = rows_cache.word_cache.split_ranges(
+                    diff,
+                    *hh,
+                    *left,
+                    *right,
+                    &diff.hunks[*hh].lines,
+                );
                 let half = width / 2;
                 let mut spans = side_cell(*hh, *left, lazy_l.as_deref(), |l| l.old_lineno, half);
                 spans.push(Span::styled(
@@ -739,6 +696,7 @@ pub fn render_diff_preview(
         body,
         FileDiffRenderProps {
             diff,
+            rows_cache: &d.diff_rows_cache,
             cached_syntax: d.current_diff_syntax().map(std::sync::Arc::as_ref),
             side_by_side: d.diff_side_by_side,
             diff_scroll: d.diff_scroll,

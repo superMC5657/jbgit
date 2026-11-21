@@ -125,16 +125,6 @@ pub fn plan_footer_bar(
     }
 }
 
-#[allow(dead_code)]
-pub fn footer_bar_height(
-    state: &AppState,
-    width: u16,
-    max_height: u16,
-    hover_target: Option<&HitTarget>,
-) -> u16 {
-    plan_footer_bar(state, width, max_height, hover_target).height
-}
-
 pub fn render_footer_bar_with_plan(
     frame: &mut Frame<'_>,
     area: Rect,
@@ -176,20 +166,6 @@ pub fn render_footer_bar_with_plan(
             FooterPlanKind::Empty | FooterPlanKind::Override => {}
         },
     }
-}
-
-#[allow(dead_code)]
-pub fn render_footer_bar(
-    frame: &mut Frame<'_>,
-    area: Rect,
-    state: &AppState,
-    ctx: &mut RenderContext<'_>,
-) {
-    if area.height == 0 || area.width == 0 {
-        return;
-    }
-    let plan = plan_footer_bar(state, area.width, area.height, ctx.hover_target);
-    render_footer_bar_with_plan(frame, area, state, ctx, &plan);
 }
 
 fn render_notification_footer(

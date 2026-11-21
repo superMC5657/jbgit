@@ -463,7 +463,7 @@ fn render_commits_table(
         snap.head_oid,
         &mut edges_cache,
     );
-    let matcher = state.log_filter.spec.text.compile().ok().flatten();
+    let matcher = state.log_filter.compiled_text_matcher();
 
     struct PreparedLogRow {
         visible_row: VisibleRowIdx,

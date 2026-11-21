@@ -1,13 +1,15 @@
 //! Darcula syntax highlighting for `FrameDiffPreview` via `syntect`.
 
+use std::cell::RefCell;
 use std::io::Cursor;
-use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, OnceLock};
 
-use jbgit_core::{DiffHunk, DiffLineKind, FileDiff};
+use jbgit_core::{DiffHunk, DiffLine, DiffLineKind, FileDiff};
 use jbgit_engine::ThreeDocStageDiff;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::Span;
+use rustc_hash::FxHashMap;
 use syntect::easy::HighlightLines;
 use syntect::highlighting::{FontStyle, Theme, ThemeSet};
 use syntect::parsing::SyntaxSet;
@@ -372,6 +374,183 @@ pub fn render_diff_line_spans_with_tab(
     spans
 }
 
+const MAX_LAZY_WORD_DIFF_ENTRIES: usize = 8_192;
+
+pub type SharedWordRanges = Arc<[(usize, usize)]>;
+
+/// Finds the paired `(deleted_idx, added_idx)` for `line_idx` within a single hunk,
+/// matching `jbgit_core::side_by_side_rows` pairing semantics.
+pub fn paired_line_in_hunk(lines: &[DiffLine], line_idx: usize) -> Option<(usize, usize)> {
+    let line = lines.get(line_idx)?;
+    match line.kind {
+        DiffLineKind::Deleted => {
+            let mut del_start = line_idx;
+            while del_start > 0 && lines[del_start - 1].kind == DiffLineKind::Deleted {
+                del_start -= 1;
+            }
+            let offset = line_idx - del_start;
+            let mut add_start = line_idx + 1;
+            while add_start < lines.len() && lines[add_start].kind == DiffLineKind::Deleted {
+                add_start += 1;
+            }
+            let right_idx = add_start + offset;
+            if lines.get(right_idx).is_some_and(|r| r.kind == DiffLineKind::Added) {
+                Some((line_idx, right_idx))
+            } else {
+                None
+            }
+        }
+        DiffLineKind::Added => {
+            let mut add_start = line_idx;
+            while add_start > 0 && lines[add_start - 1].kind == DiffLineKind::Added {
+                add_start -= 1;
+            }
+            let offset = line_idx - add_start;
+            let mut del_start = add_start;
+            while del_start > 0 && lines[del_start - 1].kind == DiffLineKind::Deleted {
+                del_start -= 1;
+            }
+            let left_idx = del_start + offset;
+            if left_idx < add_start {
+                Some((left_idx, line_idx))
+            } else {
+                None
+            }
+        }
+        DiffLineKind::Context => None,
+    }
+}
+
+#[derive(Debug)]
+struct CachedLazyWordDiffs<D> {
+    diff: Arc<D>,
+    ranges: FxHashMap<(usize, usize), SharedWordRanges>,
+}
+
+/// Per-diff lazy inline word-diff cache shared across Unified and Split views.
+#[derive(Debug)]
+pub struct LazyWordDiffCache<D> {
+    inner: RefCell<Option<CachedLazyWordDiffs<D>>>,
+}
+
+impl<D> Default for LazyWordDiffCache<D> {
+    fn default() -> Self {
+        Self {
+            inner: RefCell::new(None),
+        }
+    }
+}
+
+impl<D> Clone for LazyWordDiffCache<D> {
+    fn clone(&self) -> Self {
+        Self::default()
+    }
+}
+
+impl<D> LazyWordDiffCache<D> {
+    fn resolve_pair(
+        &self,
+        diff: &Arc<D>,
+        hunk_idx: usize,
+        left_idx: usize,
+        right_idx: usize,
+        lines: &[DiffLine],
+    ) -> (SharedWordRanges, SharedWordRanges) {
+        let mut guard = self.inner.borrow_mut();
+        let needs_reset = guard
+            .as_ref()
+            .is_none_or(|cached| !Arc::ptr_eq(&cached.diff, diff));
+        if needs_reset {
+            *guard = Some(CachedLazyWordDiffs {
+                diff: Arc::clone(diff),
+                ranges: FxHashMap::default(),
+            });
+        }
+        let cached = guard.as_mut().expect("initialized above");
+        if let (Some(lw), Some(rw)) = (
+            cached.ranges.get(&(hunk_idx, left_idx)),
+            cached.ranges.get(&(hunk_idx, right_idx)),
+        ) {
+            return (Arc::clone(lw), Arc::clone(rw));
+        }
+
+        let l = &lines[left_idx];
+        let r = &lines[right_idx];
+        let (lw, rw): (SharedWordRanges, SharedWordRanges) = if l.word_ranges.is_empty()
+            && r.word_ranges.is_empty()
+            && l.text != r.text
+            && l.text.len() <= jbgit_core::MAX_WORD_DIFF_LINE_BYTES
+            && r.text.len() <= jbgit_core::MAX_WORD_DIFF_LINE_BYTES
+        {
+            let (a, b) = jbgit_core::word_diff(&l.text, &r.text);
+            (a.into(), b.into())
+        } else {
+            (Arc::from([]), Arc::from([]))
+        };
+
+        if cached.ranges.len() >= MAX_LAZY_WORD_DIFF_ENTRIES {
+            cached.ranges.clear();
+        }
+        cached
+            .ranges
+            .insert((hunk_idx, left_idx), Arc::clone(&lw));
+        cached
+            .ranges
+            .insert((hunk_idx, right_idx), Arc::clone(&rw));
+        (lw, rw)
+    }
+
+    /// Returns cached lazy word ranges for a Unified row when eager `word_ranges` is empty.
+    pub fn unified_ranges(
+        &self,
+        diff: &Arc<D>,
+        hunk_idx: usize,
+        line_idx: usize,
+        lines: &[DiffLine],
+    ) -> Option<SharedWordRanges> {
+        let line = lines.get(line_idx)?;
+        if !line.word_ranges.is_empty() {
+            return None;
+        }
+        let (li, ri) = paired_line_in_hunk(lines, line_idx)?;
+        if !lines[li].word_ranges.is_empty() || !lines[ri].word_ranges.is_empty() {
+            return None;
+        }
+        let (lw, rw) = self.resolve_pair(diff, hunk_idx, li, ri, lines);
+        Some(if line_idx == li { lw } else { rw })
+    }
+
+    /// Returns cached lazy word ranges for a Split row pair when eager `word_ranges` are empty.
+    pub fn split_ranges(
+        &self,
+        diff: &Arc<D>,
+        hunk_idx: usize,
+        left: Option<usize>,
+        right: Option<usize>,
+        lines: &[DiffLine],
+    ) -> (Option<SharedWordRanges>, Option<SharedWordRanges>) {
+        let (Some(li), Some(ri)) = (left, right) else {
+            return (None, None);
+        };
+        if li == ri {
+            return (None, None);
+        }
+        let (Some(l), Some(r)) = (lines.get(li), lines.get(ri)) else {
+            return (None, None);
+        };
+        if !l.word_ranges.is_empty() || !r.word_ranges.is_empty() {
+            return (None, None);
+        }
+        let (lw, rw) = self.resolve_pair(diff, hunk_idx, li, ri, lines);
+        (Some(lw), Some(rw))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn cached_entry_count(&self) -> usize {
+        self.inner.borrow().as_ref().map_or(0, |c| c.ranges.len())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use jbgit_core::{DetailsKey, DiffContext, DiffHunk, DiffLine, FileDiffKey, Oid};
@@ -521,5 +700,59 @@ mod tests {
         // `let` in hunk 1 Deleted & Added both get keyword color
         assert_eq!(hl.hunks[1][1][0].fg, (0xCF, 0x8E, 0x6D));
         assert_eq!(hl.hunks[1][2][0].fg, (0xCF, 0x8E, 0x6D));
+    }
+
+    #[test]
+    fn lazy_word_diff_cache_covers_unified_and_split_and_invalidates_on_diff_change() {
+        let make_line = |kind, text: &str| DiffLine {
+            kind,
+            old_lineno: None,
+            new_lineno: None,
+            text: text.into(),
+            word_ranges: Vec::new(),
+        };
+        let diff1 = Arc::new(FileDiff {
+            key: FileDiffKey {
+                details: DetailsKey::single(Oid::ZERO),
+                path: "src/lib.rs".into(),
+                old_path: None,
+                context: DiffContext::Three,
+            },
+            hunks: vec![DiffHunk {
+                header: "@@ -1,3 +1,3 @@".into(),
+                lines: vec![
+                    make_line(DiffLineKind::Context, "fn demo() {"),
+                    make_line(DiffLineKind::Deleted, "    let old_val = 1;"),
+                    make_line(DiffLineKind::Deleted, "    let untouched_del = 9;"),
+                    make_line(DiffLineKind::Added, "    let new_val = 1;"),
+                    make_line(DiffLineKind::Context, "}"),
+                ],
+            }],
+            is_binary: false,
+            is_truncated: false,
+            is_too_large: false,
+        });
+
+        let cache = LazyWordDiffCache::default();
+        let lines = &diff1.hunks[0].lines;
+
+        // Unified row for Deleted line 1 pairs with Added line 3.
+        let u_del = cache.unified_ranges(&diff1, 0, 1, lines).unwrap();
+        assert!(!u_del.is_empty());
+        assert_eq!(cache.cached_entry_count(), 2);
+
+        // Unpaired Deleted line 2 returns None.
+        assert!(cache.unified_ranges(&diff1, 0, 2, lines).is_none());
+
+        // Subsequent Split query for the same pair hits cache without adding entries.
+        let (sl, sr) = cache.split_ranges(&diff1, 0, Some(1), Some(3), lines);
+        assert_eq!(sl.as_deref(), Some(&u_del[..]));
+        assert!(sr.is_some_and(|r| !r.is_empty()));
+        assert_eq!(cache.cached_entry_count(), 2);
+
+        // Different Arc<FileDiff> resets the cache.
+        let diff2 = Arc::new((*diff1).clone());
+        let _ = cache.unified_ranges(&diff2, 0, 3, &diff2.hunks[0].lines);
+        assert_eq!(cache.cached_entry_count(), 2);
     }
 }
