@@ -281,6 +281,17 @@ fn detect_index_lock_conflict(
     None
 }
 
+/// `git` binary on `PATH`, resolved once per process (synchronous read-only
+/// helpers spawn it directly instead of going through [`GitCliExecutor`]).
+pub(crate) fn cached_git_executable() -> Option<&'static Path> {
+    static GIT: std::sync::OnceLock<Option<PathBuf>> = std::sync::OnceLock::new();
+    GIT.get_or_init(find_git_executable).as_deref()
+}
+
+/// Max pathspecs passed on the command line to read-only helpers; beyond this
+/// callers use their libgit2 fallback (`git log` has no `--pathspec-from-file`).
+pub(crate) const MAX_INLINE_PATHSPECS: usize = PATHSPEC_FROM_FILE_THRESHOLD;
+
 fn find_git_executable() -> Option<PathBuf> {
     let exe_name = if cfg!(windows) { "git.exe" } else { "git" };
     if let Some(path_var) = std::env::var_os("PATH") {

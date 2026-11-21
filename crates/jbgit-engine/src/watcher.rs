@@ -1,15 +1,22 @@
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
+use git2::Repository;
 use jbgit_core::RefreshScope;
 use notify::RecursiveMode;
 use notify_debouncer_mini::{DebouncedEvent, DebouncedEventKind, Debouncer, new_debouncer};
 
 use crate::error::EngineError;
-use crate::pool::Git2WorkerPool;
 use crate::probe::RepoLocation;
+
+/// How long a cached "is this directory ignored?" answer stays valid. Short enough
+/// that an edited `.gitignore` in a parent we never saw an event for heals quickly.
+const IGNORE_DIR_CACHE_TTL: Duration = Duration::from_secs(2);
+/// Upper bound on cached directories before the cache is simply reset.
+const IGNORE_DIR_CACHE_MAX: usize = 4096;
 
 /// Suppresses intermediate FS refresh notifications while `jbgit-engine` itself is
 /// executing a mutating Git CLI command, coalescing them into one refresh on completion.
@@ -83,7 +90,6 @@ pub struct RepoWatcher {
 impl RepoWatcher {
     pub fn start<F>(
         location: RepoLocation,
-        pool: Arc<Git2WorkerPool>,
         guard: Arc<MutationGuard>,
         on_refresh: F,
     ) -> Result<Self, EngineError>
@@ -130,8 +136,11 @@ impl RepoWatcher {
         }
 
         let worktree_debouncer = if !location.is_bare {
-            let workdir = location.workdir.clone();
-            let git_dir_for_wt = location.git_dir.clone();
+            // Owned by the debouncer's own thread: ignore checks never touch the
+            // shared `Git2WorkerPool`, so build/IDE file storms cannot steal the
+            // workers serving interactive diff requests.
+            let mut filter =
+                WorktreeEventFilter::new(location.workdir.clone(), location.git_dir.clone());
             let guard_wt = Arc::clone(&guard);
             let on_refresh_wt = on_refresh;
 
@@ -139,14 +148,8 @@ impl RepoWatcher {
                 Duration::from_millis(250),
                 move |res: Result<Vec<DebouncedEvent>, notify::Error>| {
                     if let Ok(events) = res {
-                        let mut changed = false;
-                        for ev in events {
-                            if is_relevant_worktree_path(&ev.path, &workdir, &git_dir_for_wt, &pool)
-                            {
-                                changed = true;
-                                break;
-                            }
-                        }
+                        let changed =
+                            filter.batch_is_relevant(events.iter().map(|ev| ev.path.as_path()));
                         if changed
                             && let Some(scope) =
                                 guard_wt.record_or_defer(RefreshScope::WorktreeStatus)
@@ -209,32 +212,193 @@ pub fn classify_git_meta_path(path: &Path) -> RefreshScope {
     RefreshScope::None
 }
 
-fn is_relevant_worktree_path(
-    path: &Path,
-    workdir: &Path,
-    git_dir: &Path,
-    pool: &Git2WorkerPool,
-) -> bool {
-    let rel: PathBuf = match path.strip_prefix(workdir) {
-        Ok(r) => r.to_path_buf(),
-        Err(_) => return false,
-    };
+/// Decides whether a batch of worktree FS events warrants a status refresh.
+///
+/// Runs entirely on the watcher's debouncer thread with its own lazily opened
+/// `git2::Repository`. A batch is first reduced by the static directory
+/// blacklist and de-duplicated; parent directories are checked against
+/// `.gitignore` once (cached for [`IGNORE_DIR_CACHE_TTL`]) so thousands of
+/// events under one ignored output directory cost a single libgit2 query.
+pub struct WorktreeEventFilter {
+    workdir: PathBuf,
+    git_dir: PathBuf,
+    repo: Option<Repository>,
+    repo_open_failed: bool,
+    dir_cache: HashMap<PathBuf, (bool, Instant)>,
+    #[cfg(test)]
+    ignore_queries: usize,
+}
 
-    if rel.as_os_str().is_empty() {
-        return false;
-    }
-
-    for comp in rel.components() {
-        if let std::path::Component::Normal(name) = comp {
-            let name_str = name.to_string_lossy();
-            if matches!(
-                name_str.as_ref(),
-                ".git" | "target" | "node_modules" | ".idea"
-            ) {
-                return false;
-            }
+impl WorktreeEventFilter {
+    pub fn new(workdir: PathBuf, git_dir: PathBuf) -> Self {
+        Self {
+            workdir,
+            git_dir,
+            repo: None,
+            repo_open_failed: false,
+            dir_cache: HashMap::new(),
+            #[cfg(test)]
+            ignore_queries: 0,
         }
     }
 
-    !pool.is_path_ignored_sync(git_dir.to_path_buf(), rel)
+    /// Number of `.gitignore` lookups issued so far (tests).
+    #[cfg(test)]
+    pub fn ignore_queries(&self) -> usize {
+        self.ignore_queries
+    }
+
+    /// `true` as soon as one event path is a non-ignored worktree file. Edits to
+    /// a `.gitignore` are always relevant and reset the directory cache.
+    pub fn batch_is_relevant<'a, I>(&mut self, paths: I) -> bool
+    where
+        I: IntoIterator<Item = &'a Path>,
+    {
+        let mut seen = HashSet::new();
+        let mut candidates = Vec::new();
+        for path in paths {
+            if let Some(rel) = statically_relevant_rel_path(path, &self.workdir)
+                && seen.insert(rel.clone())
+            {
+                candidates.push(rel);
+            }
+        }
+        if candidates.is_empty() {
+            return false;
+        }
+        if candidates
+            .iter()
+            .any(|rel| rel.file_name().is_some_and(|n| n == ".gitignore"))
+        {
+            self.dir_cache.clear();
+            return true;
+        }
+        let now = Instant::now();
+        candidates.iter().any(|rel| !self.is_ignored(rel, now))
+    }
+
+    fn is_ignored(&mut self, rel: &Path, now: Instant) -> bool {
+        if let Some(parent) = rel.parent().filter(|p| !p.as_os_str().is_empty())
+            && self.dir_is_ignored(parent, now)
+        {
+            // Git cannot re-include a file below an excluded directory.
+            return true;
+        }
+        self.query_ignored(rel)
+    }
+
+    fn dir_is_ignored(&mut self, dir: &Path, now: Instant) -> bool {
+        if let Some(&(ignored, at)) = self.dir_cache.get(dir)
+            && now.saturating_duration_since(at) < IGNORE_DIR_CACHE_TTL
+        {
+            return ignored;
+        }
+        let ignored = self.query_ignored(dir);
+        if self.dir_cache.len() >= IGNORE_DIR_CACHE_MAX {
+            self.dir_cache.clear();
+        }
+        self.dir_cache.insert(dir.to_path_buf(), (ignored, now));
+        ignored
+    }
+
+    fn query_ignored(&mut self, rel: &Path) -> bool {
+        if self.repo.is_none() && !self.repo_open_failed {
+            self.repo = Repository::open(&self.git_dir).ok();
+            self.repo_open_failed = self.repo.is_none();
+        }
+        let Some(repo) = &self.repo else {
+            return false;
+        };
+        #[cfg(test)]
+        {
+            self.ignore_queries += 1;
+        }
+        repo.is_path_ignored(rel).unwrap_or(false)
+    }
+}
+
+/// Workdir-relative path of `path` unless it is outside the worktree, the
+/// worktree root itself, or under a hard-coded noise directory.
+fn statically_relevant_rel_path(path: &Path, workdir: &Path) -> Option<PathBuf> {
+    let rel = path.strip_prefix(workdir).ok()?;
+    if rel.as_os_str().is_empty() {
+        return None;
+    }
+    for comp in rel.components() {
+        if let std::path::Component::Normal(name) = comp
+            && matches!(
+                name.to_string_lossy().as_ref(),
+                ".git" | "target" | "node_modules" | ".idea"
+            )
+        {
+            return None;
+        }
+    }
+    Some(rel.to_path_buf())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn init_repo(dir: &Path) -> PathBuf {
+        let repo = Repository::init(dir).unwrap();
+        repo.path().to_path_buf()
+    }
+
+    #[test]
+    fn worktree_filter_honours_gitignore_rules() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().to_path_buf();
+        let git_dir = init_repo(&root);
+        std::fs::write(root.join(".gitignore"), "build/\n*.log\n").unwrap();
+        std::fs::create_dir_all(root.join("build/obj")).unwrap();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("build/obj/out.o"), "x").unwrap();
+        std::fs::write(root.join("debug.log"), "x").unwrap();
+        std::fs::write(root.join("src/main.rs"), "x").unwrap();
+
+        let mut filter = WorktreeEventFilter::new(root.clone(), git_dir);
+        let ignored_out = root.join("build").join("obj").join("out.o");
+        let ignored_log = root.join("debug.log");
+        let source = root.join("src").join("main.rs");
+        let noise = root.join("target").join("debug").join("jbgit.exe");
+        let git_meta = root.join(".git").join("index");
+
+        assert!(!filter.batch_is_relevant([ignored_out.as_path()]));
+        assert!(!filter.batch_is_relevant([ignored_log.as_path()]));
+        assert!(!filter.batch_is_relevant([noise.as_path(), git_meta.as_path()]));
+        assert!(filter.batch_is_relevant([ignored_out.as_path(), source.as_path()]));
+        assert!(filter.batch_is_relevant([root.join(".gitignore").as_path()]));
+        assert!(!filter.batch_is_relevant([root.as_path()]));
+    }
+
+    #[test]
+    fn worktree_filter_collapses_event_storm_under_ignored_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().to_path_buf();
+        let git_dir = init_repo(&root);
+        std::fs::write(root.join(".gitignore"), "dist/\n").unwrap();
+        std::fs::create_dir_all(root.join("dist")).unwrap();
+
+        let paths: Vec<PathBuf> = (0..2_000)
+            .map(|i| root.join("dist").join(format!("chunk-{i}.js")))
+            .collect();
+        let mut filter = WorktreeEventFilter::new(root.clone(), git_dir);
+        assert!(!filter.batch_is_relevant(paths.iter().map(PathBuf::as_path)));
+        // One lookup for `dist/`; every child short-circuits on the cached parent.
+        assert_eq!(filter.ignore_queries(), 1);
+
+        // A second storm within the TTL needs no new lookups at all.
+        assert!(!filter.batch_is_relevant(paths.iter().map(PathBuf::as_path)));
+        assert_eq!(filter.ignore_queries(), 1);
+    }
+
+    #[test]
+    fn worktree_filter_without_repo_treats_paths_as_relevant() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().to_path_buf();
+        let mut filter = WorktreeEventFilter::new(root.clone(), root.join("missing.git"));
+        assert!(filter.batch_is_relevant([root.join("a.txt").as_path()]));
+    }
 }

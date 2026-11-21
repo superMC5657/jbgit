@@ -221,6 +221,24 @@ tab_size = 2
         // Unspecified keys retain defaults
         assert_eq!(cfg.jbgit.diff.context_lines, 3);
         assert!(cfg.jbgit.diff.syntax_highlight);
+
+        let perf_toml = r#"
+[performance]
+large_index_entries = 5000
+worktree_renames = "never"
+recurse_untracked_dirs = "auto"
+load_commit_bodies = false
+"#;
+        let perf_ov: JbgitConfigOverlay = toml::from_str(perf_toml).unwrap();
+        cfg.jbgit.merge_overlay(&perf_ov);
+        let engine_cfg = cfg.jbgit.performance.to_engine_config();
+        assert_eq!(engine_cfg.large_index_entries, 5000);
+        assert_eq!(engine_cfg.worktree_renames, jbgit_engine::StatusScanMode::Never);
+        assert_eq!(
+            engine_cfg.recurse_untracked_dirs,
+            jbgit_engine::StatusScanMode::Auto
+        );
+        assert!(!engine_cfg.load_commit_bodies);
     }
 
     #[test]

@@ -233,15 +233,67 @@ impl UserFilter {
     }
 
     pub fn matches(&self, name: &str, email: &str, me: RepoUser<'_>) -> bool {
-        self.users.iter().any(|tok| {
-            if Self::is_me(tok) {
-                return me.email.is_some_and(|e| e.eq_ignore_ascii_case(email))
-                    || me.name.is_some_and(|n| n == name);
+        self.matcher().matches(name, email, me)
+    }
+
+    /// Pre-normalised form for matching many commits: query tokens are
+    /// lowercased once instead of once per commit.
+    pub fn matcher(&self) -> UserMatcher {
+        UserMatcher {
+            tokens: self
+                .users
+                .iter()
+                .map(|tok| {
+                    if Self::is_me(tok) {
+                        UserToken::Me
+                    } else {
+                        UserToken::Fragment(tok.to_lowercase())
+                    }
+                })
+                .collect(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum UserToken {
+    Me,
+    /// Lowercased name / email fragment.
+    Fragment(String),
+}
+
+/// Compiled [`UserFilter`]; see [`UserFilter::matcher`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UserMatcher {
+    tokens: Vec<UserToken>,
+}
+
+impl UserMatcher {
+    pub fn matches(&self, name: &str, email: &str, me: RepoUser<'_>) -> bool {
+        self.tokens.iter().any(|tok| match tok {
+            UserToken::Me => {
+                me.email.is_some_and(|e| e.eq_ignore_ascii_case(email))
+                    || me.name.is_some_and(|n| n == name)
             }
-            let t = tok.to_lowercase();
-            name.to_lowercase().contains(&t) || email.to_lowercase().contains(&t)
+            UserToken::Fragment(t) => {
+                contains_lowercased(name, t) || contains_lowercased(email, t)
+            }
         })
     }
+}
+
+/// `haystack.to_lowercase().contains(needle_lower)` without allocating on the
+/// common all-ASCII path.
+fn contains_lowercased(haystack: &str, needle_lower: &str) -> bool {
+    if needle_lower.is_empty() {
+        return true;
+    }
+    if haystack.is_ascii() && needle_lower.is_ascii() {
+        let (h, n) = (haystack.as_bytes(), needle_lower.as_bytes());
+        return h.len() >= n.len()
+            && h.windows(n.len()).any(|w| w.eq_ignore_ascii_case(n));
+    }
+    haystack.to_lowercase().contains(needle_lower)
 }
 
 /// Commit-date window (`today`, `yesterday`, `7d`, `30d`, `2026-01-01..2026-02-01`).
@@ -411,7 +463,26 @@ impl LogFilterSpec {
         snapshot: &RepoSnapshot,
         path_matches: Option<&HashSet<Oid>>,
     ) -> Result<Option<FixedBitSet>, FilterError> {
-        let text = self.text.compile()?;
+        self.compute_matches_cancellable(graph, snapshot, path_matches, || false)
+            .expect("uncancellable match run")
+    }
+
+    /// Evaluates active filter dimensions against `graph`, returning `None` if
+    /// `is_cancelled()` becomes true mid-walk.
+    pub fn compute_matches_cancellable(
+        &self,
+        graph: &PermanentLinearGraph,
+        snapshot: &RepoSnapshot,
+        path_matches: Option<&HashSet<Oid>>,
+        is_cancelled: impl Fn() -> bool,
+    ) -> Option<Result<Option<FixedBitSet>, FilterError>> {
+        if is_cancelled() {
+            return None;
+        }
+        let text = match self.text.compile() {
+            Ok(t) => t,
+            Err(e) => return Some(Err(e)),
+        };
         let use_paths = !self.paths.is_empty() && path_matches.is_some();
         if self.branch.is_empty()
             && text.is_none()
@@ -419,7 +490,7 @@ impl LogFilterSpec {
             && self.date.is_empty()
             && !use_paths
         {
-            return Ok(None);
+            return Some(Ok(None));
         }
 
         let n = graph.nodes_count as usize;
@@ -440,16 +511,23 @@ impl LogFilterSpec {
                 .collect();
             ReachableNodes::contained_in_branch(graph, &heads)
         };
+        if is_cancelled() {
+            return None;
+        }
 
         if text.is_none() && self.user.is_empty() && self.date.is_empty() && !use_paths {
-            return Ok(Some(matches));
+            return Some(Ok(Some(matches)));
         }
 
         let me = RepoUser {
             name: snapshot.user_name.as_deref(),
             email: snapshot.user_email.as_deref(),
         };
+        let user = (!self.user.is_empty()).then(|| self.user.matcher());
         for node in 0..n {
+            if node.is_multiple_of(1024) && is_cancelled() {
+                return None;
+            }
             if !matches.contains(node) {
                 continue;
             }
@@ -464,17 +542,16 @@ impl LogFilterSpec {
             let ok = text
                 .as_ref()
                 .is_none_or(|m| m.matches_commit(&commit.oid, &commit.subject, &commit.body))
-                && (self.user.is_empty()
-                    || self
-                        .user
-                        .matches(&commit.author_name, &commit.author_email, me))
+                && user
+                    .as_ref()
+                    .is_none_or(|u| u.matches(&commit.author_name, &commit.author_email, me))
                 && self.date.matches(commit.timestamp)
                 && (!use_paths || path_matches.is_some_and(|set| set.contains(&commit.oid)));
             if !ok {
                 matches.set(node, false);
             }
         }
-        Ok(Some(matches))
+        Some(Ok(Some(matches)))
     }
 }
 
@@ -504,6 +581,51 @@ pub fn glob_match(pattern: &str, text: &str) -> bool {
         pi += 1;
     }
     pi == p.len()
+}
+
+#[cfg(test)]
+mod user_matcher_tests {
+    use super::*;
+
+    #[test]
+    fn user_matcher_is_case_insensitive_for_ascii_and_unicode() {
+        let me = RepoUser {
+            name: Some("Me Myself"),
+            email: Some("me@example.com"),
+        };
+        let f = UserFilter::parse("ALICE");
+        assert!(f.matches("alice smith", "a@x.io", me));
+        assert!(f.matches("Bob", "Alice@Example.com", me));
+        assert!(!f.matches("Bob", "bob@x.io", me));
+
+        let f = UserFilter::parse("ÉLODIE");
+        assert!(f.matches("élodie Martin", "e@x.fr", me));
+        assert!(!f.matches("Elodie", "e@x.fr", me));
+
+        let f = UserFilter::parse("@me");
+        assert!(f.matches("Someone", "ME@example.com", me));
+        assert!(f.matches("Me Myself", "other@x.io", me));
+        assert!(!f.matches("Someone", "other@x.io", me));
+    }
+
+    #[test]
+    fn contains_lowercased_matches_reference_semantics() {
+        for (hay, needle) in [
+            ("Hello World", "world"),
+            ("Hello World", "hello w"),
+            ("abc", "abcd"),
+            ("", "a"),
+            ("ÀB", "àb"),
+            ("x", ""),
+        ] {
+            let needle_lower = needle.to_lowercase();
+            assert_eq!(
+                contains_lowercased(hay, &needle_lower),
+                hay.to_lowercase().contains(&needle_lower),
+                "{hay:?} / {needle:?}"
+            );
+        }
+    }
 }
 
 #[cfg(test)]

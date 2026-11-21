@@ -71,3 +71,16 @@ file_history_ratio = [ 2, 3 ]
 
 # 窄屏上下两栏比例: [上方提交列表, 下方 Diff 预览] (默认 [2, 3])
 file_history_vertical_ratio = [ 2, 3 ]
+
+[performance]
+# 超过该索引条目阈值时按大仓库自适应降级 status 扫描开销
+large_index_entries = 20000
+
+# 工作区未暂存重命名检测策略: "auto" (大仓库自动关闭), "always", "never"
+worktree_renames = "auto"
+
+# 未跟踪目录递归展开策略: "always", "auto" (大仓库仅展示目录项), "never"
+recurse_untracked_dirs = "always"
+
+# 快照加载时是否预读提交正文 (关闭可降低超大仓库冷启动内存, 但文本搜索仅匹配标题/作者/哈希)
+load_commit_bodies = true

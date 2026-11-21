@@ -61,6 +61,8 @@ pub(crate) fn coalesce_effects(effects: Vec<Effect>) -> Vec<Effect> {
     let mut last_stage_diff = None;
     let mut last_file_syntax = None;
     let mut last_stage_syntax = None;
+    let mut last_containing = None;
+    let mut last_rebuild_graph = None;
 
     for (i, eff) in effects.iter().enumerate() {
         match eff {
@@ -71,6 +73,8 @@ pub(crate) fn coalesce_effects(effects: Vec<Effect>) -> Vec<Effect> {
                 SyntaxJobKey::File(_) => last_file_syntax = Some(i),
                 SyntaxJobKey::Stage(_) => last_stage_syntax = Some(i),
             },
+            Effect::ComputeContainingBranches(_) => last_containing = Some(i),
+            Effect::RebuildLogGraph(_) => last_rebuild_graph = Some(i),
             _ => {}
         }
     }
@@ -85,6 +89,8 @@ pub(crate) fn coalesce_effects(effects: Vec<Effect>) -> Vec<Effect> {
                 SyntaxJobKey::File(_) => last_file_syntax == Some(i),
                 SyntaxJobKey::Stage(_) => last_stage_syntax == Some(i),
             },
+            Effect::ComputeContainingBranches(_) => last_containing == Some(i),
+            Effect::RebuildLogGraph(_) => last_rebuild_graph == Some(i),
             _ => true,
         };
         if keep {
@@ -173,23 +179,27 @@ async fn main() -> Result<()> {
     let (engine_handle, mut engine_rx, mut state) = match RepoLocation::discover(&target_path) {
         Ok(loc) => {
             let workdir = loc.workdir.clone();
-            match EngineSupervisor::start(loc, true) {
+            let config = crate::config::AppConfig::load(Some(&workdir));
+            let scan_config = config.jbgit.performance.to_engine_config();
+            match EngineSupervisor::start_with_config(loc, true, scan_config) {
                 Ok((handle, rx)) => {
-                    let s = AppState::new(workdir, None);
+                    let s = AppState::new_with_config(workdir, None, config);
                     (Some(handle), Some(rx), s)
                 }
                 Err(e) => (
                     None,
                     None,
-                    AppState::new(
+                    AppState::new_with_config(
                         target_path,
                         Some(cli_i18n.t_fmt("cli.engine_err", &[("err", &e.to_string())])),
+                        config,
                     ),
                 ),
             }
         }
         Err(e) => (None, None, AppState::new(target_path, Some(e.to_string()))),
     };
+    state.async_graph_enabled = true;
 
     let (ui_async_tx, mut ui_async_rx) =
         tokio::sync::mpsc::unbounded_channel::<crate::app::UiAsyncEvent>();
@@ -383,6 +393,7 @@ async fn main() -> Result<()> {
         }
     }
 
+    state.stage_workbench.flush_draft_sync();
     let release = state.graph_renderer.shutdown_sequence();
     if !release.is_empty() {
         let _ = std::io::stdout().write_all(&release);
@@ -555,6 +566,8 @@ where
                     state.needs_redraw = true;
                     continue;
                 }
+                // The editor may run for minutes: persist the current draft first.
+                state.stage_workbench.flush_draft_sync();
                 let tmp_path = std::env::temp_dir()
                     .join(format!("jbgit-commit-editmsg-{}.txt", std::process::id()));
                 if let Err(e) = std::fs::write(&tmp_path, state.stage_workbench.editor.text()) {
@@ -575,7 +588,7 @@ where
                             }
                             state.stage_workbench.editor.set_text(&updated);
                             state.stage_workbench.empty_message_error = false;
-                            state.stage_workbench.save_draft();
+                            state.stage_workbench.mark_draft_dirty(std::time::Instant::now());
                         }
                     }
                     Err(err) => {
@@ -1610,6 +1623,97 @@ mod tests {
         assert_eq!(state.stage_workbench.editor.text(), "wip: my draft");
     }
 
+    fn draft_test_state(tag: &str) -> (AppState, std::path::PathBuf, std::path::PathBuf) {
+        let mut state = AppState::new_with_config(
+            std::path::PathBuf::from("."),
+            None,
+            crate::config::AppConfig::load_defaults(),
+        );
+        state.stage_status = Some(std::sync::Arc::new(jbgit_core::StageStatusSnapshot::default()));
+        let dir = std::env::temp_dir().join(format!(
+            "jbgit-test-draft-debounce-{tag}-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("jbgit-commit-draft");
+        state.stage_workbench.load_draft(file.clone());
+        state.dispatch(Action::SwitchTab(WorkspaceTab::Commit));
+        state.dispatch(Action::FocusPane(PaneId::CommitMessageEditor));
+        (state, dir, file)
+    }
+
+    #[test]
+    fn commit_draft_typing_is_debounced_then_written_in_background() {
+        let (mut state, dir, file) = draft_test_state("async");
+        for ch in "feat: twenty chars!!".chars() {
+            state.dispatch(Action::CommitEditorChar(ch));
+        }
+        assert!(!file.exists(), "keystrokes must not write the draft synchronously");
+        assert!(state.stage_workbench.draft_dirty);
+        let due = state.stage_workbench.draft_save_deadline.expect("debounce armed");
+        assert!(state.next_deadline().is_some_and(|d| d <= due));
+
+        // Before the debounce window elapses nothing is written.
+        let mut effects = Vec::new();
+        state.flush_pending_at(due - std::time::Duration::from_millis(1), &mut effects);
+        state.stage_workbench.wait_draft_writes();
+        assert!(!file.exists());
+
+        state.flush_pending_at(due, &mut effects);
+        assert!(!state.stage_workbench.draft_dirty);
+        assert!(state.stage_workbench.draft_save_deadline.is_none());
+        state.stage_workbench.wait_draft_writes();
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "feat: twenty chars!!");
+
+        // Clearing the message removes the draft file.
+        for _ in 0..20 {
+            state.dispatch(Action::CommitEditorBackspace);
+        }
+        assert!(file.exists());
+        let due = state.stage_workbench.draft_save_deadline.unwrap();
+        state.flush_pending_at(due, &mut effects);
+        state.stage_workbench.wait_draft_writes();
+        assert!(!file.exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn commit_draft_flushes_synchronously_on_exit_and_submit() {
+        let (mut state, dir, file) = draft_test_state("flush");
+        state.dispatch(Action::CommitEditorPaste("wip: exit flush".into()));
+        assert!(!file.exists());
+        // Main-loop exit path.
+        state.stage_workbench.flush_draft_sync();
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "wip: exit flush");
+
+        // A stale background write can never overwrite a newer synchronous flush,
+        // and flush_draft_sync() itself joins any in-flight background write.
+        state.dispatch(Action::CommitEditorChar('!'));
+        let due = state.stage_workbench.draft_save_deadline.unwrap();
+        state.flush_pending_at(due, &mut Vec::new());
+        state.dispatch(Action::CommitEditorChar('?'));
+        state.stage_workbench.flush_draft_sync();
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "wip: exit flush!?");
+
+        // Even when draft_dirty is already false (the debounced background job
+        // just spawned), flush_draft_sync() waits until the file is on disk.
+        state.dispatch(Action::CommitEditorChar('+'));
+        let due = state.stage_workbench.draft_save_deadline.unwrap();
+        state.flush_pending_at(due, &mut Vec::new());
+        assert!(!state.stage_workbench.draft_dirty);
+        state.stage_workbench.flush_draft_sync();
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "wip: exit flush!?+");
+
+        // Submitting a commit flushes before dispatching.
+        state.dispatch(Action::CommitEditorChar('#'));
+        assert!(state.stage_workbench.draft_dirty);
+        state.dispatch(Action::SubmitCommit { and_push: false });
+        assert!(!state.stage_workbench.draft_dirty);
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "wip: exit flush!?+#");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn stage_review_fixes_amend_diff_gutter_click_draft_persistence_and_push_confirm() {
         use jbgit_core::{
@@ -1637,6 +1741,8 @@ mod tests {
         state.dispatch(Action::FocusPane(PaneId::CommitMessageEditor));
         state.dispatch(Action::CommitEditorPaste("draft: unsent note".into()));
         assert!(state.commit_history_candidates().iter().any(|c| c == "draft: unsent note"));
+        // Writes are debounced; exiting the main loop flushes synchronously.
+        state.stage_workbench.flush_draft_sync();
         let mut reloaded = AppState::new(std::path::PathBuf::from("."), None);
         reloaded.stage_workbench.load_draft(draft_file.clone());
         assert_eq!(reloaded.stage_workbench.editor.text(), "draft: unsent note");

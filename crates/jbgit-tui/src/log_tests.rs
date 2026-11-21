@@ -126,6 +126,13 @@ fn key(state: &mut AppState, code: KeyCode, mods: KeyModifiers) -> Vec<Effect> {
     run(state, actions)
 }
 
+/// Lets the 120 ms text-filter debounce elapse.
+fn settle_filter(state: &mut AppState) {
+    let due = state.log_filter.text_apply_at.expect("debounced filter edit pending");
+    let mut effects = Vec::new();
+    state.flush_pending_at(due, &mut effects);
+}
+
 fn render(state: &mut AppState, w: u16, h: u16) -> Terminal<TestBackend> {
     let mut terminal = Terminal::new(TestBackend::new(w, h)).unwrap();
     terminal.draw(|f| render_app(f, state)).unwrap();
@@ -298,6 +305,9 @@ fn text_regex_filter_hides_rows_and_speed_search_finds_branches() {
     }
     // 'q' while typing must not quit.
     assert!(!state.should_quit);
+    // Typing is debounced: the graph is re-filtered once typing pauses.
+    assert_eq!(state.log_graph.visible_count(), 6);
+    settle_filter(&mut state);
     assert_eq!(state.log_graph.visible_count(), 2);
     // Match case on → no hits.
     key(&mut state, KeyCode::Char('c'), KeyModifiers::ALT);
@@ -308,8 +318,9 @@ fn text_regex_filter_hides_rows_and_speed_search_finds_branches() {
     for c in "^(fix|login)".chars() {
         key(&mut state, KeyCode::Char(c), KeyModifiers::NONE);
     }
-    assert_eq!(state.log_graph.visible_count(), 2);
+    // `Esc` ends editing and applies the pending edit immediately.
     key(&mut state, KeyCode::Esc, KeyModifiers::NONE);
+    assert_eq!(state.log_graph.visible_count(), 2);
     assert!(!state.log_filter.editing_text);
 
     // Branch search (`tree_speed_search = false` by default): `j`/`k` navigate without
@@ -425,7 +436,11 @@ fn debounced_details_lru_hit_and_multi_select_net_changes() {
     let pending = state.details.pending.clone().expect("pending details").0;
     assert_eq!(pending.oids, vec![selected_oid(&state)]);
     let flushed = state.dispatch(Action::FlushPendingDetails);
-    assert!(matches!(&flushed[..], [Effect::RequestCommitDetails(k)] if *k == pending));
+    let details_reqs: Vec<_> = flushed
+        .iter()
+        .filter(|e| !matches!(e, Effect::ComputeContainingBranches(_)))
+        .collect();
+    assert!(matches!(&details_reqs[..], [Effect::RequestCommitDetails(k)] if *k == pending));
 
     // LRU hit: re-selecting a cached commit renders with 0 ms (no pending request).
     let top = DetailsKey::single(oid(M));
@@ -1016,4 +1031,281 @@ fn commit_stage_toolbar_highlights_on_hover() {
     let buf = t.backend().buffer();
     assert_eq!(buf[(rx, ry)].fg, state.theme.fg_bright);
     assert_eq!(buf[(rx, ry)].bg, state.theme.bg_hover);
+}
+
+// ── Spec 10 / Issue 05: large-repo filtering & containing branches ──
+
+#[test]
+fn text_filter_typing_is_debounced_into_one_graph_rebuild() {
+    let mut state = fixture_state();
+    let _ = render(&mut state, 140, 30);
+    let generation = state.log_graph.filter_generation;
+    let builds = state.log_graph.cached.as_ref().unwrap().visible_builds;
+
+    key(&mut state, KeyCode::Char('/'), KeyModifiers::NONE);
+    for c in "oauth".chars() {
+        key(&mut state, KeyCode::Char(c), KeyModifiers::NONE);
+    }
+    // Echo is immediate, the 50k-commit re-projection is not.
+    assert_eq!(state.log_filter.spec.text.query, "oauth");
+    assert_eq!(state.log_graph.filter_generation, generation);
+    assert_eq!(state.log_graph.cached.as_ref().unwrap().visible_builds, builds);
+    let due = state.log_filter.text_apply_at.expect("debounce armed");
+    assert!(state.next_deadline().is_some_and(|d| d <= due));
+
+    // Not yet due → still nothing.
+    state.flush_pending_at(due - std::time::Duration::from_millis(1), &mut Vec::new());
+    assert_eq!(state.log_graph.filter_generation, generation);
+
+    settle_filter(&mut state);
+    assert!(state.log_filter.text_apply_at.is_none());
+    assert_eq!(state.log_graph.filter_generation, generation.wrapping_add(1));
+    assert_eq!(
+        state.log_graph.cached.as_ref().unwrap().visible_builds,
+        builds + 1
+    );
+    assert_eq!(state.log_graph.visible_count(), 2);
+}
+
+#[test]
+fn snapshot_reload_with_active_filter_projects_visible_graph_once() {
+    let mut state = fixture_state();
+    let _ = render(&mut state, 140, 30);
+    key(&mut state, KeyCode::Char('/'), KeyModifiers::NONE);
+    for c in "oauth".chars() {
+        key(&mut state, KeyCode::Char(c), KeyModifiers::NONE);
+    }
+    key(&mut state, KeyCode::Enter, KeyModifiers::NONE);
+    assert_eq!(state.log_graph.visible_count(), 2);
+
+    // Same commits, new snapshot Arc (e.g. a watcher refresh).
+    let reloaded = Arc::new((**state.repo_snapshot.as_ref().unwrap()).clone());
+    state.apply_engine_event(EngineEvent::RepoSnapshotLoaded {
+        snapshot: reloaded,
+        epoch: 2,
+    });
+    let _ = render(&mut state, 140, 30);
+    let cached = state.log_graph.cached.as_ref().unwrap();
+    assert_eq!(cached.visible_builds, 1, "no throw-away unfiltered projection");
+    assert_eq!(state.log_graph.visible_count(), 2);
+}
+
+#[test]
+fn containing_branches_are_computed_off_thread_and_memoised() {
+    let mut state = fixture_state();
+    let _ = render(&mut state, 140, 40);
+    let row = row_of(&state, A2);
+    state.dispatch(Action::SelectLogRow(row));
+    let effects = state.dispatch(Action::FlushPendingDetails);
+    let job = effects
+        .iter()
+        .find_map(|e| match e {
+            Effect::ComputeContainingBranches(job) => Some(job.clone()),
+            _ => None,
+        })
+        .expect("containing-branch walk is deferred to a background job");
+    assert_eq!(job.oid, oid(A2));
+    // The UI thread did not walk the graph.
+    assert!(state.details.containing.is_none());
+
+    let names = job.run().expect("current token");
+    assert!(names.iter().any(|n| n == "main"));
+    assert!(names.iter().any(|n| n == "bugfix/ui"));
+    state.apply_ui_async_event(crate::app::UiAsyncEvent::ContainingBranches {
+        oid: job.oid,
+        token: job.token,
+        names: names.clone(),
+    });
+    assert_eq!(state.details.containing, Some((oid(A2), names.clone())));
+
+    // A stale result (superseded epoch) is ignored.
+    state.dispatch(Action::SelectLogRow(row_of(&state, L1)));
+    let effects = state.dispatch(Action::FlushPendingDetails);
+    let l1_job = effects
+        .iter()
+        .find_map(|e| match e {
+            Effect::ComputeContainingBranches(job) => Some(job.clone()),
+            _ => None,
+        })
+        .unwrap();
+    // Issue a newer token on the same tracker so `l1_job.token` becomes stale,
+    // or pass an earlier token from the tracker.
+    let stale_token = state.details.containing_epochs.issue();
+    let newer_effects = {
+        state.details.containing_requested = Some((l1_job.oid, stale_token.clone()));
+        let newer_token = state.details.containing_epochs.issue();
+        state.details.containing_requested = Some((l1_job.oid, newer_token));
+        state.apply_ui_async_event(crate::app::UiAsyncEvent::ContainingBranches {
+            oid: l1_job.oid,
+            token: stale_token,
+            names: vec!["bogus".into()],
+        })
+    };
+    assert!(newer_effects.is_empty());
+    assert!(state.details.containing_cache.get(&oid(L1)).is_none());
+
+    // Re-selecting a memoised commit needs no new walk.
+    state.dispatch(Action::SelectLogRow(row));
+    let effects = state.dispatch(Action::FlushPendingDetails);
+    assert!(
+        !effects
+            .iter()
+            .any(|e| matches!(e, Effect::ComputeContainingBranches(_)))
+    );
+    assert_eq!(state.details.containing, Some((oid(A2), names)));
+}
+
+#[test]
+fn large_graph_rebuild_offloads_off_thread_and_drops_stale_epochs() {
+    use crate::graph::state::ASYNC_GRAPH_THRESHOLD;
+
+    let count = ASYNC_GRAPH_THRESHOLD;
+    let oid_u = |n: usize| {
+        let mut bytes = [0u8; 20];
+        bytes[..8].copy_from_slice(&(n as u64).to_le_bytes());
+        Oid::from_bytes(bytes)
+    };
+    let mut commits = Vec::with_capacity(count);
+    for i in 0..count {
+        let parents = if i + 1 < count {
+            vec![oid_u(i + 1)]
+        } else {
+            vec![]
+        };
+        commits.push(CommitSummary {
+            oid: oid_u(i),
+            parents,
+            author_name: "Alice".into(),
+            author_email: "alice@x.io".into(),
+            timestamp: (count - i) as i64,
+            author_timestamp: (count - i) as i64,
+            subject: if i == 42 {
+                "target needle".into()
+            } else {
+                format!("commit {i}")
+            },
+            body: String::new(),
+        });
+    }
+    let snap = Arc::new(RepoSnapshot {
+        repo_name: "large".into(),
+        head_branch: Some("main".into()),
+        head_oid: Some(oid_u(0)),
+        refs: vec![RefInfo {
+            name: "main".into(),
+            full_name: "refs/heads/main".into(),
+            target_oid: oid_u(0),
+            kind: RefKind::LocalBranch,
+            upstream: None,
+            ahead_behind: None,
+            is_head: true,
+        }],
+        commits,
+        ..Default::default()
+    });
+
+    let mut state = AppState::new_with_config(".".into(), None, crate::config::AppConfig::default());
+    state.async_graph_enabled = true;
+
+    let effects = state.apply_engine_event(EngineEvent::RepoSnapshotLoaded {
+        snapshot: Arc::clone(&snap),
+        epoch: 1,
+    });
+    // UI thread did NOT synchronously build the 2000+ commit graph.
+    assert!(state.log_graph.cached.is_none());
+    assert!(state.log_graph.rebuild_in_progress);
+    let job = effects
+        .iter()
+        .find_map(|e| match e {
+            Effect::RebuildLogGraph(j) => Some(j.clone()),
+            _ => None,
+        })
+        .expect("large snapshot offload emits RebuildLogGraph");
+    let rebuilt = job.run().expect("valid token builds graph");
+    state.apply_ui_async_event(crate::app::UiAsyncEvent::LogGraphRebuilt(Box::new(rebuilt)));
+    assert!(!state.log_graph.rebuild_in_progress);
+    assert_eq!(state.log_graph.visible_count(), count);
+
+    // Trigger a text filter edit; a newer filter supersedes the first job.
+    state.dispatch(Action::FocusFilterText);
+    state.dispatch(Action::FilterTextInput('x'));
+    let effects1 = state.dispatch(Action::FilterTextDone);
+    let job1 = effects1
+        .iter()
+        .find_map(|e| match e {
+            Effect::RebuildLogGraph(j) => Some(j.clone()),
+            _ => None,
+        })
+        .expect("first filter job");
+
+    state.dispatch(Action::FilterTextClear);
+    state.dispatch(Action::FocusFilterText);
+    for c in "needle".chars() {
+        state.dispatch(Action::FilterTextInput(c));
+    }
+    let effects2 = state.dispatch(Action::FilterTextDone);
+    let job2 = effects2
+        .iter()
+        .find_map(|e| match e {
+            Effect::RebuildLogGraph(j) => Some(j.clone()),
+            _ => None,
+        })
+        .expect("second filter job");
+
+    // Stale job1 cancels itself without wasting CPU or overwriting state.
+    assert!(job1.run().is_none(), "superseded graph job must cancel");
+    let rebuilt2 = job2.run().expect("latest graph job completes");
+    state.apply_ui_async_event(crate::app::UiAsyncEvent::LogGraphRebuilt(Box::new(rebuilt2)));
+    assert_eq!(state.log_graph.visible_count(), 1);
+}
+
+#[test]
+fn ahead_behind_backfill_updates_branches_without_rebuilding_graph() {
+    let mut state = fixture_state();
+    let _ = render(&mut state, 140, 40);
+    let ptr_before = Arc::as_ptr(
+        &state
+            .log_graph
+            .cached
+            .as_ref()
+            .unwrap()
+            .permanent,
+    );
+
+    state.apply_engine_event(EngineEvent::RefAheadBehindBackfilled {
+        epoch: state.latest_repo_epoch,
+        updates: vec![("refs/heads/bugfix/ui".to_string(), (3, 2))],
+    });
+    let ptr_after = Arc::as_ptr(
+        &state
+            .log_graph
+            .cached
+            .as_ref()
+            .unwrap()
+            .permanent,
+    );
+    assert_eq!(ptr_before, ptr_after, "backfill must not rebuild graph");
+
+    let node = state
+        .branches
+        .model
+        .nodes
+        .iter()
+        .find(|n| n.key == "refs/heads/bugfix/ui")
+        .expect("bugfix/ui branch node");
+    assert_eq!(node.ahead_behind, Some((3, 2)));
+
+    // Stale epoch backfill is ignored.
+    state.apply_engine_event(EngineEvent::RefAheadBehindBackfilled {
+        epoch: state.latest_repo_epoch.wrapping_add(99),
+        updates: vec![("refs/heads/bugfix/ui".to_string(), (99, 99))],
+    });
+    let node = state
+        .branches
+        .model
+        .nodes
+        .iter()
+        .find(|n| n.key == "refs/heads/bugfix/ui")
+        .unwrap();
+    assert_eq!(node.ahead_behind, Some((3, 2)));
 }

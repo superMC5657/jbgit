@@ -3,21 +3,27 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 use jbgit_core::graph::{
-    EdgesInRowCache, FixedBitSet, GraphViewOptions, PermanentGraph, PrintElementGenerator,
-    RawCommitNode, ReachableNodes, VisibleGraph, VisibleRowIdx,
+    EdgesInRowCache, FixedBitSet, GraphViewOptions, PermanentGraph, PermanentLinearGraph,
+    PrintElementGenerator, RawCommitNode, ReachableNodes, VisibleGraph, VisibleRowIdx,
 };
 use jbgit_core::{
-    BranchColorId, CommitSummary, FilterError, LogFilterSpec, Oid, RefInfo, RefKind, RepoSnapshot,
+    BranchColorId, CommitSummary, EpochToken, FilterError, LogFilterSpec, Oid, RefInfo, RefKind,
+    RepoSnapshot, RequestEpoch,
 };
 use ratatui::style::Color;
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::theme::BranchColorManager;
+
+/// Snapshots with at least this many commits offload `VisibleGraph` and filter
+/// rebuilds to a blocking worker thread when the async runtime is active.
+pub const ASYNC_GRAPH_THRESHOLD: usize = 2_000;
 
 /// Per-snapshot permanent graph plus the current filtered/sorted projection.
 pub struct CachedLogGraph {
     pub snapshot: Arc<RepoSnapshot>,
-    pub permanent: PermanentGraph,
+    /// Shared so background jobs (containing-branch BFS) can walk it off the UI thread.
+    pub permanent: Arc<PermanentGraph>,
     pub visible: VisibleGraph,
     pub color_map: FxHashMap<BranchColorId, Color>,
     pub current_branch_reachable: FixedBitSet,
@@ -27,6 +33,18 @@ pub struct CachedLogGraph {
     pub ref_kind_by_name: FxHashMap<String, RefKind>,
     /// `LogGraphState::filter_generation` the visible projection was built for.
     pub filter_generation: u64,
+    /// Number of `VisibleGraph` projections built for this snapshot (tests).
+    #[cfg(test)]
+    pub visible_builds: u32,
+}
+
+impl std::fmt::Debug for CachedLogGraph {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CachedLogGraph")
+            .field("visible_count", &self.visible.linear.visible_count())
+            .field("filter_generation", &self.filter_generation)
+            .finish_non_exhaustive()
+    }
 }
 
 impl CachedLogGraph {
@@ -36,9 +54,24 @@ impl CachedLogGraph {
         filter: Option<&FixedBitSet>,
         branch_colors: &BranchColorManager,
     ) -> Self {
+        Self::build_with(snap, options, branch_colors, |_| filter.cloned())
+    }
+
+    /// Builds the permanent graph, then asks `select` for the visible-node
+    /// filter (which usually needs the permanent node ids) and projects the
+    /// visible graph exactly once.
+    pub fn build_with<F>(
+        snap: &Arc<RepoSnapshot>,
+        options: GraphViewOptions,
+        branch_colors: &BranchColorManager,
+        select: F,
+    ) -> Self
+    where
+        F: FnOnce(&PermanentLinearGraph) -> Option<FixedBitSet>,
+    {
         let raw_commits: Vec<RawCommitNode> =
             snap.commits.iter().map(RawCommitNode::from).collect();
-        let permanent = PermanentGraph::build(&raw_commits, &snap.refs, snap.head_oid);
+        let permanent = Arc::new(PermanentGraph::build(&raw_commits, &snap.refs, snap.head_oid));
         let color_map = build_graph_color_map(&permanent, branch_colors);
         let head_nodes: Vec<_> = snap
             .head_oid
@@ -47,7 +80,8 @@ impl CachedLogGraph {
             .collect();
         let current_branch_reachable =
             ReachableNodes::contained_in_branch(&permanent.linear, &head_nodes);
-        let visible = VisibleGraph::build(&permanent, options, filter);
+        let filter = select(&permanent.linear);
+        let visible = VisibleGraph::build(&permanent, options, filter.as_ref());
         let mut edges_cache = EdgesInRowCache::new(&visible.linear);
         let recommended_tracks =
             PrintElementGenerator::with_cache(&permanent, &visible, snap.head_oid, &mut edges_cache)
@@ -65,6 +99,8 @@ impl CachedLogGraph {
             refs_by_oid,
             ref_kind_by_name,
             filter_generation: 0,
+            #[cfg(test)]
+            visible_builds: 1,
         }
     }
 
@@ -90,6 +126,10 @@ impl CachedLogGraph {
         )
         .recommended_track_width();
         self.edges_cache = RefCell::new(edges_cache);
+        #[cfg(test)]
+        {
+            self.visible_builds = self.visible_builds.saturating_add(1);
+        }
     }
 
     pub fn visible_count(&self) -> usize {
@@ -134,14 +174,10 @@ pub fn build_graph_color_map(
     mgr: &BranchColorManager,
 ) -> FxHashMap<BranchColorId, Color> {
     let mut ordered_ids: Vec<BranchColorId> = Vec::new();
-    for &head in &pg.sorted_heads {
-        let cid = pg.node_color(head);
-        if !ordered_ids.contains(&cid) {
-            ordered_ids.push(cid);
-        }
-    }
-    for &cid in &pg.node_colors {
-        if !ordered_ids.contains(&cid) {
+    let mut seen: FxHashSet<BranchColorId> = FxHashSet::default();
+    let heads = pg.sorted_heads.iter().map(|&head| pg.node_color(head));
+    for cid in heads.chain(pg.node_colors.iter().copied()) {
+        if seen.insert(cid) {
             ordered_ids.push(cid);
         }
     }
@@ -156,6 +192,131 @@ pub struct FilterInputs<'a> {
 }
 
 const HISTORY_LIMIT: usize = 64;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct GraphRebuildKey {
+    snapshot_ptr: usize,
+    filter_generation: u64,
+    options: GraphViewOptions,
+}
+
+#[derive(Debug, Clone)]
+pub struct CachedGraphBase {
+    pub permanent: Arc<PermanentGraph>,
+    pub color_map: FxHashMap<BranchColorId, Color>,
+    pub current_branch_reachable: FixedBitSet,
+    pub refs_by_oid: FxHashMap<Oid, Vec<usize>>,
+    pub ref_kind_by_name: FxHashMap<String, RefKind>,
+}
+
+/// Off-UI-thread graph filter + `VisibleGraph` (and, on snapshot change,
+/// `PermanentGraph`) build job.
+#[derive(Debug, Clone)]
+pub struct LogGraphJob {
+    pub token: EpochToken,
+    pub snapshot: Arc<RepoSnapshot>,
+    pub base: Option<CachedGraphBase>,
+    pub options: GraphViewOptions,
+    pub filter_spec: LogFilterSpec,
+    pub path_matches: Option<Arc<HashSet<Oid>>>,
+    pub branch_colors: BranchColorManager,
+    pub filter_generation: u64,
+}
+
+#[derive(Debug)]
+pub struct LogGraphRebuilt {
+    pub token: EpochToken,
+    pub cached: CachedLogGraph,
+    pub filter_error: Option<FilterError>,
+}
+
+impl LogGraphJob {
+    pub fn run(self) -> Option<LogGraphRebuilt> {
+        if self.token.is_stale() {
+            return None;
+        }
+        let base = match self.base {
+            Some(b) => b,
+            None => {
+                let raw_commits: Vec<RawCommitNode> =
+                    self.snapshot.commits.iter().map(RawCommitNode::from).collect();
+                if self.token.is_stale() {
+                    return None;
+                }
+                let permanent = Arc::new(PermanentGraph::build(
+                    &raw_commits,
+                    &self.snapshot.refs,
+                    self.snapshot.head_oid,
+                ));
+                if self.token.is_stale() {
+                    return None;
+                }
+                let color_map = build_graph_color_map(&permanent, &self.branch_colors);
+                let head_nodes: Vec<_> = self
+                    .snapshot
+                    .head_oid
+                    .and_then(|oid| permanent.linear.node_of_oid(&oid))
+                    .into_iter()
+                    .collect();
+                let current_branch_reachable =
+                    ReachableNodes::contained_in_branch(&permanent.linear, &head_nodes);
+                let (refs_by_oid, ref_kind_by_name) = build_ref_indices(&self.snapshot.refs);
+                CachedGraphBase {
+                    permanent,
+                    color_map,
+                    current_branch_reachable,
+                    refs_by_oid,
+                    ref_kind_by_name,
+                }
+            }
+        };
+
+        let match_res = self.filter_spec.compute_matches_cancellable(
+            &base.permanent.linear,
+            &self.snapshot,
+            self.path_matches.as_deref(),
+            || self.token.is_stale(),
+        )?;
+        let (bits, filter_error) = match match_res {
+            Ok(bits) => (bits, None),
+            Err(e) => (None, Some(e)),
+        };
+        if self.token.is_stale() {
+            return None;
+        }
+        let visible = VisibleGraph::build(&base.permanent, self.options, bits.as_ref());
+        if self.token.is_stale() {
+            return None;
+        }
+        let mut edges_cache = EdgesInRowCache::new(&visible.linear);
+        let recommended_tracks = PrintElementGenerator::with_cache(
+            &base.permanent,
+            &visible,
+            self.snapshot.head_oid,
+            &mut edges_cache,
+        )
+        .recommended_track_width();
+
+        Some(LogGraphRebuilt {
+            token: self.token,
+            cached: CachedLogGraph {
+                snapshot: self.snapshot,
+                permanent: base.permanent,
+                visible,
+                color_map: base.color_map,
+                current_branch_reachable: base.current_branch_reachable,
+                recommended_tracks,
+                edges_cache: RefCell::new(edges_cache),
+                refs_by_oid: base.refs_by_oid,
+                ref_kind_by_name: base.ref_kind_by_name,
+                filter_generation: self.filter_generation,
+                #[cfg(test)]
+                visible_builds: 1,
+            },
+            filter_error,
+        })
+    }
+}
 
 /// Log-tab graph projection cache, viewport scroll, multi-selection and
 /// back/forward navigation history (`MainFrame.myHistory`).
@@ -172,6 +333,9 @@ pub struct LogGraphState {
     /// Bumped whenever filter inputs change; forces a visible-graph rebuild.
     pub filter_generation: u64,
     pub filter_error: Option<FilterError>,
+    pub graph_epochs: RequestEpoch,
+    in_flight_job: Option<GraphRebuildKey>,
+    pub rebuild_in_progress: bool,
 }
 
 impl Default for LogGraphState {
@@ -187,24 +351,15 @@ impl Default for LogGraphState {
             forward_history: Vec::new(),
             filter_generation: 0,
             filter_error: None,
+            graph_epochs: RequestEpoch::new(),
+            in_flight_job: None,
+            rebuild_in_progress: false,
         }
     }
 }
 
 impl LogGraphState {
-    /// Ensures the permanent graph matches `repo_snapshot` and the visible
-    /// projection matches the current options / filter generation, keeping the
-    /// selected commit selected when it survives the re-projection.
-    pub fn ensure_cache(
-        &mut self,
-        repo_snapshot: Option<&Arc<RepoSnapshot>>,
-        branch_colors: &BranchColorManager,
-        filter: &FilterInputs<'_>,
-    ) {
-        let Some(snap) = repo_snapshot else {
-            self.cached = None;
-            return;
-        };
+    fn is_stale_for(&self, snap: &Arc<RepoSnapshot>) -> (bool, bool) {
         let snapshot_stale = self
             .cached
             .as_ref()
@@ -212,49 +367,17 @@ impl LogGraphState {
         let visible_stale = self.cached.as_ref().is_none_or(|c| {
             c.filter_generation != self.filter_generation || c.visible.options != self.options
         });
-        if !snapshot_stale && !visible_stale {
+        (snapshot_stale, visible_stale)
+    }
+
+    fn preserve_selection_after_rebuild(
+        &mut self,
+        selected_oid: Option<Oid>,
+        anchor_oid: Option<Oid>,
+    ) {
+        let Some(cached) = self.cached.as_ref() else {
             return;
-        }
-
-        // Carry the selection over only from a previous projection (by oid);
-        // a first build always starts at the top row.
-        let prev_snap = self.cached.as_ref().map(|c| Arc::clone(&c.snapshot));
-        let oid_at = |row: usize| {
-            let cached = self.cached.as_ref()?;
-            let prev = prev_snap.as_ref()?;
-            cached.commit_at_visible_row(prev, row).map(|c| c.oid)
         };
-        let selected_oid = oid_at(self.selected_idx);
-        let anchor_oid = self.anchor.and_then(oid_at);
-
-        if snapshot_stale {
-            self.cached = Some(CachedLogGraph::build(
-                snap,
-                self.options,
-                None,
-                branch_colors,
-            ));
-        }
-        let cached = self.cached.as_mut().expect("cache built above");
-        let matches =
-            filter
-                .spec
-                .compute_matches(&cached.permanent.linear, snap, filter.path_matches);
-        let bits = match matches {
-            Ok(bits) => {
-                self.filter_error = None;
-                bits
-            }
-            Err(e) => {
-                self.filter_error = Some(e);
-                None
-            }
-        };
-        if bits.is_some() || !snapshot_stale || cached.visible.options != self.options {
-            cached.rebuild_visible(self.options, bits.as_ref());
-        }
-        cached.filter_generation = self.filter_generation;
-
         let len = cached.visible_count();
         match selected_oid.and_then(|oid| cached.row_of_oid(&oid)) {
             Some(row) => self.selected_idx = row,
@@ -269,6 +392,147 @@ impl LogGraphState {
             self.anchor = None;
         }
         self.adjust_scroll(len, false);
+    }
+
+    fn capture_selection_oids(&self) -> (Option<Oid>, Option<Oid>) {
+        let Some(cached) = self.cached.as_ref() else {
+            return (None, None);
+        };
+        let snap = &cached.snapshot;
+        let selected_oid = cached
+            .commit_at_visible_row(snap, self.selected_idx)
+            .map(|c| c.oid);
+        let anchor_oid = self
+            .anchor
+            .and_then(|row| cached.commit_at_visible_row(snap, row).map(|c| c.oid));
+        (selected_oid, anchor_oid)
+    }
+
+    /// Ensures the permanent graph matches `repo_snapshot` and the visible
+    /// projection matches the current options / filter generation, keeping the
+    /// selected commit selected when it survives the re-projection.
+    pub fn ensure_cache(
+        &mut self,
+        repo_snapshot: Option<&Arc<RepoSnapshot>>,
+        branch_colors: &BranchColorManager,
+        filter: &FilterInputs<'_>,
+    ) {
+        let Some(snap) = repo_snapshot else {
+            self.cached = None;
+            self.in_flight_job = None;
+            self.rebuild_in_progress = false;
+            let _ = self.graph_epochs.issue();
+            return;
+        };
+        let (snapshot_stale, visible_stale) = self.is_stale_for(snap);
+        if !snapshot_stale && !visible_stale {
+            return;
+        }
+
+        let (selected_oid, anchor_oid) = self.capture_selection_oids();
+
+        if snapshot_stale {
+            // Fresh snapshot: compute the filter against the new permanent node ids
+            // and project the visible graph once (no throw-away unfiltered build).
+            let mut filter_result = None;
+            self.cached = Some(CachedLogGraph::build_with(
+                snap,
+                self.options,
+                branch_colors,
+                |linear| {
+                    let res = filter.spec.compute_matches(linear, snap, filter.path_matches);
+                    let bits = res.as_ref().ok().cloned().flatten();
+                    filter_result = Some(res);
+                    bits
+                },
+            ));
+            self.filter_error = filter_result.and_then(Result::err);
+        } else {
+            let cached = self.cached.as_mut().expect("cached graph exists");
+            match filter
+                .spec
+                .compute_matches(&cached.permanent.linear, snap, filter.path_matches)
+            {
+                Ok(bits) => {
+                    self.filter_error = None;
+                    cached.rebuild_visible(self.options, bits.as_ref());
+                }
+                Err(e) => {
+                    self.filter_error = Some(e);
+                    cached.rebuild_visible(self.options, None);
+                }
+            }
+        }
+        let cached = self.cached.as_mut().expect("cache built above");
+        cached.filter_generation = self.filter_generation;
+        self.in_flight_job = None;
+        self.rebuild_in_progress = false;
+        let _ = self.graph_epochs.issue();
+
+        self.preserve_selection_after_rebuild(selected_oid, anchor_oid);
+    }
+
+    /// Issues an off-thread [`LogGraphJob`] when the snapshot has at least
+    /// [`ASYNC_GRAPH_THRESHOLD`] commits and the cache is stale relative to
+    /// what is currently in flight.
+    pub fn take_async_rebuild_job(
+        &mut self,
+        repo_snapshot: Option<&Arc<RepoSnapshot>>,
+        branch_colors: &BranchColorManager,
+        spec: &LogFilterSpec,
+        path_matches: Option<Arc<HashSet<Oid>>>,
+    ) -> Option<LogGraphJob> {
+        let snap = repo_snapshot?;
+        let (snapshot_stale, visible_stale) = self.is_stale_for(snap);
+        if !snapshot_stale && !visible_stale {
+            return None;
+        }
+        let key = GraphRebuildKey {
+            snapshot_ptr: Arc::as_ptr(snap) as usize,
+            filter_generation: self.filter_generation,
+            options: self.options,
+        };
+        if self.in_flight_job.as_ref() == Some(&key) {
+            return None;
+        }
+        let base = if !snapshot_stale {
+            self.cached.as_ref().map(|c| CachedGraphBase {
+                permanent: Arc::clone(&c.permanent),
+                color_map: c.color_map.clone(),
+                current_branch_reachable: c.current_branch_reachable.clone(),
+                refs_by_oid: c.refs_by_oid.clone(),
+                ref_kind_by_name: c.ref_kind_by_name.clone(),
+            })
+        } else {
+            None
+        };
+        let token = self.graph_epochs.issue();
+        self.in_flight_job = Some(key);
+        self.rebuild_in_progress = true;
+        Some(LogGraphJob {
+            token,
+            snapshot: Arc::clone(snap),
+            base,
+            options: self.options,
+            filter_spec: spec.clone(),
+            path_matches,
+            branch_colors: branch_colors.clone(),
+            filter_generation: self.filter_generation,
+        })
+    }
+
+    /// Installs an off-thread [`LogGraphRebuilt`] if its token has not been superseded.
+    pub fn apply_rebuilt(&mut self, rebuilt: LogGraphRebuilt) -> bool {
+        if rebuilt.token.is_stale() {
+            return false;
+        }
+        self.in_flight_job = None;
+        self.rebuild_in_progress = false;
+        let (selected_oid, anchor_oid) = self.capture_selection_oids();
+        self.cached = Some(rebuilt.cached);
+        self.filter_error = rebuilt.filter_error;
+        self.preserve_selection_after_rebuild(selected_oid, anchor_oid);
+        true
     }
 
     pub fn on_snapshot_loaded(&mut self) {

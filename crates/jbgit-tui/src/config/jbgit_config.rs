@@ -209,6 +209,96 @@ impl<'de> Deserialize<'de> for GlyphModePref {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum StatusScanModePref {
+    #[default]
+    Auto,
+    Always,
+    Never,
+}
+
+impl StatusScanModePref {
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "auto" => Some(Self::Auto),
+            "always" | "true" | "on" => Some(Self::Always),
+            "never" | "false" | "off" => Some(Self::Never),
+            _ => None,
+        }
+    }
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Always => "always",
+            Self::Never => "never",
+        }
+    }
+
+    pub const fn to_engine(self) -> jbgit_engine::StatusScanMode {
+        match self {
+            Self::Auto => jbgit_engine::StatusScanMode::Auto,
+            Self::Always => jbgit_engine::StatusScanMode::Always,
+            Self::Never => jbgit_engine::StatusScanMode::Never,
+        }
+    }
+}
+
+impl Serialize for StatusScanModePref {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for StatusScanModePref {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let s = String::deserialize(deserializer)?;
+        Ok(Self::parse(&s).unwrap_or_default())
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PerformanceSection {
+    #[serde(default = "default_large_index_entries")]
+    pub large_index_entries: usize,
+    #[serde(default)]
+    pub worktree_renames: StatusScanModePref,
+    #[serde(default = "default_recurse_untracked")]
+    pub recurse_untracked_dirs: StatusScanModePref,
+    #[serde(default = "default_true")]
+    pub load_commit_bodies: bool,
+}
+
+fn default_large_index_entries() -> usize {
+    jbgit_engine::pool::LARGE_INDEX_ENTRIES
+}
+
+fn default_recurse_untracked() -> StatusScanModePref {
+    StatusScanModePref::Always
+}
+
+impl Default for PerformanceSection {
+    fn default() -> Self {
+        Self {
+            large_index_entries: default_large_index_entries(),
+            worktree_renames: StatusScanModePref::Auto,
+            recurse_untracked_dirs: StatusScanModePref::Always,
+            load_commit_bodies: true,
+        }
+    }
+}
+
+impl PerformanceSection {
+    pub fn to_engine_config(&self) -> jbgit_engine::StatusScanConfig {
+        jbgit_engine::StatusScanConfig {
+            large_index_entries: self.large_index_entries,
+            worktree_renames: self.worktree_renames.to_engine(),
+            recurse_untracked_dirs: self.recurse_untracked_dirs.to_engine(),
+            load_commit_bodies: self.load_commit_bodies,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct JbgitConfig {
     #[serde(default)]
@@ -219,6 +309,8 @@ pub struct JbgitConfig {
     pub diff: DiffSection,
     #[serde(default)]
     pub layout: LayoutSection,
+    #[serde(default)]
+    pub performance: PerformanceSection,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -557,6 +649,20 @@ impl JbgitConfig {
                 }
             }
         }
+        if let Some(perf) = &overlay.performance {
+            if let Some(n) = perf.large_index_entries {
+                self.performance.large_index_entries = n;
+            }
+            if let Some(m) = perf.worktree_renames {
+                self.performance.worktree_renames = m;
+            }
+            if let Some(m) = perf.recurse_untracked_dirs {
+                self.performance.recurse_untracked_dirs = m;
+            }
+            if let Some(b) = perf.load_commit_bodies {
+                self.performance.load_commit_bodies = b;
+            }
+        }
     }
 }
 
@@ -571,6 +677,15 @@ pub struct JbgitConfigOverlay {
     pub graph: Option<GraphSectionOverlay>,
     pub diff: Option<DiffSectionOverlay>,
     pub layout: Option<LayoutSectionOverlay>,
+    pub performance: Option<PerformanceSectionOverlay>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct PerformanceSectionOverlay {
+    pub large_index_entries: Option<usize>,
+    pub worktree_renames: Option<StatusScanModePref>,
+    pub recurse_untracked_dirs: Option<StatusScanModePref>,
+    pub load_commit_bodies: Option<bool>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

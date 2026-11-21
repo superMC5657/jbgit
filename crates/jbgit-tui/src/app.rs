@@ -6,9 +6,9 @@ use std::time::{Duration, Instant};
 use jbgit_core::graph::SortType;
 use jbgit_core::{
     BranchFilter, BranchNodeKind, ChangeRowKind, CommitSummary, ConflictChoice, ConflictDocument,
-    DetailsKey, FileDiff, FileDiffKey, FileHistoryKey, GitConsoleEntry, GitOp, ModalButton, Oid,
-    PaneId, PathFilter, RefKind, RefreshScope, RepoSnapshot, SplitAxis, SplitterId,
-    StageStatusSnapshot, StageTarget, StageTreeRowKind, WorkspaceTab,
+    DetailsKey, EpochToken, FileDiff, FileDiffKey, FileHistoryKey, GitConsoleEntry, GitOp,
+    ModalButton, Oid, PaneId, PathFilter, RefKind, RefreshScope, RepoSnapshot, SplitAxis,
+    SplitterId, StageStatusSnapshot, StageTarget, StageTreeRowKind, WorkspaceTab,
 };
 use jbgit_engine::{
     CommitRequest, EngineEvent, EngineHandle, StageDiffKey, TaskRequest, ThreeDocStageDiff,
@@ -18,7 +18,7 @@ use rustc_hash::FxHashMap;
 
 use crate::dialogs::Dialog;
 use crate::graph::LogGraphState;
-use crate::graph::state::FilterInputs;
+use crate::graph::state::{ASYNC_GRAPH_THRESHOLD, FilterInputs, LogGraphJob, LogGraphRebuilt};
 use crate::hit_test::{DiffHunkActionKind, HitTarget, HitTestRegistry};
 use crate::log_view::{
     BranchesPaneState, DETAILS_DEBOUNCE, DetailsPaneState, DiffPreviewDock,
@@ -516,13 +516,47 @@ pub struct SyntaxJob {
     pub cancel: Arc<AtomicBool>,
 }
 
+/// Off-UI-thread `ReachableNodes::containing_branches` walk for one commit.
 #[derive(Debug, Clone)]
+pub struct ContainingBranchesJob {
+    pub oid: Oid,
+    pub node: jbgit_core::graph::PermNodeId,
+    pub token: EpochToken,
+    pub graph: Arc<jbgit_core::graph::PermanentGraph>,
+    pub snapshot: Arc<RepoSnapshot>,
+}
+
+impl ContainingBranchesJob {
+    pub fn run(&self) -> Option<Vec<String>> {
+        if self.token.is_stale() {
+            return None;
+        }
+        Some(
+            jbgit_core::graph::ReachableNodes::containing_branches(
+                &self.graph.linear,
+                self.node,
+                &self.snapshot.refs,
+            )
+            .into_iter()
+            .map(|r| r.name.clone())
+            .collect(),
+        )
+    }
+}
+
+#[derive(Debug)]
 pub enum UiAsyncEvent {
     SyntaxHighlighted {
         key: SyntaxJobKey,
         epoch: u64,
         highlighted: Arc<HighlightedDiff>,
     },
+    ContainingBranches {
+        oid: Oid,
+        token: EpochToken,
+        names: Vec<String>,
+    },
+    LogGraphRebuilt(Box<LogGraphRebuilt>),
 }
 
 #[derive(Debug, Clone)]
@@ -535,6 +569,8 @@ pub enum Effect {
     RequestPathMatches(Vec<String>, Arc<RepoSnapshot>),
     RequestStageFileDiff(StageDiffKey),
     RequestSyntaxHighlight(SyntaxJob),
+    ComputeContainingBranches(ContainingBranchesJob),
+    RebuildLogGraph(Box<LogGraphJob>),
     RequestAmendPreview,
     RequestCommitPrecheck,
     ApplyStageBuffer {
@@ -944,6 +980,7 @@ pub struct AppState {
 
     pub next_cli_id: u64,
     pub loading_snapshot: bool,
+    pub async_graph_enabled: bool,
     pub status_notice: Option<String>,
     pub spinner_frame: usize,
     pub needs_redraw: bool,
@@ -1068,6 +1105,7 @@ impl AppState {
             scroll_metrics: ViewportScrollMetrics::default(),
             next_cli_id: 1,
             loading_snapshot: false,
+            async_graph_enabled: false,
             status_notice: None,
             spinner_frame: 0,
             needs_redraw: true,
@@ -1085,18 +1123,28 @@ impl AppState {
         }
     }
 
+    fn uses_async_graph(&self) -> bool {
+        self.async_graph_enabled
+            && self
+                .repo_snapshot
+                .as_ref()
+                .is_some_and(|s| s.commits.len() >= ASYNC_GRAPH_THRESHOLD)
+    }
+
     pub fn ensure_graph_cache(&mut self) {
-        let path_matches = self
-            .log_filter
-            .current_path_matches(self.repo_snapshot.as_ref());
-        self.log_graph.ensure_cache(
-            self.repo_snapshot.as_ref(),
-            &self.branch_colors,
-            &FilterInputs {
-                spec: &self.log_filter.spec,
-                path_matches,
-            },
-        );
+        if !self.uses_async_graph() {
+            let path_matches = self
+                .log_filter
+                .current_path_matches(self.repo_snapshot.as_ref());
+            self.log_graph.ensure_cache(
+                self.repo_snapshot.as_ref(),
+                &self.branch_colors,
+                &FilterInputs {
+                    spec: &self.log_filter.spec,
+                    path_matches,
+                },
+            );
+        }
         self.branches.sync_model(self.repo_snapshot.as_ref(), false);
     }
 
@@ -1203,6 +1251,7 @@ impl AppState {
 
     pub fn has_active_tasks(&self) -> bool {
         self.loading_snapshot
+            || self.log_graph.rebuild_in_progress
             || self.stage_workbench.commit_in_progress
             || self.git_ops_running > 0
             || self.file_history.as_ref().is_some_and(|fh| fh.loading)
@@ -1219,6 +1268,7 @@ impl AppState {
             self.stage_workbench.next_deadline(),
             self.file_history.as_ref().and_then(FileHistoryState::next_deadline),
             self.menu_hover.map(|h| h.due),
+            self.log_filter.next_deadline(),
             chord,
         ]
         .into_iter()
@@ -1274,6 +1324,8 @@ impl AppState {
     }
 
     pub(crate) fn on_filter_changed(&mut self) {
+        // Any explicit re-filter also covers a pending debounced text edit.
+        self.log_filter.clear_text_debounce();
         self.log_graph.filter_generation = self.log_graph.filter_generation.wrapping_add(1);
         self.ensure_graph_cache();
         if let Some(err) = &self.log_graph.filter_error {
@@ -1635,16 +1687,15 @@ impl AppState {
                 self.log_filter.editing_text = true;
             }
             Action::FilterTextInput(ch) => {
-                self.log_filter.spec.text.query.push(ch);
-                self.on_filter_changed();
+                self.log_filter.push_text_char(ch, Instant::now());
             }
             Action::FilterTextBackspace => {
-                if self.log_filter.spec.text.query.pop().is_some() {
-                    self.on_filter_changed();
-                }
+                self.log_filter.pop_text_char(Instant::now());
             }
             Action::FilterTextDone => {
-                self.log_filter.editing_text = false;
+                if self.log_filter.finish_text_edit() {
+                    self.on_filter_changed();
+                }
             }
             Action::FilterTextClear => {
                 self.log_filter.spec.text.query.clear();
@@ -2058,6 +2109,10 @@ impl AppState {
             self.pending_key_at = None;
         }
         crate::input_menus::flush_menu_hover(self, now);
+        self.stage_workbench.flush_draft_due(now);
+        if self.log_filter.take_due_text_apply(now) {
+            self.on_filter_changed();
+        }
         if let Some((key, _)) = self.details.pending.take()
             && !self.details.cache.contains(&key)
         {
@@ -2165,14 +2220,32 @@ impl AppState {
     }
 
     pub fn apply_ui_async_event(&mut self, event: UiAsyncEvent) -> Vec<Effect> {
+        let mut effects = Vec::new();
         match event {
+            UiAsyncEvent::ContainingBranches { oid, token, names } => {
+                if self.details.resolve_containing_branches(oid, &token, names) {
+                    self.needs_redraw = true;
+                }
+            }
+            UiAsyncEvent::LogGraphRebuilt(rebuilt) => {
+                if self.log_graph.apply_rebuilt(*rebuilt) {
+                    if let Some(err) = &self.log_graph.filter_error {
+                        self.status_notice = Some(
+                            self.i18n
+                                .t_fmt("toast.filter_error", &[("err", &err.to_string())]),
+                        );
+                    }
+                    self.needs_redraw = true;
+                    self.reconcile_log_requests(Instant::now(), &mut effects);
+                }
+            }
             UiAsyncEvent::SyntaxHighlighted {
                 key: SyntaxJobKey::File(fk),
                 epoch,
                 highlighted,
             } => {
                 if !self.file_syntax.finish(&fk, epoch) {
-                    return Vec::new();
+                    return effects;
                 }
                 let mut updated = false;
                 if self.details.diff_cache.contains(&fk) {
@@ -2195,7 +2268,7 @@ impl AppState {
                 highlighted,
             } => {
                 if !self.stage_syntax.finish(&sk, epoch) {
-                    return Vec::new();
+                    return effects;
                 }
                 if self.stage_workbench.diff_cache.contains(&sk) {
                     self.stage_workbench
@@ -2208,15 +2281,36 @@ impl AppState {
                 }
             }
         }
-        Vec::new()
+        effects
     }
 
     /// Derives background requests from the current Log selection:
-    /// debounced details (LRU hit → 0 ms), containing refs, diff preview and
-    /// path-filter matches.
+    /// debounced details (LRU hit → 0 ms), containing refs, diff preview,
+    /// large-graph rebuilds and path-filter matches.
     pub fn reconcile_log_requests(&mut self, now: Instant, effects: &mut Vec<Effect>) {
         self.ensure_graph_cache();
         let snap = self.repo_snapshot.clone();
+        if self.uses_async_graph() {
+            let path_matches = self
+                .log_filter
+                .path_matches
+                .as_ref()
+                .filter(|pm| {
+                    snap.as_ref().is_some_and(|s| {
+                        pm.paths == self.log_filter.spec.paths.paths
+                            && Arc::ptr_eq(&pm.snapshot, s)
+                    })
+                })
+                .map(|pm| Arc::clone(&pm.oids));
+            if let Some(job) = self.log_graph.take_async_rebuild_job(
+                snap.as_ref(),
+                &self.branch_colors,
+                &self.log_filter.spec,
+                path_matches,
+            ) {
+                effects.push(Effect::RebuildLogGraph(Box::new(job)));
+            }
+        }
 
         // Path filter matches.
         if let Some(s) = &snap
@@ -2280,27 +2374,23 @@ impl AppState {
             );
         }
 
-        // Containing branches / tags (once the selection settles).
-        if self.details.pending.is_none()
-            && let Some(key) = &self.details.current_key
+        // Containing branches / tags (once the selection settles). The full-graph
+        // walk runs on a blocking worker; results are memoised per snapshot.
+        if let Some(key) = &self.details.current_key
             && let [oid] = key.oids.as_slice()
-            && self
-                .details
-                .containing
-                .as_ref()
-                .is_none_or(|(o, _)| o != oid)
             && let (Some(s), Some(cached)) = (&snap, &self.log_graph.cached)
             && let Some(node) = cached.permanent.linear.node_of_oid(oid)
         {
-            let names = jbgit_core::graph::ReachableNodes::containing_branches(
-                &cached.permanent.linear,
-                node,
-                &s.refs,
-            )
-            .into_iter()
-            .map(|r| r.name.clone())
-            .collect();
-            self.details.containing = Some((*oid, names));
+            let oid = *oid;
+            if let Some(token) = self.details.request_containing_branches(oid) {
+                effects.push(Effect::ComputeContainingBranches(ContainingBranchesJob {
+                    oid,
+                    node,
+                    token,
+                    graph: Arc::clone(&cached.permanent),
+                    snapshot: Arc::clone(s),
+                }));
+            }
         }
 
         // Diff preview.
@@ -2517,10 +2607,16 @@ impl AppState {
                     self.stage_workbench.amend_preview = None;
                 }
                 self.log_graph.on_snapshot_loaded();
-                self.details.containing = None;
+                self.details.reset_containing();
                 self.repo_snapshot = Some(snapshot);
                 if self.stage_workbench.amend {
                     effects.push(Effect::RequestAmendPreview);
+                }
+            }
+            EngineEvent::RefAheadBehindBackfilled { epoch, updates } => {
+                if epoch == self.latest_repo_epoch {
+                    self.branches.apply_ahead_behind_backfill(&updates);
+                    self.needs_redraw = true;
                 }
             }
             EngineEvent::CommitDetailsLoaded { bundle, epoch } => {
@@ -2771,6 +2867,37 @@ pub fn execute_effects(
             Effect::CopyToClipboard(text) => {
                 crate::terminal::copy_to_clipboard(&text);
             }
+            Effect::ComputeContainingBranches(job) => {
+                if let Some(tx) = ui_async_tx.cloned() {
+                    tokio::task::spawn_blocking(move || {
+                        if let Some(names) = job.run() {
+                            let _ = tx.send(UiAsyncEvent::ContainingBranches {
+                                oid: job.oid,
+                                token: job.token,
+                                names,
+                            });
+                        }
+                    });
+                } else if let Some(names) = job.run() {
+                    // Headless / test harness without an async runtime.
+                    let _ = state.apply_ui_async_event(UiAsyncEvent::ContainingBranches {
+                        oid: job.oid,
+                        token: job.token,
+                        names,
+                    });
+                }
+            }
+            Effect::RebuildLogGraph(job) => {
+                if let Some(tx) = ui_async_tx.cloned() {
+                    tokio::task::spawn_blocking(move || {
+                        if let Some(rebuilt) = job.run() {
+                            let _ = tx.send(UiAsyncEvent::LogGraphRebuilt(Box::new(rebuilt)));
+                        }
+                    });
+                } else if let Some(rebuilt) = job.run() {
+                    let _ = state.apply_ui_async_event(UiAsyncEvent::LogGraphRebuilt(Box::new(rebuilt)));
+                }
+            }
             Effect::RequestSyntaxHighlight(job) => {
                 if let Some(tx) = ui_async_tx.cloned() {
                     tokio::task::spawn_blocking(move || {
@@ -2932,6 +3059,8 @@ pub fn execute_effects(
                     }
                     Effect::CopyToClipboard(_)
                     | Effect::RequestSyntaxHighlight(_)
+                    | Effect::ComputeContainingBranches(_)
+                    | Effect::RebuildLogGraph(_)
                     | Effect::OpenExternalEditorMessage
                     | Effect::OpenExternalEditorFile(_)
                     | Effect::OpenExternalMergetool(_)

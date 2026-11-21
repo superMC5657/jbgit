@@ -43,19 +43,30 @@ fn delta_path(file: git2::DiffFile<'_>) -> Option<String> {
     file.path().map(|p| p.to_string_lossy().replace('\\', "/"))
 }
 
-pub fn verify_commit_signature_sync(git_dir: &Path, oid: Oid) -> SignatureStatus {
-    let mut cmd = Command::new("git");
-    cmd.arg("--git-dir")
-        .arg(git_dir)
-        .args(["log", "-1", "--format=%G?", &oid.to_string()])
-        .env("GIT_OPTIONAL_LOCKS", "0")
+fn non_interactive_git_command(git: &Path, cwd: Option<&Path>) -> Command {
+    let mut cmd = Command::new(git);
+    if let Some(dir) = cwd {
+        cmd.current_dir(dir);
+    }
+    cmd.env("GIT_OPTIONAL_LOCKS", "0")
         .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GIT_PAGER", "cat")
+        .env("LC_ALL", "C.UTF-8")
         .stdin(Stdio::null());
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
-        cmd.creation_flags(0x0800_0000);
+        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
     }
+    cmd
+}
+
+pub fn verify_commit_signature_sync(git_dir: &Path, oid: Oid) -> SignatureStatus {
+    let git = crate::cli::cached_git_executable().unwrap_or_else(|| Path::new("git"));
+    let mut cmd = non_interactive_git_command(git, None);
+    cmd.arg("--git-dir")
+        .arg(git_dir)
+        .args(["log", "-1", "--format=%G?", &oid.to_string()]);
     match cmd.output() {
         Ok(o) if o.status.success() => {
             if String::from_utf8_lossy(&o.stdout).trim() == "G" {
@@ -818,7 +829,170 @@ pub fn load_file_diff_with_oids_sync(
 
 /// Commits (from `snapshot`) touching any of `paths`. A merge matches only
 /// when it differs from every parent (`--simplify-merges` TREESAME rule).
+/// Commits of `snapshot` touching any of `paths` (log `Paths` filter).
+///
+/// Prefers the native `git log` path walk, which uses the commit-graph and
+/// changed-path Bloom filters when the repository has them; falls back to the
+/// per-commit libgit2 tree diff when no `git` CLI is available, the pathspec
+/// list is too long for the command line, or the CLI run fails.
 pub fn load_path_matches_sync(
+    location: &RepoLocation,
+    paths: &[String],
+    snapshot: &RepoSnapshot,
+    token: &EpochToken,
+) -> Result<HashSet<Oid>, EngineError> {
+    if token.is_stale() {
+        return Err(EngineError::Cancelled);
+    }
+    if paths.len() <= crate::cli::MAX_INLINE_PATHSPECS
+        && let Some(git) = crate::cli::cached_git_executable()
+    {
+        match load_path_matches_cli(git, location, paths, snapshot, token) {
+            Ok(set) => return Ok(set),
+            Err(EngineError::Cancelled) => return Err(EngineError::Cancelled),
+            Err(e) => tracing::debug!("git log path filter failed, using libgit2: {e}"),
+        }
+    }
+    load_path_matches_git2(location, paths, snapshot, token)
+}
+
+/// `git log --full-history` over the snapshot's ref set.
+///
+/// `--full-history` (without parent rewriting) never prunes side branches and
+/// lists every non-merge commit that differs from its parent at `paths` — the
+/// expensive part, served from commit-graph Bloom filters. It also lists merges
+/// that differ from at least *one* parent, whereas the jbgit rule requires a
+/// difference from *every* parent, so only the (few) merges in the output are
+/// re-checked with libgit2. (`--simplify-merges` rewrites parents and would
+/// drift further from that rule.) The child process is killed as soon as
+/// `token` goes stale.
+pub fn load_path_matches_cli(
+    git: &Path,
+    location: &RepoLocation,
+    paths: &[String],
+    snapshot: &RepoSnapshot,
+    token: &EpochToken,
+) -> Result<HashSet<Oid>, EngineError> {
+    use std::io::BufRead;
+
+    if token.is_stale() {
+        return Err(EngineError::Cancelled);
+    }
+    if snapshot.commits.is_empty() || paths.is_empty() {
+        return Ok(HashSet::new());
+    }
+    let known: HashSet<Oid> = snapshot.commits.iter().map(|c| c.oid).collect();
+    let mut args: Vec<String> = [
+        "-c",
+        "core.quotepath=false",
+        "-c",
+        "log.showSignature=false",
+        "log",
+        "--format=%H",
+        "--full-history",
+        "HEAD",
+        "--branches",
+        "--remotes",
+        "--tags",
+    ]
+    .iter()
+    .map(ToString::to_string)
+    .collect();
+    args.push("--".to_string());
+    args.extend(paths.iter().cloned());
+
+    let cwd = if location.is_bare {
+        &location.git_dir
+    } else {
+        &location.workdir
+    };
+    let mut cmd = non_interactive_git_command(git, Some(cwd));
+    cmd.args(&args)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    let mut child = cmd.spawn()?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| EngineError::Other("git log: no stdout".to_string()))?;
+
+    // Read on a helper thread so a quiet-but-busy `git` can still be killed
+    // promptly when the request is superseded.
+    let (line_tx, line_rx) = crossbeam_channel::unbounded::<String>();
+    let reader = std::thread::Builder::new()
+        .name("jbgit-path-log-reader".into())
+        .spawn(move || {
+            for line in std::io::BufReader::new(stdout).lines() {
+                let Ok(line) = line else { break };
+                if line_tx.send(line).is_err() {
+                    break;
+                }
+            }
+        })?;
+
+    let mut out = HashSet::new();
+    let mut cancelled = false;
+    let mut lines = 0usize;
+    loop {
+        match line_rx.recv_timeout(std::time::Duration::from_millis(50)) {
+            Ok(line) => {
+                lines += 1;
+                if let Ok(oid) = line.trim().parse::<Oid>()
+                    && known.contains(&oid)
+                {
+                    out.insert(oid);
+                }
+                if lines.is_multiple_of(256) && token.is_stale() {
+                    cancelled = true;
+                    break;
+                }
+            }
+            Err(crossbeam_channel::RecvTimeoutError::Timeout) => {
+                if token.is_stale() {
+                    cancelled = true;
+                    break;
+                }
+            }
+            Err(crossbeam_channel::RecvTimeoutError::Disconnected) => break,
+        }
+    }
+    if cancelled {
+        let _ = child.kill();
+        let _ = child.wait();
+        drop(line_rx);
+        let _ = reader.join();
+        return Err(EngineError::Cancelled);
+    }
+    let _ = reader.join();
+    let status = child.wait()?;
+    if !status.success() {
+        return Err(EngineError::Other(format!("git log exited with {status}")));
+    }
+
+    let merges: Vec<Oid> = snapshot
+        .commits
+        .iter()
+        .filter(|c| c.parents.len() > 1 && out.contains(&c.oid))
+        .map(|c| c.oid)
+        .collect();
+    if !merges.is_empty() {
+        with_thread_repo(&location.git_dir, |repo| {
+            for (idx, oid) in merges.iter().enumerate() {
+                if idx % 64 == 0 && token.is_stale() {
+                    return Err(EngineError::Cancelled);
+                }
+                if !commit_touches_paths(repo, oid, paths)? {
+                    out.remove(oid);
+                }
+            }
+            Ok(())
+        })?;
+    }
+    Ok(out)
+}
+
+/// libgit2 fallback: diff every snapshot commit against each parent.
+pub fn load_path_matches_git2(
     location: &RepoLocation,
     paths: &[String],
     snapshot: &RepoSnapshot,
@@ -830,37 +1004,46 @@ pub fn load_path_matches_sync(
 
     with_thread_repo(&location.git_dir, |repo| {
         let mut out = HashSet::new();
-        let touches = |parent: Option<&git2::Tree<'_>>, tree: &git2::Tree<'_>| -> bool {
-            let mut opts = DiffOptions::new();
-            for p in paths {
-                opts.pathspec(p);
-            }
-            repo.diff_tree_to_tree(parent, Some(tree), Some(&mut opts))
-                .map(|d| d.deltas().len() > 0)
-                .unwrap_or(false)
-        };
         for (idx, summary) in snapshot.commits.iter().enumerate() {
             if idx % 64 == 0 && token.is_stale() {
                 return Err(EngineError::Cancelled);
             }
-            let Ok(commit) = repo.find_commit(to_git2_oid(&summary.oid)?) else {
-                continue;
-            };
-            let Ok(tree) = commit.tree() else {
-                continue;
-            };
-            let matched = if commit.parent_count() == 0 {
-                touches(None, &tree)
-            } else {
-                commit
-                    .parents()
-                    .all(|p| p.tree().is_ok_and(|pt| touches(Some(&pt), &tree)))
-            };
-            if matched {
+            if commit_touches_paths(repo, &summary.oid, paths)? {
                 out.insert(summary.oid);
             }
         }
         Ok(out)
+    })
+}
+
+/// TREESAME rule shared by both path-filter backends: a commit matches when its
+/// tree differs at `paths` from *every* parent (root: from the empty tree).
+fn commit_touches_paths(
+    repo: &Repository,
+    oid: &Oid,
+    paths: &[String],
+) -> Result<bool, EngineError> {
+    let Ok(commit) = repo.find_commit(to_git2_oid(oid)?) else {
+        return Ok(false);
+    };
+    let Ok(tree) = commit.tree() else {
+        return Ok(false);
+    };
+    let touches = |parent: Option<&git2::Tree<'_>>| -> bool {
+        let mut opts = DiffOptions::new();
+        for p in paths {
+            opts.pathspec(p);
+        }
+        repo.diff_tree_to_tree(parent, Some(&tree), Some(&mut opts))
+            .map(|d| d.deltas().len() > 0)
+            .unwrap_or(false)
+    };
+    Ok(if commit.parent_count() == 0 {
+        touches(None)
+    } else {
+        commit
+            .parents()
+            .all(|p| p.tree().is_ok_and(|pt| touches(Some(&pt))))
     })
 }
 
@@ -1098,7 +1281,8 @@ pub fn load_file_history_sync(
         .unwrap_or_else(|| "HEAD".to_string());
     let max_count_arg = format!("--max-count={}", DEFAULT_FILE_HISTORY_LIMIT + 1);
 
-    let mut cmd = Command::new("git");
+    let git = crate::cli::cached_git_executable().unwrap_or_else(|| Path::new("git"));
+    let mut cmd = non_interactive_git_command(git, Some(&location.workdir));
     cmd.arg("--git-dir")
         .arg(&location.git_dir)
         .args(["-c", "core.quotepath=false", "log", &max_count_arg]);
@@ -1113,19 +1297,7 @@ pub fn load_file_history_sync(
         &start_rev,
         "--",
         &key.path,
-    ])
-    .current_dir(&location.workdir)
-    .env("GIT_OPTIONAL_LOCKS", "0")
-    .env("GIT_TERMINAL_PROMPT", "0")
-    .env("GIT_PAGER", "cat")
-    .env("LC_ALL", "C.UTF-8")
-    .stdin(Stdio::null());
-
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
-    }
+    ]);
 
     let output = cmd.output().map_err(|e| {
         if e.kind() == std::io::ErrorKind::NotFound {

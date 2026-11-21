@@ -505,30 +505,30 @@ impl AppState {
             Action::CommitEditorChar(ch) => {
                 self.stage_workbench.empty_message_error = false;
                 self.stage_workbench.editor.insert_char(*ch);
-                self.stage_workbench.save_draft();
+                self.stage_workbench.mark_draft_dirty(Instant::now());
             }
             Action::CommitEditorNewline => {
                 self.stage_workbench.empty_message_error = false;
                 self.stage_workbench.editor.insert_newline();
-                self.stage_workbench.save_draft();
+                self.stage_workbench.mark_draft_dirty(Instant::now());
             }
             Action::CommitEditorPaste(text) => {
                 self.stage_workbench.empty_message_error = false;
                 self.stage_workbench.editor.insert_paste(text);
-                self.stage_workbench.save_draft();
+                self.stage_workbench.mark_draft_dirty(Instant::now());
             }
             Action::CommitEditorBackspace => {
                 self.stage_workbench.empty_message_error = false;
                 self.stage_workbench.editor.backspace();
-                self.stage_workbench.save_draft();
+                self.stage_workbench.mark_draft_dirty(Instant::now());
             }
             Action::CommitEditorDelete => {
                 self.stage_workbench.editor.delete_forward();
-                self.stage_workbench.save_draft();
+                self.stage_workbench.mark_draft_dirty(Instant::now());
             }
             Action::CommitEditorDeleteWord => {
                 self.stage_workbench.editor.delete_word_backward();
-                self.stage_workbench.save_draft();
+                self.stage_workbench.mark_draft_dirty(Instant::now());
             }
             Action::CommitEditorMove(kind) => match kind {
                 EditorMoveKind::Left => self.stage_workbench.editor.move_left(),
@@ -540,12 +540,12 @@ impl AppState {
             },
             Action::CommitEditorUndo => {
                 if self.stage_workbench.editor.undo() {
-                    self.stage_workbench.save_draft();
+                    self.stage_workbench.mark_draft_dirty(Instant::now());
                 }
             }
             Action::CommitEditorRedo => {
                 if self.stage_workbench.editor.redo() {
-                    self.stage_workbench.save_draft();
+                    self.stage_workbench.mark_draft_dirty(Instant::now());
                 }
             }
             Action::CommitToggleAmend => {
@@ -554,6 +554,9 @@ impl AppState {
                 self.stage_workbench.empty_message_error = false;
                 if next {
                     self.stage_workbench.saved_draft = Some(self.stage_workbench.editor.text());
+                    // Persist the user's own draft before the editor shows HEAD's message.
+                    self.stage_workbench.mark_draft_dirty(Instant::now());
+                    self.stage_workbench.flush_draft_sync();
                     self.stage_workbench.amend_awaiting_message = true;
                     if let Some(preview) = &self.stage_workbench.amend_preview
                         && !preview.message.trim().is_empty()
@@ -567,7 +570,8 @@ impl AppState {
                     if let Some(draft) = self.stage_workbench.saved_draft.take() {
                         self.stage_workbench.editor.set_text(&draft);
                     }
-                    self.stage_workbench.save_draft();
+                    self.stage_workbench.mark_draft_dirty(Instant::now());
+                    self.stage_workbench.flush_draft_sync();
                 }
                 self.stage_workbench.sync_rows(self.stage_status.as_ref());
             }
@@ -604,7 +608,7 @@ impl AppState {
                     }
                     self.stage_workbench.editor.set_text(&msg);
                     self.stage_workbench.empty_message_error = false;
-                    self.stage_workbench.save_draft();
+                    self.stage_workbench.mark_draft_dirty(Instant::now());
                     self.focused_pane = PaneId::CommitMessageEditor;
                 }
             }
@@ -751,6 +755,7 @@ impl AppState {
         if self.stage_workbench.commit_in_progress {
             return;
         }
+        self.stage_workbench.flush_draft_sync();
         if let Some(status) = &self.stage_status
             && !status.conflicted.is_empty()
         {
@@ -1033,7 +1038,7 @@ impl AppState {
                     self.stage_workbench.saved_draft = None;
                     self.stage_workbench.amend_preview = None;
                     self.stage_workbench.empty_message_error = false;
-                    self.stage_workbench.save_draft();
+                    self.stage_workbench.mark_draft_dirty(Instant::now());
                     let localized_summary = match outcome.short_sha.as_deref() {
                         Some(sha) if was_amend => {
                             self.i18n.t_fmt("toast.amended_commit", &[("sha", sha)])
@@ -1095,7 +1100,7 @@ impl AppState {
                 self.stage_workbench.amend_preview = None;
                 if self.stage_workbench.editor.is_empty() && !restored_message.is_empty() {
                     self.stage_workbench.editor.set_text(&restored_message);
-                    self.stage_workbench.save_draft();
+                    self.stage_workbench.mark_draft_dirty(Instant::now());
                 }
                 self.status_notice =
                     Some(self.i18n.t("toast.undid_last_commit").to_string());

@@ -3,8 +3,8 @@
 
 use std::cell::RefCell;
 use std::path::PathBuf;
-use std::sync::Arc;
-use std::time::Instant;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use jbgit_core::{
     AmendCommitPreview, DiffContext, DiffLineKind, LineSelection, LruCache, StageNodeKind,
@@ -410,6 +410,36 @@ impl Eq for SyncRowsCacheKey {}
 
 pub type CachedStageDiffRowsEntry = (Arc<ThreeDocStageDiff>, bool, Arc<[StageDiffRow]>);
 
+/// Quiet period after the last commit-message edit before the draft hits disk.
+pub const DRAFT_DEBOUNCE: Duration = Duration::from_millis(300);
+
+/// Serialises draft file writes issued from background threads and the
+/// synchronous flush path. Every write carries a monotonically increasing
+/// sequence number; a write older than the newest one already on disk is
+/// dropped, so a slow background write can never clobber a later flush.
+#[derive(Debug, Default)]
+pub struct DraftPersistence {
+    written_seq: Mutex<u64>,
+}
+
+impl DraftPersistence {
+    fn write(&self, path: &std::path::Path, content: Option<&str>, seq: u64) {
+        let mut written = self.written_seq.lock().unwrap_or_else(|e| e.into_inner());
+        if seq <= *written {
+            return;
+        }
+        match content {
+            Some(text) => {
+                let _ = std::fs::write(path, text);
+            }
+            None => {
+                let _ = std::fs::remove_file(path);
+            }
+        }
+        *written = seq;
+    }
+}
+
 #[derive(Debug)]
 pub struct StageWorkbenchState {
     pub tree_opts: StageTreeOptions,
@@ -451,6 +481,13 @@ pub struct StageWorkbenchState {
     pub commit_history: Vec<String>,
     pub history_path: Option<PathBuf>,
     pub draft_path: Option<PathBuf>,
+    /// Editor content changed since the draft file was last written.
+    pub draft_dirty: bool,
+    /// When the debounced background draft write fires.
+    pub draft_save_deadline: Option<Instant>,
+    pub(crate) draft_seq: u64,
+    pub(crate) draft_io: Arc<DraftPersistence>,
+    pub(crate) draft_jobs: Vec<std::thread::JoinHandle<()>>,
     pub last_commit_banner: Option<CommitBanner>,
 
     pub sync_rows_key: Option<SyncRowsCacheKey>,
@@ -498,6 +535,11 @@ impl Default for StageWorkbenchState {
             commit_history: Vec::new(),
             history_path: None,
             draft_path: None,
+            draft_dirty: false,
+            draft_save_deadline: None,
+            draft_seq: 0,
+            draft_io: Arc::default(),
+            draft_jobs: Vec::new(),
             last_commit_banner: None,
             sync_rows_key: None,
             diff_rows_cache: RefCell::new(None),
@@ -508,7 +550,13 @@ impl Default for StageWorkbenchState {
 
 impl StageWorkbenchState {
     pub fn next_deadline(&self) -> Option<Instant> {
-        self.pending_diff.as_ref().map(|(_, at)| *at)
+        [
+            self.pending_diff.as_ref().map(|(_, at)| *at),
+            self.draft_save_deadline,
+        ]
+        .into_iter()
+        .flatten()
+        .min()
     }
 
     pub fn invalidate_diff_cache_for_path(&mut self, path: &str) {
@@ -577,19 +625,80 @@ impl StageWorkbenchState {
         self.draft_path = Some(path);
     }
 
-    pub fn save_draft(&self) {
-        let Some(path) = &self.draft_path else {
+    /// Records a commit-message edit; the draft is written [`DRAFT_DEBOUNCE`]
+    /// after the last edit by [`Self::flush_draft_due`] on a background thread.
+    pub fn mark_draft_dirty(&mut self, now: Instant) {
+        if self.draft_path.is_none() {
+            return;
+        }
+        self.draft_dirty = true;
+        self.draft_save_deadline = Some(now + DRAFT_DEBOUNCE);
+    }
+
+    /// Draft text to persist (`None` = remove the file). While amending, the
+    /// editor holds the amended commit's message; the user's own draft is
+    /// parked in `saved_draft`.
+    fn draft_contents(&self) -> Option<String> {
+        let draft = if self.amend {
+            self.saved_draft.clone().unwrap_or_default()
+        } else {
+            self.editor.text()
+        };
+        (!draft.trim().is_empty()).then_some(draft)
+    }
+
+    fn take_draft_write(&mut self) -> Option<(PathBuf, Option<String>, u64)> {
+        if !self.draft_dirty {
+            return None;
+        }
+        let path = self.draft_path.clone()?;
+        self.draft_dirty = false;
+        self.draft_save_deadline = None;
+        self.draft_seq += 1;
+        Some((path, self.draft_contents(), self.draft_seq))
+    }
+
+    /// Fires the debounced draft write once its deadline has passed, snapshotting
+    /// the text on the UI thread and doing the disk IO on a short-lived worker.
+    pub fn flush_draft_due(&mut self, now: Instant) {
+        if self.draft_save_deadline.is_none_or(|at| at > now) {
+            return;
+        }
+        let Some((path, contents, seq)) = self.take_draft_write() else {
+            self.draft_save_deadline = None;
             return;
         };
-        let draft = if self.amend {
-            self.saved_draft.as_deref().unwrap_or("")
-        } else {
-            &self.editor.text()
-        };
-        if draft.trim().is_empty() {
-            let _ = std::fs::remove_file(path);
-        } else {
-            let _ = std::fs::write(path, draft);
+        self.draft_jobs.retain(|job| !job.is_finished());
+        let io = Arc::clone(&self.draft_io);
+        let spawned = std::thread::Builder::new()
+            .name("jbgit-draft-writer".into())
+            .spawn(move || io.write(&path, contents.as_deref(), seq));
+        match spawned {
+            Ok(job) => self.draft_jobs.push(job),
+            Err(_) => {
+                // Could not spawn: fall back to the synchronous write.
+                if let Some(path) = &self.draft_path {
+                    let contents = self.draft_contents();
+                    self.draft_io.write(path, contents.as_deref(), seq);
+                }
+            }
+        }
+    }
+
+    /// Writes any pending draft immediately (before commit, amend toggle,
+    /// external editor hand-off, and on exit) and waits for any in-flight
+    /// background draft write so no edit is lost or raced.
+    pub fn flush_draft_sync(&mut self) {
+        if let Some((path, contents, seq)) = self.take_draft_write() {
+            self.draft_io.write(&path, contents.as_deref(), seq);
+        }
+        self.wait_draft_writes();
+    }
+
+    /// Blocks until all background draft writes issued so far have finished.
+    pub fn wait_draft_writes(&mut self) {
+        for job in self.draft_jobs.drain(..) {
+            let _ = job.join();
         }
     }
 

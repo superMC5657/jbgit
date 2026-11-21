@@ -34,7 +34,7 @@ pub use details::{
 pub use epoch::{EpochToken, EpochTracker, RequestEpoch};
 pub use filter::{
     BranchFilter, DateFilter, FilterError, LogFilterSpec, PathFilter, RepoUser, TextFilter,
-    TextMatcher, UserFilter, glob_match,
+    TextMatcher, UserFilter, UserMatcher, glob_match,
 };
 pub use git_ops::{
     GitFailure, GitOp, GitOpOutcome, GitStep, OngoingKind, OngoingStep, RefNameError, ResetMode,

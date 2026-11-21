@@ -12,7 +12,7 @@ use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 
 use crate::cli::{CliCommand, CliStreamEvent, GitCliExecutor, GitExecutableInfo};
 use crate::error::EngineError;
-use crate::pool::Git2WorkerPool;
+use crate::pool::{AheadBehindUpdate, Git2WorkerPool, StatusScanConfig, TaskPriority};
 use crate::probe::{RepoLocation, probe_repo_state};
 use crate::stage::{
     CommitOutcome, CommitPrecheckInfo, CommitRequest, StageDiffKey, ThreeDocStageDiff,
@@ -110,6 +110,12 @@ pub enum EngineEvent {
     RepoSnapshotLoaded {
         snapshot: Arc<RepoSnapshot>,
         epoch: u64,
+    },
+    /// Delayed `ahead_behind` counts for tracking branches skipped by the
+    /// initial snapshot budget.
+    RefAheadBehindBackfilled {
+        epoch: u64,
+        updates: Vec<AheadBehindUpdate>,
     },
     CommitDetailsLoaded {
         bundle: Arc<CommitChangesBundle>,
@@ -289,6 +295,15 @@ impl EngineSupervisor {
         location: RepoLocation,
         enable_watcher: bool,
     ) -> Result<(EngineHandle, UnboundedReceiver<EngineEvent>), EngineError> {
+        Self::start_with_config(location, enable_watcher, StatusScanConfig::default())
+    }
+
+    /// Variant of [`Self::start`] using explicit status/snapshot scan policies.
+    pub fn start_with_config(
+        location: RepoLocation,
+        enable_watcher: bool,
+        scan_config: StatusScanConfig,
+    ) -> Result<(EngineHandle, UnboundedReceiver<EngineEvent>), EngineError> {
         let epochs = EpochTracker::default();
         let pool = Arc::new(Git2WorkerPool::new(4));
         let cli = GitCliExecutor::detect().ok();
@@ -302,7 +317,6 @@ impl EngineSupervisor {
             let ev_tx = event_tx.clone();
             match RepoWatcher::start(
                 location.clone(),
-                Arc::clone(&pool),
                 Arc::clone(&mutation_guard),
                 move |scope| {
                     let _ = ev_tx.send(EngineEvent::ExternalFsChanged(scope));
@@ -335,14 +349,50 @@ impl EngineSupervisor {
                         let pool = Arc::clone(&pool);
                         let loc = sup_location.clone();
                         let token = EpochToken::new(sup_epochs.repo_snapshot.clone(), epoch);
-                        spawn_epoch_task(
-                            &event_tx,
-                            async move {
-                                pool.load_repo_snapshot(loc, token, DEFAULT_MAX_COMMITS)
-                                    .await
-                            },
-                            move |snapshot| EngineEvent::RepoSnapshotLoaded { snapshot, epoch },
-                        );
+                        let tx = event_tx.clone();
+                        tokio::spawn(async move {
+                            match pool
+                                .load_repo_snapshot_with_pending(
+                                    loc.clone(),
+                                    token.clone(),
+                                    DEFAULT_MAX_COMMITS,
+                                    scan_config,
+                                )
+                                .await
+                            {
+                                Ok((snapshot, pending)) => {
+                                    let _ = tx.send(EngineEvent::RepoSnapshotLoaded {
+                                        snapshot,
+                                        epoch,
+                                    });
+                                    if !pending.is_empty() && !token.is_stale() {
+                                        match pool
+                                            .compute_ahead_behind_batch(loc, pending, token)
+                                            .await
+                                        {
+                                            Ok(updates) if !updates.is_empty() => {
+                                                let _ = tx.send(
+                                                    EngineEvent::RefAheadBehindBackfilled {
+                                                        epoch,
+                                                        updates,
+                                                    },
+                                                );
+                                            }
+                                            Ok(_) | Err(EngineError::Cancelled) => {}
+                                            Err(e) => {
+                                                tracing::debug!(
+                                                    "ahead_behind backfill skipped: {e}"
+                                                );
+                                            }
+                                        }
+                                    }
+                                }
+                                Err(EngineError::Cancelled) => {}
+                                Err(e) => {
+                                    let _ = tx.send(EngineEvent::Error(e.to_string()));
+                                }
+                            }
+                        });
                     }
                     TaskRequest::LoadCommitDetails { key, epoch } => {
                         let pool = Arc::clone(&pool);
@@ -456,7 +506,15 @@ impl EngineSupervisor {
                         let token = EpochToken::new(sup_epochs.stage_status.clone(), epoch);
                         spawn_epoch_task(
                             &event_tx,
-                            async move { pool.load_stage_status(loc, include_ignored, token).await },
+                            async move {
+                                pool.load_stage_status_with_config(
+                                    loc,
+                                    include_ignored,
+                                    scan_config,
+                                    token,
+                                )
+                                .await
+                            },
                             move |status| EngineEvent::StageStatusLoaded { status, epoch },
                         );
                     }
@@ -484,7 +542,7 @@ impl EngineSupervisor {
                         let loc = sup_location.clone();
                         let tx = event_tx.clone();
                         tokio::spawn(async move {
-                            let info = pool.probe_commit_precheck(loc).await;
+                            let info = pool.probe_commit_precheck(loc, TaskPriority::Background).await;
                             let _ = tx.send(EngineEvent::CommitPrecheckLoaded { info });
                         });
                     }
@@ -575,7 +633,9 @@ impl EngineSupervisor {
                         let guard = Arc::clone(&mutation_guard);
                         tokio::spawn(async move {
                             let token = guard.begin();
-                            let precheck = pool.probe_commit_precheck(loc.clone()).await;
+                            let precheck = pool
+                                .probe_commit_precheck(loc.clone(), TaskPriority::Interactive)
+                                .await;
                             let use_cli = ((precheck.has_commit_hooks && request.run_hooks)
                                 || precheck.gpg_sign)
                                 && cli_exec.is_some();

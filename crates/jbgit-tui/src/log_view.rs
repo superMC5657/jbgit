@@ -11,11 +11,11 @@ use std::time::{Duration, Instant};
 use jbgit_core::{
     BranchFilter, BranchTreeNode, BranchTreeRow, BranchesPanelSettings, BranchesTreeModel,
     ChangeRowKind, ChangeTreeRow, CommitChangesBundle, DateFilter, DetailsKey, DiffContext,
-    FileChange, FileDiff, FileDiffKey, FileHistoryBundle, FileHistoryEntry, FileHistoryKey,
-    LogFilterSpec, LruCache, Oid, PathFilter, RepoSnapshot, SignatureStatus, TextFilter,
-    TextMatcher, UserFilter, build_change_rows, side_by_side_rows,
+    EpochToken, FileChange, FileDiff, FileDiffKey, FileHistoryBundle, FileHistoryEntry,
+    FileHistoryKey, LogFilterSpec, LruCache, Oid, PathFilter, RepoSnapshot, RequestEpoch,
+    SignatureStatus, TextFilter, TextMatcher, UserFilter, build_change_rows, side_by_side_rows,
 };
-use rustc_hash::FxHashSet;
+use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::syntax::{HighlightedDiff, LazyWordDiffCache};
 
@@ -25,6 +25,11 @@ pub const NARROW_WIDTH: u16 = 110;
 pub const DETAILS_DEBOUNCE: Duration = Duration::from_millis(30);
 pub const DETAILS_CACHE_CAPACITY: usize = 256;
 pub const DIFF_CACHE_CAPACITY: usize = 64;
+/// Quiet period after the last Log text-filter keystroke before the 50k-commit
+/// graph is re-filtered (`Enter` applies immediately).
+pub const FILTER_TEXT_DEBOUNCE: Duration = Duration::from_millis(120);
+/// Per-snapshot memo of containing-branch BFS results.
+pub const CONTAINING_CACHE_CAPACITY: usize = 256;
 
 // ───────────────────────────── Branches pane ─────────────────────────────
 
@@ -46,6 +51,7 @@ pub struct BranchesPaneState {
     pub forced_open: bool,
     pub settings_path: Option<PathBuf>,
     source: Option<Arc<RepoSnapshot>>,
+    ahead_behind_overrides: FxHashMap<String, (usize, usize)>,
 }
 
 impl BranchesPaneState {
@@ -89,6 +95,9 @@ impl BranchesPaneState {
         if !stale && !force {
             return;
         }
+        if stale {
+            self.ahead_behind_overrides.clear();
+        }
         let selected_key = self.selected_node().map(|n| n.key.clone());
         self.model = match snap {
             Some(s) => BranchesTreeModel::build(
@@ -100,12 +109,33 @@ impl BranchesPaneState {
             ),
             None => BranchesTreeModel::default(),
         };
+        if !self.ahead_behind_overrides.is_empty() {
+            for node in &mut self.model.nodes {
+                if let Some(&ab) = self.ahead_behind_overrides.get(&node.key) {
+                    node.ahead_behind = Some(ab);
+                }
+            }
+        }
         self.source = snap.cloned();
         let valid: FxHashSet<&str> = self.model.nodes.iter().map(|n| n.key.as_str()).collect();
         self.multi.retain(|k| valid.contains(k.as_str()));
         self.refresh_rows();
         if let Some(key) = selected_key {
             self.select_key(&key);
+        }
+    }
+
+    pub fn apply_ahead_behind_backfill(&mut self, updates: &[(String, (usize, usize))]) {
+        if updates.is_empty() {
+            return;
+        }
+        for (full_name, ab) in updates {
+            self.ahead_behind_overrides.insert(full_name.clone(), *ab);
+        }
+        for node in &mut self.model.nodes {
+            if let Some(&ab) = self.ahead_behind_overrides.get(&node.key) {
+                node.ahead_behind = Some(ab);
+            }
         }
     }
 
@@ -310,6 +340,8 @@ pub struct FilterBarState {
     pub path_matches: Option<PathMatches>,
     /// Paths + snapshot of the in-flight path request.
     pub path_requested: Option<PathRequest>,
+    /// Debounced text-filter re-projection deadline (see [`FILTER_TEXT_DEBOUNCE`]).
+    pub text_apply_at: Option<Instant>,
     compiled_text: RefCell<Option<CachedTextMatcher>>,
 }
 
@@ -360,6 +392,43 @@ impl FilterBarState {
 
     pub fn path_matches_pending(&self, snap: Option<&Arc<RepoSnapshot>>) -> bool {
         !self.spec.paths.is_empty() && self.current_path_matches(snap).is_none()
+    }
+
+    pub fn push_text_char(&mut self, ch: char, now: Instant) {
+        self.spec.text.query.push(ch);
+        self.text_apply_at = Some(now + FILTER_TEXT_DEBOUNCE);
+    }
+
+    pub fn pop_text_char(&mut self, now: Instant) -> bool {
+        if self.spec.text.query.pop().is_some() {
+            self.text_apply_at = Some(now + FILTER_TEXT_DEBOUNCE);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Leaves text-edit mode; returns `true` when an un-flushed edit was pending.
+    pub fn finish_text_edit(&mut self) -> bool {
+        self.editing_text = false;
+        self.text_apply_at.take().is_some()
+    }
+
+    pub fn take_due_text_apply(&mut self, now: Instant) -> bool {
+        if self.text_apply_at.is_some_and(|at| at <= now) {
+            self.text_apply_at = None;
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn clear_text_debounce(&mut self) {
+        self.text_apply_at = None;
+    }
+
+    pub fn next_deadline(&self) -> Option<Instant> {
+        self.text_apply_at
     }
 }
 
@@ -532,6 +601,11 @@ pub struct DetailsPaneState {
     pub requested_diff: Option<FileDiffKey>,
     /// Containing branches/tags for the single selected commit.
     pub containing: Option<(Oid, Vec<String>)>,
+    /// Background containing-branch results for the current snapshot.
+    pub containing_cache: LruCache<Oid, Vec<String>>,
+    /// Commit + epoch token of the in-flight containing-branch job.
+    pub containing_requested: Option<(Oid, EpochToken)>,
+    pub containing_epochs: RequestEpoch,
 
     pub changes_selected: usize,
     pub changes_group_by_dir: bool,
@@ -568,6 +642,9 @@ impl Default for DetailsPaneState {
             merge_parent: 0,
             requested_diff: None,
             containing: None,
+            containing_cache: LruCache::new(CONTAINING_CACHE_CAPACITY),
+            containing_requested: None,
+            containing_epochs: RequestEpoch::new(),
             changes_selected: 0,
             changes_group_by_dir: true,
             changes_collapsed: FxHashSet::default(),
@@ -722,6 +799,66 @@ impl DetailsPaneState {
 
     pub fn next_deadline(&self) -> Option<Instant> {
         self.pending.as_ref().map(|(_, at)| *at)
+    }
+
+    pub fn reset_containing(&mut self) {
+        self.containing = None;
+        self.containing_cache.clear();
+        self.containing_requested = None;
+        let _ = self.containing_epochs.issue();
+    }
+
+    /// Resolves a single-commit containing-branch query from cache or issues a
+    /// new cancellable [`EpochToken`] when an off-thread BFS is needed.
+    pub fn request_containing_branches(&mut self, oid: Oid) -> Option<EpochToken> {
+        if self.pending.is_some()
+            || self.containing.as_ref().is_some_and(|(o, _)| *o == oid)
+        {
+            return None;
+        }
+        if let Some(names) = self.containing_cache.get(&oid).cloned() {
+            self.containing = Some((oid, names));
+            return None;
+        }
+        if self
+            .containing_requested
+            .as_ref()
+            .is_some_and(|(o, _)| *o == oid)
+        {
+            return None;
+        }
+        let token = self.containing_epochs.issue();
+        self.containing_requested = Some((oid, token.clone()));
+        Some(token)
+    }
+
+    /// Applies an off-thread containing-branch result if it is still current.
+    /// Returns `true` when the active pane display changed.
+    pub fn resolve_containing_branches(
+        &mut self,
+        oid: Oid,
+        token: &EpochToken,
+        names: Vec<String>,
+    ) -> bool {
+        let is_current = self
+            .containing_requested
+            .as_ref()
+            .is_some_and(|(o, t)| *o == oid && t.epoch() == token.epoch() && !token.is_stale());
+        if !is_current {
+            return false;
+        }
+        self.containing_requested = None;
+        self.containing_cache.insert(oid, names.clone());
+        let selected = self
+            .current_key
+            .as_ref()
+            .is_some_and(|k| k.oids.as_slice() == [oid]);
+        if selected {
+            self.containing = Some((oid, names));
+            true
+        } else {
+            false
+        }
     }
 
     pub fn diff_total_rows(&self) -> usize {
