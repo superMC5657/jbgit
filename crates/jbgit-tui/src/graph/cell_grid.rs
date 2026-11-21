@@ -234,11 +234,11 @@ impl CellGridGraphBackend {
                         if from_col < cols {
                             GraphCell::set_slot(&mut self.cells[from_col].right, conn);
                         }
-                        for x in (from_col + 1)..to_col {
-                            if x < cols {
-                                GraphCell::set_slot(&mut self.cells[x].left, conn);
-                                GraphCell::set_slot(&mut self.cells[x].right, conn);
-                            }
+                        let end = to_col.min(cols);
+                        let start = (from_col + 1).min(end);
+                        for cell in &mut self.cells[start..end] {
+                            GraphCell::set_slot(&mut cell.left, conn);
+                            GraphCell::set_slot(&mut cell.right, conn);
                         }
                         if to_col < cols {
                             GraphCell::set_slot(&mut self.cells[to_col].left, conn);

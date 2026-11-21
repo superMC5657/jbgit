@@ -575,10 +575,7 @@ fn spawn_load_repo_snapshot(ctx: &SupervisorContext, epoch: u64) {
                                 updates,
                             });
                         }
-                        Ok(_) | Err(EngineError::Cancelled) => {}
-                        Err(e) => {
-                            tracing::debug!("ahead_behind backfill skipped: {e}");
-                        }
+                        Ok(_) | Err(_) => {}
                     }
                 }
             }

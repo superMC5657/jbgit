@@ -32,7 +32,7 @@ pub fn load_path_matches_sync(
         match load_path_matches_cli(git, location, paths, snapshot, token) {
             Ok(set) => return Ok(set),
             Err(EngineError::Cancelled) => return Err(EngineError::Cancelled),
-            Err(e) => tracing::debug!("git log path filter failed, using libgit2: {e}"),
+            Err(_) => {}
         }
     }
     load_path_matches_git2(location, paths, snapshot, token)
