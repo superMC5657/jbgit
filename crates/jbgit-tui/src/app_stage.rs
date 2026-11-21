@@ -2,6 +2,8 @@
 //! Amend workflow, Commit & Push confirmation, and draft/history persistence.
 
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
+use std::time::Instant;
 
 use jbgit_core::{
     LineSelection, ModalButton, PaneId, RefreshScope, StageNodeKind, StageTreeRowKind,
@@ -12,7 +14,6 @@ use jbgit_engine::{CommitRequest, EngineEvent, StageDiffSide};
 use crate::app::{Action, AppState, EditorMoveKind, Effect, ModalLayer, PopupKind};
 use crate::hit_test::DiffHunkActionKind;
 use crate::stage_view::{CommitBanner, RollbackUndoEntry, StageDiffRow};
-use crate::syntax::HighlightedDiff;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum StageDiffOp {
@@ -29,26 +30,28 @@ impl AppState {
     ) -> bool {
         match action {
             Action::SelectCommitStageRow(idx) => {
-                self.stage_workbench.sync_rows(self.stage_status.as_deref());
+                self.stage_workbench.sync_rows(self.stage_status.as_ref());
                 let total = self.stage_item_count();
                 if total > 0 {
                     self.commit_stage_selected_idx = (*idx).min(total - 1);
                     self.stage_workbench.multi_selected.clear();
+                    self.stage_workbench.pending_select_immediate = true;
                 }
             }
             Action::ScrollCommitStage(delta) => {
-                self.stage_workbench.sync_rows(self.stage_status.as_deref());
+                self.stage_workbench.sync_rows(self.stage_status.as_ref());
                 let total = self.stage_item_count();
                 if total > 0 {
                     self.commit_stage_selected_idx =
                         (self.commit_stage_selected_idx as isize + *delta)
                             .clamp(0, (total - 1) as isize) as usize;
                     self.stage_workbench.multi_selected.clear();
+                    self.stage_workbench.pending_select_immediate = false;
                 }
             }
             Action::StageExpand(expand) => {
                 let expand = *expand;
-                self.stage_workbench.sync_rows(self.stage_status.as_deref());
+                self.stage_workbench.sync_rows(self.stage_status.as_ref());
                 if let Some(row) = self
                     .stage_workbench
                     .rows
@@ -63,7 +66,7 @@ impl AppState {
                         }
                     ) {
                         self.stage_workbench.tree_opts.untracked_many_expanded = expand;
-                        self.stage_workbench.sync_rows(self.stage_status.as_deref());
+                        self.stage_workbench.sync_rows(self.stage_status.as_ref());
                     } else if row.is_container() {
                         if row.expanded != expand {
                             if expand {
@@ -71,7 +74,7 @@ impl AppState {
                             } else {
                                 self.stage_workbench.collapsed.insert(row.key.clone());
                             }
-                            self.stage_workbench.sync_rows(self.stage_status.as_deref());
+                            self.stage_workbench.sync_rows(self.stage_status.as_ref());
                         } else if expand
                             && self.commit_stage_selected_idx + 1 < self.stage_workbench.rows.len()
                         {
@@ -86,7 +89,7 @@ impl AppState {
             }
             Action::StageToggleRow(idx) => {
                 let idx = *idx;
-                self.stage_workbench.sync_rows(self.stage_status.as_deref());
+                self.stage_workbench.sync_rows(self.stage_status.as_ref());
                 if let Some(row) = self.stage_workbench.rows.get(idx).cloned() {
                     if matches!(
                         row.kind,
@@ -97,20 +100,20 @@ impl AppState {
                     ) {
                         self.stage_workbench.tree_opts.untracked_many_expanded =
                             !self.stage_workbench.tree_opts.untracked_many_expanded;
-                        self.stage_workbench.sync_rows(self.stage_status.as_deref());
+                        self.stage_workbench.sync_rows(self.stage_status.as_ref());
                     } else if row.is_container() {
                         if row.expanded {
                             self.stage_workbench.collapsed.insert(row.key.clone());
                         } else {
                             self.stage_workbench.collapsed.remove(&row.key);
                         }
-                        self.stage_workbench.sync_rows(self.stage_status.as_deref());
+                        self.stage_workbench.sync_rows(self.stage_status.as_ref());
                     }
                 }
             }
             Action::StageToggleMulti(idx) => {
                 let idx = *idx;
-                self.stage_workbench.sync_rows(self.stage_status.as_deref());
+                self.stage_workbench.sync_rows(self.stage_status.as_ref());
                 if let Some(row) = self.stage_workbench.rows.get(idx) {
                     let key = row.key.clone();
                     if self.stage_workbench.multi_selected.is_empty()
@@ -131,7 +134,7 @@ impl AppState {
                 }
             }
             Action::StageSelectAll => {
-                self.stage_workbench.sync_rows(self.stage_status.as_deref());
+                self.stage_workbench.sync_rows(self.stage_status.as_ref());
                 self.stage_workbench.multi_selected = self
                     .stage_workbench
                     .rows
@@ -143,7 +146,7 @@ impl AppState {
             Action::StageToggleGroupByDir => {
                 self.stage_workbench.tree_opts.group_by_dir =
                     !self.stage_workbench.tree_opts.group_by_dir;
-                self.stage_workbench.sync_rows(self.stage_status.as_deref());
+                self.stage_workbench.sync_rows(self.stage_status.as_ref());
                 self.commit_stage_selected_idx = 0;
             }
             Action::StageExpandAll(expand) => {
@@ -152,7 +155,7 @@ impl AppState {
                     self.stage_workbench.tree_opts.untracked_many_expanded = true;
                 } else {
                     self.stage_workbench.tree_opts.untracked_many_expanded = false;
-                    self.stage_workbench.sync_rows(self.stage_status.as_deref());
+                    self.stage_workbench.sync_rows(self.stage_status.as_ref());
                     let keys: Vec<String> = self
                         .stage_workbench
                         .rows
@@ -162,7 +165,7 @@ impl AppState {
                         .collect();
                     self.stage_workbench.collapsed.extend(keys);
                 }
-                self.stage_workbench.sync_rows(self.stage_status.as_deref());
+                self.stage_workbench.sync_rows(self.stage_status.as_ref());
             }
             Action::StageToggleShowIgnored => {
                 self.stage_workbench.tree_opts.show_ignored =
@@ -179,7 +182,7 @@ impl AppState {
                 }
             }
             Action::StageActionSelected => {
-                self.stage_workbench.sync_rows(self.stage_status.as_deref());
+                self.stage_workbench.sync_rows(self.stage_status.as_ref());
                 if let Some(status) = &self.stage_status {
                     let targets = self.stage_workbench.collect_targets_for_action(
                         self.commit_stage_selected_idx,
@@ -187,6 +190,13 @@ impl AppState {
                         StageNodeKind::can_stage,
                     );
                     if !targets.is_empty() {
+                        for t in &targets {
+                            self.stage_workbench.invalidate_diff_cache_for_path(&t.path);
+                            if let Some(old) = &t.old_path {
+                                self.stage_workbench.invalidate_diff_cache_for_path(old);
+                            }
+                        }
+                        self.stage_workbench.pending_select_immediate = true;
                         let count_s = targets.len().to_string();
                         self.status_notice = Some(
                             self.i18n
@@ -197,7 +207,7 @@ impl AppState {
                 }
             }
             Action::UnstageActionSelected => {
-                self.stage_workbench.sync_rows(self.stage_status.as_deref());
+                self.stage_workbench.sync_rows(self.stage_status.as_ref());
                 if let Some(status) = &self.stage_status {
                     let targets = self.stage_workbench.collect_targets_for_action(
                         self.commit_stage_selected_idx,
@@ -205,6 +215,13 @@ impl AppState {
                         StageNodeKind::can_unstage,
                     );
                     if !targets.is_empty() {
+                        for t in &targets {
+                            self.stage_workbench.invalidate_diff_cache_for_path(&t.path);
+                            if let Some(old) = &t.old_path {
+                                self.stage_workbench.invalidate_diff_cache_for_path(old);
+                            }
+                        }
+                        self.stage_workbench.pending_select_immediate = true;
                         let count_s = targets.len().to_string();
                         self.status_notice = Some(
                             self.i18n
@@ -215,12 +232,14 @@ impl AppState {
                 }
             }
             Action::StageAllTracked => {
+                self.stage_workbench.invalidate_all_diff_caches();
+                self.stage_workbench.pending_select_immediate = true;
                 effects.push(Effect::StageAllTracked);
                 self.status_notice =
                     Some(self.i18n.t("toast.staging_all_tracked").to_string());
             }
             Action::DiscardPromptSelected => {
-                self.stage_workbench.sync_rows(self.stage_status.as_deref());
+                self.stage_workbench.sync_rows(self.stage_status.as_ref());
                 if let Some(status) = &self.stage_status {
                     let targets = self.stage_workbench.collect_targets_for_action(
                         self.commit_stage_selected_idx,
@@ -328,7 +347,7 @@ impl AppState {
                 }
             }
             Action::StageDiffNextFile(delta) => {
-                self.stage_workbench.sync_rows(self.stage_status.as_deref());
+                self.stage_workbench.sync_rows(self.stage_status.as_ref());
                 let file_indices: Vec<usize> = self
                     .stage_workbench
                     .rows
@@ -378,7 +397,9 @@ impl AppState {
             Action::StageDiffCycleContext => {
                 self.stage_workbench.diff_context = self.stage_workbench.diff_context.next();
                 self.stage_workbench.requested_diff = None;
+                self.stage_workbench.pending_diff = None;
                 self.stage_workbench.visual_anchor_row = None;
+                self.stage_workbench.pending_select_immediate = true;
             }
             Action::StageDiffSwitchSide => {
                 if let Some(key) = &self.stage_workbench.current_diff_key {
@@ -396,6 +417,7 @@ impl AppState {
                         )
                     }) {
                         self.commit_stage_selected_idx = pos;
+                        self.stage_workbench.pending_select_immediate = true;
                     }
                 }
             }
@@ -416,6 +438,8 @@ impl AppState {
             }
             Action::StageDiffUndoRollback => {
                 if let Some(entry) = self.stage_workbench.rollback_undo_stack.pop() {
+                    self.stage_workbench.invalidate_diff_cache_for_path(&entry.path);
+                    self.stage_workbench.pending_select_immediate = true;
                     self.status_notice = Some(
                         self.i18n
                             .t_fmt("toast.undid_rollback", &[("path", &entry.path)]),
@@ -546,7 +570,7 @@ impl AppState {
                     }
                     self.stage_workbench.save_draft();
                 }
-                self.stage_workbench.sync_rows(self.stage_status.as_deref());
+                self.stage_workbench.sync_rows(self.stage_status.as_ref());
             }
             Action::CommitToggleSignoff => {
                 self.stage_workbench.signoff = !self.stage_workbench.signoff;
@@ -625,7 +649,7 @@ impl AppState {
         sel: LineSelection,
         effects: &mut Vec<Effect>,
     ) {
-        let Some(diff) = &self.stage_workbench.current_diff else {
+        let Some(diff) = self.stage_workbench.current_diff.as_ref().cloned() else {
             return;
         };
         if diff.key.side == StageDiffSide::AmendCommit {
@@ -635,6 +659,8 @@ impl AppState {
             StageDiffOp::Stage if !sel.staged_side => {
                 let new_staged = diff.tracker.stage_lines(&sel);
                 self.stage_workbench.visual_anchor_row = None;
+                self.stage_workbench.invalidate_diff_cache_for_path(&diff.key.path);
+                self.stage_workbench.pending_select_immediate = true;
                 effects.push(Effect::ApplyStageBuffer {
                     path: diff.key.path.clone(),
                     new_staged_bytes: new_staged,
@@ -646,6 +672,8 @@ impl AppState {
                 let new_staged = diff.tracker.unstage_lines(&sel);
                 let remove = !diff.vcs_exists && new_staged.is_empty();
                 self.stage_workbench.visual_anchor_row = None;
+                self.stage_workbench.invalidate_diff_cache_for_path(&diff.key.path);
+                self.stage_workbench.pending_select_immediate = true;
                 effects.push(Effect::ApplyStageBuffer {
                     path: diff.key.path.clone(),
                     new_staged_bytes: new_staged,
@@ -662,6 +690,8 @@ impl AppState {
                         prev_local_bytes: diff.local_bytes.clone(),
                     });
                 self.stage_workbench.visual_anchor_row = None;
+                self.stage_workbench.invalidate_diff_cache_for_path(&diff.key.path);
+                self.stage_workbench.pending_select_immediate = true;
                 self.status_notice = Some(
                     self.i18n
                         .t_fmt("toast.rolled_back_lines", &[("path", &diff.key.path)]),
@@ -792,8 +822,8 @@ impl AppState {
         effects.push(Effect::ExecuteCommit(req));
     }
 
-    pub fn reconcile_stage_requests(&mut self, effects: &mut Vec<Effect>) {
-        self.stage_workbench.sync_rows(self.stage_status.as_deref());
+    pub fn reconcile_stage_requests(&mut self, now: Instant, effects: &mut Vec<Effect>) {
+        self.stage_workbench.sync_rows(self.stage_status.as_ref());
         let total = self.stage_workbench.rows.len();
         if total == 0 {
             self.commit_stage_selected_idx = 0;
@@ -802,32 +832,96 @@ impl AppState {
         }
 
         if self.active_tab != WorkspaceTab::Commit || self.stage_workbench.diff_collapsed {
+            self.stage_workbench.pending_diff = None;
             return;
         }
+        let immediate = std::mem::take(&mut self.stage_workbench.pending_select_immediate);
 
         let desired = self
             .stage_workbench
             .desired_diff_key(self.commit_stage_selected_idx, self.stage_status.as_deref());
 
         if desired != self.stage_workbench.current_diff_key {
+            if let Some(prev) = self.stage_syntax_cancel.take() {
+                prev.store(true, Ordering::Relaxed);
+            }
+            self.stage_syntax_epoch = self.stage_syntax_epoch.wrapping_add(1);
+            self.stage_syntax_in_flight = None;
             self.stage_workbench.current_diff_key = desired.clone();
             self.stage_workbench.diff_scroll = 0;
             self.stage_workbench.diff_cursor_row = 0;
             self.stage_workbench.visual_anchor_row = None;
-            self.stage_workbench.current_diff = None;
-            self.stage_workbench.diff_syntax = None;
+
             if let Some(k) = desired {
-                self.stage_workbench.requested_diff = Some(k.clone());
-                effects.push(Effect::RequestStageFileDiff(k));
+                if let Some(cached) = self.stage_workbench.diff_cache.get(&k).cloned() {
+                    self.stage_workbench.pending_diff = None;
+                    self.stage_workbench.requested_diff = None;
+                    self.stage_workbench.diff_syntax =
+                        self.stage_workbench.diff_syntax_cache.get(&k).cloned();
+                    self.stage_workbench.current_diff = Some(Arc::clone(&cached));
+                    let len = self.stage_workbench.diff_rows().len();
+                    if len > 0 {
+                        self.stage_workbench.diff_cursor_row =
+                            self.stage_workbench.diff_cursor_row.min(len - 1);
+                    }
+                    if self.stage_workbench.diff_syntax.is_none() {
+                        self.schedule_stage_syntax(cached, effects);
+                    }
+                } else {
+                    self.stage_workbench.current_diff = None;
+                    self.stage_workbench.diff_syntax = None;
+                    if immediate {
+                        self.stage_workbench.pending_diff = None;
+                        self.stage_workbench.requested_diff = Some(k.clone());
+                        effects.push(Effect::RequestStageFileDiff(k));
+                    } else {
+                        self.stage_workbench.pending_diff =
+                            Some((k, now + crate::log_view::DETAILS_DEBOUNCE));
+                    }
+                }
             } else {
+                self.stage_workbench.current_diff = None;
+                self.stage_workbench.diff_syntax = None;
                 self.stage_workbench.requested_diff = None;
+                self.stage_workbench.pending_diff = None;
             }
-        } else if let Some(k) = desired
-            && self.stage_workbench.current_diff.is_none()
-            && self.stage_workbench.requested_diff.as_ref() != Some(&k)
-        {
-            self.stage_workbench.requested_diff = Some(k.clone());
-            effects.push(Effect::RequestStageFileDiff(k));
+        } else if let Some(k) = desired {
+            if self.stage_workbench.current_diff.is_none() {
+                if let Some(cached) = self.stage_workbench.diff_cache.get(&k).cloned() {
+                    self.stage_workbench.pending_diff = None;
+                    self.stage_workbench.requested_diff = None;
+                    self.stage_workbench.diff_syntax =
+                        self.stage_workbench.diff_syntax_cache.get(&k).cloned();
+                    self.stage_workbench.current_diff = Some(Arc::clone(&cached));
+                    if self.stage_workbench.diff_syntax.is_none() {
+                        self.schedule_stage_syntax(cached, effects);
+                    }
+                } else if self.stage_workbench.requested_diff.as_ref() != Some(&k)
+                    && self
+                        .stage_workbench
+                        .pending_diff
+                        .as_ref()
+                        .map(|(pk, _)| pk)
+                        != Some(&k)
+                {
+                    if immediate {
+                        self.stage_workbench.pending_diff = None;
+                        self.stage_workbench.requested_diff = Some(k.clone());
+                        effects.push(Effect::RequestStageFileDiff(k));
+                    } else {
+                        self.stage_workbench.pending_diff =
+                            Some((k, now + crate::log_view::DETAILS_DEBOUNCE));
+                    }
+                }
+            } else if self.stage_workbench.diff_syntax.is_none()
+                && let Some(cached_hl) = self.stage_workbench.diff_syntax_cache.get(&k).cloned()
+            {
+                self.stage_workbench.diff_syntax = Some(cached_hl);
+            } else if self.stage_workbench.diff_syntax.is_none()
+                && let Some(diff) = self.stage_workbench.current_diff.clone()
+            {
+                self.schedule_stage_syntax(diff, effects);
+            }
         }
     }
 
@@ -843,10 +937,16 @@ impl AppState {
                 }
                 self.latest_stage_epoch = epoch;
 
+                let changed = self.stage_status.as_ref() != Some(&status);
                 let old_rows = self.stage_workbench.rows.clone();
                 let old_sel = self.commit_stage_selected_idx;
                 self.stage_status = Some(status);
-                self.stage_workbench.sync_rows(self.stage_status.as_deref());
+                if changed {
+                    self.stage_workbench.invalidate_all_diff_caches();
+                    self.stage_workbench.current_diff_key = None;
+                    self.stage_workbench.pending_select_immediate = true;
+                }
+                self.stage_workbench.sync_rows(self.stage_status.as_ref());
                 if !old_rows.is_empty() {
                     self.commit_stage_selected_idx = self
                         .stage_workbench
@@ -854,36 +954,27 @@ impl AppState {
                 } else {
                     self.commit_stage_selected_idx = 0;
                 }
-                self.stage_workbench.requested_diff = None;
-                if let Some(k) = self
-                    .stage_workbench
-                    .desired_diff_key(self.commit_stage_selected_idx, self.stage_status.as_deref())
-                {
-                    self.stage_workbench.current_diff_key = Some(k.clone());
-                    self.stage_workbench.requested_diff = Some(k.clone());
-                    effects.push(Effect::RequestStageFileDiff(k));
-                }
                 None
             }
             EngineEvent::StageFileDiffLoaded { diff, epoch } => {
-                if epoch < self.latest_stage_diff_epoch {
-                    return None;
-                }
-                self.latest_stage_diff_epoch = epoch;
                 if self.stage_workbench.requested_diff.as_ref() == Some(&diff.key) {
                     self.stage_workbench.requested_diff = None;
                 }
-                if self.stage_workbench.current_diff_key.as_ref() == Some(&diff.key) {
-                    if self.config.jbgit.diff.syntax_highlight
-                        && !diff.is_binary
-                        && !diff.hunks.is_empty()
-                    {
-                        let hl = Arc::new(HighlightedDiff::build(&diff.as_file_diff()));
-                        self.stage_workbench.diff_syntax = Some(hl);
-                    } else {
-                        self.stage_workbench.diff_syntax = None;
-                    }
-                    self.stage_workbench.current_diff = Some(diff);
+                let is_wanted = self.stage_workbench.current_diff_key.as_ref() == Some(&diff.key);
+                if epoch < self.latest_stage_diff_epoch && !is_wanted {
+                    return None;
+                }
+                self.latest_stage_diff_epoch = self.latest_stage_diff_epoch.max(epoch);
+                self.stage_workbench
+                    .diff_cache
+                    .insert(diff.key.clone(), Arc::clone(&diff));
+                if is_wanted {
+                    self.stage_workbench.diff_syntax = self
+                        .stage_workbench
+                        .diff_syntax_cache
+                        .get(&diff.key)
+                        .cloned();
+                    self.stage_workbench.current_diff = Some(Arc::clone(&diff));
                     let len = self.stage_workbench.diff_rows().len();
                     if len == 0 {
                         self.stage_workbench.diff_cursor_row = 0;
@@ -891,6 +982,9 @@ impl AppState {
                     } else {
                         self.stage_workbench.diff_cursor_row =
                             self.stage_workbench.diff_cursor_row.min(len - 1);
+                    }
+                    if self.stage_workbench.diff_syntax.is_none() {
+                        self.schedule_stage_syntax(diff, effects);
                     }
                 }
                 None
@@ -903,6 +997,10 @@ impl AppState {
                     .map(|p| p.short_sha.clone());
                 let new_sha = preview.as_ref().map(|p| p.short_sha.clone());
                 let head_changed = prev_sha != new_sha;
+                if head_changed {
+                    self.stage_workbench.invalidate_all_diff_caches();
+                    self.stage_workbench.pending_select_immediate = true;
+                }
                 let should_fill = self.stage_workbench.amend
                     && (self.stage_workbench.amend_awaiting_message || head_changed);
                 self.stage_workbench.amend_preview = preview.clone();
@@ -913,7 +1011,7 @@ impl AppState {
                 {
                     self.stage_workbench.editor.set_text(&p.message);
                 }
-                self.stage_workbench.sync_rows(self.stage_status.as_deref());
+                self.stage_workbench.sync_rows(self.stage_status.as_ref());
                 None
             }
             EngineEvent::CommitPrecheckLoaded { info } => {
@@ -923,6 +1021,8 @@ impl AppState {
             EngineEvent::CommitCompleted(outcome) => {
                 self.stage_workbench.commit_in_progress = false;
                 if outcome.success {
+                    self.stage_workbench.invalidate_all_diff_caches();
+                    self.stage_workbench.pending_select_immediate = true;
                     let was_amend = self.stage_workbench.amend;
                     let committed_msg = self.stage_workbench.editor.text();
                     self.stage_workbench.push_history(&committed_msg);

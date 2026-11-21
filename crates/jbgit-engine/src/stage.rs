@@ -4,9 +4,9 @@ use std::path::Path;
 use git2::{Commit, DiffFindOptions, IndexEntry, IndexTime, ObjectType, Repository, ResetType, Signature};
 use git2::build::CheckoutBuilder;
 use jbgit_core::{
-    AmendCommitPreview, DiffContext, DiffHunk, DiffLine, DiffLineKind, EpochToken, FileChange,
-    FileDiff, FileDiffKey, FileStatusKind, Oid, StageDiffHunk, StageLineTracker, StageNodeKind,
-    StageTarget, DetailsKey,
+    AmendCommitPreview, DetailsKey, DiffContext, DiffHunk, DiffLine, DiffLineKind, EpochToken,
+    FileChange, FileDiff, FileDiffKey, FileStatusKind, MAX_DIFF_FILE_BYTES, Oid, StageDiffHunk,
+    StageLineTracker, StageNodeKind, StageTarget,
 };
 
 use crate::error::EngineError;
@@ -43,6 +43,7 @@ pub struct ThreeDocStageDiff {
     pub tracker: StageLineTracker,
     pub hunks: Vec<StageDiffHunk>,
     pub is_truncated: bool,
+    pub is_too_large: bool,
 }
 
 impl ThreeDocStageDiff {
@@ -57,6 +58,7 @@ impl ThreeDocStageDiff {
             hunks: self.hunks.iter().map(|h| h.hunk.clone()).collect(),
             is_binary: self.is_binary,
             is_truncated: self.is_truncated,
+            is_too_large: self.is_too_large,
         }
     }
 }
@@ -94,97 +96,151 @@ pub struct CommitOutcome {
 
 const MAX_STAGE_DIFF_LINES: usize = 20_000;
 
-fn read_tree_entry(
-    repo: &Repository,
-    tree: &git2::Tree<'_>,
-    rel_path: &str,
-) -> (Option<Vec<u8>>, Option<u32>, bool) {
-    let Ok(entry) = tree.get_path(Path::new(rel_path)) else {
-        return (None, None, false);
-    };
-    let mode = entry.filemode() as u32;
-    match entry.to_object(repo) {
-        Ok(obj) if obj.kind() == Some(ObjectType::Blob) => {
-            if let Some(blob) = obj.as_blob() {
-                let is_bin = blob.is_binary() || blob.content().contains(&0);
-                return (Some(blob.content().to_vec()), Some(mode), is_bin);
-            }
-            (None, Some(mode), false)
+enum StageReadSide {
+    Missing,
+    TooLarge { mode: Option<u32> },
+    Loaded {
+        bytes: Vec<u8>,
+        mode: Option<u32>,
+        is_binary: bool,
+    },
+}
+
+impl StageReadSide {
+    fn is_too_large(&self) -> bool {
+        matches!(self, Self::TooLarge { .. })
+    }
+
+    fn exists(&self) -> bool {
+        !matches!(self, Self::Missing)
+    }
+
+    fn mode(&self) -> Option<u32> {
+        match self {
+            Self::Missing => None,
+            Self::TooLarge { mode } | Self::Loaded { mode, .. } => *mode,
         }
-        _ => (None, Some(mode), false),
+    }
+
+    fn into_parts(self) -> (Option<Vec<u8>>, Option<u32>, bool) {
+        match self {
+            Self::Loaded {
+                bytes,
+                mode,
+                is_binary,
+            } => (Some(bytes), mode, is_binary),
+            Self::TooLarge { mode } => (None, mode, false),
+            Self::Missing => (None, None, false),
+        }
     }
 }
 
-fn read_head_tree_entry(
+fn read_blob_if_within_limit(
     repo: &Repository,
-    rel_path: &str,
-) -> (Option<Vec<u8>>, Option<u32>, bool) {
+    oid: git2::Oid,
+    mode: u32,
+) -> StageReadSide {
+    if let Ok(odb) = repo.odb()
+        && let Ok((size, ObjectType::Blob)) = odb.read_header(oid)
+        && size > MAX_DIFF_FILE_BYTES
+    {
+        return StageReadSide::TooLarge { mode: Some(mode) };
+    }
+    match repo.find_blob(oid) {
+        Ok(blob) => {
+            if blob.size() > MAX_DIFF_FILE_BYTES {
+                return StageReadSide::TooLarge { mode: Some(mode) };
+            }
+            let content = blob.content();
+            let is_bin = blob.is_binary() || content.contains(&0);
+            StageReadSide::Loaded {
+                bytes: content.to_vec(),
+                mode: Some(mode),
+                is_binary: is_bin,
+            }
+        }
+        Err(_) => StageReadSide::Loaded {
+            bytes: Vec::new(),
+            mode: Some(mode),
+            is_binary: false,
+        },
+    }
+}
+
+fn read_tree_entry(repo: &Repository, tree: &git2::Tree<'_>, rel_path: &str) -> StageReadSide {
+    let Ok(entry) = tree.get_path(Path::new(rel_path)) else {
+        return StageReadSide::Missing;
+    };
+    let mode = entry.filemode() as u32;
+    if entry.kind() != Some(ObjectType::Blob) {
+        return StageReadSide::Missing;
+    }
+    read_blob_if_within_limit(repo, entry.id(), mode)
+}
+
+fn read_head_tree_entry(repo: &Repository, rel_path: &str) -> StageReadSide {
     let Ok(head) = repo.head() else {
-        return (None, None, false);
+        return StageReadSide::Missing;
     };
     let Ok(commit) = head.peel_to_commit() else {
-        return (None, None, false);
+        return StageReadSide::Missing;
     };
     let Ok(tree) = commit.tree() else {
-        return (None, None, false);
+        return StageReadSide::Missing;
     };
     read_tree_entry(repo, &tree, rel_path)
 }
 
-fn read_index_entry(
-    repo: &Repository,
-    rel_path: &str,
-) -> (Option<Vec<u8>>, Option<u32>, bool, bool) {
+fn read_index_entry(repo: &Repository, rel_path: &str) -> (StageReadSide, bool) {
     let Ok(index) = repo.index() else {
-        return (None, None, false, false);
+        return (StageReadSide::Missing, false);
     };
-    let is_conflicted = index
-        .conflicts()
-        .ok()
-        .map(|mut c| {
-            c.any(|item| {
-                item.ok().is_some_and(|e| {
-                    [e.ancestor.as_ref(), e.our.as_ref(), e.their.as_ref()]
-                        .into_iter()
-                        .flatten()
-                        .any(|ie| ie.path == rel_path.as_bytes())
-                })
-            })
-        })
-        .unwrap_or(false);
+    let path_obj = Path::new(rel_path);
+    let is_conflicted = index.has_conflicts()
+        && (1..=3).any(|stage| index.get_path(path_obj, stage).is_some());
 
-    if let Some(entry) = index.get_path(Path::new(rel_path), 0) {
+    if let Some(entry) = index.get_path(path_obj, 0) {
         let mode = entry.mode;
-        if let Ok(blob) = repo.find_blob(entry.id) {
-            let is_bin = blob.is_binary() || blob.content().contains(&0);
-            return (
-                Some(blob.content().to_vec()),
-                Some(mode),
-                is_bin,
-                is_conflicted,
-            );
-        }
-        return (None, Some(mode), false, is_conflicted);
+        return (
+            read_blob_if_within_limit(repo, entry.id, mode),
+            is_conflicted,
+        );
     }
-    (None, None, false, is_conflicted)
+    (StageReadSide::Missing, is_conflicted)
 }
 
-fn read_worktree_file(workdir: &Path, rel_path: &str) -> (Option<Vec<u8>>, Option<u32>, bool) {
+fn read_worktree_file(workdir: &Path, rel_path: &str) -> StageReadSide {
     let full = workdir.join(rel_path);
-    let Ok(bytes) = fs::read(&full) else {
-        return (None, None, false);
+    let Ok(meta) = fs::metadata(&full) else {
+        return StageReadSide::Missing;
     };
-    let is_bin = bytes.iter().take(8192).any(|&b| b == 0);
     #[cfg(unix)]
     let mode = {
         use std::os::unix::fs::PermissionsExt;
-        fs::metadata(&full)
-            .ok()
-            .map(|m| if m.permissions().mode() & 0o111 != 0 { 0o100755 } else { 0o100644 })
+        Some(if meta.permissions().mode() & 0o111 != 0 {
+            0o100755
+        } else {
+            0o100644
+        })
     };
     #[cfg(not(unix))]
     let mode = Some(0o100644);
-    (Some(bytes), mode, is_bin)
+
+    if meta.len() > MAX_DIFF_FILE_BYTES as u64 {
+        return StageReadSide::TooLarge { mode };
+    }
+    let Ok(bytes) = fs::read(&full) else {
+        return StageReadSide::Missing;
+    };
+    if bytes.len() > MAX_DIFF_FILE_BYTES {
+        return StageReadSide::TooLarge { mode };
+    }
+    let is_bin = bytes.iter().take(8192).any(|&b| b == 0);
+    StageReadSide::Loaded {
+        bytes,
+        mode,
+        is_binary: is_bin,
+    }
 }
 
 pub fn load_stage_file_diff_sync(
@@ -203,40 +259,54 @@ pub fn load_stage_file_diff_sync(
 
         if key.side == StageDiffSide::AmendCommit {
             let vcs_lookup = key.old_path.as_deref().unwrap_or(&key.path);
-            let (vcs_opt, vcs_mode, vcs_bin, head_opt, head_mode, head_bin) =
-                match repo.head().ok().and_then(|h| h.peel_to_commit().ok()) {
-                    Some(commit) => {
-                        let parent_res = commit
-                            .parent(0)
-                            .ok()
-                            .and_then(|p| p.tree().ok())
-                            .map(|t| read_tree_entry(repo, &t, vcs_lookup))
-                            .unwrap_or((None, None, false));
-                        let head_res = commit
-                            .tree()
-                            .ok()
-                            .map(|t| read_tree_entry(repo, &t, &key.path))
-                            .unwrap_or((None, None, false));
-                        (
-                            parent_res.0,
-                            parent_res.1,
-                            parent_res.2,
-                            head_res.0,
-                            head_res.1,
-                            head_res.2,
-                        )
-                    }
-                    None => (None, None, false, None, None, false),
-                };
+            let (vcs_side, head_side) = match repo.head().ok().and_then(|h| h.peel_to_commit().ok())
+            {
+                Some(commit) => {
+                    let parent_res = commit
+                        .parent(0)
+                        .ok()
+                        .and_then(|p| p.tree().ok())
+                        .map(|t| read_tree_entry(repo, &t, vcs_lookup))
+                        .unwrap_or(StageReadSide::Missing);
+                    let head_res = commit
+                        .tree()
+                        .ok()
+                        .map(|t| read_tree_entry(repo, &t, &key.path))
+                        .unwrap_or(StageReadSide::Missing);
+                    (parent_res, head_res)
+                }
+                None => (StageReadSide::Missing, StageReadSide::Missing),
+            };
 
             if token.is_stale() {
                 return Err(EngineError::Cancelled);
             }
 
-            let file_mode = head_mode.or(vcs_mode).unwrap_or(0o100644);
+            let file_mode = head_side.mode().or(vcs_side.mode()).unwrap_or(0o100644);
+            let vcs_exists = vcs_side.exists();
+            let head_exists = head_side.exists();
+            if vcs_side.is_too_large() || head_side.is_too_large() {
+                return Ok(ThreeDocStageDiff {
+                    key: key.clone(),
+                    vcs_exists,
+                    staged_exists: head_exists,
+                    local_exists: head_exists,
+                    vcs_bytes: Vec::new(),
+                    staged_bytes: Vec::new(),
+                    local_bytes: Vec::new(),
+                    file_mode,
+                    is_binary: false,
+                    is_conflicted: false,
+                    tracker: StageLineTracker::new(b"", b"", b""),
+                    hunks: Vec::new(),
+                    is_truncated: false,
+                    is_too_large: true,
+                });
+            }
+
+            let (vcs_opt, _, vcs_bin) = vcs_side.into_parts();
+            let (head_opt, _, head_bin) = head_side.into_parts();
             let is_binary = vcs_bin || head_bin;
-            let vcs_exists = vcs_opt.is_some();
-            let head_exists = head_opt.is_some();
             let vcs_bytes = vcs_opt.unwrap_or_default();
             let head_bytes = head_opt.unwrap_or_default();
 
@@ -255,12 +325,19 @@ pub fn load_stage_file_diff_sync(
                     tracker: StageLineTracker::new(b"", b"", b""),
                     hunks: Vec::new(),
                     is_truncated: false,
+                    is_too_large: false,
                 });
             }
 
             let tracker = StageLineTracker::new(&vcs_bytes, &head_bytes, &head_bytes);
+            if token.is_stale() {
+                return Err(EngineError::Cancelled);
+            }
             let (hunks, is_truncated) =
                 tracker.build_interactive_hunks(true, key.context, MAX_STAGE_DIFF_LINES);
+            if token.is_stale() {
+                return Err(EngineError::Cancelled);
+            }
 
             return Ok(ThreeDocStageDiff {
                 key: key.clone(),
@@ -276,6 +353,7 @@ pub fn load_stage_file_diff_sync(
                 tracker,
                 hunks,
                 is_truncated,
+                is_too_large: false,
             });
         }
 
@@ -285,24 +363,46 @@ pub fn load_stage_file_diff_sync(
             &key.path
         };
 
-        let (vcs_opt, vcs_mode, vcs_bin) = read_head_tree_entry(repo, vcs_lookup);
-        let (staged_opt, staged_mode, staged_bin, is_conflicted) =
-            read_index_entry(repo, &key.path);
-        let (local_opt, local_mode, local_bin) = read_worktree_file(&location.workdir, &key.path);
+        let vcs_side = read_head_tree_entry(repo, vcs_lookup);
+        let (staged_side, is_conflicted) = read_index_entry(repo, &key.path);
+        let local_side = read_worktree_file(&location.workdir, &key.path);
 
         if token.is_stale() {
             return Err(EngineError::Cancelled);
         }
 
-        let file_mode = staged_mode
-            .or(vcs_mode)
-            .or(local_mode)
+        let file_mode = staged_side
+            .mode()
+            .or(vcs_side.mode())
+            .or(local_side.mode())
             .unwrap_or(0o100644);
-        let is_binary = vcs_bin || staged_bin || local_bin;
+        let vcs_exists = vcs_side.exists();
+        let staged_exists = staged_side.exists();
+        let local_exists = local_side.exists();
 
-        let vcs_exists = vcs_opt.is_some();
-        let staged_exists = staged_opt.is_some();
-        let local_exists = local_opt.is_some();
+        if vcs_side.is_too_large() || staged_side.is_too_large() || local_side.is_too_large() {
+            return Ok(ThreeDocStageDiff {
+                key: key.clone(),
+                vcs_exists,
+                staged_exists,
+                local_exists,
+                vcs_bytes: Vec::new(),
+                staged_bytes: Vec::new(),
+                local_bytes: Vec::new(),
+                file_mode,
+                is_binary: false,
+                is_conflicted,
+                tracker: StageLineTracker::new(b"", b"", b""),
+                hunks: Vec::new(),
+                is_truncated: false,
+                is_too_large: true,
+            });
+        }
+
+        let (vcs_opt, _, vcs_bin) = vcs_side.into_parts();
+        let (staged_opt, _, staged_bin) = staged_side.into_parts();
+        let (local_opt, _, local_bin) = local_side.into_parts();
+        let is_binary = vcs_bin || staged_bin || local_bin;
 
         let vcs_bytes = vcs_opt.unwrap_or_default();
         let staged_bytes = staged_opt.unwrap_or_default();
@@ -323,23 +423,35 @@ pub fn load_stage_file_diff_sync(
                 tracker: StageLineTracker::new(b"", b"", b""),
                 hunks: Vec::new(),
                 is_truncated: false,
+                is_too_large: false,
             });
         }
 
         let tracker = StageLineTracker::new(&vcs_bytes, &staged_bytes, &local_bytes);
+        if token.is_stale() {
+            return Err(EngineError::Cancelled);
+        }
         let (mut hunks, is_truncated) = tracker.build_interactive_hunks(
             key.side == StageDiffSide::Staged,
             key.context,
             MAX_STAGE_DIFF_LINES,
         );
+        if token.is_stale() {
+            return Err(EngineError::Cancelled);
+        }
 
         // If conflicted and index stage 0 is absent, show the worktree conflict markers directly
         if is_conflicted && hunks.is_empty() && !local_bytes.is_empty() {
-            let lines: Vec<DiffLine> = String::from_utf8_lossy(&local_bytes)
+            let mut lines = Vec::new();
+            for (idx, t) in String::from_utf8_lossy(&local_bytes)
                 .lines()
                 .enumerate()
                 .take(MAX_STAGE_DIFF_LINES)
-                .map(|(idx, t)| DiffLine {
+            {
+                if idx % 64 == 0 && token.is_stale() {
+                    return Err(EngineError::Cancelled);
+                }
+                lines.push(DiffLine {
                     kind: if t.starts_with("<<<<<<<")
                         || t.starts_with("=======")
                         || t.starts_with(">>>>>>>")
@@ -352,8 +464,8 @@ pub fn load_stage_file_diff_sync(
                     new_lineno: Some(idx as u32 + 1),
                     text: t.replace('\t', "    "),
                     word_ranges: Vec::new(),
-                })
-                .collect();
+                });
+            }
             let line_count = lines.len();
             hunks.push(StageDiffHunk {
                 hunk: DiffHunk {
@@ -380,6 +492,7 @@ pub fn load_stage_file_diff_sync(
             tracker,
             hunks,
             is_truncated,
+            is_too_large: false,
         })
     })
 }
@@ -584,6 +697,7 @@ pub fn load_amend_preview_sync(
                 .map(|p| p.to_string_lossy().replace('\\', "/"))
                 .filter(|o| matches!(kind, FileStatusKind::Renamed | FileStatusKind::Copied) && *o != path);
             let exists_in_workdir = workdir.is_some_and(|w| w.join(&path).is_file());
+            let opt_core = |id: git2::Oid| (!id.is_zero()).then(|| to_core_oid(id));
             files.push(FileChange {
                 path,
                 old_path,
@@ -592,6 +706,8 @@ pub fn load_amend_preview_sync(
                 deletions: 0,
                 is_binary: delta.flags().is_binary(),
                 exists_in_workdir,
+                old_oid: opt_core(delta.old_file().id()),
+                new_oid: opt_core(delta.new_file().id()),
             });
         }
 

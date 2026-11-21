@@ -2,6 +2,7 @@
 //! projection: Branches Dashboard, filter bar, presentation settings and the
 //! right-hand changes / details / diff panes.
 
+use std::cell::RefCell;
 use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -11,7 +12,8 @@ use jbgit_core::{
     BranchFilter, BranchTreeNode, BranchTreeRow, BranchesPanelSettings, BranchesTreeModel,
     ChangeRowKind, ChangeTreeRow, CommitChangesBundle, DateFilter, DetailsKey, DiffContext,
     FileChange, FileDiff, FileDiffKey, FileHistoryBundle, FileHistoryEntry, FileHistoryKey,
-    LogFilterSpec, LruCache, Oid, PathFilter, RepoSnapshot, UserFilter, build_change_rows,
+    LogFilterSpec, LruCache, Oid, PathFilter, RepoSnapshot, SignatureStatus, TextFilter,
+    TextMatcher, UserFilter, build_change_rows, side_by_side_rows,
 };
 use rustc_hash::FxHashSet;
 
@@ -293,6 +295,12 @@ pub struct PathMatches {
     pub oids: Arc<HashSet<Oid>>,
 }
 
+#[derive(Debug, Clone)]
+struct CachedTextMatcher {
+    key: TextFilter,
+    matcher: Option<Arc<TextMatcher>>,
+}
+
 #[derive(Debug, Default)]
 pub struct FilterBarState {
     pub spec: LogFilterSpec,
@@ -302,6 +310,7 @@ pub struct FilterBarState {
     pub path_matches: Option<PathMatches>,
     /// Paths + snapshot of the in-flight path request.
     pub path_requested: Option<PathRequest>,
+    compiled_text: RefCell<Option<CachedTextMatcher>>,
 }
 
 impl FilterBarState {
@@ -315,6 +324,30 @@ impl FilterBarState {
 
     pub fn field_active(&self, field: FilterField) -> bool {
         field.is_active(&self.spec)
+    }
+
+    /// Cached compiled text matcher rebuilt only when `spec.text` changes.
+    pub fn compiled_text_matcher(&self) -> Option<Arc<TextMatcher>> {
+        {
+            let guard = self.compiled_text.borrow();
+            if let Some(cached) = guard.as_ref()
+                && cached.key == self.spec.text
+            {
+                return cached.matcher.clone();
+            }
+        }
+        let compiled = self
+            .spec
+            .text
+            .compile()
+            .ok()
+            .flatten()
+            .map(Arc::new);
+        *self.compiled_text.borrow_mut() = Some(CachedTextMatcher {
+            key: self.spec.text.clone(),
+            matcher: compiled.clone(),
+        });
+        compiled
     }
 
     /// Path matches valid for the current paths and snapshot.
@@ -408,11 +441,85 @@ pub enum ChangesExpandState {
     Unavailable,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DiffRow {
+    Header(usize),
+    Unified(usize, usize),
+    Split(usize, Option<usize>, Option<usize>),
+}
+
+pub fn build_file_diff_rows(diff: &FileDiff, side_by_side: bool) -> Vec<DiffRow> {
+    let mut rows = Vec::new();
+    for (h, hunk) in diff.hunks.iter().enumerate() {
+        rows.push(DiffRow::Header(h));
+        if side_by_side {
+            rows.extend(
+                side_by_side_rows(hunk)
+                    .into_iter()
+                    .map(|r| DiffRow::Split(h, r.left, r.right)),
+            );
+        } else {
+            rows.extend((0..hunk.lines.len()).map(|l| DiffRow::Unified(h, l)));
+        }
+    }
+    rows
+}
+
+#[derive(Debug)]
+struct CachedFileDiffRows {
+    diff: Arc<FileDiff>,
+    side_by_side: bool,
+    rows: Arc<[DiffRow]>,
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct FileDiffRowsCache {
+    entry: RefCell<Option<CachedFileDiffRows>>,
+}
+
+impl Clone for FileDiffRowsCache {
+    fn clone(&self) -> Self {
+        Self::default()
+    }
+}
+
+impl FileDiffRowsCache {
+    pub fn rows_for(&self, diff: &Arc<FileDiff>, side_by_side: bool) -> Arc<[DiffRow]> {
+        {
+            let guard = self.entry.borrow();
+            if let Some(cached) = guard.as_ref()
+                && cached.side_by_side == side_by_side
+                && Arc::ptr_eq(&cached.diff, diff)
+            {
+                return Arc::clone(&cached.rows);
+            }
+        }
+        let rows: Arc<[DiffRow]> = build_file_diff_rows(diff, side_by_side).into();
+        *self.entry.borrow_mut() = Some(CachedFileDiffRows {
+            diff: Arc::clone(diff),
+            side_by_side,
+            rows: Arc::clone(&rows),
+        });
+        rows
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct CachedChangeRows {
+    bundle: Arc<CommitChangesBundle>,
+    group_by_dir: bool,
+    collapsed: FxHashSet<String>,
+    rows: Arc<[ChangeTreeRow]>,
+}
+
+pub(crate) type CachedAllChangeRowsEntry = (Arc<CommitChangesBundle>, Arc<[ChangeTreeRow]>);
+
 #[derive(Debug)]
 pub struct DetailsPaneState {
     pub cache: LruCache<DetailsKey, Arc<CommitChangesBundle>>,
     pub diff_cache: LruCache<FileDiffKey, Arc<FileDiff>>,
     pub diff_syntax: LruCache<FileDiffKey, Arc<HighlightedDiff>>,
+    pub signature_overrides: LruCache<Oid, SignatureStatus>,
     /// Details the right panes currently represent.
     pub current_key: Option<DetailsKey>,
     /// Explicit comparison override (`Compare Versions` / `Compare with Local`).
@@ -441,6 +548,10 @@ pub struct DetailsPaneState {
     pub diff_scroll: usize,
     /// Path to auto-select once the next `CommitChangesBundle` resolves.
     pub pending_select_path: Option<String>,
+
+    pub(crate) cached_change_rows: RefCell<Option<CachedChangeRows>>,
+    pub(crate) cached_all_change_rows: RefCell<Option<CachedAllChangeRowsEntry>>,
+    pub(crate) diff_rows_cache: FileDiffRowsCache,
 }
 
 impl Default for DetailsPaneState {
@@ -449,6 +560,7 @@ impl Default for DetailsPaneState {
             cache: LruCache::new(DETAILS_CACHE_CAPACITY),
             diff_cache: LruCache::new(DIFF_CACHE_CAPACITY),
             diff_syntax: LruCache::new(DIFF_CACHE_CAPACITY),
+            signature_overrides: LruCache::new(DETAILS_CACHE_CAPACITY),
             current_key: None,
             compare_override: None,
             pending: None,
@@ -466,6 +578,9 @@ impl Default for DetailsPaneState {
             diff_context: DiffContext::Three,
             diff_scroll: 0,
             pending_select_path: None,
+            cached_change_rows: RefCell::new(None),
+            cached_all_change_rows: RefCell::new(None),
+            diff_rows_cache: FileDiffRowsCache::default(),
         }
     }
 }
@@ -475,14 +590,54 @@ impl DetailsPaneState {
         self.cache.peek(self.current_key.as_ref()?)
     }
 
-    pub fn change_rows(&self) -> Vec<ChangeTreeRow> {
-        self.current_bundle().map_or_else(Vec::new, |b| {
-            build_change_rows(
-                &b.changes,
-                self.changes_group_by_dir,
-                &self.changes_collapsed,
-            )
-        })
+    pub fn change_rows(&self) -> Arc<[ChangeTreeRow]> {
+        let Some(bundle) = self.current_bundle() else {
+            return Arc::from([]);
+        };
+        {
+            let guard = self.cached_change_rows.borrow();
+            if let Some(cached) = guard.as_ref()
+                && Arc::ptr_eq(&cached.bundle, bundle)
+                && cached.group_by_dir == self.changes_group_by_dir
+                && cached.collapsed == self.changes_collapsed
+            {
+                return Arc::clone(&cached.rows);
+            }
+        }
+        let rows: Arc<[ChangeTreeRow]> = build_change_rows(
+            &bundle.changes,
+            self.changes_group_by_dir,
+            &self.changes_collapsed,
+        )
+        .into();
+        *self.cached_change_rows.borrow_mut() = Some(CachedChangeRows {
+            bundle: Arc::clone(bundle),
+            group_by_dir: self.changes_group_by_dir,
+            collapsed: self.changes_collapsed.clone(),
+            rows: Arc::clone(&rows),
+        });
+        rows
+    }
+
+    pub fn all_expanded_change_rows(&self) -> Option<Arc<[ChangeTreeRow]>> {
+        let bundle = self.current_bundle()?;
+        {
+            let guard = self.cached_all_change_rows.borrow();
+            if let Some((b, rows)) = guard.as_ref()
+                && Arc::ptr_eq(b, bundle)
+            {
+                return Some(Arc::clone(rows));
+            }
+        }
+        let rows: Arc<[ChangeTreeRow]> =
+            build_change_rows(&bundle.changes, true, &FxHashSet::default()).into();
+        *self.cached_all_change_rows.borrow_mut() =
+            Some((Arc::clone(bundle), Arc::clone(&rows)));
+        Some(rows)
+    }
+
+    pub fn diff_rows_for(&self, diff: &Arc<FileDiff>, side_by_side: bool) -> Arc<[DiffRow]> {
+        self.diff_rows_cache.rows_for(diff, side_by_side)
     }
 
     /// Returns the expansion state for the current changes tree's root directories.
@@ -490,14 +645,13 @@ impl DetailsPaneState {
         if !self.changes_group_by_dir {
             return ChangesExpandState::Unavailable;
         }
-        let Some(bundle) = self.current_bundle() else {
+        let Some(all) = self.all_expanded_change_rows() else {
             return ChangesExpandState::Unavailable;
         };
-        let all = build_change_rows(&bundle.changes, true, &FxHashSet::default());
         let mut has_dirs = false;
         let mut all_expanded = true;
         let mut all_collapsed = true;
-        for row in &all {
+        for row in all.iter() {
             if matches!(row.kind, ChangeRowKind::Dir { .. }) {
                 has_dirs = true;
                 let collapsed = self.changes_collapsed.contains(&row.key);
@@ -573,37 +727,21 @@ impl DetailsPaneState {
         let Some(diff) = self.current_diff() else {
             return 0;
         };
-        if diff.is_binary || diff.hunks.is_empty() {
+        if diff.is_too_large || diff.is_binary || diff.hunks.is_empty() {
             return 0;
         }
-        let mut row = usize::from(diff.is_truncated);
-        for hunk in &diff.hunks {
-            row += 1;
-            if self.diff_side_by_side {
-                row += jbgit_core::side_by_side_rows(hunk).len();
-            } else {
-                row += hunk.lines.len();
-            }
-        }
-        row
+        self.diff_rows_for(diff, self.diff_side_by_side).len() + usize::from(diff.is_truncated)
     }
 
     pub fn hunk_header_offsets(&self) -> Vec<usize> {
         let Some(diff) = self.current_diff() else {
             return Vec::new();
         };
-        let mut offsets = Vec::with_capacity(diff.hunks.len());
-        let mut row = 0usize;
-        for hunk in &diff.hunks {
-            offsets.push(row);
-            row += 1;
-            if self.diff_side_by_side {
-                row += jbgit_core::side_by_side_rows(hunk).len();
-            } else {
-                row += hunk.lines.len();
-            }
-        }
-        offsets
+        self.diff_rows_for(diff, self.diff_side_by_side)
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, r)| matches!(r, DiffRow::Header(_)).then_some(idx))
+            .collect()
     }
 
     pub fn jump_diff_hunk(&mut self, delta: isize) {
@@ -699,6 +837,7 @@ pub struct FileHistoryState {
     pub pending_diff: Option<(FileDiffKey, Instant)>,
     pub requested_diff: Option<FileDiffKey>,
     pub pending_g: Option<Instant>,
+    pub(crate) diff_rows_cache: FileDiffRowsCache,
 }
 
 impl FileHistoryState {
@@ -719,7 +858,12 @@ impl FileHistoryState {
             pending_diff: None,
             requested_diff: None,
             pending_g: None,
+            diff_rows_cache: FileDiffRowsCache::default(),
         }
+    }
+
+    pub fn diff_rows_for(&self, diff: &Arc<FileDiff>) -> Arc<[DiffRow]> {
+        self.diff_rows_cache.rows_for(diff, self.diff_side_by_side)
     }
 
     pub fn entries(&self) -> &[FileHistoryEntry] {
@@ -996,5 +1140,70 @@ mod tests {
         assert!(!p.is_collapsed(100));
         p.toggle_collapsed(140);
         assert!(p.is_collapsed(140));
+    }
+
+    #[test]
+    fn details_pane_change_rows_caches_and_invalidates_on_collapsed_or_bundle() {
+        let mut d = DetailsPaneState::default();
+        let oid = jbgit_core::Oid::from_bytes([1u8; 20]);
+        let key = DetailsKey::single(oid);
+        let bundle1 = Arc::new(jbgit_core::CommitChangesBundle {
+            key: key.clone(),
+            details: vec![],
+            changes: vec![jbgit_core::FileChange {
+                path: "src/a.rs".into(),
+                old_path: None,
+                kind: jbgit_core::FileStatusKind::Modified,
+                additions: 1,
+                deletions: 0,
+                is_binary: false,
+                exists_in_workdir: true,
+                old_oid: None,
+                new_oid: None,
+            }],
+        });
+        d.cache.insert(key.clone(), Arc::clone(&bundle1));
+        d.current_key = Some(key.clone());
+
+        // 1. Initial call caches Arc<[ChangeTreeRow]>
+        let r1 = d.change_rows();
+        let r2 = d.change_rows();
+        assert!(
+            Arc::ptr_eq(&r1, &r2),
+            "change_rows must return the same Arc slice on identical bundle"
+        );
+
+        // 2. Modifying collapsed set invalidates cache
+        d.changes_collapsed.insert("src".into());
+        let r3 = d.change_rows();
+        assert!(
+            !Arc::ptr_eq(&r1, &r3),
+            "change_rows must invalidate cache when collapsed set changes"
+        );
+
+        // 3. Diff rows cache tests
+        let diff = Arc::new(jbgit_core::FileDiff {
+            key: jbgit_core::FileDiffKey {
+                details: DetailsKey::single(oid),
+                path: "src/a.rs".into(),
+                old_path: None,
+                context: DiffContext::Three,
+            },
+            hunks: vec![],
+            is_binary: false,
+            is_truncated: false,
+            is_too_large: false,
+        });
+        let dr1 = d.diff_rows_for(&diff, false);
+        let dr2 = d.diff_rows_for(&diff, false);
+        assert!(
+            Arc::ptr_eq(&dr1, &dr2),
+            "diff_rows_for must cache rows for same diff and mode"
+        );
+        let dr3 = d.diff_rows_for(&diff, true);
+        assert!(
+            !Arc::ptr_eq(&dr1, &dr3),
+            "diff_rows_for must invalidate when side_by_side changes"
+        );
     }
 }

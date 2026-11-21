@@ -71,13 +71,22 @@ pub fn render_hover_tooltip(
             {
                 let is_head = snap.head_oid == Some(commit.oid);
                 let head_marker = is_head.then(|| RefInfo::head_marker(commit.oid));
-                let groups = group_refs_for_table(
-                    snap.refs
-                        .iter()
-                        .filter(|r| r.target_oid == commit.oid)
-                        .chain(head_marker.as_ref()),
-                    GroupOptions::default(),
-                );
+                let groups = if let Some(cached) = &state.log_graph.cached {
+                    group_refs_for_table(
+                        cached
+                            .refs_for_oid(snap, commit.oid)
+                            .chain(head_marker.as_ref()),
+                        GroupOptions::default(),
+                    )
+                } else {
+                    group_refs_for_table(
+                        snap.refs
+                            .iter()
+                            .filter(|r| r.target_oid == commit.oid)
+                            .chain(head_marker.as_ref()),
+                        GroupOptions::default(),
+                    )
+                };
                 for grp in &groups {
                     let badge = RefBadgeKind::from_group(grp);
                     let style = ctx.theme.ref_style(badge);

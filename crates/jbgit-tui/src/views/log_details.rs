@@ -408,7 +408,7 @@ fn render_diff_view(
 }
 
 pub fn file_diff_total_rows(diff: &FileDiff, side_by_side: bool) -> usize {
-    if diff.is_binary || diff.hunks.is_empty() {
+    if diff.is_too_large || diff.is_binary || diff.hunks.is_empty() {
         return 0;
     }
     let mut total = usize::from(diff.is_truncated);
@@ -448,6 +448,14 @@ pub fn render_file_diff_body(
         return;
     }
     let h = body.height as usize;
+    if diff.is_too_large {
+        ctx.record_scroll_bound(scroll_pane, h, 0);
+        frame.render_widget(
+            muted_line(ctx, ctx.t("view.log_details.too_large_diff")),
+            body,
+        );
+        return;
+    }
     if diff.is_binary {
         ctx.record_scroll_bound(scroll_pane, h, 0);
         frame.render_widget(muted_line(ctx, ctx.t("view.log_details.binary_diff")), body);
@@ -474,7 +482,6 @@ pub fn render_file_diff_body(
     let num_w = 4usize;
     let tab_size = ctx.diff_tab_size();
     let empty_hl;
-    let computed_hl;
     let hl_diff: &HighlightedDiff = if !ctx.diff_syntax_enabled() {
         empty_hl = HighlightedDiff::default();
         &empty_hl
@@ -482,8 +489,8 @@ pub fn render_file_diff_body(
         match cached_syntax {
             Some(cached) => cached,
             None => {
-                computed_hl = HighlightedDiff::build(diff);
-                &computed_hl
+                empty_hl = HighlightedDiff::default();
+                &empty_hl
             }
         }
     };
@@ -512,6 +519,7 @@ pub fn render_file_diff_body(
 
     let side_cell = |hh: usize,
                      line_idx: Option<usize>,
+                     custom_wr: Option<&[(usize, usize)]>,
                      lineno: fn(&DiffLine) -> Option<u32>,
                      width: usize|
      -> Vec<Span<'static>> {
@@ -529,10 +537,11 @@ pub fn render_file_diff_body(
                 spans.push(Span::styled(format!("{} ", num(lineno(l))), gutter));
                 spans.push(Span::styled(marker.to_string(), base));
                 let text_w = width.saturating_sub(num_w + 2);
+                let wr = custom_wr.unwrap_or(&l.word_ranges);
                 let mut body = render_diff_line_spans_with_tab(
                     &l.text,
                     toks,
-                    &l.word_ranges,
+                    wr,
                     text_w,
                     tab_size,
                     base,
@@ -599,13 +608,31 @@ pub fn render_file_diff_body(
                 Line::from(spans).style(base)
             }
             Some(DiffRow::Split(hh, left, right)) => {
+                let (lazy_l, lazy_r) = match (*left, *right) {
+                    (Some(li), Some(ri)) => {
+                        let l = &diff.hunks[*hh].lines[li];
+                        let r = &diff.hunks[*hh].lines[ri];
+                        if l.word_ranges.is_empty()
+                            && r.word_ranges.is_empty()
+                            && l.text != r.text
+                            && l.text.len() <= jbgit_core::MAX_WORD_DIFF_LINE_BYTES
+                            && r.text.len() <= jbgit_core::MAX_WORD_DIFF_LINE_BYTES
+                        {
+                            let (lw, rw) = jbgit_core::word_diff(&l.text, &r.text);
+                            (Some(lw), Some(rw))
+                        } else {
+                            (None, None)
+                        }
+                    }
+                    _ => (None, None),
+                };
                 let half = width / 2;
-                let mut spans = side_cell(*hh, *left, |l| l.old_lineno, half);
+                let mut spans = side_cell(*hh, *left, lazy_l.as_deref(), |l| l.old_lineno, half);
                 spans.push(Span::styled(
                     "│",
                     Style::default().fg(theme.border_splitter),
                 ));
-                spans.extend(side_cell(*hh, *right, |l| l.new_lineno, width - half - 1));
+                spans.extend(side_cell(*hh, *right, lazy_r.as_deref(), |l| l.new_lineno, width - half - 1));
                 Line::from(spans)
             }
         };
@@ -880,7 +907,13 @@ fn build_single_details(
                 .add_modifier(Modifier::UNDERLINED),
         ),
     ];
-    match d.signature {
+    let effective_sig = state
+        .details
+        .signature_overrides
+        .peek(&d.oid)
+        .copied()
+        .unwrap_or(d.signature);
+    match effective_sig {
         SignatureStatus::Verified => sha_spans.push(Span::styled(
             ctx.t("view.log_details.verified").to_string(),
             Style::default()
@@ -943,7 +976,14 @@ fn build_single_details(
     if let (Some((oid, names)), Some(snap)) = (&state.details.containing, &state.repo_snapshot)
         && *oid == d.oid
     {
-        let kind_of = |n: &str| snap.refs.iter().find(|r| r.name == n).map(|r| r.kind);
+        let kind_of = |n: &str| {
+            state
+                .log_graph
+                .cached
+                .as_ref()
+                .and_then(|c| c.ref_kind_by_name.get(n).copied())
+                .or_else(|| snap.refs.iter().find(|r| r.name == n).map(|r| r.kind))
+        };
         let branches: Vec<&str> = names
             .iter()
             .filter(|n| kind_of(n) != Some(RefKind::Tag))

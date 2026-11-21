@@ -9,18 +9,62 @@ pub const BLOCK_SIZE: usize = 40;
 pub const WALK_SIZE: usize = 1000;
 pub const CACHE_SIZE: usize = 20;
 
+/// Persistent block-anchor cache shared across frames for a given [`VisibleLinearGraph`].
+#[derive(Debug, Clone)]
+pub struct EdgesInRowCache {
+    above_anchor_cache: BlockLruCache,
+    below_anchor_cache: BlockLruCache,
+    /// Edges spanning strictly more than `WALK_SIZE` rows, ensuring exactness at arbitrary offsets.
+    ultra_long_edges: Vec<GraphEdge>,
+    hits: usize,
+}
+
+impl EdgesInRowCache {
+    pub fn new(graph: &VisibleLinearGraph) -> Self {
+        let ultra_long_edges = graph
+            .down_edges_data
+            .iter()
+            .copied()
+            .filter(|e| (e.down - e.up) as usize > WALK_SIZE)
+            .collect();
+        Self {
+            above_anchor_cache: BlockLruCache::new(CACHE_SIZE),
+            below_anchor_cache: BlockLruCache::new(CACHE_SIZE),
+            ultra_long_edges,
+            hits: 0,
+        }
+    }
+
+    pub fn cache_hits(&self) -> usize {
+        self.hits
+    }
+}
+
+enum CacheStorage<'a> {
+    Owned(EdgesInRowCache),
+    Borrowed(&'a mut EdgesInRowCache),
+}
+
+impl CacheStorage<'_> {
+    #[inline]
+    fn get_mut(&mut self) -> &mut EdgesInRowCache {
+        match self {
+            Self::Owned(c) => c,
+            Self::Borrowed(c) => c,
+        }
+    }
+}
+
 /// Bidirectional block-cached active-edge scanner (mirroring IDEA `EdgesInRowGenerator.java`).
 ///
 /// For any `row`, `edges_in_row(row)` returns all edges crossing the gap between `row` and
 /// `row + 1` (i.e., `edge.up <= row && row < edge.down`).
 pub struct EdgesInRowGenerator<'a> {
     graph: &'a VisibleLinearGraph,
-    above_anchor_cache: BlockLruCache,
-    below_anchor_cache: BlockLruCache,
-    /// Edges spanning strictly more than `WALK_SIZE` rows, ensuring exactness at arbitrary offsets.
-    ultra_long_edges: Vec<GraphEdge>,
+    cache: CacheStorage<'a>,
 }
 
+#[derive(Debug, Clone)]
 struct BlockLruCache {
     capacity: usize,
     entries: VecDeque<(usize, FxHashSet<GraphEdge>)>,
@@ -56,18 +100,16 @@ impl BlockLruCache {
 
 impl<'a> EdgesInRowGenerator<'a> {
     pub fn new(graph: &'a VisibleLinearGraph) -> Self {
-        let ultra_long_edges = graph
-            .down_edges_data
-            .iter()
-            .copied()
-            .filter(|e| (e.down - e.up) as usize > WALK_SIZE)
-            .collect();
-
         Self {
             graph,
-            above_anchor_cache: BlockLruCache::new(CACHE_SIZE),
-            below_anchor_cache: BlockLruCache::new(CACHE_SIZE),
-            ultra_long_edges,
+            cache: CacheStorage::Owned(EdgesInRowCache::new(graph)),
+        }
+    }
+
+    pub fn with_cache(graph: &'a VisibleLinearGraph, cache: &'a mut EdgesInRowCache) -> Self {
+        Self {
+            graph,
+            cache: CacheStorage::Borrowed(cache),
         }
     }
 
@@ -82,7 +124,7 @@ impl<'a> EdgesInRowGenerator<'a> {
         let mut active = self.edges_from_above(r);
         let below = self.edges_from_below(r, n);
         active.extend(below);
-        for &e in &self.ultra_long_edges {
+        for &e in &self.cache.get_mut().ultra_long_edges {
             if e.up <= row && row < e.down {
                 active.insert(e);
             }
@@ -97,7 +139,15 @@ impl<'a> EdgesInRowGenerator<'a> {
     /// endpoint is within `WALK_SIZE` above `up_anchor`.
     fn edges_from_above(&mut self, row: usize) -> FxHashSet<GraphEdge> {
         let up_anchor = (row / BLOCK_SIZE) * BLOCK_SIZE;
-        let mut set = if let Some(cached) = self.above_anchor_cache.get(up_anchor) {
+        let cached = {
+            let cache = self.cache.get_mut();
+            let hit = cache.above_anchor_cache.get(up_anchor);
+            if hit.is_some() {
+                cache.hits += 1;
+            }
+            hit
+        };
+        let mut set = if let Some(cached) = cached {
             cached
         } else {
             let start = up_anchor.saturating_sub(WALK_SIZE);
@@ -105,7 +155,10 @@ impl<'a> EdgesInRowGenerator<'a> {
             for cur in start..up_anchor {
                 self.one_down_step(cur, &mut s);
             }
-            self.above_anchor_cache.insert(up_anchor, s.clone());
+            self.cache
+                .get_mut()
+                .above_anchor_cache
+                .insert(up_anchor, s.clone());
             s
         };
 
@@ -121,7 +174,15 @@ impl<'a> EdgesInRowGenerator<'a> {
         let up_anchor = (row / BLOCK_SIZE) * BLOCK_SIZE;
         let down_anchor = (up_anchor + BLOCK_SIZE - 1).min(n - 1);
 
-        let mut set = if let Some(cached) = self.below_anchor_cache.get(down_anchor) {
+        let cached = {
+            let cache = self.cache.get_mut();
+            let hit = cache.below_anchor_cache.get(down_anchor);
+            if hit.is_some() {
+                cache.hits += 1;
+            }
+            hit
+        };
+        let mut set = if let Some(cached) = cached {
             cached
         } else {
             let end = (down_anchor + WALK_SIZE).min(n - 1);
@@ -129,7 +190,10 @@ impl<'a> EdgesInRowGenerator<'a> {
             for cur in ((down_anchor + 1)..=end).rev() {
                 self.one_up_step(cur, n, &mut s);
             }
-            self.below_anchor_cache.insert(down_anchor, s.clone());
+            self.cache
+                .get_mut()
+                .below_anchor_cache
+                .insert(down_anchor, s.clone());
             s
         };
 
@@ -239,5 +303,61 @@ mod tests {
             expected.sort_by_key(|e| (e.up, e.down));
             assert_eq!(actual, expected, "mismatch at row {r}");
         }
+    }
+
+    #[test]
+    fn persistent_edges_cache_records_hits_on_consecutive_viewport_queries() {
+        let n = 200usize;
+        let mut commits = Vec::with_capacity(n);
+        for i in 0..n {
+            let mut parents = Vec::new();
+            if i + 1 < n {
+                parents.push(oid((i + 1) as u64));
+            }
+            if i == 5 {
+                parents.push(oid(80));
+            }
+            commits.push(RawCommitNode {
+                oid: oid(i as u64),
+                parents,
+                timestamp: (n - i) as i64,
+            });
+        }
+        let refs = vec![RefInfo {
+            name: "main".into(),
+            full_name: "refs/heads/main".into(),
+            target_oid: oid(0),
+            kind: RefKind::LocalBranch,
+            upstream: None,
+            ahead_behind: None,
+            is_head: true,
+        }];
+        let pg = PermanentGraph::build(&commits, &refs, Some(oid(0)));
+        let vis = VisibleGraph::build(&pg, GraphViewOptions::default(), None);
+
+        let mut cache = EdgesInRowCache::new(&vis.linear);
+        assert_eq!(cache.cache_hits(), 0);
+
+        // Frame 1: populate cache anchors around row 10..25
+        {
+            let mut gen1 = EdgesInRowGenerator::with_cache(&vis.linear, &mut cache);
+            for r in 10..25 {
+                let _ = gen1.edges_in_row(r as VisibleRowIdx);
+            }
+        }
+        let initial_hits = cache.cache_hits();
+
+        // Frame 2: simulate scrolling/spinner redraw on a persistent cache
+        {
+            let mut gen2 = EdgesInRowGenerator::with_cache(&vis.linear, &mut cache);
+            for r in 12..27 {
+                let _ = gen2.edges_in_row(r as VisibleRowIdx);
+            }
+        }
+        assert!(
+            cache.cache_hits() > initial_hits,
+            "subsequent frame must hit persistent anchor cache: before={initial_hits}, after={}",
+            cache.cache_hits()
+        );
     }
 }

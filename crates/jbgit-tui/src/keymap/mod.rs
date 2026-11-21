@@ -661,7 +661,7 @@ where
         if !allow(binding) {
             continue;
         }
-        if let Some(seq) = KeySequence::parse(&binding.on) {
+        if let Some(seq) = binding.parsed_seq() {
             if seq.matches_exact(events) {
                 return MatchResult::Exact(binding);
             }

@@ -33,14 +33,92 @@ use std::time::Duration;
 
 use anyhow::Result;
 use crossterm::event::{Event, EventStream};
-use futures::StreamExt;
+use futures::{FutureExt, StreamExt};
 use jbgit_engine::{EngineSupervisor, RepoLocation};
 
-use crate::app::{Action, AppState, Effect, execute_effects};
+use crate::app::{Action, AppState, Effect, SyntaxJobKey, execute_effects};
 use crate::graph::GraphicsCapabilities;
 use crate::input::route_terminal_event;
 use crate::terminal::TerminalGuard;
 use crate::views::render_app;
+
+const MAX_COALESCE_EVENTS: usize = 64;
+
+fn effects_need_terminal_handoff(effects: &[Effect]) -> bool {
+    effects.iter().any(|e| {
+        matches!(
+            e,
+            Effect::OpenExternalEditorMessage
+                | Effect::OpenExternalEditorFile(_)
+                | Effect::OpenExternalMergetool(_)
+        )
+    })
+}
+
+pub(crate) fn coalesce_effects(effects: Vec<Effect>) -> Vec<Effect> {
+    let mut last_details = None;
+    let mut last_file_diff = None;
+    let mut last_stage_diff = None;
+    let mut last_file_syntax = None;
+    let mut last_stage_syntax = None;
+
+    for (i, eff) in effects.iter().enumerate() {
+        match eff {
+            Effect::RequestCommitDetails(_) => last_details = Some(i),
+            Effect::RequestFileDiff(_) => last_file_diff = Some(i),
+            Effect::RequestStageFileDiff(_) => last_stage_diff = Some(i),
+            Effect::RequestSyntaxHighlight(job) => match job.key {
+                SyntaxJobKey::File(_) => last_file_syntax = Some(i),
+                SyntaxJobKey::Stage(_) => last_stage_syntax = Some(i),
+            },
+            _ => {}
+        }
+    }
+
+    let mut out = Vec::with_capacity(effects.len());
+    for (i, eff) in effects.into_iter().enumerate() {
+        let keep = match &eff {
+            Effect::RequestCommitDetails(_) => last_details == Some(i),
+            Effect::RequestFileDiff(_) => last_file_diff == Some(i),
+            Effect::RequestStageFileDiff(_) => last_stage_diff == Some(i),
+            Effect::RequestSyntaxHighlight(job) => match job.key {
+                SyntaxJobKey::File(_) => last_file_syntax == Some(i),
+                SyntaxJobKey::Stage(_) => last_stage_syntax == Some(i),
+            },
+            _ => true,
+        };
+        if keep {
+            out.push(eff);
+        }
+    }
+    out
+}
+
+fn handle_term_event(
+    ev: Event,
+    state: &mut AppState,
+    batch_effects: &mut Vec<Effect>,
+    cell_px_probe_deadline: &mut Option<tokio::time::Instant>,
+) -> bool {
+    let is_resize = matches!(ev, Event::Resize(..));
+    if is_resize {
+        // Font zoom (Ctrl +/-) arrives as a resize: re-calibrate cell pixels.
+        let prev_cell_px = state.graph_renderer.capabilities().cell_px;
+        let mut caps = GraphicsCapabilities::detect();
+        if caps.needs_async_wezterm_probe() {
+            caps.cell_px = prev_cell_px;
+            *cell_px_probe_deadline =
+                Some(tokio::time::Instant::now() + Duration::from_millis(100));
+        }
+        state.graph_renderer.set_capabilities(caps);
+    }
+    let actions = route_terminal_event(ev, state);
+    for action in actions {
+        let effs = state.dispatch(action);
+        batch_effects.extend(effs);
+    }
+    is_resize || state.should_quit || effects_need_terminal_handoff(batch_effects)
+}
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -113,9 +191,13 @@ async fn main() -> Result<()> {
         Err(e) => (None, None, AppState::new(target_path, Some(e.to_string()))),
     };
 
+    let (ui_async_tx, mut ui_async_rx) =
+        tokio::sync::mpsc::unbounded_channel::<crate::app::UiAsyncEvent>();
+    tokio::task::spawn_blocking(crate::syntax::warmup_syntax_assets);
+
     if let Some(handle) = engine_handle.as_ref() {
         let initial_effects = state.dispatch(Action::RefreshAll);
-        execute_effects(initial_effects, &mut state, Some(handle));
+        execute_effects(initial_effects, &mut state, Some(handle), Some(&ui_async_tx));
     }
 
     let mut term_guard = Some(TerminalGuard::enter()?);
@@ -168,34 +250,15 @@ async fn main() -> Result<()> {
             }
         };
 
+        let mut batch_effects: Vec<Effect> = Vec::new();
+        let mut allow_coalesce = false;
+
         tokio::select! {
             maybe_term = event_stream.next() => {
                 match maybe_term {
                     Some(Ok(ev)) => {
-                        if matches!(ev, Event::Resize(..)) {
-                            // Font zoom (Ctrl +/-) arrives as a resize: re-calibrate cell pixels.
-                            let prev_cell_px = state.graph_renderer.capabilities().cell_px;
-                            let mut caps = GraphicsCapabilities::detect();
-                            if caps.needs_async_wezterm_probe() {
-                                caps.cell_px = prev_cell_px;
-                                cell_px_probe_deadline =
-                                    Some(tokio::time::Instant::now() + Duration::from_millis(100));
-                            }
-                            state.graph_renderer.set_capabilities(caps);
-                        }
-                        let actions = route_terminal_event(ev, &mut state);
-                        for action in actions {
-                            let effects = state.dispatch(action);
-                            let refresh_stage = handle_external_editor_effects(&effects, &mut state, &mut term_guard);
-                            execute_effects(effects, &mut state, engine_handle.as_ref());
-                            if refresh_stage {
-                                execute_effects(
-                                    vec![Effect::RefreshScope(jbgit_core::RefreshScope::StageStatus)],
-                                    &mut state,
-                                    engine_handle.as_ref(),
-                                );
-                            }
-                        }
+                        let stop = handle_term_event(ev, &mut state, &mut batch_effects, &mut cell_px_probe_deadline);
+                        allow_coalesce = !stop;
                     }
                     Some(Err(_)) | None => {
                         state.should_quit = true;
@@ -204,27 +267,25 @@ async fn main() -> Result<()> {
             }
             maybe_engine = recv_engine(&mut engine_rx) => {
                 if let Some(ev) = maybe_engine {
-                    let effects = state.apply_engine_event(ev);
-                    let refresh_stage = handle_external_editor_effects(&effects, &mut state, &mut term_guard);
-                    execute_effects(effects, &mut state, engine_handle.as_ref());
-                    if refresh_stage {
-                        execute_effects(
-                            vec![Effect::RefreshScope(jbgit_core::RefreshScope::StageStatus)],
-                            &mut state,
-                            engine_handle.as_ref(),
-                        );
-                    }
+                    let effs = state.apply_engine_event(ev);
+                    let stop = state.should_quit || effects_need_terminal_handoff(&effs);
+                    batch_effects.extend(effs);
+                    allow_coalesce = !stop;
                 } else {
                     engine_rx = None;
                 }
             }
+            Some(ui_ev) = ui_async_rx.recv() => {
+                let effs = state.apply_ui_async_event(ui_ev);
+                let stop = state.should_quit || effects_need_terminal_handoff(&effs);
+                batch_effects.extend(effs);
+                allow_coalesce = !stop;
+            }
             _ = debounce_sleep => {
-                let effects = state.dispatch(Action::FlushPendingDetails);
-                execute_effects(effects, &mut state, engine_handle.as_ref());
+                batch_effects.extend(state.dispatch(Action::FlushPendingDetails));
             }
             _ = spinner_sleep => {
-                let effects = state.dispatch(Action::TickSpinner);
-                execute_effects(effects, &mut state, engine_handle.as_ref());
+                batch_effects.extend(state.dispatch(Action::TickSpinner));
             }
             _ = cell_px_debounce_sleep => {
                 cell_px_probe_deadline = None;
@@ -251,6 +312,73 @@ async fn main() -> Result<()> {
                     cell_px_probe_in_flight = true;
                     spawn_wezterm_cell_probe(cell_px_tx.clone());
                 }
+            }
+        }
+
+        if allow_coalesce {
+            for _ in 1..MAX_COALESCE_EVENTS {
+                if let Some(maybe_term) = event_stream.next().now_or_never() {
+                    match maybe_term {
+                        Some(Ok(ev)) => {
+                            if handle_term_event(
+                                ev,
+                                &mut state,
+                                &mut batch_effects,
+                                &mut cell_px_probe_deadline,
+                            ) {
+                                break;
+                            }
+                            continue;
+                        }
+                        Some(Err(_)) | None => {
+                            state.should_quit = true;
+                            break;
+                        }
+                    }
+                }
+                if let Some(rx) = engine_rx.as_mut() {
+                    match rx.try_recv() {
+                        Ok(ev) => {
+                            let effs = state.apply_engine_event(ev);
+                            let stop = state.should_quit || effects_need_terminal_handoff(&effs);
+                            batch_effects.extend(effs);
+                            if stop {
+                                break;
+                            }
+                            continue;
+                        }
+                        Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
+                            engine_rx = None;
+                        }
+                        Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {}
+                    }
+                }
+                match ui_async_rx.try_recv() {
+                    Ok(ui_ev) => {
+                        let effs = state.apply_ui_async_event(ui_ev);
+                        let stop = state.should_quit || effects_need_terminal_handoff(&effs);
+                        batch_effects.extend(effs);
+                        if stop {
+                            break;
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+        }
+
+        if !batch_effects.is_empty() {
+            let coalesced = coalesce_effects(batch_effects);
+            let refresh_stage =
+                handle_external_editor_effects(&coalesced, &mut state, &mut term_guard);
+            execute_effects(coalesced, &mut state, engine_handle.as_ref(), Some(&ui_async_tx));
+            if refresh_stage {
+                execute_effects(
+                    vec![Effect::RefreshScope(jbgit_core::RefreshScope::StageStatus)],
+                    &mut state,
+                    engine_handle.as_ref(),
+                    Some(&ui_async_tx),
+                );
             }
         }
     }
@@ -1419,6 +1547,7 @@ mod tests {
             tracker,
             hunks,
             is_truncated,
+            is_too_large: false,
         });
         state.apply_engine_event(EngineEvent::StageFileDiffLoaded { diff, epoch: 1 });
 
@@ -1453,6 +1582,8 @@ mod tests {
                     deletions: 0,
                     is_binary: false,
                     exists_in_workdir: true,
+                    old_oid: None,
+                    new_oid: None,
                 }],
             }),
         });
@@ -1524,6 +1655,8 @@ mod tests {
                     deletions: 1,
                     is_binary: false,
                     exists_in_workdir: true,
+                    old_oid: None,
+                    new_oid: None,
                 }],
             }),
         });
@@ -1607,6 +1740,7 @@ mod tests {
                 tracker,
                 hunks,
                 is_truncated,
+                is_too_large: false,
             }),
             epoch: 1,
         });
@@ -1958,6 +2092,8 @@ stash_preview_ratio = [1, 1]
             deletions: 0,
             is_binary: false,
             exists_in_workdir: true,
+            old_oid: None,
+            new_oid: None,
         }];
         let details = jbgit_core::CommitDetails {
             oid,
@@ -2007,6 +2143,7 @@ stash_preview_ratio = [1, 1]
                 key: diff_key,
                 is_binary: false,
                 is_truncated: false,
+                is_too_large: false,
                 hunks: vec![jbgit_core::DiffHunk {
                     header: "@@ -0,0 +1,80 @@".into(),
                     lines,
@@ -2240,5 +2377,166 @@ stash_preview_ratio = [1, 1]
         assert!(refresh);
         assert_eq!(state.status_notice, None);
         assert_eq!(state.stage_workbench.editor.text(), "feat: keep message");
+    }
+
+    #[test]
+    fn commit_tab_diff_lru_cache_invalidation_debounce_and_effect_coalescing() {
+        use std::sync::Arc;
+        use std::time::{Duration, Instant};
+        use jbgit_core::{DiffContext, FileStatusKind, StageEntry, StageStatusSnapshot, WorkspaceTab};
+        use jbgit_engine::{EngineEvent, StageDiffKey, StageDiffSide, ThreeDocStageDiff};
+        use crate::app::Effect;
+
+        let mut state = AppState::new_with_config(
+            std::path::PathBuf::from("."),
+            None,
+            crate::config::AppConfig::load_defaults(),
+        );
+        state.stage_workbench.tree_opts.group_by_dir = false;
+        state.dispatch(Action::SwitchTab(WorkspaceTab::Commit));
+
+        let status = Arc::new(StageStatusSnapshot {
+            unstaged: vec![
+                StageEntry {
+                    path: "a.rs".into(),
+                    old_path: None,
+                    kind: FileStatusKind::Modified,
+                },
+                StageEntry {
+                    path: "b.rs".into(),
+                    old_path: None,
+                    kind: FileStatusKind::Modified,
+                },
+            ],
+            ..Default::default()
+        });
+        let init_effs = state.apply_engine_event(EngineEvent::StageStatusLoaded {
+            status,
+            epoch: 1,
+        });
+        // Row 0 = Unstaged group header, Row 1 = a.rs, Row 2 = b.rs
+        assert!(init_effs.iter().any(|e| matches!(
+            e,
+            Effect::RequestStageFileDiff(k) if k.path == "a.rs"
+        )));
+
+        let make_stage_diff = |path: &str| {
+            let vcs = b"fn x() {\n    let a = 1;\n}\n";
+            let staged = b"fn x() {\n    let a = 1;\n}\n";
+            let local = b"fn x() {\n    let a = 2;\n}\n";
+            let tracker = jbgit_core::StageLineTracker::new(vcs, staged, local);
+            let (hunks, is_truncated) = tracker.build_interactive_hunks(false, DiffContext::Three, 20_000);
+            Arc::new(ThreeDocStageDiff {
+                key: StageDiffKey {
+                    path: path.into(),
+                    old_path: None,
+                    side: StageDiffSide::Unstaged,
+                    context: DiffContext::Three,
+                },
+                vcs_exists: true,
+                staged_exists: true,
+                local_exists: true,
+                vcs_bytes: vcs.to_vec(),
+                staged_bytes: staged.to_vec(),
+                local_bytes: local.to_vec(),
+                file_mode: 0o100644,
+                is_binary: false,
+                is_conflicted: false,
+                tracker,
+                hunks,
+                is_truncated,
+                is_too_large: false,
+            })
+        };
+
+        // 1. Rapid 20 Down/Up keyboard scrolls before both diffs are cached emit ZERO immediate
+        // RequestStageFileDiff; flushing past DETAILS_DEBOUNCE emits only the final file (`b.rs`).
+        state.dispatch(Action::SelectCommitStageRow(1)); // `a.rs`
+        for step in 0..20 {
+            let delta = if step % 2 == 0 { 1 } else { -1 };
+            let effs = state.dispatch(Action::ScrollCommitStage(delta));
+            assert!(
+                !effs.iter().any(|e| matches!(e, Effect::RequestStageFileDiff(_))),
+                "keyboard scroll must debounce stage diff request"
+            );
+        }
+        // Final delta (step 19 was -1 -> back at row 1); move to row 2 (`b.rs`) via ScrollCommitStage(1).
+        let effs = state.dispatch(Action::ScrollCommitStage(1));
+        assert!(!effs.iter().any(|e| matches!(e, Effect::RequestStageFileDiff(_))));
+        assert!(state.stage_workbench.pending_diff.is_some());
+
+        let mut flushed = Vec::new();
+        state.flush_pending_at(
+            Instant::now() + crate::log_view::DETAILS_DEBOUNCE + Duration::from_millis(5),
+            &mut flushed,
+        );
+        assert!(matches!(
+            &flushed[..],
+            [Effect::RequestStageFileDiff(k)] if k.path == "b.rs"
+        ));
+
+        // Populate both `a.rs` and `b.rs` into LRU cache.
+        state.dispatch(Action::SelectCommitStageRow(1));
+        state.apply_engine_event(EngineEvent::StageFileDiffLoaded {
+            diff: make_stage_diff("a.rs"),
+            epoch: 2,
+        });
+        state.dispatch(Action::SelectCommitStageRow(2));
+        state.apply_engine_event(EngineEvent::StageFileDiffLoaded {
+            diff: make_stage_diff("b.rs"),
+            epoch: 3,
+        });
+
+        // 2. Switching B -> A -> B hits diff_cache with 0 ms and zero RequestStageFileDiff.
+        let back_to_a = state.dispatch(Action::SelectCommitStageRow(1));
+        assert!(!back_to_a.iter().any(|e| matches!(e, Effect::RequestStageFileDiff(_))));
+        assert_eq!(
+            state
+                .stage_workbench
+                .current_diff
+                .as_ref()
+                .map(|d| d.key.path.as_str()),
+            Some("a.rs")
+        );
+
+        // 3. Partial stage on `a.rs` invalidates `a.rs` cache entry while keeping `b.rs` cached.
+        state.stage_workbench.diff_cursor_row = 1;
+        let _ = state.dispatch(Action::StageDiffStageSelection);
+        let key_a = StageDiffKey {
+            path: "a.rs".into(),
+            old_path: None,
+            side: StageDiffSide::Unstaged,
+            context: DiffContext::Three,
+        };
+        let key_b = StageDiffKey {
+            path: "b.rs".into(),
+            old_path: None,
+            side: StageDiffSide::Unstaged,
+            context: DiffContext::Three,
+        };
+        assert!(!state.stage_workbench.diff_cache.contains(&key_a));
+        assert!(state.stage_workbench.diff_cache.contains(&key_b));
+
+        // 4. `coalesce_effects` keeps only the last superseding read per category & preserves writes.
+        let mut raw = Vec::new();
+        for i in 0..10 {
+            raw.push(Effect::RequestStageFileDiff(StageDiffKey {
+                path: format!("f{i}.rs"),
+                old_path: None,
+                side: StageDiffSide::Unstaged,
+                context: DiffContext::Three,
+            }));
+        }
+        raw.push(Effect::CopyToClipboard("keep-me".into()));
+        let coalesced = super::coalesce_effects(raw);
+        assert_eq!(coalesced.len(), 2);
+        assert!(matches!(
+            &coalesced[0],
+            Effect::RequestStageFileDiff(k) if k.path == "f9.rs"
+        ));
+        assert!(matches!(
+            &coalesced[1],
+            Effect::CopyToClipboard(s) if s == "keep-me"
+        ));
     }
 }

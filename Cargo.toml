@@ -42,3 +42,18 @@ toml = "0.8"
 tracing = "0.1"
 unicode-width = "0.2"
 criterion = { version = "0.8", default-features = false }
+
+[profile.dev.package.syntect]
+opt-level = 3
+
+[profile.dev.package.fancy-regex]
+opt-level = 3
+
+[profile.dev.package.imara-diff]
+opt-level = 3
+
+[profile.dev.package.flate2]
+opt-level = 3
+
+[profile.dev.package.tiny-skia]
+opt-level = 3

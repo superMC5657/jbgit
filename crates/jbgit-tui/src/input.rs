@@ -758,8 +758,17 @@ pub(crate) fn route_mouse(mouse: MouseEvent, state: &mut AppState) -> Vec<Action
                 state.needs_redraw = true;
             }
             if next_target != state.hover_target {
+                let visual_change = state
+                    .hover_target
+                    .as_ref()
+                    .is_some_and(|t| t.has_visual_hover())
+                    || next_target
+                        .as_ref()
+                        .is_some_and(|t| t.has_visual_hover());
                 state.hover_target = next_target;
-                state.needs_redraw = true;
+                if visual_change {
+                    state.needs_redraw = true;
+                }
             }
             Vec::new()
         }

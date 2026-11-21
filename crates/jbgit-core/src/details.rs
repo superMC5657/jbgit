@@ -143,6 +143,8 @@ pub struct FileChange {
     pub deletions: usize,
     pub is_binary: bool,
     pub exists_in_workdir: bool,
+    pub old_oid: Option<Oid>,
+    pub new_oid: Option<Oid>,
 }
 
 /// Result of a details load: metadata for every selected commit plus the
@@ -348,6 +350,13 @@ pub struct FileDiffKey {
     pub context: DiffContext,
 }
 
+/// Hard ceiling (4 MiB) on single-file diff preview / three-doc tracker loading.
+pub const MAX_DIFF_FILE_BYTES: usize = 4 * 1024 * 1024;
+/// Maximum line pairs per diff for eager inline word-diff calculation.
+pub const EAGER_WORD_DIFF_PAIR_BUDGET: usize = 256;
+/// Maximum single-line byte length eligible for inline word-diff tokenization.
+pub const MAX_WORD_DIFF_LINE_BYTES: usize = 2048;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FileDiff {
     pub key: FileDiffKey,
@@ -355,6 +364,8 @@ pub struct FileDiff {
     pub is_binary: bool,
     /// Diff exceeded the line budget and was truncated.
     pub is_truncated: bool,
+    /// Either side exceeded [`MAX_DIFF_FILE_BYTES`] and full diffing was skipped.
+    pub is_too_large: bool,
 }
 
 impl FileDiff {
@@ -409,13 +420,24 @@ pub fn side_by_side_rows(hunk: &DiffHunk) -> Vec<SideBySideRow> {
 
 /// Fills `word_ranges` on paired deleted/added lines (`ByWord` highlighting).
 pub fn apply_word_diff(hunk: &mut DiffHunk) {
+    let mut unlimited = usize::MAX;
+    apply_word_diff_with_budget(hunk, &mut unlimited);
+}
+
+/// Fills `word_ranges` on paired deleted/added lines up to `*pair_budget` pairs.
+pub fn apply_word_diff_with_budget(hunk: &mut DiffHunk, pair_budget: &mut usize) {
+    if *pair_budget == 0 {
+        return;
+    }
     let pairs: Vec<(usize, usize)> = side_by_side_rows(hunk)
         .into_iter()
         .filter_map(|r| match (r.left, r.right) {
             (Some(l), Some(r)) if l != r => Some((l, r)),
             _ => None,
         })
+        .take(*pair_budget)
         .collect();
+    *pair_budget = pair_budget.saturating_sub(pairs.len());
     for (l, r) in pairs {
         let (old_ranges, new_ranges) = word_diff(&hunk.lines[l].text, &hunk.lines[r].text);
         hunk.lines[l].word_ranges = old_ranges;
@@ -455,39 +477,67 @@ fn tokenize(s: &str) -> Vec<(usize, usize)> {
 const WORD_DIFF_MAX_TOKENS: usize = 256;
 
 /// Token-level LCS diff; returns changed byte ranges for `old` and `new`.
-/// Lines with nothing in common get no inline highlight (the line color says it all).
+/// Lines with nothing in common or exceeding [`MAX_WORD_DIFF_LINE_BYTES`] get no inline highlight.
 /// Byte ranges `(start, end)` within a line.
 pub type ByteRanges = Vec<(usize, usize)>;
 
 pub fn word_diff(old: &str, new: &str) -> (ByteRanges, ByteRanges) {
-    let a = tokenize(old);
-    let b = tokenize(new);
-    if a.len() > WORD_DIFF_MAX_TOKENS || b.len() > WORD_DIFF_MAX_TOKENS {
+    if old.len() > MAX_WORD_DIFF_LINE_BYTES || new.len() > MAX_WORD_DIFF_LINE_BYTES {
         return (Vec::new(), Vec::new());
     }
+    let a = tokenize(old);
+    let b = tokenize(new);
     let tok_a = |i: usize| &old[a[i].0..a[i].1];
     let tok_b = |j: usize| &new[b[j].0..b[j].1];
-    let (n, m) = (a.len(), b.len());
+
+    let max_common = a.len().min(b.len());
+    let mut prefix = 0usize;
+    let mut fixed_non_ws = 0usize;
+    while prefix < max_common && tok_a(prefix) == tok_b(prefix) {
+        if !tok_a(prefix).trim().is_empty() {
+            fixed_non_ws += 1;
+        }
+        prefix += 1;
+    }
+    let mut suffix = 0usize;
+    while suffix < max_common - prefix
+        && tok_a(a.len() - 1 - suffix) == tok_b(b.len() - 1 - suffix)
+    {
+        if !tok_a(a.len() - 1 - suffix).trim().is_empty() {
+            fixed_non_ws += 1;
+        }
+        suffix += 1;
+    }
+
+    let n = a.len() - prefix - suffix;
+    let m = b.len() - prefix - suffix;
+    if n == 0 && m == 0 {
+        return (Vec::new(), Vec::new());
+    }
+    if n > WORD_DIFF_MAX_TOKENS || m > WORD_DIFF_MAX_TOKENS {
+        return (Vec::new(), Vec::new());
+    }
+
     let mut dp = vec![0u16; (n + 1) * (m + 1)];
     let idx = |i: usize, j: usize| i * (m + 1) + j;
     for i in (0..n).rev() {
         for j in (0..m).rev() {
-            dp[idx(i, j)] = if tok_a(i) == tok_b(j) {
+            dp[idx(i, j)] = if tok_a(prefix + i) == tok_b(prefix + j) {
                 dp[idx(i + 1, j + 1)] + 1
             } else {
                 dp[idx(i + 1, j)].max(dp[idx(i, j + 1)])
             };
         }
     }
-    let common_non_ws = {
+    let (mid_count, keep_a, keep_b) = {
         let (mut i, mut j, mut count) = (0, 0, 0usize);
         let mut keep_a = vec![false; n];
         let mut keep_b = vec![false; m];
         while i < n && j < m {
-            if tok_a(i) == tok_b(j) {
+            if tok_a(prefix + i) == tok_b(prefix + j) {
                 keep_a[i] = true;
                 keep_b[j] = true;
-                if !tok_a(i).trim().is_empty() {
+                if !tok_a(prefix + i).trim().is_empty() {
                     count += 1;
                 }
                 i += 1;
@@ -500,8 +550,7 @@ pub fn word_diff(old: &str, new: &str) -> (ByteRanges, ByteRanges) {
         }
         (count, keep_a, keep_b)
     };
-    let (count, keep_a, keep_b) = common_non_ws;
-    if count == 0 {
+    if fixed_non_ws + mid_count == 0 {
         return (Vec::new(), Vec::new());
     }
     let ranges = |toks: &[(usize, usize)], keep: &[bool]| {
@@ -517,7 +566,10 @@ pub fn word_diff(old: &str, new: &str) -> (ByteRanges, ByteRanges) {
         }
         out
     };
-    (ranges(&a, &keep_a), ranges(&b, &keep_b))
+    (
+        ranges(&a[prefix..a.len() - suffix], &keep_a),
+        ranges(&b[prefix..b.len() - suffix], &keep_b),
+    )
 }
 
 /// Classification of a commit message line for rich rendering.
@@ -583,6 +635,8 @@ mod tests {
             deletions: 0,
             is_binary: false,
             exists_in_workdir: kind != FileStatusKind::Deleted,
+            old_oid: None,
+            new_oid: None,
         }
     }
 
@@ -629,6 +683,20 @@ mod tests {
         assert_eq!(old.len(), 1);
         let (o, n) = word_diff("abc", "xyz");
         assert!(o.is_empty() && n.is_empty());
+
+        // Common prefix/suffix trimming keeps >256-token lines fast when few tokens differ,
+        // while lines over MAX_WORD_DIFF_LINE_BYTES short-circuit cleanly.
+        let long_prefix = "x ".repeat(200);
+        let a_long = format!("{long_prefix}alpha tail");
+        let b_long = format!("{long_prefix}omega tail");
+        let (ol, nl) = word_diff(&a_long, &b_long);
+        assert_eq!(&a_long[ol[0].0..ol[0].1], "alpha");
+        assert_eq!(&b_long[nl[0].0..nl[0].1], "omega");
+
+        let huge_a = format!("{}alpha", "a".repeat(MAX_WORD_DIFF_LINE_BYTES + 16));
+        let huge_b = format!("{}omega", "a".repeat(MAX_WORD_DIFF_LINE_BYTES + 16));
+        let (oh, nh) = word_diff(&huge_a, &huge_b);
+        assert!(oh.is_empty() && nh.is_empty());
     }
 
     #[test]

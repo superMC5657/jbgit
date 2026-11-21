@@ -13,7 +13,8 @@ use jbgit_core::{
 };
 
 use crate::details::{
-    load_commit_details_sync, load_file_diff_sync, load_file_history_sync, load_path_matches_sync,
+    load_commit_details_sync, load_file_diff_with_oids_sync, load_file_history_sync,
+    load_path_matches_sync,
 };
 use crate::error::EngineError;
 use crate::probe::{RepoLocation, probe_repo_state, to_core_oid};
@@ -135,10 +136,13 @@ impl Git2WorkerPool {
         &self,
         location: RepoLocation,
         key: FileDiffKey,
+        known_oids: Option<(Option<Oid>, Option<Oid>)>,
         token: EpochToken,
     ) -> Result<Arc<FileDiff>, EngineError> {
-        self.run(move || load_file_diff_sync(&location, &key, &token).map(Arc::new))
-            .await
+        self.run(move || {
+            load_file_diff_with_oids_sync(&location, &key, known_oids, &token).map(Arc::new)
+        })
+        .await
     }
 
     pub async fn load_file_history(

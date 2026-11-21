@@ -1,6 +1,6 @@
 # jbgit Feature Specs & Issue Tracker 目录索引
 
-> 本目录为 `jbgit` 项目的本地需求工单与技术规格索引（遵循 [`docs/agents/issue-tracker.md`](../docs/agents/issue-tracker.md) 与 [`AGENTS.md`](../AGENTS.md)），按执行时序汇总 **10 个特性与治理专题（共 27 个原子工单）** 及其架构演进取舍。
+> 本目录为 `jbgit` 项目的本地需求工单与技术规格索引（遵循 [`docs/agents/issue-tracker.md`](../docs/agents/issue-tracker.md) 与 [`AGENTS.md`](../AGENTS.md)），按执行时序汇总 **11 个特性与治理专题（共 32 个原子工单）** 及其架构演进取舍。
 
 ---
 
@@ -28,6 +28,7 @@
 | **#07** | Phase 4: 控制台治理与视口体验加固 | [`07-console-output-stream-and-severity`](./07-console-output-stream-and-severity/spec.md) | Git 控制台保序输出流重构与 `git4idea` 风格行级语义分级渲染 | 2026-11-19 | `aa00fcf` | M6+ (`core` / `engine` / `tui`) | 2 / 2 Resolved |
 | **#08** | Phase 4: 控制台治理与视口体验加固 | [`08-viewport-scroll-clamping-and-console-navigation`](./08-viewport-scroll-clamping-and-console-navigation/spec.md) | 全视图滚动上界双端夹紧（防 Overscroll 卡死）与控制台键盘导航/位置指示 | 2026-11-19 | `4248b7d` | M6+ (`tui`) | 2 / 2 Resolved |
 | **#09** | Phase 4: 控制台治理与视口体验加固 | [`09-log-changes-context-menu-and-file-history`](./09-log-changes-context-menu-and-file-history/spec.md) | 变更文件上下文菜单、单文件历史（`--follow` 重命名追踪）与联动 Diff 检视 | 2026-11-20 | — | M6+ (`core` / `engine` / `tui`) | 3 / 3 Resolved |
+| **#10** | Phase 5: 性能架构治理与交互零卡顿优化 | [`10-diff-switching-and-render-performance`](./10-diff-switching-and-render-performance/spec.md) | Diff 切换延迟治理、异步语法高亮、每帧渲染缓存与大仓库性能优化 | 2026-11-21 | `2764039` | M7 (`core` / `engine` / `tui`) | 3 / 5 In Progress |
 
 ---
 
@@ -126,6 +127,21 @@
 
 ---
 
+### Phase 5: 性能架构治理与交互零卡顿优化（2026-11-21）
+
+围绕 2026-11-21 基准测试与全仓热路径审计发现的 19 项底层瓶颈，系统治理切换代码修改延迟、每帧渲染抖动与大仓库扩展性问题。
+
+#### #10 · `10-diff-switching-and-render-performance`
+- **定位**：Diff 切换延迟治理、异步语法高亮、每帧渲染缓存与大仓库性能优化（0 / 5 Ready）。
+- **原子工单**：
+  - [`01-async-syntax-highlighting-and-safe-diff-limits.md`](./10-diff-switching-and-render-performance/issues/01-async-syntax-highlighting-and-safe-diff-limits.md) — P0：`Cargo.toml` Dev 重计算依赖优化、`syntect` 后台预热与异步可取消高亮、单流消除 `Context` 双重高亮、4 MiB 大文件 / 2048 B 长行安全护栏、`SlicedDocument` 零逐行拷贝与 `StageLineTracker` / `word_diff` / span 线性化。
+  - [`02-fast-diff-loading-commit-cache-and-event-coalescing.md`](./10-diff-switching-and-render-performance/issues/02-fast-diff-loading-commit-cache-and-event-coalescing.md) — P0（Blocked by `01`）：`load_file_diff_sync` 目标树直读快路径（绕开全树 `resolve_changes` + `find_similar`）、异步化签名验证、`StageWorkbenchState` LRU 缓存与 30ms 防抖、定点冲突查询与主循环输入事件合并。
+  - [`03-render-hot-path-caching-and-vector-graph-perf.md`](./10-diff-switching-and-render-performance/issues/03-render-hot-path-caching-and-vector-graph-perf.md) — P1：持久化 `EdgesInRowGenerator` 缓存、预解析键位与单帧 Footer 规划、缓存 `change_rows` / `sync_rows` / `diff_rows` / Refs 索引 / 过滤正则，并实现矢量图按行局部重栅格化与 Sixel `[bool; 256]` 编码提速。
+  - [`04-engine-worker-priority-and-watcher-isolation.md`](./10-diff-switching-and-render-performance/issues/04-engine-worker-priority-and-watcher-isolation.md) — P1：`Git2WorkerPool` 高优交互 / 后台扫描双优先级调度、将 `RepoWatcher::is_path_ignored_sync` 隔离出共享 worker 池、以及提交草稿 300ms 防抖异步落盘。
+  - [`05-large-repo-filtering-graph-and-status-scaling.md`](./10-diff-switching-and-render-performance/issues/05-large-repo-filtering-graph-and-status-scaling.md) — P2（Blocked by `03, 04`）：Log 文本过滤 120ms 防抖与单次 `VisibleGraph` 构建、`containing_branches` 异步化与缓存、`load_path_matches_sync` 接入 `git log --simplify-merges`（Bloom filter），以及 Windows 大工作区状态/多分支 `ahead_behind`/快照体积优化。
+
+---
+
 ## 架构演进与取舍清单 (Superseded, Pruned & Trade-offs)
 
 在迭代过程中，部分早期规划、数据结构或交互策略做了明确的演进替换、边界收敛或工程取舍，在此集中备注：
@@ -158,7 +174,7 @@ jbgit/
 ├── docs/
 │   ├── manual.md               # 用户操作与 TOML 配置手册
 │   └── agents/                 # Agent 协作指引（issue-tracker / triage-labels / domain / ai-exploratory-testing）
-└── .scratch/                   # 按执行时序组织的 Feature Specs (#00 ~ #09) 与原子 Issues
+└── .scratch/                   # 按执行时序组织的 Feature Specs (#00 ~ #10) 与原子 Issues
 ```
 
 ---

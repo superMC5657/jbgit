@@ -5,8 +5,8 @@ use std::sync::Arc;
 use jbgit_core::{
     AmendCommitPreview, CommitChangesBundle, ConflictDocument, ConsoleStream, DetailsKey,
     EpochToken, EpochTracker, FileDiff, FileDiffKey, FileHistoryBundle, FileHistoryKey,
-    GitConsoleEntry, GitOp, GitOpOutcome, Oid, RefreshScope, RepoSnapshot, StageStatusSnapshot,
-    StageTarget,
+    GitConsoleEntry, GitOp, GitOpOutcome, LruCache, Oid, RefreshScope, RepoSnapshot,
+    SignatureStatus, StageStatusSnapshot, StageTarget,
 };
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 
@@ -35,6 +35,7 @@ pub enum TaskRequest {
     /// Line diff of one file of a details selection (diff preview).
     LoadFileDiff {
         key: FileDiffKey,
+        known_oids: Option<(Option<Oid>, Option<Oid>)>,
         epoch: u64,
     },
     /// Commit history of a single file (`--follow` rename tracking).
@@ -113,6 +114,10 @@ pub enum EngineEvent {
     CommitDetailsLoaded {
         bundle: Arc<CommitChangesBundle>,
         epoch: u64,
+    },
+    CommitSignatureVerified {
+        oid: Oid,
+        status: SignatureStatus,
     },
     FileDiffLoaded {
         diff: Arc<FileDiff>,
@@ -207,8 +212,20 @@ impl EngineHandle {
     }
 
     pub fn request_file_diff(&self, key: FileDiffKey) -> u64 {
+        self.request_file_diff_with_oids(key, None)
+    }
+
+    pub fn request_file_diff_with_oids(
+        &self,
+        key: FileDiffKey,
+        known_oids: Option<(Option<Oid>, Option<Oid>)>,
+    ) -> u64 {
         let epoch = self.epochs.file_diff.next_epoch();
-        self.send(TaskRequest::LoadFileDiff { key, epoch });
+        self.send(TaskRequest::LoadFileDiff {
+            key,
+            known_oids,
+            epoch,
+        });
         epoch
     }
 
@@ -307,6 +324,7 @@ impl EngineSupervisor {
         let sup_epochs = epochs.clone();
         let sup_cli = cli.map(Arc::new);
         let op_ids = Arc::new(std::sync::atomic::AtomicU64::new(1));
+        let sig_cache = Arc::new(std::sync::Mutex::new(LruCache::<Oid, SignatureStatus>::new(256)));
 
         tokio::spawn(async move {
             let _keep_watcher = watcher;
@@ -330,19 +348,73 @@ impl EngineSupervisor {
                         let pool = Arc::clone(&pool);
                         let loc = sup_location.clone();
                         let token = EpochToken::new(sup_epochs.commit_details.clone(), epoch);
-                        spawn_epoch_task(
-                            &event_tx,
-                            async move { pool.load_commit_details(loc, key, token).await },
-                            move |bundle| EngineEvent::CommitDetailsLoaded { bundle, epoch },
-                        );
+                        let tx = event_tx.clone();
+                        let sig_cache = Arc::clone(&sig_cache);
+                        let sig_epoch = sup_epochs.commit_signature.clone();
+                        tokio::spawn(async move {
+                            match pool.load_commit_details(loc.clone(), key, token).await {
+                                Ok(mut bundle) => {
+                                    let mut unverified_oids = Vec::new();
+                                    {
+                                        let mut cache = sig_cache
+                                            .lock()
+                                            .unwrap_or_else(|e| e.into_inner());
+                                        let b_mut = Arc::make_mut(&mut bundle);
+                                        for d in &mut b_mut.details {
+                                            if d.signature == SignatureStatus::SignedUnverified {
+                                                if let Some(&cached) = cache.get(&d.oid) {
+                                                    d.signature = cached;
+                                                } else {
+                                                    unverified_oids.push(d.oid);
+                                                }
+                                            }
+                                        }
+                                    }
+                                    let _ = tx.send(EngineEvent::CommitDetailsLoaded {
+                                        bundle,
+                                        epoch,
+                                    });
+                                    if !unverified_oids.is_empty() {
+                                        let sig_token = sig_epoch.issue();
+                                        let git_dir = loc.git_dir;
+                                        tokio::task::spawn_blocking(move || {
+                                            for oid in unverified_oids {
+                                                if sig_token.is_stale() {
+                                                    break;
+                                                }
+                                                let status = crate::details::verify_commit_signature_sync(&git_dir, oid);
+                                                {
+                                                    let mut cache = sig_cache
+                                                        .lock()
+                                                        .unwrap_or_else(|e| e.into_inner());
+                                                    cache.insert(oid, status);
+                                                }
+                                                let _ = tx.send(EngineEvent::CommitSignatureVerified {
+                                                    oid,
+                                                    status,
+                                                });
+                                            }
+                                        });
+                                    }
+                                }
+                                Err(EngineError::Cancelled) => {}
+                                Err(e) => {
+                                    let _ = tx.send(EngineEvent::Error(e.to_string()));
+                                }
+                            }
+                        });
                     }
-                    TaskRequest::LoadFileDiff { key, epoch } => {
+                    TaskRequest::LoadFileDiff {
+                        key,
+                        known_oids,
+                        epoch,
+                    } => {
                         let pool = Arc::clone(&pool);
                         let loc = sup_location.clone();
                         let token = EpochToken::new(sup_epochs.file_diff.clone(), epoch);
                         spawn_epoch_task(
                             &event_tx,
-                            async move { pool.load_file_diff(loc, key, token).await },
+                            async move { pool.load_file_diff(loc, key, known_oids, token).await },
                             move |diff| EngineEvent::FileDiffLoaded { diff, epoch },
                         );
                     }

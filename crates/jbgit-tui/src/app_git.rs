@@ -322,7 +322,7 @@ impl AppState {
                 self.active_tab = WorkspaceTab::Commit;
                 self.focused_pane = PaneId::CommitChangesTree;
                 self.stage_workbench
-                    .sync_rows(self.stage_status.as_deref());
+                    .sync_rows(self.stage_status.as_ref());
                 let first_conflict = self.stage_workbench.rows.iter().enumerate().find_map(|(i, r)| {
                     match &r.kind {
                         StageTreeRowKind::File {

@@ -1,11 +1,14 @@
+use std::cell::RefCell;
 use std::collections::HashSet;
 use std::sync::Arc;
 
 use jbgit_core::graph::{
-    FixedBitSet, GraphViewOptions, PermanentGraph, PrintElementGenerator, RawCommitNode,
-    ReachableNodes, VisibleGraph, VisibleRowIdx,
+    EdgesInRowCache, FixedBitSet, GraphViewOptions, PermanentGraph, PrintElementGenerator,
+    RawCommitNode, ReachableNodes, VisibleGraph, VisibleRowIdx,
 };
-use jbgit_core::{BranchColorId, CommitSummary, FilterError, LogFilterSpec, Oid, RepoSnapshot};
+use jbgit_core::{
+    BranchColorId, CommitSummary, FilterError, LogFilterSpec, Oid, RefInfo, RefKind, RepoSnapshot,
+};
 use ratatui::style::Color;
 use rustc_hash::FxHashMap;
 
@@ -19,6 +22,9 @@ pub struct CachedLogGraph {
     pub color_map: FxHashMap<BranchColorId, Color>,
     pub current_branch_reachable: FixedBitSet,
     pub recommended_tracks: usize,
+    pub edges_cache: RefCell<EdgesInRowCache>,
+    pub refs_by_oid: FxHashMap<Oid, Vec<usize>>,
+    pub ref_kind_by_name: FxHashMap<String, RefKind>,
     /// `LogGraphState::filter_generation` the visible projection was built for.
     pub filter_generation: u64,
 }
@@ -42,8 +48,11 @@ impl CachedLogGraph {
         let current_branch_reachable =
             ReachableNodes::contained_in_branch(&permanent.linear, &head_nodes);
         let visible = VisibleGraph::build(&permanent, options, filter);
-        let recommended_tracks = PrintElementGenerator::new(&permanent, &visible, snap.head_oid)
-            .recommended_track_width();
+        let mut edges_cache = EdgesInRowCache::new(&visible.linear);
+        let recommended_tracks =
+            PrintElementGenerator::with_cache(&permanent, &visible, snap.head_oid, &mut edges_cache)
+                .recommended_track_width();
+        let (refs_by_oid, ref_kind_by_name) = build_ref_indices(&snap.refs);
 
         Self {
             snapshot: Arc::clone(snap),
@@ -52,15 +61,35 @@ impl CachedLogGraph {
             color_map,
             current_branch_reachable,
             recommended_tracks,
+            edges_cache: RefCell::new(edges_cache),
+            refs_by_oid,
+            ref_kind_by_name,
             filter_generation: 0,
         }
     }
 
+    pub fn refs_for_oid<'a>(
+        &self,
+        snap: &'a RepoSnapshot,
+        oid: Oid,
+    ) -> impl Iterator<Item = &'a RefInfo> {
+        self.refs_by_oid
+            .get(&oid)
+            .into_iter()
+            .flat_map(|indices| indices.iter().filter_map(|&i| snap.refs.get(i)))
+    }
+
     fn rebuild_visible(&mut self, options: GraphViewOptions, filter: Option<&FixedBitSet>) {
         self.visible = VisibleGraph::build(&self.permanent, options, filter);
-        self.recommended_tracks =
-            PrintElementGenerator::new(&self.permanent, &self.visible, self.snapshot.head_oid)
-                .recommended_track_width();
+        let mut edges_cache = EdgesInRowCache::new(&self.visible.linear);
+        self.recommended_tracks = PrintElementGenerator::with_cache(
+            &self.permanent,
+            &self.visible,
+            self.snapshot.head_oid,
+            &mut edges_cache,
+        )
+        .recommended_track_width();
+        self.edges_cache = RefCell::new(edges_cache);
     }
 
     pub fn visible_count(&self) -> usize {
@@ -85,6 +114,19 @@ impl CachedLogGraph {
         let node = self.permanent.linear.node_of_oid(oid)?;
         self.visible.linear.visible_row(node).map(|r| r as usize)
     }
+}
+
+fn build_ref_indices(
+    refs: &[RefInfo],
+) -> (FxHashMap<Oid, Vec<usize>>, FxHashMap<String, RefKind>) {
+    let mut by_oid: FxHashMap<Oid, Vec<usize>> = FxHashMap::default();
+    let mut by_name: FxHashMap<String, RefKind> = FxHashMap::default();
+    by_name.reserve(refs.len());
+    for (idx, r) in refs.iter().enumerate() {
+        by_oid.entry(r.target_oid).or_default().push(idx);
+        by_name.entry(r.name.clone()).or_insert(r.kind);
+    }
+    (by_oid, by_name)
 }
 
 pub fn build_graph_color_map(

@@ -220,6 +220,8 @@ fn log_changes_context_menu_right_click_keyboard_dot_and_enablement() {
                 additions: 2,
                 deletions: 1,
                 exists_in_workdir: true,
+                old_oid: None,
+                new_oid: None,
             },
             FileChange {
                 kind: FileStatusKind::Modified,
@@ -229,6 +231,8 @@ fn log_changes_context_menu_right_click_keyboard_dot_and_enablement() {
                 additions: 1,
                 deletions: 0,
                 exists_in_workdir: false,
+                old_oid: None,
+                new_oid: None,
             },
             FileChange {
                 kind: FileStatusKind::Deleted,
@@ -238,6 +242,8 @@ fn log_changes_context_menu_right_click_keyboard_dot_and_enablement() {
                 additions: 0,
                 deletions: 5,
                 exists_in_workdir: false,
+                old_oid: None,
+                new_oid: None,
             },
         ],
     });
@@ -365,6 +371,8 @@ fn log_changes_context_menu_right_click_keyboard_dot_and_enablement() {
             additions: 3,
             deletions: 0,
             exists_in_workdir: true,
+            old_oid: None,
+            new_oid: None,
         }],
     });
     let _ = state.apply_engine_event(EngineEvent::CommitDetailsLoaded {
@@ -458,6 +466,8 @@ fn compare_file_with_local_expands_collapsed_dir_cache_hit_and_missing_toast() {
                 additions: 1,
                 deletions: 0,
                 exists_in_workdir: true,
+                old_oid: None,
+                new_oid: None,
             },
             FileChange {
                 kind: FileStatusKind::Modified,
@@ -467,6 +477,8 @@ fn compare_file_with_local_expands_collapsed_dir_cache_hit_and_missing_toast() {
                 additions: 4,
                 deletions: 1,
                 exists_in_workdir: true,
+                old_oid: None,
+                new_oid: None,
             },
         ],
     });
@@ -534,6 +546,8 @@ fn get_version_menu_item_opens_confirm_dialog_and_dispatches_checkout_paths() {
             additions: 1,
             deletions: 0,
             exists_in_workdir: true,
+            old_oid: None,
+            new_oid: None,
         }],
     });
     let _ = state.apply_engine_event(EngineEvent::CommitDetailsLoaded {
@@ -682,6 +696,8 @@ fn commit_stage_tree_history_menu_and_h_shortcut() {
             additions: 1,
             deletions: 0,
             exists_in_workdir: true,
+            old_oid: None,
+            new_oid: None,
         }],
     });
     let _ = state.apply_engine_event(EngineEvent::CommitDetailsLoaded { bundle, epoch: 2 });
@@ -821,6 +837,7 @@ fn file_history_modal_end_to_end_renames_compare_navigation_and_scroll() {
         }],
         is_binary: false,
         is_truncated: false,
+        is_too_large: false,
     };
     let _ = state.apply_engine_event(EngineEvent::FileDiffLoaded {
         diff: Arc::new(diff),

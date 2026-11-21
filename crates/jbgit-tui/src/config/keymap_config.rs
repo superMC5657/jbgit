@@ -1,3 +1,6 @@
+use std::fmt;
+use std::sync::OnceLock;
+
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::keymap::KeyAction;
@@ -125,6 +128,35 @@ pub struct KeyBindingsList {
     pub append_keymap: Vec<KeyBindingConfig>,
 }
 
+#[derive(Default)]
+struct ParsedKeyCache(OnceLock<Option<(crate::keymap::KeySequence, String)>>);
+
+impl fmt::Debug for ParsedKeyCache {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_tuple("ParsedKeyCache")
+            .field(&self.0.get().is_some())
+            .finish()
+    }
+}
+
+impl Clone for ParsedKeyCache {
+    fn clone(&self) -> Self {
+        let lock = OnceLock::new();
+        if let Some(val) = self.0.get() {
+            let _ = lock.set(val.clone());
+        }
+        Self(lock)
+    }
+}
+
+impl PartialEq for ParsedKeyCache {
+    fn eq(&self, _other: &Self) -> bool {
+        true
+    }
+}
+
+impl Eq for ParsedKeyCache {}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct KeyBindingConfig {
     #[serde(deserialize_with = "deserialize_key_seq")]
@@ -134,6 +166,39 @@ pub struct KeyBindingConfig {
     pub desc: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub show_hint: Option<bool>,
+    #[serde(skip)]
+    parsed: ParsedKeyCache,
+}
+
+impl KeyBindingConfig {
+    fn ensure_parsed(&self) -> Option<&(crate::keymap::KeySequence, String)> {
+        self.parsed
+            .0
+            .get_or_init(|| {
+                crate::keymap::KeySequence::parse(&self.on).map(|seq| {
+                    let disp = seq.to_display_string();
+                    (seq, disp)
+                })
+            })
+            .as_ref()
+    }
+
+    pub fn parsed_seq(&self) -> Option<&crate::keymap::KeySequence> {
+        self.ensure_parsed().map(|(seq, _)| seq)
+    }
+
+    pub fn display_key(&self) -> Option<&str> {
+        self.ensure_parsed().map(|(_, disp)| disp.as_str())
+    }
+
+    pub fn precompile(&self) {
+        let _ = self.ensure_parsed();
+    }
+
+    #[cfg(test)]
+    pub fn is_precompiled(&self) -> bool {
+        self.parsed.0.get().is_some()
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -309,6 +374,7 @@ fn kb_hint(
         run,
         desc: desc.map(ToString::to_string),
         show_hint,
+        parsed: ParsedKeyCache::default(),
     }
 }
 
@@ -344,7 +410,7 @@ impl KeymapConfig {
         cfg.normalize_sections();
 
         match preset {
-            KeymapPreset::Default => cfg,
+            KeymapPreset::Default => {}
             KeymapPreset::Jetbrains => {
                 cfg.preset = KeymapPreset::Jetbrains;
                 cfg.tree_speed_search = true;
@@ -383,7 +449,6 @@ impl KeymapConfig {
                     ..Default::default()
                 };
                 cfg.merge_overlay(&overlay);
-                cfg
             }
             KeymapPreset::Vim => {
                 cfg.preset = KeymapPreset::Vim;
@@ -411,7 +476,24 @@ impl KeymapConfig {
                     ..Default::default()
                 };
                 cfg.merge_overlay(&overlay);
-                cfg
+            }
+        }
+        cfg.precompile_all();
+        cfg
+    }
+
+    pub fn precompile_all(&self) {
+        for scope in [
+            KeymapScope::Global,
+            KeymapScope::Log,
+            KeymapScope::Commit,
+            KeymapScope::Branch,
+            KeymapScope::Diff,
+            KeymapScope::Stash,
+            KeymapScope::Console,
+        ] {
+            for b in self.bindings_for(scope) {
+                b.precompile();
             }
         }
     }
@@ -451,6 +533,7 @@ impl KeymapConfig {
         if let Some(c) = &overlay.console {
             merge_section(&mut self.console.key_bindings, c);
         }
+        self.precompile_all();
     }
 
     pub fn bindings_for(&self, scope: KeymapScope) -> &[KeyBindingConfig] {
@@ -469,9 +552,9 @@ impl KeymapConfig {
         for &scope in scopes {
             for b in self.bindings_for(scope) {
                 if &b.run == run
-                    && let Some(seq) = crate::keymap::KeySequence::parse(&b.on)
+                    && let Some(disp) = b.display_key()
                 {
-                    return Some(seq.to_display_string());
+                    return Some(disp.to_string());
                 }
             }
         }
@@ -483,12 +566,10 @@ impl KeymapConfig {
         for &scope in scopes {
             for b in self.bindings_for(scope) {
                 if &b.run == run
-                    && let Some(seq) = crate::keymap::KeySequence::parse(&b.on)
+                    && let Some(disp) = b.display_key()
+                    && !out.iter().any(|existing| existing == disp)
                 {
-                    let disp = seq.to_display_string();
-                    if !out.contains(&disp) {
-                        out.push(disp);
-                    }
+                    out.push(disp.to_string());
                 }
             }
         }
@@ -500,13 +581,12 @@ impl KeymapConfig {
         for &scope in scopes {
             for b in self.bindings_for(scope) {
                 if &b.run == run
-                    && let Some(seq) = crate::keymap::KeySequence::parse(&b.on)
+                    && let Some(seq) = b.parsed_seq()
                     && seq.starts_with_editor_chord()
+                    && let Some(disp) = b.display_key()
+                    && !out.iter().any(|existing| existing == disp)
                 {
-                    let disp = seq.to_display_string();
-                    if !out.contains(&disp) {
-                        out.push(disp);
-                    }
+                    out.push(disp.to_string());
                 }
             }
         }
@@ -529,7 +609,7 @@ impl KeymapConfig {
                 if !b.run.is_active() {
                     continue;
                 }
-                let Some(seq) = crate::keymap::KeySequence::parse(&b.on) else {
+                let Some(seq) = b.parsed_seq() else {
                     continue;
                 };
                 if !seq.starts_with_editor_chord() {
@@ -538,7 +618,7 @@ impl KeymapConfig {
                 let first = &seq.strokes[0];
                 if &b.run == run && seq.strokes.len() == 1 {
                     if !shadowed.contains(first) {
-                        return Some(seq);
+                        return Some(seq.clone());
                     }
                 } else if !shadowed.contains(first) {
                     shadowed.push(first.clone());
@@ -546,5 +626,36 @@ impl KeymapConfig {
             }
         }
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn precompile_all_populates_parsed_key_cache() {
+        let cfg = KeymapConfig::default();
+        cfg.precompile_all();
+        for scope in [
+            KeymapScope::Global,
+            KeymapScope::Log,
+            KeymapScope::Commit,
+            KeymapScope::Branch,
+            KeymapScope::Diff,
+            KeymapScope::Stash,
+            KeymapScope::Console,
+        ] {
+            for b in cfg.bindings_for(scope) {
+                assert!(
+                    b.is_precompiled(),
+                    "binding for {:?} with on={:?} must be precompiled",
+                    b.run,
+                    b.on
+                );
+                assert!(b.parsed_seq().is_some());
+                assert!(b.display_key().is_some());
+            }
+        }
     }
 }

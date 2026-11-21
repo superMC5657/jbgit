@@ -25,10 +25,11 @@ pub use console::{
 };
 pub use details::{
     ChangeRowKind, ChangeTreeRow, CommitChangesBundle, CommitDetails, DetailsKey, DetailsMode,
-    DiffContext, DiffHunk, DiffLine, DiffLineKind, FileChange, FileDiff, FileDiffKey,
-    FileHistoryBundle, FileHistoryEntry, FileHistoryKey, MessageLineKind, PersonStamp,
-    SideBySideRow, SignatureStatus, apply_word_diff, build_change_rows, classify_message_line,
-    issue_ref_ranges, side_by_side_rows, word_diff,
+    DiffContext, DiffHunk, DiffLine, DiffLineKind, EAGER_WORD_DIFF_PAIR_BUDGET, FileChange,
+    FileDiff, FileDiffKey, FileHistoryBundle, FileHistoryEntry, FileHistoryKey,
+    MAX_DIFF_FILE_BYTES, MAX_WORD_DIFF_LINE_BYTES, MessageLineKind, PersonStamp, SideBySideRow,
+    SignatureStatus, apply_word_diff, apply_word_diff_with_budget, build_change_rows,
+    classify_message_line, issue_ref_ranges, side_by_side_rows, word_diff,
 };
 pub use epoch::{EpochToken, EpochTracker, RequestEpoch};
 pub use filter::{
@@ -56,7 +57,7 @@ pub use stage::{
     build_stage_tree_rows, collect_targets_under_row, next_anchor_after_mutation,
 };
 pub use stage_tracker::{
-    DiffBlock, LineEnding, LineGutterMark, LineSelection, SlicedDocument, SlicedLine,
+    DiffBlock, LineEnding, LineGutterMark, LineSelection, LineSlice, SlicedDocument,
     StageDiffHunk, StageDiffLineMeta, StageLineTracker, StagedRange, compute_diff_blocks,
     merge_stage_blocks,
 };

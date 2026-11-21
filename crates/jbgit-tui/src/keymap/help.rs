@@ -7,7 +7,7 @@ use crate::app::AppState;
 use crate::config::keymap_config::{KeyBindingConfig, KeymapScope};
 
 use super::actions::{is_action_applicable, scopes_for_context};
-use super::{KEY_CHORD_WINDOW, KeyAction, KeySequence, KeyStroke};
+use super::{KEY_CHORD_WINDOW, KeyAction, KeyStroke};
 
 pub fn localized_action_desc(
     state: &AppState,
@@ -45,7 +45,7 @@ pub fn pending_completions(state: &AppState) -> Vec<(String, String)> {
             if !is_action_applicable(&b.run, state) {
                 continue;
             }
-            if let Some(seq) = KeySequence::parse(&b.on)
+            if let Some(seq) = b.parsed_seq()
                 && seq.matches_prefix(&state.pending_keys)
                 && let Some(next_stroke) = seq.strokes.get(prefix_len)
             {
@@ -123,10 +123,10 @@ fn collect_merged_entries(
         if filter_applicable && !is_action_applicable(&b.run, state) {
             continue;
         }
-        let Some(seq) = KeySequence::parse(&b.on) else {
+        let Some(key_disp) = b.display_key() else {
             continue;
         };
-        let key_disp = seq.to_display_string();
+        let key_disp = key_disp.to_string();
         if let Some(pos) = order.iter().position(|r| r == &b.run) {
             let entry = &mut keys_by_run[pos];
             if !entry.1.contains(&key_disp) {

@@ -71,33 +71,76 @@ fn active_footer_override<'a>(
     None
 }
 
+enum FooterPlanKind {
+    Empty,
+    Override,
+    Dynamic {
+        hints: FooterHints,
+        rows: Vec<Vec<usize>>,
+        hidden: usize,
+    },
+}
+
+pub struct FooterRenderPlan {
+    pub height: u16,
+    kind: FooterPlanKind,
+}
+
+pub fn plan_footer_bar(
+    state: &AppState,
+    width: u16,
+    max_height: u16,
+    hover_target: Option<&HitTarget>,
+) -> FooterRenderPlan {
+    if max_height == 0 || width == 0 {
+        return FooterRenderPlan {
+            height: 0,
+            kind: FooterPlanKind::Empty,
+        };
+    }
+    if active_footer_override(state, hover_target).is_some() {
+        return FooterRenderPlan {
+            height: 1,
+            kind: FooterPlanKind::Override,
+        };
+    }
+    let configured = state.config.keymap.footer_max_lines;
+    if configured == 0 {
+        return FooterRenderPlan {
+            height: 0,
+            kind: FooterPlanKind::Empty,
+        };
+    }
+    let cap = configured.min(max_height) as usize;
+    let hints = collect_footer_hints(state);
+    let (rows, hidden) = layout_footer_pills(&hints.pills, hints.help.as_ref(), width as usize, cap);
+    let height = (rows.len() as u16).max(1).min(max_height);
+    FooterRenderPlan {
+        height,
+        kind: FooterPlanKind::Dynamic {
+            hints,
+            rows,
+            hidden,
+        },
+    }
+}
+
+#[allow(dead_code)]
 pub fn footer_bar_height(
     state: &AppState,
     width: u16,
     max_height: u16,
     hover_target: Option<&HitTarget>,
 ) -> u16 {
-    if max_height == 0 || width == 0 {
-        return 0;
-    }
-    if active_footer_override(state, hover_target).is_some() {
-        return 1;
-    }
-    let configured = state.config.keymap.footer_max_lines;
-    if configured == 0 {
-        return 0;
-    }
-    let cap = configured.min(max_height) as usize;
-    let hints = collect_footer_hints(state);
-    let (rows, _) = layout_footer_pills(&hints.pills, hints.help.as_ref(), width as usize, cap);
-    (rows.len() as u16).max(1).min(max_height)
+    plan_footer_bar(state, width, max_height, hover_target).height
 }
 
-pub fn render_footer_bar(
+pub fn render_footer_bar_with_plan(
     frame: &mut Frame<'_>,
     area: Rect,
     state: &AppState,
     ctx: &mut RenderContext<'_>,
+    plan: &FooterRenderPlan,
 ) {
     if area.height == 0 || area.width == 0 {
         return;
@@ -124,10 +167,29 @@ pub fn render_footer_bar(
         }) => {
             render_graph_arrow_footer(frame, area, state, ctx, target_row, target_oid, is_down);
         }
-        None => {
-            render_dynamic_footer_hints(frame, area, state, ctx);
-        }
+        None => match &plan.kind {
+            FooterPlanKind::Dynamic {
+                hints,
+                rows,
+                hidden,
+            } => render_dynamic_footer_hints_from_plan(frame, area, ctx, hints, rows, *hidden),
+            FooterPlanKind::Empty | FooterPlanKind::Override => {}
+        },
     }
+}
+
+#[allow(dead_code)]
+pub fn render_footer_bar(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    state: &AppState,
+    ctx: &mut RenderContext<'_>,
+) {
+    if area.height == 0 || area.width == 0 {
+        return;
+    }
+    let plan = plan_footer_bar(state, area.width, area.height, ctx.hover_target);
+    render_footer_bar_with_plan(frame, area, state, ctx, &plan);
 }
 
 fn render_notification_footer(
@@ -604,8 +666,8 @@ fn collect_footer_hints(state: &AppState) -> FooterHints {
                     label: t("view.footer.pill.status_probe"),
                 });
                 if let Some(seq) = KeySequence::parse(&[probe_key]) {
-                    push_unique_seq(&mut claimed_keys, seq.clone());
-                    push_unique_seq(&mut non_global_claimed_keys, seq);
+                    push_unique_seq(&mut claimed_keys, &seq);
+                    push_unique_seq(&mut non_global_claimed_keys, &seq);
                 }
             }
 
@@ -694,24 +756,20 @@ fn layout_footer_pills(
     (rows, pills.len() - idx)
 }
 
-fn render_dynamic_footer_hints(
+fn render_dynamic_footer_hints_from_plan(
     frame: &mut Frame<'_>,
     area: Rect,
-    state: &AppState,
     ctx: &RenderContext<'_>,
+    hints: &FooterHints,
+    rows: &[Vec<usize>],
+    hidden: usize,
 ) {
-    if state.config.keymap.footer_max_lines == 0 || area.height == 0 || area.width == 0 {
+    if area.height == 0 || area.width == 0 {
         return;
     }
 
-    let hints = collect_footer_hints(state);
     let total_w = area.width as usize;
-    let (rows, hidden) = layout_footer_pills(
-        &hints.pills,
-        hints.help.as_ref(),
-        total_w,
-        area.height as usize,
-    );
+    let visible_rows = rows.len().min(area.height as usize);
 
     let pill_badge_style = Style::default()
         .bg(ctx.theme.bg_elevated)
@@ -721,16 +779,15 @@ fn render_dynamic_footer_hints(
         .bg(ctx.theme.bg_panel)
         .fg(ctx.theme.fg_muted);
 
-    let row_count = rows.len();
-    let mut lines: Vec<Line<'static>> = Vec::with_capacity(row_count);
+    let mut lines: Vec<Line<'static>> = Vec::with_capacity(visible_rows);
 
-    for (row_idx, pill_indices) in rows.into_iter().enumerate() {
-        let is_last_row = row_idx + 1 == row_count;
+    for (row_idx, pill_indices) in rows.iter().take(visible_rows).enumerate() {
+        let is_last_row = row_idx + 1 == visible_rows;
         let mut spans: Vec<Span<'static>> = Vec::new();
         spans.push(Span::styled(" ", pill_label_style));
         let mut used_w = 1usize;
 
-        for pill_idx in pill_indices {
+        for &pill_idx in pill_indices {
             let pill = &hints.pills[pill_idx];
             used_w += pill.display_width();
             spans.push(Span::styled(pill.key_badge(), pill_badge_style));

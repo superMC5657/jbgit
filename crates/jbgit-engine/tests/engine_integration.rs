@@ -1008,3 +1008,279 @@ async fn file_history_follow_renames_cjk_diffs_and_supervisor_epoch_cancellation
     }
     assert_eq!(latest.unwrap().entries.len(), 2);
 }
+
+#[test]
+fn large_file_exceeding_limit_short_circuits_file_and_stage_diff() {
+    use jbgit_core::{DetailsKey, DiffContext, FileDiffKey, MAX_DIFF_FILE_BYTES, RequestEpoch};
+    use jbgit_engine::{
+        StageDiffKey, StageDiffSide, load_file_diff_sync, load_stage_file_diff_sync,
+    };
+
+    let tmp = TempDir::new().unwrap();
+    let dir = tmp.path();
+    git(dir, &["init", "-b", "main"]);
+    let loc = RepoLocation::discover(dir).unwrap();
+    let token = RequestEpoch::new().issue();
+
+    // Commit a > 4 MiB blob
+    let huge = vec![b'a'; MAX_DIFF_FILE_BYTES + 1024];
+    std::fs::write(dir.join("huge.txt"), &huge).unwrap();
+    git(dir, &["add", "huge.txt"]);
+    git(dir, &["commit", "-m", "add huge file"]);
+    let head = rev(dir, "HEAD");
+
+    let file_diff = load_file_diff_sync(
+        &loc,
+        &FileDiffKey {
+            details: DetailsKey::single(head),
+            path: "huge.txt".into(),
+            old_path: None,
+            context: DiffContext::Three,
+        },
+        &token,
+    )
+    .unwrap();
+    assert!(file_diff.is_too_large);
+    assert!(file_diff.hunks.is_empty());
+
+    // Modify worktree with another > 4 MiB payload and check stage diff
+    let mut huge_wt = huge;
+    huge_wt.extend_from_slice(b"\nmore\n");
+    std::fs::write(dir.join("huge.txt"), &huge_wt).unwrap();
+
+    let stage_diff = load_stage_file_diff_sync(
+        &loc,
+        &StageDiffKey {
+            path: "huge.txt".into(),
+            old_path: None,
+            side: StageDiffSide::Unstaged,
+            context: DiffContext::Three,
+        },
+        &token,
+    )
+    .unwrap();
+    assert!(stage_diff.is_too_large);
+    assert!(stage_diff.hunks.is_empty());
+    assert!(stage_diff.vcs_bytes.is_empty());
+    assert!(stage_diff.local_bytes.is_empty());
+}
+
+#[test]
+fn fast_file_diff_paths_match_rename_add_delete_compare_local_and_multi_commit_oids() {
+    use jbgit_core::{DetailsKey, DiffContext, DiffLineKind, FileDiffKey, FileStatusKind, RequestEpoch};
+    use jbgit_engine::{
+        load_commit_details_sync, load_file_diff_sync, load_file_diff_with_oids_sync,
+    };
+
+    let tmp = TempDir::new().unwrap();
+    let dir = tmp.path();
+    git(dir, &["init", "-b", "main"]);
+
+    fs::write(dir.join("keep.txt"), "one\ntwo\n").unwrap();
+    fs::write(dir.join("to_delete.txt"), "bye1\nbye2\n").unwrap();
+    fs::write(dir.join("old_name.txt"), "rename line 1\nrename line 2\n").unwrap();
+    git(dir, &["add", "."]);
+    git(dir, &["commit", "-m", "c1"]);
+    let c1 = rev(dir, "HEAD");
+
+    fs::write(dir.join("keep.txt"), "one\ntwo_v2\n").unwrap();
+    fs::write(dir.join("added.txt"), "new_a\nnew_b\n").unwrap();
+    fs::remove_file(dir.join("to_delete.txt")).unwrap();
+    git(dir, &["mv", "old_name.txt", "new_name.txt"]);
+    git(dir, &["add", "-A"]);
+    git(dir, &["commit", "-m", "c2"]);
+    let c2 = rev(dir, "HEAD");
+
+    fs::write(dir.join("keep.txt"), "one\ntwo_v3\nthree\n").unwrap();
+    git(dir, &["add", "keep.txt"]);
+    git(dir, &["commit", "-m", "c3"]);
+    let c3 = rev(dir, "HEAD");
+
+    let loc = RepoLocation::discover(dir).unwrap();
+    let token = RequestEpoch::new().issue();
+
+    // Commit c2 details must populate FileChange.{old_oid,new_oid}
+    let bundle_c2 = load_commit_details_sync(&loc, &DetailsKey::single(c2), &token).unwrap();
+    let ren = bundle_c2
+        .changes
+        .iter()
+        .find(|c| c.path == "new_name.txt")
+        .unwrap();
+    assert_eq!(ren.kind, FileStatusKind::Renamed);
+    assert_eq!(ren.old_path.as_deref(), Some("old_name.txt"));
+    assert!(ren.old_oid.is_some() && ren.new_oid.is_some());
+
+    // Direct O(tree_depth) single-commit diffs (known_oids = None)
+    let diff_add = load_file_diff_sync(
+        &loc,
+        &FileDiffKey {
+            details: DetailsKey::single(c2),
+            path: "added.txt".into(),
+            old_path: None,
+            context: DiffContext::Three,
+        },
+        &token,
+    )
+    .unwrap();
+    assert!(
+        diff_add.hunks[0]
+            .lines
+            .iter()
+            .all(|l| l.kind == DiffLineKind::Added)
+    );
+
+    let diff_del = load_file_diff_sync(
+        &loc,
+        &FileDiffKey {
+            details: DetailsKey::single(c2),
+            path: "to_delete.txt".into(),
+            old_path: None,
+            context: DiffContext::Three,
+        },
+        &token,
+    )
+    .unwrap();
+    assert!(
+        diff_del.hunks[0]
+            .lines
+            .iter()
+            .all(|l| l.kind == DiffLineKind::Deleted)
+    );
+
+    let diff_ren = load_file_diff_sync(
+        &loc,
+        &FileDiffKey {
+            details: DetailsKey::single(c2),
+            path: "new_name.txt".into(),
+            old_path: Some("old_name.txt".into()),
+            context: DiffContext::Three,
+        },
+        &token,
+    )
+    .unwrap();
+    assert!(diff_ren.hunks.is_empty(), "identical rename has empty hunks");
+
+    // Multi-commit net diff: known_oids fast path must match fallback path
+    let multi_key = DetailsKey::commits(vec![c3, c2], 0);
+    let multi_bundle = load_commit_details_sync(&loc, &multi_key, &token).unwrap();
+    let keep_change = multi_bundle
+        .changes
+        .iter()
+        .find(|c| c.path == "keep.txt")
+        .unwrap();
+    let fkey = FileDiffKey {
+        details: multi_key,
+        path: "keep.txt".into(),
+        old_path: None,
+        context: DiffContext::Three,
+    };
+    let via_oids = load_file_diff_with_oids_sync(
+        &loc,
+        &fkey,
+        Some((keep_change.old_oid, keep_change.new_oid)),
+        &token,
+    )
+    .unwrap();
+    let via_fallback = load_file_diff_sync(&loc, &fkey, &token).unwrap();
+    assert_eq!(via_oids, via_fallback);
+
+    // CompareWithLocal & CompareVersions fast paths (including worktree edits + untracked)
+    fs::write(dir.join("keep.txt"), "one\ntwo_local\n").unwrap();
+    let cmp_local = load_file_diff_sync(
+        &loc,
+        &FileDiffKey {
+            details: DetailsKey::compare_with_local(c1),
+            path: "keep.txt".into(),
+            old_path: None,
+            context: DiffContext::Three,
+        },
+        &token,
+    )
+    .unwrap();
+    assert!(
+        cmp_local.hunks[0]
+            .lines
+            .iter()
+            .any(|l| l.kind == DiffLineKind::Added && l.text == "two_local")
+    );
+
+    let cmp_ver = load_file_diff_sync(
+        &loc,
+        &FileDiffKey {
+            details: DetailsKey::compare_versions(c1, c3),
+            path: "keep.txt".into(),
+            old_path: None,
+            context: DiffContext::Three,
+        },
+        &token,
+    )
+    .unwrap();
+    assert!(
+        cmp_ver.hunks[0]
+            .lines
+            .iter()
+            .any(|l| l.kind == DiffLineKind::Added && l.text == "three")
+    );
+}
+
+#[test]
+fn stage_diff_index_entry_conflict_vs_normal_detection() {
+    use jbgit_core::{DiffContext, RequestEpoch};
+    use jbgit_engine::{StageDiffKey, StageDiffSide, load_stage_file_diff_sync};
+
+    let tmp = TempDir::new().unwrap();
+    let dir = tmp.path();
+    git(dir, &["init", "-b", "main"]);
+    fs::write(dir.join("conflict.txt"), "base\n").unwrap();
+    fs::write(dir.join("clean.txt"), "ok\n").unwrap();
+    git(dir, &["add", "."]);
+    git(dir, &["commit", "-m", "base"]);
+
+    git(dir, &["checkout", "-b", "branch_a"]);
+    fs::write(dir.join("conflict.txt"), "ours\n").unwrap();
+    git(dir, &["add", "conflict.txt"]);
+    git(dir, &["commit", "-m", "ours"]);
+
+    git(dir, &["checkout", "main"]);
+    fs::write(dir.join("conflict.txt"), "theirs\n").unwrap();
+    fs::write(dir.join("clean.txt"), "ok_edited\n").unwrap();
+    git(dir, &["add", "."]);
+    git(dir, &["commit", "-m", "theirs"]);
+
+    let merge_out = Command::new("git")
+        .args(["merge", "branch_a"])
+        .current_dir(dir)
+        .output()
+        .unwrap();
+    assert!(!merge_out.status.success(), "expected merge conflict");
+
+    let loc = RepoLocation::discover(dir).unwrap();
+    let token = RequestEpoch::new().issue();
+
+    let conflicted = load_stage_file_diff_sync(
+        &loc,
+        &StageDiffKey {
+            path: "conflict.txt".into(),
+            old_path: None,
+            side: StageDiffSide::Unstaged,
+            context: DiffContext::Three,
+        },
+        &token,
+    )
+    .unwrap();
+    assert!(conflicted.is_conflicted);
+    assert!(!conflicted.hunks.is_empty());
+
+    let normal = load_stage_file_diff_sync(
+        &loc,
+        &StageDiffKey {
+            path: "clean.txt".into(),
+            old_path: None,
+            side: StageDiffSide::Unstaged,
+            context: DiffContext::Three,
+        },
+        &token,
+    )
+    .unwrap();
+    assert!(!normal.is_conflicted);
+}

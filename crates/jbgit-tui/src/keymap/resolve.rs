@@ -38,10 +38,10 @@ fn has_earlier_conflict(
     earlier.iter().any(|prev| {
         prev.run != *target_run
             && is_action_applicable(&prev.run, ctx.state)
-            && KeySequence::parse(&prev.on).is_some_and(|prev_seq| {
+            && prev.parsed_seq().is_some_and(|prev_seq| {
                 (!ctx.editor_only || prev_seq.starts_with_editor_chord())
-                    && !is_speed_search_captured(&prev_seq, ctx.filter_speed_search)
-                    && seqs_conflict(&prev_seq, seq)
+                    && !is_speed_search_captured(prev_seq, ctx.filter_speed_search)
+                    && seqs_conflict(prev_seq, seq)
             })
     })
 }
@@ -79,18 +79,18 @@ pub(crate) fn resolve_key_in_scopes(
     binding_idx: usize,
     binding: &KeyBindingConfig,
 ) -> Option<String> {
-    if let Some(seq) = KeySequence::parse(&binding.on)
+    if let Some(seq) = binding.parsed_seq()
         && is_candidate_usable(
             ctx,
             scopes,
             scope_idx,
             scope_idx,
             binding_idx,
-            &seq,
+            seq,
             &binding.run,
         )
     {
-        return Some(seq.to_display_string());
+        return binding.display_key().map(ToString::to_string);
     }
 
     let km = &ctx.state.config.keymap;
@@ -100,18 +100,18 @@ pub(crate) fn resolve_key_in_scopes(
             if fb.run != binding.run || fb.show_hint == Some(false) {
                 continue;
             }
-            if let Some(alt_seq) = KeySequence::parse(&fb.on)
+            if let Some(alt_seq) = fb.parsed_seq()
                 && is_candidate_usable(
                     ctx,
                     scopes,
                     scope_idx,
                     fb_scope_idx,
                     fb_idx,
-                    &alt_seq,
+                    alt_seq,
                     &fb.run,
                 )
             {
-                return Some(alt_seq.to_display_string());
+                return fb.display_key().map(ToString::to_string);
             }
         }
     }
@@ -119,9 +119,9 @@ pub(crate) fn resolve_key_in_scopes(
     None
 }
 
-pub(crate) fn push_unique_seq(out: &mut Vec<KeySequence>, seq: KeySequence) {
-    if !out.contains(&seq) {
-        out.push(seq);
+pub(crate) fn push_unique_seq(out: &mut Vec<KeySequence>, seq: &KeySequence) {
+    if !out.contains(seq) {
+        out.push(seq.clone());
     }
 }
 
@@ -134,10 +134,10 @@ pub(crate) fn collect_claimed_keys(
 ) {
     for b in bindings {
         if is_action_applicable(&b.run, state)
-            && let Some(seq) = KeySequence::parse(&b.on)
-            && !is_speed_search_captured(&seq, filter_speed_search)
+            && let Some(seq) = b.parsed_seq()
+            && !is_speed_search_captured(seq, filter_speed_search)
         {
-            push_unique_seq(claimed, seq.clone());
+            push_unique_seq(claimed, seq);
             if let Some(ng) = non_global_claimed.as_deref_mut() {
                 push_unique_seq(ng, seq);
             }

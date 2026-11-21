@@ -60,6 +60,7 @@ struct OwnedRow {
     row_bg: Color,
     elements: Vec<RenderGraphElement>,
     colors: Vec<Rgb>,
+    row_hash: u64,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -89,6 +90,9 @@ pub struct PixelVectorGraphBackend {
     rows_len: usize,
     color_map: FxHashMap<BranchColorId, Color>,
     raster_key: Option<u64>,
+    raster_layout_key: Option<(u16, usize, CellPixelSize, Rgb)>,
+    row_hashes: Vec<u64>,
+    last_rasterized_rows: usize,
     pending: Option<PendingFrame>,
     /// Key of the Sixel / iTerm2 image currently on screen.
     emitted_key: Option<u64>,
@@ -117,6 +121,9 @@ impl PixelVectorGraphBackend {
             rows_len: 0,
             color_map: FxHashMap::default(),
             raster_key: None,
+            raster_layout_key: None,
+            row_hashes: Vec::new(),
+            last_rasterized_rows: 0,
             pending: None,
             emitted_key: None,
             kitty_current: None,
@@ -154,8 +161,15 @@ impl PixelVectorGraphBackend {
         self.invalidate();
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn last_rasterized_rows(&self) -> usize {
+        self.last_rasterized_rows
+    }
+
     pub fn invalidate(&mut self) {
         self.raster_key = None;
+        self.raster_layout_key = None;
+        self.row_hashes.clear();
         self.emitted_key = None;
         // Re-transmit under the other id; the old image is deleted afterwards.
         if let Some(cur) = self.kitty_current.as_mut() {
@@ -379,6 +393,12 @@ impl PixelVectorGraphBackend {
                 );
                 Rgb::from_color(c, Rgb(187, 187, 187))
             }));
+            let mut row_h = FxHasher::default();
+            src.row_bg.hash(&mut row_h);
+            src.elements.hash(&mut row_h);
+            dst.colors.hash(&mut row_h);
+            dst.row_hash = row_h.finish();
+
             src.row_bg.hash(&mut h);
             src.elements.hash(&mut h);
             dst.colors.hash(&mut h);
@@ -391,26 +411,67 @@ impl PixelVectorGraphBackend {
         let row_h = u32::from(self.cell_px.height);
         let h = rows as u32 * row_h;
         let row_bytes = (w * row_h * 4) as usize;
-        self.strip.resize(row_bytes * rows, 0);
-        self.strip_size = (w, h);
+        let total_bytes = row_bytes * rows;
+
+        let layout_key = (cols, rows, self.cell_px, hover_outline);
+        let can_incremental = self.raster_layout_key == Some(layout_key)
+            && self.row_hashes.len() == rows
+            && self.strip.len() == total_bytes
+            && self.strip_size == (w, h);
 
         let geom = self.geometry;
-        for (i, row) in self.rows.iter().take(rows).enumerate() {
-            let bg = Rgb::from_color(row.row_bg, Rgb(0, 0, 0));
-            let bytes = &mut self.strip[i * row_bytes..(i + 1) * row_bytes];
-            let Some(mut pixmap) = PixmapMut::from_bytes(bytes, w, row_h) else {
-                continue;
-            };
-            pixmap.fill(bg.to_skia());
-            self.painter.paint_row(
-                &mut pixmap,
-                &geom,
-                &row.elements,
-                &row.colors,
-                bg,
-                hover_outline,
-            );
+        let mut rasterized_count = 0;
+
+        if can_incremental {
+            for (i, row) in self.rows.iter().take(rows).enumerate() {
+                if self.row_hashes[i] != row.row_hash {
+                    let bg = Rgb::from_color(row.row_bg, Rgb(0, 0, 0));
+                    let bytes = &mut self.strip[i * row_bytes..(i + 1) * row_bytes];
+                    let Some(mut pixmap) = PixmapMut::from_bytes(bytes, w, row_h) else {
+                        continue;
+                    };
+                    pixmap.fill(bg.to_skia());
+                    self.painter.paint_row(
+                        &mut pixmap,
+                        &geom,
+                        &row.elements,
+                        &row.colors,
+                        bg,
+                        hover_outline,
+                    );
+                    self.row_hashes[i] = row.row_hash;
+                    rasterized_count += 1;
+                }
+            }
+        } else {
+            self.strip.resize(total_bytes, 0);
+            self.strip_size = (w, h);
+            self.row_hashes.clear();
+            self.row_hashes.reserve(rows);
+
+            for (i, row) in self.rows.iter().take(rows).enumerate() {
+                let bg = Rgb::from_color(row.row_bg, Rgb(0, 0, 0));
+                let bytes = &mut self.strip[i * row_bytes..(i + 1) * row_bytes];
+                let Some(mut pixmap) = PixmapMut::from_bytes(bytes, w, row_h) else {
+                    self.row_hashes.push(row.row_hash);
+                    continue;
+                };
+                pixmap.fill(bg.to_skia());
+                self.painter.paint_row(
+                    &mut pixmap,
+                    &geom,
+                    &row.elements,
+                    &row.colors,
+                    bg,
+                    hover_outline,
+                );
+                self.row_hashes.push(row.row_hash);
+                rasterized_count += 1;
+            }
+            self.raster_layout_key = Some(layout_key);
         }
+
+        self.last_rasterized_rows = rasterized_count;
     }
 
     /// Cell-mapped hit regions using the reference `isOverEdge` / `isOverNode`

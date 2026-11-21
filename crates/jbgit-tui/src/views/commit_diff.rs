@@ -106,6 +106,14 @@ pub fn render_stage_diff_workbench(
         return;
     };
 
+    if diff.is_too_large {
+        ctx.record_scroll_bound(ScrollPane::StageDiff, h, 0);
+        frame.render_widget(
+            muted_line(ctx, state.i18n.t("view.commit.diff_too_large")),
+            diff_area,
+        );
+        return;
+    }
     if diff.is_binary {
         ctx.record_scroll_bound(ScrollPane::StageDiff, h, 0);
         frame.render_widget(muted_line(ctx, state.i18n.t("view.commit.diff_binary")), diff_area);
@@ -132,7 +140,6 @@ pub fn render_stage_diff_workbench(
     let tab_size = ctx.diff_tab_size();
 
     let empty_hl;
-    let computed_hl;
     let hl_diff: &HighlightedDiff = if !ctx.diff_syntax_enabled() {
         empty_hl = HighlightedDiff::default();
         &empty_hl
@@ -140,8 +147,8 @@ pub fn render_stage_diff_workbench(
         match &sw.diff_syntax {
             Some(cached) => cached,
             None => {
-                computed_hl = HighlightedDiff::build(&diff.as_file_diff());
-                &computed_hl
+                empty_hl = HighlightedDiff::default();
+                &empty_hl
             }
         }
     };
@@ -190,6 +197,7 @@ pub fn render_stage_diff_workbench(
 
     let side_cell = |hh: usize,
                      line_idx: Option<usize>,
+                     custom_wr: Option<&[(usize, usize)]>,
                      lineno: fn(&DiffLine) -> Option<u32>,
                      cell_w: usize,
                      row_sel: bool,
@@ -214,10 +222,11 @@ pub fn render_stage_diff_workbench(
                 spans.push(Span::styled(format!("{} ", num(lineno(l))), gutter));
                 spans.push(Span::styled(marker.to_string(), base));
                 let text_w = cell_w.saturating_sub(num_w + 3);
+                let wr = custom_wr.unwrap_or(&l.word_ranges);
                 let mut line_body = render_diff_line_spans_with_tab(
                     &l.text,
                     toks,
-                    &l.word_ranges,
+                    wr,
                     text_w,
                     tab_size,
                     base,
@@ -394,10 +403,29 @@ pub fn render_stage_diff_workbench(
                 }
             }
             Some(StageDiffRow::Split(hh, left, right)) => {
+                let (lazy_l, lazy_r) = match (*left, *right) {
+                    (Some(li), Some(ri)) => {
+                        let l = &diff.hunks[*hh].hunk.lines[li];
+                        let r = &diff.hunks[*hh].hunk.lines[ri];
+                        if l.word_ranges.is_empty()
+                            && r.word_ranges.is_empty()
+                            && l.text != r.text
+                            && l.text.len() <= jbgit_core::MAX_WORD_DIFF_LINE_BYTES
+                            && r.text.len() <= jbgit_core::MAX_WORD_DIFF_LINE_BYTES
+                        {
+                            let (lw, rw) = jbgit_core::word_diff(&l.text, &r.text);
+                            (Some(lw), Some(rw))
+                        } else {
+                            (None, None)
+                        }
+                    }
+                    _ => (None, None),
+                };
                 let half = width / 2;
                 let mut spans = side_cell(
                     *hh,
                     *left,
+                    lazy_l.as_deref(),
                     |l| l.old_lineno,
                     half,
                     in_visual,
@@ -410,6 +438,7 @@ pub fn render_stage_diff_workbench(
                 spans.extend(side_cell(
                     *hh,
                     *right,
+                    lazy_r.as_deref(),
                     |l| l.new_lineno,
                     width.saturating_sub(half + 1),
                     in_visual,

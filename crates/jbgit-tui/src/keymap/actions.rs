@@ -937,6 +937,7 @@ pub fn route_editor_dynamic_key(key: &KeyEvent, state: &mut AppState) -> Option<
         }
     }
     route_dynamic_inner(key, state, |b| {
-        KeySequence::parse(&b.on).is_some_and(|s| s.starts_with_editor_chord())
+        b.parsed_seq()
+            .is_some_and(KeySequence::starts_with_editor_chord)
     })
 }

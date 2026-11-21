@@ -1343,4 +1343,61 @@ mod app_level {
         let (_, out) = draw(&mut state, 90, 24);
         assert!(out.is_empty());
     }
+
+    #[test]
+    fn incremental_row_rasterization_produces_identical_bytes_and_updates_only_dirty_row() {
+        let fx = Fixture::fork_and_merge();
+        let rows = fx.rows.len();
+        let area = Rect::new(0, 0, 12, rows as u16);
+        let mut buf = Buffer::empty(area);
+        let mut hits = HitTestRegistry::new();
+        let mut backend = PixelVectorGraphBackend::new(GraphicsProtocol::Sixel, CELL);
+
+        // Frame 1: full initial render
+        let slices1 = fx.slices(|_| fx.bg());
+        let slice1 = GraphViewportSlice {
+            rows: &slices1,
+            area,
+            occluding_rects: &[],
+            color_map: &fx.color_map,
+        };
+        assert!(backend.try_render(&slice1, &mut buf, &mut fx.ctx(&mut hits)));
+        assert_eq!(backend.last_rasterized_rows(), rows);
+
+        // Frame 2: row 3 changes background color (e.g. selection / cursor moved)
+        let slices2 = fx.slices(|i| {
+            if i == 3 {
+                Color::Rgb(60, 80, 120)
+            } else {
+                fx.bg()
+            }
+        });
+        let slice2 = GraphViewportSlice {
+            rows: &slices2,
+            area,
+            occluding_rects: &[],
+            color_map: &fx.color_map,
+        };
+        assert!(backend.try_render(&slice2, &mut buf, &mut fx.ctx(&mut hits)));
+        // Incremental repaint: only row 3 is rasterized
+        assert_eq!(
+            backend.last_rasterized_rows(),
+            1,
+            "single row background change must repaint exactly 1 row"
+        );
+        let incremental_strip = backend.strip().0.to_vec();
+
+        // Control: fresh backend rasterizing slice2 from scratch
+        let mut fresh_backend = PixelVectorGraphBackend::new(GraphicsProtocol::Sixel, CELL);
+        let mut fresh_buf = Buffer::empty(area);
+        let mut fresh_hits = HitTestRegistry::new();
+        assert!(fresh_backend.try_render(&slice2, &mut fresh_buf, &mut fx.ctx(&mut fresh_hits)));
+        assert_eq!(fresh_backend.last_rasterized_rows(), rows);
+        let full_strip = fresh_backend.strip().0;
+
+        assert_eq!(
+            incremental_strip, full_strip,
+            "incremental single-row rasterization strip must be byte-for-byte identical to full repaint"
+        );
+    }
 }

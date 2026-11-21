@@ -456,8 +456,13 @@ fn render_commits_table(
 
     let focused = ctx.focused_pane == PaneId::LogCommitTable;
     let presentation = &state.presentation;
-    let mut elem_gen =
-        PrintElementGenerator::new(&cached.permanent, &cached.visible, snap.head_oid);
+    let mut edges_cache = cached.edges_cache.borrow_mut();
+    let mut elem_gen = PrintElementGenerator::with_cache(
+        &cached.permanent,
+        &cached.visible,
+        snap.head_oid,
+        &mut edges_cache,
+    );
     let matcher = state.log_filter.spec.text.compile().ok().flatten();
 
     struct PreparedLogRow {
@@ -610,9 +615,8 @@ fn render_commits_table(
 
         let head_marker = is_head.then(|| RefInfo::head_marker(commit.oid));
         let groups = group_refs_for_table(
-            snap.refs
-                .iter()
-                .filter(|r| r.target_oid == commit.oid)
+            cached
+                .refs_for_oid(snap, commit.oid)
                 .chain(head_marker.as_ref()),
             GroupOptions {
                 compact: state.compact_refs,

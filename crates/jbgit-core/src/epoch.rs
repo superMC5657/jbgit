@@ -64,6 +64,7 @@ impl EpochToken {
 pub struct EpochTracker {
     pub repo_snapshot: RequestEpoch,
     pub commit_details: RequestEpoch,
+    pub commit_signature: RequestEpoch,
     pub file_diff: RequestEpoch,
     pub file_history: RequestEpoch,
     pub path_filter: RequestEpoch,

@@ -259,11 +259,14 @@ pub fn encode_sixel(
     for band in 0..bands {
         let y0 = band * 6;
         scratch.band_colors.clear();
+        let mut seen = [false; SIXEL_MAX_COLORS];
         for r in 0..6 {
             let row = &scratch.indices[(y0 + r) * w..(y0 + r + 1) * w];
             for (x, &ci) in row.iter().enumerate() {
-                let slot = &mut scratch.band_bits[usize::from(ci) * w + x];
-                if *slot == 0 && !scratch.band_colors.contains(&ci) {
+                let ci_idx = usize::from(ci);
+                let slot = &mut scratch.band_bits[ci_idx * w + x];
+                if !seen[ci_idx] {
+                    seen[ci_idx] = true;
                     scratch.band_colors.push(ci);
                 }
                 *slot |= 1 << r;

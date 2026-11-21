@@ -1,16 +1,17 @@
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use jbgit_core::graph::SortType;
 use jbgit_core::{
     BranchFilter, BranchNodeKind, ChangeRowKind, CommitSummary, ConflictChoice, ConflictDocument,
-    DetailsKey, FileDiffKey, FileHistoryKey, GitConsoleEntry, GitOp, ModalButton, Oid, PaneId,
-    PathFilter, RefKind, RefreshScope, RepoSnapshot, SplitAxis, SplitterId, StageStatusSnapshot,
-    StageTarget, StageTreeRowKind, WorkspaceTab,
+    DetailsKey, FileDiff, FileDiffKey, FileHistoryKey, GitConsoleEntry, GitOp, ModalButton, Oid,
+    PaneId, PathFilter, RefKind, RefreshScope, RepoSnapshot, SplitAxis, SplitterId,
+    StageStatusSnapshot, StageTarget, StageTreeRowKind, WorkspaceTab,
 };
 use jbgit_engine::{
-    CommitRequest, EngineEvent, EngineHandle, StageDiffKey, TaskRequest,
+    CommitRequest, EngineEvent, EngineHandle, StageDiffKey, TaskRequest, ThreeDocStageDiff,
 };
 use ratatui::layout::Rect;
 use rustc_hash::FxHashMap;
@@ -495,6 +496,35 @@ pub enum EditorMoveKind {
     End,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SyntaxJobKey {
+    File(FileDiffKey),
+    Stage(StageDiffKey),
+}
+
+#[derive(Debug, Clone)]
+pub enum SyntaxTarget {
+    File(Arc<FileDiff>),
+    Stage(Arc<ThreeDocStageDiff>),
+}
+
+#[derive(Debug, Clone)]
+pub struct SyntaxJob {
+    pub key: SyntaxJobKey,
+    pub epoch: u64,
+    pub target: SyntaxTarget,
+    pub cancel: Arc<AtomicBool>,
+}
+
+#[derive(Debug, Clone)]
+pub enum UiAsyncEvent {
+    SyntaxHighlighted {
+        key: SyntaxJobKey,
+        epoch: u64,
+        highlighted: Arc<HighlightedDiff>,
+    },
+}
+
 #[derive(Debug, Clone)]
 pub enum Effect {
     RefreshRepoAndStage,
@@ -504,6 +534,7 @@ pub enum Effect {
     RequestFileHistory(FileHistoryKey),
     RequestPathMatches(Vec<String>, Arc<RepoSnapshot>),
     RequestStageFileDiff(StageDiffKey),
+    RequestSyntaxHighlight(SyntaxJob),
     RequestAmendPreview,
     RequestCommitPrecheck,
     ApplyStageBuffer {
@@ -855,6 +886,13 @@ pub struct AppState {
     pub latest_file_history_epoch: u64,
     pub latest_path_epoch: u64,
 
+    pub file_syntax_epoch: u64,
+    pub file_syntax_cancel: Option<Arc<AtomicBool>>,
+    pub file_syntax_in_flight: Option<FileDiffKey>,
+    pub stage_syntax_epoch: u64,
+    pub stage_syntax_cancel: Option<Arc<AtomicBool>>,
+    pub stage_syntax_in_flight: Option<StageDiffKey>,
+
     pub commit_stage_selected_idx: usize,
     pub hook_error_output: Option<String>,
 
@@ -979,6 +1017,12 @@ impl AppState {
             latest_file_diff_epoch: 0,
             latest_file_history_epoch: 0,
             latest_path_epoch: 0,
+            file_syntax_epoch: 0,
+            file_syntax_cancel: None,
+            file_syntax_in_flight: None,
+            stage_syntax_epoch: 0,
+            stage_syntax_cancel: None,
+            stage_syntax_in_flight: None,
             commit_stage_selected_idx: 0,
             hook_error_output: None,
             console_entries: Vec::new(),
@@ -1135,6 +1179,7 @@ impl AppState {
             .map(|t| t + crate::keymap::KEY_CHORD_WINDOW);
         [
             self.details.next_deadline(),
+            self.stage_workbench.next_deadline(),
             self.file_history.as_ref().and_then(FileHistoryState::next_deadline),
             self.menu_hover.map(|h| h.due),
             chord,
@@ -1351,6 +1396,12 @@ impl AppState {
                     self.modal_stack.pop()
                 {
                     if let Some(eff) = confirm_effect {
+                        if let Effect::DiscardTargets(targets) = &eff {
+                            for t in targets {
+                                self.stage_workbench.invalidate_diff_cache_for_path(&t.path);
+                            }
+                            self.stage_workbench.pending_select_immediate = true;
+                        }
                         effects.push(eff);
                     } else {
                         self.loading_snapshot = true;
@@ -1904,41 +1955,7 @@ impl AppState {
                 effects.push(Effect::CopyToClipboard(text));
             }
             Action::FlushPendingDetails => {
-                if self
-                    .pending_key_at
-                    .is_some_and(|t| t.elapsed() >= crate::keymap::KEY_CHORD_WINDOW)
-                {
-                    self.pending_keys.clear();
-                    self.pending_key_at = None;
-                }
-                crate::input_menus::flush_menu_hover(self, Instant::now());
-                if let Some((key, _)) = self.details.pending.take()
-                    && !self.details.cache.contains(&key)
-                {
-                    effects.push(Effect::RequestCommitDetails(key));
-                }
-                if let Some(fh) = &mut self.file_history
-                    && fh
-                        .pending_g
-                        .is_some_and(|t| t.elapsed() >= FILE_HISTORY_G_WINDOW)
-                {
-                    fh.pending_g = None;
-                    self.jump_file_history_to_log(&mut effects);
-                }
-                if let Some(fh) = &mut self.file_history
-                    && let Some((key, at)) = fh.pending_diff.take()
-                {
-                    if at <= Instant::now() {
-                        if !self.details.diff_cache.contains(&key)
-                            && fh.requested_diff.as_ref() != Some(&key)
-                        {
-                            fh.requested_diff = Some(key.clone());
-                            effects.push(Effect::RequestFileDiff(key));
-                        }
-                    } else {
-                        fh.pending_diff = Some((key, at));
-                    }
-                }
+                self.flush_pending_at(Instant::now(), &mut effects);
             }
 
             Action::SelectConsoleRow(idx) => {
@@ -1984,14 +2001,203 @@ impl AppState {
         }
 
         self.reconcile_log_requests(Instant::now(), &mut effects);
-        self.reconcile_file_history_requests(Instant::now());
-        self.reconcile_stage_requests(&mut effects);
+        self.reconcile_file_history_requests(Instant::now(), &mut effects);
+        self.reconcile_stage_requests(Instant::now(), &mut effects);
         self.stash.reconcile_requests(
             self.repo_snapshot.as_ref(),
             self.active_tab == WorkspaceTab::Stash,
             &mut effects,
         );
+        self.reconcile_stash_syntax(&mut effects);
         effects
+    }
+
+    pub fn flush_pending_at(&mut self, now: Instant, effects: &mut Vec<Effect>) {
+        if self
+            .pending_key_at
+            .is_some_and(|t| now.saturating_duration_since(t) >= crate::keymap::KEY_CHORD_WINDOW)
+        {
+            self.pending_keys.clear();
+            self.pending_key_at = None;
+        }
+        crate::input_menus::flush_menu_hover(self, now);
+        if let Some((key, _)) = self.details.pending.take()
+            && !self.details.cache.contains(&key)
+        {
+            effects.push(Effect::RequestCommitDetails(key));
+        }
+        if let Some((key, at)) = self.stage_workbench.pending_diff.take() {
+            if at <= now {
+                if let Some(cached) = self.stage_workbench.diff_cache.get(&key).cloned() {
+                    if self.stage_workbench.current_diff_key.as_ref() == Some(&key) {
+                        self.stage_workbench.diff_syntax =
+                            self.stage_workbench.diff_syntax_cache.get(&key).cloned();
+                        self.stage_workbench.current_diff = Some(Arc::clone(&cached));
+                        if self.stage_workbench.diff_syntax.is_none() {
+                            self.schedule_stage_syntax(cached, effects);
+                        }
+                    }
+                } else if self.stage_workbench.requested_diff.as_ref() != Some(&key) {
+                    self.stage_workbench.requested_diff = Some(key.clone());
+                    effects.push(Effect::RequestStageFileDiff(key));
+                }
+            } else {
+                self.stage_workbench.pending_diff = Some((key, at));
+            }
+        }
+        if let Some(fh) = &mut self.file_history
+            && fh
+                .pending_g
+                .is_some_and(|t| now.saturating_duration_since(t) >= FILE_HISTORY_G_WINDOW)
+        {
+            fh.pending_g = None;
+            self.jump_file_history_to_log(effects);
+        }
+        if let Some(fh) = &mut self.file_history
+            && let Some((key, at)) = fh.pending_diff.take()
+        {
+            if at <= now {
+                if !self.details.diff_cache.contains(&key)
+                    && fh.requested_diff.as_ref() != Some(&key)
+                {
+                    fh.requested_diff = Some(key.clone());
+                    effects.push(Effect::RequestFileDiff(key));
+                }
+            } else {
+                fh.pending_diff = Some((key, at));
+            }
+        }
+    }
+
+    pub(crate) fn schedule_file_syntax(
+        &mut self,
+        diff: Arc<FileDiff>,
+        effects: &mut Vec<Effect>,
+    ) {
+        if !self.config.jbgit.diff.syntax_highlight
+            || diff.is_binary
+            || diff.is_too_large
+            || diff.hunks.is_empty()
+        {
+            return;
+        }
+        if self.file_syntax_in_flight.as_ref() == Some(&diff.key) {
+            return;
+        }
+        if let Some(prev) = self.file_syntax_cancel.take() {
+            prev.store(true, Ordering::Relaxed);
+        }
+        self.file_syntax_epoch = self.file_syntax_epoch.wrapping_add(1);
+        let cancel = Arc::new(AtomicBool::new(false));
+        self.file_syntax_cancel = Some(Arc::clone(&cancel));
+        self.file_syntax_in_flight = Some(diff.key.clone());
+        effects.push(Effect::RequestSyntaxHighlight(SyntaxJob {
+            key: SyntaxJobKey::File(diff.key.clone()),
+            epoch: self.file_syntax_epoch,
+            target: SyntaxTarget::File(diff),
+            cancel,
+        }));
+    }
+
+    pub(crate) fn schedule_stage_syntax(
+        &mut self,
+        diff: Arc<ThreeDocStageDiff>,
+        effects: &mut Vec<Effect>,
+    ) {
+        if !self.config.jbgit.diff.syntax_highlight
+            || diff.is_binary
+            || diff.is_too_large
+            || diff.hunks.is_empty()
+        {
+            return;
+        }
+        if self.stage_syntax_in_flight.as_ref() == Some(&diff.key) {
+            return;
+        }
+        if let Some(prev) = self.stage_syntax_cancel.take() {
+            prev.store(true, Ordering::Relaxed);
+        }
+        self.stage_syntax_epoch = self.stage_syntax_epoch.wrapping_add(1);
+        let cancel = Arc::new(AtomicBool::new(false));
+        self.stage_syntax_cancel = Some(Arc::clone(&cancel));
+        self.stage_syntax_in_flight = Some(diff.key.clone());
+        effects.push(Effect::RequestSyntaxHighlight(SyntaxJob {
+            key: SyntaxJobKey::Stage(diff.key.clone()),
+            epoch: self.stage_syntax_epoch,
+            target: SyntaxTarget::Stage(diff),
+            cancel,
+        }));
+    }
+
+    fn reconcile_stash_syntax(&mut self, effects: &mut Vec<Effect>) {
+        if self.active_tab != WorkspaceTab::Stash {
+            return;
+        }
+        let Some(dk) = self.stash.diff_key() else {
+            return;
+        };
+        if self.stash.details.diff_syntax.get(&dk).is_none()
+            && let Some(diff) = self.stash.details.diff_cache.peek(&dk).cloned()
+        {
+            self.schedule_file_syntax(diff, effects);
+        }
+    }
+
+    pub fn apply_ui_async_event(&mut self, event: UiAsyncEvent) -> Vec<Effect> {
+        match event {
+            UiAsyncEvent::SyntaxHighlighted {
+                key: SyntaxJobKey::File(fk),
+                epoch,
+                highlighted,
+            } => {
+                if self.file_syntax_in_flight.as_ref() == Some(&fk)
+                    && epoch == self.file_syntax_epoch
+                {
+                    self.file_syntax_in_flight = None;
+                }
+                if epoch < self.file_syntax_epoch {
+                    return Vec::new();
+                }
+                let mut updated = false;
+                if self.details.diff_cache.contains(&fk) {
+                    self.details
+                        .diff_syntax
+                        .insert(fk.clone(), Arc::clone(&highlighted));
+                    updated = true;
+                }
+                if self.stash.details.diff_cache.contains(&fk) {
+                    self.stash.details.diff_syntax.insert(fk, highlighted);
+                    updated = true;
+                }
+                if updated {
+                    self.needs_redraw = true;
+                }
+            }
+            UiAsyncEvent::SyntaxHighlighted {
+                key: SyntaxJobKey::Stage(sk),
+                epoch,
+                highlighted,
+            } => {
+                if self.stage_syntax_in_flight.as_ref() == Some(&sk)
+                    && epoch == self.stage_syntax_epoch
+                {
+                    self.stage_syntax_in_flight = None;
+                }
+                if epoch < self.stage_syntax_epoch {
+                    return Vec::new();
+                }
+                if self.stage_workbench.diff_cache.contains(&sk) {
+                    self.stage_workbench
+                        .diff_syntax_cache
+                        .insert(sk.clone(), Arc::clone(&highlighted));
+                }
+                if self.stage_workbench.current_diff_key.as_ref() == Some(&sk) {
+                    self.stage_workbench.diff_syntax = Some(highlighted);
+                    self.needs_redraw = true;
+                }
+            }
+        }
+        Vec::new()
     }
 
     /// Derives background requests from the current Log selection:
@@ -2090,9 +2296,16 @@ impl AppState {
         if self.details.diff_visible()
             && let Some(key) = self.details.desired_diff_key()
         {
-            if self.details.diff_cache.get(&key).is_some() {
-                let _ = self.details.diff_syntax.get(&key);
+            if let Some(cached) = self.details.diff_cache.get(&key).cloned() {
+                if self.details.diff_syntax.get(&key).is_none() {
+                    self.schedule_file_syntax(cached, effects);
+                }
             } else if self.details.requested_diff.as_ref() != Some(&key) {
+                if let Some(prev) = self.file_syntax_cancel.take() {
+                    prev.store(true, Ordering::Relaxed);
+                    self.file_syntax_epoch = self.file_syntax_epoch.wrapping_add(1);
+                    self.file_syntax_in_flight = None;
+                }
                 self.details.requested_diff = Some(key.clone());
                 effects.push(Effect::RequestFileDiff(key));
             }
@@ -2229,21 +2442,33 @@ impl AppState {
     }
 
     /// Schedules debounced diff fetches (0 ms on LRU cache hit) for `PopupKind::FileHistory`.
-    pub fn reconcile_file_history_requests(&mut self, now: Instant) {
-        let Some(fh) = &mut self.file_history else {
-            return;
+    pub fn reconcile_file_history_requests(
+        &mut self,
+        now: Instant,
+        effects: &mut Vec<Effect>,
+    ) {
+        let desired_key = match &mut self.file_history {
+            Some(fh) => match fh.desired_diff_key() {
+                Some(k) => k,
+                None => {
+                    fh.pending_diff = None;
+                    return;
+                }
+            },
+            None => return,
         };
-        let Some(key) = fh.desired_diff_key() else {
-            fh.pending_diff = None;
-            return;
-        };
-        if self.details.diff_cache.get(&key).is_some() {
-            let _ = self.details.diff_syntax.get(&key);
-            fh.pending_diff = None;
-        } else if fh.requested_diff.as_ref() != Some(&key)
-            && fh.pending_diff.as_ref().map(|(k, _)| k) != Some(&key)
+        if let Some(cached) = self.details.diff_cache.get(&desired_key).cloned() {
+            if let Some(fh) = &mut self.file_history {
+                fh.pending_diff = None;
+            }
+            if self.details.diff_syntax.get(&desired_key).is_none() {
+                self.schedule_file_syntax(cached, effects);
+            }
+        } else if let Some(fh) = &mut self.file_history
+            && fh.requested_diff.as_ref() != Some(&desired_key)
+            && fh.pending_diff.as_ref().map(|(k, _)| k) != Some(&desired_key)
         {
-            fh.pending_diff = Some((key, now + DETAILS_DEBOUNCE));
+            fh.pending_diff = Some((desired_key, now + DETAILS_DEBOUNCE));
         }
     }
 
@@ -2254,7 +2479,7 @@ impl AppState {
         let event = match self.apply_stage_engine_event(event, &mut effects) {
             None => {
                 self.reconcile_log_requests(Instant::now(), &mut effects);
-                self.reconcile_stage_requests(&mut effects);
+                self.reconcile_stage_requests(Instant::now(), &mut effects);
                 return effects;
             }
             Some(ev) => ev,
@@ -2304,7 +2529,25 @@ impl AppState {
                 }
                 self.details.cache.insert(bundle.key.clone(), bundle);
             }
+            EngineEvent::CommitSignatureVerified { oid, status } => {
+                self.details.signature_overrides.insert(oid, status);
+                self.needs_redraw = true;
+            }
             EngineEvent::FileDiffLoaded { diff, epoch } => {
+                let log_wants = self.details.diff_visible()
+                    && self.details.desired_diff_key().as_ref() == Some(&diff.key);
+                let stash_wants = self.active_tab == WorkspaceTab::Stash
+                    && self.stash.details.desired_diff_key().as_ref() == Some(&diff.key);
+                let fh_wants = self
+                    .file_history
+                    .as_ref()
+                    .and_then(|fh| fh.desired_diff_key())
+                    .as_ref()
+                    == Some(&diff.key);
+                let is_wanted = log_wants || stash_wants || fh_wants;
+                if epoch < self.latest_file_diff_epoch && !is_wanted {
+                    return effects;
+                }
                 self.latest_file_diff_epoch = self.latest_file_diff_epoch.max(epoch);
                 if self.details.requested_diff.as_ref() == Some(&diff.key) {
                     self.details.requested_diff = None;
@@ -2317,33 +2560,26 @@ impl AppState {
                 {
                     fh.requested_diff = None;
                 }
-                let hl = (self.config.jbgit.diff.syntax_highlight
-                    && !diff.is_binary
-                    && !diff.hunks.is_empty())
-                    .then(|| Arc::new(HighlightedDiff::build(&diff)));
-                if self.stash.details.desired_diff_key().as_ref() == Some(&diff.key) {
-                    if let Some(h) = &hl {
-                        self.stash
-                            .details
-                            .diff_syntax
-                            .insert(diff.key.clone(), Arc::clone(h));
-                    }
+                if stash_wants || self.stash.details.desired_diff_key().as_ref() == Some(&diff.key)
+                {
                     self.stash
                         .details
                         .diff_cache
                         .insert(diff.key.clone(), Arc::clone(&diff));
                 }
-                if let Some(h) = hl {
-                    self.details.diff_syntax.insert(diff.key.clone(), h);
+                self.details
+                    .diff_cache
+                    .insert(diff.key.clone(), Arc::clone(&diff));
+                if is_wanted && self.details.diff_syntax.peek(&diff.key).is_none() {
+                    self.schedule_file_syntax(diff, &mut effects);
                 }
-                self.details.diff_cache.insert(diff.key.clone(), diff);
             }
             EngineEvent::FileHistoryLoaded { bundle, epoch } => {
                 if epoch < self.latest_file_history_epoch {
                     return effects;
                 }
                 self.latest_file_history_epoch = epoch;
-                if let Some(fh) = &mut self.file_history
+                let desired_after_load = if let Some(fh) = &mut self.file_history
                     && fh.key == bundle.key
                 {
                     fh.loading = false;
@@ -2357,13 +2593,20 @@ impl AppState {
                         .and_then(|start| bundle.entries.iter().position(|e| e.oid == start))
                         .unwrap_or(0);
                     fh.bundle = Some(bundle);
-                    if let Some(key) = fh.desired_diff_key() {
-                        if self.details.diff_cache.get(&key).is_some() {
-                            let _ = self.details.diff_syntax.get(&key);
-                        } else if fh.requested_diff.as_ref() != Some(&key) {
-                            fh.requested_diff = Some(key.clone());
-                            effects.push(Effect::RequestFileDiff(key));
+                    fh.desired_diff_key()
+                } else {
+                    None
+                };
+                if let Some(key) = desired_after_load {
+                    if let Some(cached) = self.details.diff_cache.get(&key).cloned() {
+                        if self.details.diff_syntax.get(&key).is_none() {
+                            self.schedule_file_syntax(cached, &mut effects);
                         }
+                    } else if let Some(fh) = &mut self.file_history
+                        && fh.requested_diff.as_ref() != Some(&key)
+                    {
+                        fh.requested_diff = Some(key.clone());
+                        effects.push(Effect::RequestFileDiff(key));
                     }
                 }
             }
@@ -2446,6 +2689,10 @@ impl AppState {
             }
             EngineEvent::GitOpFinished(outcome) => {
                 self.git_ops_running = self.git_ops_running.saturating_sub(1);
+                if outcome.success {
+                    self.stage_workbench.invalidate_all_diff_caches();
+                    self.stage_workbench.pending_select_immediate = true;
+                }
                 self.apply_git_outcome(outcome, &mut effects);
             }
             EngineEvent::ConflictDocumentLoaded { doc } => {
@@ -2474,161 +2721,214 @@ impl AppState {
         }
 
         self.reconcile_log_requests(Instant::now(), &mut effects);
-        self.reconcile_file_history_requests(Instant::now());
-        self.reconcile_stage_requests(&mut effects);
+        self.reconcile_file_history_requests(Instant::now(), &mut effects);
+        self.reconcile_stage_requests(Instant::now(), &mut effects);
         self.stash.reconcile_requests(
             self.repo_snapshot.as_ref(),
             self.active_tab == WorkspaceTab::Stash,
             &mut effects,
         );
+        self.reconcile_stash_syntax(&mut effects);
         effects
     }
 }
 
-pub fn execute_effects(effects: Vec<Effect>, state: &mut AppState, engine: Option<&EngineHandle>) {
+fn lookup_file_diff_oids(
+    state: &AppState,
+    key: &FileDiffKey,
+) -> Option<(Option<Oid>, Option<Oid>)> {
+    let bundle = state
+        .details
+        .cache
+        .peek(&key.details)
+        .or_else(|| state.stash.details.cache.peek(&key.details))?;
+    let change = bundle
+        .changes
+        .iter()
+        .find(|c| c.path == key.path && c.old_path == key.old_path)
+        .or_else(|| bundle.changes.iter().find(|c| c.path == key.path))?;
+    (change.old_oid.is_some() || change.new_oid.is_some())
+        .then_some((change.old_oid, change.new_oid))
+}
+
+pub fn execute_effects(
+    effects: Vec<Effect>,
+    state: &mut AppState,
+    engine: Option<&EngineHandle>,
+    ui_async_tx: Option<&tokio::sync::mpsc::UnboundedSender<UiAsyncEvent>>,
+) {
     for effect in effects {
-        if let Effect::CopyToClipboard(text) = &effect {
-            crate::terminal::copy_to_clipboard(text);
-            continue;
-        }
-        let Some(handle) = engine else {
-            continue;
-        };
         match effect {
-            Effect::RefreshRepoAndStage => {
-                let show_ignored = state.stage_workbench.tree_opts.show_ignored;
-                state.latest_repo_epoch =
-                    state.latest_repo_epoch.max(handle.request_repo_snapshot());
-                state.latest_stage_epoch = state
-                    .latest_stage_epoch
-                    .max(handle.request_stage_status(show_ignored));
+            Effect::CopyToClipboard(text) => {
+                crate::terminal::copy_to_clipboard(&text);
             }
-            Effect::RefreshScope(scope) => {
-                let show_ignored = state.stage_workbench.tree_opts.show_ignored;
-                if scope.needs_graph_refresh() {
-                    state.latest_repo_epoch =
-                        state.latest_repo_epoch.max(handle.request_repo_snapshot());
+            Effect::RequestSyntaxHighlight(job) => {
+                if let Some(tx) = ui_async_tx.cloned() {
+                    tokio::task::spawn_blocking(move || {
+                        let res = match &job.target {
+                            SyntaxTarget::File(diff) => {
+                                HighlightedDiff::build_cancellable_file(diff, &job.cancel)
+                            }
+                            SyntaxTarget::Stage(diff) => {
+                                HighlightedDiff::build_cancellable_stage(diff, &job.cancel)
+                            }
+                        };
+                        if let Some(highlighted) = res {
+                            let _ = tx.send(UiAsyncEvent::SyntaxHighlighted {
+                                key: job.key,
+                                epoch: job.epoch,
+                                highlighted: Arc::new(highlighted),
+                            });
+                        }
+                    });
                 }
-                if scope.needs_stage_refresh() {
-                    state.latest_stage_epoch = state
-                        .latest_stage_epoch
-                        .max(handle.request_stage_status(show_ignored));
-                }
-            }
-            Effect::RequestCommitDetails(key) => {
-                state.latest_commit_details_epoch = state
-                    .latest_commit_details_epoch
-                    .max(handle.request_commit_details(key));
-            }
-            Effect::RequestFileDiff(key) => {
-                state.latest_file_diff_epoch = state
-                    .latest_file_diff_epoch
-                    .max(handle.request_file_diff(key));
-            }
-            Effect::RequestFileHistory(key) => {
-                state.latest_file_history_epoch = state
-                    .latest_file_history_epoch
-                    .max(handle.request_file_history(key));
-            }
-            Effect::RequestPathMatches(paths, snapshot) => {
-                state.latest_path_epoch = state
-                    .latest_path_epoch
-                    .max(handle.request_path_matches(paths, snapshot));
-            }
-            Effect::RequestStageFileDiff(key) => {
-                state.latest_stage_diff_epoch = state
-                    .latest_stage_diff_epoch
-                    .max(handle.request_stage_file_diff(key));
-            }
-            Effect::RequestAmendPreview => {
-                handle.request_amend_preview();
-            }
-            Effect::RequestCommitPrecheck => {
-                handle.request_commit_precheck();
-            }
-            Effect::ApplyStageBuffer {
-                path,
-                new_staged_bytes,
-                file_mode,
-                remove_from_index,
-            } => {
-                handle.send(TaskRequest::ApplyStageBuffer {
-                    path,
-                    new_staged_bytes,
-                    file_mode,
-                    remove_from_index,
-                });
-            }
-            Effect::WriteWorktreeBuffer {
-                path,
-                new_local_bytes,
-            } => {
-                handle.send(TaskRequest::WriteWorktreeBuffer {
-                    path,
-                    new_local_bytes,
-                });
-            }
-            Effect::StageTargets(targets) => {
-                handle.send(TaskRequest::StageTargets { targets });
-            }
-            Effect::StageAllTracked => {
-                handle.send(TaskRequest::StageAllTracked);
-            }
-            Effect::UnstageTargets(targets) => {
-                handle.send(TaskRequest::UnstageTargets { targets });
-            }
-            Effect::DiscardTargets(targets) => {
-                handle.send(TaskRequest::DiscardTargets { targets });
-            }
-            Effect::ExecuteCommit(request) => {
-                state.stage_workbench.commit_in_progress = true;
-                let id = state.next_cli_id;
-                state.next_cli_id += 1;
-                handle.send(TaskRequest::ExecuteCommit { id, request });
-            }
-            Effect::UndoLastCommit => {
-                handle.send(TaskRequest::UndoLastCommit);
             }
             Effect::OpenExternalEditorMessage
             | Effect::OpenExternalEditorFile(_)
-            | Effect::OpenExternalMergetool(_) => {
-                // Handled in main loop where TerminalGuard can pause raw mode
+            | Effect::OpenExternalMergetool(_)
+            | Effect::Quit => {}
+            other => {
+                let Some(handle) = engine else {
+                    continue;
+                };
+                match other {
+                    Effect::RefreshRepoAndStage => {
+                        let show_ignored = state.stage_workbench.tree_opts.show_ignored;
+                        state.latest_repo_epoch =
+                            state.latest_repo_epoch.max(handle.request_repo_snapshot());
+                        state.latest_stage_epoch = state
+                            .latest_stage_epoch
+                            .max(handle.request_stage_status(show_ignored));
+                    }
+                    Effect::RefreshScope(scope) => {
+                        let show_ignored = state.stage_workbench.tree_opts.show_ignored;
+                        if scope.needs_graph_refresh() {
+                            state.latest_repo_epoch =
+                                state.latest_repo_epoch.max(handle.request_repo_snapshot());
+                        }
+                        if scope.needs_stage_refresh() {
+                            state.latest_stage_epoch = state
+                                .latest_stage_epoch
+                                .max(handle.request_stage_status(show_ignored));
+                        }
+                    }
+                    Effect::RequestCommitDetails(key) => {
+                        state.latest_commit_details_epoch = state
+                            .latest_commit_details_epoch
+                            .max(handle.request_commit_details(key));
+                    }
+                    Effect::RequestFileDiff(key) => {
+                        let known_oids = lookup_file_diff_oids(state, &key);
+                        state.latest_file_diff_epoch = state
+                            .latest_file_diff_epoch
+                            .max(handle.request_file_diff_with_oids(key, known_oids));
+                    }
+                    Effect::RequestFileHistory(key) => {
+                        state.latest_file_history_epoch = state
+                            .latest_file_history_epoch
+                            .max(handle.request_file_history(key));
+                    }
+                    Effect::RequestPathMatches(paths, snapshot) => {
+                        state.latest_path_epoch = state
+                            .latest_path_epoch
+                            .max(handle.request_path_matches(paths, snapshot));
+                    }
+                    Effect::RequestStageFileDiff(key) => {
+                        state.latest_stage_diff_epoch = state
+                            .latest_stage_diff_epoch
+                            .max(handle.request_stage_file_diff(key));
+                    }
+                    Effect::RequestAmendPreview => {
+                        handle.request_amend_preview();
+                    }
+                    Effect::RequestCommitPrecheck => {
+                        handle.request_commit_precheck();
+                    }
+                    Effect::ApplyStageBuffer {
+                        path,
+                        new_staged_bytes,
+                        file_mode,
+                        remove_from_index,
+                    } => {
+                        handle.send(TaskRequest::ApplyStageBuffer {
+                            path,
+                            new_staged_bytes,
+                            file_mode,
+                            remove_from_index,
+                        });
+                    }
+                    Effect::WriteWorktreeBuffer {
+                        path,
+                        new_local_bytes,
+                    } => {
+                        handle.send(TaskRequest::WriteWorktreeBuffer {
+                            path,
+                            new_local_bytes,
+                        });
+                    }
+                    Effect::StageTargets(targets) => {
+                        handle.send(TaskRequest::StageTargets { targets });
+                    }
+                    Effect::StageAllTracked => {
+                        handle.send(TaskRequest::StageAllTracked);
+                    }
+                    Effect::UnstageTargets(targets) => {
+                        handle.send(TaskRequest::UnstageTargets { targets });
+                    }
+                    Effect::DiscardTargets(targets) => {
+                        handle.send(TaskRequest::DiscardTargets { targets });
+                    }
+                    Effect::ExecuteCommit(request) => {
+                        state.stage_workbench.commit_in_progress = true;
+                        let id = state.next_cli_id;
+                        state.next_cli_id += 1;
+                        handle.send(TaskRequest::ExecuteCommit { id, request });
+                    }
+                    Effect::UndoLastCommit => {
+                        handle.send(TaskRequest::UndoLastCommit);
+                    }
+                    Effect::LoadConflictDocument(path) => {
+                        handle.send(TaskRequest::LoadConflictDocument { path });
+                    }
+                    Effect::SaveConflictResolution {
+                        path,
+                        content,
+                        stage,
+                    } => {
+                        handle.send(TaskRequest::SaveConflictResolution {
+                            path,
+                            content,
+                            stage,
+                        });
+                    }
+                    Effect::RunCli {
+                        args,
+                        stdin_payload,
+                        is_read_only,
+                        refresh_after,
+                    } => {
+                        let id = state.next_cli_id;
+                        state.next_cli_id += 1;
+                        handle.send(TaskRequest::RunGitCli {
+                            id,
+                            args,
+                            stdin_payload,
+                            is_read_only,
+                            refresh_after,
+                        });
+                    }
+                    Effect::GitOp(op) => {
+                        state.git_ops_running += 1;
+                        handle.send(TaskRequest::RunGitOp { op });
+                    }
+                    Effect::CopyToClipboard(_)
+                    | Effect::RequestSyntaxHighlight(_)
+                    | Effect::OpenExternalEditorMessage
+                    | Effect::OpenExternalEditorFile(_)
+                    | Effect::OpenExternalMergetool(_)
+                    | Effect::Quit => unreachable!(),
+                }
             }
-            Effect::LoadConflictDocument(path) => {
-                handle.send(TaskRequest::LoadConflictDocument { path });
-            }
-            Effect::SaveConflictResolution {
-                path,
-                content,
-                stage,
-            } => {
-                handle.send(TaskRequest::SaveConflictResolution {
-                    path,
-                    content,
-                    stage,
-                });
-            }
-            Effect::RunCli {
-                args,
-                stdin_payload,
-                is_read_only,
-                refresh_after,
-            } => {
-                let id = state.next_cli_id;
-                state.next_cli_id += 1;
-                handle.send(TaskRequest::RunGitCli {
-                    id,
-                    args,
-                    stdin_payload,
-                    is_read_only,
-                    refresh_after,
-                });
-            }
-            Effect::GitOp(op) => {
-                state.git_ops_running += 1;
-                handle.send(TaskRequest::RunGitOp { op });
-            }
-            Effect::CopyToClipboard(_) | Effect::Quit => {}
         }
     }
 }

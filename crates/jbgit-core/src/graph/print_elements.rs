@@ -1,7 +1,7 @@
 use std::cmp::Ordering;
 
 use crate::Oid;
-use crate::graph::edges_in_row::EdgesInRowGenerator;
+use crate::graph::edges_in_row::{EdgesInRowCache, EdgesInRowGenerator};
 use crate::graph::permanent::{LayoutIndex, PermNodeId, PermanentGraph, VisibleRowIdx};
 use crate::graph::visible::{GraphEdge, GraphEdgeType, VisibleGraph};
 use crate::refs::BranchColorId;
@@ -221,6 +221,21 @@ impl<'a> PrintElementGenerator<'a> {
         head_oid: Option<Oid>,
     ) -> Self {
         let edges_gen = EdgesInRowGenerator::new(&visible.linear);
+        Self {
+            permanent,
+            visible,
+            head_oid,
+            edges_gen,
+        }
+    }
+
+    pub fn with_cache(
+        permanent: &'a PermanentGraph,
+        visible: &'a VisibleGraph,
+        head_oid: Option<Oid>,
+        cache: &'a mut EdgesInRowCache,
+    ) -> Self {
+        let edges_gen = EdgesInRowGenerator::with_cache(&visible.linear, cache);
         Self {
             permanent,
             visible,

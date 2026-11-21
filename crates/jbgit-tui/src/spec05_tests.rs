@@ -1123,7 +1123,7 @@ fn stage_tree_menu_covers_spec_actions() {
     });
     state
         .stage_workbench
-        .sync_rows(state.stage_status.as_deref());
+        .sync_rows(state.stage_status.as_ref());
     let idx_of = |state: &AppState, p: &str| {
         state
             .stage_workbench
@@ -1296,6 +1296,8 @@ fn non_contiguous_squash_rejected_compare_views_stash_reuse_and_conflict_modal()
                 deletions: 1,
                 is_binary: false,
                 exists_in_workdir: true,
+                old_oid: None,
+                new_oid: None,
             }],
         }),
         epoch: 1,

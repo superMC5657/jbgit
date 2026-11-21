@@ -1,12 +1,13 @@
 //! UI state for the `[1 Commit]` workbench: `GitStageTree`,
 //! `CommitMessageEditor` + Amend/Signoff/Hooks options, and `StageDiffWorkbench`.
 
+use std::cell::RefCell;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 
 use jbgit_core::{
-    AmendCommitPreview, DiffContext, DiffLineKind, LineSelection, StageNodeKind,
+    AmendCommitPreview, DiffContext, DiffLineKind, LineSelection, LruCache, StageNodeKind,
     StageStatusSnapshot, StageTarget, StageTreeOptions, StageTreeRow, StageTreeRowKind,
     StagedRange, build_stage_tree_rows, collect_targets_under_row, next_anchor_after_mutation,
 };
@@ -18,6 +19,7 @@ use crate::syntax::HighlightedDiff;
 
 const MAX_COMMIT_HISTORY: usize = 20;
 const MAX_EDITOR_UNDO: usize = 128;
+pub const STAGE_DIFF_CACHE_CAPACITY: usize = 32;
 
 #[derive(Debug, Clone)]
 struct EditorSnapshot {
@@ -385,6 +387,17 @@ pub enum StageDiffRow {
     Split(usize, Option<usize>, Option<usize>),
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SyncRowsCacheKey {
+    status_ptr: Option<usize>,
+    amend: bool,
+    amend_sha: Option<String>,
+    tree_opts: StageTreeOptions,
+    collapsed: FxHashSet<String>,
+}
+
+pub type CachedStageDiffRowsEntry = (Arc<ThreeDocStageDiff>, bool, Arc<[StageDiffRow]>);
+
 #[derive(Debug)]
 pub struct StageWorkbenchState {
     pub tree_opts: StageTreeOptions,
@@ -400,8 +413,12 @@ pub struct StageWorkbenchState {
     pub visual_anchor_row: Option<usize>,
     pub current_diff_key: Option<StageDiffKey>,
     pub requested_diff: Option<StageDiffKey>,
+    pub pending_diff: Option<(StageDiffKey, Instant)>,
+    pub pending_select_immediate: bool,
     pub current_diff: Option<Arc<ThreeDocStageDiff>>,
     pub diff_syntax: Option<Arc<HighlightedDiff>>,
+    pub diff_cache: LruCache<StageDiffKey, Arc<ThreeDocStageDiff>>,
+    pub diff_syntax_cache: LruCache<StageDiffKey, Arc<HighlightedDiff>>,
     pub rollback_undo_stack: Vec<RollbackUndoEntry>,
     pub three_way_range_idx: Option<usize>,
     pub bracket_jump_at: Option<Instant>,
@@ -423,6 +440,9 @@ pub struct StageWorkbenchState {
     pub history_path: Option<PathBuf>,
     pub draft_path: Option<PathBuf>,
     pub last_commit_banner: Option<CommitBanner>,
+
+    pub sync_rows_key: Option<SyncRowsCacheKey>,
+    pub diff_rows_cache: RefCell<Option<CachedStageDiffRowsEntry>>,
 }
 
 impl Default for StageWorkbenchState {
@@ -440,8 +460,12 @@ impl Default for StageWorkbenchState {
             visual_anchor_row: None,
             current_diff_key: None,
             requested_diff: None,
+            pending_diff: None,
+            pending_select_immediate: false,
             current_diff: None,
             diff_syntax: None,
+            diff_cache: LruCache::new(STAGE_DIFF_CACHE_CAPACITY),
+            diff_syntax_cache: LruCache::new(STAGE_DIFF_CACHE_CAPACITY),
             rollback_undo_stack: Vec::new(),
             three_way_range_idx: None,
             bracket_jump_at: None,
@@ -462,16 +486,57 @@ impl Default for StageWorkbenchState {
             history_path: None,
             draft_path: None,
             last_commit_banner: None,
+            sync_rows_key: None,
+            diff_rows_cache: RefCell::new(None),
         }
     }
 }
 
 impl StageWorkbenchState {
-    pub fn sync_rows(&mut self, status: Option<&StageStatusSnapshot>) {
+    pub fn next_deadline(&self) -> Option<Instant> {
+        self.pending_diff.as_ref().map(|(_, at)| *at)
+    }
+
+    pub fn invalidate_diff_cache_for_path(&mut self, path: &str) {
+        self.diff_cache.retain(|k, _| k.path != path);
+        self.diff_syntax_cache.retain(|k, _| k.path != path);
+        if self.current_diff_key.as_ref().is_some_and(|k| k.path == path) {
+            self.current_diff = None;
+            self.diff_syntax = None;
+            self.requested_diff = None;
+        }
+    }
+
+    pub fn invalidate_all_diff_caches(&mut self) {
+        self.diff_cache.clear();
+        self.diff_syntax_cache.clear();
+        self.current_diff = None;
+        self.diff_syntax = None;
+        self.requested_diff = None;
+        self.pending_diff = None;
+    }
+
+    pub fn sync_rows(&mut self, status: Option<&Arc<StageStatusSnapshot>>) {
         let Some(status) = status else {
             self.rows.clear();
+            self.sync_rows_key = None;
             return;
         };
+        let amend_sha = if self.amend {
+            self.amend_preview.as_ref().map(|p| p.short_sha.clone())
+        } else {
+            None
+        };
+        let key = SyncRowsCacheKey {
+            status_ptr: Some(Arc::as_ptr(status) as usize),
+            amend: self.amend,
+            amend_sha,
+            tree_opts: self.tree_opts,
+            collapsed: self.collapsed.clone(),
+        };
+        if self.sync_rows_key.as_ref() == Some(&key) {
+            return;
+        }
         let amend = if self.amend {
             self.amend_preview.as_ref()
         } else {
@@ -480,6 +545,7 @@ impl StageWorkbenchState {
         self.rows = build_stage_tree_rows(status, amend, self.tree_opts, &self.collapsed);
         let valid: FxHashSet<&str> = self.rows.iter().map(|r| r.key.as_str()).collect();
         self.multi_selected.retain(|k| valid.contains(k.as_str()));
+        self.sync_rows_key = Some(key);
     }
 
     pub fn load_draft(&mut self, path: PathBuf) {
@@ -646,10 +712,19 @@ impl StageWorkbenchState {
         }
     }
 
-    pub fn diff_rows(&self) -> Vec<StageDiffRow> {
+    pub fn diff_rows(&self) -> Arc<[StageDiffRow]> {
         let Some(diff) = &self.current_diff else {
-            return Vec::new();
+            return Arc::from([]);
         };
+        {
+            let guard = self.diff_rows_cache.borrow();
+            if let Some((cached_diff, sbs, rows)) = guard.as_ref()
+                && Arc::ptr_eq(cached_diff, diff)
+                && *sbs == self.diff_side_by_side
+            {
+                return Arc::clone(rows);
+            }
+        }
         let mut out = Vec::new();
         for (h, hunk) in diff.hunks.iter().enumerate() {
             out.push(StageDiffRow::Header(h));
@@ -663,7 +738,10 @@ impl StageWorkbenchState {
                 out.extend((0..hunk.hunk.lines.len()).map(|l| StageDiffRow::Unified(h, l)));
             }
         }
-        out
+        let rows: Arc<[StageDiffRow]> = out.into();
+        *self.diff_rows_cache.borrow_mut() =
+            Some((Arc::clone(diff), self.diff_side_by_side, Arc::clone(&rows)));
+        rows
     }
 
     pub fn hunk_header_rows(&self) -> Vec<usize> {
@@ -848,5 +926,83 @@ mod tests {
         let (wrapped, cursor) = ed.visual_wrapped_lines(10);
         assert!(wrapped.len() >= 4);
         assert!(cursor.1 <= 10);
+    }
+
+    #[test]
+    fn sync_rows_caches_when_status_and_opts_unchanged() {
+        let mut sw = StageWorkbenchState::default();
+        let snap = Arc::new(StageStatusSnapshot {
+            staged: vec![jbgit_core::StageEntry {
+                path: "foo.rs".into(),
+                old_path: None,
+                kind: jbgit_core::FileStatusKind::Modified,
+            }],
+            ..Default::default()
+        });
+
+        // First call populates rows
+        sw.sync_rows(Some(&snap));
+        assert_eq!(sw.rows.len(), 2); // Group header + File row
+
+        // Mutate rows directly to verify sync_rows is skipped when key matches
+        sw.rows.clear();
+        sw.sync_rows(Some(&snap));
+        assert_eq!(
+            sw.rows.len(),
+            0,
+            "sync_rows should skip rebuild when status pointer and options are identical"
+        );
+
+        // Modifying options invalidates cache
+        sw.tree_opts.show_ignored = true;
+        sw.sync_rows(Some(&snap));
+        assert_eq!(
+            sw.rows.len(),
+            2,
+            "sync_rows must rebuild when options change"
+        );
+    }
+
+    #[test]
+    fn diff_rows_caches_until_diff_or_side_by_side_changes() {
+        let mut sw = StageWorkbenchState::default();
+        let tracker = jbgit_core::StageLineTracker::new(b"", b"", b"");
+        let diff1 = Arc::new(ThreeDocStageDiff {
+            key: StageDiffKey {
+                path: "foo.rs".into(),
+                old_path: None,
+                side: StageDiffSide::Staged,
+                context: DiffContext::Three,
+            },
+            vcs_exists: false,
+            staged_exists: true,
+            local_exists: false,
+            vcs_bytes: vec![],
+            staged_bytes: vec![],
+            local_bytes: vec![],
+            file_mode: 0o100644,
+            is_binary: false,
+            is_conflicted: false,
+            tracker,
+            hunks: vec![],
+            is_truncated: false,
+            is_too_large: false,
+        });
+
+        sw.current_diff = Some(Arc::clone(&diff1));
+        let r1 = sw.diff_rows();
+        let r2 = sw.diff_rows();
+        assert!(
+            Arc::ptr_eq(&r1, &r2),
+            "diff_rows must return cached Arc slice on identical diff and mode"
+        );
+
+        // Toggling side-by-side mode invalidates cache
+        sw.diff_side_by_side = true;
+        let r3 = sw.diff_rows();
+        assert!(
+            !Arc::ptr_eq(&r1, &r3),
+            "diff_rows must invalidate cache when side-by-side toggles"
+        );
     }
 }

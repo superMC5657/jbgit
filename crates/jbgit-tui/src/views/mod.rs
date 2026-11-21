@@ -76,12 +76,13 @@ pub fn render_app(frame: &mut Frame<'_>, state: &mut AppState) {
         .saturating_sub(header_h + tabs_h + banner_raw + 4)
         .max(1)
         .min(avail_after_top);
-    let footer_h = footer::footer_bar_height(
+    let footer_plan = footer::plan_footer_bar(
         state,
         area.width,
         max_footer_cap,
         state.hover_target.as_ref(),
     );
+    let footer_h = footer_plan.height;
     let banner_h = banner_raw
         .min(area.height.saturating_sub(header_h + tabs_h + footer_h + 4));
     let body_h = area
@@ -119,11 +120,8 @@ pub fn render_app(frame: &mut Frame<'_>, state: &mut AppState) {
         footer_h,
     );
 
-    let theme = state.theme.clone();
-    let branch_colors = state.branch_colors.clone();
     let glyph_mode = state.glyph_mode;
     let focused_pane = state.focused_pane;
-    let hover_target = state.hover_target.clone();
     let dragging_splitter = match state.drag_state {
         Some(crate::app::DragState::Splitter { splitter_id, .. }) => Some(splitter_id),
         _ => None,
@@ -142,12 +140,12 @@ pub fn render_app(frame: &mut Frame<'_>, state: &mut AppState) {
 
     {
         let mut ctx = RenderContext {
-            theme: &theme,
+            theme: &state.theme,
             glyph_mode,
-            branch_colors: &branch_colors,
+            branch_colors: &state.branch_colors,
             hit_registry: &mut hit_registry,
             focused_pane,
-            hover_target: hover_target.as_ref(),
+            hover_target: state.hover_target.as_ref(),
             dragging_splitter,
             graph_renderer: Some(&mut graph_renderer),
             i18n: Some(&state.i18n),
@@ -175,7 +173,7 @@ pub fn render_app(frame: &mut Frame<'_>, state: &mut AppState) {
             }
         }
 
-        footer::render_footer_bar(frame, footer_rect, state, &mut ctx);
+        footer::render_footer_bar_with_plan(frame, footer_rect, state, &mut ctx, &footer_plan);
         overlays::render_hover_tooltip(frame, area, state, &ctx);
         overlays::render_which_key_popup(frame, area, footer_h, state, &ctx);
         overlays::render_modals(frame, area, state, &mut ctx);

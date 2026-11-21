@@ -269,6 +269,28 @@ pub enum HitTarget {
     ModalButton(ModalButton),
 }
 
+impl HitTarget {
+    /// Whether hovering over this target triggers visual styling changes or tooltips.
+    /// Used by mouse move handler to avoid spurious full redraws on passive areas.
+    pub fn has_visual_hover(&self) -> bool {
+        !matches!(
+            self,
+            HitTarget::Pane(_)
+                | HitTarget::DetailsArea
+                | HitTarget::DiffArea
+                | HitTarget::CommitEditorArea
+                | HitTarget::ConsoleOutputArea
+                | HitTarget::StageDiffLine { .. }
+                | HitTarget::StageDiffGutter { .. }
+                | HitTarget::FileHistoryListArea
+                | HitTarget::FileHistoryDiffArea
+                | HitTarget::DialogBody
+                | HitTarget::MenuBody { .. }
+                | HitTarget::ModalBackdrop { .. }
+        )
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HitRegion {
     pub rect: Rect,

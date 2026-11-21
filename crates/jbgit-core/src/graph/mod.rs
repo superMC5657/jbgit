@@ -3,7 +3,9 @@ pub mod permanent;
 pub mod print_elements;
 pub mod visible;
 
-pub use edges_in_row::{BLOCK_SIZE, CACHE_SIZE, EdgesInRowGenerator, WALK_SIZE};
+pub use edges_in_row::{
+    BLOCK_SIZE, CACHE_SIZE, EdgesInRowCache, EdgesInRowGenerator, WALK_SIZE,
+};
 pub use fixedbitset::FixedBitSet;
 pub use permanent::{
     BranchLayoutPriority, CommitMetaLite, DownTarget, GraphLayoutBuilder, LayoutIndex, PermNodeId,

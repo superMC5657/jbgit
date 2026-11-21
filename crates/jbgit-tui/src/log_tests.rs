@@ -198,6 +198,8 @@ fn change(path: &str, kind: FileStatusKind) -> FileChange {
         deletions: 1,
         is_binary: false,
         exists_in_workdir: kind != FileStatusKind::Deleted,
+        old_oid: None,
+        new_oid: None,
     }
 }
 
@@ -555,6 +557,7 @@ fn details_parent_link_click_jumps_and_diff_preview_word_highlight() {
             hunks: vec![hunk],
             is_binary: false,
             is_truncated: false,
+            is_too_large: false,
         }),
         epoch: 1,
     });

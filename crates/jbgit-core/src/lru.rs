@@ -67,6 +67,12 @@ impl<K: Clone + Eq + Hash, V> LruCache<K, V> {
         self.order.clear();
     }
 
+    pub fn retain(&mut self, mut pred: impl FnMut(&K, &V) -> bool) {
+        self.map.retain(|k, v| pred(k, v));
+        let map = &self.map;
+        self.order.retain(|k| map.contains_key(k));
+    }
+
     fn touch(&mut self, key: &K) {
         if let Some(pos) = self.order.iter().position(|k| k == key) {
             let k = self.order.remove(pos).expect("position valid");
@@ -88,5 +94,9 @@ mod tests {
         c.insert(3, "c");
         assert!(c.contains(&1) && c.contains(&3) && !c.contains(&2));
         assert_eq!(c.len(), 2);
+
+        c.retain(|&k, _| k == 1);
+        assert!(c.contains(&1) && !c.contains(&3));
+        assert_eq!(c.len(), 1);
     }
 }

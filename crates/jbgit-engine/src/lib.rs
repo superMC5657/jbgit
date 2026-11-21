@@ -11,7 +11,8 @@ pub mod watcher;
 pub use cli::{GitCliExecutor, GitExecutableInfo, prepare_pathspec_args};
 pub use details::{
     DEFAULT_FILE_HISTORY_LIMIT, load_commit_details_sync, load_file_diff_sync,
-    load_file_history_sync, load_path_matches_sync, parse_file_history_z,
+    load_file_diff_with_oids_sync, load_file_history_sync, load_path_matches_sync,
+    parse_file_history_z, verify_commit_signature_sync,
 };
 pub use error::EngineError;
 pub use ops::run_git_op;

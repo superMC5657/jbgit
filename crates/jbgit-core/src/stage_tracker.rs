@@ -2,11 +2,15 @@
 //! and pure-memory partial staging / unstaging / rollback buffer synthesis.
 
 use std::ops::Range;
+use std::sync::Arc;
 
 use imara_diff::{Algorithm, Diff, InternedInput};
 use rustc_hash::FxHashSet;
 
-use crate::details::{DiffContext, DiffHunk, DiffLine, DiffLineKind, apply_word_diff};
+use crate::details::{
+    DiffContext, DiffHunk, DiffLine, DiffLineKind, EAGER_WORD_DIFF_PAIR_BUDGET,
+    apply_word_diff_with_budget,
+};
 
 /// Line ending metadata for lossless byte-for-byte document reconstruction.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -26,48 +30,64 @@ impl LineEnding {
     }
 }
 
-/// One lossless line slice (content bytes without trailing `\n` or `\r\n`, plus ending tag).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SlicedLine {
-    pub content: Vec<u8>,
+/// Zero-copy line slice descriptor into a shared [`SlicedDocument`] byte buffer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LineSlice {
+    pub start: usize,
+    pub end: usize,
     pub ending: LineEnding,
 }
 
-impl SlicedLine {
-    pub fn to_bytes_into(&self, out: &mut Vec<u8>) {
-        out.extend_from_slice(&self.content);
-        out.extend_from_slice(self.ending.as_bytes());
-    }
-
-    pub fn display_text(&self) -> String {
-        String::from_utf8_lossy(&self.content).replace('\t', "    ")
+impl LineSlice {
+    #[inline]
+    pub const fn raw_end(self) -> usize {
+        self.end + self.ending.as_bytes().len()
     }
 }
 
-/// Lossless line-sliced representation of an arbitrary byte buffer.
+/// Lossless line-sliced representation of an arbitrary byte buffer backed by a single shared allocation.
 /// `SlicedDocument::from_bytes(b).to_bytes() == b` for every byte sequence `b`.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SlicedDocument {
-    pub lines: Vec<SlicedLine>,
+    pub bytes: Arc<[u8]>,
+    pub lines: Vec<LineSlice>,
+}
+
+impl Default for SlicedDocument {
+    fn default() -> Self {
+        Self {
+            bytes: Arc::from([] as [u8; 0]),
+            lines: Vec::new(),
+        }
+    }
 }
 
 impl SlicedDocument {
     pub fn from_bytes(bytes: &[u8]) -> Self {
         if bytes.is_empty() {
-            return Self { lines: Vec::new() };
+            return Self::default();
         }
-        let mut lines = Vec::new();
+        Self::from_arc(Arc::from(bytes))
+    }
+
+    pub fn from_arc(bytes: Arc<[u8]>) -> Self {
+        if bytes.is_empty() {
+            return Self::default();
+        }
+        let mut lines = Vec::with_capacity((bytes.len() / 64).min(4096));
         let mut start = 0usize;
         for (i, &b) in bytes.iter().enumerate() {
             if b == b'\n' {
                 if i > start && bytes[i - 1] == b'\r' {
-                    lines.push(SlicedLine {
-                        content: bytes[start..i - 1].to_vec(),
+                    lines.push(LineSlice {
+                        start,
+                        end: i - 1,
                         ending: LineEnding::Crlf,
                     });
                 } else {
-                    lines.push(SlicedLine {
-                        content: bytes[start..i].to_vec(),
+                    lines.push(LineSlice {
+                        start,
+                        end: i,
                         ending: LineEnding::Lf,
                     });
                 }
@@ -75,23 +95,59 @@ impl SlicedDocument {
             }
         }
         if start < bytes.len() {
-            lines.push(SlicedLine {
-                content: bytes[start..].to_vec(),
+            lines.push(LineSlice {
+                start,
+                end: bytes.len(),
                 ending: LineEnding::None,
             });
         }
-        Self { lines }
+        Self { bytes, lines }
+    }
+
+    #[inline]
+    pub fn line_content(&self, idx: usize) -> &[u8] {
+        let s = self.lines[idx];
+        &self.bytes[s.start..s.end]
+    }
+
+    #[inline]
+    pub fn display_text(&self, idx: usize) -> String {
+        let content = self.line_content(idx);
+        if !content.contains(&b'\t')
+            && let Ok(s) = std::str::from_utf8(content)
+        {
+            return s.to_string();
+        }
+        String::from_utf8_lossy(content).replace('\t', "    ")
+    }
+
+    #[inline]
+    pub fn write_line_into(&self, idx: usize, out: &mut Vec<u8>) {
+        let s = self.lines[idx];
+        out.extend_from_slice(&self.bytes[s.start..s.raw_end()]);
+    }
+
+    #[inline]
+    pub fn write_range_into(&self, range: Range<usize>, out: &mut Vec<u8>) {
+        if range.start >= range.end || range.start >= self.lines.len() {
+            return;
+        }
+        let end = range.end.min(self.lines.len());
+        let first = self.lines[range.start];
+        let last = self.lines[end - 1];
+        out.extend_from_slice(&self.bytes[first.start..last.raw_end()]);
     }
 
     pub fn to_bytes(&self) -> Vec<u8> {
         let cap: usize = self
             .lines
             .iter()
-            .map(|l| l.content.len() + l.ending.as_bytes().len())
+            .map(|l| (l.end - l.start) + l.ending.as_bytes().len())
             .sum();
         let mut out = Vec::with_capacity(cap);
-        for line in &self.lines {
-            line.to_bytes_into(&mut out);
+        for l in &self.lines {
+            out.extend_from_slice(&self.bytes[l.start..l.end]);
+            out.extend_from_slice(l.ending.as_bytes());
         }
         out
     }
@@ -107,10 +163,7 @@ impl SlicedDocument {
     pub fn slice_display(&self, range: Range<usize>) -> Vec<String> {
         let start = range.start.min(self.lines.len());
         let end = range.end.min(self.lines.len());
-        self.lines[start..end]
-            .iter()
-            .map(SlicedLine::display_text)
-            .collect()
+        (start..end).map(|i| self.display_text(i)).collect()
     }
 }
 
@@ -357,31 +410,43 @@ impl StageLineTracker {
         }
     }
 
-    /// Finds the `StagedRange` index touching a `staged_doc` line index.
-    pub fn range_for_staged_line(&self, staged_line: usize) -> Option<usize> {
-        self.ranges.iter().position(|r| {
-            if r.staged_range.is_empty() {
-                r.staged_range.start == staged_line
+    #[inline]
+    fn find_range_binary(
+        &self,
+        line: usize,
+        get_range: impl Fn(&StagedRange) -> &Range<usize>,
+    ) -> Option<usize> {
+        let idx = self.ranges.partition_point(|r| {
+            let range = get_range(r);
+            if range.is_empty() {
+                range.start < line
             } else {
-                r.staged_range.contains(&staged_line)
+                range.end <= line
             }
-        })
+        });
+        let r = self.ranges.get(idx)?;
+        let range = get_range(r);
+        let matched = if range.is_empty() {
+            range.start == line
+        } else {
+            range.contains(&line)
+        };
+        matched.then_some(idx)
     }
 
-    /// Finds the `StagedRange` index touching a `local_doc` line index.
+    /// Finds the `StagedRange` index touching a `staged_doc` line index (`O(log R)`).
+    pub fn range_for_staged_line(&self, staged_line: usize) -> Option<usize> {
+        self.find_range_binary(staged_line, |r| &r.staged_range)
+    }
+
+    /// Finds the `StagedRange` index touching a `local_doc` line index (`O(log R)`).
     pub fn range_for_local_line(&self, local_line: usize) -> Option<usize> {
-        self.ranges.iter().position(|r| {
-            if r.local_range.is_empty() {
-                r.local_range.start == local_line
-            } else {
-                r.local_range.contains(&local_line)
-            }
-        })
+        self.find_range_binary(local_line, |r| &r.local_range)
     }
 
     fn extend_selected(
-        out: &mut Vec<SlicedLine>,
-        lines: &[SlicedLine],
+        out: &mut Vec<u8>,
+        doc: &SlicedDocument,
         range: Range<usize>,
         selected: &FxHashSet<usize>,
         keep_selected: bool,
@@ -389,13 +454,11 @@ impl StageLineTracker {
         if range.is_empty() {
             return;
         }
-        out.extend(
-            lines[range.clone()]
-                .iter()
-                .enumerate()
-                .filter(|(offset, _)| selected.contains(&(range.start + offset)) == keep_selected)
-                .map(|(_, line)| line.clone()),
-        );
+        for idx in range {
+            if selected.contains(&idx) == keep_selected {
+                doc.write_line_into(idx, out);
+            }
+        }
     }
 
     fn splice_blocks(
@@ -406,24 +469,23 @@ impl StageLineTracker {
         sel_before: &FxHashSet<usize>,
         sel_after: &FxHashSet<usize>,
     ) -> Vec<u8> {
-        let mut out = SlicedDocument::default();
+        let mut out = Vec::with_capacity(base_doc.bytes.len());
         let mut cursor = 0usize;
         for block in blocks {
             if base_is_before {
                 if block.start1 > cursor {
-                    out.lines
-                        .extend(base_doc.lines[cursor..block.start1].iter().cloned());
+                    base_doc.write_range_into(cursor..block.start1, &mut out);
                 }
                 Self::extend_selected(
-                    &mut out.lines,
-                    &base_doc.lines,
+                    &mut out,
+                    base_doc,
                     block.start1..block.end1,
                     sel_before,
                     false,
                 );
                 Self::extend_selected(
-                    &mut out.lines,
-                    &other_doc.lines,
+                    &mut out,
+                    other_doc,
                     block.start2..block.end2,
                     sel_after,
                     true,
@@ -431,19 +493,18 @@ impl StageLineTracker {
                 cursor = block.end1;
             } else {
                 if block.start2 > cursor {
-                    out.lines
-                        .extend(base_doc.lines[cursor..block.start2].iter().cloned());
+                    base_doc.write_range_into(cursor..block.start2, &mut out);
                 }
                 Self::extend_selected(
-                    &mut out.lines,
-                    &other_doc.lines,
+                    &mut out,
+                    other_doc,
                     block.start1..block.end1,
                     sel_before,
                     true,
                 );
                 Self::extend_selected(
-                    &mut out.lines,
-                    &base_doc.lines,
+                    &mut out,
+                    base_doc,
                     block.start2..block.end2,
                     sel_after,
                     false,
@@ -452,9 +513,9 @@ impl StageLineTracker {
             }
         }
         if cursor < base_doc.lines.len() {
-            out.lines.extend(base_doc.lines[cursor..].iter().cloned());
+            base_doc.write_range_into(cursor..base_doc.lines.len(), &mut out);
         }
-        out.to_bytes()
+        out
     }
 
     /// Synthesizes a new Index buffer (`new_staged_bytes`) by staging only the
@@ -514,7 +575,7 @@ impl StageLineTracker {
             kind: DiffLineKind::Context,
             old_lineno: Some(cur_before as u32 + 1),
             new_lineno: Some(cur_after as u32 + 1),
-            text: doc_before.lines[cur_before].display_text(),
+            text: doc_before.display_text(cur_before),
             word_ranges: Vec::new(),
         });
         let pivot_line = if staged_side { cur_after } else { cur_before };
@@ -560,6 +621,7 @@ impl StageLineTracker {
         let before_len = doc_before.len();
         let mut out = Vec::new();
         let mut budget = max_lines;
+        let mut word_diff_budget = EAGER_WORD_DIFF_PAIR_BUDGET;
         let mut truncated = false;
 
         let mut i = 0usize;
@@ -608,13 +670,7 @@ impl StageLineTracker {
                 if truncated {
                     break;
                 }
-                for (b_idx, line) in doc_before
-                    .lines
-                    .iter()
-                    .enumerate()
-                    .take(b.end1)
-                    .skip(b.start1)
-                {
+                for b_idx in b.start1..b.end1 {
                     if budget == 0 {
                         truncated = true;
                         break;
@@ -624,7 +680,7 @@ impl StageLineTracker {
                         kind: DiffLineKind::Deleted,
                         old_lineno: Some(b_idx as u32 + 1),
                         new_lineno: None,
-                        text: line.display_text(),
+                        text: doc_before.display_text(b_idx),
                         word_ranges: Vec::new(),
                     });
                     let sr_idx = if staged_side {
@@ -658,13 +714,7 @@ impl StageLineTracker {
                         staged_range_idx: sr_idx,
                     });
                 }
-                for (a_idx, line) in doc_after
-                    .lines
-                    .iter()
-                    .enumerate()
-                    .take(b.end2)
-                    .skip(b.start2)
-                {
+                for a_idx in b.start2..b.end2 {
                     if budget == 0 {
                         truncated = true;
                         break;
@@ -674,7 +724,7 @@ impl StageLineTracker {
                         kind: DiffLineKind::Added,
                         old_lineno: None,
                         new_lineno: Some(a_idx as u32 + 1),
-                        text: line.display_text(),
+                        text: doc_after.display_text(a_idx),
                         word_ranges: Vec::new(),
                     });
                     let sr_idx = if staged_side {
@@ -755,7 +805,7 @@ impl StageLineTracker {
                 ),
                 lines,
             };
-            apply_word_diff(&mut hunk);
+            apply_word_diff_with_budget(&mut hunk, &mut word_diff_budget);
             out.push(StageDiffHunk {
                 hunk,
                 block_indices: (i..group_end).collect(),
@@ -977,6 +1027,83 @@ mod tests {
             // 4. Full rollback restores local to staged
             let rolled_back = tracker.rollback_lines(&select_all_blocks(&tracker.unstaged_blocks, false));
             prop_assert_eq!(rolled_back, staged);
+
+            // 5. Binary-search range lookup matches linear scan on every line index
+            for l in 0..=tracker.staged_doc.len() {
+                let linear = tracker.ranges.iter().position(|r| {
+                    if r.staged_range.is_empty() {
+                        r.staged_range.start == l
+                    } else {
+                        r.staged_range.contains(&l)
+                    }
+                });
+                prop_assert_eq!(tracker.range_for_staged_line(l), linear);
+            }
+            for l in 0..=tracker.local_doc.len() {
+                let linear = tracker.ranges.iter().position(|r| {
+                    if r.local_range.is_empty() {
+                        r.local_range.start == l
+                    } else {
+                        r.local_range.contains(&l)
+                    }
+                });
+                prop_assert_eq!(tracker.range_for_local_line(l), linear);
+            }
+        }
+    }
+
+    #[test]
+    fn binary_search_ranges_match_linear_on_10k_lines_1k_hunks() {
+        use std::io::Write;
+        let mut vcs = Vec::with_capacity(200_000);
+        let mut staged = Vec::with_capacity(200_000);
+        let mut local = Vec::with_capacity(200_000);
+
+        for i in 0..10_000usize {
+            let nl = if i % 3 == 0 { "\r\n" } else { "\n" };
+            writeln!(vcs, "line {i:05} orig{nl}").unwrap();
+            if i % 10 == 2 {
+                // pure insertion in staged + replacement in local every 10 lines -> ~1000 hunks
+                staged.extend_from_slice(format!("line {i:05} staged_edit\n").as_bytes());
+                local.extend_from_slice(format!("line {i:05} local_a\nline {i:05} local_b{nl}").as_bytes());
+            } else if i % 10 == 7 {
+                // deleted in staged
+                local.extend_from_slice(format!("line {i:05} restored{nl}").as_bytes());
+            } else {
+                let base = format!("line {i:05} orig{nl}\n");
+                staged.extend_from_slice(base.as_bytes());
+                local.extend_from_slice(base.as_bytes());
+            }
+        }
+        // Strip final newline to test No-EOF handling on large doc as well
+        local.extend_from_slice(b"tail_no_nl");
+
+        assert_eq!(SlicedDocument::from_bytes(&vcs).to_bytes(), vcs);
+        assert_eq!(SlicedDocument::from_bytes(&staged).to_bytes(), staged);
+        assert_eq!(SlicedDocument::from_bytes(&local).to_bytes(), local);
+
+        let tracker = StageLineTracker::new(&vcs, &staged, &local);
+        assert!(tracker.ranges.len() >= 1_000, "got {} ranges", tracker.ranges.len());
+
+        for l in 0..=tracker.staged_doc.len() {
+            let linear = tracker.ranges.iter().position(|r| {
+                if r.staged_range.is_empty() {
+                    r.staged_range.start == l
+                } else {
+                    r.staged_range.contains(&l)
+                }
+            });
+            assert_eq!(tracker.range_for_staged_line(l), linear, "staged mismatch at {l}");
+        }
+        for l in 0..=tracker.local_doc.len() {
+            let linear = tracker.ranges.iter().position(|r| {
+                if r.local_range.is_empty() {
+                    r.local_range.start == l
+                } else {
+                    r.local_range.contains(&l)
+                }
+            });
+            assert_eq!(tracker.range_for_local_line(l), linear, "local mismatch at {l}");
         }
     }
 }

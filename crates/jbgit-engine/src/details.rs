@@ -10,9 +10,9 @@ use git2::{Delta, DiffFindOptions, DiffOptions, Repository};
 use imara_diff::{Algorithm, Diff, InternedInput};
 use jbgit_core::{
     CommitChangesBundle, CommitDetails, DetailsKey, DetailsMode, DiffHunk, DiffLine, DiffLineKind,
-    EpochToken, FileChange, FileDiff, FileDiffKey, FileHistoryBundle, FileHistoryEntry,
-    FileHistoryKey, FileStatusKind, Oid, PersonStamp, RepoSnapshot, SignatureStatus,
-    apply_word_diff,
+    EAGER_WORD_DIFF_PAIR_BUDGET, EpochToken, FileChange, FileDiff, FileDiffKey, FileHistoryBundle,
+    FileHistoryEntry, FileHistoryKey, FileStatusKind, MAX_DIFF_FILE_BYTES, Oid, PersonStamp,
+    RepoSnapshot, SignatureStatus, apply_word_diff_with_budget,
 };
 
 use crate::error::EngineError;
@@ -43,15 +43,20 @@ fn delta_path(file: git2::DiffFile<'_>) -> Option<String> {
     file.path().map(|p| p.to_string_lossy().replace('\\', "/"))
 }
 
-fn verify_commit_signature(git_dir: &Path, oid: git2::Oid) -> SignatureStatus {
-    let out = Command::new("git")
-        .arg("--git-dir")
+pub fn verify_commit_signature_sync(git_dir: &Path, oid: Oid) -> SignatureStatus {
+    let mut cmd = Command::new("git");
+    cmd.arg("--git-dir")
         .arg(git_dir)
         .args(["log", "-1", "--format=%G?", &oid.to_string()])
+        .env("GIT_OPTIONAL_LOCKS", "0")
         .env("GIT_TERMINAL_PROMPT", "0")
-        .stdin(Stdio::null())
-        .output();
-    match out {
+        .stdin(Stdio::null());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x0800_0000);
+    }
+    match cmd.output() {
         Ok(o) if o.status.success() => {
             if String::from_utf8_lossy(&o.stdout).trim() == "G" {
                 SignatureStatus::Verified
@@ -291,59 +296,111 @@ fn resolve_changes<'r>(
     Ok((changes, commits))
 }
 
-fn read_blob_bytes(repo: &Repository, oid: git2::Oid) -> (Vec<u8>, bool) {
+enum ReadBytes {
+    Loaded { bytes: Vec<u8>, is_binary: bool },
+    TooLarge,
+}
+
+fn read_blob_checked(repo: &Repository, oid: git2::Oid) -> ReadBytes {
     if oid.is_zero() {
-        return (Vec::new(), false);
+        return ReadBytes::Loaded {
+            bytes: Vec::new(),
+            is_binary: false,
+        };
+    }
+    if let Ok(odb) = repo.odb()
+        && let Ok((size, _)) = odb.read_header(oid)
+        && size > MAX_DIFF_FILE_BYTES
+    {
+        return ReadBytes::TooLarge;
     }
     match repo.find_blob(oid) {
         Ok(blob) => {
-            let is_bin = blob.is_binary() || blob.content().contains(&0);
-            (blob.content().to_vec(), is_bin)
+            if blob.size() > MAX_DIFF_FILE_BYTES {
+                return ReadBytes::TooLarge;
+            }
+            let content = blob.content();
+            let is_bin = blob.is_binary() || content.contains(&0);
+            ReadBytes::Loaded {
+                bytes: content.to_vec(),
+                is_binary: is_bin,
+            }
         }
-        Err(_) => (Vec::new(), false),
+        Err(_) => ReadBytes::Loaded {
+            bytes: Vec::new(),
+            is_binary: false,
+        },
     }
 }
 
-fn read_new_bytes(repo: &Repository, key: &DetailsKey, item: &ResolvedChange) -> (Vec<u8>, bool) {
+fn read_new_bytes_checked(
+    repo: &Repository,
+    key: &DetailsKey,
+    item: &ResolvedChange,
+) -> ReadBytes {
     if key.mode == DetailsMode::CompareWithLocal
         && item.new_oid.is_zero()
         && item.kind != FileStatusKind::Deleted
-        && let Some(workdir) = repo.workdir()
-        && let Ok(bytes) = std::fs::read(workdir.join(&item.path))
     {
-        let is_bin = bytes.contains(&0);
-        return (bytes, is_bin);
+        return read_workdir_path_checked(repo, &item.path);
     }
-    read_blob_bytes(repo, item.new_oid)
+    read_blob_checked(repo, item.new_oid)
 }
 
-fn read_tree_path_bytes(repo: &Repository, tree: &git2::Tree<'_>, path: &str) -> (Vec<u8>, bool) {
+fn read_tree_path_checked(repo: &Repository, tree: &git2::Tree<'_>, path: &str) -> ReadBytes {
     let Ok(entry) = tree.get_path(Path::new(path)) else {
-        return (Vec::new(), false);
+        return ReadBytes::Loaded {
+            bytes: Vec::new(),
+            is_binary: false,
+        };
     };
-    read_blob_bytes(repo, entry.id())
+    read_blob_checked(repo, entry.id())
 }
 
-fn read_workdir_path_bytes(repo: &Repository, path: &str) -> (Vec<u8>, bool) {
+fn read_workdir_path_checked(repo: &Repository, path: &str) -> ReadBytes {
     let Some(workdir) = repo.workdir() else {
-        return (Vec::new(), false);
+        return ReadBytes::Loaded {
+            bytes: Vec::new(),
+            is_binary: false,
+        };
     };
-    match std::fs::read(workdir.join(path)) {
+    let full = workdir.join(path);
+    if let Ok(meta) = std::fs::metadata(&full)
+        && meta.len() > MAX_DIFF_FILE_BYTES as u64
+    {
+        return ReadBytes::TooLarge;
+    }
+    match std::fs::read(&full) {
         Ok(bytes) => {
+            if bytes.len() > MAX_DIFF_FILE_BYTES {
+                return ReadBytes::TooLarge;
+            }
             let is_bin = bytes.contains(&0);
-            (bytes, is_bin)
+            ReadBytes::Loaded {
+                bytes,
+                is_binary: is_bin,
+            }
         }
-        Err(_) => (Vec::new(), false),
+        Err(_) => ReadBytes::Loaded {
+            bytes: Vec::new(),
+            is_binary: false,
+        },
     }
 }
 
-fn imara_line_stats(old: &[u8], new: &[u8]) -> (usize, usize) {
+fn imara_line_stats(old: &[u8], new: &[u8], token: &EpochToken) -> Result<(usize, usize), EngineError> {
+    if token.is_stale() {
+        return Err(EngineError::Cancelled);
+    }
     let old_s = String::from_utf8_lossy(old);
     let new_s = String::from_utf8_lossy(new);
     let input = InternedInput::new(old_s.as_ref(), new_s.as_ref());
+    if token.is_stale() {
+        return Err(EngineError::Cancelled);
+    }
     let mut diff = Diff::compute(Algorithm::Histogram, &input);
     diff.postprocess_lines(&input);
-    (diff.count_additions() as usize, diff.count_removals() as usize)
+    Ok((diff.count_additions() as usize, diff.count_removals() as usize))
 }
 
 fn build_imara_hunks(
@@ -372,6 +429,7 @@ fn build_imara_hunks(
 
     let mut out = Vec::new();
     let mut budget = MAX_DIFF_LINES;
+    let mut word_diff_budget = EAGER_WORD_DIFF_PAIR_BUDGET;
     let mut truncated = false;
 
     // Group adjacent diff hunks whose context windows touch or overlap.
@@ -487,7 +545,7 @@ fn build_imara_hunks(
             ),
             lines,
         };
-        apply_word_diff(&mut dh);
+        apply_word_diff_with_budget(&mut dh, &mut word_diff_budget);
         out.push(dh);
         if truncated {
             break;
@@ -513,8 +571,10 @@ pub fn load_commit_details_sync(
         let details = commits
             .iter()
             .map(|c| {
+                // Defer `git log --format=%G?` subprocess verification to background task so
+                // commit details and changed files appear immediately without stalling on GPG.
                 let signature = if repo.extract_signature(&c.id(), None).is_ok() {
-                    verify_commit_signature(repo.path(), c.id())
+                    SignatureStatus::SignedUnverified
                 } else {
                     SignatureStatus::Unsigned
                 };
@@ -532,20 +592,33 @@ pub fn load_commit_details_sync(
             .collect();
 
         let workdir = repo.workdir();
+        let opt_core = |id: git2::Oid| (!id.is_zero()).then(|| to_core_oid(id));
         let mut changes = Vec::with_capacity(resolved.len());
         for (idx, item) in resolved.into_iter().enumerate() {
-            if idx % 64 == 0 && token.is_stale() {
+            if idx % 32 == 0 && token.is_stale() {
                 return Err(EngineError::Cancelled);
             }
             let mut additions = 0usize;
             let mut deletions = 0usize;
             let mut is_binary = item.is_binary;
-            if idx < MAX_STAT_FILES && !is_binary {
-                let (old_bytes, old_bin) = read_blob_bytes(repo, item.old_oid);
-                let (new_bytes, new_bin) = read_new_bytes(repo, key, &item);
+            if idx < MAX_STAT_FILES && !is_binary
+                && let (
+                    ReadBytes::Loaded {
+                        bytes: old_bytes,
+                        is_binary: old_bin,
+                    },
+                    ReadBytes::Loaded {
+                        bytes: new_bytes,
+                        is_binary: new_bin,
+                    },
+                ) = (
+                    read_blob_checked(repo, item.old_oid),
+                    read_new_bytes_checked(repo, key, &item),
+                )
+            {
                 is_binary |= old_bin || new_bin;
                 if !is_binary {
-                    (additions, deletions) = imara_line_stats(&old_bytes, &new_bytes);
+                    (additions, deletions) = imara_line_stats(&old_bytes, &new_bytes, token)?;
                 }
             }
             let exists_in_workdir = workdir.is_some_and(|w| w.join(&item.path).is_file());
@@ -557,6 +630,8 @@ pub fn load_commit_details_sync(
                 deletions,
                 is_binary,
                 exists_in_workdir,
+                old_oid: opt_core(item.old_oid),
+                new_oid: opt_core(item.new_oid),
             });
         }
 
@@ -570,18 +645,30 @@ pub fn load_commit_details_sync(
 
 fn populate_file_diff(
     mut out: FileDiff,
-    old_bytes: &[u8],
-    old_bin: bool,
-    new_bytes: &[u8],
-    new_bin: bool,
+    old: ReadBytes,
+    new: ReadBytes,
     context_lines: u32,
     token: &EpochToken,
 ) -> Result<FileDiff, EngineError> {
+    let (
+        ReadBytes::Loaded {
+            bytes: old_bytes,
+            is_binary: old_bin,
+        },
+        ReadBytes::Loaded {
+            bytes: new_bytes,
+            is_binary: new_bin,
+        },
+    ) = (old, new)
+    else {
+        out.is_too_large = true;
+        return Ok(out);
+    };
     if old_bin || new_bin {
         out.is_binary = true;
         return Ok(out);
     }
-    let (hunks, is_truncated) = build_imara_hunks(old_bytes, new_bytes, context_lines, token)?;
+    let (hunks, is_truncated) = build_imara_hunks(&old_bytes, &new_bytes, context_lines, token)?;
     out.hunks = hunks;
     out.is_truncated = is_truncated;
     Ok(out)
@@ -592,57 +679,117 @@ pub fn load_file_diff_sync(
     key: &FileDiffKey,
     token: &EpochToken,
 ) -> Result<FileDiff, EngineError> {
+    load_file_diff_with_oids_sync(location, key, None, token)
+}
+
+pub fn load_file_diff_with_oids_sync(
+    location: &RepoLocation,
+    key: &FileDiffKey,
+    known_oids: Option<(Option<Oid>, Option<Oid>)>,
+    token: &EpochToken,
+) -> Result<FileDiff, EngineError> {
     if token.is_stale() {
         return Err(EngineError::Cancelled);
     }
 
     with_thread_repo(&location.git_dir, |repo| {
+        if token.is_stale() {
+            return Err(EngineError::Cancelled);
+        }
         let mut out = FileDiff {
             key: key.clone(),
             hunks: Vec::new(),
             is_binary: false,
             is_truncated: false,
+            is_too_large: false,
         };
         let context_lines = key.context.lines();
+        let lookup_old = key.old_path.as_deref().unwrap_or(&key.path);
 
-        if let Some(old_path) = key.old_path.as_deref().filter(|old| *old != key.path) {
-            match key.details.mode {
-                DetailsMode::CompareVersions if key.details.oids.len() >= 2 => {
-                    let base = repo.find_commit(to_git2_oid(&key.details.oids[0])?)?;
-                    let target = repo.find_commit(to_git2_oid(&key.details.oids[1])?)?;
-                    let base_tree = base.tree()?;
-                    let target_tree = target.tree()?;
-                    let (old_bytes, old_bin) = read_tree_path_bytes(repo, &base_tree, old_path);
-                    let (new_bytes, new_bin) = read_tree_path_bytes(repo, &target_tree, &key.path);
-                    return populate_file_diff(
-                        out,
-                        &old_bytes,
-                        old_bin,
-                        &new_bytes,
-                        new_bin,
-                        context_lines,
-                        token,
-                    );
-                }
-                DetailsMode::CompareWithLocal if !key.details.oids.is_empty() => {
-                    let base = repo.find_commit(to_git2_oid(&key.details.oids[0])?)?;
-                    let base_tree = base.tree()?;
-                    let (old_bytes, old_bin) = read_tree_path_bytes(repo, &base_tree, old_path);
-                    let (new_bytes, new_bin) = read_workdir_path_bytes(repo, &key.path);
-                    return populate_file_diff(
-                        out,
-                        &old_bytes,
-                        old_bin,
-                        &new_bytes,
-                        new_bin,
-                        context_lines,
-                        token,
-                    );
-                }
-                _ => {}
+        let read_opt_oid = |opt: Option<Oid>| -> Result<ReadBytes, EngineError> {
+            match opt {
+                Some(id) => Ok(read_blob_checked(repo, to_git2_oid(&id)?)),
+                None => Ok(ReadBytes::Loaded {
+                    bytes: Vec::new(),
+                    is_binary: false,
+                }),
             }
+        };
+
+        match key.details.mode {
+            DetailsMode::CompareVersions if key.details.oids.len() >= 2 => {
+                if let Some((old_id, new_id)) = known_oids {
+                    return populate_file_diff(
+                        out,
+                        read_opt_oid(old_id)?,
+                        read_opt_oid(new_id)?,
+                        context_lines,
+                        token,
+                    );
+                }
+                let base = repo.find_commit(to_git2_oid(&key.details.oids[0])?)?;
+                let target = repo.find_commit(to_git2_oid(&key.details.oids[1])?)?;
+                let base_tree = base.tree()?;
+                let target_tree = target.tree()?;
+                let old = read_tree_path_checked(repo, &base_tree, lookup_old);
+                let new = read_tree_path_checked(repo, &target_tree, &key.path);
+                return populate_file_diff(out, old, new, context_lines, token);
+            }
+            DetailsMode::CompareWithLocal if !key.details.oids.is_empty() => {
+                let old = match known_oids {
+                    Some((old_id, _)) => read_opt_oid(old_id)?,
+                    None => {
+                        let base = repo.find_commit(to_git2_oid(&key.details.oids[0])?)?;
+                        let base_tree = base.tree()?;
+                        read_tree_path_checked(repo, &base_tree, lookup_old)
+                    }
+                };
+                let new = read_workdir_path_checked(repo, &key.path);
+                return populate_file_diff(out, old, new, context_lines, token);
+            }
+            DetailsMode::Commits if key.details.oids.len() == 1 => {
+                if let Some((old_id, new_id)) = known_oids {
+                    return populate_file_diff(
+                        out,
+                        read_opt_oid(old_id)?,
+                        read_opt_oid(new_id)?,
+                        context_lines,
+                        token,
+                    );
+                }
+                let commit = repo.find_commit(to_git2_oid(&key.details.oids[0])?)?;
+                let new_tree = commit.tree()?;
+                let parent_idx = if key.details.parent_index < commit.parent_count() {
+                    key.details.parent_index
+                } else {
+                    0
+                };
+                let old_tree = commit.parent(parent_idx).ok().and_then(|p| p.tree().ok());
+                let old = old_tree
+                    .as_ref()
+                    .map(|t| read_tree_path_checked(repo, t, lookup_old))
+                    .unwrap_or_else(|| ReadBytes::Loaded {
+                        bytes: Vec::new(),
+                        is_binary: false,
+                    });
+                let new = read_tree_path_checked(repo, &new_tree, &key.path);
+                return populate_file_diff(out, old, new, context_lines, token);
+            }
+            DetailsMode::Commits if !key.details.oids.is_empty() => {
+                if let Some((old_id, new_id)) = known_oids {
+                    return populate_file_diff(
+                        out,
+                        read_opt_oid(old_id)?,
+                        read_opt_oid(new_id)?,
+                        context_lines,
+                        token,
+                    );
+                }
+            }
+            _ => {}
         }
 
+        // Fallback only when multi-commit range is queried without cached FileChange OIDs.
         let (resolved, commits) = resolve_changes(repo, &key.details, token)?;
         let Some(item) = resolved.into_iter().find(|c| c.path == key.path) else {
             return Ok(out);
@@ -651,7 +798,7 @@ pub fn load_file_diff_sync(
             out.is_binary = true;
             return Ok(out);
         }
-        let (old_bytes, old_bin) = if item.old_oid.is_zero()
+        let old = if item.old_oid.is_zero()
             && key.details.mode == DetailsMode::Commits
             && commits.len() == 1
             && let Some(old_path) = key.old_path.as_deref().filter(|old| *old != key.path)
@@ -660,20 +807,12 @@ pub fn load_file_diff_sync(
                 .ok()
                 .and_then(|p| p.tree().ok())
         {
-            read_tree_path_bytes(repo, &parent_tree, old_path)
+            read_tree_path_checked(repo, &parent_tree, old_path)
         } else {
-            read_blob_bytes(repo, item.old_oid)
+            read_blob_checked(repo, item.old_oid)
         };
-        let (new_bytes, new_bin) = read_new_bytes(repo, &key.details, &item);
-        populate_file_diff(
-            out,
-            &old_bytes,
-            old_bin,
-            &new_bytes,
-            new_bin,
-            context_lines,
-            token,
-        )
+        let new = read_new_bytes_checked(repo, &key.details, &item);
+        populate_file_diff(out, old, new, context_lines, token)
     })
 }
 
