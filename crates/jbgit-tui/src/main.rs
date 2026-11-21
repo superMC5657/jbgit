@@ -226,61 +226,195 @@ fn resume_terminal_after_external_cmd(
     state.graph_renderer.invalidate();
 }
 
+fn is_external_editor_disabled_val(val: Option<&str>) -> bool {
+    val.is_some_and(|v| {
+        let trimmed = v.trim();
+        trimmed == "1"
+            || trimmed.eq_ignore_ascii_case("true")
+            || trimmed.eq_ignore_ascii_case("yes")
+    })
+}
+
+fn is_external_editor_disabled() -> bool {
+    is_external_editor_disabled_val(std::env::var("JBGIT_NO_EXTERNAL_EDITOR").ok().as_deref())
+}
+
+fn split_editor_command(raw: &str) -> Option<(String, Vec<String>)> {
+    let mut parts: Vec<String> = Vec::new();
+    let mut current = String::new();
+    let mut in_token = false;
+    let mut quote: Option<char> = None;
+    let mut chars = raw.chars().peekable();
+
+    while let Some(c) = chars.next() {
+        match quote {
+            Some('\'') => {
+                if c == '\'' {
+                    quote = None;
+                } else {
+                    current.push(c);
+                }
+            }
+            Some('"') => {
+                if c == '"' {
+                    quote = None;
+                } else if c == '\\' && chars.peek() == Some(&'"') {
+                    chars.next();
+                    current.push('"');
+                } else {
+                    current.push(c);
+                }
+            }
+            _ => {
+                if c.is_whitespace() {
+                    if in_token {
+                        parts.push(std::mem::take(&mut current));
+                        in_token = false;
+                    }
+                } else if c == '\'' || c == '"' {
+                    quote = Some(c);
+                    in_token = true;
+                } else {
+                    current.push(c);
+                    in_token = true;
+                }
+            }
+        }
+    }
+    if in_token {
+        parts.push(current);
+    }
+
+    let mut iter = parts.into_iter();
+    let prog = iter.next().filter(|s| !s.is_empty())?;
+    Some((prog, iter.collect()))
+}
+
+fn resolve_editor_command_with<F>(get_env: F) -> (String, Vec<String>)
+where
+    F: Fn(&str) -> Option<String>,
+{
+    for var in ["GIT_EDITOR", "VISUAL", "EDITOR"] {
+        if let Some(raw) = get_env(var)
+            && !raw.trim().is_empty()
+            && let Some(cmd) = split_editor_command(&raw)
+        {
+            return cmd;
+        }
+    }
+    let fallback = if cfg!(windows) { "notepad" } else { "vi" };
+    (fallback.to_string(), Vec::new())
+}
+
+fn set_editor_failed_notice(state: &mut AppState, err: &str) {
+    state.status_notice = Some(
+        state
+            .i18n
+            .t_fmt("toast.external_editor_failed", &[("error", err)]),
+    );
+}
+
+fn run_external_editor_command(
+    bin: &str,
+    args: &[String],
+    path: &std::path::Path,
+    state: &mut AppState,
+    term_guard: &mut Option<TerminalGuard>,
+) -> Result<(), String> {
+    if bin == ":" || bin == "true" {
+        return Ok(());
+    }
+    drop(term_guard.take());
+    let status = std::process::Command::new(bin)
+        .args(args)
+        .arg(path)
+        .status();
+    resume_terminal_after_external_cmd(term_guard, state);
+    match status {
+        Ok(s) if s.success() => Ok(()),
+        Ok(s) => Err(format!("exit {}", s.code().unwrap_or(-1))),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
 fn handle_external_editor_effects(
     effects: &[Effect],
     state: &mut AppState,
     term_guard: &mut Option<TerminalGuard>,
 ) -> bool {
+    handle_external_editor_effects_with(
+        effects,
+        state,
+        term_guard,
+        is_external_editor_disabled(),
+        || resolve_editor_command_with(|k| std::env::var(k).ok()),
+    )
+}
+
+fn handle_external_editor_effects_with<F>(
+    effects: &[Effect],
+    state: &mut AppState,
+    term_guard: &mut Option<TerminalGuard>,
+    disabled: bool,
+    resolve_editor: F,
+) -> bool
+where
+    F: Fn() -> (String, Vec<String>),
+{
     let mut refresh_stage = false;
-    let editor_bin = || {
-        std::env::var("VISUAL")
-            .ok()
-            .filter(|s| !s.trim().is_empty())
-            .or_else(|| std::env::var("EDITOR").ok().filter(|s| !s.trim().is_empty()))
-            .unwrap_or_else(|| {
-                if cfg!(windows) {
-                    "notepad".to_string()
-                } else {
-                    "vi".to_string()
-                }
-            })
-    };
 
     for eff in effects {
         match eff {
             Effect::OpenExternalEditorMessage => {
-                let tmp_path = std::env::temp_dir().join("jbgit-commit-editmsg.txt");
-                if std::fs::write(&tmp_path, state.stage_workbench.editor.text()).is_err() {
+                if disabled {
+                    state.status_notice = Some(state.i18n.t("toast.external_editor_disabled").to_string());
+                    state.needs_redraw = true;
                     continue;
                 }
-                drop(term_guard.take());
-                let cmd = editor_bin();
-                let status = std::process::Command::new(&cmd).arg(&tmp_path).status();
-                resume_terminal_after_external_cmd(term_guard, state);
-                if status.is_ok_and(|s| s.success())
-                    && let Ok(updated) = std::fs::read_to_string(&tmp_path)
-                {
-                    let prev = state.stage_workbench.editor.text();
-                    if !state.stage_workbench.amend
-                        && !prev.trim().is_empty()
-                        && prev.trim() != updated.trim()
-                    {
-                        state.stage_workbench.push_history(&prev);
+                let tmp_path = std::env::temp_dir()
+                    .join(format!("jbgit-commit-editmsg-{}.txt", std::process::id()));
+                if let Err(e) = std::fs::write(&tmp_path, state.stage_workbench.editor.text()) {
+                    set_editor_failed_notice(state, &e.to_string());
+                    state.needs_redraw = true;
+                    continue;
+                }
+                let (bin, args) = resolve_editor();
+                match run_external_editor_command(&bin, &args, &tmp_path, state, term_guard) {
+                    Ok(()) => {
+                        if let Ok(updated) = std::fs::read_to_string(&tmp_path) {
+                            let prev = state.stage_workbench.editor.text();
+                            if !state.stage_workbench.amend
+                                && !prev.trim().is_empty()
+                                && prev.trim() != updated.trim()
+                            {
+                                state.stage_workbench.push_history(&prev);
+                            }
+                            state.stage_workbench.editor.set_text(&updated);
+                            state.stage_workbench.empty_message_error = false;
+                            state.stage_workbench.save_draft();
+                        }
                     }
-                    state.stage_workbench.editor.set_text(&updated);
-                    state.stage_workbench.empty_message_error = false;
-                    state.stage_workbench.save_draft();
+                    Err(err) => {
+                        set_editor_failed_notice(state, &err);
+                    }
                 }
                 let _ = std::fs::remove_file(&tmp_path);
                 state.needs_redraw = true;
             }
             Effect::OpenExternalEditorFile(rel) => {
+                if disabled {
+                    state.status_notice = Some(state.i18n.t("toast.external_editor_disabled").to_string());
+                    state.needs_redraw = true;
+                    continue;
+                }
                 let full = state.repo_path_display.join(rel);
-                drop(term_guard.take());
-                let cmd = editor_bin();
-                let _ = std::process::Command::new(&cmd).arg(&full).status();
-                resume_terminal_after_external_cmd(term_guard, state);
+                let (bin, args) = resolve_editor();
+                if let Err(err) = run_external_editor_command(&bin, &args, &full, state, term_guard)
+                {
+                    set_editor_failed_notice(state, &err);
+                }
                 state.needs_redraw = true;
+                refresh_stage = true;
             }
             Effect::OpenExternalMergetool(rel) => {
                 drop(term_guard.take());
@@ -1935,5 +2069,120 @@ stash_preview_ratio = [1, 1]
         send_key(&mut state, KeyCode::Char('g'), KeyModifiers::NONE);
         send_key(&mut state, KeyCode::Char('g'), KeyModifiers::NONE);
         assert_eq!(state.console_output_scroll, bound.max_scroll);
+    }
+
+    #[test]
+    fn test_split_editor_command_quotes_and_windows_paths() {
+        assert_eq!(
+            super::split_editor_command("nvim"),
+            Some(("nvim".to_string(), vec![]))
+        );
+        assert_eq!(
+            super::split_editor_command("code --wait --reuse-window"),
+            Some((
+                "code".to_string(),
+                vec!["--wait".to_string(), "--reuse-window".to_string()],
+            ))
+        );
+        assert_eq!(
+            super::split_editor_command(
+                "\"C:\\Program Files\\Microsoft VS Code\\Code.exe\" --wait"
+            ),
+            Some((
+                "C:\\Program Files\\Microsoft VS Code\\Code.exe".to_string(),
+                vec!["--wait".to_string()],
+            ))
+        );
+        assert_eq!(
+            super::split_editor_command("'/Applications/Sublime Text/subl' -w"),
+            Some((
+                "/Applications/Sublime Text/subl".to_string(),
+                vec!["-w".to_string()],
+            ))
+        );
+        assert_eq!(super::split_editor_command("   "), None);
+        assert_eq!(super::split_editor_command("\"\""), None);
+    }
+
+    #[test]
+    fn test_resolve_editor_command_priority() {
+        let resolved = super::resolve_editor_command_with(|k| match k {
+            "GIT_EDITOR" => Some("nano -w".to_string()),
+            "VISUAL" => Some("code --wait".to_string()),
+            "EDITOR" => Some("vi".to_string()),
+            _ => None,
+        });
+        assert_eq!(resolved, ("nano".to_string(), vec!["-w".to_string()]));
+
+        let resolved_visual = super::resolve_editor_command_with(|k| match k {
+            "GIT_EDITOR" => Some("   ".to_string()),
+            "VISUAL" => Some("code --wait".to_string()),
+            "EDITOR" => Some("vi".to_string()),
+            _ => None,
+        });
+        assert_eq!(
+            resolved_visual,
+            ("code".to_string(), vec!["--wait".to_string()])
+        );
+
+        let fallback = super::resolve_editor_command_with(|_| None);
+        let expected_bin = if cfg!(windows) { "notepad" } else { "vi" };
+        assert_eq!(fallback, (expected_bin.to_string(), vec![]));
+    }
+
+    #[test]
+    fn test_handle_external_editor_effects_noop_and_disabled() {
+        use crate::app::Effect;
+
+        assert!(super::is_external_editor_disabled_val(Some("1")));
+        assert!(super::is_external_editor_disabled_val(Some(" TRUE ")));
+        assert!(super::is_external_editor_disabled_val(Some("yes")));
+        assert!(!super::is_external_editor_disabled_val(Some("0")));
+        assert!(!super::is_external_editor_disabled_val(None));
+
+        let mut state = AppState::new_with_config(
+            std::path::PathBuf::from("."),
+            None,
+            crate::config::AppConfig::load_defaults(),
+        );
+        let mut term_guard = None;
+        let expected_disabled = state.i18n.t("toast.external_editor_disabled").to_string();
+
+        let refresh = super::handle_external_editor_effects_with(
+            &[Effect::OpenExternalEditorMessage],
+            &mut state,
+            &mut term_guard,
+            true,
+            || (":".to_string(), vec![]),
+        );
+        assert!(!refresh);
+        assert_eq!(state.status_notice.as_deref(), Some(expected_disabled.as_str()));
+
+        state.status_notice = None;
+        let refresh = super::handle_external_editor_effects_with(
+            &[Effect::OpenExternalEditorFile("README.md".to_string())],
+            &mut state,
+            &mut term_guard,
+            true,
+            || (":".to_string(), vec![]),
+        );
+        assert!(!refresh);
+        assert_eq!(state.status_notice.as_deref(), Some(expected_disabled.as_str()));
+
+        state.status_notice = None;
+        state.stage_workbench.editor.set_text("feat: keep message");
+        let refresh = super::handle_external_editor_effects_with(
+            &[
+                Effect::OpenExternalEditorMessage,
+                Effect::OpenExternalEditorFile("README.md".to_string()),
+            ],
+            &mut state,
+            &mut term_guard,
+            false,
+            || (":".to_string(), vec![]),
+        );
+        assert!(refresh);
+        assert_eq!(state.status_notice, None);
+        assert_eq!(state.stage_workbench.editor.text(), "feat: keep message");
     }
 }

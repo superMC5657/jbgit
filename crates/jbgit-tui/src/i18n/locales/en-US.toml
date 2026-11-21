@@ -837,6 +837,8 @@ op_running = "{label}…"
 op_done = "✔ {label}"
 path_filter_set = "Log filtered by path: {path}"
 compare_local_no_diff = "{path} has no differences from working tree"
+external_editor_disabled = "External editor is disabled in headless/automated mode"
+external_editor_failed = "External editor failed: {error}"
 
 [git_op]
 checkout = "Checkout '{target}'"

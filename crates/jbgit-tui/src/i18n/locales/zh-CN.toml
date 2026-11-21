@@ -837,6 +837,8 @@ op_running = "{label}…"
 op_done = "✔ {label}"
 path_filter_set = "已按路径筛选日志：{path}"
 compare_local_no_diff = "{path} 与本地工作区无差异"
+external_editor_disabled = "当前无头/自动化环境已禁用外部编辑器"
+external_editor_failed = "外部编辑器调用失败：{error}"
 
 [git_op]
 checkout = "检出 '{target}'"

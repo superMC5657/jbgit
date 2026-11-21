@@ -122,6 +122,9 @@ pub fn run_serve(opts: ServeOptions) -> Result<()> {
     let mut cmd = CommandBuilder::new(&bin_path);
     cmd.arg(&repo_path);
     cmd.cwd(&repo_path);
+    if std::env::var_os("JBGIT_NO_EXTERNAL_EDITOR").is_none() {
+        cmd.env("JBGIT_NO_EXTERNAL_EDITOR", "1");
+    }
     if opts.truecolor {
         cmd.env("COLORTERM", "truecolor");
     }
