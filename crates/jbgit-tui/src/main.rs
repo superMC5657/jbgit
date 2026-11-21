@@ -33,7 +33,7 @@ use std::time::Duration;
 
 use anyhow::Result;
 use crossterm::event::{Event, EventStream};
-use futures::{FutureExt, StreamExt};
+use futures::StreamExt;
 use jbgit_engine::{EngineSupervisor, RepoLocation};
 
 use crate::app::{Action, AppState, Effect, SyntaxJobKey, execute_effects};
@@ -98,6 +98,25 @@ pub(crate) fn coalesce_effects(effects: Vec<Effect>) -> Vec<Effect> {
         }
     }
     out
+}
+
+/// Polls `stream` once without suspending on `Poll::Pending`, while forwarding
+/// the current async task's real `Context` waker rather than `noop_waker()`.
+///
+/// `crossterm::event::EventStream` only captures `cx.waker()` when its
+/// `stream_wake_task_executed` flag transitions `false -> true` on `Poll::Pending`.
+/// Polling via `FutureExt::now_or_never()` after consuming an event registers a
+/// `noop_waker` with the background reader thread, permanently preventing
+/// subsequent terminal input from waking `tokio::select!`.
+async fn poll_stream_ready<S>(stream: &mut S) -> Option<Option<S::Item>>
+where
+    S: futures::Stream + Unpin,
+{
+    std::future::poll_fn(|cx| match std::pin::Pin::new(&mut *stream).poll_next(cx) {
+        std::task::Poll::Ready(item) => std::task::Poll::Ready(Some(item)),
+        std::task::Poll::Pending => std::task::Poll::Ready(None),
+    })
+    .await
 }
 
 fn handle_term_event(
@@ -327,7 +346,7 @@ async fn main() -> Result<()> {
 
         if allow_coalesce {
             for _ in 1..MAX_COALESCE_EVENTS {
-                if let Some(maybe_term) = event_stream.next().now_or_never() {
+                if let Some(maybe_term) = poll_stream_ready(&mut event_stream).await {
                     match maybe_term {
                         Some(Ok(ev)) => {
                             if handle_term_event(
@@ -2662,5 +2681,146 @@ stash_preview_ratio = [1, 1]
             e,
             Effect::RequestStageFileDiff(k) if k.path == "b.rs"
         )));
+    }
+
+    #[tokio::test]
+    async fn coalescing_event_stream_does_not_poison_single_flight_waker() {
+        use std::collections::VecDeque;
+        use std::pin::Pin;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::{Arc, Condvar, Mutex, mpsc};
+        use std::task::{Context, Poll, Waker};
+        use std::time::Duration;
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        use futures::StreamExt;
+        use super::MAX_COALESCE_EVENTS;
+
+        struct SharedQueue {
+            events: Mutex<VecDeque<Event>>,
+            available: Condvar,
+            shutdown: AtomicBool,
+        }
+
+        // Mirrors crossterm::event::EventStream's exact single-flight waker contract:
+        // `poll_next` only forwards `cx.waker()` to its blocking poller thread when
+        // `stream_wake_task_executed` transitions `false -> true`.
+        struct SingleFlightEventStream {
+            queue: Arc<SharedQueue>,
+            stream_wake_task_executed: Arc<AtomicBool>,
+            task_tx: mpsc::SyncSender<Waker>,
+        }
+
+        impl SingleFlightEventStream {
+            fn new() -> (Self, Arc<SharedQueue>) {
+                let queue = Arc::new(SharedQueue {
+                    events: Mutex::new(VecDeque::new()),
+                    available: Condvar::new(),
+                    shutdown: AtomicBool::new(false),
+                });
+                let executed = Arc::new(AtomicBool::new(false));
+                let (task_tx, task_rx) = mpsc::sync_channel::<Waker>(1);
+                let q_bg = Arc::clone(&queue);
+                let exec_bg = Arc::clone(&executed);
+                std::thread::spawn(move || {
+                    while let Ok(waker) = task_rx.recv() {
+                        {
+                            let mut guard = q_bg.events.lock().unwrap();
+                            while guard.is_empty() && !q_bg.shutdown.load(Ordering::SeqCst) {
+                                guard = q_bg.available.wait(guard).unwrap();
+                            }
+                        }
+                        exec_bg.store(false, Ordering::SeqCst);
+                        waker.wake();
+                    }
+                });
+                (
+                    Self {
+                        queue: Arc::clone(&queue),
+                        stream_wake_task_executed: executed,
+                        task_tx,
+                    },
+                    queue,
+                )
+            }
+        }
+
+        impl Drop for SingleFlightEventStream {
+            fn drop(&mut self) {
+                self.queue.shutdown.store(true, Ordering::SeqCst);
+                self.queue.available.notify_all();
+            }
+        }
+
+        impl futures::Stream for SingleFlightEventStream {
+            type Item = std::io::Result<Event>;
+
+            fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+                if let Some(ev) = self.queue.events.lock().unwrap().pop_front() {
+                    return Poll::Ready(Some(Ok(ev)));
+                }
+                if !self
+                    .stream_wake_task_executed
+                    .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+                    .unwrap_or_else(|x| x)
+                {
+                    let _ = self.task_tx.send(cx.waker().clone());
+                }
+                Poll::Pending
+            }
+        }
+
+        let push_key = |q: &Arc<SharedQueue>, ch: char| {
+            q.events
+                .lock()
+                .unwrap()
+                .push_back(Event::Key(KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE)));
+            q.available.notify_all();
+        };
+
+        let (mut stream, queue) = SingleFlightEventStream::new();
+
+        // Burst of 2 non-quit keys ('j', 'k'): first arrives via `select!`, second is
+        // drained via `poll_stream_ready`, third poll hits `Poll::Pending`.
+        push_key(&queue, 'j');
+        push_key(&queue, 'k');
+
+        // Run both event-loop iterations on one task (matching `async fn main()`), while
+        // `timeout` sits on the outer `JoinHandle` so timer expiry never spuriously re-polls
+        // `stream.next()` (matching `main()` once debounce/spinner settle to `pending()`).
+        let q_later = Arc::clone(&queue);
+        let loop_task = tokio::spawn(async move {
+            let mut received = Vec::new();
+            tokio::select! {
+                Some(Ok(Event::Key(k))) = stream.next() => received.push(k.code),
+            }
+            for _ in 1..MAX_COALESCE_EVENTS {
+                match super::poll_stream_ready(&mut stream).await {
+                    Some(Some(Ok(Event::Key(k)))) => received.push(k.code),
+                    Some(_) => break,
+                    None => break,
+                }
+            }
+            assert_eq!(received, vec![KeyCode::Char('j'), KeyCode::Char('k')]);
+
+            std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(15));
+                q_later.events.lock().unwrap().push_back(Event::Key(KeyEvent::new(
+                    KeyCode::Char('q'),
+                    KeyModifiers::NONE,
+                )));
+                q_later.available.notify_all();
+            });
+
+            stream.next().await
+        });
+
+        let next_ev = tokio::time::timeout(Duration::from_millis(300), loop_task)
+            .await
+            .expect("EventStream must not hang after non-blocking coalescing poll")
+            .unwrap();
+        assert!(matches!(
+            next_ev,
+            Some(Ok(Event::Key(k))) if k.code == KeyCode::Char('q')
+        ));
     }
 }

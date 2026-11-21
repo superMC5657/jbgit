@@ -154,11 +154,13 @@ pub fn route_context_menu_key(key: KeyEvent, state: &mut AppState) -> Vec<Action
         }
         KeyCode::Delete => {
             if let Some(idx) = items.iter().position(|i| {
-                i.is_enabled()
+                !i.is_separator()
                     && i.shortcut
                         .as_deref()
                         .is_some_and(|s| s == "Del" || s.split(" / ").any(|p| p == "Del"))
             }) {
+                *selected = idx;
+                state.needs_redraw = true;
                 return activate_top_menu_item(state, idx);
             }
             Vec::new()
@@ -171,6 +173,8 @@ pub fn route_context_menu_key(key: KeyEvent, state: &mut AppState) -> Vec<Action
             if let Some(idx) = items.iter().position(|i| {
                 !i.is_separator() && i.mnemonic.is_some_and(|m| m.to_ascii_lowercase() == target)
             }) {
+                *selected = idx;
+                state.needs_redraw = true;
                 return activate_top_menu_item(state, idx);
             }
             Vec::new()

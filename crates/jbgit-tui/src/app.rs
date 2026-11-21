@@ -362,6 +362,14 @@ impl ContextMenuItem {
     }
 }
 
+pub(crate) fn initial_menu_selection(items: &[ContextMenuItem]) -> usize {
+    items
+        .iter()
+        .position(ContextMenuItem::is_enabled)
+        .or_else(|| items.iter().position(|i| !i.is_separator()))
+        .unwrap_or(0)
+}
+
 /// Where a cascading submenu hangs off its parent menu / popup.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MenuParent {
@@ -1436,7 +1444,7 @@ impl AppState {
                 depth,
             } => {
                 if !items.is_empty() {
-                    let selected = items.iter().position(|i| !i.is_separator()).unwrap_or(0);
+                    let selected = initial_menu_selection(&items);
                     self.menu_hover = None;
                     self.modal_stack.push(ModalLayer::ContextMenu {
                         anchor,

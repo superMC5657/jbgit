@@ -1296,3 +1296,88 @@ file_history_vertical_ratio = [1, 2]
         .rect;
     assert_eq!(reset_v_list.height, v_list.height);
 }
+
+#[test]
+fn directory_context_menu_starts_on_enabled_item_and_disabled_mnemonic_updates_footer() {
+    let dir = tempfile::tempdir().unwrap();
+    let workdir = dir.path().to_path_buf();
+    let c1 = oid_n(1);
+    let c2 = oid_n(2);
+    let mut state = test_state(workdir.clone());
+
+    state.repo_snapshot = Some(make_snapshot(
+        workdir,
+        vec![make_commit(2, vec![c1], "mod"), make_commit(1, vec![], "init")],
+    ));
+    let _ = state.dispatch(Action::SwitchTab(WorkspaceTab::Log));
+
+    let bundle = Arc::new(CommitChangesBundle {
+        key: DetailsKey::single(c2),
+        details: vec![make_details(c2, vec![c1], "mod")],
+        changes: vec![FileChange {
+            kind: FileStatusKind::Modified,
+            path: "src/components/a.rs".into(),
+            old_path: None,
+            is_binary: false,
+            additions: 1,
+            deletions: 0,
+            exists_in_workdir: true,
+            old_oid: None,
+            new_oid: None,
+        }],
+    });
+    let _ = state.apply_engine_event(EngineEvent::CommitDetailsLoaded { bundle, epoch: 1 });
+    let _ = render_to_buffer(&mut state, 140, 40);
+
+    let rows = state.details.change_rows().to_vec();
+    let dir_idx = rows
+        .iter()
+        .position(|r| matches!(r.kind, ChangeRowKind::Dir { .. }))
+        .expect("directory row");
+
+    let _ = state.dispatch(Action::FocusPane(PaneId::LogChangesTree));
+    let _ = state.dispatch(Action::ChangesSelectRow(dir_idx));
+    let acts = route_key(key(KeyCode::Char('.')), &mut state);
+    let _ = dispatch_all(&mut state, acts);
+
+    let (items, selected) = match state.modal_stack.last() {
+        Some(ModalLayer::ContextMenu {
+            items, selected, ..
+        }) => (items.clone(), *selected),
+        other => panic!("expected directory ContextMenu, got {other:?}"),
+    };
+    assert!(
+        items[selected].is_enabled(),
+        "initial menu selection on directory row must skip disabled items, got {:?}",
+        items[selected].label
+    );
+    assert_eq!(items[selected].label, "Show History for Selected Directory");
+
+    let buf = render_to_buffer(&mut state, 140, 40);
+    let footer = (0..buf.area.width)
+        .map(|x| buf[(x, 39)].symbol())
+        .collect::<String>();
+    assert!(
+        !footer.contains("Toggle Diff Preview"),
+        "footer must not show disabled Toggle Diff Preview on open: {footer}"
+    );
+
+    // Pressing disabled mnemonic 'p' ("Copy Patch of File") moves selection to it so footer shows its own reason.
+    let acts = route_key(key(KeyCode::Char('p')), &mut state);
+    let _ = dispatch_all(&mut state, acts);
+    let (items, selected) = match state.modal_stack.last() {
+        Some(ModalLayer::ContextMenu {
+            items, selected, ..
+        }) => (items.clone(), *selected),
+        other => panic!("expected ContextMenu still open, got {other:?}"),
+    };
+    assert_eq!(items[selected].label, "Copy Patch of File");
+    let buf = render_to_buffer(&mut state, 140, 40);
+    let footer = (0..buf.area.width)
+        .map(|x| buf[(x, 39)].symbol())
+        .collect::<String>();
+    assert!(
+        footer.contains("Copy Patch of File: Select a file"),
+        "footer must show disabled item's own reason, got: {footer}"
+    );
+}

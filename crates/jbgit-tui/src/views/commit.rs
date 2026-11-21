@@ -688,16 +688,32 @@ fn render_commit_message_editor(
         sw.editor.scroll_row.min(wrapped.len().saturating_sub(h))
     };
 
-    for (vis_y, row_idx) in (scroll..wrapped.len()).take(h).enumerate() {
+    for vis_y in 0..h {
+        let row_idx = scroll + vis_y;
         let line_rect = Rect::new(text_area.x, text_area.y + vis_y as u16, text_area.width, 1);
-        let wl = &wrapped[row_idx];
+        let lead = if focused {
+            Span::styled("▏", Style::default().fg(ctx.theme.border_focused))
+        } else {
+            Span::raw(" ")
+        };
+
+        let Some(wl) = wrapped.get(row_idx) else {
+            if focused {
+                frame.render_widget(
+                    Paragraph::new(Line::from(lead)).style(Style::default().bg(bg)),
+                    line_rect,
+                );
+            }
+            continue;
+        };
+
         let text_fg = if wl.logical_line == 0 {
             ctx.theme.fg_bright
         } else {
             ctx.theme.fg_primary
         };
 
-        let mut spans = vec![Span::raw(" ")];
+        let mut spans = vec![lead];
         if focused && row_idx == cur_row {
             let (before, after_char, rest) = split_at_visual_col(&wl.text, cur_col);
             spans.push(Span::styled(before, Style::default().fg(text_fg)));

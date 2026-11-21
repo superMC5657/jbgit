@@ -2230,3 +2230,58 @@ prepend_keymap = [
         "clicking Cancel on CriticalDialog should close it"
     );
 }
+
+#[test]
+fn commit_editor_focus_bar_and_changes_tree_enter_diff_hint() {
+    let mut state = state_with(snapshot());
+    state.config.keymap =
+        crate::config::KeymapConfig::for_preset(crate::config::KeymapPreset::Default);
+    state.dispatch(Action::SwitchTab(WorkspaceTab::Commit));
+    state.stage_status = Some(Arc::new(jbgit_core::StageStatusSnapshot {
+        unstaged: vec![jbgit_core::StageEntry {
+            path: "src/lib.rs".into(),
+            old_path: None,
+            kind: jbgit_core::FileStatusKind::Modified,
+        }],
+        ..Default::default()
+    }));
+    state
+        .stage_workbench
+        .sync_rows(state.stage_status.as_ref());
+
+    // 1. On a container row (Unstaged group), footer does not show `Enter  Diff`.
+    state.dispatch(Action::FocusPane(PaneId::CommitChangesTree));
+    state.dispatch(Action::SelectCommitStageRow(0));
+    let term = render(&mut state, 140, 40);
+    let group_footer = row_text(term.backend().buffer(), 39);
+    assert!(
+        !group_footer.contains("Enter  Diff"),
+        "group row must not advertise Enter Diff: {group_footer}"
+    );
+
+    // 2. On a file row with diff panel open, footer advertises `Enter  Diff`.
+    let file_idx = state
+        .stage_workbench
+        .rows
+        .iter()
+        .position(|r| !r.is_container())
+        .expect("file row");
+    state.dispatch(Action::SelectCommitStageRow(file_idx));
+    let term = render(&mut state, 140, 40);
+    let file_footer = row_text(term.backend().buffer(), 39);
+    assert!(
+        file_footer.contains("Enter  Diff"),
+        "file row should advertise Enter Diff: {file_footer}"
+    );
+
+    // 3. CommitMessageEditor displays focused accent bar `▏` only when focused (and not editing author).
+    let ed_rect = region_of(&state, |t| matches!(t, HitTarget::CommitEditorArea));
+    let unfocused_cell = &term.backend().buffer()[(ed_rect.x, ed_rect.y + 1)];
+    assert_ne!(unfocused_cell.symbol(), "▏");
+
+    state.dispatch(Action::FocusPane(PaneId::CommitMessageEditor));
+    let term = render(&mut state, 140, 40);
+    let focused_cell = &term.backend().buffer()[(ed_rect.x, ed_rect.y + 1)];
+    assert_eq!(focused_cell.symbol(), "▏");
+    assert_eq!(focused_cell.fg, state.theme.border_focused);
+}

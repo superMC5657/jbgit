@@ -575,15 +575,27 @@ fn collect_footer_hints(state: &AppState) -> FooterHints {
         None
     };
 
-    let mut after_primary_lit = matches!(
+    let mut after_primary_lit = if matches!(
         state.focused_pane,
         PaneId::LogChangesTree
             | PaneId::LogDetailsDiff
             | PaneId::CommitDiffPreview
             | PaneId::StashDiffPreview
             | PaneId::ConsoleOutputDetail
-    )
-    .then(|| ("Esc".to_string(), t("view.footer.pill.back")));
+    ) {
+        Some(("Esc".to_string(), t("view.footer.pill.back")))
+    } else if state.focused_pane == PaneId::CommitChangesTree
+        && !state.stage_workbench.diff_collapsed
+        && state
+            .stage_workbench
+            .rows
+            .get(state.commit_stage_selected_idx)
+            .is_some_and(|r| !r.is_container())
+    {
+        Some(("Enter".to_string(), t("view.footer.pill.diff")))
+    } else {
+        None
+    };
 
     let mut claimed_keys: Vec<KeySequence> = Vec::new();
     let mut non_global_claimed_keys: Vec<KeySequence> = Vec::new();

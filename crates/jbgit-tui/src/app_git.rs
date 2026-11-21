@@ -125,7 +125,7 @@ impl AppState {
                     self.modal_stack.pop();
                 }
                 if !items.is_empty() {
-                    let selected = items.iter().position(|i| !i.is_separator()).unwrap_or(0);
+                    let selected = crate::app::initial_menu_selection(items);
                     self.modal_stack.push(ModalLayer::ContextMenu {
                         anchor: (parent.rect.right(), parent.row_y),
                         items: items.clone(),
