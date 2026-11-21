@@ -12,6 +12,7 @@ use ratatui::widgets::{Block, Clear, Widget};
 use rustc_hash::FxHashMap;
 
 use super::*;
+use crate::graph::probe::WindowSizePx;
 use crate::graph::renderer::{
     GraphRenderer, GraphRendererMode, GraphicsCapabilities, ResolvedGraphBackend,
 };
@@ -526,6 +527,47 @@ fn normal_and_head_nodes_are_symmetrically_centered_on_track_axis() {
 }
 
 #[test]
+fn fallback_cell_size_centers_track_axis_and_row_center_at_exact_half() {
+    let g = PaintGeometry::new(CellPixelSize::FALLBACK.width, CellPixelSize::FALLBACK.height);
+    assert_eq!(
+        g.track_x(0) + 0.5,
+        f32::from(CellPixelSize::FALLBACK.width) / 2.0
+    );
+    assert_eq!(
+        g.row_center + 0.5,
+        f32::from(CellPixelSize::FALLBACK.height) / 2.0
+    );
+}
+
+#[test]
+fn vertical_edges_cross_row_boundaries_without_top_notch() {
+    let fx = Fixture::manual(vec![
+        vec![edge(0, 0, 0, EdgeDirection::Down, 1)],
+        vec![
+            edge(1, 0, 0, EdgeDirection::Up, 1),
+            edge(1, 0, 0, EdgeDirection::Down, 1),
+        ],
+        vec![edge(2, 0, 0, EdgeDirection::Up, 1)],
+    ]);
+    for cell in [CELL, CellPixelSize::FALLBACK] {
+        let (backend, _, _) = rasterize(&fx, GraphicsProtocol::Sixel, cell, 4);
+        let g = *backend.geometry();
+        let x = g.track_x(0) as u32;
+        let half = (g.line_thickness as u32) / 2;
+        let h = u32::from(cell.height);
+        let want = Rgb::from_color(fx.color_map[&BranchColorId(1)], Rgb(0, 0, 0));
+        // Across the entire stroke width, Row 1 top (`y = h`) and bottom (`y = 2*h - 1`)
+        // and Row 2 top (`y = 2*h`) must match cleanly with no top-boundary notch.
+        for px_x in x - half..=x + half {
+            assert_eq!(pixel(&backend, px_x, h - 1), want, "cell {cell:?} x={px_x} row 0 bottom");
+            assert_eq!(pixel(&backend, px_x, h), want, "cell {cell:?} x={px_x} row 1 top");
+            assert_eq!(pixel(&backend, px_x, 2 * h - 1), want, "cell {cell:?} x={px_x} row 1 bottom");
+            assert_eq!(pixel(&backend, px_x, 2 * h), want, "cell {cell:?} x={px_x} row 2 top");
+        }
+    }
+}
+
+#[test]
 fn golden_pngs_match_tiny_skia_output_pixel_for_pixel() {
     let cases: [(&str, Fixture, CellPixelSize, u16); 4] = [
         ("fork_and_merge", Fixture::fork_and_merge(), CELL, 12),
@@ -815,7 +857,12 @@ fn zero_pixel_window_size_degrades_to_identical_character_grid() {
     // window_size() reporting 0×0 pixels → no cell size → Auto picks the grid.
     let probed = GraphicsCapabilities::from_probe(
         |k| (k == "TERM").then(|| "xterm-kitty".to_string()),
-        Some((120, 40, 0, 0)),
+        Some(WindowSizePx {
+            columns: 120,
+            rows: 40,
+            width_px: 0,
+            height_px: 0,
+        }),
     );
     assert_eq!(probed.cell_px, None);
     for caps in [probed, caps(None, Some(CELL))] {

@@ -120,9 +120,16 @@ async fn main() -> Result<()> {
 
     let mut term_guard = Some(TerminalGuard::enter()?);
     let mut event_stream = EventStream::new();
-    state
-        .graph_renderer
-        .set_capabilities(GraphicsCapabilities::detect());
+    let initial_caps = GraphicsCapabilities::detect();
+    state.graph_renderer.set_capabilities(initial_caps);
+    let (cell_px_tx, mut cell_px_rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut cell_px_probe_deadline: Option<tokio::time::Instant> = None;
+    let mut cell_px_probe_in_flight = false;
+    let mut cell_px_probe_pending = false;
+    if initial_caps.needs_async_wezterm_probe() {
+        cell_px_probe_in_flight = true;
+        spawn_wezterm_cell_probe(cell_px_tx.clone());
+    }
 
     while !state.should_quit {
         if state.needs_redraw {
@@ -154,15 +161,27 @@ async fn main() -> Result<()> {
             }
         };
 
+        let cell_px_debounce_sleep = async {
+            match cell_px_probe_deadline {
+                Some(at) => tokio::time::sleep_until(at).await,
+                None => std::future::pending::<()>().await,
+            }
+        };
+
         tokio::select! {
             maybe_term = event_stream.next() => {
                 match maybe_term {
                     Some(Ok(ev)) => {
                         if matches!(ev, Event::Resize(..)) {
                             // Font zoom (Ctrl +/-) arrives as a resize: re-calibrate cell pixels.
-                            state
-                                .graph_renderer
-                                .set_capabilities(GraphicsCapabilities::detect());
+                            let prev_cell_px = state.graph_renderer.capabilities().cell_px;
+                            let mut caps = GraphicsCapabilities::detect();
+                            if caps.needs_async_wezterm_probe() {
+                                caps.cell_px = prev_cell_px;
+                                cell_px_probe_deadline =
+                                    Some(tokio::time::Instant::now() + Duration::from_millis(100));
+                            }
+                            state.graph_renderer.set_capabilities(caps);
                         }
                         let actions = route_terminal_event(ev, &mut state);
                         for action in actions {
@@ -207,6 +226,32 @@ async fn main() -> Result<()> {
                 let effects = state.dispatch(Action::TickSpinner);
                 execute_effects(effects, &mut state, engine_handle.as_ref());
             }
+            _ = cell_px_debounce_sleep => {
+                cell_px_probe_deadline = None;
+                if cell_px_probe_in_flight {
+                    cell_px_probe_pending = true;
+                } else {
+                    cell_px_probe_in_flight = true;
+                    spawn_wezterm_cell_probe(cell_px_tx.clone());
+                }
+            }
+            Some(maybe_cell_px) = cell_px_rx.recv() => {
+                cell_px_probe_in_flight = false;
+                if let Some(cell_px) = maybe_cell_px {
+                    let mut caps = state.graph_renderer.capabilities();
+                    if caps.protocol == Some(crate::graph::renderer::GraphicsProtocol::Iterm2)
+                        && caps.cell_px != Some(cell_px)
+                    {
+                        caps.cell_px = Some(cell_px);
+                        state.graph_renderer.set_capabilities(caps);
+                        state.needs_redraw = true;
+                    }
+                }
+                if std::mem::take(&mut cell_px_probe_pending) && cell_px_probe_deadline.is_none() {
+                    cell_px_probe_in_flight = true;
+                    spawn_wezterm_cell_probe(cell_px_tx.clone());
+                }
+            }
         }
     }
 
@@ -216,6 +261,17 @@ async fn main() -> Result<()> {
     }
     drop(term_guard);
     Ok(())
+}
+
+fn spawn_wezterm_cell_probe(
+    tx: tokio::sync::mpsc::UnboundedSender<Option<crate::graph::renderer::CellPixelSize>>,
+) {
+    tokio::task::spawn_blocking(move || {
+        let cell_px = crate::graph::probe::query_wezterm_cell_size(
+            crate::graph::probe::WEZTERM_PROBE_TIMEOUT,
+        );
+        let _ = tx.send(cell_px);
+    });
 }
 
 fn resume_terminal_after_external_cmd(

@@ -1,4 +1,5 @@
 pub mod cell_grid;
+pub mod probe;
 pub mod renderer;
 pub mod state;
 #[cfg(feature = "graphics-protocol")]

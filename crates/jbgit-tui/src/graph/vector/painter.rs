@@ -10,7 +10,9 @@
 
 use crate::graph::RenderGraphElement;
 use jbgit_core::graph::{EdgeDirection, GraphPrintElement, LineStyle, NodeKind};
-use tiny_skia::{FillRule, LineCap, LineJoin, Paint, PathBuilder, PixmapMut, Stroke, Transform};
+use tiny_skia::{
+    FillRule, LineCap, LineJoin, Paint, PathBuilder, PathStroker, PixmapMut, Stroke, Transform,
+};
 
 /// `PaintParameters.ROW_HEIGHT`: the reference row height all sizes scale from.
 pub const REFERENCE_ROW_HEIGHT: f32 = 22.0;
@@ -45,6 +47,7 @@ struct Pt(f32, f32);
 struct LinePaint {
     is_solid: bool,
     selected: bool,
+    clip_past_top: bool,
     color: Rgb,
 }
 
@@ -87,7 +90,7 @@ impl PaintGeometry {
         let cw = f32::from(cell_width.max(1));
         let element_width = 2.0 * cw;
         let element_center = (cw / 2.0).floor();
-        let row_center = align_floor_odd(h / 2.0);
+        let row_center = (h / 2.0).floor();
 
         let line_thickness = align_floor_odd(scale_with_row_height(THICK_LINE, h)).max(1.0);
         let selected_line_thickness =
@@ -267,9 +270,10 @@ impl Rgb {
     }
 }
 
-/// Re-usable `tiny-skia` painter (keeps the path builder allocation alive).
+/// Re-usable `tiny-skia` painter (keeps the path builder and stroker alive).
 pub struct RowPainter {
     builder: Option<PathBuilder>,
+    stroker: PathStroker,
 }
 
 impl Default for RowPainter {
@@ -282,6 +286,7 @@ impl RowPainter {
     pub fn new() -> Self {
         Self {
             builder: Some(PathBuilder::with_capacity(8, 8)),
+            stroker: PathStroker::new(),
         }
     }
 
@@ -337,6 +342,7 @@ impl RowPainter {
                     LinePaint {
                         is_solid: style == LineStyle::Solid,
                         selected,
+                        clip_past_top: from_pos == to_pos && !down,
                         color,
                     },
                 );
@@ -353,6 +359,7 @@ impl RowPainter {
                     LinePaint {
                         is_solid: true,
                         selected,
+                        clip_past_top: false,
                         color,
                     },
                 );
@@ -368,6 +375,7 @@ impl RowPainter {
                     LinePaint {
                         is_solid: false,
                         selected,
+                        clip_past_top: false,
                         color,
                     },
                 );
@@ -478,8 +486,15 @@ impl RowPainter {
 
         let mut pb = self.builder.take().unwrap_or_default();
         if style.is_solid || arrow_tip.is_some() {
+            // Extend vertical `Up` edges 0.5px past `y = 0` so pixel `y = 0` is
+            // fully covered just like pixel `y = row_height - 1` on `Down` edges.
+            let end_y = if style.clip_past_top {
+                -0.5
+            } else {
+                end.1 + 0.5
+            };
             pb.move_to(start.0 + 0.5, start.1 + 0.5);
-            pb.line_to(end.0 + 0.5, end.1 + 0.5);
+            pb.line_to(end.0 + 0.5, end_y);
         } else {
             let geom_len = (start.0 - end.0).hypot(start.1 - end.1);
             let edge_len = if start.0 == end.0 {
@@ -506,9 +521,17 @@ impl RowPainter {
             return;
         };
         let paint = solid_paint(style.color);
-        canvas
-            .pixmap
-            .stroke_path(&path, &paint, &stroke, Transform::identity(), None);
+        // Expand strokes into filled paths rather than calling `stroke_path`
+        // directly so 1px strokes avoid `tiny-skia`'s hairline_aa `y = 0` clamp bug.
+        if let Some(stroked) = self.stroker.stroke(&path, &stroke, 1.0) {
+            canvas.pixmap.fill_path(
+                &stroked,
+                &paint,
+                FillRule::Winding,
+                Transform::identity(),
+                None,
+            );
+        }
         self.builder = Some(path.clear());
     }
 }

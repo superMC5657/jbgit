@@ -12,13 +12,13 @@
 //!    writing any pending image escape sequences to the terminal.
 
 use std::io::{self, Write};
-use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 
 use crate::app::RenderContext;
+use crate::graph::probe::{WindowSizePx, can_probe_wezterm_env, query_tmux_passthrough};
 use crate::graph::{CellGridGraphBackend, GraphRenderBackend, GraphViewportSlice};
 
 #[cfg(feature = "graphics-protocol")]
@@ -93,9 +93,11 @@ pub struct CellPixelSize {
 impl CellPixelSize {
     /// Cell size assumed for Kitty / iTerm2 when the terminal does not report
     /// one: both protocols stretch the image over its `cols x rows` cells.
+    /// Odd dimensions place track axes and row centers on exact half-texel
+    /// midpoints (`10.5 / 21 = 0.5`, `22.5 / 45 = 0.5`) at HiDPI density.
     pub const FALLBACK: Self = Self {
-        width: 10,
-        height: 20,
+        width: 21,
+        height: 45,
     };
 
     pub fn is_usable(self) -> bool {
@@ -128,9 +130,12 @@ impl GraphicsCapabilities {
     /// and `crossterm::terminal::window_size()`.
     pub fn detect() -> Self {
         let start = Instant::now();
-        let window = crossterm::terminal::window_size()
-            .ok()
-            .map(|w| (w.columns, w.rows, w.width, w.height));
+        let window = crossterm::terminal::window_size().ok().map(|w| WindowSizePx {
+            columns: w.columns,
+            rows: w.rows,
+            width_px: w.width,
+            height_px: w.height,
+        });
         let tmux_passthrough = if std::env::var_os("TMUX").is_some() {
             Some(query_tmux_passthrough(HANDSHAKE_TIMEOUT))
         } else {
@@ -148,11 +153,11 @@ impl GraphicsCapabilities {
     }
 
     /// Pure capability probe over an environment lookup and an optional
-    /// `(columns, rows, width_px, height_px)` window size.
+    /// [`WindowSizePx`].
     #[cfg_attr(not(test), allow(dead_code))]
     pub fn from_probe(
         env: impl Fn(&str) -> Option<String>,
-        window: Option<(u16, u16, u16, u16)>,
+        window: Option<WindowSizePx>,
     ) -> Self {
         Self::from_probe_with(env, window, None, |_, _| Some(Duration::ZERO))
     }
@@ -162,11 +167,11 @@ impl GraphicsCapabilities {
     /// `None` degrades `protocol` to `None`).
     pub fn from_probe_with(
         env: impl Fn(&str) -> Option<String>,
-        window: Option<(u16, u16, u16, u16)>,
+        window: Option<WindowSizePx>,
         tmux_passthrough: Option<bool>,
         handshake: impl FnOnce(GraphicsProtocol, Duration) -> Option<Duration>,
     ) -> Self {
-        let cell_px = window.and_then(|(c, r, w, h)| CellPixelSize::from_window(c, r, w, h));
+        let cell_px = window.and_then(WindowSizePx::cell_pixel_size);
         let mut protocol = detect_protocol_with(&env, tmux_passthrough);
         if let Some(p) = protocol {
             match handshake(p, HANDSHAKE_TIMEOUT) {
@@ -176,43 +181,13 @@ impl GraphicsCapabilities {
         }
         Self { protocol, cell_px }
     }
-}
 
-/// Queries `tmux` for `allow-passthrough` (`on` or `all`) within `timeout`.
-fn query_tmux_passthrough(timeout: Duration) -> bool {
-    let Ok(mut child) = Command::new("tmux")
-        .args(["display-message", "-p", "#{allow-passthrough}"])
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-    else {
-        return false;
-    };
-    let deadline = Instant::now() + timeout;
-    loop {
-        match child.try_wait() {
-            Ok(Some(status)) => {
-                if !status.success() {
-                    return false;
-                }
-                let Ok(out) = child.wait_with_output() else {
-                    return false;
-                };
-                let val = String::from_utf8_lossy(&out.stdout);
-                let trimmed = val.trim();
-                return trimmed == "on" || trimmed == "all";
-            }
-            Ok(None) => {
-                if Instant::now() >= deadline {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    return false;
-                }
-                std::thread::sleep(Duration::from_millis(2));
-            }
-            Err(_) => return false,
-        }
+    /// Returns `true` when WezTerm is active without OS-reported pixel sizes,
+    /// so pixel calibration should run asynchronously via `wezterm cli`.
+    pub fn needs_async_wezterm_probe(&self) -> bool {
+        self.protocol == Some(GraphicsProtocol::Iterm2)
+            && self.cell_px.is_none()
+            && can_probe_wezterm_env()
     }
 }
 
@@ -346,6 +321,10 @@ impl GraphRenderer {
 
     pub fn mode(&self) -> GraphRendererMode {
         self.mode
+    }
+
+    pub fn capabilities(&self) -> GraphicsCapabilities {
+        self.caps
     }
 
     pub fn set_mode(&mut self, mode: GraphRendererMode) {
@@ -538,9 +517,15 @@ mod tests {
 
     #[test]
     fn handshake_timeout_over_50ms_degrades_to_none() {
+        let win = Some(WindowSizePx {
+            columns: 100,
+            rows: 40,
+            width_px: 900,
+            height_px: 720,
+        });
         let timed_out = GraphicsCapabilities::from_probe_with(
             env_of(&[("TERM", "xterm-kitty")]),
-            Some((100, 40, 900, 720)),
+            win,
             None,
             |_, timeout| Some(timeout + Duration::from_millis(1)),
         );
@@ -552,7 +537,7 @@ mod tests {
 
         let fast = GraphicsCapabilities::from_probe_with(
             env_of(&[("TERM", "xterm-kitty")]),
-            Some((100, 40, 900, 720)),
+            win,
             None,
             |_, _| Some(Duration::from_millis(10)),
         );
@@ -561,7 +546,15 @@ mod tests {
 
     #[test]
     fn cell_pixel_size_from_window() {
-        let caps = GraphicsCapabilities::from_probe(env_of(&[]), Some((100, 40, 900, 720)));
+        let caps = GraphicsCapabilities::from_probe(
+            env_of(&[]),
+            Some(WindowSizePx {
+                columns: 100,
+                rows: 40,
+                width_px: 900,
+                height_px: 720,
+            }),
+        );
         assert_eq!(
             caps.cell_px,
             Some(CellPixelSize {
@@ -570,7 +563,15 @@ mod tests {
             })
         );
         // window_size() reporting 0 pixels → unknown.
-        let caps = GraphicsCapabilities::from_probe(env_of(&[]), Some((100, 40, 0, 0)));
+        let caps = GraphicsCapabilities::from_probe(
+            env_of(&[]),
+            Some(WindowSizePx {
+                columns: 100,
+                rows: 40,
+                width_px: 0,
+                height_px: 0,
+            }),
+        );
         assert_eq!(caps.cell_px, None);
         assert_eq!(CellPixelSize::from_window(100, 40, 100, 100), None);
     }
