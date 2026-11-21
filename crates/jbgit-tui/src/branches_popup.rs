@@ -1,4 +1,4 @@
-//! `GitBranchesPopup` (Spec 05 §1): global branch speed-search popup with
+//! `GitBranchesPopup`: global branch speed-search popup with
 //! `nucleo` fuzzy filtering + match highlighting, reflog `Recent` section,
 //! local / remote grouping, ★ favorites, `↑↓` sync counters, ongoing
 //! operation actions and cascading per-branch action submenus.

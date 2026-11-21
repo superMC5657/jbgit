@@ -1,4 +1,4 @@
-//! Executes high-level [`GitOp`]s (Spec 05) as sequences of `git` CLI steps,
+//! Executes high-level [`GitOp`]s as sequences of `git` CLI steps,
 //! streaming every step to the Console tab, with:
 //!
 //! * **Smart Operation Saver** (`GitPreservingProcess`): `stash push -u` →

@@ -1,6 +1,7 @@
 use std::collections::HashSet;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::atomic::AtomicU64;
+use std::sync::{Arc, Mutex};
 
 use jbgit_core::{
     AmendCommitPreview, CommitChangesBundle, ConflictDocument, ConsoleStream, DetailsKey,
@@ -285,12 +286,22 @@ where
     });
 }
 
+struct SupervisorContext {
+    location: RepoLocation,
+    scan_config: StatusScanConfig,
+    epochs: EpochTracker,
+    pool: Arc<Git2WorkerPool>,
+    cli: Option<Arc<GitCliExecutor>>,
+    mutation_guard: Arc<MutationGuard>,
+    event_tx: UnboundedSender<EngineEvent>,
+    op_ids: Arc<AtomicU64>,
+    sig_cache: Arc<Mutex<LruCache<Oid, SignatureStatus>>>,
+}
+
 pub struct EngineSupervisor;
 
 impl EngineSupervisor {
     /// Spawns the engine supervisor, worker pool, CLI executor, and FS watcher.
-    /// Returns an `EngineHandle` for sending tasks and an `UnboundedReceiver<EngineEvent>`
-    /// for consuming reactive snapshots and console events.
     pub fn start(
         location: RepoLocation,
         enable_watcher: bool,
@@ -334,574 +345,22 @@ impl EngineSupervisor {
             None
         };
 
-        let sup_location = location.clone();
-        let sup_epochs = epochs.clone();
-        let sup_cli = cli.map(Arc::new);
-        let op_ids = Arc::new(std::sync::atomic::AtomicU64::new(1));
-        let sig_cache = Arc::new(std::sync::Mutex::new(LruCache::<Oid, SignatureStatus>::new(256)));
+        let ctx = SupervisorContext {
+            location: location.clone(),
+            scan_config,
+            epochs: epochs.clone(),
+            pool,
+            cli: cli.map(Arc::new),
+            mutation_guard,
+            event_tx,
+            op_ids: Arc::new(AtomicU64::new(1)),
+            sig_cache: Arc::new(Mutex::new(LruCache::new(256))),
+        };
 
         tokio::spawn(async move {
             let _keep_watcher = watcher;
-
             while let Some(req) = task_rx.recv().await {
-                match req {
-                    TaskRequest::LoadRepoSnapshot { epoch } => {
-                        let pool = Arc::clone(&pool);
-                        let loc = sup_location.clone();
-                        let token = EpochToken::new(sup_epochs.repo_snapshot.clone(), epoch);
-                        let tx = event_tx.clone();
-                        tokio::spawn(async move {
-                            match pool
-                                .load_repo_snapshot_with_pending(
-                                    loc.clone(),
-                                    token.clone(),
-                                    DEFAULT_MAX_COMMITS,
-                                    scan_config,
-                                )
-                                .await
-                            {
-                                Ok((snapshot, pending)) => {
-                                    let _ = tx.send(EngineEvent::RepoSnapshotLoaded {
-                                        snapshot,
-                                        epoch,
-                                    });
-                                    if !pending.is_empty() && !token.is_stale() {
-                                        match pool
-                                            .compute_ahead_behind_batch(loc, pending, token)
-                                            .await
-                                        {
-                                            Ok(updates) if !updates.is_empty() => {
-                                                let _ = tx.send(
-                                                    EngineEvent::RefAheadBehindBackfilled {
-                                                        epoch,
-                                                        updates,
-                                                    },
-                                                );
-                                            }
-                                            Ok(_) | Err(EngineError::Cancelled) => {}
-                                            Err(e) => {
-                                                tracing::debug!(
-                                                    "ahead_behind backfill skipped: {e}"
-                                                );
-                                            }
-                                        }
-                                    }
-                                }
-                                Err(EngineError::Cancelled) => {}
-                                Err(e) => {
-                                    let _ = tx.send(EngineEvent::Error(e.to_string()));
-                                }
-                            }
-                        });
-                    }
-                    TaskRequest::LoadCommitDetails { key, epoch } => {
-                        let pool = Arc::clone(&pool);
-                        let loc = sup_location.clone();
-                        let token = EpochToken::new(sup_epochs.commit_details.clone(), epoch);
-                        let tx = event_tx.clone();
-                        let sig_cache = Arc::clone(&sig_cache);
-                        let sig_epoch = sup_epochs.commit_signature.clone();
-                        tokio::spawn(async move {
-                            match pool.load_commit_details(loc.clone(), key, token).await {
-                                Ok(mut bundle) => {
-                                    let mut unverified_oids = Vec::new();
-                                    {
-                                        let mut cache = sig_cache
-                                            .lock()
-                                            .unwrap_or_else(|e| e.into_inner());
-                                        let b_mut = Arc::make_mut(&mut bundle);
-                                        for d in &mut b_mut.details {
-                                            if d.signature == SignatureStatus::SignedUnverified {
-                                                if let Some(&cached) = cache.get(&d.oid) {
-                                                    d.signature = cached;
-                                                } else {
-                                                    unverified_oids.push(d.oid);
-                                                }
-                                            }
-                                        }
-                                    }
-                                    let _ = tx.send(EngineEvent::CommitDetailsLoaded {
-                                        bundle,
-                                        epoch,
-                                    });
-                                    if !unverified_oids.is_empty() {
-                                        let sig_token = sig_epoch.issue();
-                                        let git_dir = loc.git_dir;
-                                        tokio::task::spawn_blocking(move || {
-                                            for oid in unverified_oids {
-                                                if sig_token.is_stale() {
-                                                    break;
-                                                }
-                                                let status = crate::details::verify_commit_signature_sync(&git_dir, oid);
-                                                {
-                                                    let mut cache = sig_cache
-                                                        .lock()
-                                                        .unwrap_or_else(|e| e.into_inner());
-                                                    cache.insert(oid, status);
-                                                }
-                                                let _ = tx.send(EngineEvent::CommitSignatureVerified {
-                                                    oid,
-                                                    status,
-                                                });
-                                            }
-                                        });
-                                    }
-                                }
-                                Err(EngineError::Cancelled) => {}
-                                Err(e) => {
-                                    let _ = tx.send(EngineEvent::Error(e.to_string()));
-                                }
-                            }
-                        });
-                    }
-                    TaskRequest::LoadFileDiff {
-                        key,
-                        known_oids,
-                        epoch,
-                    } => {
-                        let pool = Arc::clone(&pool);
-                        let loc = sup_location.clone();
-                        let token = EpochToken::new(sup_epochs.file_diff.clone(), epoch);
-                        spawn_epoch_task(
-                            &event_tx,
-                            async move { pool.load_file_diff(loc, key, known_oids, token).await },
-                            move |diff| EngineEvent::FileDiffLoaded { diff, epoch },
-                        );
-                    }
-                    TaskRequest::LoadFileHistory { key, epoch } => {
-                        let pool = Arc::clone(&pool);
-                        let loc = sup_location.clone();
-                        let token = EpochToken::new(sup_epochs.file_history.clone(), epoch);
-                        spawn_epoch_task(
-                            &event_tx,
-                            async move { pool.load_file_history(loc, key, token).await },
-                            move |bundle| EngineEvent::FileHistoryLoaded { bundle, epoch },
-                        );
-                    }
-                    TaskRequest::LoadPathMatches {
-                        paths,
-                        snapshot,
-                        epoch,
-                    } => {
-                        let pool = Arc::clone(&pool);
-                        let loc = sup_location.clone();
-                        let token = EpochToken::new(sup_epochs.path_filter.clone(), epoch);
-                        let reported = paths.clone();
-                        spawn_epoch_task(
-                            &event_tx,
-                            async move { pool.load_path_matches(loc, paths, snapshot, token).await },
-                            move |matches| EngineEvent::PathMatchesLoaded {
-                                paths: reported,
-                                matches,
-                                epoch,
-                            },
-                        );
-                    }
-                    TaskRequest::LoadStageStatus {
-                        include_ignored,
-                        epoch,
-                    } => {
-                        let pool = Arc::clone(&pool);
-                        let loc = sup_location.clone();
-                        let token = EpochToken::new(sup_epochs.stage_status.clone(), epoch);
-                        spawn_epoch_task(
-                            &event_tx,
-                            async move {
-                                pool.load_stage_status_with_config(
-                                    loc,
-                                    include_ignored,
-                                    scan_config,
-                                    token,
-                                )
-                                .await
-                            },
-                            move |status| EngineEvent::StageStatusLoaded { status, epoch },
-                        );
-                    }
-                    TaskRequest::LoadStageFileDiff { key, epoch } => {
-                        let pool = Arc::clone(&pool);
-                        let loc = sup_location.clone();
-                        let token = EpochToken::new(sup_epochs.stage_diff.clone(), epoch);
-                        spawn_epoch_task(
-                            &event_tx,
-                            async move { pool.load_stage_file_diff(loc, key, token).await },
-                            move |diff| EngineEvent::StageFileDiffLoaded { diff, epoch },
-                        );
-                    }
-                    TaskRequest::LoadAmendPreview => {
-                        let pool = Arc::clone(&pool);
-                        let loc = sup_location.clone();
-                        spawn_epoch_task(
-                            &event_tx,
-                            async move { pool.load_amend_preview(loc).await },
-                            move |preview| EngineEvent::AmendPreviewLoaded { preview },
-                        );
-                    }
-                    TaskRequest::ProbeCommitPrecheck => {
-                        let pool = Arc::clone(&pool);
-                        let loc = sup_location.clone();
-                        let tx = event_tx.clone();
-                        tokio::spawn(async move {
-                            let info = pool.probe_commit_precheck(loc, TaskPriority::Background).await;
-                            let _ = tx.send(EngineEvent::CommitPrecheckLoaded { info });
-                        });
-                    }
-                    TaskRequest::ApplyStageBuffer {
-                        path,
-                        new_staged_bytes,
-                        file_mode,
-                        remove_from_index,
-                    } => {
-                        spawn_guarded_mutation(
-                            &pool,
-                            &sup_location,
-                            &event_tx,
-                            &mutation_guard,
-                            RefreshScope::StageStatus,
-                            move |pool, loc| async move {
-                                pool.apply_stage_buffer(
-                                    loc,
-                                    path,
-                                    new_staged_bytes,
-                                    file_mode,
-                                    remove_from_index,
-                                )
-                                .await
-                            },
-                        );
-                    }
-                    TaskRequest::WriteWorktreeBuffer {
-                        path,
-                        new_local_bytes,
-                    } => {
-                        spawn_guarded_mutation(
-                            &pool,
-                            &sup_location,
-                            &event_tx,
-                            &mutation_guard,
-                            RefreshScope::WorktreeStatus,
-                            move |pool, loc| async move {
-                                pool.write_worktree_buffer(loc, path, new_local_bytes).await
-                            },
-                        );
-                    }
-                    TaskRequest::StageTargets { targets } => {
-                        spawn_guarded_mutation(
-                            &pool,
-                            &sup_location,
-                            &event_tx,
-                            &mutation_guard,
-                            RefreshScope::StageStatus,
-                            move |pool, loc| async move { pool.stage_targets(loc, targets).await },
-                        );
-                    }
-                    TaskRequest::StageAllTracked => {
-                        spawn_guarded_mutation(
-                            &pool,
-                            &sup_location,
-                            &event_tx,
-                            &mutation_guard,
-                            RefreshScope::StageStatus,
-                            move |pool, loc| async move { pool.stage_all_tracked(loc).await },
-                        );
-                    }
-                    TaskRequest::UnstageTargets { targets } => {
-                        spawn_guarded_mutation(
-                            &pool,
-                            &sup_location,
-                            &event_tx,
-                            &mutation_guard,
-                            RefreshScope::StageStatus,
-                            move |pool, loc| async move { pool.unstage_targets(loc, targets).await },
-                        );
-                    }
-                    TaskRequest::DiscardTargets { targets } => {
-                        spawn_guarded_mutation(
-                            &pool,
-                            &sup_location,
-                            &event_tx,
-                            &mutation_guard,
-                            RefreshScope::WorktreeStatus,
-                            move |pool, loc| async move { pool.discard_targets(loc, targets).await },
-                        );
-                    }
-                    TaskRequest::ExecuteCommit { id, request } => {
-                        let pool = Arc::clone(&pool);
-                        let cli_exec = sup_cli.as_ref().map(Arc::clone);
-                        let loc = sup_location.clone();
-                        let tx = event_tx.clone();
-                        let guard = Arc::clone(&mutation_guard);
-                        tokio::spawn(async move {
-                            let token = guard.begin();
-                            let precheck = pool
-                                .probe_commit_precheck(loc.clone(), TaskPriority::Interactive)
-                                .await;
-                            let use_cli = ((precheck.has_commit_hooks && request.run_hooks)
-                                || precheck.gpg_sign)
-                                && cli_exec.is_some();
-
-                            let outcome = if use_cli {
-                                if request.stage_all_tracked
-                                    && let Err(e) = pool.stage_all_tracked(loc.clone()).await
-                                {
-                                    drop(token);
-                                    let _ = tx.send(EngineEvent::CommitCompleted(CommitOutcome {
-                                        success: false,
-                                        commit_oid: None,
-                                        short_sha: None,
-                                        summary: "Stage all tracked failed".to_string(),
-                                        error_output: Some(e.to_string()),
-                                        and_push: false,
-                                        preserved_message: Some(request.message),
-                                    }));
-                                    return;
-                                }
-                                let (args, stdin_payload) = build_commit_cli_args(&request);
-                                let cli = cli_exec.expect("checked is_some");
-                                let res = cli
-                                    .execute(
-                                        CliCommand {
-                                            id,
-                                            workdir: &loc.workdir,
-                                            git_dir: &loc.git_dir,
-                                            args: &args,
-                                            stdin_payload: Some(&stdin_payload),
-                                            is_read_only: false,
-                                            env: &[],
-                                        },
-                                        |ev| forward_cli_event(&tx, ev),
-                                    )
-                                    .await;
-
-                                match res {
-                                    Ok(out) if out.exit_code == 0 => {
-                                        let oid = crate::pool::with_thread_repo(&loc.git_dir, |r| {
-                                            Ok(probe_repo_state(r).head_oid)
-                                        })
-                                        .ok()
-                                        .flatten();
-                                        let short = oid.map(|o| o.short());
-                                        let label = short.clone().unwrap_or_default();
-                                        CommitOutcome {
-                                            success: true,
-                                            commit_oid: oid,
-                                            short_sha: short,
-                                            summary: if request.amend {
-                                                format!("Amended commit {label}")
-                                            } else {
-                                                format!("Committed {label}")
-                                            },
-                                            error_output: None,
-                                            and_push: request.and_push,
-                                            preserved_message: None,
-                                        }
-                                    }
-                                    Ok(out) => {
-                                        let mut combined = out.stderr_lines.clone();
-                                        if combined.is_empty() {
-                                            combined = out.stdout_lines;
-                                        } else if !out.stdout_lines.is_empty() {
-                                            combined.extend(out.stdout_lines);
-                                        }
-                                        CommitOutcome {
-                                            success: false,
-                                            commit_oid: None,
-                                            short_sha: None,
-                                            summary: format!(
-                                                "Commit failed (exit {})",
-                                                out.exit_code
-                                            ),
-                                            error_output: Some(combined.join("\n")),
-                                            and_push: false,
-                                            preserved_message: Some(request.message),
-                                        }
-                                    }
-                                    Err(e) => CommitOutcome {
-                                        success: false,
-                                        commit_oid: None,
-                                        short_sha: None,
-                                        summary: "Commit failed".to_string(),
-                                        error_output: Some(e.to_string()),
-                                        and_push: false,
-                                        preserved_message: Some(request.message),
-                                    },
-                                }
-                            } else {
-                                match pool.execute_commit_git2(loc, request.clone()).await {
-                                    Ok(o) => o,
-                                    Err(e) => CommitOutcome {
-                                        success: false,
-                                        commit_oid: None,
-                                        short_sha: None,
-                                        summary: "Commit failed".to_string(),
-                                        error_output: Some(e.to_string()),
-                                        and_push: false,
-                                        preserved_message: Some(request.message),
-                                    },
-                                }
-                            };
-
-                            let ok = outcome.success;
-                            drop(token);
-                            let deferred = guard.take_pending();
-                            let _ = tx.send(EngineEvent::CommitCompleted(outcome));
-                            if ok {
-                                let _ = tx.send(EngineEvent::ExternalFsChanged(
-                                    RefreshScope::All.merge(deferred),
-                                ));
-                            }
-                        });
-                    }
-                    TaskRequest::UndoLastCommit => {
-                        let pool = Arc::clone(&pool);
-                        let loc = sup_location.clone();
-                        let tx = event_tx.clone();
-                        let guard = Arc::clone(&mutation_guard);
-                        tokio::spawn(async move {
-                            let token = guard.begin();
-                            let res = pool.undo_last_commit(loc).await;
-                            drop(token);
-                            let deferred = guard.take_pending();
-                            match res {
-                                Ok(restored_message) => {
-                                    let _ = tx.send(EngineEvent::UndoCommitCompleted {
-                                        restored_message,
-                                    });
-                                    let _ = tx.send(EngineEvent::ExternalFsChanged(
-                                        RefreshScope::All.merge(deferred),
-                                    ));
-                                }
-                                Err(e) => {
-                                    let _ = tx.send(EngineEvent::Error(e.to_string()));
-                                }
-                            }
-                        });
-                    }
-                    TaskRequest::RunGitOp { op } => {
-                        let Some(cli_exec) = sup_cli.as_ref().map(Arc::clone) else {
-                            let _ = event_tx
-                                .send(EngineEvent::Error(EngineError::GitNotFound.to_string()));
-                            continue;
-                        };
-                        let loc = sup_location.clone();
-                        let tx = event_tx.clone();
-                        let guard = Arc::clone(&mutation_guard);
-                        let ids = Arc::clone(&op_ids);
-                        tokio::spawn(async move {
-                            let read_only = op.is_read_only();
-                            let token = (!read_only).then(|| guard.begin());
-                            let fwd = tx.clone();
-                            let outcome =
-                                crate::ops::run_git_op(&cli_exec, &loc, &ids, op, move |ev| {
-                                    forward_cli_event(&fwd, ev);
-                                })
-                                .await;
-                            drop(token);
-                            let deferred = guard.take_pending();
-                            let _ = tx.send(EngineEvent::GitOpFinished(outcome));
-                            if !read_only {
-                                let _ = tx.send(EngineEvent::ExternalFsChanged(
-                                    RefreshScope::All.merge(deferred),
-                                ));
-                            }
-                        });
-                    }
-                    TaskRequest::LoadConflictDocument { path } => {
-                        let pool = Arc::clone(&pool);
-                        let loc = sup_location.clone();
-                        let tx = event_tx.clone();
-                        tokio::spawn(async move {
-                            match pool.load_conflict_document(loc, path).await {
-                                Ok(doc) => {
-                                    let _ = tx.send(EngineEvent::ConflictDocumentLoaded { doc });
-                                }
-                                Err(e) => {
-                                    let _ = tx.send(EngineEvent::Error(e.to_string()));
-                                }
-                            }
-                        });
-                    }
-                    TaskRequest::SaveConflictResolution {
-                        path,
-                        content,
-                        stage,
-                    } => {
-                        spawn_guarded_mutation(
-                            &pool,
-                            &sup_location,
-                            &event_tx,
-                            &mutation_guard,
-                            RefreshScope::StageStatus,
-                            move |pool, loc| async move {
-                                pool.save_conflict_resolution(loc, path, content, stage)
-                                    .await
-                            },
-                        );
-                    }
-                    TaskRequest::RunGitCli {
-                        id,
-                        args,
-                        stdin_payload,
-                        is_read_only,
-                        refresh_after,
-                    } => {
-                        let Some(cli_exec) = sup_cli.as_ref().map(Arc::clone) else {
-                            let _ = event_tx
-                                .send(EngineEvent::Error(EngineError::GitNotFound.to_string()));
-                            continue;
-                        };
-                        let loc = sup_location.clone();
-                        let tx = event_tx.clone();
-                        let guard = Arc::clone(&mutation_guard);
-                        tokio::spawn(async move {
-                            let _token = if is_read_only {
-                                None
-                            } else {
-                                Some(guard.begin())
-                            };
-
-                            let res = cli_exec
-                                .execute(
-                                    CliCommand {
-                                        id,
-                                        workdir: &loc.workdir,
-                                        git_dir: &loc.git_dir,
-                                        args: &args,
-                                        stdin_payload: stdin_payload.as_deref(),
-                                        is_read_only,
-                                        env: &[],
-                                    },
-                                    |ev| forward_cli_event(&tx, ev),
-                                )
-                                .await;
-
-                            drop(_token);
-
-                            match res {
-                                Ok(out) => {
-                                    if let Some((lock_path, message)) = out.index_lock_conflict {
-                                        let _ = tx.send(EngineEvent::IndexLockDetected {
-                                            lock_path,
-                                            message,
-                                            retry_args: args,
-                                            retry_stdin: stdin_payload,
-                                            retry_is_read_only: is_read_only,
-                                            retry_refresh_after: refresh_after,
-                                        });
-                                    }
-                                    let deferred = guard.take_pending();
-                                    let merged = refresh_after.merge(deferred);
-                                    if merged != RefreshScope::None {
-                                        let _ = tx.send(EngineEvent::ExternalFsChanged(merged));
-                                    }
-                                }
-                                Err(e) => {
-                                    let _ = tx.send(EngineEvent::Error(e.to_string()));
-                                }
-                            }
-                        });
-                    }
-                }
+                handle_task_request(&ctx, req);
             }
         });
 
@@ -915,6 +374,517 @@ impl EngineSupervisor {
             event_rx,
         ))
     }
+}
+
+fn handle_task_request(ctx: &SupervisorContext, req: TaskRequest) {
+    match req {
+        TaskRequest::LoadRepoSnapshot { epoch } => spawn_load_repo_snapshot(ctx, epoch),
+        TaskRequest::LoadCommitDetails { key, epoch } => {
+            spawn_load_commit_details(ctx, key, epoch);
+        }
+        TaskRequest::LoadFileDiff {
+            key,
+            known_oids,
+            epoch,
+        } => {
+            let pool = Arc::clone(&ctx.pool);
+            let loc = ctx.location.clone();
+            let token = EpochToken::new(ctx.epochs.file_diff.clone(), epoch);
+            spawn_epoch_task(
+                &ctx.event_tx,
+                async move { pool.load_file_diff(loc, key, known_oids, token).await },
+                move |diff| EngineEvent::FileDiffLoaded { diff, epoch },
+            );
+        }
+        TaskRequest::LoadFileHistory { key, epoch } => {
+            let pool = Arc::clone(&ctx.pool);
+            let loc = ctx.location.clone();
+            let token = EpochToken::new(ctx.epochs.file_history.clone(), epoch);
+            spawn_epoch_task(
+                &ctx.event_tx,
+                async move { pool.load_file_history(loc, key, token).await },
+                move |bundle| EngineEvent::FileHistoryLoaded { bundle, epoch },
+            );
+        }
+        TaskRequest::LoadPathMatches {
+            paths,
+            snapshot,
+            epoch,
+        } => {
+            let pool = Arc::clone(&ctx.pool);
+            let loc = ctx.location.clone();
+            let token = EpochToken::new(ctx.epochs.path_filter.clone(), epoch);
+            let reported = paths.clone();
+            spawn_epoch_task(
+                &ctx.event_tx,
+                async move { pool.load_path_matches(loc, paths, snapshot, token).await },
+                move |matches| EngineEvent::PathMatchesLoaded {
+                    paths: reported,
+                    matches,
+                    epoch,
+                },
+            );
+        }
+        TaskRequest::LoadStageStatus {
+            include_ignored,
+            epoch,
+        } => {
+            let pool = Arc::clone(&ctx.pool);
+            let loc = ctx.location.clone();
+            let scan_config = ctx.scan_config;
+            let token = EpochToken::new(ctx.epochs.stage_status.clone(), epoch);
+            spawn_epoch_task(
+                &ctx.event_tx,
+                async move {
+                    pool.load_stage_status_with_config(loc, include_ignored, scan_config, token)
+                        .await
+                },
+                move |status| EngineEvent::StageStatusLoaded { status, epoch },
+            );
+        }
+        TaskRequest::LoadStageFileDiff { key, epoch } => {
+            let pool = Arc::clone(&ctx.pool);
+            let loc = ctx.location.clone();
+            let token = EpochToken::new(ctx.epochs.stage_diff.clone(), epoch);
+            spawn_epoch_task(
+                &ctx.event_tx,
+                async move { pool.load_stage_file_diff(loc, key, token).await },
+                move |diff| EngineEvent::StageFileDiffLoaded { diff, epoch },
+            );
+        }
+        TaskRequest::LoadAmendPreview => {
+            let pool = Arc::clone(&ctx.pool);
+            let loc = ctx.location.clone();
+            spawn_epoch_task(
+                &ctx.event_tx,
+                async move { pool.load_amend_preview(loc).await },
+                move |preview| EngineEvent::AmendPreviewLoaded { preview },
+            );
+        }
+        TaskRequest::ProbeCommitPrecheck => {
+            let pool = Arc::clone(&ctx.pool);
+            let loc = ctx.location.clone();
+            let tx = ctx.event_tx.clone();
+            tokio::spawn(async move {
+                let info = pool
+                    .probe_commit_precheck(loc, TaskPriority::Background)
+                    .await;
+                let _ = tx.send(EngineEvent::CommitPrecheckLoaded { info });
+            });
+        }
+        TaskRequest::ApplyStageBuffer {
+            path,
+            new_staged_bytes,
+            file_mode,
+            remove_from_index,
+        } => spawn_guarded_mutation(ctx, RefreshScope::StageStatus, move |pool, loc| async move {
+            pool.apply_stage_buffer(loc, path, new_staged_bytes, file_mode, remove_from_index)
+                .await
+        }),
+        TaskRequest::WriteWorktreeBuffer {
+            path,
+            new_local_bytes,
+        } => spawn_guarded_mutation(
+            ctx,
+            RefreshScope::WorktreeStatus,
+            move |pool, loc| async move {
+                pool.write_worktree_buffer(loc, path, new_local_bytes).await
+            },
+        ),
+        TaskRequest::StageTargets { targets } => {
+            spawn_guarded_mutation(ctx, RefreshScope::StageStatus, move |pool, loc| async move {
+                pool.stage_targets(loc, targets).await
+            });
+        }
+        TaskRequest::StageAllTracked => {
+            spawn_guarded_mutation(ctx, RefreshScope::StageStatus, move |pool, loc| async move {
+                pool.stage_all_tracked(loc).await
+            });
+        }
+        TaskRequest::UnstageTargets { targets } => {
+            spawn_guarded_mutation(ctx, RefreshScope::StageStatus, move |pool, loc| async move {
+                pool.unstage_targets(loc, targets).await
+            });
+        }
+        TaskRequest::DiscardTargets { targets } => {
+            spawn_guarded_mutation(
+                ctx,
+                RefreshScope::WorktreeStatus,
+                move |pool, loc| async move { pool.discard_targets(loc, targets).await },
+            );
+        }
+        TaskRequest::ExecuteCommit { id, request } => spawn_execute_commit(ctx, id, request),
+        TaskRequest::UndoLastCommit => spawn_undo_last_commit(ctx),
+        TaskRequest::RunGitOp { op } => spawn_run_git_op(ctx, op),
+        TaskRequest::LoadConflictDocument { path } => {
+            let pool = Arc::clone(&ctx.pool);
+            let loc = ctx.location.clone();
+            let tx = ctx.event_tx.clone();
+            tokio::spawn(async move {
+                match pool.load_conflict_document(loc, path).await {
+                    Ok(doc) => {
+                        let _ = tx.send(EngineEvent::ConflictDocumentLoaded { doc });
+                    }
+                    Err(e) => {
+                        let _ = tx.send(EngineEvent::Error(e.to_string()));
+                    }
+                }
+            });
+        }
+        TaskRequest::SaveConflictResolution {
+            path,
+            content,
+            stage,
+        } => spawn_guarded_mutation(ctx, RefreshScope::StageStatus, move |pool, loc| async move {
+            pool.save_conflict_resolution(loc, path, content, stage)
+                .await
+        }),
+        TaskRequest::RunGitCli {
+            id,
+            args,
+            stdin_payload,
+            is_read_only,
+            refresh_after,
+        } => spawn_run_git_cli(ctx, id, args, stdin_payload, is_read_only, refresh_after),
+    }
+}
+
+fn spawn_load_repo_snapshot(ctx: &SupervisorContext, epoch: u64) {
+    let pool = Arc::clone(&ctx.pool);
+    let loc = ctx.location.clone();
+    let scan_config = ctx.scan_config;
+    let token = EpochToken::new(ctx.epochs.repo_snapshot.clone(), epoch);
+    let tx = ctx.event_tx.clone();
+    tokio::spawn(async move {
+        match pool
+            .load_repo_snapshot_with_pending(
+                loc.clone(),
+                token.clone(),
+                DEFAULT_MAX_COMMITS,
+                scan_config,
+            )
+            .await
+        {
+            Ok((snapshot, pending)) => {
+                let _ = tx.send(EngineEvent::RepoSnapshotLoaded { snapshot, epoch });
+                if !pending.is_empty() && !token.is_stale() {
+                    match pool.compute_ahead_behind_batch(loc, pending, token).await {
+                        Ok(updates) if !updates.is_empty() => {
+                            let _ = tx.send(EngineEvent::RefAheadBehindBackfilled {
+                                epoch,
+                                updates,
+                            });
+                        }
+                        Ok(_) | Err(EngineError::Cancelled) => {}
+                        Err(e) => {
+                            tracing::debug!("ahead_behind backfill skipped: {e}");
+                        }
+                    }
+                }
+            }
+            Err(EngineError::Cancelled) => {}
+            Err(e) => {
+                let _ = tx.send(EngineEvent::Error(e.to_string()));
+            }
+        }
+    });
+}
+
+fn spawn_load_commit_details(ctx: &SupervisorContext, key: DetailsKey, epoch: u64) {
+    let pool = Arc::clone(&ctx.pool);
+    let loc = ctx.location.clone();
+    let token = EpochToken::new(ctx.epochs.commit_details.clone(), epoch);
+    let tx = ctx.event_tx.clone();
+    let sig_cache = Arc::clone(&ctx.sig_cache);
+    let sig_epoch = ctx.epochs.commit_signature.clone();
+    tokio::spawn(async move {
+        match pool.load_commit_details(loc.clone(), key, token).await {
+            Ok(mut bundle) => {
+                let mut unverified_oids = Vec::new();
+                {
+                    let mut cache = sig_cache.lock().unwrap_or_else(|e| e.into_inner());
+                    let b_mut = Arc::make_mut(&mut bundle);
+                    for d in &mut b_mut.details {
+                        if d.signature == SignatureStatus::SignedUnverified {
+                            if let Some(&cached) = cache.get(&d.oid) {
+                                d.signature = cached;
+                            } else {
+                                unverified_oids.push(d.oid);
+                            }
+                        }
+                    }
+                }
+                let _ = tx.send(EngineEvent::CommitDetailsLoaded { bundle, epoch });
+                if !unverified_oids.is_empty() {
+                    let sig_token = sig_epoch.issue();
+                    let git_dir = loc.git_dir;
+                    tokio::task::spawn_blocking(move || {
+                        for oid in unverified_oids {
+                            if sig_token.is_stale() {
+                                break;
+                            }
+                            let status = crate::details::verify_commit_signature_sync(&git_dir, oid);
+                            {
+                                let mut cache =
+                                    sig_cache.lock().unwrap_or_else(|e| e.into_inner());
+                                cache.insert(oid, status);
+                            }
+                            let _ = tx.send(EngineEvent::CommitSignatureVerified { oid, status });
+                        }
+                    });
+                }
+            }
+            Err(EngineError::Cancelled) => {}
+            Err(e) => {
+                let _ = tx.send(EngineEvent::Error(e.to_string()));
+            }
+        }
+    });
+}
+
+fn spawn_execute_commit(ctx: &SupervisorContext, id: u64, request: CommitRequest) {
+    let pool = Arc::clone(&ctx.pool);
+    let cli_exec = ctx.cli.as_ref().map(Arc::clone);
+    let loc = ctx.location.clone();
+    let tx = ctx.event_tx.clone();
+    let guard = Arc::clone(&ctx.mutation_guard);
+    tokio::spawn(async move {
+        let token = guard.begin();
+        let precheck = pool
+            .probe_commit_precheck(loc.clone(), TaskPriority::Interactive)
+            .await;
+        let use_cli =
+            ((precheck.has_commit_hooks && request.run_hooks) || precheck.gpg_sign)
+                && cli_exec.is_some();
+
+        let outcome = if use_cli {
+            if request.stage_all_tracked
+                && let Err(e) = pool.stage_all_tracked(loc.clone()).await
+            {
+                drop(token);
+                let _ = tx.send(EngineEvent::CommitCompleted(CommitOutcome {
+                    success: false,
+                    commit_oid: None,
+                    short_sha: None,
+                    summary: "Stage all tracked failed".to_string(),
+                    error_output: Some(e.to_string()),
+                    and_push: false,
+                    preserved_message: Some(request.message),
+                }));
+                return;
+            }
+            let (args, stdin_payload) = build_commit_cli_args(&request);
+            let cli = cli_exec.expect("checked is_some");
+            let res = cli
+                .execute(
+                    CliCommand {
+                        id,
+                        workdir: &loc.workdir,
+                        git_dir: &loc.git_dir,
+                        args: &args,
+                        stdin_payload: Some(&stdin_payload),
+                        is_read_only: false,
+                        env: &[],
+                    },
+                    |ev| forward_cli_event(&tx, ev),
+                )
+                .await;
+
+            match res {
+                Ok(out) if out.exit_code == 0 => {
+                    let oid = crate::pool::with_thread_repo(&loc.git_dir, |r| {
+                        Ok(probe_repo_state(r).head_oid)
+                    })
+                    .ok()
+                    .flatten();
+                    let short = oid.map(|o| o.short());
+                    let label = short.clone().unwrap_or_default();
+                    CommitOutcome {
+                        success: true,
+                        commit_oid: oid,
+                        short_sha: short,
+                        summary: if request.amend {
+                            format!("Amended commit {label}")
+                        } else {
+                            format!("Committed {label}")
+                        },
+                        error_output: None,
+                        and_push: request.and_push,
+                        preserved_message: None,
+                    }
+                }
+                Ok(out) => {
+                    let mut combined = out.stderr_lines.clone();
+                    if combined.is_empty() {
+                        combined = out.stdout_lines;
+                    } else if !out.stdout_lines.is_empty() {
+                        combined.extend(out.stdout_lines);
+                    }
+                    CommitOutcome {
+                        success: false,
+                        commit_oid: None,
+                        short_sha: None,
+                        summary: format!("Commit failed (exit {})", out.exit_code),
+                        error_output: Some(combined.join("\n")),
+                        and_push: false,
+                        preserved_message: Some(request.message),
+                    }
+                }
+                Err(e) => CommitOutcome {
+                    success: false,
+                    commit_oid: None,
+                    short_sha: None,
+                    summary: "Commit failed".to_string(),
+                    error_output: Some(e.to_string()),
+                    and_push: false,
+                    preserved_message: Some(request.message),
+                },
+            }
+        } else {
+            match pool.execute_commit_git2(loc, request.clone()).await {
+                Ok(o) => o,
+                Err(e) => CommitOutcome {
+                    success: false,
+                    commit_oid: None,
+                    short_sha: None,
+                    summary: "Commit failed".to_string(),
+                    error_output: Some(e.to_string()),
+                    and_push: false,
+                    preserved_message: Some(request.message),
+                },
+            }
+        };
+
+        let ok = outcome.success;
+        drop(token);
+        let deferred = guard.take_pending();
+        let _ = tx.send(EngineEvent::CommitCompleted(outcome));
+        if ok {
+            let _ = tx.send(EngineEvent::ExternalFsChanged(
+                RefreshScope::All.merge(deferred),
+            ));
+        }
+    });
+}
+
+fn spawn_undo_last_commit(ctx: &SupervisorContext) {
+    let pool = Arc::clone(&ctx.pool);
+    let loc = ctx.location.clone();
+    let tx = ctx.event_tx.clone();
+    let guard = Arc::clone(&ctx.mutation_guard);
+    tokio::spawn(async move {
+        let token = guard.begin();
+        let res = pool.undo_last_commit(loc).await;
+        drop(token);
+        let deferred = guard.take_pending();
+        match res {
+            Ok(restored_message) => {
+                let _ = tx.send(EngineEvent::UndoCommitCompleted { restored_message });
+                let _ = tx.send(EngineEvent::ExternalFsChanged(
+                    RefreshScope::All.merge(deferred),
+                ));
+            }
+            Err(e) => {
+                let _ = tx.send(EngineEvent::Error(e.to_string()));
+            }
+        }
+    });
+}
+
+fn spawn_run_git_op(ctx: &SupervisorContext, op: GitOp) {
+    let Some(cli_exec) = ctx.cli.as_ref().map(Arc::clone) else {
+        let _ = ctx
+            .event_tx
+            .send(EngineEvent::Error(EngineError::GitNotFound.to_string()));
+        return;
+    };
+    let loc = ctx.location.clone();
+    let tx = ctx.event_tx.clone();
+    let guard = Arc::clone(&ctx.mutation_guard);
+    let ids = Arc::clone(&ctx.op_ids);
+    tokio::spawn(async move {
+        let read_only = op.is_read_only();
+        let token = (!read_only).then(|| guard.begin());
+        let fwd = tx.clone();
+        let outcome = crate::ops::run_git_op(&cli_exec, &loc, &ids, op, move |ev| {
+            forward_cli_event(&fwd, ev);
+        })
+        .await;
+        drop(token);
+        let deferred = guard.take_pending();
+        let _ = tx.send(EngineEvent::GitOpFinished(outcome));
+        if !read_only {
+            let _ = tx.send(EngineEvent::ExternalFsChanged(
+                RefreshScope::All.merge(deferred),
+            ));
+        }
+    });
+}
+
+fn spawn_run_git_cli(
+    ctx: &SupervisorContext,
+    id: u64,
+    args: Vec<String>,
+    stdin_payload: Option<Vec<u8>>,
+    is_read_only: bool,
+    refresh_after: RefreshScope,
+) {
+    let Some(cli_exec) = ctx.cli.as_ref().map(Arc::clone) else {
+        let _ = ctx
+            .event_tx
+            .send(EngineEvent::Error(EngineError::GitNotFound.to_string()));
+        return;
+    };
+    let loc = ctx.location.clone();
+    let tx = ctx.event_tx.clone();
+    let guard = Arc::clone(&ctx.mutation_guard);
+    tokio::spawn(async move {
+        let _token = if is_read_only {
+            None
+        } else {
+            Some(guard.begin())
+        };
+
+        let res = cli_exec
+            .execute(
+                CliCommand {
+                    id,
+                    workdir: &loc.workdir,
+                    git_dir: &loc.git_dir,
+                    args: &args,
+                    stdin_payload: stdin_payload.as_deref(),
+                    is_read_only,
+                    env: &[],
+                },
+                |ev| forward_cli_event(&tx, ev),
+            )
+            .await;
+
+        drop(_token);
+
+        match res {
+            Ok(out) => {
+                if let Some((lock_path, message)) = out.index_lock_conflict {
+                    let _ = tx.send(EngineEvent::IndexLockDetected {
+                        lock_path,
+                        message,
+                        retry_args: args,
+                        retry_stdin: stdin_payload,
+                        retry_is_read_only: is_read_only,
+                        retry_refresh_after: refresh_after,
+                    });
+                }
+                let deferred = guard.take_pending();
+                let merged = refresh_after.merge(deferred);
+                if merged != RefreshScope::None {
+                    let _ = tx.send(EngineEvent::ExternalFsChanged(merged));
+                }
+            }
+            Err(e) => {
+                let _ = tx.send(EngineEvent::Error(e.to_string()));
+            }
+        }
+    });
 }
 
 pub(crate) fn forward_cli_event(tx: &UnboundedSender<EngineEvent>, ev: CliStreamEvent) {
@@ -938,20 +908,17 @@ pub(crate) fn forward_cli_event(tx: &UnboundedSender<EngineEvent>, ev: CliStream
 }
 
 fn spawn_guarded_mutation<F, Fut>(
-    pool: &Arc<Git2WorkerPool>,
-    location: &RepoLocation,
-    event_tx: &UnboundedSender<EngineEvent>,
-    mutation_guard: &Arc<MutationGuard>,
+    ctx: &SupervisorContext,
     scope: RefreshScope,
     op: F,
 ) where
     F: FnOnce(Arc<Git2WorkerPool>, RepoLocation) -> Fut + Send + 'static,
     Fut: std::future::Future<Output = Result<(), EngineError>> + Send + 'static,
 {
-    let pool = Arc::clone(pool);
-    let loc = location.clone();
-    let tx = event_tx.clone();
-    let guard = Arc::clone(mutation_guard);
+    let pool = Arc::clone(&ctx.pool);
+    let loc = ctx.location.clone();
+    let tx = ctx.event_tx.clone();
+    let guard = Arc::clone(&ctx.mutation_guard);
     tokio::spawn(async move {
         let token = guard.begin();
         let res = op(pool, loc).await;

@@ -1,4 +1,4 @@
-//! Spec 05 action dispatch: Git write operations, comparison / conflict-merge
+//! Git action dispatch: Git write operations, comparison / conflict-merge
 //! workflows, and follow-up dialogs driven by operation outcomes (Smart
 //! Operation, unmerged delete guard, merged-branch cleanup, `[Restore Branch]`).
 

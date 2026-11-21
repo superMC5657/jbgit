@@ -1,4 +1,4 @@
-//! `OngoingRepositoryStateBanner` (Spec 05 §4.3): amber row under the tab bar
+//! `OngoingRepositoryStateBanner`: amber row under the tab bar
 //! while a rebase / merge / cherry-pick / revert is paused, with one-click
 //! `[Resolve] [Continue] [Skip] [Abort]`.
 

@@ -1,6 +1,8 @@
 mod client;
 mod keys;
 mod protocol;
+mod sandbox;
+mod screen;
 mod server;
 
 use std::env;

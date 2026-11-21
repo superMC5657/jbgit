@@ -1,4 +1,4 @@
-//! Context-menu builders (Spec 05 §3): Log commit rows, branch / remote /
+//! Context-menu builders: Log commit rows, branch / remote /
 //! tag submenus, Stage tree & diff menus, ongoing-operation actions and
 //! `[3 Stash]` actions. Items whose preconditions fail stay visible but
 //! disabled, carrying the reason shown in the footer.

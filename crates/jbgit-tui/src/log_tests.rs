@@ -1,4 +1,4 @@
-//! Acceptance tests for Spec 03 (three-pane Log workbench), driven through
+//! Acceptance tests for the three-pane Log workbench, driven through
 //! `AppState::dispatch` / `apply_engine_event` and a `TestBackend` render.
 
 use std::sync::Arc;
@@ -1033,7 +1033,7 @@ fn commit_stage_toolbar_highlights_on_hover() {
     assert_eq!(buf[(rx, ry)].bg, state.theme.bg_hover);
 }
 
-// ── Spec 10 / Issue 05: large-repo filtering & containing branches ──
+// ── Large-repo filtering & containing branches ──
 
 #[test]
 fn text_filter_typing_is_debounced_into_one_graph_rebuild() {

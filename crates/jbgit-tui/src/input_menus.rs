@@ -1,7 +1,7 @@
-//! Spec 05 input routing: cascading context-menu navigation (separator
-//! skipping, disabled items, mnemonics, 150 ms hover-to-open), the unified
-//! right-click / keyboard (`Menu`, `Shift+F10`, `.`, `m`) context-menu
-//! builder, dialogs, the branches popup, the ongoing banner and the Stash tab.
+//! Input routing for cascading context menus (separator skipping, disabled
+//! items, mnemonics, 150 ms hover-to-open), the unified right-click / keyboard
+//! (`Menu`, `Shift+F10`, `.`, `m`) context-menu builder, dialogs, the branches
+//! popup, the ongoing banner and the Stash tab.
 
 use std::time::Instant;
 
@@ -364,8 +364,8 @@ pub fn route_dialog(key: &KeyEvent, state: &mut AppState) -> Vec<Action> {
     }
 }
 
-/// Left-clicks on Spec 05 hit targets (dialogs, popup, banner, stash, …).
-pub fn route_spec05_click(
+/// Left-clicks on overlay / workbench hit targets (dialogs, popup, banner, stash, …).
+pub fn route_overlay_and_stash_click(
     target: &HitTarget,
     state: &mut AppState,
     is_double: bool,

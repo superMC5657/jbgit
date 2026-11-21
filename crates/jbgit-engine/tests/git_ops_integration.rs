@@ -1,4 +1,4 @@
-//! Spec 05 acceptance tests for high-level Git write operations executed by
+//! Acceptance tests for high-level Git write operations executed by
 //! `jbgit_engine::run_git_op` against real temporary repositories.
 
 use std::fs;

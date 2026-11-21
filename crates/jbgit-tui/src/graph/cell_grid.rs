@@ -644,8 +644,8 @@ mod tests {
     }
 
     #[test]
-    fn snapshot_fork_and_merge_nested_matches_spec_02_diagram() {
-        // Matches Spec 02 section 6.4 exact 8-row nested merge topology!
+    fn snapshot_fork_and_merge_nested_topology() {
+        // Exact 8-row nested merge topology.
         let commits = vec![
             raw(0, &[1], 80),    // main HEAD
             raw(1, &[6, 2], 70), // Merge PR #42

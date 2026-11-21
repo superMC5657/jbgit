@@ -1,6 +1,3 @@
-//! UI state for the `[1 Commit]` workbench: `GitStageTree`,
-//! `CommitMessageEditor` + Amend/Signoff/Hooks options, and `StageDiffWorkbench`.
-
 use std::cell::RefCell;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -13,20 +10,15 @@ use jbgit_core::{
 };
 use jbgit_engine::{CommitPrecheckInfo, StageDiffKey, StageDiffSide, ThreeDocStageDiff};
 use rustc_hash::FxHashSet;
-use unicode_width::UnicodeWidthChar;
 
 use crate::syntax::{HighlightedDiff, LazyWordDiffCache};
 
-const MAX_COMMIT_HISTORY: usize = 20;
-const MAX_EDITOR_UNDO: usize = 128;
-pub const STAGE_DIFF_CACHE_CAPACITY: usize = 32;
+use super::CommitMessageEditor;
 
-#[derive(Debug, Clone)]
-struct EditorSnapshot {
-    lines: Vec<String>,
-    cursor_line: usize,
-    cursor_col: usize,
-}
+const MAX_COMMIT_HISTORY: usize = 20;
+pub const STAGE_DIFF_CACHE_CAPACITY: usize = 32;
+/// Quiet period after the last commit-message edit before the draft hits disk.
+pub const DRAFT_DEBOUNCE: Duration = Duration::from_millis(300);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RollbackUndoEntry {
@@ -38,346 +30,6 @@ pub struct RollbackUndoEntry {
 pub struct CommitBanner {
     pub summary: String,
     pub can_undo: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct WrappedEditorLine {
-    pub logical_line: usize,
-    pub char_start: usize,
-    pub text: String,
-}
-
-#[derive(Debug, Clone)]
-pub struct CommitMessageEditor {
-    pub lines: Vec<String>,
-    pub cursor_line: usize,
-    pub cursor_col: usize,
-    pub scroll_row: usize,
-    undo_stack: Vec<EditorSnapshot>,
-    redo_stack: Vec<EditorSnapshot>,
-}
-
-impl Default for CommitMessageEditor {
-    fn default() -> Self {
-        Self {
-            lines: vec![String::new()],
-            cursor_line: 0,
-            cursor_col: 0,
-            scroll_row: 0,
-            undo_stack: Vec::new(),
-            redo_stack: Vec::new(),
-        }
-    }
-}
-
-impl CommitMessageEditor {
-    pub fn text(&self) -> String {
-        self.lines.join("\n")
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.lines.len() == 1 && self.lines[0].is_empty()
-    }
-
-    pub fn set_text(&mut self, text: &str) {
-        self.push_undo();
-        let norm = text.replace("\r\n", "\n");
-        self.lines = if norm.is_empty() {
-            vec![String::new()]
-        } else {
-            norm.split('\n').map(ToString::to_string).collect()
-        };
-        self.cursor_line = self.lines.len().saturating_sub(1);
-        self.cursor_col = self.lines[self.cursor_line].chars().count();
-        self.scroll_row = 0;
-    }
-
-    pub fn clear(&mut self) {
-        if !self.is_empty() {
-            self.push_undo();
-        }
-        self.lines = vec![String::new()];
-        self.cursor_line = 0;
-        self.cursor_col = 0;
-        self.scroll_row = 0;
-    }
-
-    fn push_undo(&mut self) {
-        if self.undo_stack.len() >= MAX_EDITOR_UNDO {
-            self.undo_stack.remove(0);
-        }
-        self.undo_stack.push(EditorSnapshot {
-            lines: self.lines.clone(),
-            cursor_line: self.cursor_line,
-            cursor_col: self.cursor_col,
-        });
-        self.redo_stack.clear();
-    }
-
-    pub fn undo(&mut self) -> bool {
-        let Some(snap) = self.undo_stack.pop() else {
-            return false;
-        };
-        self.redo_stack.push(EditorSnapshot {
-            lines: self.lines.clone(),
-            cursor_line: self.cursor_line,
-            cursor_col: self.cursor_col,
-        });
-        self.lines = snap.lines;
-        self.cursor_line = snap.cursor_line.min(self.lines.len().saturating_sub(1));
-        self.cursor_col = snap
-            .cursor_col
-            .min(self.lines[self.cursor_line].chars().count());
-        true
-    }
-
-    pub fn redo(&mut self) -> bool {
-        let Some(snap) = self.redo_stack.pop() else {
-            return false;
-        };
-        self.undo_stack.push(EditorSnapshot {
-            lines: self.lines.clone(),
-            cursor_line: self.cursor_line,
-            cursor_col: self.cursor_col,
-        });
-        self.lines = snap.lines;
-        self.cursor_line = snap.cursor_line.min(self.lines.len().saturating_sub(1));
-        self.cursor_col = snap
-            .cursor_col
-            .min(self.lines[self.cursor_line].chars().count());
-        true
-    }
-
-    fn byte_idx_at(s: &str, char_col: usize) -> usize {
-        s.char_indices()
-            .nth(char_col)
-            .map_or(s.len(), |(idx, _)| idx)
-    }
-
-    pub fn insert_char(&mut self, ch: char) {
-        self.push_undo();
-        let line = &mut self.lines[self.cursor_line];
-        let b = Self::byte_idx_at(line, self.cursor_col);
-        line.insert(b, ch);
-        self.cursor_col += 1;
-    }
-
-    pub fn insert_newline(&mut self) {
-        self.push_undo();
-        let line = &mut self.lines[self.cursor_line];
-        let b = Self::byte_idx_at(line, self.cursor_col);
-        let tail = line.split_off(b);
-        self.cursor_line += 1;
-        self.lines.insert(self.cursor_line, tail);
-        self.cursor_col = 0;
-    }
-
-    pub fn insert_paste(&mut self, pasted: &str) {
-        if pasted.is_empty() {
-            return;
-        }
-        self.push_undo();
-        let norm = pasted.replace("\r\n", "\n").replace('\r', "\n");
-        let mut parts = norm.split('\n');
-        let first = parts.next().unwrap_or("");
-        let tail_after = {
-            let line = &mut self.lines[self.cursor_line];
-            let b = Self::byte_idx_at(line, self.cursor_col);
-            let tail = line.split_off(b);
-            line.push_str(first);
-            tail
-        };
-        let rest: Vec<&str> = parts.collect();
-        if rest.is_empty() {
-            self.cursor_col += first.chars().count();
-            self.lines[self.cursor_line].push_str(&tail_after);
-        } else {
-            for (idx, part) in rest.iter().enumerate() {
-                self.cursor_line += 1;
-                let mut s = (*part).to_string();
-                if idx + 1 == rest.len() {
-                    self.cursor_col = part.chars().count();
-                    s.push_str(&tail_after);
-                }
-                self.lines.insert(self.cursor_line, s);
-            }
-        }
-    }
-
-    pub fn backspace(&mut self) {
-        if self.cursor_line == 0 && self.cursor_col == 0 {
-            return;
-        }
-        self.push_undo();
-        if self.cursor_col > 0 {
-            let line = &mut self.lines[self.cursor_line];
-            let start = Self::byte_idx_at(line, self.cursor_col - 1);
-            let end = Self::byte_idx_at(line, self.cursor_col);
-            line.replace_range(start..end, "");
-            self.cursor_col -= 1;
-        } else {
-            let removed = self.lines.remove(self.cursor_line);
-            self.cursor_line -= 1;
-            self.cursor_col = self.lines[self.cursor_line].chars().count();
-            self.lines[self.cursor_line].push_str(&removed);
-        }
-    }
-
-    pub fn delete_forward(&mut self) {
-        let len = self.lines[self.cursor_line].chars().count();
-        if self.cursor_col < len {
-            self.push_undo();
-            let line = &mut self.lines[self.cursor_line];
-            let start = Self::byte_idx_at(line, self.cursor_col);
-            let end = Self::byte_idx_at(line, self.cursor_col + 1);
-            line.replace_range(start..end, "");
-        } else if self.cursor_line + 1 < self.lines.len() {
-            self.push_undo();
-            let next = self.lines.remove(self.cursor_line + 1);
-            self.lines[self.cursor_line].push_str(&next);
-        }
-    }
-
-    pub fn delete_word_backward(&mut self) {
-        if self.cursor_col == 0 {
-            self.backspace();
-            return;
-        }
-        self.push_undo();
-        let line = &mut self.lines[self.cursor_line];
-        let chars: Vec<char> = line.chars().collect();
-        let mut new_col = self.cursor_col;
-        while new_col > 0 && chars[new_col - 1].is_whitespace() {
-            new_col -= 1;
-        }
-        while new_col > 0 && !chars[new_col - 1].is_whitespace() {
-            new_col -= 1;
-        }
-        let start = Self::byte_idx_at(line, new_col);
-        let end = Self::byte_idx_at(line, self.cursor_col);
-        line.replace_range(start..end, "");
-        self.cursor_col = new_col;
-    }
-
-    pub fn move_left(&mut self) {
-        if self.cursor_col > 0 {
-            self.cursor_col -= 1;
-        } else if self.cursor_line > 0 {
-            self.cursor_line -= 1;
-            self.cursor_col = self.lines[self.cursor_line].chars().count();
-        }
-    }
-
-    pub fn move_right(&mut self) {
-        let len = self.lines[self.cursor_line].chars().count();
-        if self.cursor_col < len {
-            self.cursor_col += 1;
-        } else if self.cursor_line + 1 < self.lines.len() {
-            self.cursor_line += 1;
-            self.cursor_col = 0;
-        }
-    }
-
-    pub fn move_up(&mut self) {
-        if self.cursor_line > 0 {
-            self.cursor_line -= 1;
-            self.cursor_col = self.cursor_col.min(self.lines[self.cursor_line].chars().count());
-        }
-    }
-
-    pub fn move_down(&mut self) {
-        if self.cursor_line + 1 < self.lines.len() {
-            self.cursor_line += 1;
-            self.cursor_col = self.cursor_col.min(self.lines[self.cursor_line].chars().count());
-        }
-    }
-
-    pub fn move_home(&mut self) {
-        self.cursor_col = 0;
-    }
-
-    pub fn move_end(&mut self) {
-        self.cursor_col = self.lines[self.cursor_line].chars().count();
-    }
-
-    pub fn subject_char_count(&self) -> usize {
-        self.lines.first().map_or(0, |l| l.chars().count())
-    }
-
-    pub fn needs_blank_second_line_hint(&self) -> bool {
-        self.lines.len() >= 2 && !self.lines[1].trim().is_empty()
-    }
-
-    /// Soft-wraps logical lines to `width` terminal columns and computes visual `(row, col)` cursor.
-    pub fn visual_wrapped_lines(&self, width: usize) -> (Vec<WrappedEditorLine>, (usize, usize)) {
-        let width = width.max(1);
-        let mut out = Vec::new();
-        let mut cursor_vis = (0usize, 0usize);
-
-        for (l_idx, line) in self.lines.iter().enumerate() {
-            if line.is_empty() {
-                if l_idx == self.cursor_line {
-                    cursor_vis = (out.len(), 0);
-                }
-                out.push(WrappedEditorLine {
-                    logical_line: l_idx,
-                    char_start: 0,
-                    text: String::new(),
-                });
-                continue;
-            }
-
-            let mut seg = String::new();
-            let mut seg_w = 0usize;
-            let mut seg_start = 0usize;
-            let mut placed_cursor = false;
-
-            for (c_idx, ch) in line.chars().enumerate() {
-                let cw = ch.width().unwrap_or(0).max(1);
-                if seg_w + cw > width && !seg.is_empty() {
-                    if l_idx == self.cursor_line
-                        && !placed_cursor
-                        && self.cursor_col >= seg_start
-                        && self.cursor_col < c_idx
-                    {
-                        let prefix_w: usize = seg
-                            .chars()
-                            .take(self.cursor_col - seg_start)
-                            .map(|c| c.width().unwrap_or(0))
-                            .sum();
-                        cursor_vis = (out.len(), prefix_w);
-                        placed_cursor = true;
-                    }
-                    out.push(WrappedEditorLine {
-                        logical_line: l_idx,
-                        char_start: seg_start,
-                        text: std::mem::take(&mut seg),
-                    });
-                    seg_start = c_idx;
-                    seg_w = 0;
-                }
-                seg.push(ch);
-                seg_w += cw;
-            }
-
-            if l_idx == self.cursor_line && !placed_cursor {
-                let offset = self.cursor_col.saturating_sub(seg_start);
-                let prefix_w: usize = seg
-                    .chars()
-                    .take(offset)
-                    .map(|c| c.width().unwrap_or(0))
-                    .sum();
-                cursor_vis = (out.len(), prefix_w.min(width));
-            }
-            out.push(WrappedEditorLine {
-                logical_line: l_idx,
-                char_start: seg_start,
-                text: seg,
-            });
-        }
-
-        (out, cursor_vis)
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -409,9 +61,6 @@ impl PartialEq for SyncRowsCacheKey {
 impl Eq for SyncRowsCacheKey {}
 
 pub type CachedStageDiffRowsEntry = (Arc<ThreeDocStageDiff>, bool, Arc<[StageDiffRow]>);
-
-/// Quiet period after the last commit-message edit before the draft hits disk.
-pub const DRAFT_DEBOUNCE: Duration = Duration::from_millis(300);
 
 /// Serialises draft file writes issued from background threads and the
 /// synchronous flush path. Every write carries a monotonically increasing
@@ -635,9 +284,6 @@ impl StageWorkbenchState {
         self.draft_save_deadline = Some(now + DRAFT_DEBOUNCE);
     }
 
-    /// Draft text to persist (`None` = remove the file). While amending, the
-    /// editor holds the amended commit's message; the user's own draft is
-    /// parked in `saved_draft`.
     fn draft_contents(&self) -> Option<String> {
         let draft = if self.amend {
             self.saved_draft.clone().unwrap_or_default()
@@ -658,8 +304,7 @@ impl StageWorkbenchState {
         Some((path, self.draft_contents(), self.draft_seq))
     }
 
-    /// Fires the debounced draft write once its deadline has passed, snapshotting
-    /// the text on the UI thread and doing the disk IO on a short-lived worker.
+    /// Fires the debounced draft write once its deadline has passed.
     pub fn flush_draft_due(&mut self, now: Instant) {
         if self.draft_save_deadline.is_none_or(|at| at > now) {
             return;
@@ -676,7 +321,6 @@ impl StageWorkbenchState {
         match spawned {
             Ok(job) => self.draft_jobs.push(job),
             Err(_) => {
-                // Could not spawn: fall back to the synchronous write.
                 if let Some(path) = &self.draft_path {
                     let contents = self.draft_contents();
                     self.draft_io.write(path, contents.as_deref(), seq);
@@ -685,9 +329,7 @@ impl StageWorkbenchState {
         }
     }
 
-    /// Writes any pending draft immediately (before commit, amend toggle,
-    /// external editor hand-off, and on exit) and waits for any in-flight
-    /// background draft write so no edit is lost or raced.
+    /// Writes any pending draft immediately and waits for any in-flight write.
     pub fn flush_draft_sync(&mut self) {
         if let Some((path, contents, seq)) = self.take_draft_write() {
             self.draft_io.write(&path, contents.as_deref(), seq);
@@ -695,7 +337,6 @@ impl StageWorkbenchState {
         self.wait_draft_writes();
     }
 
-    /// Blocks until all background draft writes issued so far have finished.
     pub fn wait_draft_writes(&mut self) {
         for job in self.draft_jobs.drain(..) {
             let _ = job.join();
@@ -805,19 +446,16 @@ impl StageWorkbenchState {
             StageTreeRowKind::Group {
                 kind: StageNodeKind::AmendCommit,
                 ..
-            } => {
-                self.rows.iter().find_map(|r| match &r.kind {
-                    StageTreeRowKind::AmendFile { path, old_path, .. } => Some(StageDiffKey {
-                        path: path.clone(),
-                        old_path: old_path.clone(),
-                        side: StageDiffSide::AmendCommit,
-                        context: self.diff_context,
-                    }),
-                    _ => None,
-                })
-            }
+            } => self.rows.iter().find_map(|r| match &r.kind {
+                StageTreeRowKind::AmendFile { path, old_path, .. } => Some(StageDiffKey {
+                    path: path.clone(),
+                    old_path: old_path.clone(),
+                    side: StageDiffSide::AmendCommit,
+                    context: self.diff_context,
+                }),
+                _ => None,
+            }),
             _ => {
-                // If cursor is on a group/dir, preview first file under it if any
                 let st = status?;
                 let targets = collect_targets_under_row(
                     &self.rows,
@@ -926,7 +564,6 @@ impl StageWorkbenchState {
             return (!sel.is_empty()).then_some(sel);
         }
 
-        // Otherwise find hunk at cursor
         let cursor = self.diff_cursor_row.min(rows.len() - 1);
         let hunk_idx = match rows[cursor] {
             StageDiffRow::Header(h)
@@ -1031,130 +668,5 @@ impl StageWorkbenchState {
             return pos;
         }
         next_anchor_after_mutation(old_rows, old_selected, &self.rows)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn commit_editor_cjk_wrapping_paste_and_undo_redo() {
-        let mut ed = CommitMessageEditor::default();
-        ed.insert_paste("feat(中文): 测试多行提交\n\n详细说明");
-        assert_eq!(ed.lines.len(), 3);
-        assert_eq!(ed.subject_char_count(), 16);
-        assert!(!ed.needs_blank_second_line_hint());
-
-        ed.cursor_line = 1;
-        ed.cursor_col = 0;
-        ed.insert_char('x');
-        assert!(ed.needs_blank_second_line_hint());
-
-        assert!(ed.undo());
-        assert!(!ed.needs_blank_second_line_hint());
-        assert!(ed.redo());
-        assert!(ed.needs_blank_second_line_hint());
-
-        let (wrapped, cursor) = ed.visual_wrapped_lines(10);
-        assert!(wrapped.len() >= 4);
-        assert!(cursor.1 <= 10);
-    }
-
-    #[test]
-    fn sync_rows_caches_when_status_and_opts_unchanged() {
-        let mut sw = StageWorkbenchState::default();
-        let snap = Arc::new(StageStatusSnapshot {
-            staged: vec![jbgit_core::StageEntry {
-                path: "foo.rs".into(),
-                old_path: None,
-                kind: jbgit_core::FileStatusKind::Modified,
-            }],
-            ..Default::default()
-        });
-
-        // First call populates rows
-        sw.sync_rows(Some(&snap));
-        assert_eq!(sw.rows.len(), 2); // Group header + File row
-
-        // Mutate rows directly to verify sync_rows is skipped when key matches
-        sw.rows.clear();
-        sw.sync_rows(Some(&snap));
-        assert_eq!(
-            sw.rows.len(),
-            0,
-            "sync_rows should skip rebuild when status pointer and options are identical"
-        );
-
-        // Modifying options invalidates cache
-        sw.tree_opts.show_ignored = true;
-        sw.sync_rows(Some(&snap));
-        assert_eq!(
-            sw.rows.len(),
-            2,
-            "sync_rows must rebuild when options change"
-        );
-
-        // Replacing with a brand-new Arc<StageStatusSnapshot> rebuilds even if the
-        // old Arc was dropped first (retaining Arc in SyncRowsCacheKey prevents ABA).
-        let snap2 = Arc::new(StageStatusSnapshot {
-            unstaged: vec![jbgit_core::StageEntry {
-                path: "bar.rs".into(),
-                old_path: None,
-                kind: jbgit_core::FileStatusKind::Modified,
-            }],
-            ..Default::default()
-        });
-        drop(snap);
-        sw.rows.clear();
-        sw.sync_rows(Some(&snap2));
-        assert_eq!(
-            sw.rows.len(),
-            2,
-            "sync_rows must rebuild for a distinct StageStatusSnapshot Arc"
-        );
-    }
-
-    #[test]
-    fn diff_rows_caches_until_diff_or_side_by_side_changes() {
-        let mut sw = StageWorkbenchState::default();
-        let tracker = jbgit_core::StageLineTracker::new(b"", b"", b"");
-        let diff1 = Arc::new(ThreeDocStageDiff {
-            key: StageDiffKey {
-                path: "foo.rs".into(),
-                old_path: None,
-                side: StageDiffSide::Staged,
-                context: DiffContext::Three,
-            },
-            vcs_exists: false,
-            staged_exists: true,
-            local_exists: false,
-            vcs_bytes: vec![],
-            staged_bytes: vec![],
-            local_bytes: vec![],
-            file_mode: 0o100644,
-            is_binary: false,
-            is_conflicted: false,
-            tracker,
-            hunks: vec![],
-            is_truncated: false,
-            is_too_large: false,
-        });
-
-        sw.current_diff = Some(Arc::clone(&diff1));
-        let r1 = sw.diff_rows();
-        let r2 = sw.diff_rows();
-        assert!(
-            Arc::ptr_eq(&r1, &r2),
-            "diff_rows must return cached Arc slice on identical diff and mode"
-        );
-
-        // Toggling side-by-side mode invalidates cache
-        sw.diff_side_by_side = true;
-        let r3 = sw.diff_rows();
-        assert!(
-            !Arc::ptr_eq(&r1, &r3),
-            "diff_rows must invalidate cache when side-by-side toggles"
-        );
     }
 }

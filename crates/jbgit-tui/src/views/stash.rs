@@ -1,4 +1,4 @@
-//! `[3 Stash]` workbench (Spec 05 §4.4): stash list with Apply / Pop /
+//! `[3 Stash]` workbench: stash list with Apply / Pop /
 //! Unstash as Branch / Drop / New / Clear, plus reused `CommitChangesBrowser`
 //! + `DiffPreview` on the right for the selected stash.
 

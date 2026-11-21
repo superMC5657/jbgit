@@ -25,7 +25,7 @@ use crate::graph::{CellGridGraphBackend, GraphRenderBackend, GraphViewportSlice}
 use crate::graph::vector::PixelVectorGraphBackend;
 
 /// Maximum time spent probing `tmux` passthrough or protocol handshake before
-/// silently degrading to the character grid (Spec 02 §7.1).
+/// silently degrading to the character grid.
 pub const HANDSHAKE_TIMEOUT: Duration = Duration::from_millis(50);
 
 /// User-selected graph renderer (`[⚙ Presentation] → Graph Renderer`, `F8`).

@@ -1,4 +1,4 @@
-//! Spec 10 / Issue 05: the native `git log --full-history` path filter must
+//! The native `git log --full-history` path filter must
 //! return exactly the commits the libgit2 per-commit tree diff returns,
 //! including TREESAME merges, evil merges and tag-only history.
 

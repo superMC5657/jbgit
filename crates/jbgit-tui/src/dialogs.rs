@@ -1,4 +1,4 @@
-//! Lightweight modal dialog library (`ModalDialog`, Spec 05 §2/§4):
+//! Lightweight modal dialog library (`ModalDialog`):
 //! validated single-line input (New Branch / Tag / Rename), radio & button
 //! choice groups (`GitResetDialog`, Smart Operation, dangerous confirms),
 //! multi-line message editor (Reword / Squash / annotated tag) and the
