@@ -60,6 +60,7 @@ jobs:
           mkdir -p dist/stage
           cp "target/${{ matrix.target }}/release/${{ matrix.bin_name }}" dist/stage/
           cp README.md dist/stage/
+          cp LICENSE dist/stage/
           tar -C dist/stage -czf "dist/${{ matrix.archive_name }}.tar.gz" .
 
       - name: Package archive (Windows)
@@ -69,6 +70,7 @@ jobs:
           New-Item -ItemType Directory -Force -Path dist/stage | Out-Null
           Copy-Item "target/${{ matrix.target }}/release/${{ matrix.bin_name }}" dist/stage/
           Copy-Item README.md dist/stage/
+          Copy-Item LICENSE dist/stage/
           Compress-Archive -Path dist/stage/* -DestinationPath "dist/${{ matrix.archive_name }}.zip" -Force
 
       - name: Upload build artifact

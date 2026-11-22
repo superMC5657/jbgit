@@ -12,7 +12,7 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/Rust-2024_Edition-orange?logo=rust" alt="Rust 2024" />
-  <img src="https://img.shields.io/badge/License-Apache--2.0-blue.svg" alt="License" />
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-Apache--2.0-blue.svg" alt="License" /></a>
   <img src="https://img.shields.io/badge/Architecture-Async_Tokio_%2B_libgit2-blueviolet" alt="Architecture" />
   <img src="https://img.shields.io/badge/UI-Ratatui_%2B_Crossterm-green" alt="UI" />
 </p>
@@ -155,4 +155,4 @@ jbgit --help
 
 ## 📄 开源许可证 (License)
 
-本项目遵循 **Apache License 2.0** 开源协议（详见 `Cargo.toml`）。
+本项目遵循 **Apache License 2.0** 开源协议，详见 [LICENSE](LICENSE)。
