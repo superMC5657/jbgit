@@ -7,21 +7,20 @@ use jbgit_core::{
     FileStatusKind, Oid, SignatureStatus,
 };
 
+use crate::blob_reader::read_blob;
 use crate::error::EngineError;
 use crate::pool::{delta_to_kind, with_thread_repo};
 use crate::probe::{RepoLocation, to_core_oid};
 
-use super::file_diff::{
-    ReadBytes, imara_line_stats, read_blob_checked, read_new_bytes_checked,
-};
-use super::{delta_path, non_interactive_git_command, person, to_git2_oid};
+use super::file_diff::{imara_line_stats, read_new_bytes_checked};
+use super::{delta_path, person, to_git2_oid};
 
 /// Per-file line statistics are skipped beyond this many files (huge merges).
 const MAX_STAT_FILES: usize = 2_000;
 
 pub fn verify_commit_signature_sync(git_dir: &Path, oid: Oid) -> SignatureStatus {
     let git = crate::cli::cached_git_executable().unwrap_or_else(|| Path::new("git"));
-    let mut cmd = non_interactive_git_command(git, None);
+    let mut cmd = crate::cli::non_interactive_std_command(git, None);
     cmd.arg("--git-dir")
         .arg(git_dir)
         .args(["log", "-1", "--format=%G?", &oid.to_string()]);
@@ -310,18 +309,9 @@ pub fn load_commit_details_sync(
             let mut is_binary = item.is_binary;
             if idx < MAX_STAT_FILES
                 && !is_binary
-                && let (
-                    ReadBytes::Loaded {
-                        bytes: old_bytes,
-                        is_binary: old_bin,
-                    },
-                    ReadBytes::Loaded {
-                        bytes: new_bytes,
-                        is_binary: new_bin,
-                    },
-                ) = (
-                    read_blob_checked(repo, item.old_oid),
-                    read_new_bytes_checked(repo, key, &item),
+                && let (Some((old_bytes, old_bin)), Some((new_bytes, new_bin))) = (
+                    read_blob(repo, item.old_oid, None).into_bytes_or_too_large(),
+                    read_new_bytes_checked(repo, key, &item).into_bytes_or_too_large(),
                 )
             {
                 is_binary |= old_bin || new_bin;

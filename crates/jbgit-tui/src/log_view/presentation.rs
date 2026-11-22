@@ -14,6 +14,10 @@ pub enum PresentationToggle {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LogPresentation {
+    /// Compact References View: only the first ref keeps its text.
+    pub compact_refs: bool,
+    /// `Show Tag Names`: when off, tags collapse to icons.
+    pub show_tag_names: bool,
     pub highlight_current_branch: bool,
     pub highlight_merges: bool,
     pub show_hash_column: bool,
@@ -25,6 +29,8 @@ pub struct LogPresentation {
 impl Default for LogPresentation {
     fn default() -> Self {
         Self {
+            compact_refs: false,
+            show_tag_names: true,
             highlight_current_branch: true,
             highlight_merges: true,
             show_hash_column: false,

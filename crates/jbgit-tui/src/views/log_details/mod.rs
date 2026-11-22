@@ -12,10 +12,13 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::app::{RenderContext, ScrollPane};
 
-pub use changes_browser::{render_changes_browser, render_changes_pane};
+pub use changes_browser::{ChangesBrowserProps, render_changes_browser, render_changes_pane};
+pub(crate) use diff_view::{
+    DiffLineRenderInput, diff_line_style, render_diff_side_cell, render_diff_unified_spans,
+};
 pub use diff_view::{
-    FileDiffRenderProps, render_details_or_diff, render_diff_preview, render_docked_diff,
-    render_file_diff_body, render_zoomed_diff,
+    DiffPreviewProps, FileDiffRenderProps, render_details_or_diff, render_diff_preview,
+    render_docked_diff, render_file_diff_body, render_zoomed_diff,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

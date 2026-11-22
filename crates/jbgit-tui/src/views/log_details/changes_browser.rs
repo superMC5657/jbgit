@@ -6,13 +6,22 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
 use crate::app::{AppState, RenderContext};
+use crate::diff_session::{ChangesExpandState, ChangesTreeSession, DiffCacheStore};
 use crate::hit_test::{ChangesToolbarButton, HitTarget};
-use crate::log_view::{ChangesExpandState, DetailsPaneState};
 use crate::views::{
     fit_left_right_spans, list_viewport, render_pane_frame, render_toolbar, row_background,
 };
 
 use super::{DiffHost, muted_line};
+
+pub struct ChangesBrowserProps<'a> {
+    pub changes: &'a ChangesTreeSession,
+    pub caches: &'a DiffCacheStore,
+    pub host: DiffHost,
+    pub pane: PaneId,
+    pub diff_preview: bool,
+    pub merge_parent: usize,
+}
 
 pub fn render_changes_pane(
     frame: &mut Frame<'_>,
@@ -23,9 +32,14 @@ pub fn render_changes_pane(
     render_changes_browser(
         frame,
         area,
-        &state.details,
-        DiffHost::Log,
-        PaneId::LogChangesTree,
+        ChangesBrowserProps {
+            changes: &state.log.details.changes,
+            caches: &state.diff_caches,
+            host: DiffHost::Log,
+            pane: PaneId::LogChangesTree,
+            diff_preview: state.log.details.diff_preview,
+            merge_parent: state.log.details.merge_parent,
+        },
         ctx,
     );
 }
@@ -33,13 +47,19 @@ pub fn render_changes_pane(
 pub fn render_changes_browser(
     frame: &mut Frame<'_>,
     area: Rect,
-    details: &DetailsPaneState,
-    host: DiffHost,
-    pane: PaneId,
+    props: ChangesBrowserProps<'_>,
     ctx: &mut RenderContext<'_>,
 ) {
-    let bundle = details.current_bundle();
-    let subtitle = match (bundle, &details.current_key) {
+    let ChangesBrowserProps {
+        changes,
+        caches,
+        host,
+        pane,
+        diff_preview,
+        merge_parent,
+    } = props;
+    let bundle = changes.current_bundle(caches);
+    let subtitle = match (bundle, &changes.current_key) {
         (Some(b), _) => {
             let (add, del) = b.totals();
             let stats = ctx.t_fmt(
@@ -85,11 +105,11 @@ pub fn render_changes_browser(
         .filter(|b| b.key.mode == DetailsMode::Commits && b.key.oids.len() == 1)
         .and_then(|b| b.details.first())
         .map_or(0, |d| d.parents.len());
-    let expand_state = details.changes_expand_state();
+    let expand_state = changes.expand_state(caches);
     let mut buttons = vec![
         (
             ctx.t("view.log_details.toolbar_dir").to_string(),
-            details.changes_group_by_dir,
+            changes.group_by_dir,
             ChangesToolbarButton::GroupByDir,
         ),
         (
@@ -106,7 +126,7 @@ pub fn render_changes_browser(
     if host == DiffHost::Log {
         buttons.push((
             ctx.t("view.log_details.toolbar_diff").to_string(),
-            details.diff_preview,
+            diff_preview,
             ChangesToolbarButton::DiffPreview,
         ));
         if merge_parents >= 2 {
@@ -114,7 +134,7 @@ pub fn render_changes_browser(
                 ctx.t_fmt(
                     "view.log_details.toolbar_parent",
                     &[
-                        ("cur", &(details.merge_parent + 1).to_string()),
+                        ("cur", &(merge_parent + 1).to_string()),
                         ("total", &merge_parents.to_string()),
                     ],
                 ),
@@ -145,7 +165,7 @@ pub fn render_changes_browser(
         return;
     }
     let Some(bundle) = bundle else {
-        let msg = if details.current_key.is_some() {
+        let msg = if changes.current_key.is_some() {
             ctx.t("view.log_details.loading_changes")
         } else {
             ctx.t("view.log_details.select_commit_changes")
@@ -157,24 +177,45 @@ pub fn render_changes_browser(
         frame.render_widget(muted_line(ctx, ctx.t("view.log_details.no_changes")), list);
         return;
     }
-    let rows = details.change_rows();
-    render_change_rows(frame, list, details, host, pane, ctx, bundle, &rows);
+    let rows = changes.change_rows(caches);
+    render_change_rows_inner(
+        frame,
+        list,
+        ChangeRowsView {
+            selected_idx: changes.selected,
+            host,
+            pane,
+            bundle,
+            rows: &rows,
+        },
+        ctx,
+    );
 }
 
-#[allow(clippy::too_many_arguments)]
-fn render_change_rows(
-    frame: &mut Frame<'_>,
-    area: Rect,
-    details: &DetailsPaneState,
+struct ChangeRowsView<'a> {
+    selected_idx: usize,
     host: DiffHost,
     pane: PaneId,
+    bundle: &'a CommitChangesBundle,
+    rows: &'a [ChangeTreeRow],
+}
+
+fn render_change_rows_inner(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    view: ChangeRowsView<'_>,
     ctx: &mut RenderContext<'_>,
-    bundle: &CommitChangesBundle,
-    rows: &[ChangeTreeRow],
 ) {
+    let ChangeRowsView {
+        selected_idx,
+        host,
+        pane,
+        bundle,
+        rows,
+    } = view;
     let focused = ctx.focused_pane == pane;
     let glyphs = ctx.glyph_mode.symbols();
-    let (selected, offset) = list_viewport(rows.len(), details.changes_selected, area.height as usize);
+    let (selected, offset) = list_viewport(rows.len(), selected_idx, area.height as usize);
     for (vis_y, idx) in (offset..rows.len()).take(area.height as usize).enumerate() {
         let row = &rows[idx];
         let rect = Rect::new(area.x, area.y + vis_y as u16, area.width, 1);

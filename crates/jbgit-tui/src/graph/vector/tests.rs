@@ -1195,7 +1195,7 @@ mod app_level {
     }
 
     fn send(state: &mut AppState, ev: Event) {
-        for a in route_terminal_event(ev, state) {
+        for a in route_terminal_event(&ev, state) {
             state.dispatch(a);
         }
     }
@@ -1209,18 +1209,19 @@ mod app_level {
         let mut terminal = Terminal::new(TestBackend::new(w, h)).unwrap();
         terminal.draw(|f| render_app(f, state)).unwrap();
         let mut out = Vec::new();
-        state.graph_renderer.write_emission(&mut out).unwrap();
+        state.log.graph_renderer.write_emission(&mut out).unwrap();
         (terminal.backend().buffer().clone(), out)
     }
 
     /// Same state, rendered with the character grid (the fallback reference).
     fn draw_grid(state: &mut AppState, w: u16, h: u16) -> Buffer {
-        let mode = state.graph_renderer.mode();
+        let mode = state.log.graph_renderer.mode();
         state
+            .log
             .graph_renderer
             .set_mode(GraphRendererMode::CharacterGrid);
         let (buf, _) = draw(state, w, h);
-        state.graph_renderer.set_mode(mode);
+        state.log.graph_renderer.set_mode(mode);
         buf
     }
 
@@ -1243,7 +1244,7 @@ mod app_level {
     fn context_menu_and_branches_popup_are_never_covered_by_sixel_tracks() {
         let (w, h) = (90u16, 24u16);
         let mut state = state();
-        state.graph_renderer = GraphRenderer::new(
+        state.log.graph_renderer = GraphRenderer::new(
             GraphRendererMode::Auto,
             caps(Some(GraphicsProtocol::Sixel), Some(CELL)),
         );
@@ -1317,25 +1318,27 @@ mod app_level {
 
         state.dispatch(Action::SetGraphRenderer(GraphRendererMode::CharacterGrid));
         assert_eq!(
-            state.graph_renderer.mode(),
+            state.log.graph_renderer.mode(),
             GraphRendererMode::CharacterGrid
         );
 
         key(&mut state, KeyCode::F(8), KeyModifiers::NONE);
-        assert_eq!(state.graph_renderer.mode(), GraphRendererMode::Auto);
+        assert_eq!(state.log.graph_renderer.mode(), GraphRendererMode::Auto);
         key(&mut state, KeyCode::F(8), KeyModifiers::NONE);
-        assert_eq!(state.graph_renderer.mode(), GraphRendererMode::Vector);
+        assert_eq!(state.log.graph_renderer.mode(), GraphRendererMode::Vector);
 
         // Forced vector without a usable terminal stays on the grid, and says why.
         state
+            .log
             .graph_renderer
             .set_capabilities(GraphicsCapabilities::default());
         assert_eq!(
-            state.graph_renderer.resolved(),
+            state.log.graph_renderer.resolved(),
             ResolvedGraphBackend::CharacterGrid
         );
         assert!(
             state
+                .log
                 .graph_renderer
                 .status_label()
                 .contains("no graphics protocol detected")

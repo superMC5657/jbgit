@@ -709,10 +709,10 @@ custom_extra = "自定义内容"
         assert_eq!(state.active_tab, jbgit_core::WorkspaceTab::Log);
         assert_eq!(state.focused_pane, jbgit_core::PaneId::LogBranchesTree);
         assert_eq!(
-            state.graph_renderer.mode(),
+            state.log.graph_renderer.mode(),
             crate::graph::GraphRendererMode::CharacterGrid
         );
-        assert_eq!(state.details.diff_context, jbgit_core::DiffContext::Ten);
+        assert_eq!(state.log.details.diff.context, jbgit_core::DiffContext::Ten);
 
         let stage_items = crate::menus::stage_tree_menu_items(&state, 0);
         assert!(
@@ -725,7 +725,9 @@ custom_extra = "自定义内容"
         state.modal_stack.push(crate::app::ModalLayer::Dialog(Box::new(
             crate::dialogs::new_branch_from_head_dialog(None, &state.i18n),
         )));
-        crate::input::route_terminal_event(Event::Paste("特性/中文分支\n".into()), &mut state);
+        for a in crate::input::route_terminal_event(&Event::Paste("特性/中文分支\n".into()), &state) {
+            state.dispatch(a);
+        }
         if let Some(crate::app::ModalLayer::Dialog(d)) = state.modal_stack.last() {
             if let crate::dialogs::Dialog::Input(inp) = d.as_ref() {
                 assert_eq!(inp.value, "特性/中文分支");
@@ -736,14 +738,13 @@ custom_extra = "自定义内容"
         state.modal_stack.pop();
 
         // CJK paste into GoToRevision floating popup
-        state.modal_stack.push(crate::app::ModalLayer::FloatingPopup {
-            kind: crate::app::PopupKind::GoToRevision,
+        state.modal_stack.push(crate::app::ModalLayer::GoToRevision {
             query: String::new(),
-            selected: 0,
         });
-        crate::input::route_terminal_event(Event::Paste("标签-发布".into()), &mut state);
-        if let Some(crate::app::ModalLayer::FloatingPopup { query, .. }) = state.modal_stack.last()
-        {
+        for a in crate::input::route_terminal_event(&Event::Paste("标签-发布".into()), &state) {
+            state.dispatch(a);
+        }
+        if let Some(crate::app::ModalLayer::GoToRevision { query }) = state.modal_stack.last() {
             assert_eq!(query, "标签-发布");
         }
     }

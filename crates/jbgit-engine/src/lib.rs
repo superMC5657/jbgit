@@ -1,33 +1,21 @@
-pub mod cli;
-pub mod details;
+pub(crate) mod blob_reader;
+pub(crate) mod cli;
+pub(crate) mod details;
 pub mod error;
-pub mod ops;
+pub(crate) mod ops;
 pub mod pool;
 pub mod probe;
 pub mod stage;
 pub mod supervisor;
-pub mod watcher;
+pub(crate) mod watcher;
 
-pub use cli::{GitCliExecutor, GitExecutableInfo, prepare_pathspec_args};
-pub use details::{
-    DEFAULT_FILE_HISTORY_LIMIT, load_commit_details_sync, load_file_diff_sync,
-    load_file_diff_with_oids_sync, load_file_history_sync, load_path_matches_cli,
-    load_path_matches_git2, load_path_matches_sync,
-    parse_file_history_z, verify_commit_signature_sync,
-};
+pub use cli::GitExecutableInfo;
 pub use error::EngineError;
-pub use ops::run_git_op;
 pub use pool::{
-    AheadBehindUpdate, Git2WorkerPool, PendingAheadBehind, StatusScanConfig, StatusScanMode,
-    StatusScanPolicy, TaskPriority,
+    AheadBehindUpdate, LARGE_INDEX_ENTRIES, StatusScanConfig, StatusScanMode, StatusScanPolicy,
 };
-pub use probe::{RepoLocation, RepoProbeResult, probe_repo_state};
-pub use stage::{
-    CommitOutcome, CommitPrecheckInfo, CommitRequest, StageDiffKey, StageDiffSide,
-    ThreeDocStageDiff, apply_stage_buffer_sync, build_commit_cli_args, discard_targets_sync,
-    execute_commit_git2_sync, load_amend_preview_sync, load_stage_file_diff_sync,
-    probe_commit_precheck_sync, stage_all_tracked_sync, stage_targets_sync, undo_last_commit_sync,
-    unstage_targets_sync, write_worktree_buffer_sync,
+pub use probe::{RepoLocation, RepoProbeResult};
+pub use stage::{CommitOutcome, CommitPrecheckInfo, CommitRequest, StageDiffKey, StageDiffSide, ThreeDocStageDiff};
+pub use supervisor::{
+    EngineBackend, EngineEvent, EngineHandle, EngineSupervisor, RecordingEngineBackend, TaskRequest,
 };
-pub use supervisor::{EngineEvent, EngineHandle, EngineSupervisor, TaskRequest};
-pub use watcher::{MutationGuard, MutationToken, RepoWatcher};

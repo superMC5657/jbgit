@@ -1,13 +1,11 @@
-use std::path::Path;
-
 use git2::Repository;
 use imara_diff::{Algorithm, Diff, InternedInput};
 use jbgit_core::{
-    DetailsKey, DetailsMode, DiffHunk, DiffLine, DiffLineKind, EAGER_WORD_DIFF_PAIR_BUDGET,
-    EpochToken, FileDiff, FileDiffKey, FileStatusKind, MAX_DIFF_FILE_BYTES, Oid,
-    apply_word_diff_with_budget,
+    DetailsKey, DetailsMode, EpochToken, FileDiff, FileDiffKey, FileStatusKind, MAX_DIFF_LINES,
+    Oid, build_diff_hunks,
 };
 
+use crate::blob_reader::{CheckedBlob, read_blob, read_tree_path, read_worktree_path};
 use crate::error::EngineError;
 use crate::pool::with_thread_repo;
 use crate::probe::RepoLocation;
@@ -15,99 +13,20 @@ use crate::probe::RepoLocation;
 use super::commit_changes::{ResolvedChange, resolve_changes};
 use super::to_git2_oid;
 
-/// Diff preview line budget before truncation.
-const MAX_DIFF_LINES: usize = 20_000;
-
-pub(super) enum ReadBytes {
-    Loaded { bytes: Vec<u8>, is_binary: bool },
-    TooLarge,
-}
-
-pub(super) fn read_blob_checked(repo: &Repository, oid: git2::Oid) -> ReadBytes {
-    if oid.is_zero() {
-        return ReadBytes::Loaded {
-            bytes: Vec::new(),
-            is_binary: false,
-        };
-    }
-    if let Ok(odb) = repo.odb()
-        && let Ok((size, _)) = odb.read_header(oid)
-        && size > MAX_DIFF_FILE_BYTES
-    {
-        return ReadBytes::TooLarge;
-    }
-    match repo.find_blob(oid) {
-        Ok(blob) => {
-            if blob.size() > MAX_DIFF_FILE_BYTES {
-                return ReadBytes::TooLarge;
-            }
-            let content = blob.content();
-            let is_bin = blob.is_binary() || content.contains(&0);
-            ReadBytes::Loaded {
-                bytes: content.to_vec(),
-                is_binary: is_bin,
-            }
-        }
-        Err(_) => ReadBytes::Loaded {
-            bytes: Vec::new(),
-            is_binary: false,
-        },
-    }
-}
-
 pub(super) fn read_new_bytes_checked(
     repo: &Repository,
     key: &DetailsKey,
     item: &ResolvedChange,
-) -> ReadBytes {
+) -> CheckedBlob {
     if key.mode == DetailsMode::CompareWithLocal
         && item.new_oid.is_zero()
         && item.kind != FileStatusKind::Deleted
     {
-        return read_workdir_path_checked(repo, &item.path);
+        return repo
+            .workdir()
+            .map_or(CheckedBlob::Missing, |w| read_worktree_path(w, &item.path));
     }
-    read_blob_checked(repo, item.new_oid)
-}
-
-fn read_tree_path_checked(repo: &Repository, tree: &git2::Tree<'_>, path: &str) -> ReadBytes {
-    let Ok(entry) = tree.get_path(Path::new(path)) else {
-        return ReadBytes::Loaded {
-            bytes: Vec::new(),
-            is_binary: false,
-        };
-    };
-    read_blob_checked(repo, entry.id())
-}
-
-fn read_workdir_path_checked(repo: &Repository, path: &str) -> ReadBytes {
-    let Some(workdir) = repo.workdir() else {
-        return ReadBytes::Loaded {
-            bytes: Vec::new(),
-            is_binary: false,
-        };
-    };
-    let full = workdir.join(path);
-    if let Ok(meta) = std::fs::metadata(&full)
-        && meta.len() > MAX_DIFF_FILE_BYTES as u64
-    {
-        return ReadBytes::TooLarge;
-    }
-    match std::fs::read(&full) {
-        Ok(bytes) => {
-            if bytes.len() > MAX_DIFF_FILE_BYTES {
-                return ReadBytes::TooLarge;
-            }
-            let is_bin = bytes.contains(&0);
-            ReadBytes::Loaded {
-                bytes,
-                is_binary: is_bin,
-            }
-        }
-        Err(_) => ReadBytes::Loaded {
-            bytes: Vec::new(),
-            is_binary: false,
-        },
-    }
+    read_blob(repo, item.new_oid, None)
 }
 
 pub(super) fn imara_line_stats(
@@ -132,176 +51,17 @@ pub(super) fn imara_line_stats(
     ))
 }
 
-fn build_imara_hunks(
-    old: &[u8],
-    new: &[u8],
-    context_len: u32,
-    token: &EpochToken,
-) -> Result<(Vec<DiffHunk>, bool), EngineError> {
-    let old_s = String::from_utf8_lossy(old);
-    let new_s = String::from_utf8_lossy(new);
-    let input = InternedInput::new(old_s.as_ref(), new_s.as_ref());
-    let mut diff = Diff::compute(Algorithm::Histogram, &input);
-    diff.postprocess_lines(&input);
-
-    let before_len = input.before.len() as u32;
-    let raw_hunks: Vec<_> = diff.hunks().collect();
-    if raw_hunks.is_empty() {
-        return Ok((Vec::new(), false));
-    }
-
-    let clean_line = |tok| {
-        input.interner[tok]
-            .trim_end_matches(['\n', '\r'])
-            .replace('\t', "    ")
-    };
-
-    let mut out = Vec::new();
-    let mut budget = MAX_DIFF_LINES;
-    let mut word_diff_budget = EAGER_WORD_DIFF_PAIR_BUDGET;
-    let mut truncated = false;
-
-    let mut i = 0usize;
-    while i < raw_hunks.len() {
-        if token.is_stale() {
-            return Err(EngineError::Cancelled);
-        }
-        let first = &raw_hunks[i];
-        let mut group_end = i + 1;
-        while group_end < raw_hunks.len() {
-            let prev_end = raw_hunks[group_end - 1].before.end;
-            let next_start = raw_hunks[group_end].before.start;
-            if next_start.saturating_sub(prev_end) <= context_len.saturating_mul(2) {
-                group_end += 1;
-            } else {
-                break;
-            }
-        }
-
-        let start_before = first.before.start.saturating_sub(context_len);
-        let leading = first.before.start - start_before;
-        let start_after = first.after.start.saturating_sub(leading);
-
-        let mut lines = Vec::new();
-        let mut cur_before = start_before;
-        let mut cur_after = start_after;
-
-        for h in &raw_hunks[i..group_end] {
-            while cur_before < h.before.start {
-                if budget == 0 {
-                    truncated = true;
-                    break;
-                }
-                budget -= 1;
-                lines.push(DiffLine {
-                    kind: DiffLineKind::Context,
-                    old_lineno: Some(cur_before + 1),
-                    new_lineno: Some(cur_after + 1),
-                    text: clean_line(input.before[cur_before as usize]),
-                    word_ranges: Vec::new(),
-                });
-                cur_before += 1;
-                cur_after += 1;
-            }
-            if truncated {
-                break;
-            }
-            for b_idx in h.before.start..h.before.end {
-                if budget == 0 {
-                    truncated = true;
-                    break;
-                }
-                budget -= 1;
-                lines.push(DiffLine {
-                    kind: DiffLineKind::Deleted,
-                    old_lineno: Some(b_idx + 1),
-                    new_lineno: None,
-                    text: clean_line(input.before[b_idx as usize]),
-                    word_ranges: Vec::new(),
-                });
-            }
-            for a_idx in h.after.start..h.after.end {
-                if budget == 0 {
-                    truncated = true;
-                    break;
-                }
-                budget -= 1;
-                lines.push(DiffLine {
-                    kind: DiffLineKind::Added,
-                    old_lineno: None,
-                    new_lineno: Some(a_idx + 1),
-                    text: clean_line(input.after[a_idx as usize]),
-                    word_ranges: Vec::new(),
-                });
-            }
-            if truncated {
-                break;
-            }
-            cur_before = h.before.end;
-            cur_after = h.after.end;
-        }
-
-        if !truncated {
-            let tail_end = cur_before.saturating_add(context_len).min(before_len);
-            while cur_before < tail_end {
-                if budget == 0 {
-                    truncated = true;
-                    break;
-                }
-                budget -= 1;
-                lines.push(DiffLine {
-                    kind: DiffLineKind::Context,
-                    old_lineno: Some(cur_before + 1),
-                    new_lineno: Some(cur_after + 1),
-                    text: clean_line(input.before[cur_before as usize]),
-                    word_ranges: Vec::new(),
-                });
-                cur_before += 1;
-                cur_after += 1;
-            }
-        }
-
-        let len_before = cur_before - start_before;
-        let len_after = cur_after - start_after;
-        let mut dh = DiffHunk {
-            header: format!(
-                "@@ -{},{} +{},{} @@",
-                start_before + 1,
-                len_before,
-                start_after + 1,
-                len_after
-            ),
-            lines,
-        };
-        apply_word_diff_with_budget(&mut dh, &mut word_diff_budget);
-        out.push(dh);
-        if truncated {
-            break;
-        }
-        i = group_end;
-    }
-
-    Ok((out, truncated))
-}
-
 fn populate_file_diff(
     mut out: FileDiff,
-    old: ReadBytes,
-    new: ReadBytes,
+    old: CheckedBlob,
+    new: CheckedBlob,
     context_lines: u32,
     token: &EpochToken,
 ) -> Result<FileDiff, EngineError> {
-    let (
-        ReadBytes::Loaded {
-            bytes: old_bytes,
-            is_binary: old_bin,
-        },
-        ReadBytes::Loaded {
-            bytes: new_bytes,
-            is_binary: new_bin,
-        },
-    ) = (old, new)
-    else {
+    let (Some((old_bytes, old_bin)), Some((new_bytes, new_bin))) = (
+        old.into_bytes_or_too_large(),
+        new.into_bytes_or_too_large(),
+    ) else {
         out.is_too_large = true;
         return Ok(out);
     };
@@ -309,18 +69,17 @@ fn populate_file_diff(
         out.is_binary = true;
         return Ok(out);
     }
-    let (hunks, is_truncated) = build_imara_hunks(&old_bytes, &new_bytes, context_lines, token)?;
+    let (hunks, is_truncated) = build_diff_hunks(
+        &old_bytes,
+        &new_bytes,
+        context_lines as usize,
+        MAX_DIFF_LINES,
+        || token.is_stale(),
+    )
+    .ok_or(EngineError::Cancelled)?;
     out.hunks = hunks;
     out.is_truncated = is_truncated;
     Ok(out)
-}
-
-pub fn load_file_diff_sync(
-    location: &RepoLocation,
-    key: &FileDiffKey,
-    token: &EpochToken,
-) -> Result<FileDiff, EngineError> {
-    load_file_diff_with_oids_sync(location, key, None, token)
 }
 
 pub fn load_file_diff_with_oids_sync(
@@ -347,13 +106,10 @@ pub fn load_file_diff_with_oids_sync(
         let context_lines = key.context.lines();
         let lookup_old = key.old_path.as_deref().unwrap_or(&key.path);
 
-        let read_opt_oid = |opt: Option<Oid>| -> Result<ReadBytes, EngineError> {
+        let read_opt_oid = |opt: Option<Oid>| -> Result<CheckedBlob, EngineError> {
             match opt {
-                Some(id) => Ok(read_blob_checked(repo, to_git2_oid(&id)?)),
-                None => Ok(ReadBytes::Loaded {
-                    bytes: Vec::new(),
-                    is_binary: false,
-                }),
+                Some(id) => Ok(read_blob(repo, to_git2_oid(&id)?, None)),
+                None => Ok(CheckedBlob::empty()),
             }
         };
 
@@ -372,8 +128,8 @@ pub fn load_file_diff_with_oids_sync(
                 let target = repo.find_commit(to_git2_oid(&key.details.oids[1])?)?;
                 let base_tree = base.tree()?;
                 let target_tree = target.tree()?;
-                let old = read_tree_path_checked(repo, &base_tree, lookup_old);
-                let new = read_tree_path_checked(repo, &target_tree, &key.path);
+                let old = read_tree_path(repo, &base_tree, lookup_old);
+                let new = read_tree_path(repo, &target_tree, &key.path);
                 return populate_file_diff(out, old, new, context_lines, token);
             }
             DetailsMode::CompareWithLocal if !key.details.oids.is_empty() => {
@@ -382,10 +138,12 @@ pub fn load_file_diff_with_oids_sync(
                     None => {
                         let base = repo.find_commit(to_git2_oid(&key.details.oids[0])?)?;
                         let base_tree = base.tree()?;
-                        read_tree_path_checked(repo, &base_tree, lookup_old)
+                        read_tree_path(repo, &base_tree, lookup_old)
                     }
                 };
-                let new = read_workdir_path_checked(repo, &key.path);
+                let new = repo
+                    .workdir()
+                    .map_or(CheckedBlob::Missing, |w| read_worktree_path(w, &key.path));
                 return populate_file_diff(out, old, new, context_lines, token);
             }
             DetailsMode::Commits if key.details.oids.len() == 1 => {
@@ -408,12 +166,9 @@ pub fn load_file_diff_with_oids_sync(
                 let old_tree = commit.parent(parent_idx).ok().and_then(|p| p.tree().ok());
                 let old = old_tree
                     .as_ref()
-                    .map(|t| read_tree_path_checked(repo, t, lookup_old))
-                    .unwrap_or_else(|| ReadBytes::Loaded {
-                        bytes: Vec::new(),
-                        is_binary: false,
-                    });
-                let new = read_tree_path_checked(repo, &new_tree, &key.path);
+                    .map(|t| read_tree_path(repo, t, lookup_old))
+                    .unwrap_or_else(CheckedBlob::empty);
+                let new = read_tree_path(repo, &new_tree, &key.path);
                 return populate_file_diff(out, old, new, context_lines, token);
             }
             DetailsMode::Commits if !key.details.oids.is_empty() => {
@@ -447,9 +202,9 @@ pub fn load_file_diff_with_oids_sync(
                 .ok()
                 .and_then(|p| p.tree().ok())
         {
-            read_tree_path_checked(repo, &parent_tree, old_path)
+            read_tree_path(repo, &parent_tree, old_path)
         } else {
-            read_blob_checked(repo, item.old_oid)
+            read_blob(repo, item.old_oid, None)
         };
         let new = read_new_bytes_checked(repo, &key.details, &item);
         populate_file_diff(out, old, new, context_lines, token)

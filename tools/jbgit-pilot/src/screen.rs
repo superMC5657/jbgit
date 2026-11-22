@@ -206,32 +206,82 @@ pub(crate) fn summarize_palette(shared: &Arc<Mutex<SharedPtyState>>) -> Vec<Colo
     list
 }
 
-pub(crate) fn extract_latest_osc52_clipboard(raw: &[u8]) -> Option<String> {
-    const PREFIX: &[u8] = b"\x1b]52;";
-    let mut latest = None;
-    let mut i = 0;
-    while i + PREFIX.len() <= raw.len() {
-        if raw[i..].starts_with(PREFIX) {
-            let after_prefix = &raw[i + PREFIX.len()..];
-            if let Some(semi) = after_prefix.iter().take(16).position(|&b| b == b';') {
-                let payload = &after_prefix[semi + 1..];
-                let end = find_osc_terminator(payload);
-                if let Some((term_idx, term_len)) = end {
-                    let b64 = &payload[..term_idx];
-                    if b64 != b"?"
-                        && let Some(decoded) = base64_decode(b64)
-                        && let Ok(text) = String::from_utf8(decoded)
-                    {
-                        latest = Some(text);
-                    }
-                    i += PREFIX.len() + semi + 1 + term_idx + term_len;
-                    continue;
-                }
-            }
+/// Incremental streaming scanner for OSC-52 clipboard writes (`\x1b]52;<sel>;<b64>\x07|\x1b\\`).
+///
+/// Fed directly from the PTY reader loop so `PilotAction::Clipboard` returns the
+/// latest clipboard payload in O(1) without re-reading `pty_raw.log`.
+#[derive(Debug, Default)]
+pub(crate) struct Osc52ClipboardScanner {
+    pending: Vec<u8>,
+    latest: Option<String>,
+}
+
+impl Osc52ClipboardScanner {
+    const PREFIX: &'static [u8] = b"\x1b]52;";
+    const MAX_PENDING_BYTES: usize = 256 * 1024;
+
+    pub(crate) fn feed(&mut self, chunk: &[u8]) {
+        if chunk.is_empty() {
+            return;
         }
-        i += 1;
+        self.pending.extend_from_slice(chunk);
+
+        let mut i = 0;
+        let mut keep_from = self.pending.len();
+        while i < self.pending.len() {
+            let rem = &self.pending[i..];
+            if rem.starts_with(Self::PREFIX) {
+                let after_prefix = &rem[Self::PREFIX.len()..];
+                if let Some(semi) = after_prefix.iter().take(16).position(|&b| b == b';') {
+                    let payload = &after_prefix[semi + 1..];
+                    if let Some((term_idx, term_len)) = find_osc_terminator(payload) {
+                        let b64 = &payload[..term_idx];
+                        if b64 != b"?"
+                            && let Some(decoded) = base64_decode(b64)
+                            && let Ok(text) = String::from_utf8(decoded)
+                        {
+                            self.latest = Some(text);
+                        }
+                        i += Self::PREFIX.len() + semi + 1 + term_idx + term_len;
+                        continue;
+                    }
+                    // Complete header, waiting for terminator in a later chunk.
+                    if rem.len() <= Self::MAX_PENDING_BYTES {
+                        keep_from = i;
+                        break;
+                    }
+                } else if after_prefix.len() < 16 {
+                    // Header selector not complete yet; wait for more bytes.
+                    keep_from = i;
+                    break;
+                }
+            } else if rem.len() < Self::PREFIX.len() && Self::PREFIX.starts_with(rem) {
+                // Partial `\x1b]52;` prefix at the tail of the chunk.
+                keep_from = i;
+                break;
+            }
+            i += 1;
+        }
+
+        if keep_from == 0 {
+            // Retain entire pending slice (bounded by MAX_PENDING_BYTES above).
+        } else if keep_from >= self.pending.len() {
+            self.pending.clear();
+        } else {
+            self.pending.drain(..keep_from);
+        }
     }
-    latest
+
+    pub(crate) fn latest(&self) -> Option<&str> {
+        self.latest.as_deref()
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn extract_latest_osc52_clipboard(raw: &[u8]) -> Option<String> {
+    let mut scanner = Osc52ClipboardScanner::default();
+    scanner.feed(raw);
+    scanner.latest().map(ToString::to_string)
 }
 
 fn find_osc_terminator(bytes: &[u8]) -> Option<(usize, usize)> {
@@ -279,7 +329,7 @@ fn base64_decode(input: &[u8]) -> Option<Vec<u8>> {
 
 #[cfg(test)]
 mod tests {
-    use super::extract_latest_osc52_clipboard;
+    use super::{Osc52ClipboardScanner, extract_latest_osc52_clipboard};
 
     #[test]
     fn decodes_latest_osc52_clipboard_sequence() {
@@ -295,5 +345,21 @@ mod tests {
             extract_latest_osc52_clipboard(b"\x1b]52;c;?\x07"),
             None
         );
+    }
+
+    #[test]
+    fn incremental_osc52_scanner_handles_arbitrary_chunk_splits() {
+        let stream = b"prefix\x1b]52;c;Zmlyc3Q=\x07mid\x1b]52;c;c2Vjb25k\x1b\\tail";
+        for chunk_size in [1, 2, 3, 5, 7, 13] {
+            let mut scanner = Osc52ClipboardScanner::default();
+            for chunk in stream.chunks(chunk_size) {
+                scanner.feed(chunk);
+            }
+            assert_eq!(
+                scanner.latest(),
+                Some("second"),
+                "failed for chunk_size={chunk_size}"
+            );
+        }
     }
 }

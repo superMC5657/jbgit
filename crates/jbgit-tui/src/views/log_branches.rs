@@ -57,7 +57,7 @@ pub fn render_branches_pane(
     state: &AppState,
     ctx: &mut RenderContext<'_>,
 ) {
-    let pane = &state.branches;
+    let pane = &state.log.branches;
     let sub = state
         .repo_snapshot
         .as_ref()
@@ -104,12 +104,12 @@ pub fn render_branches_pane(
         return;
     }
     let mut list_area = body;
-    if !state.log_filter.spec.branch.is_empty() && list_area.height > 1 {
+    if !state.log.filter.spec.branch.is_empty() && list_area.height > 1 {
         let bar = Rect::new(list_area.x, list_area.y, list_area.width, 1);
         let btn_text = state.i18n.t("view.branches.clear_filter_btn");
         let label = state.i18n.t_fmt(
             "view.branches.filtered_prefix",
-            &[("label", &state.log_filter.spec.branch.label())],
+            &[("label", &state.log.filter.spec.branch.label())],
         );
         let btn_w = btn_text.width() as u16;
         let left_w = list_area.width.saturating_sub(btn_w + 1) as usize;
@@ -203,7 +203,7 @@ pub fn render_branches_pane(
     let glyphs = ctx.glyph_mode.symbols();
     let visible_h = list_area.height as usize;
     let (selected, offset) = list_viewport(pane.rows.len(), pane.selected, visible_h);
-    let filter_names = &state.log_filter.spec.branch.include;
+    let filter_names = &state.log.filter.spec.branch.include;
 
     for (vis_y, row_idx) in (offset..pane.rows.len()).take(visible_h).enumerate() {
         let row = pane.rows[row_idx];

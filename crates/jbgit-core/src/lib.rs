@@ -6,6 +6,7 @@ pub mod epoch;
 pub mod filter;
 pub mod git_ops;
 pub mod graph;
+pub mod key_token;
 pub mod lru;
 pub mod oid;
 pub mod refs;
@@ -31,17 +32,18 @@ pub use details::{
     SignatureStatus, apply_word_diff, apply_word_diff_with_budget, build_change_rows,
     classify_message_line, issue_ref_ranges, side_by_side_rows, word_diff,
 };
-pub use epoch::{EpochToken, EpochTracker, RequestEpoch};
+pub use epoch::{EpochToken, RequestEpoch, RequestSlot, RequestSlotId, RequestSlotTable, SlotRegistry};
 pub use filter::{
     BranchFilter, DateFilter, FilterError, LogFilterSpec, PathFilter, RepoUser, TextFilter,
     TextMatcher, UserFilter, UserMatcher, glob_match,
 };
 pub use git_ops::{
-    GitFailure, GitOp, GitOpOutcome, GitStep, OngoingKind, OngoingStep, RefNameError, ResetMode,
-    RewritePlan, StashEntry, TodoAction, TodoEntry, classify_failure, default_squash_messages,
-    fuzzy_indices, is_protected_branch, parse_recent_checkouts, render_todo, short_rev,
-    validate_ref_name, validate_ref_name_typed,
+    GitFailure, GitOp, GitOpOutcome, OngoingKind, OngoingStep, PatchSource, RefNameError,
+    ResetMode, RewritePlan, StashEntry, TodoAction, TodoEntry, classify_failure,
+    default_squash_messages, fuzzy_indices, is_protected_branch, parse_recent_checkouts,
+    render_todo, short_rev, validate_ref_name, validate_ref_name_typed,
 };
+pub use key_token::{KeyToken, KeyTokenError, KeyTokenKind, parse_key_token};
 pub use lru::LruCache;
 pub use oid::Oid;
 pub use refs::{
@@ -57,8 +59,9 @@ pub use stage::{
     build_stage_tree_rows, collect_targets_under_row, next_anchor_after_mutation,
 };
 pub use stage_tracker::{
-    DiffBlock, LineEnding, LineGutterMark, LineSelection, LineSlice, SlicedDocument,
-    StageDiffHunk, StageDiffLineMeta, StageLineTracker, StagedRange, compute_diff_blocks,
+    BINARY_SNIFF_BYTES, DiffBlock, LineEnding, LineGutterMark, LineSelection, LineSlice,
+    MAX_DIFF_LINES, SlicedDocument, StageDiffHunk, StageDiffLineMeta, StageLineTracker,
+    StagedRange, assemble_hunks, build_diff_hunks, compute_diff_blocks, is_binary_bytes,
     merge_stage_blocks,
 };
 pub use ui::{

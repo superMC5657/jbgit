@@ -257,16 +257,35 @@ impl ChoiceDialog {
         cancel: impl Into<String>,
         actions: Vec<Action>,
     ) -> Self {
+        Self::confirm_with_default(title, body, confirm, cancel, true, false, actions)
+    }
+
+    /// Two-button confirmation dialog with configurable danger styling and initial button focus.
+    pub fn confirm_with_default(
+        title: impl Into<String>,
+        body: Vec<String>,
+        confirm: impl Into<String>,
+        cancel: impl Into<String>,
+        danger: bool,
+        default_confirm: bool,
+        actions: Vec<Action>,
+    ) -> Self {
+        let confirm_opt = ChoiceOption::new(confirm, None, actions);
+        let confirm_opt = if danger {
+            confirm_opt.danger()
+        } else {
+            confirm_opt
+        };
         let mut d = Self::buttons(
             title,
             body,
             vec![
-                ChoiceOption::new(confirm, None, actions).danger(),
+                confirm_opt,
                 ChoiceOption::new(cancel, Some('c'), Vec::new()),
             ],
         );
-        d.selected = 1;
-        d.danger = true;
+        d.selected = if default_confirm { 0 } else { 1 };
+        d.danger = danger;
         d
     }
 }
@@ -490,6 +509,13 @@ pub fn route_dialog_key(dialog: &mut Dialog, key: &KeyEvent, i18n: &I18n) -> Dia
                         Some(idx) => {
                             d.selected = idx;
                             DialogKey::Confirm
+                        }
+                        None if !d.radio && d.options.len() == 2 && c == 'y' => {
+                            d.selected = 0;
+                            DialogKey::Confirm
+                        }
+                        None if !d.radio && d.options.len() == 2 && matches!(c, 'n' | 'q') => {
+                            DialogKey::Cancel
                         }
                         None => DialogKey::None,
                     }

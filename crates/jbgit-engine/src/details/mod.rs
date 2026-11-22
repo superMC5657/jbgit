@@ -7,17 +7,16 @@ mod file_diff;
 mod file_history;
 mod path_matches;
 
-use std::path::Path;
-use std::process::{Command, Stdio};
-
 use jbgit_core::{Oid, PersonStamp};
 
 use crate::error::EngineError;
 
-pub use commit_changes::{load_commit_details_sync, verify_commit_signature_sync};
-pub use file_diff::{load_file_diff_sync, load_file_diff_with_oids_sync};
-pub use file_history::{DEFAULT_FILE_HISTORY_LIMIT, load_file_history_sync, parse_file_history_z};
-pub use path_matches::{load_path_matches_cli, load_path_matches_git2, load_path_matches_sync};
+pub(crate) use commit_changes::{load_commit_details_sync, verify_commit_signature_sync};
+pub(crate) use file_diff::load_file_diff_with_oids_sync;
+pub(crate) use file_history::load_file_history_sync;
+#[cfg(test)]
+pub(crate) use file_history::parse_file_history_z;
+pub(crate) use path_matches::load_path_matches_sync;
 
 pub(super) fn to_git2_oid(oid: &Oid) -> Result<git2::Oid, EngineError> {
     git2::Oid::from_bytes(oid.as_bytes()).map_err(EngineError::from)
@@ -34,24 +33,6 @@ pub(super) fn person(sig: &git2::Signature<'_>) -> PersonStamp {
 
 pub(super) fn delta_path(file: git2::DiffFile<'_>) -> Option<String> {
     file.path().map(|p| p.to_string_lossy().replace('\\', "/"))
-}
-
-pub(super) fn non_interactive_git_command(git: &Path, cwd: Option<&Path>) -> Command {
-    let mut cmd = Command::new(git);
-    if let Some(dir) = cwd {
-        cmd.current_dir(dir);
-    }
-    cmd.env("GIT_OPTIONAL_LOCKS", "0")
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .env("GIT_PAGER", "cat")
-        .env("LC_ALL", "C.UTF-8")
-        .stdin(Stdio::null());
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        cmd.creation_flags(0x0800_0000);
-    }
-    cmd
 }
 
 #[cfg(test)]

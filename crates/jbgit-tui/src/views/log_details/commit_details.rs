@@ -53,8 +53,8 @@ pub(super) fn render_commit_details(
     }
     ctx.hit_registry.register(area, 1, HitTarget::DetailsArea);
     let h = area.height as usize;
-    let details = &state.details;
-    let Some(key) = &details.current_key else {
+    let details = &state.log.details;
+    let Some(key) = &details.changes.current_key else {
         ctx.record_scroll_bound(ScrollPane::LogDetails, h, 0);
         frame.render_widget(
             muted_line(ctx, ctx.t("view.log_details.no_commit_selected")),
@@ -62,7 +62,7 @@ pub(super) fn render_commit_details(
         );
         return;
     };
-    let Some(bundle) = details.current_bundle() else {
+    let Some(bundle) = details.current_bundle(&state.diff_caches) else {
         if let [oid] = key.oids.as_slice()
             && let Some(c) = state
                 .repo_snapshot
@@ -144,7 +144,7 @@ pub(super) fn render_commit_details(
 
     let max_scroll = lines.len().saturating_sub(h);
     ctx.record_scroll_bound(ScrollPane::LogDetails, h, max_scroll);
-    let scroll = details.details_scroll.min(max_scroll);
+    let scroll = details.details_scroll.offset().min(max_scroll);
     for (vis_y, idx) in (scroll..lines.len()).take(h).enumerate() {
         let rect = Rect::new(area.x, area.y + vis_y as u16, area.width, 1);
         frame.render_widget(Paragraph::new(lines[idx].clone()), rect);
@@ -180,8 +180,8 @@ fn build_single_details(
         ),
     ];
     let effective_sig = state
-        .details
-        .signature_overrides
+        .diff_caches
+        .signatures
         .peek(&d.oid)
         .copied()
         .unwrap_or(d.signature);
@@ -246,12 +246,13 @@ fn build_single_details(
     }
     lines.push(Line::from(parent_spans));
 
-    if let (Some((oid, names)), Some(snap)) = (&state.details.containing, &state.repo_snapshot)
+    if let (Some((oid, names)), Some(snap)) = (&state.log.details.containing, &state.repo_snapshot)
         && *oid == d.oid
     {
         let kind_of = |n: &str| {
             state
-                .log_graph
+                .log
+                .graph
                 .cached
                 .as_ref()
                 .and_then(|c| c.ref_kind_by_name.get(n).copied())

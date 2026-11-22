@@ -6,19 +6,17 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use jbgit_core::PaneId;
 use jbgit_engine::StageDiffSide;
 
-use crate::app::{
-    Action, AppState, ContextMenuAction, ContextMenuItem, EditorMoveKind, PopupKind,
-};
+use crate::app::{Action, AppState, ContextMenuItem, DiffScope, EditorMoveKind, PopupKind};
 use crate::hit_test::{
     CommitOptionKind, HitTarget, StageDiffToolbarButton, StageToolbarButton,
 };
-use crate::keymap::KeyAction;
+use crate::keymap::{KeyAction, catalog};
 
 const BRACKET_CHORD_WINDOW: Duration = Duration::from_millis(500);
 
 pub(crate) fn route_commit_priority_key(
     key: &KeyEvent,
-    state: &mut AppState,
+    state: &AppState,
 ) -> Option<Vec<Action>> {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     let alt = key.modifiers.contains(KeyModifiers::ALT);
@@ -31,7 +29,7 @@ pub(crate) fn route_commit_priority_key(
         if key.code == KeyCode::Char('e') && ctrl && !alt {
             return Some(vec![Action::OpenExternalEditorMessage]);
         }
-        if state.stage_workbench.editing_author {
+        if state.stage_workbench.editing_author() {
             return Some(match key.code {
                 KeyCode::Esc | KeyCode::Enter => vec![Action::CommitAuthorDone],
                 KeyCode::Backspace => vec![Action::CommitAuthorBackspace],
@@ -67,14 +65,10 @@ pub(crate) fn route_commit_priority_key(
             && !alt
             && state
                 .stage_workbench
-                .bracket_jump_at
-                .take()
+                .bracket_jump_at()
                 .is_some_and(|t| t.elapsed() < BRACKET_CHORD_WINDOW)
         {
-            return Some(Vec::new());
-        }
-        if !matches!(key.code, KeyCode::Char(']') | KeyCode::Char('[')) {
-            state.stage_workbench.bracket_jump_at = None;
+            return Some(vec![Action::StageClearBracketJump]);
         }
     }
 
@@ -86,8 +80,7 @@ pub(crate) fn route_commit_diff_fallback_key(key: &KeyEvent, state: &AppState) -
     let alt = key.modifiers.contains(KeyModifiers::ALT);
     let side = state
         .stage_workbench
-        .current_diff_key
-        .as_ref()
+        .current_diff_key()
         .map(|k| k.side);
     let is_amend_ref = side == Some(StageDiffSide::AmendCommit);
 
@@ -105,7 +98,7 @@ pub(crate) fn route_commit_diff_fallback_key(key: &KeyEvent, state: &AppState) -
             vec![Action::StageDiffUnstageSelection]
         }
         KeyCode::Esc => {
-            if state.stage_workbench.visual_anchor_row.is_some() {
+            if state.stage_workbench.visual_anchor_row().is_some() {
                 vec![Action::StageDiffToggleVisual]
             } else {
                 vec![Action::FocusPane(PaneId::CommitChangesTree)]
@@ -124,13 +117,11 @@ pub(crate) fn route_commit_changes_tree_key(key: &KeyEvent, state: &AppState) ->
         KeyCode::Right => vec![Action::StageExpand(true)],
         KeyCode::Left => vec![Action::StageExpand(false)],
         KeyCode::Enter => {
-            let row = state
-                .stage_workbench
-                .rows
-                .get(state.commit_stage_selected_idx);
+            let sel = state.stage_workbench.selected_idx();
+            let row = state.stage_workbench.selected_row();
             match row {
                 Some(r) if r.is_container() => {
-                    vec![Action::StageToggleRow(state.commit_stage_selected_idx)]
+                    vec![Action::StageToggleRow(sel)]
                 }
                 Some(_) => vec![Action::FocusPane(PaneId::CommitDiffPreview)],
                 None => Vec::new(),
@@ -147,7 +138,7 @@ pub(crate) fn route_commit_changes_tree_key(key: &KeyEvent, state: &AppState) ->
 
 pub(crate) fn route_stage_left_click(
     target: HitTarget,
-    state: &mut AppState,
+    state: &AppState,
     col: u16,
     row: u16,
     ctrl: bool,
@@ -164,7 +155,7 @@ pub(crate) fn route_stage_left_click(
             if on_hover_action_icon {
                 let group_kind = state
                     .stage_workbench
-                    .rows
+                    .rows()
                     .get(idx)
                     .map(|r| r.group_kind());
                 let mut actions = vec![
@@ -191,7 +182,7 @@ pub(crate) fn route_stage_left_click(
                 Action::SelectCommitStageRow(idx),
             ];
             if is_double
-                && let Some(r) = state.stage_workbench.rows.get(idx)
+                && let Some(r) = state.stage_workbench.rows().get(idx)
             {
                 if r.is_container() {
                     actions.push(Action::StageToggleRow(idx));
@@ -216,10 +207,12 @@ pub(crate) fn route_stage_left_click(
         HitTarget::StageResolveConflicts => Ok(vec![Action::ResolveConflictsNotice]),
         HitTarget::StageDiffToolbar(btn) => Ok(match btn {
             StageDiffToolbarButton::SwitchSide => vec![Action::StageDiffSwitchSide],
-            StageDiffToolbarButton::SideBySide => vec![Action::StageDiffToggleSideBySide],
-            StageDiffToolbarButton::Context => vec![Action::StageDiffCycleContext],
-            StageDiffToolbarButton::PrevHunk => vec![Action::StageDiffJumpHunk(-1)],
-            StageDiffToolbarButton::NextHunk => vec![Action::StageDiffJumpHunk(1)],
+            StageDiffToolbarButton::SideBySide => {
+                vec![Action::DiffToggleSideBySide(DiffScope::Stage)]
+            }
+            StageDiffToolbarButton::Context => vec![Action::DiffCycleContext(DiffScope::Stage)],
+            StageDiffToolbarButton::PrevHunk => vec![Action::DiffJumpHunk(DiffScope::Stage, -1)],
+            StageDiffToolbarButton::NextHunk => vec![Action::DiffJumpHunk(DiffScope::Stage, 1)],
             StageDiffToolbarButton::Close => vec![Action::StageToggleDiffCollapsed],
         }),
         HitTarget::DiffHunkAction { hunk_idx, action } => Ok(vec![
@@ -229,32 +222,22 @@ pub(crate) fn route_stage_left_click(
         HitTarget::StageDiffGutter {
             row_idx,
             staged_range_idx,
-        } => {
-            state.stage_workbench.visual_anchor_row = None;
-            Ok(vec![
-                Action::FocusPane(PaneId::CommitDiffPreview),
-                Action::OpenThreeWayInspector {
-                    row_idx: Some(row_idx),
-                    range_idx: staged_range_idx,
-                },
-            ])
-        }
-        HitTarget::StageDiffLine { row_idx } => {
-            if shift {
-                if state.stage_workbench.visual_anchor_row.is_none() {
-                    state.stage_workbench.visual_anchor_row =
-                        Some(state.stage_workbench.diff_cursor_row);
-                }
-            } else {
-                state.stage_workbench.visual_anchor_row = None;
-            }
-            state.stage_workbench.diff_cursor_row = row_idx;
-            Ok(vec![Action::FocusPane(PaneId::CommitDiffPreview)])
-        }
-        HitTarget::CommitEditorArea => {
-            state.stage_workbench.editing_author = false;
-            Ok(vec![Action::FocusPane(PaneId::CommitMessageEditor)])
-        }
+        } => Ok(vec![
+            Action::StageDiffClearVisualAnchor,
+            Action::FocusPane(PaneId::CommitDiffPreview),
+            Action::OpenThreeWayInspector {
+                row_idx: Some(row_idx),
+                range_idx: staged_range_idx,
+            },
+        ]),
+        HitTarget::StageDiffLine { row_idx } => Ok(vec![
+            Action::StageDiffSelectLine {
+                row_idx,
+                extend: shift,
+            },
+            Action::FocusPane(PaneId::CommitDiffPreview),
+        ]),
+        HitTarget::CommitEditorArea => Ok(vec![Action::CommitEditorFocusBody]),
         HitTarget::CommitOption(kind) => Ok(match kind {
             CommitOptionKind::Amend => vec![Action::CommitToggleAmend],
             CommitOptionKind::Signoff => vec![Action::CommitToggleSignoff],
@@ -276,28 +259,21 @@ pub(crate) fn route_stage_left_click(
 pub(crate) fn stage_tree_context_menu_items(
     state: &AppState,
     idx: usize,
-    actions: &mut Vec<Action>,
 ) -> Vec<ContextMenuItem> {
-    if state.commit_stage_selected_idx != idx {
-        actions.push(Action::FocusPane(PaneId::CommitChangesTree));
-        actions.push(Action::SelectCommitStageRow(idx));
-    }
     let mut items = crate::menus::stage_tree_menu_items(state, idx);
-    let refresh_sc = state
-        .config
-        .keymap
-        .primary_key_for(&[crate::config::KeymapScope::Global], &KeyAction::Refresh);
+    let refresh_sc =
+        catalog::shortcut_for_action(state, &[crate::config::KeymapScope::Global], &KeyAction::Refresh);
     items.push(ContextMenuItem::separator());
     items.push(ContextMenuItem::submenu(
         state.i18n.t("menu.stage.view_options"),
         Some('o'),
         stage_options_menu_items(state),
     ));
-    items.push(ContextMenuItem::action(
+    items.push(ContextMenuItem::run(
         state.i18n.t("menu.stage.refresh_status"),
         Some('r'),
         refresh_sc.as_deref(),
-        ContextMenuAction::RefreshRepo,
+        vec![Action::RefreshAll],
     ));
     items
 }
@@ -305,48 +281,49 @@ pub(crate) fn stage_tree_context_menu_items(
 pub(crate) fn stage_options_menu_items(state: &AppState) -> Vec<ContextMenuItem> {
     let check = |on: bool| if on { "✓" } else { " " };
     let i18n = &state.i18n;
-    let group_sc = state
-        .config
-        .keymap
-        .primary_key_for(&[crate::config::KeymapScope::Commit], &KeyAction::ToggleGroup);
+    let group_sc = catalog::shortcut_for_action(
+        state,
+        &[crate::config::KeymapScope::Commit],
+        &KeyAction::ToggleGroup,
+    );
     vec![
-        ContextMenuItem::action(
+        ContextMenuItem::run(
             format!(
                 "{} {}",
-                check(state.stage_workbench.tree_opts.group_by_dir),
+                check(state.stage_workbench.tree_opts().group_by_dir),
                 i18n.t("menu.stage.opt_group_by_dir")
             ),
             Some('g'),
             group_sc.as_deref(),
-            ContextMenuAction::StageToggleGroupByDir,
+            vec![Action::StageToggleGroupByDir],
         ),
-        ContextMenuItem::action(
+        ContextMenuItem::run(
             format!(
                 "{} {}",
-                check(state.stage_workbench.tree_opts.show_ignored),
+                check(state.stage_workbench.tree_opts().show_ignored),
                 i18n.t("menu.stage.opt_show_ignored")
             ),
             Some('i'),
             None,
-            ContextMenuAction::StageToggleShowIgnored,
+            vec![Action::StageToggleShowIgnored],
         ),
-        ContextMenuItem::action(
+        ContextMenuItem::run(
             i18n.t("menu.stage.expand_all"),
             Some('e'),
             None,
-            ContextMenuAction::StageExpandAll(true),
+            vec![Action::StageExpandAll(true)],
         ),
-        ContextMenuItem::action(
+        ContextMenuItem::run(
             i18n.t("menu.stage.collapse_all"),
             Some('c'),
             None,
-            ContextMenuAction::StageExpandAll(false),
+            vec![Action::StageExpandAll(false)],
         ),
-        ContextMenuItem::action(
+        ContextMenuItem::run(
             i18n.t("menu.stage.stage_all_tracked"),
             Some('a'),
             None,
-            ContextMenuAction::StageAllTracked,
+            vec![Action::StageAllTracked],
         ),
     ]
 }

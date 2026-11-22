@@ -2,10 +2,13 @@ mod branches_and_dialogs_tests;
 mod context_menu_tests;
 mod file_history_and_changes_tests;
 mod footer_and_keymap_tests;
+mod log_tests;
 mod runtime_and_editor_tests;
+mod session_tests;
 
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use crossterm::event::{
     Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
@@ -14,20 +17,19 @@ use jbgit_core::{
     CommitDetails, CommitSummary, GitOp, Oid, PersonStamp, RefInfo, RefKind, RepoSnapshot,
     RepositoryState, SignatureStatus,
 };
-use jbgit_engine::EngineEvent;
+use jbgit_engine::{EngineEvent, RecordingEngineBackend, TaskRequest};
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 
 use crate::app::{
-    Action, AppState, ContextMenuAction, ContextMenuEntryKind, ContextMenuItem, Effect, ModalLayer,
+    Action, AppState, ContextMenuEntryKind, ContextMenuItem, ModalLayer, UiAsyncEvent,
 };
 use crate::config::AppConfig;
 use crate::hit_test::HitTarget;
 use crate::i18n::I18n;
-use crate::input::route_terminal_event;
-use crate::views::render_app;
+use crate::session::{SessionInput, TestHost, TuiSession, TurnReport};
 
 pub(super) fn oid(n: u8) -> Oid {
     Oid::from_bytes([n; 20])
@@ -180,51 +182,178 @@ pub(super) fn test_state(workdir: PathBuf) -> AppState {
     state
 }
 
-pub(super) fn state_with(snap: RepoSnapshot) -> AppState {
-    let mut state = AppState::new_with_config(".".into(), None, AppConfig::default());
-    state.i18n = Arc::new(I18n::load("en-US", None));
-    state.apply_engine_event(EngineEvent::RepoSnapshotLoaded {
-        snapshot: Arc::new(snap),
-        epoch: 1,
-    });
-    state
+/// Full end-to-end deterministic test harness pairing [`TuiSession`] with
+/// [`RecordingEngineBackend`], [`TestHost`], a virtual monotonic clock, and
+/// ratatui's [`TestBackend`].
+pub(super) struct TestSession {
+    pub(super) session: TuiSession,
+    pub(super) engine: RecordingEngineBackend,
+    pub(super) host: TestHost,
+    clock: Instant,
 }
 
-pub(super) fn run(state: &mut AppState, actions: Vec<Action>) -> Vec<Effect> {
-    let mut effects = Vec::new();
-    for a in actions {
-        effects.extend(state.dispatch(a));
+impl TestSession {
+    pub(super) fn new(state: AppState) -> Self {
+        let clock = Instant::now();
+        Self {
+            session: TuiSession::new_at(state, clock),
+            engine: RecordingEngineBackend::new(),
+            host: TestHost::new(),
+            clock,
+        }
     }
-    effects
-}
 
-pub(super) fn key(state: &mut AppState, code: KeyCode, mods: KeyModifiers) -> Vec<Effect> {
-    let actions = route_terminal_event(Event::Key(KeyEvent::new(code, mods)), state);
-    run(state, actions)
-}
-
-pub(super) fn type_str(state: &mut AppState, text: &str) {
-    for c in text.chars() {
-        key(state, KeyCode::Char(c), KeyModifiers::NONE);
+    pub(super) fn with_snapshot(snap: RepoSnapshot) -> Self {
+        let mut s = Self::new(test_state(snap.workdir.clone()));
+        s.deliver_engine_event(EngineEvent::RepoSnapshotLoaded {
+            snapshot: Arc::new(snap),
+            epoch: 1,
+        });
+        s
     }
-}
 
-pub(super) fn mouse(
-    state: &mut AppState,
-    kind: MouseEventKind,
-    col: u16,
-    row: u16,
-) -> Vec<Effect> {
-    let actions = route_terminal_event(
-        Event::Mouse(MouseEvent {
+    pub(super) fn with_config(workdir: PathBuf, config: AppConfig) -> Self {
+        let mut state = AppState::new_with_config(workdir, None, config);
+        state.i18n = Arc::new(I18n::load("en-US", None));
+        Self::new(state)
+    }
+
+    pub(super) fn state(&self) -> &AppState {
+        self.session.state()
+    }
+
+    pub(super) fn state_mut(&mut self) -> &mut AppState {
+        self.session.state_mut()
+    }
+
+    pub(super) fn now(&self) -> Instant {
+        self.clock
+    }
+
+    pub(super) fn step(&mut self, inputs: impl IntoIterator<Item = SessionInput>) -> TurnReport {
+        self.session
+            .step_turn(inputs, self.clock, Some(&self.engine), &mut self.host)
+    }
+
+    pub(super) fn send_event(&mut self, ev: Event) -> TurnReport {
+        self.step([SessionInput::Terminal(ev)])
+    }
+
+    pub(super) fn send_events(&mut self, events: impl IntoIterator<Item = Event>) -> TurnReport {
+        self.step(events.into_iter().map(SessionInput::Terminal))
+    }
+
+    pub(super) fn send_key(&mut self, code: KeyCode, mods: KeyModifiers) -> TurnReport {
+        self.send_event(Event::Key(KeyEvent::new(code, mods)))
+    }
+
+    pub(super) fn type_str(&mut self, text: &str) {
+        let events: Vec<Event> = text
+            .chars()
+            .map(|c| Event::Key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE)))
+            .collect();
+        self.send_events(events);
+    }
+
+    pub(super) fn send_mouse_event(&mut self, ev: MouseEvent) -> TurnReport {
+        self.send_event(Event::Mouse(ev))
+    }
+
+    pub(super) fn send_mouse(
+        &mut self,
+        kind: MouseEventKind,
+        col: u16,
+        row: u16,
+    ) -> TurnReport {
+        self.send_event(Event::Mouse(MouseEvent {
             kind,
             column: col,
             row,
             modifiers: KeyModifiers::NONE,
-        }),
-        state,
-    );
-    run(state, actions)
+        }))
+    }
+
+    pub(super) fn dispatch(&mut self, action: Action) -> TurnReport {
+        self.step([SessionInput::Action(action)])
+    }
+
+    pub(super) fn dispatch_many(&mut self, actions: impl IntoIterator<Item = Action>) -> TurnReport {
+        self.step(actions.into_iter().map(SessionInput::Action))
+    }
+
+    pub(super) fn deliver_engine_event(&mut self, ev: EngineEvent) -> TurnReport {
+        self.step([SessionInput::Engine(ev)])
+    }
+
+    #[allow(dead_code)]
+    pub(super) fn deliver_ui_async(&mut self, ev: UiAsyncEvent) -> TurnReport {
+        self.step([SessionInput::UiAsync(ev)])
+    }
+
+    pub(super) fn advance_by(&mut self, delta: Duration) -> TurnReport {
+        self.clock += delta;
+        self.session
+            .advance_to(self.clock, Some(&self.engine), &mut self.host)
+    }
+
+    pub(super) fn render(&mut self, w: u16, h: u16) -> Buffer {
+        let mut terminal = Terminal::new(TestBackend::new(w, h)).unwrap();
+        terminal
+            .draw(|f| self.session.render(f))
+            .unwrap();
+        terminal.backend().buffer().clone()
+    }
+
+    pub(super) fn take_requests(&self) -> Vec<(TaskRequest, Option<u64>)> {
+        self.engine.take_recorded()
+    }
+
+    pub(super) fn take_git_ops(&self) -> Vec<GitOp> {
+        self.engine
+            .take_recorded()
+            .into_iter()
+            .filter_map(|(req, _)| match req {
+                TaskRequest::RunGitOp { op } => Some(op),
+                _ => None,
+            })
+            .collect()
+    }
+
+    pub(super) fn region_of(&self, pred: impl Fn(&HitTarget) -> bool) -> Rect {
+        self.state()
+            .hit_registry
+            .find(pred)
+            .map(|r| r.rect)
+            .expect("hit region not registered")
+    }
+
+    pub(super) fn hit_center_of(&self, pred: impl Fn(&HitTarget) -> bool) -> Option<(u16, u16)> {
+        self.state()
+            .hit_registry
+            .find(pred)
+            .map(|r| (r.rect.x + r.rect.width / 2, r.rect.y + r.rect.height / 2))
+    }
+
+    pub(super) fn should_quit(&self) -> bool {
+        self.session.should_quit()
+    }
+
+    pub(super) fn next_deadline(&self) -> Option<Instant> {
+        self.session.next_deadline()
+    }
+
+    pub(super) fn clipboard(&self) -> &[String] {
+        &self.host.clipboard
+    }
+
+    pub(super) fn execute_effects(&mut self, effects: Vec<crate::app::Effect>) {
+        crate::app::execute_effects_with_host(
+            effects,
+            self.session.state_mut(),
+            Some(&self.engine),
+            &mut self.host,
+        );
+    }
 }
 
 pub(super) fn left_click(col: u16, row: u16, mods: KeyModifiers) -> MouseEvent {
@@ -245,16 +374,6 @@ pub(super) fn right_click(col: u16, row: u16) -> MouseEvent {
     }
 }
 
-pub(super) fn render(state: &mut AppState, w: u16, h: u16) -> Terminal<TestBackend> {
-    let mut terminal = Terminal::new(TestBackend::new(w, h)).unwrap();
-    terminal.draw(|f| render_app(f, state)).unwrap();
-    terminal
-}
-
-pub(super) fn render_to_buffer(state: &mut AppState, width: u16, height: u16) -> Buffer {
-    render(state, width, height).backend().buffer().clone()
-}
-
 pub(super) fn row_text(buf: &Buffer, y: u16) -> String {
     (0..buf.area.width)
         .map(|x| buf[(x, y)].symbol().to_string())
@@ -266,34 +385,6 @@ pub(super) fn screen_text(buf: &Buffer) -> String {
         .map(|y| row_text(buf, y))
         .collect::<Vec<_>>()
         .join("\n")
-}
-
-pub(super) fn region_of(state: &AppState, pred: impl Fn(&HitTarget) -> bool) -> Rect {
-    state
-        .hit_registry
-        .find(pred)
-        .map(|r| r.rect)
-        .expect("hit region not registered")
-}
-
-pub(super) fn hit_center_of(
-    state: &AppState,
-    pred: impl Fn(&HitTarget) -> bool,
-) -> Option<(u16, u16)> {
-    state
-        .hit_registry
-        .find(pred)
-        .map(|r| (r.rect.x + r.rect.width / 2, r.rect.y + r.rect.height / 2))
-}
-
-pub(super) fn git_ops(effects: &[Effect]) -> Vec<GitOp> {
-    effects
-        .iter()
-        .filter_map(|e| match e {
-            Effect::GitOp(op) => Some(op.clone()),
-            _ => None,
-        })
-        .collect()
 }
 
 pub(super) fn top_menu(state: &AppState) -> (&[ContextMenuItem], usize, u8) {
@@ -337,7 +428,7 @@ pub(super) fn menu_item_by_label<'a>(
 
 pub(super) fn item_run_actions(item: &ContextMenuItem) -> Vec<Action> {
     match &item.kind {
-        ContextMenuEntryKind::Action(ContextMenuAction::Run(actions)) => actions.clone(),
+        ContextMenuEntryKind::Action(actions) => actions.clone(),
         other => panic!("expected Run item, got {other:?}"),
     }
 }

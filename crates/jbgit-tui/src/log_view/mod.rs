@@ -7,14 +7,12 @@ mod details_pane;
 mod file_history;
 mod filter_bar;
 mod presentation;
+mod workbench;
 
 pub use branches_pane::BranchesPaneState;
-pub(crate) use details_pane::FileDiffRowsCache;
 #[cfg(test)]
-pub use details_pane::DETAILS_CACHE_CAPACITY;
-pub use details_pane::{
-    ChangesExpandState, DETAILS_DEBOUNCE, DetailsPaneState, DiffPreviewDock, DiffRow,
-};
+pub use details_pane::{ChangesExpandState, DETAILS_CACHE_CAPACITY};
+pub use details_pane::{DETAILS_DEBOUNCE, DetailsPaneState, DiffPreviewDock};
 pub use file_history::{FILE_HISTORY_G_WINDOW, FileHistoryFocus, FileHistoryState};
 pub use filter_bar::{
     FilterBarState, FilterField, PathMatches, PathRequest, complete_last_token, filter_suggestions,
@@ -22,6 +20,7 @@ pub use filter_bar::{
 pub use presentation::{
     LogPresentation, PresentationToggle, format_absolute_time, format_relative_time,
 };
+pub use workbench::{LogDispatchCtx, LogReconcileCtx, LogWorkbench};
 
 #[cfg(test)]
 mod tests {
@@ -80,18 +79,19 @@ mod tests {
                 new_oid: None,
             }],
         });
-        d.cache.insert(key.clone(), Arc::clone(&bundle1));
-        d.current_key = Some(key);
+        let mut store = crate::diff_session::DiffCacheStore::new();
+        store.insert_details(Arc::clone(&bundle1));
+        d.changes.current_key = Some(key);
 
-        let r1 = d.change_rows();
-        let r2 = d.change_rows();
+        let r1 = d.change_rows(&store);
+        let r2 = d.change_rows(&store);
         assert!(
             Arc::ptr_eq(&r1, &r2),
             "change_rows must return the same Arc slice on identical bundle"
         );
 
-        d.changes_collapsed.insert("src".into());
-        let r3 = d.change_rows();
+        d.changes.collapsed.insert("src".into());
+        let r3 = d.change_rows(&store);
         assert!(
             !Arc::ptr_eq(&r1, &r3),
             "change_rows must invalidate cache when collapsed set changes"
@@ -109,13 +109,13 @@ mod tests {
             is_truncated: false,
             is_too_large: false,
         });
-        let dr1 = d.diff_rows_for(&diff, false);
-        let dr2 = d.diff_rows_for(&diff, false);
+        let dr1 = d.diff.rows_cache.rows_for(&diff, false);
+        let dr2 = d.diff.rows_cache.rows_for(&diff, false);
         assert!(
             Arc::ptr_eq(&dr1, &dr2),
             "diff_rows_for must cache rows for same diff and mode"
         );
-        let dr3 = d.diff_rows_for(&diff, true);
+        let dr3 = d.diff.rows_cache.rows_for(&diff, true);
         assert!(
             !Arc::ptr_eq(&dr1, &dr3),
             "diff_rows_for must invalidate when side_by_side changes"

@@ -267,7 +267,10 @@ pub fn render_tab_bar(
         };
         let label = match tab {
             WorkspaceTab::Commit => {
-                let count = state.stage_status.as_ref().map_or(0, |s| s.total_changes());
+                let count = state
+                    .stage_workbench
+                    .status()
+                    .map_or(0, |s| s.total_changes());
                 if count > 0 {
                     format!(" [{}] {} ({}) ", tab.index(), tab_name, count)
                 } else {
@@ -275,7 +278,7 @@ pub fn render_tab_bar(
                 }
             }
             WorkspaceTab::Console => {
-                let count = state.console_entries.len();
+                let count = state.console.len();
                 if count > 0 {
                     format!(" [{}] {} ({}) ", tab.index(), tab_name, count)
                 } else {

@@ -12,7 +12,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph};
 use unicode_width::UnicodeWidthStr;
 
-use crate::app::{Action, AppState, MenuParent, ModalLayer, PopupKind, RenderContext};
+use crate::app::{Action, AppState, MenuParent, ModalLayer, RenderContext};
 use crate::config::KeymapScope;
 use crate::dialogs::{Dialog, InputDialog, InputIntent, InputValidation, new_branch_from_head_dialog};
 use crate::hit_test::HitTarget;
@@ -68,6 +68,7 @@ fn branch_row(
     };
     let is_favorite = r.kind != RefKind::Tag
         && state
+            .log
             .branches
             .settings
             .favorites
@@ -321,8 +322,8 @@ fn popup_new_branch_seq(state: &AppState) -> Option<KeySequence> {
     )
 }
 
-/// Keyboard routing while the popup is the topmost layer.
-pub fn route_branches_popup_key(key: &KeyEvent, state: &mut AppState) -> Vec<Action> {
+/// Keyboard routing while the popup is the topmost layer (pure read).
+pub fn route_branches_popup_key(key: &KeyEvent, state: &AppState) -> Vec<Action> {
     if popup_new_branch_seq(state).is_some_and(|seq| seq.matches_exact(&[*key])) {
         return vec![
             Action::PopModal,
@@ -335,42 +336,30 @@ pub fn route_branches_popup_key(key: &KeyEvent, state: &mut AppState) -> Vec<Act
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     let alt = key.modifiers.contains(KeyModifiers::ALT);
     let (query, selected) = match state.modal_stack.last() {
-        Some(ModalLayer::FloatingPopup {
-            kind: PopupKind::BranchesQuickView,
-            query,
-            selected,
-        }) => (query.clone(), *selected),
+        Some(ModalLayer::BranchesPopup { query, selected }) => (query.clone(), *selected),
         _ => return Vec::new(),
     };
     let rows = build_popup_rows(state, &query);
-    let set = |state: &mut AppState, q: String, sel: usize| {
-        if let Some(ModalLayer::FloatingPopup {
-            query, selected, ..
-        }) = state.modal_stack.last_mut()
-        {
-            *query = q;
-            *selected = sel;
-        }
-        state.needs_redraw = true;
-    };
     match key.code {
         KeyCode::Esc => vec![Action::PopModal],
-        KeyCode::Up => {
-            set(state, query, move_selection(&rows, selected, -1));
-            Vec::new()
-        }
-        KeyCode::Down => {
-            set(state, query, move_selection(&rows, selected, 1));
-            Vec::new()
-        }
+        KeyCode::Up => vec![Action::PopupSetState {
+            query,
+            selected: move_selection(&rows, selected, -1),
+        }],
+        KeyCode::Down => vec![Action::PopupSetState {
+            query,
+            selected: move_selection(&rows, selected, 1),
+        }],
         KeyCode::PageUp | KeyCode::PageDown => {
             let mut sel = selected;
             let d = if key.code == KeyCode::PageUp { -1 } else { 1 };
             for _ in 0..10 {
                 sel = move_selection(&rows, sel, d);
             }
-            set(state, query, sel);
-            Vec::new()
+            vec![Action::PopupSetState {
+                query,
+                selected: sel,
+            }]
         }
         KeyCode::Enter | KeyCode::Right => activate_row(state, &query, selected),
         KeyCode::Char('f') if alt => {
@@ -380,20 +369,26 @@ pub fn route_branches_popup_key(key: &KeyEvent, state: &mut AppState) -> Vec<Act
             let mut q = query;
             q.pop();
             let sel = first_selectable_row(state, &q);
-            set(state, q, sel);
-            Vec::new()
+            vec![Action::PopupSetState {
+                query: q,
+                selected: sel,
+            }]
         }
         KeyCode::Char('u') if ctrl => {
             let sel = first_selectable_row(state, "");
-            set(state, String::new(), sel);
-            Vec::new()
+            vec![Action::PopupSetState {
+                query: String::new(),
+                selected: sel,
+            }]
         }
         KeyCode::Char(c) if !ctrl && !alt && !c.is_whitespace() => {
             let mut q = query;
             q.push(c);
             let sel = first_selectable_row(state, &q);
-            set(state, q, sel);
-            Vec::new()
+            vec![Action::PopupSetState {
+                query: q,
+                selected: sel,
+            }]
         }
         _ => Vec::new(),
     }

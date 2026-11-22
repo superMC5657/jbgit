@@ -1,29 +1,29 @@
 use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
-use jbgit_core::{ChangeRowKind, ModalButton, PaneId, WorkspaceTab};
+use jbgit_core::{ChangeRowKind, PaneId, WorkspaceTab};
 
-use crate::app::{Action, AppState, ClickRecord, DragState, ModalLayer, PopupKind};
+use crate::app::{Action, AppState, ChangesHost, DiffScope, DragState, PopupKind};
 use crate::hit_test::{
     BranchesToolbarButton, ChangesToolbarButton, DiffToolbarButton, FileHistoryToolbarButton,
     GraphHitKind, HitTarget,
 };
-use crate::input_menus::{activate_top_menu_item, on_menu_hover, route_overlay_and_stash_click};
 use crate::input_stage::route_stage_left_click;
 
-use super::menus::{build_menu_for, presentation_menu_items};
+use super::menus::{presentation_menu_items, route_overlay_and_stash_click};
 
-pub(crate) fn route_mouse(mouse: MouseEvent, state: &mut AppState) -> Vec<Action> {
+pub(crate) fn route_mouse(mouse: MouseEvent, state: &AppState) -> Vec<Action> {
     let col = mouse.column;
     let row = mouse.row;
 
     match mouse.kind {
         MouseEventKind::Drag(MouseButton::Left) => route_mouse_drag(col, row, state),
         MouseEventKind::Up(MouseButton::Left) => {
-            if state.drag_state.take().is_some() {
-                state.needs_redraw = true;
+            if state.drag_state.is_some() {
+                vec![Action::SetDragState(None)]
+            } else {
+                Vec::new()
             }
-            Vec::new()
         }
-        MouseEventKind::Moved => route_mouse_move(col, row, state),
+        MouseEventKind::Moved => vec![Action::MouseMove { col, row }],
         MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
             let delta = if matches!(mouse.kind, MouseEventKind::ScrollUp) {
                 -3
@@ -40,19 +40,9 @@ pub(crate) fn route_mouse(mouse: MouseEvent, state: &mut AppState) -> Vec<Action
     }
 }
 
-fn route_mouse_drag(col: u16, row: u16, state: &mut AppState) -> Vec<Action> {
+fn route_mouse_drag(col: u16, row: u16, state: &AppState) -> Vec<Action> {
     match state.drag_state {
-        Some(DragState::Splitter {
-            splitter_id,
-            axis,
-            container,
-        }) => {
-            state
-                .splitters
-                .update_from_pointer(splitter_id, axis, container, col, row);
-            state.needs_redraw = true;
-            Vec::new()
-        }
+        Some(DragState::Splitter { .. }) => vec![Action::DragSplitter { col, row }],
         Some(DragState::LogSelection) => {
             if let Some(region) = state.hit_registry.hit_test(col, row) {
                 let target_row = match &region.target {
@@ -70,46 +60,6 @@ fn route_mouse_drag(col: u16, row: u16, state: &mut AppState) -> Vec<Action> {
         }
         None => Vec::new(),
     }
-}
-
-fn route_mouse_move(col: u16, row: u16, state: &mut AppState) -> Vec<Action> {
-    state.hover_pos = Some((col, row));
-    let next_target = state
-        .hit_registry
-        .hit_test(col, row)
-        .map(|r| r.target.clone());
-    if let Some(HitTarget::MenuItem {
-        menu_depth,
-        item_idx,
-    }) = &next_target
-    {
-        on_menu_hover(state, *menu_depth, *item_idx);
-    }
-    if let Some(HitTarget::BranchPopupRow(idx)) = &next_target
-        && let Some(ModalLayer::FloatingPopup {
-            kind: PopupKind::BranchesQuickView,
-            selected,
-            ..
-        }) = state.modal_stack.last_mut()
-        && *selected != *idx
-    {
-        *selected = *idx;
-        state.needs_redraw = true;
-    }
-    if next_target != state.hover_target {
-        let visual_change = state
-            .hover_target
-            .as_ref()
-            .is_some_and(|t| t.has_visual_hover())
-            || next_target
-                .as_ref()
-                .is_some_and(|t| t.has_visual_hover());
-        state.hover_target = next_target;
-        if visual_change {
-            state.needs_redraw = true;
-        }
-    }
-    Vec::new()
 }
 
 fn route_mouse_scroll(col: u16, row: u16, delta: isize, state: &AppState) -> Vec<Action> {
@@ -131,24 +81,24 @@ fn route_mouse_scroll(col: u16, row: u16, delta: isize, state: &AppState) -> Vec
             HitTarget::LogChangeRow { .. }
             | HitTarget::ChangesToolbar(_)
             | HitTarget::Pane(PaneId::LogChangesTree) => {
-                return vec![Action::ChangesMove(delta / 3)];
+                return vec![Action::ChangesMove(ChangesHost::Log, delta / 3)];
             }
             HitTarget::DiffArea
             | HitTarget::StageDiffLine { .. }
             | HitTarget::StageDiffGutter { .. }
             | HitTarget::Pane(PaneId::CommitDiffPreview) => {
                 return vec![if state.active_tab == WorkspaceTab::Commit {
-                    Action::StageDiffScroll(delta)
+                    Action::DiffScroll(DiffScope::Stage, delta)
                 } else {
-                    Action::ScrollDiff(delta)
+                    Action::DiffScroll(DiffScope::Log, delta)
                 }];
             }
             HitTarget::DetailsArea
             | HitTarget::DetailsHash { .. }
             | HitTarget::DetailsParent { .. }
             | HitTarget::Pane(PaneId::LogDetailsDiff) => {
-                return vec![if state.details.diff_visible() {
-                    Action::ScrollDiff(delta)
+                return vec![if state.log.details.diff_visible() {
+                    Action::DiffScroll(DiffScope::Log, delta)
                 } else {
                     Action::ScrollDetails(delta)
                 }];
@@ -166,7 +116,7 @@ fn route_mouse_scroll(col: u16, row: u16, delta: isize, state: &AppState) -> Vec
                 return vec![Action::StashMove(delta / 3)];
             }
             HitTarget::StashChangeRow(_) | HitTarget::Pane(PaneId::StashDiffPreview) => {
-                return vec![Action::StashDiffScroll(delta)];
+                return vec![Action::DiffScroll(DiffScope::Stash, delta)];
             }
             HitTarget::FileHistoryRow { .. } | HitTarget::FileHistoryListArea => {
                 return vec![Action::FileHistoryMove {
@@ -175,7 +125,7 @@ fn route_mouse_scroll(col: u16, row: u16, delta: isize, state: &AppState) -> Vec
                 }];
             }
             HitTarget::FileHistoryDiffArea => {
-                return vec![Action::FileHistoryScrollDiff(delta)];
+                return vec![Action::DiffScroll(DiffScope::FileHistory, delta)];
             }
             _ => {}
         }
@@ -187,60 +137,42 @@ fn route_mouse_left_down(
     col: u16,
     row: u16,
     modifiers: KeyModifiers,
-    state: &mut AppState,
+    state: &AppState,
 ) -> Vec<Action> {
     let is_double = state
         .last_click
         .is_some_and(|prev| prev.is_double_click(col, row));
-    state.last_click = Some(ClickRecord {
-        at: std::time::Instant::now(),
-        col,
-        row,
-    });
+    let mut out = vec![Action::MouseRecordClick { col, row }];
     let ctrl = modifiers.contains(KeyModifiers::CONTROL);
     let shift = modifiers.contains(KeyModifiers::SHIFT);
 
     let Some(region) = state.hit_registry.hit_test(col, row).cloned() else {
-        return Vec::new();
+        return out;
     };
 
-    match region.target {
+    let follow = match region.target {
         HitTarget::ModalBackdrop { layer_z } if (30..40).contains(&layer_z) => {
             vec![Action::PopContextMenus]
         }
         HitTarget::ModalBackdrop { .. } => vec![Action::PopModal],
-        HitTarget::ModalButton(btn) => match btn {
-            ModalButton::Confirm => vec![Action::ConfirmCriticalDialog],
-            ModalButton::Cancel => vec![Action::PopModal],
-        },
+        HitTarget::ModalButton(_) => vec![Action::PopModal],
         HitTarget::MenuItem {
             menu_depth,
             item_idx,
-        } => {
-            while matches!(
-                state.modal_stack.last(),
-                Some(ModalLayer::ContextMenu { depth, .. }) if *depth > menu_depth
-            ) {
-                state.modal_stack.pop();
-            }
-            state.menu_hover = None;
-            if let Some(ModalLayer::ContextMenu { selected, .. }) = state.modal_stack.last_mut() {
-                *selected = item_idx;
-            }
-            activate_top_menu_item(state, item_idx)
-        }
+        } => vec![Action::ContextMenuActivateItem {
+            depth: menu_depth,
+            idx: item_idx,
+        }],
         HitTarget::Splitter { id, axis } => {
             if is_double {
                 vec![Action::ResetSplitter(id)]
+            } else if let Some((_, container)) = state.splitter_containers.get(&id).copied() {
+                vec![Action::SetDragState(Some(DragState::Splitter {
+                    splitter_id: id,
+                    axis,
+                    container,
+                }))]
             } else {
-                if let Some((_, container)) = state.splitter_containers.get(&id).copied() {
-                    state.drag_state = Some(DragState::Splitter {
-                        splitter_id: id,
-                        axis,
-                        container,
-                    });
-                    state.needs_redraw = true;
-                }
                 Vec::new()
             }
         }
@@ -256,19 +188,20 @@ fn route_mouse_left_down(
         }],
         HitTarget::BranchTreeNode { row: idx, .. } => {
             if ctrl {
-                return vec![
+                vec![
                     Action::FocusPane(PaneId::LogBranchesTree),
                     Action::BranchesToggleMulti(idx),
+                ]
+            } else {
+                let mut actions = vec![
+                    Action::FocusPane(PaneId::LogBranchesTree),
+                    Action::SelectBranchRow(idx),
                 ];
+                if is_double {
+                    actions.push(Action::BranchesApplyFilter);
+                }
+                actions
             }
-            let mut actions = vec![
-                Action::FocusPane(PaneId::LogBranchesTree),
-                Action::SelectBranchRow(idx),
-            ];
-            if is_double {
-                actions.push(Action::BranchesApplyFilter);
-            }
-            actions
         }
         HitTarget::BranchTreeToggle { row } => vec![
             Action::FocusPane(PaneId::LogBranchesTree),
@@ -285,7 +218,7 @@ fn route_mouse_left_down(
         HitTarget::FilterRegexToggle => vec![Action::ToggleFilterRegex],
         HitTarget::FilterCaseToggle => vec![Action::ToggleFilterCase],
         HitTarget::FilterChip(field) => {
-            let mut initial = state.log_filter.field_expr(field);
+            let mut initial = state.log.filter.field_expr(field);
             if !initial.is_empty() {
                 initial.push(' ');
             }
@@ -303,12 +236,12 @@ fn route_mouse_left_down(
         HitTarget::LogChangeRow { idx } => {
             let mut actions = vec![
                 Action::FocusPane(PaneId::LogChangesTree),
-                Action::ChangesSelectRow(idx),
+                Action::ChangesSelect(ChangesHost::Log, idx),
             ];
             if is_double {
-                match state.details.change_rows().get(idx) {
+                match state.log.details.change_rows(&state.diff_caches).get(idx) {
                     Some(r) if matches!(r.kind, ChangeRowKind::Dir { .. }) => {
-                        actions.push(Action::ChangesExpand(!r.expanded));
+                        actions.push(Action::ChangesExpand(ChangesHost::Log, !r.expanded));
                     }
                     Some(_) => actions.push(Action::ZoomDiff(true)),
                     None => {}
@@ -317,9 +250,13 @@ fn route_mouse_left_down(
             actions
         }
         HitTarget::ChangesToolbar(btn) => match btn {
-            ChangesToolbarButton::GroupByDir => vec![Action::ChangesToggleGroupByDir],
-            ChangesToolbarButton::ExpandAll => vec![Action::ChangesExpandAll(true)],
-            ChangesToolbarButton::CollapseAll => vec![Action::ChangesExpandAll(false)],
+            ChangesToolbarButton::GroupByDir => {
+                vec![Action::ChangesToggleGroupByDir(ChangesHost::Log)]
+            }
+            ChangesToolbarButton::ExpandAll => vec![Action::ChangesExpandAll(ChangesHost::Log, true)],
+            ChangesToolbarButton::CollapseAll => {
+                vec![Action::ChangesExpandAll(ChangesHost::Log, false)]
+            }
             ChangesToolbarButton::DiffPreview => vec![Action::ToggleDiffPreview],
             ChangesToolbarButton::SwitchParent => vec![Action::SwitchMergeParent],
         },
@@ -329,12 +266,12 @@ fn route_mouse_left_down(
             vec![Action::FocusPane(PaneId::LogDetailsDiff)]
         }
         HitTarget::DiffToolbar(btn) => match btn {
-            DiffToolbarButton::SideBySide => vec![Action::DiffToggleSideBySide],
-            DiffToolbarButton::Context => vec![Action::DiffCycleContext],
+            DiffToolbarButton::SideBySide => vec![Action::DiffToggleSideBySide(DiffScope::Log)],
+            DiffToolbarButton::Context => vec![Action::DiffCycleContext(DiffScope::Log)],
             DiffToolbarButton::Dock => vec![Action::DiffCycleDock],
-            DiffToolbarButton::Zoom => vec![Action::ZoomDiff(!state.details.diff_zoomed)],
+            DiffToolbarButton::Zoom => vec![Action::ZoomDiff(!state.log.details.diff.zoomed)],
             DiffToolbarButton::Close => {
-                if state.details.diff_zoomed {
+                if state.log.details.diff.zoomed {
                     vec![Action::ZoomDiff(false)]
                 } else {
                     vec![Action::ToggleDiffPreview]
@@ -374,13 +311,39 @@ fn route_mouse_left_down(
             ],
             GraphHitKind::Node { .. } | GraphHitKind::Edge { .. } => {
                 if shift {
-                    return vec![
+                    vec![
                         Action::FocusPane(PaneId::LogCommitTable),
                         Action::ExtendLogSelectionTo(visible_row),
+                    ]
+                } else {
+                    let mut actions = vec![
+                        Action::SetDragState(Some(DragState::LogSelection)),
+                        Action::FocusPane(PaneId::LogCommitTable),
+                        Action::SelectLogRow(visible_row),
                     ];
+                    if is_double {
+                        actions.push(Action::RunCliProbe(vec![
+                            "show".into(),
+                            "--stat".into(),
+                            commit_oid.to_string(),
+                        ]));
+                    }
+                    actions
                 }
-                state.drag_state = Some(DragState::LogSelection);
+            }
+        },
+        HitTarget::CommitTableRow {
+            visible_row,
+            commit_oid,
+        } => {
+            if shift {
+                vec![
+                    Action::FocusPane(PaneId::LogCommitTable),
+                    Action::ExtendLogSelectionTo(visible_row),
+                ]
+            } else {
                 let mut actions = vec![
+                    Action::SetDragState(Some(DragState::LogSelection)),
                     Action::FocusPane(PaneId::LogCommitTable),
                     Action::SelectLogRow(visible_row),
                 ];
@@ -393,30 +356,6 @@ fn route_mouse_left_down(
                 }
                 actions
             }
-        },
-        HitTarget::CommitTableRow {
-            visible_row,
-            commit_oid,
-        } => {
-            if shift {
-                return vec![
-                    Action::FocusPane(PaneId::LogCommitTable),
-                    Action::ExtendLogSelectionTo(visible_row),
-                ];
-            }
-            state.drag_state = Some(DragState::LogSelection);
-            let mut actions = vec![
-                Action::FocusPane(PaneId::LogCommitTable),
-                Action::SelectLogRow(visible_row),
-            ];
-            if is_double {
-                actions.push(Action::RunCliProbe(vec![
-                    "show".into(),
-                    "--stat".into(),
-                    commit_oid.to_string(),
-                ]));
-            }
-            actions
         }
         HitTarget::ConsoleCommandRow { idx } => vec![
             Action::FocusPane(PaneId::ConsoleCommandList),
@@ -448,23 +387,30 @@ fn route_mouse_left_down(
             FileHistoryToolbarButton::CompareLocal => {
                 vec![Action::FileHistoryToggleCompareLocal]
             }
-            FileHistoryToolbarButton::SideBySide => vec![Action::FileHistoryToggleSideBySide],
-            FileHistoryToolbarButton::Context => vec![Action::FileHistoryCycleContext],
+            FileHistoryToolbarButton::SideBySide => {
+                vec![Action::DiffToggleSideBySide(DiffScope::FileHistory)]
+            }
+            FileHistoryToolbarButton::Context => {
+                vec![Action::DiffCycleContext(DiffScope::FileHistory)]
+            }
             FileHistoryToolbarButton::Zoom => vec![Action::FileHistoryToggleZoom],
             FileHistoryToolbarButton::LocateInLog => vec![Action::FileHistoryJumpToLog],
         },
         HitTarget::Pane(pane) => vec![Action::FocusPane(pane)],
         other => {
             if let Some(actions) = route_overlay_and_stash_click(&other, state, is_double) {
-                return actions;
+                actions
+            } else {
+                route_stage_left_click(other, state, col, row, ctrl, shift, is_double)
+                    .unwrap_or_default()
             }
-            route_stage_left_click(other, state, col, row, ctrl, shift, is_double)
-                .unwrap_or_default()
         }
-    }
+    };
+    out.extend(follow);
+    out
 }
 
-fn route_mouse_right_down(col: u16, row: u16, state: &mut AppState) -> Vec<Action> {
+fn route_mouse_right_down(col: u16, row: u16, state: &AppState) -> Vec<Action> {
     let Some(region) = state.hit_registry.hit_test(col, row).cloned() else {
         return Vec::new();
     };
@@ -501,24 +447,8 @@ fn route_mouse_right_down(col: u16, row: u16, state: &mut AppState) -> Vec<Actio
         }];
     }
 
-    let mut actions = Vec::new();
-    let Some(menu_items) = build_menu_for(&region.target, state, &mut actions) else {
-        return Vec::new();
-    };
-    if menu_items.is_empty() {
-        return Vec::new();
-    }
-    if matches!(
-        state.modal_stack.last(),
-        Some(ModalLayer::ContextMenu { .. })
-    ) {
-        actions.insert(0, Action::PopContextMenus);
-    }
-
-    actions.push(Action::OpenContextMenu {
+    vec![Action::OpenContextMenuForTarget {
+        target: region.target,
         anchor: (col, row),
-        items: menu_items,
-        depth: 0,
-    });
-    actions
+    }]
 }

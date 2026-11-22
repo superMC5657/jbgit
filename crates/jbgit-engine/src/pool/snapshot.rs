@@ -14,7 +14,7 @@ use super::scan_config::{
 };
 use super::worker_pool::with_thread_repo;
 
-pub(super) fn load_conflict_document_sync(
+pub(crate) fn load_conflict_document_sync(
     location: &RepoLocation,
     path: &str,
 ) -> Result<ConflictDocument, EngineError> {
@@ -56,20 +56,6 @@ pub(super) fn load_conflict_document_sync(
         index_ours.as_deref(),
         index_theirs.as_deref(),
     ))
-}
-
-pub fn load_repo_snapshot_sync(
-    location: &RepoLocation,
-    token: &EpochToken,
-    max_commits: usize,
-) -> Result<RepoSnapshot, EngineError> {
-    let (snap, _) = load_repo_snapshot_with_config_sync(
-        location,
-        token,
-        max_commits,
-        StatusScanConfig::default(),
-    )?;
-    Ok(snap)
 }
 
 pub fn load_repo_snapshot_with_config_sync(

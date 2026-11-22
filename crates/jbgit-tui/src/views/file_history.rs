@@ -29,7 +29,7 @@ pub fn render_file_history_modal(
     if screen.width < 20 || screen.height < 10 {
         return;
     }
-    let Some(fh) = &state.file_history else {
+    let Some(fh) = state.modal_stack.file_history() else {
         return;
     };
 
@@ -117,31 +117,31 @@ pub fn render_file_history_modal(
             FileHistoryToolbarButton::CompareLocal,
         ),
         (
-            if fh.diff_side_by_side {
+            if fh.diff.side_by_side {
                 ctx.t("view.log_details.side_by_side_btn")
             } else {
                 ctx.t("view.log_details.unified_btn")
             }
             .to_string(),
-            fh.diff_side_by_side,
+            fh.diff.side_by_side,
             FileHistoryToolbarButton::SideBySide,
         ),
         (
             ctx.t_fmt(
                 "view.log_details.ctx_btn",
-                &[("ctx", ctx.diff_context_label(fh.diff_context))],
+                &[("ctx", ctx.diff_context_label(fh.diff.context))],
             ),
             false,
             FileHistoryToolbarButton::Context,
         ),
         (
-            if fh.diff_zoomed {
+            if fh.diff.zoomed {
                 ctx.t("view.log_details.restore_btn")
             } else {
                 ctx.t("view.log_details.zoom_btn")
             }
             .to_string(),
-            fh.diff_zoomed,
+            fh.diff.zoomed,
             FileHistoryToolbarButton::Zoom,
         ),
         (
@@ -160,7 +160,7 @@ pub fn render_file_history_modal(
     );
 
     if content.height >= 2 && content.width >= 8 {
-        if fh.diff_zoomed {
+        if fh.diff.zoomed {
             render_diff_pane(frame, content, state, fh, ctx, z + 2);
         } else {
             let (splitter_id, axis) = if content.width >= 100 {
@@ -418,7 +418,7 @@ fn render_diff_pane(
     ctx.hit_registry
         .register(area, z, HitTarget::FileHistoryDiffArea);
 
-    let focused = fh.focus == FileHistoryFocus::Diff || fh.diff_zoomed;
+    let focused = fh.focus == FileHistoryFocus::Diff || fh.diff.zoomed;
     let hdr_rect = Rect::new(area.x, area.y, area.width, 1);
     let hdr_bg = if focused {
         ctx.theme.bg_panel
@@ -522,7 +522,7 @@ fn render_diff_pane(
         return;
     };
 
-    let Some(diff) = state.details.diff_cache.peek(&key) else {
+    let Some(diff) = state.diff_caches.peek_diff(&key) else {
         ctx.record_scroll_bound(ScrollPane::FileHistoryDiff, h, 0);
         let msg = if fh.selected_entry().is_some_and(|e| e.is_binary) {
             ctx.t("view.log_details.binary_diff")
@@ -540,19 +540,18 @@ fn render_diff_pane(
     };
 
     let cached_syntax = state
-        .details
-        .diff_syntax
-        .peek(&key)
+        .diff_caches
+        .peek_syntax(&key)
         .map(std::sync::Arc::as_ref);
     render_file_diff_body(
         frame,
         body,
         FileDiffRenderProps {
             diff,
-            rows_cache: &fh.diff_rows_cache,
+            rows_cache: &fh.diff.rows_cache,
             cached_syntax,
-            side_by_side: fh.diff_side_by_side,
-            diff_scroll: fh.diff_scroll,
+            side_by_side: fh.diff.side_by_side,
+            diff_scroll: fh.diff.scroll.offset(),
             scroll_pane: ScrollPane::FileHistoryDiff,
         },
         ctx,

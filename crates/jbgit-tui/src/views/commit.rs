@@ -26,7 +26,7 @@ pub fn render_commit_tab(
         return;
     }
 
-    let diff_collapsed = state.stage_workbench.diff_collapsed;
+    let diff_collapsed = state.stage_workbench.diff_collapsed();
     let (left_area, right_area, main_divider, main_container, main_collapsed) = if diff_collapsed {
         (area, Rect::ZERO, Rect::ZERO, area, true)
     } else {
@@ -62,7 +62,10 @@ pub fn render_commit_tab(
     );
 
     // Left-top: GitStageTree
-    let total_changes = state.stage_status.as_ref().map_or(0, |s| s.total_changes());
+    let total_changes = state
+        .stage_workbench
+        .status()
+        .map_or(0, |s| s.total_changes());
     let total_s = total_changes.to_string();
     let changes_sub = state.i18n.t_fmt("view.commit.files_count", &[("count", &total_s)]);
     let changes_body = render_pane_frame(
@@ -85,11 +88,11 @@ pub fn render_commit_tab(
         );
 
         let staged_count = state
-            .stage_status
-            .as_ref()
+            .stage_workbench
+            .status()
             .map_or(0, |s| s.staged.len());
         let staged_s = staged_count.to_string();
-        let commit_sub = if state.stage_workbench.amend {
+        let commit_sub = if state.stage_workbench.amend() {
             state.i18n.t("view.commit.amend_head").to_string()
         } else {
             state.i18n.t_fmt("view.commit.staged_count", &[("count", &staged_s)])
@@ -140,7 +143,7 @@ fn render_stage_tree_pane(
         return;
     }
 
-    let Some(status) = &state.stage_status else {
+    let Some(status) = state.stage_workbench.status() else {
         frame.render_widget(
             Paragraph::new(Span::styled(
                 state.i18n.t("view.commit.loading_stage"),
@@ -151,7 +154,7 @@ fn render_stage_tree_pane(
         return;
     };
 
-    let rows = &state.stage_workbench.rows;
+    let rows = state.stage_workbench.rows();
     if rows.is_empty() {
         frame.render_widget(
             Paragraph::new(Span::styled(
@@ -164,7 +167,8 @@ fn render_stage_tree_pane(
     }
 
     let visible_h = list_area.height as usize;
-    let (selected, offset) = list_viewport(rows.len(), state.commit_stage_selected_idx, visible_h);
+    let (selected, offset) =
+        list_viewport(rows.len(), state.stage_workbench.selected_idx(), visible_h);
     let focused = ctx.focused_pane == PaneId::CommitChangesTree;
     let glyphs = ctx.glyph_mode.symbols();
 
@@ -176,7 +180,8 @@ fn render_stage_tree_pane(
             list_area.width,
             1,
         );
-        let is_sel = row_idx == selected || state.stage_workbench.multi_selected.contains(&row.key);
+        let is_sel =
+            row_idx == selected || state.stage_workbench.multi_selected().contains(&row.key);
         let is_hovered = matches!(
             ctx.hover_target,
             Some(HitTarget::ChangesTreeNode { node_id, .. }) if node_id.0 as usize == row_idx
@@ -210,8 +215,7 @@ fn render_stage_tree_pane(
                 let group_title = if *kind == StageNodeKind::AmendCommit {
                     let sha = state
                         .stage_workbench
-                        .amend_preview
-                        .as_ref()
+                        .amend_preview()
                         .map(|p| p.short_sha.as_str())
                         .unwrap_or("");
                     state
@@ -405,15 +409,15 @@ fn render_stage_toolbar(
         (stash_btn, false, StageToolbarButton::Stash),
         (
             dir_btn,
-            sw.tree_opts.group_by_dir,
+            sw.tree_opts().group_by_dir,
             StageToolbarButton::GroupByDir,
         ),
         (
             diff_btn,
-            !sw.diff_collapsed,
+            !sw.diff_collapsed(),
             StageToolbarButton::ToggleDiff,
         ),
-        (" ⚙ ", sw.tree_opts.show_ignored, StageToolbarButton::Options),
+        (" ⚙ ", sw.tree_opts().show_ignored, StageToolbarButton::Options),
     ];
 
     render_toolbar(frame, area, ctx, 3, &buttons, HitTarget::StageToolbar);
@@ -440,14 +444,14 @@ fn render_commit_panel(
     }
 
     // Optional Author override row
-    if sw.show_author_input && y < bottom {
+    if sw.show_author_input() && y < bottom {
         let auth_rect = Rect::new(area.x, y, area.width, 1);
         let prefix = format!(" {}: ", state.i18n.t("view.commit.author"));
-        let cursor = if sw.editing_author { "▏" } else { "" };
-        let val = if sw.author_input.is_empty() && !sw.editing_author {
+        let cursor = if sw.editing_author() { "▏" } else { "" };
+        let val = if sw.author_input().is_empty() && !sw.editing_author() {
             state.i18n.t("view.commit.author_placeholder")
         } else {
-            &sw.author_input
+            sw.author_input()
         };
         let line = Line::from(vec![
             Span::styled(prefix, Style::default().fg(ctx.theme.fg_muted)),
@@ -456,7 +460,7 @@ fn render_commit_panel(
                     "{}{cursor}",
                     truncate_to_width(val, area.width.saturating_sub(11) as usize)
                 ),
-                Style::default().fg(if sw.editing_author {
+                Style::default().fg(if sw.editing_author() {
                     ctx.theme.fg_bright
                 } else {
                     ctx.theme.fg_primary
@@ -476,7 +480,7 @@ fn render_commit_panel(
     }
 
     // Reserve bottom rows for Action buttons (and optional Undo Commit / Progress banner)
-    let reserve_banner = u16::from(sw.last_commit_banner.is_some() || sw.commit_in_progress);
+    let reserve_banner = u16::from(sw.last_commit_banner().is_some() || sw.commit_in_progress());
     let reserve_btns = u16::from(y + 1 < bottom);
     let editor_h = bottom
         .saturating_sub(y)
@@ -499,7 +503,7 @@ fn render_commit_panel(
     // Bottom status/undo banner
     if reserve_banner > 0 && y < bottom {
         let banner_rect = Rect::new(area.x, y, area.width, 1);
-        if sw.commit_in_progress {
+        if sw.commit_in_progress() {
             let spinner_s = state.spinner_char().to_string();
             let line = Line::from(Span::styled(
                 state.i18n.t_fmt("view.commit.running_hooks", &[("spinner", &spinner_s)]),
@@ -509,7 +513,7 @@ fn render_commit_panel(
                 Paragraph::new(line).style(Style::default().bg(ctx.theme.bg_panel)),
                 banner_rect,
             );
-        } else if let Some(banner) = &sw.last_commit_banner {
+        } else if let Some(banner) = sw.last_commit_banner() {
             let left = vec![Span::styled(
                 format!(" ✓ {}", banner.summary),
                 Style::default().fg(ctx.theme.status_added),
@@ -546,7 +550,7 @@ fn render_commit_panel(
 fn render_commit_options_row(
     frame: &mut Frame<'_>,
     area: Rect,
-    sw: &crate::stage_view::StageWorkbenchState,
+    sw: &crate::stage_view::CommitWorkbench,
     ctx: &mut RenderContext<'_>,
 ) {
     frame.render_widget(
@@ -556,23 +560,23 @@ fn render_commit_options_row(
     let chk = |on: bool| if on { "x" } else { " " };
     let items = [
         (
-            format!(" [{}] {} ", chk(sw.amend), ctx.t("view.commit.amend_checkbox")),
-            sw.amend,
+            format!(" [{}] {} ", chk(sw.amend()), ctx.t("view.commit.amend_checkbox")),
+            sw.amend(),
             CommitOptionKind::Amend,
         ),
         (
-            format!(" [{}] {} ", chk(sw.signoff), ctx.t("view.commit.sign_off")),
-            sw.signoff,
+            format!(" [{}] {} ", chk(sw.signoff()), ctx.t("view.commit.sign_off")),
+            sw.signoff(),
             CommitOptionKind::Signoff,
         ),
         (
-            format!(" [{}] {} ", chk(sw.run_hooks), ctx.t("view.commit.hooks")),
-            sw.run_hooks,
+            format!(" [{}] {} ", chk(sw.run_hooks()), ctx.t("view.commit.hooks")),
+            sw.run_hooks(),
             CommitOptionKind::RunHooks,
         ),
         (
             format!(" {} ", ctx.t("view.commit.author")),
-            sw.show_author_input,
+            sw.show_author_input(),
             CommitOptionKind::AuthorToggle,
         ),
         (" 🕘 ".to_string(), false, CommitOptionKind::History),
@@ -613,11 +617,12 @@ fn render_commit_message_editor(
     ctx: &mut RenderContext<'_>,
 ) {
     let sw = &state.stage_workbench;
-    let focused = ctx.focused_pane == PaneId::CommitMessageEditor && !sw.editing_author;
+    let ed = sw.editor();
+    let focused = ctx.focused_pane == PaneId::CommitMessageEditor && !sw.editing_author();
     ctx.hit_registry
         .register(area, 2, HitTarget::CommitEditorArea);
 
-    let bg = if sw.empty_message_error {
+    let bg = if sw.empty_message_error() {
         ctx.theme.diff_del_bg
     } else if focused {
         ctx.theme.bg_elevated
@@ -637,7 +642,7 @@ fn render_commit_message_editor(
     };
 
     if ruler_h > 0 {
-        let subj_len = sw.editor.subject_char_count();
+        let subj_len = ed.subject_char_count();
         let len_color = if subj_len > 72 {
             ctx.theme.status_conflicted
         } else if subj_len > 50 {
@@ -645,18 +650,18 @@ fn render_commit_message_editor(
         } else {
             ctx.theme.fg_muted
         };
-        let hint_text = if sw.empty_message_error {
+        let hint_text = if sw.empty_message_error() {
             state.i18n.t("view.commit.msg_err_empty")
-        } else if sw.editor.needs_blank_second_line_hint() {
+        } else if ed.needs_blank_second_line_hint() {
             state.i18n.t("view.commit.msg_hint_blank")
-        } else if sw.editor.is_empty() {
+        } else if ed.is_empty() {
             state.i18n.t("view.commit.msg_hint_empty")
         } else {
             state.i18n.t("view.commit.msg_hint_body")
         };
         let left = vec![Span::styled(
             hint_text.to_string(),
-            Style::default().fg(if sw.empty_message_error {
+            Style::default().fg(if sw.empty_message_error() {
                 ctx.theme.status_conflicted
             } else {
                 ctx.theme.fg_muted
@@ -678,14 +683,15 @@ fn render_commit_message_editor(
     }
 
     let inner_w = text_area.width.saturating_sub(2) as usize;
-    let (wrapped, (cur_row, cur_col)) = sw.editor.visual_wrapped_lines(inner_w);
+    let (wrapped, (cur_row, cur_col)) = ed.visual_wrapped_lines(inner_w);
     let h = text_area.height as usize;
-    let scroll = if cur_row >= sw.editor.scroll_row + h {
+    ctx.record_commit_editor_viewport(inner_w, h);
+    let scroll = if cur_row >= ed.scroll_row + h {
         cur_row + 1 - h
-    } else if cur_row < sw.editor.scroll_row {
+    } else if cur_row < ed.scroll_row {
         cur_row
     } else {
-        sw.editor.scroll_row.min(wrapped.len().saturating_sub(h))
+        ed.scroll_row.min(wrapped.len().saturating_sub(h))
     };
 
     for vis_y in 0..h {
@@ -767,7 +773,7 @@ fn render_commit_buttons_row(
         area,
     );
     let sw = &state.stage_workbench;
-    let commit_label = if sw.amend {
+    let commit_label = if sw.amend() {
         state.i18n.t("view.commit.amend_commit_btn")
     } else {
         state.i18n.t("view.commit.commit_btn")

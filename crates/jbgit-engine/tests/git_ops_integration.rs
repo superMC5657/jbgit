@@ -4,15 +4,16 @@
 use std::fs;
 use std::path::Path;
 use std::process::Command;
-use std::sync::atomic::AtomicU64;
+use std::sync::Arc;
+use std::time::Duration;
 
 use jbgit_core::{
-    GitFailure, GitOp, GitOpOutcome, Oid, OngoingKind, OngoingStep, RefKind, RepositoryState,
-    RequestEpoch, ResetMode, TodoAction, TodoEntry,
+    GitFailure, GitOp, GitOpOutcome, Oid, OngoingKind, OngoingStep, RefKind, RepoSnapshot,
+    RepositoryState, RequestSlotId, ResetMode, TodoAction, TodoEntry,
 };
-use jbgit_engine::pool::load_repo_snapshot_sync;
-use jbgit_engine::{GitCliExecutor, RepoLocation, run_git_op};
+use jbgit_engine::{EngineBackend, EngineEvent, EngineSupervisor, RepoLocation, TaskRequest};
 use tempfile::TempDir;
+use tokio::sync::mpsc::UnboundedReceiver;
 
 fn git_out(dir: &Path, args: &[&str]) -> (bool, String) {
     let output = Command::new("git")
@@ -64,17 +65,42 @@ fn subjects(dir: &Path) -> Vec<String> {
         .collect()
 }
 
-async fn run(dir: &Path, op: GitOp) -> GitOpOutcome {
-    let cli = GitCliExecutor::detect().expect("git on PATH");
-    let loc = RepoLocation::discover(dir).unwrap();
-    let ids = AtomicU64::new(1);
-    run_git_op(&cli, &loc, &ids, op, |_| {}).await
+async fn recv_matching<T>(
+    rx: &mut UnboundedReceiver<EngineEvent>,
+    mut predicate: impl FnMut(EngineEvent) -> Option<T>,
+) -> T {
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while let Some(ev) = rx.recv().await {
+            if let Some(val) = predicate(ev) {
+                return val;
+            }
+        }
+        panic!("engine event channel closed before expected event");
+    })
+    .await
+    .expect("timed out waiting for engine event")
 }
 
-fn snapshot(dir: &Path) -> jbgit_core::RepoSnapshot {
+async fn run(dir: &Path, op: GitOp) -> GitOpOutcome {
     let loc = RepoLocation::discover(dir).unwrap();
-    let tracker = RequestEpoch::new();
-    load_repo_snapshot_sync(&loc, &tracker.issue(), 1000).unwrap()
+    let (handle, mut rx) = EngineSupervisor::start(loc, false).unwrap();
+    let _ = handle.dispatch(TaskRequest::RunGitOp { op });
+    recv_matching(&mut rx, |ev| match ev {
+        EngineEvent::GitOpFinished(out) => Some(out),
+        _ => None,
+    })
+    .await
+}
+
+async fn snapshot(dir: &Path) -> Arc<RepoSnapshot> {
+    let loc = RepoLocation::discover(dir).unwrap();
+    let (handle, mut rx) = EngineSupervisor::start(loc, false).unwrap();
+    let epoch = handle.request_repo_snapshot();
+    recv_matching(&mut rx, |ev| match ev {
+        EngineEvent::RepoSnapshotLoaded { snapshot, epoch: e } if e == epoch => Some(snapshot),
+        _ => None,
+    })
+    .await
 }
 
 #[tokio::test]
@@ -86,7 +112,7 @@ async fn reword_and_drop_three_commits_back_preserve_later_history() {
     }
     // HEAD = c5; HEAD~3 = c2.
     let c2 = rev(d, "HEAD~3");
-    let snap = snapshot(d);
+    let snap = snapshot(d).await;
     let todo_from = |base: Oid| -> Vec<TodoEntry> {
         let mut v: Vec<TodoEntry> = snap
             .commits
@@ -123,7 +149,7 @@ async fn reword_and_drop_three_commits_back_preserve_later_history() {
     }
 
     // Drop the (rewritten) c2.
-    let snap = snapshot(d);
+    let snap = snapshot(d).await;
     let base = rev(d, "HEAD~4");
     let mut todo: Vec<TodoEntry> = snap
         .commits
@@ -148,7 +174,7 @@ async fn reword_and_drop_three_commits_back_preserve_later_history() {
     assert!(!d.join(".git").join("jbgit-rebase").exists());
 
     // Squash c4 into c3 (combined message), HEAD reword fast path.
-    let snap = snapshot(d);
+    let snap = snapshot(d).await;
     let base = rev(d, "HEAD~3");
     let mut todo: Vec<TodoEntry> = snap
         .commits
@@ -218,7 +244,7 @@ async fn smart_checkout_stashes_switches_and_restores_local_changes() {
         }
         other => panic!("expected local-changes failure, got {other:?}"),
     }
-    assert_eq!(snapshot(d).head_branch.as_deref(), Some("main"));
+    assert_eq!(snapshot(d).await.head_branch.as_deref(), Some("main"));
 
     let smart = run(
         d,
@@ -230,7 +256,7 @@ async fn smart_checkout_stashes_switches_and_restores_local_changes() {
     .await;
     assert!(smart.success, "smart checkout failed: {smart:?}");
     assert!(!smart.stash_kept);
-    assert_eq!(snapshot(d).head_branch.as_deref(), Some("feature"));
+    assert_eq!(snapshot(d).await.head_branch.as_deref(), Some("feature"));
     let content = fs::read_to_string(d.join("shared.txt")).unwrap();
     assert!(content.starts_with("feature 1\n"), "{content}");
     assert!(content.ends_with("local 10\n"), "{content}");
@@ -238,7 +264,7 @@ async fn smart_checkout_stashes_switches_and_restores_local_changes() {
         fs::read_to_string(d.join("notes.txt")).unwrap(),
         "untracked\n"
     );
-    assert!(snapshot(d).stashes.is_empty());
+    assert!(snapshot(d).await.stashes.is_empty());
 }
 
 #[tokio::test]
@@ -265,7 +291,7 @@ async fn rebase_conflict_reports_progress_and_abort_restores_original_state() {
     assert!(!out.success);
     assert_eq!(out.failure, Some(GitFailure::Conflicts));
 
-    let snap = snapshot(d);
+    let snap = snapshot(d).await;
     assert_eq!(
         OngoingKind::from_state(&snap.state),
         Some(OngoingKind::Rebase)
@@ -284,7 +310,7 @@ async fn rebase_conflict_reports_progress_and_abort_restores_original_state() {
     )
     .await;
     assert!(abort.success, "{abort:?}");
-    let snap = snapshot(d);
+    let snap = snapshot(d).await;
     assert_eq!(snap.state, RepositoryState::Clean);
     assert_eq!(snap.head_branch.as_deref(), Some("feat"));
     assert_eq!(rev(d, "HEAD"), original_head);
@@ -294,7 +320,7 @@ async fn rebase_conflict_reports_progress_and_abort_restores_original_state() {
     git(d, &["checkout", "main"]);
     let out = run(d, GitOp::Merge { rev: "feat".into() }).await;
     assert_eq!(out.failure, Some(GitFailure::Conflicts));
-    assert_eq!(snapshot(d).state, RepositoryState::Merge);
+    assert_eq!(snapshot(d).await.state, RepositoryState::Merge);
     let abort = run(
         d,
         GitOp::Ongoing {
@@ -304,7 +330,7 @@ async fn rebase_conflict_reports_progress_and_abort_restores_original_state() {
     )
     .await;
     assert!(abort.success);
-    assert_eq!(snapshot(d).state, RepositoryState::Clean);
+    assert_eq!(snapshot(d).await.state, RepositoryState::Clean);
 }
 
 #[tokio::test]
@@ -335,7 +361,7 @@ async fn remote_checkout_tracks_and_branch_delete_can_be_restored() {
     )
     .await;
     assert!(out.success, "{out:?}");
-    let snap = snapshot(d);
+    let snap = snapshot(d).await;
     assert_eq!(snap.head_branch.as_deref(), Some("feature-new"));
     let local = snap.local_branch("feature-new").unwrap();
     assert_eq!(local.upstream.as_deref(), Some("origin/feature-new"));
@@ -366,7 +392,7 @@ async fn remote_checkout_tracks_and_branch_delete_can_be_restored() {
     )
     .await;
     assert!(out.success);
-    assert!(snapshot(d).local_branch("topic").is_none());
+    assert!(snapshot(d).await.local_branch("topic").is_none());
     let out = run(
         d,
         GitOp::RestoreBranch {
@@ -376,8 +402,8 @@ async fn remote_checkout_tracks_and_branch_delete_can_be_restored() {
     )
     .await;
     assert!(out.success);
-    assert_eq!(snapshot(d).local_branch("topic").unwrap().target_oid, tip);
-    let recent = snapshot(d).recent_branches;
+    assert_eq!(snapshot(d).await.local_branch("topic").unwrap().target_oid, tip);
+    let recent = snapshot(d).await.recent_branches.clone();
     assert!(recent.contains(&"topic".to_string()), "{recent:?}");
 }
 
@@ -420,7 +446,7 @@ async fn reset_modes_stash_workflow_and_cherry_pick() {
     )
     .await;
     assert!(out.success, "{out:?}");
-    let snap = snapshot(d);
+    let snap = snapshot(d).await;
     assert_eq!(snap.stashes.len(), 1);
     assert_eq!(snap.stashes[0].short_message(), "wip parser");
     assert_eq!(snap.stashes[0].branch(), Some("main"));
@@ -434,7 +460,7 @@ async fn reset_modes_stash_workflow_and_cherry_pick() {
     )
     .await;
     assert!(out.success, "{out:?}");
-    let snap = snapshot(d);
+    let snap = snapshot(d).await;
     assert_eq!(snap.head_branch.as_deref(), Some("from-stash"));
     assert!(snap.stashes.is_empty());
     assert!(d.join("c.txt").exists());
@@ -459,7 +485,7 @@ async fn reset_modes_stash_workflow_and_cherry_pick() {
     assert!(out.success, "{out:?}");
     assert_eq!(subjects(d)[0], "zed");
     assert!(
-        snapshot(d)
+        snapshot(d).await
             .refs
             .iter()
             .any(|r| r.kind == RefKind::LocalBranch && r.name == "pick-target")
@@ -468,9 +494,7 @@ async fn reset_modes_stash_workflow_and_cherry_pick() {
 
 #[tokio::test]
 async fn root_commit_fixup_patch_compare_and_conflict_resolution() {
-    use jbgit_core::{ConflictChoice, DetailsKey, DiffContext, FileDiffKey, RequestEpoch};
-    use jbgit_engine::details::{load_commit_details_sync, load_file_diff_sync};
-    use jbgit_engine::pool::Git2WorkerPool;
+    use jbgit_core::{ConflictChoice, DetailsKey, DiffContext, FileDiffKey};
 
     let tmp = init_repo();
     let d = tmp.path();
@@ -509,30 +533,45 @@ async fn root_commit_fixup_patch_compare_and_conflict_resolution() {
 
     // CompareVersions & CompareWithLocal produce real file changes + diffs.
     let loc = RepoLocation::discover(d).unwrap();
-    let token = RequestEpoch::new().issue();
-    let cmp_ver = load_commit_details_sync(
-        &loc,
-        &DetailsKey::compare_versions(new_root, new_second),
-        &token,
-    )
-    .unwrap();
+    let (handle, mut rx) = EngineSupervisor::start(loc, false).unwrap();
+
+    let e1 = handle.request_commit_details(
+        RequestSlotId::LogCommitDetails,
+        DetailsKey::compare_versions(new_root, new_second),
+    );
+    let cmp_ver = recv_matching(&mut rx, |ev| match ev {
+        EngineEvent::CommitDetailsLoaded { bundle, epoch, .. } if epoch == e1 => Some(bundle),
+        _ => None,
+    })
+    .await;
     assert!(cmp_ver.changes.iter().any(|c| c.path == "second.txt"));
 
     fs::write(d.join("root.txt"), "v3-local\n").unwrap();
-    let cmp_local =
-        load_commit_details_sync(&loc, &DetailsKey::compare_with_local(new_root), &token).unwrap();
+    let e2 = handle.request_commit_details(
+        RequestSlotId::LogCommitDetails,
+        DetailsKey::compare_with_local(new_root),
+    );
+    let cmp_local = recv_matching(&mut rx, |ev| match ev {
+        EngineEvent::CommitDetailsLoaded { bundle, epoch, .. } if epoch == e2 => Some(bundle),
+        _ => None,
+    })
+    .await;
     assert!(cmp_local.changes.iter().any(|c| c.path == "root.txt"));
-    let diff = load_file_diff_sync(
-        &loc,
-        &FileDiffKey {
+
+    let e3 = handle.request_file_diff(
+        RequestSlotId::LogFileDiff,
+        FileDiffKey {
             details: DetailsKey::compare_with_local(new_root),
             path: "root.txt".into(),
             old_path: None,
             context: DiffContext::Three,
         },
-        &token,
-    )
-    .unwrap();
+    );
+    let diff = recv_matching(&mut rx, |ev| match ev {
+        EngineEvent::FileDiffLoaded { diff, epoch, .. } if epoch == e3 => Some(diff),
+        _ => None,
+    })
+    .await;
     assert!(!diff.hunks.is_empty());
 
     // Three-pane conflict loader + resolver stages the resolved file.
@@ -544,16 +583,24 @@ async fn root_commit_fixup_patch_compare_and_conflict_resolution() {
     let merge = run(d, GitOp::Merge { rev: "side".into() }).await;
     assert_eq!(merge.failure, Some(GitFailure::Conflicts));
 
-    let pool = Git2WorkerPool::new(1);
-    let mut doc = pool
-        .load_conflict_document(loc.clone(), "root.txt".into())
-        .await
-        .unwrap();
+    let e4 = handle.request_conflict_document("root.txt".into());
+    let mut doc = recv_matching(&mut rx, |ev| match ev {
+        EngineEvent::ConflictDocumentLoaded { doc, epoch } if epoch == e4 => Some(doc),
+        _ => None,
+    })
+    .await;
     assert_eq!(doc.conflict_count, 1);
     doc.set_choice(0, ConflictChoice::Theirs);
-    pool.save_conflict_resolution(loc, "root.txt".into(), doc.render_merged().into_bytes(), true)
-        .await
-        .unwrap();
+    let _ = handle.dispatch(TaskRequest::SaveConflictResolution {
+        path: "root.txt".into(),
+        content: doc.render_merged().into_bytes(),
+        stage: true,
+    });
+    recv_matching(&mut rx, |ev| match ev {
+        EngineEvent::ExternalFsChanged(_) => Some(()),
+        _ => None,
+    })
+    .await;
     assert_eq!(fs::read_to_string(d.join("root.txt")).unwrap(), "side-edit\n");
     let porcelain = git(d, &["status", "--porcelain"]);
     assert!(porcelain.contains("M  root.txt"), "{porcelain}");

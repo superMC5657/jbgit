@@ -4,10 +4,9 @@ use jbgit_core::{
     EpochToken, FileHistoryBundle, FileHistoryEntry, FileHistoryKey, FileStatusKind, Oid,
 };
 
+use crate::cli::non_interactive_std_command;
 use crate::error::EngineError;
 use crate::probe::RepoLocation;
-
-use super::non_interactive_git_command;
 
 /// Default max commits loaded for a single-file history query.
 pub const DEFAULT_FILE_HISTORY_LIMIT: usize = 500;
@@ -245,7 +244,7 @@ pub fn load_file_history_sync(
     let max_count_arg = format!("--max-count={}", DEFAULT_FILE_HISTORY_LIMIT + 1);
 
     let git = crate::cli::cached_git_executable().unwrap_or_else(|| Path::new("git"));
-    let mut cmd = non_interactive_git_command(git, Some(&location.workdir));
+    let mut cmd = non_interactive_std_command(git, Some(&location.workdir));
     cmd.arg("--git-dir")
         .arg(&location.git_dir)
         .args(["-c", "core.quotepath=false", "log", &max_count_arg]);

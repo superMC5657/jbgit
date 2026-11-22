@@ -601,18 +601,59 @@ mod tests {
 
     #[test]
     fn tab_size_expands_tabs_in_diff_spans() {
-        let spans = render_diff_line_spans_with_tab(
-            "\tlet x = 1;",
-            &[],
-            &[],
-            40,
-            2,
-            Style::default(),
-            Color::Reset,
-            true,
-        );
-        let joined: String = spans.iter().map(|s| s.content.as_ref()).collect();
-        assert_eq!(joined, "  let x = 1;");
+        let before = b"fn main() {\n\tlet val = alpha;\n}\n";
+        let after = b"fn main() {\n\tlet val = omega;\n}\n";
+        let (hunks, _) =
+            jbgit_core::build_diff_hunks(before, after, 3, jbgit_core::MAX_DIFF_LINES, || false)
+                .expect("diff hunks");
+        let diff = FileDiff {
+            key: FileDiffKey {
+                details: DetailsKey::single(Oid::ZERO),
+                path: "src/main.rs".into(),
+                old_path: None,
+                context: DiffContext::Three,
+            },
+            hunks,
+            is_binary: false,
+            is_truncated: false,
+            is_too_large: false,
+        };
+        let hl = HighlightedDiff::build(&diff);
+        let (line_idx, added) = diff.hunks[0]
+            .lines
+            .iter()
+            .enumerate()
+            .find(|(_, l)| l.kind == DiffLineKind::Added)
+            .expect("added line");
+        assert!(added.text.starts_with('\t'), "raw tab must be preserved");
+        let word_bg = Color::Rgb(55, 102, 75);
+
+        for (tab_size, expected_prefix) in [(2, "  let val = omega;"), (8, "        let val = omega;")]
+        {
+            for tokens in [&[][..], hl.hunks[0][line_idx].as_slice()] {
+                let spans = render_diff_line_spans_with_tab(
+                    &added.text,
+                    tokens,
+                    &added.word_ranges,
+                    80,
+                    tab_size,
+                    Style::default(),
+                    word_bg,
+                    true,
+                );
+                let joined: String = spans.iter().map(|s| s.content.as_ref()).collect();
+                assert_eq!(joined, expected_prefix);
+                let omega = spans
+                    .iter()
+                    .find(|s| s.content == "omega")
+                    .expect("omega word span");
+                assert_eq!(
+                    omega.style.bg,
+                    Some(word_bg),
+                    "word-diff bg must stay aligned at tab_size={tab_size}"
+                );
+            }
+        }
     }
 
     #[test]

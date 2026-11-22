@@ -1,32 +1,33 @@
 use std::sync::Arc;
-use std::time::Instant;
 
-use jbgit_core::{ModalButton, WorkspaceTab};
+use jbgit_core::{RequestSlotId, WorkspaceTab};
 use jbgit_engine::EngineEvent;
 
+use crate::dialogs::{ChoiceDialog, Dialog};
 use crate::log_view::PathMatches;
 
-use super::{AppState, Effect, ModalLayer, SyntaxJobKey, UiAsyncEvent};
+use super::{Action, AppState, Effect, ModalLayer, SyntaxJobKey, UiAsyncEvent};
 
 impl AppState {
     pub fn apply_ui_async_event(&mut self, event: UiAsyncEvent) -> Vec<Effect> {
         let mut effects = Vec::new();
         match event {
             UiAsyncEvent::ContainingBranches { oid, token, names } => {
-                if self.details.resolve_containing_branches(oid, &token, names) {
+                if self.log.details.resolve_containing_branches(oid, &token, names) {
                     self.needs_redraw = true;
                 }
             }
             UiAsyncEvent::LogGraphRebuilt(rebuilt) => {
-                if self.log_graph.apply_rebuilt(*rebuilt) {
-                    if let Some(err) = &self.log_graph.filter_error {
+                if self.log.graph.apply_rebuilt(*rebuilt) {
+                    if let Some(err) = &self.log.graph.filter_error {
                         self.status_notice = Some(
                             self.i18n
                                 .t_fmt("toast.filter_error", &[("err", &err.to_string())]),
                         );
                     }
                     self.needs_redraw = true;
-                    self.reconcile_log_requests(Instant::now(), &mut effects);
+                    let now = self.now();
+                    self.reconcile_log_requests(now, &mut effects);
                 }
             }
             UiAsyncEvent::SyntaxHighlighted {
@@ -34,21 +35,11 @@ impl AppState {
                 epoch,
                 highlighted,
             } => {
-                if !self.file_syntax.finish(&fk, epoch) {
+                if !self.file_syntax.finish_cancelable(&fk, epoch) {
                     return effects;
                 }
-                let mut updated = false;
-                if self.details.diff_cache.contains(&fk) {
-                    self.details
-                        .diff_syntax
-                        .insert(fk.clone(), Arc::clone(&highlighted));
-                    updated = true;
-                }
-                if self.stash.details.diff_cache.contains(&fk) {
-                    self.stash.details.diff_syntax.insert(fk, highlighted);
-                    updated = true;
-                }
-                if updated {
+                if self.diff_caches.diffs.contains(&fk) {
+                    self.diff_caches.insert_syntax(fk, highlighted);
                     self.needs_redraw = true;
                 }
             }
@@ -57,16 +48,10 @@ impl AppState {
                 epoch,
                 highlighted,
             } => {
-                if !self.stage_syntax.finish(&sk, epoch) {
-                    return effects;
-                }
-                if self.stage_workbench.diff_cache.contains(&sk) {
-                    self.stage_workbench
-                        .diff_syntax_cache
-                        .insert(sk.clone(), Arc::clone(&highlighted));
-                }
-                if self.stage_workbench.current_diff_key.as_ref() == Some(&sk) {
-                    self.stage_workbench.diff_syntax = Some(highlighted);
+                if self
+                    .stage_workbench
+                    .apply_syntax_highlighted(sk, epoch, highlighted, &mut self.stage_syntax)
+                {
                     self.needs_redraw = true;
                 }
             }
@@ -78,10 +63,37 @@ impl AppState {
         let mut effects = Vec::new();
         self.needs_redraw = true;
 
-        let event = match self.apply_stage_engine_event(event, &mut effects) {
+        let now = self.now();
+        let snap_ref = self.repo_snapshot.clone();
+        let default_remote = self.default_remote();
+        let syntax_enabled = self.config.jbgit.diff.syntax_highlight;
+        let mut modals = Vec::new();
+        let event = {
+            let mut cctx = crate::stage_view::CommitContext {
+                snap: snap_ref.as_deref(),
+                default_remote: &default_remote,
+                i18n: &self.i18n,
+                now,
+                focused_pane: &mut self.focused_pane,
+                loading_snapshot: &mut self.loading_snapshot,
+                status_notice: &mut self.status_notice,
+                effects: &mut effects,
+                modals: &mut modals,
+            };
+            self.stage_workbench.apply_engine_event(
+                event,
+                &mut self.request_slots,
+                &mut self.stage_syntax,
+                syntax_enabled,
+                &mut cctx,
+            )
+        };
+        for m in modals {
+            self.push_modal(m);
+        }
+        let event = match event {
             None => {
-                self.reconcile_log_requests(Instant::now(), &mut effects);
-                self.reconcile_stage_requests(Instant::now(), &mut effects);
+                self.reconcile_all_requests(&mut effects);
                 return effects;
             }
             Some(ev) => ev,
@@ -89,110 +101,105 @@ impl AppState {
 
         match event {
             EngineEvent::RepoSnapshotLoaded { snapshot, epoch } => {
-                if epoch < self.latest_repo_epoch {
+                if !self.request_slots.accept(RequestSlotId::RepoSnapshot, epoch) {
                     return effects;
                 }
-                self.latest_repo_epoch = epoch;
                 self.loading_snapshot = false;
-                if self.branches.settings_path.is_none()
-                    && !snapshot.common_dir.as_os_str().is_empty()
-                {
-                    self.branches
-                        .load_settings(snapshot.common_dir.join("jbgit-branches-panel"));
-                    self.stage_workbench
-                        .load_history(snapshot.common_dir.join("jbgit-commit-history"));
-                    self.stage_workbench
-                        .load_draft(snapshot.common_dir.join("jbgit-commit-draft"));
-                }
                 let prev_head = self.repo_snapshot.as_ref().and_then(|s| s.head_oid);
                 let head_changed = prev_head.is_some() && prev_head != snapshot.head_oid;
-                if head_changed && !self.stage_workbench.amend {
-                    self.stage_workbench.amend_preview = None;
+                if self.log.branches.settings_path.is_none()
+                    && !snapshot.common_dir.as_os_str().is_empty()
+                {
+                    self.log
+                        .branches
+                        .load_settings(snapshot.common_dir.join("jbgit-branches-panel"));
                 }
-                self.log_graph.on_snapshot_loaded();
-                self.details.reset_containing();
+                self.stage_workbench
+                    .on_repo_snapshot_loaded(&snapshot, head_changed, &mut effects);
+                self.log.graph.on_snapshot_loaded();
+                self.log.details.reset_containing();
                 self.repo_snapshot = Some(snapshot);
-                if self.stage_workbench.amend {
-                    effects.push(Effect::RequestAmendPreview);
-                }
             }
             EngineEvent::RefAheadBehindBackfilled { epoch, updates } => {
-                if epoch == self.latest_repo_epoch {
-                    self.branches.apply_ahead_behind_backfill(&updates);
+                if self
+                    .request_slots
+                    .matches_latest(RequestSlotId::RepoSnapshot, epoch)
+                {
+                    self.log.branches.apply_ahead_behind_backfill(&updates);
                     self.needs_redraw = true;
                 }
             }
-            EngineEvent::CommitDetailsLoaded { bundle, epoch } => {
-                self.latest_commit_details_epoch = self.latest_commit_details_epoch.max(epoch);
-                if self.stash.requested_details.as_ref() == Some(&bundle.key) {
-                    self.stash.requested_details = None;
+            EngineEvent::CommitDetailsLoaded {
+                slot,
+                bundle,
+                epoch,
+            } => {
+                if !self.request_slots.accept(slot, epoch) {
+                    return effects;
                 }
-                if self.stash.details.current_key.as_ref() == Some(&bundle.key) {
-                    self.stash
-                        .details
-                        .cache
-                        .insert(bundle.key.clone(), Arc::clone(&bundle));
+                if slot == RequestSlotId::StashCommitDetails {
+                    self.stash.on_details_loaded(&bundle.key);
                 }
-                self.details.cache.insert(bundle.key.clone(), bundle);
+                self.diff_caches.insert_details(bundle);
             }
             EngineEvent::CommitSignatureVerified { oid, status } => {
-                self.details.signature_overrides.insert(oid, status);
+                self.diff_caches.signatures.insert(oid, status);
                 self.needs_redraw = true;
             }
-            EngineEvent::FileDiffLoaded { diff, epoch } => {
-                let log_wants = self.details.diff_visible()
-                    && self.details.desired_diff_key().as_ref() == Some(&diff.key);
+            EngineEvent::FileDiffLoaded { slot, diff, epoch } => {
+                if !self.request_slots.accept(slot, epoch) {
+                    return effects;
+                }
+                match slot {
+                    RequestSlotId::LogFileDiff => {
+                        if self.log.details.diff.requested.as_ref() == Some(&diff.key) {
+                            self.log.details.diff.requested = None;
+                        }
+                    }
+                    RequestSlotId::StashFileDiff => {
+                        self.stash.on_file_diff_loaded(&diff.key);
+                    }
+                    RequestSlotId::FileHistoryDiff => {
+                        if let Some(fh) = self.modal_stack.file_history_mut()
+                            && fh.diff.requested.as_ref() == Some(&diff.key)
+                        {
+                            fh.diff.requested = None;
+                        }
+                    }
+                    _ => {}
+                }
+                let log_wants = self.log.details.diff_visible()
+                    && self.log.details.desired_diff_key(&self.diff_caches).as_ref()
+                        == Some(&diff.key);
                 let stash_wants = self.active_tab == WorkspaceTab::Stash
-                    && self.stash.details.desired_diff_key().as_ref() == Some(&diff.key);
+                    && self.stash.diff_key(&self.diff_caches).as_ref() == Some(&diff.key);
                 let fh_wants = self
-                    .file_history
-                    .as_ref()
+                    .modal_stack
+                    .file_history()
                     .and_then(|fh| fh.desired_diff_key())
                     .as_ref()
                     == Some(&diff.key);
                 let is_wanted = log_wants || stash_wants || fh_wants;
-                if epoch < self.latest_file_diff_epoch && !is_wanted {
-                    return effects;
-                }
-                self.latest_file_diff_epoch = self.latest_file_diff_epoch.max(epoch);
-                if self.details.requested_diff.as_ref() == Some(&diff.key) {
-                    self.details.requested_diff = None;
-                }
-                if self.stash.details.requested_diff.as_ref() == Some(&diff.key) {
-                    self.stash.details.requested_diff = None;
-                }
-                if let Some(fh) = &mut self.file_history
-                    && fh.requested_diff.as_ref() == Some(&diff.key)
-                {
-                    fh.requested_diff = None;
-                }
-                if stash_wants || self.stash.details.desired_diff_key().as_ref() == Some(&diff.key)
-                {
-                    self.stash
-                        .details
-                        .diff_cache
-                        .insert(diff.key.clone(), Arc::clone(&diff));
-                }
-                self.details
-                    .diff_cache
-                    .insert(diff.key.clone(), Arc::clone(&diff));
-                if is_wanted && self.details.diff_syntax.peek(&diff.key).is_none() {
+                self.diff_caches.insert_diff(Arc::clone(&diff));
+                if is_wanted && self.diff_caches.peek_syntax(&diff.key).is_none() {
                     self.schedule_file_syntax(diff, &mut effects);
                 }
             }
             EngineEvent::FileHistoryLoaded { bundle, epoch } => {
-                if epoch < self.latest_file_history_epoch {
+                if !self
+                    .request_slots
+                    .accept(RequestSlotId::FileHistoryList, epoch)
+                {
                     return effects;
                 }
-                self.latest_file_history_epoch = epoch;
-                let desired_after_load = if let Some(fh) = &mut self.file_history
+                let desired_after_load = if let Some(fh) = self.modal_stack.file_history_mut()
                     && fh.key == bundle.key
                 {
                     fh.loading = false;
                     fh.error = None;
                     fh.anchor = None;
-                    fh.diff_scroll = 0;
-                    fh.pending_diff = None;
+                    fh.diff.scroll.reset();
+                    fh.diff.pending = None;
                     fh.selected = fh
                         .key
                         .start_oid
@@ -204,15 +211,18 @@ impl AppState {
                     None
                 };
                 if let Some(key) = desired_after_load {
-                    if let Some(cached) = self.details.diff_cache.get(&key).cloned() {
-                        if self.details.diff_syntax.get(&key).is_none() {
+                    if let Some(cached) = self.diff_caches.get_diff(&key) {
+                        if self.diff_caches.get_syntax(&key).is_none() {
                             self.schedule_file_syntax(cached, &mut effects);
                         }
-                    } else if let Some(fh) = &mut self.file_history
-                        && fh.requested_diff.as_ref() != Some(&key)
+                    } else if let Some(fh) = self.modal_stack.file_history_mut()
+                        && fh.diff.requested.as_ref() != Some(&key)
                     {
-                        fh.requested_diff = Some(key.clone());
-                        effects.push(Effect::RequestFileDiff(key));
+                        fh.diff.requested = Some(key.clone());
+                        effects.push(Effect::RequestFileDiff {
+                            slot: RequestSlotId::FileHistoryDiff,
+                            key,
+                        });
                     }
                 }
             }
@@ -221,19 +231,24 @@ impl AppState {
                 matches,
                 epoch,
             } => {
-                if epoch < self.latest_path_epoch {
+                if !self.request_slots.accept(RequestSlotId::PathFilter, epoch) {
                     return effects;
                 }
-                self.latest_path_epoch = epoch;
-                if let Some(req) = self.log_filter.path_requested.take()
+                if let Some(req) = self.log.filter.path_requested.take()
                     && req.paths == paths
                 {
-                    self.log_filter.path_matches = Some(PathMatches {
+                    self.log.filter.path_matches = Some(PathMatches {
                         paths,
                         snapshot: req.snapshot,
                         oids: matches,
                     });
-                    self.on_filter_changed();
+                    self.log.on_filter_changed(
+                        self.repo_snapshot.as_ref(),
+                        &self.branch_colors,
+                        self.async_graph_enabled,
+                        &self.i18n,
+                        &mut self.status_notice,
+                    );
                 }
             }
             EngineEvent::StageStatusLoaded { .. }
@@ -245,24 +260,17 @@ impl AppState {
                 unreachable!("handled by apply_stage_engine_event")
             }
             EngineEvent::ConsoleStarted(entry) => {
-                self.console_entries.insert(0, entry);
-                self.console_selected_idx = 0;
-                self.console_output_scroll = 0;
+                self.console.push_started(entry);
             }
             EngineEvent::ConsoleOutput { id, stream, line } => {
-                if let Some(entry) = self.console_entries.iter_mut().find(|e| e.id == id) {
-                    entry.push_line(stream, line);
-                }
+                self.console.push_output(id, stream, line);
             }
             EngineEvent::ConsoleFinished {
                 id,
                 exit_code,
                 duration_ms,
             } => {
-                if let Some(entry) = self.console_entries.iter_mut().find(|e| e.id == id) {
-                    entry.exit_code = Some(exit_code);
-                    entry.duration_ms = Some(duration_ms);
-                }
+                self.console.finish_command(id, exit_code, duration_ms);
             }
             EngineEvent::IndexLockDetected {
                 lock_path,
@@ -273,22 +281,31 @@ impl AppState {
                 retry_refresh_after,
             } => {
                 let path_s = lock_path.display().to_string();
-                self.modal_stack.push(ModalLayer::CriticalDialog {
-                    title: self.i18n.t("dialog.index_lock.title").to_string(),
-                    body: self.i18n.t_fmt(
+                let body: Vec<String> = self
+                    .i18n
+                    .t_fmt(
                         "dialog.index_lock.body",
                         &[("path", &path_s), ("message", &message)],
-                    ),
-                    confirm_label: self.i18n.t("common.retry").to_string(),
-                    cancel_label: self.i18n.t("common.dismiss").to_string(),
-                    selected_button: ModalButton::Confirm,
-                    confirm_effect: Some(Effect::RunCli {
-                        args: retry_args,
-                        stdin_payload: retry_stdin,
-                        is_read_only: retry_is_read_only,
-                        refresh_after: retry_refresh_after,
-                    }),
-                });
+                    )
+                    .lines()
+                    .map(ToString::to_string)
+                    .collect();
+                self.push_modal(ModalLayer::Dialog(Box::new(
+                    Dialog::Choice(ChoiceDialog::confirm_with_default(
+                        self.i18n.t("dialog.index_lock.title"),
+                        body,
+                        self.i18n.t("common.retry"),
+                        self.i18n.t("common.dismiss"),
+                        true,
+                        true,
+                        vec![Action::RetryCliCommand {
+                            args: retry_args,
+                            stdin_payload: retry_stdin,
+                            is_read_only: retry_is_read_only,
+                            refresh_after: retry_refresh_after,
+                        }],
+                    )),
+                )));
             }
             EngineEvent::ExternalFsChanged(scope) => {
                 effects.push(Effect::RefreshScope(scope));
@@ -296,28 +313,33 @@ impl AppState {
             EngineEvent::GitOpFinished(outcome) => {
                 self.git_ops_running = self.git_ops_running.saturating_sub(1);
                 if outcome.success {
-                    self.stage_workbench.invalidate_all_diff_caches();
-                    self.stage_workbench.pending_select_immediate = true;
+                    self.stage_workbench.on_git_op_succeeded();
                 }
                 self.apply_git_outcome(outcome, &mut effects);
             }
-            EngineEvent::ConflictDocumentLoaded { doc } => {
-                if let Some(cm) = &mut self.conflict_merge
+            EngineEvent::ConflictDocumentLoaded { doc, epoch } => {
+                if !self
+                    .request_slots
+                    .accept(RequestSlotId::ConflictDocument, epoch)
+                {
+                    return effects;
+                }
+                if let Some(cm) = self.modal_stack.conflict_merge_mut()
                     && cm.path == doc.path
                 {
                     cm.selected_block = 0;
-                    cm.scroll = 0;
+                    cm.scroll.reset();
                     cm.doc = Some(doc);
                 }
             }
             EngineEvent::Error(msg) => {
                 self.loading_snapshot = false;
-                self.details.requested_diff = None;
-                self.stage_workbench.requested_diff = None;
-                self.stage_workbench.commit_in_progress = false;
-                if let Some(fh) = &mut self.file_history {
+                self.log.details.diff.requested = None;
+                self.stash.on_error();
+                self.stage_workbench.on_engine_error();
+                if let Some(fh) = self.modal_stack.file_history_mut() {
                     fh.loading = false;
-                    fh.requested_diff = None;
+                    fh.diff.requested = None;
                     if fh.bundle.is_none() {
                         fh.error = Some(msg.clone());
                     }

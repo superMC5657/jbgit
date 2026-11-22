@@ -63,7 +63,7 @@ pub fn render_hover_tooltip(
             {
                 let is_head = snap.head_oid == Some(commit.oid);
                 let head_marker = is_head.then(|| RefInfo::head_marker(commit.oid));
-                let groups = if let Some(cached) = &state.log_graph.cached {
+                let groups = if let Some(cached) = &state.log.graph.cached {
                     group_refs_for_table(
                         cached
                             .refs_for_oid(snap, commit.oid)

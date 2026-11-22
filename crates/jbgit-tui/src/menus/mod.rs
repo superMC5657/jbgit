@@ -51,13 +51,3 @@ pub(super) fn local_names(state: &AppState) -> Vec<String> {
 pub(super) fn ellipsize(s: &str, max: usize) -> String {
     crate::views::truncate_to_width(s, max)
 }
-
-pub(super) fn diff_patch_args(staged: bool, paths: &[String]) -> Vec<String> {
-    let mut args = vec!["diff".to_string()];
-    if staged {
-        args.push("--cached".to_string());
-    }
-    args.push("--".to_string());
-    args.extend(paths.iter().cloned());
-    args
-}

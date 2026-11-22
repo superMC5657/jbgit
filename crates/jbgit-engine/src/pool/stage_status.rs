@@ -7,19 +7,6 @@ use crate::probe::RepoLocation;
 use super::scan_config::StatusScanConfig;
 use super::worker_pool::with_thread_repo;
 
-pub fn load_stage_status_sync(
-    location: &RepoLocation,
-    include_ignored: bool,
-    token: &EpochToken,
-) -> Result<StageStatusSnapshot, EngineError> {
-    load_stage_status_with_config_sync(
-        location,
-        include_ignored,
-        StatusScanConfig::default(),
-        token,
-    )
-}
-
 pub fn load_stage_status_with_config_sync(
     location: &RepoLocation,
     include_ignored: bool,

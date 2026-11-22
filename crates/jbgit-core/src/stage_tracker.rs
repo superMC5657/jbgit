@@ -113,12 +113,10 @@ impl SlicedDocument {
     #[inline]
     pub fn display_text(&self, idx: usize) -> String {
         let content = self.line_content(idx);
-        if !content.contains(&b'\t')
-            && let Ok(s) = std::str::from_utf8(content)
-        {
-            return s.to_string();
+        match std::str::from_utf8(content) {
+            Ok(s) => s.to_string(),
+            Err(_) => String::from_utf8_lossy(content).into_owned(),
         }
-        String::from_utf8_lossy(content).replace('\t', "    ")
     }
 
     #[inline]
@@ -182,6 +180,235 @@ impl DiffBlock {
         let inserted = self.end2 as isize - self.start2 as isize;
         inserted - deleted
     }
+}
+
+/// Default diff line budget before truncation across both two-doc and three-doc diffs.
+pub const MAX_DIFF_LINES: usize = 20_000;
+/// Prefix length scanned for NUL bytes when sniffing binary files (matches Git's 8 KiB rule).
+pub const BINARY_SNIFF_BYTES: usize = 8192;
+
+/// Returns `true` when `bytes` contains a NUL byte within the first [`BINARY_SNIFF_BYTES`].
+#[inline]
+pub fn is_binary_bytes(bytes: &[u8]) -> bool {
+    bytes.iter().take(BINARY_SNIFF_BYTES).any(|&b| b == 0)
+}
+
+/// Output hunk produced by [`assemble_hunks`] pairing a [`DiffHunk`] with its
+/// originating [`DiffBlock`] index range and per-line caller metadata.
+#[derive(Debug, Clone)]
+pub struct AssembledHunk<M> {
+    pub hunk: DiffHunk,
+    pub block_range: Range<usize>,
+    pub line_meta: Vec<M>,
+}
+
+/// Assembles merged [`DiffHunk`]s from two [`SlicedDocument`]s and precomputed
+/// [`DiffBlock`]s. Preserves raw `'\t'` bytes in `DiffLine::text` so downstream
+/// renderers expand tabs according to `[diff] tab_size`.
+///
+/// Returns `None` if `is_cancelled()` becomes `true`.
+pub fn assemble_hunks<M, F>(
+    doc_before: &SlicedDocument,
+    doc_after: &SlicedDocument,
+    blocks: &[DiffBlock],
+    context_len: usize,
+    max_lines: usize,
+    is_cancelled: impl Fn() -> bool,
+    mut on_line: F,
+) -> Option<(Vec<AssembledHunk<M>>, bool)>
+where
+    F: FnMut(DiffLineKind, Option<usize>, Option<usize>, Option<&DiffBlock>) -> M,
+{
+    if blocks.is_empty() {
+        return Some((Vec::new(), false));
+    }
+
+    let before_len = doc_before.len();
+    let mut out = Vec::new();
+    let mut budget = max_lines;
+    let mut word_diff_budget = EAGER_WORD_DIFF_PAIR_BUDGET;
+    let mut truncated = false;
+
+    let mut i = 0usize;
+    while i < blocks.len() {
+        if is_cancelled() {
+            return None;
+        }
+        let first = &blocks[i];
+        let mut group_end = i + 1;
+        while group_end < blocks.len() {
+            let prev_end = blocks[group_end - 1].end1;
+            let next_start = blocks[group_end].start1;
+            if next_start.saturating_sub(prev_end) <= context_len.saturating_mul(2) {
+                group_end += 1;
+            } else {
+                break;
+            }
+        }
+
+        let start_before = first.start1.saturating_sub(context_len);
+        let leading = first.start1 - start_before;
+        let start_after = first.start2.saturating_sub(leading);
+
+        let mut lines = Vec::new();
+        let mut meta = Vec::new();
+        let mut cur_before = start_before;
+        let mut cur_after = start_after;
+
+        for b in &blocks[i..group_end] {
+            while cur_before < b.start1 {
+                if budget == 0 {
+                    truncated = true;
+                    break;
+                }
+                budget -= 1;
+                lines.push(DiffLine {
+                    kind: DiffLineKind::Context,
+                    old_lineno: Some(cur_before as u32 + 1),
+                    new_lineno: Some(cur_after as u32 + 1),
+                    text: doc_before.display_text(cur_before),
+                    word_ranges: Vec::new(),
+                });
+                meta.push(on_line(
+                    DiffLineKind::Context,
+                    Some(cur_before),
+                    Some(cur_after),
+                    None,
+                ));
+                cur_before += 1;
+                cur_after += 1;
+            }
+            if truncated {
+                break;
+            }
+            for b_idx in b.start1..b.end1 {
+                if budget == 0 {
+                    truncated = true;
+                    break;
+                }
+                budget -= 1;
+                lines.push(DiffLine {
+                    kind: DiffLineKind::Deleted,
+                    old_lineno: Some(b_idx as u32 + 1),
+                    new_lineno: None,
+                    text: doc_before.display_text(b_idx),
+                    word_ranges: Vec::new(),
+                });
+                meta.push(on_line(
+                    DiffLineKind::Deleted,
+                    Some(b_idx),
+                    None,
+                    Some(b),
+                ));
+            }
+            for a_idx in b.start2..b.end2 {
+                if budget == 0 {
+                    truncated = true;
+                    break;
+                }
+                budget -= 1;
+                lines.push(DiffLine {
+                    kind: DiffLineKind::Added,
+                    old_lineno: None,
+                    new_lineno: Some(a_idx as u32 + 1),
+                    text: doc_after.display_text(a_idx),
+                    word_ranges: Vec::new(),
+                });
+                meta.push(on_line(
+                    DiffLineKind::Added,
+                    None,
+                    Some(a_idx),
+                    Some(b),
+                ));
+            }
+            if truncated {
+                break;
+            }
+            cur_before = b.end1;
+            cur_after = b.end2;
+        }
+
+        if !truncated {
+            let tail_end = cur_before.saturating_add(context_len).min(before_len);
+            while cur_before < tail_end {
+                if budget == 0 {
+                    truncated = true;
+                    break;
+                }
+                budget -= 1;
+                lines.push(DiffLine {
+                    kind: DiffLineKind::Context,
+                    old_lineno: Some(cur_before as u32 + 1),
+                    new_lineno: Some(cur_after as u32 + 1),
+                    text: doc_before.display_text(cur_before),
+                    word_ranges: Vec::new(),
+                });
+                meta.push(on_line(
+                    DiffLineKind::Context,
+                    Some(cur_before),
+                    Some(cur_after),
+                    None,
+                ));
+                cur_before += 1;
+                cur_after += 1;
+            }
+        }
+
+        let len_before = cur_before - start_before;
+        let len_after = cur_after - start_after;
+        let mut hunk = DiffHunk {
+            header: format!(
+                "@@ -{},{} +{},{} @@",
+                start_before + 1,
+                len_before,
+                start_after + 1,
+                len_after
+            ),
+            lines,
+        };
+        apply_word_diff_with_budget(&mut hunk, &mut word_diff_budget);
+        out.push(AssembledHunk {
+            hunk,
+            block_range: i..group_end,
+            line_meta: meta,
+        });
+        if truncated {
+            break;
+        }
+        i = group_end;
+    }
+
+    Some((out, truncated))
+}
+
+/// Builds two-document `imara-diff` hunks from raw byte slices, preserving raw `'\t'`
+/// in `DiffLine::text`. Returns `None` if `is_cancelled()` becomes `true`.
+pub fn build_diff_hunks(
+    before: &[u8],
+    after: &[u8],
+    context_len: usize,
+    max_lines: usize,
+    is_cancelled: impl Fn() -> bool,
+) -> Option<(Vec<DiffHunk>, bool)> {
+    if is_cancelled() {
+        return None;
+    }
+    let blocks = compute_diff_blocks(before, after);
+    if blocks.is_empty() {
+        return Some((Vec::new(), false));
+    }
+    let doc_before = SlicedDocument::from_bytes(before);
+    let doc_after = SlicedDocument::from_bytes(after);
+    let (assembled, truncated) = assemble_hunks(
+        &doc_before,
+        &doc_after,
+        &blocks,
+        context_len,
+        max_lines,
+        is_cancelled,
+        |_, _, _, _| (),
+    )?;
+    Some((assembled.into_iter().map(|h| h.hunk).collect(), truncated))
 }
 
 /// Computes exact line diff blocks between two byte slices using `imara-diff` Histogram.
@@ -560,46 +787,6 @@ impl StageLineTracker {
         )
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn push_context_line(
-        &self,
-        staged_side: bool,
-        doc_before: &SlicedDocument,
-        cur_before: usize,
-        cur_after: usize,
-        lines: &mut Vec<DiffLine>,
-        line_meta: &mut Vec<StageDiffLineMeta>,
-        has_mixed: &mut bool,
-    ) {
-        lines.push(DiffLine {
-            kind: DiffLineKind::Context,
-            old_lineno: Some(cur_before as u32 + 1),
-            new_lineno: Some(cur_after as u32 + 1),
-            text: doc_before.display_text(cur_before),
-            word_ranges: Vec::new(),
-        });
-        let pivot_line = if staged_side { cur_after } else { cur_before };
-        let sr_idx = self.range_for_staged_line(pivot_line);
-        let mark = sr_idx
-            .and_then(|idx| self.ranges.get(idx))
-            .map_or(LineGutterMark::None, |sr| {
-                if sr.has_staged && sr.has_unstaged {
-                    *has_mixed = true;
-                    LineGutterMark::Both
-                } else if sr.has_staged {
-                    LineGutterMark::Staged(DiffLineKind::Context)
-                } else {
-                    LineGutterMark::None
-                }
-            });
-        line_meta.push(StageDiffLineMeta {
-            before_idx: Some(cur_before),
-            after_idx: Some(cur_after),
-            gutter_mark: mark,
-            staged_range_idx: sr_idx,
-        });
-    }
-
     /// Builds interactive diff hunks with per-line gutter marks & `StagedRange` links.
     /// When `staged_side` is true, diffs `vcs_doc ↔ staged_doc`; otherwise `staged_doc ↔ local_doc`.
     pub fn build_interactive_hunks(
@@ -613,76 +800,40 @@ impl StageLineTracker {
         } else {
             (&self.staged_doc, &self.local_doc, &self.unstaged_blocks)
         };
-        if blocks.is_empty() {
-            return (Vec::new(), false);
-        }
-
-        let context_len = context.lines() as usize;
-        let before_len = doc_before.len();
-        let mut out = Vec::new();
-        let mut budget = max_lines;
-        let mut word_diff_budget = EAGER_WORD_DIFF_PAIR_BUDGET;
-        let mut truncated = false;
-
-        let mut i = 0usize;
-        while i < blocks.len() {
-            let first = &blocks[i];
-            let mut group_end = i + 1;
-            while group_end < blocks.len() {
-                let prev_end = blocks[group_end - 1].end1;
-                let next_start = blocks[group_end].start1;
-                if next_start.saturating_sub(prev_end) <= context_len.saturating_mul(2) {
-                    group_end += 1;
-                } else {
-                    break;
-                }
-            }
-
-            let start_before = first.start1.saturating_sub(context_len);
-            let leading = first.start1 - start_before;
-            let start_after = first.start2.saturating_sub(leading);
-
-            let mut lines = Vec::new();
-            let mut line_meta = Vec::new();
-            let mut cur_before = start_before;
-            let mut cur_after = start_after;
-            let mut has_mixed = false;
-
-            for b in &blocks[i..group_end] {
-                while cur_before < b.start1 {
-                    if budget == 0 {
-                        truncated = true;
-                        break;
+        let Some((assembled, truncated)) = assemble_hunks(
+            doc_before,
+            doc_after,
+            blocks,
+            context.lines() as usize,
+            max_lines,
+            || false,
+            |kind, before_idx, after_idx, block| match kind {
+                DiffLineKind::Context => {
+                    let cur_before = before_idx.unwrap_or(0);
+                    let cur_after = after_idx.unwrap_or(0);
+                    let pivot_line = if staged_side { cur_after } else { cur_before };
+                    let sr_idx = self.range_for_staged_line(pivot_line);
+                    let mark = sr_idx
+                        .and_then(|idx| self.ranges.get(idx))
+                        .map_or(LineGutterMark::None, |sr| {
+                            if sr.has_staged && sr.has_unstaged {
+                                LineGutterMark::Both
+                            } else if sr.has_staged {
+                                LineGutterMark::Staged(DiffLineKind::Context)
+                            } else {
+                                LineGutterMark::None
+                            }
+                        });
+                    StageDiffLineMeta {
+                        before_idx,
+                        after_idx,
+                        gutter_mark: mark,
+                        staged_range_idx: sr_idx,
                     }
-                    budget -= 1;
-                    self.push_context_line(
-                        staged_side,
-                        doc_before,
-                        cur_before,
-                        cur_after,
-                        &mut lines,
-                        &mut line_meta,
-                        &mut has_mixed,
-                    );
-                    cur_before += 1;
-                    cur_after += 1;
                 }
-                if truncated {
-                    break;
-                }
-                for b_idx in b.start1..b.end1 {
-                    if budget == 0 {
-                        truncated = true;
-                        break;
-                    }
-                    budget -= 1;
-                    lines.push(DiffLine {
-                        kind: DiffLineKind::Deleted,
-                        old_lineno: Some(b_idx as u32 + 1),
-                        new_lineno: None,
-                        text: doc_before.display_text(b_idx),
-                        word_ranges: Vec::new(),
-                    });
+                DiffLineKind::Deleted => {
+                    let b_idx = before_idx.unwrap_or(0);
+                    let b = block.expect("deleted line belongs to a block");
                     let sr_idx = if staged_side {
                         self.range_for_staged_line(b.start2)
                     } else {
@@ -698,7 +849,6 @@ impl StageLineTracker {
                             },
                             |sr| {
                                 if sr.has_staged && sr.has_unstaged {
-                                    has_mixed = true;
                                     LineGutterMark::Both
                                 } else if staged_side {
                                     LineGutterMark::Staged(DiffLineKind::Deleted)
@@ -707,26 +857,16 @@ impl StageLineTracker {
                                 }
                             },
                         );
-                    line_meta.push(StageDiffLineMeta {
-                        before_idx: Some(b_idx),
+                    StageDiffLineMeta {
+                        before_idx,
                         after_idx: None,
                         gutter_mark: mark,
                         staged_range_idx: sr_idx,
-                    });
-                }
-                for a_idx in b.start2..b.end2 {
-                    if budget == 0 {
-                        truncated = true;
-                        break;
                     }
-                    budget -= 1;
-                    lines.push(DiffLine {
-                        kind: DiffLineKind::Added,
-                        old_lineno: None,
-                        new_lineno: Some(a_idx as u32 + 1),
-                        text: doc_after.display_text(a_idx),
-                        word_ranges: Vec::new(),
-                    });
+                }
+                DiffLineKind::Added => {
+                    let a_idx = after_idx.unwrap_or(0);
+                    let b = block.expect("added line belongs to a block");
                     let sr_idx = if staged_side {
                         self.range_for_staged_line(a_idx)
                     } else {
@@ -748,7 +888,6 @@ impl StageLineTracker {
                             },
                             |sr| {
                                 if sr.has_staged && sr.has_unstaged {
-                                    has_mixed = true;
                                     LineGutterMark::Both
                                 } else if staged_side {
                                     LineGutterMark::Staged(mark_kind)
@@ -757,67 +896,33 @@ impl StageLineTracker {
                                 }
                             },
                         );
-                    line_meta.push(StageDiffLineMeta {
+                    StageDiffLineMeta {
                         before_idx: None,
-                        after_idx: Some(a_idx),
+                        after_idx,
                         gutter_mark: mark,
                         staged_range_idx: sr_idx,
-                    });
-                }
-                if truncated {
-                    break;
-                }
-                cur_before = b.end1;
-                cur_after = b.end2;
-            }
-
-            if !truncated {
-                let tail_end = cur_before.saturating_add(context_len).min(before_len);
-                while cur_before < tail_end {
-                    if budget == 0 {
-                        truncated = true;
-                        break;
                     }
-                    budget -= 1;
-                    self.push_context_line(
-                        staged_side,
-                        doc_before,
-                        cur_before,
-                        cur_after,
-                        &mut lines,
-                        &mut line_meta,
-                        &mut has_mixed,
-                    );
-                    cur_before += 1;
-                    cur_after += 1;
                 }
-            }
+            },
+        ) else {
+            return (Vec::new(), false);
+        };
 
-            let len_before = cur_before - start_before;
-            let len_after = cur_after - start_after;
-            let mut hunk = DiffHunk {
-                header: format!(
-                    "@@ -{},{} +{},{} @@",
-                    start_before + 1,
-                    len_before,
-                    start_after + 1,
-                    len_after
-                ),
-                lines,
-            };
-            apply_word_diff_with_budget(&mut hunk, &mut word_diff_budget);
-            out.push(StageDiffHunk {
-                hunk,
-                block_indices: (i..group_end).collect(),
-                line_meta,
-                has_mixed_range: has_mixed,
-            });
-            if truncated {
-                break;
-            }
-            i = group_end;
-        }
-
+        let out = assembled
+            .into_iter()
+            .map(|h| {
+                let has_mixed_range = h
+                    .line_meta
+                    .iter()
+                    .any(|m| m.gutter_mark == LineGutterMark::Both);
+                StageDiffHunk {
+                    hunk: h.hunk,
+                    block_indices: h.block_range.collect(),
+                    line_meta: h.line_meta,
+                    has_mixed_range,
+                }
+            })
+            .collect();
         (out, truncated)
     }
 }

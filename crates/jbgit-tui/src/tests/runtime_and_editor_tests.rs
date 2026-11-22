@@ -4,58 +4,46 @@ use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, mpsc};
 use std::task::{Context, Poll, Waker};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use chrono::Local;
 use crossterm::event::{
-    Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+    Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEventKind,
 };
 use futures::StreamExt;
 use jbgit_core::{
     AmendCommitPreview, CommitSummary, ConsoleLine, ConsoleStream, DiffContext, DiffHunk, DiffLine,
     DiffLineKind, FileChange, FileDiff, FileDiffKey, FileStatusKind, GitConsoleEntry, Oid, PaneId,
-    PersonStamp, RefInfo, RefKind, RefreshScope, RepoSnapshot, RepositoryState, SignatureStatus,
-    SplitAxis, SplitterId, StageEntry, StageStatusSnapshot, StageTreeRowKind, StashEntry,
-    WorkspaceTab,
+    RefInfo, RefKind, RefreshScope, RepoSnapshot, RepositoryState, SplitAxis, SplitterId,
+    StageEntry, StageStatusSnapshot, StageTreeRowKind, StashEntry, WorkspaceTab,
 };
-use jbgit_engine::{CommitOutcome, EngineEvent, StageDiffKey, StageDiffSide, ThreeDocStageDiff};
-use ratatui::Terminal;
-use ratatui::backend::TestBackend;
+use jbgit_engine::{
+    CommitOutcome, EngineEvent, StageDiffKey, StageDiffSide, TaskRequest, ThreeDocStageDiff,
+};
 use ratatui::layout::Rect;
 use unicode_width::UnicodeWidthStr;
 
-use crate::app::{Action, AppState, ContextMenuAction, ContextMenuEntryKind, ContextMenuItem, Effect, ModalLayer};
+use crate::app::{Action, AppState, ContextMenuEntryKind, ContextMenuItem, Effect, ModalLayer};
 use crate::external_editor::{
     handle_external_editor_effects_with, is_external_editor_disabled_val,
     resolve_editor_command_with, split_editor_command,
 };
-use crate::input::route_terminal_event;
-use crate::views::{render_app, truncate_to_width};
+use crate::views::truncate_to_width;
+
+use super::TestSession;
 
 #[test]
 fn test_backend_render_tiny_and_normal_no_panic() {
-    let mut state = AppState::new_with_config(
-        PathBuf::from("."),
-        None,
-        crate::config::AppConfig::load_defaults(),
-    );
+    let mut ts = TestSession::with_snapshot(super::snapshot());
     for (w, h) in [(10, 4), (45, 12), (59, 15), (120, 40)] {
-        let backend = TestBackend::new(w, h);
-        let mut terminal = Terminal::new(backend).unwrap();
-        terminal.draw(|f| render_app(f, &mut state)).unwrap();
+        let _ = ts.render(w, h);
     }
 }
 
 #[test]
 fn tab_switch_and_focus_ring_and_splitter_drag() {
-    let mut state = AppState::new_with_config(
-        PathBuf::from("."),
-        None,
-        crate::config::AppConfig::load_defaults(),
-    );
-    let backend = TestBackend::new(120, 40);
-    let mut terminal = Terminal::new(backend).unwrap();
-    terminal.draw(|f| render_app(f, &mut state)).unwrap();
+    let mut ts = TestSession::with_snapshot(super::snapshot());
+    let _ = ts.render(120, 40);
 
     for (ch, expected) in [
         ('1', WorkspaceTab::Commit),
@@ -63,33 +51,28 @@ fn tab_switch_and_focus_ring_and_splitter_drag() {
         ('3', WorkspaceTab::Stash),
         ('4', WorkspaceTab::Console),
     ] {
-        let actions = route_terminal_event(
-            Event::Key(KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE)),
-            &mut state,
-        );
-        for a in actions {
-            state.dispatch(a);
-        }
-        assert_eq!(state.active_tab, expected);
+        ts.send_key(KeyCode::Char(ch), KeyModifiers::NONE);
+        assert_eq!(ts.state().active_tab, expected);
     }
 
-    state.dispatch(Action::SwitchTab(WorkspaceTab::Log));
-    assert_eq!(state.focused_pane, PaneId::LogCommitTable);
-    state.dispatch(Action::CycleFocus { reverse: false });
-    assert_eq!(state.focused_pane, PaneId::LogChangesTree);
-    state.dispatch(Action::CycleFocus { reverse: false });
-    assert_eq!(state.focused_pane, PaneId::LogDetailsDiff);
-    state.dispatch(Action::CycleFocus { reverse: false });
-    assert_eq!(state.focused_pane, PaneId::LogBranchesTree);
+    ts.dispatch(Action::SwitchTab(WorkspaceTab::Log));
+    assert_eq!(ts.state().focused_pane, PaneId::LogCommitTable);
+    ts.dispatch(Action::CycleFocus { reverse: false });
+    assert_eq!(ts.state().focused_pane, PaneId::LogChangesTree);
+    ts.dispatch(Action::CycleFocus { reverse: false });
+    assert_eq!(ts.state().focused_pane, PaneId::LogDetailsDiff);
+    ts.dispatch(Action::CycleFocus { reverse: false });
+    assert_eq!(ts.state().focused_pane, PaneId::LogBranchesTree);
 
-    terminal.draw(|f| render_app(f, &mut state)).unwrap();
-    let (_, container) = state
+    let _ = ts.render(120, 40);
+    let (_, container) = ts
+        .state()
         .splitter_containers
         .get(&SplitterId::LogLeftHorizontal)
         .copied()
         .unwrap();
-    let initial_ratio = state.splitters.ratio(SplitterId::LogLeftHorizontal);
-    let split = state.splitters.split(
+    let initial_ratio = ts.state().splitters.ratio(SplitterId::LogLeftHorizontal);
+    let split = ts.state().splitters.split(
         container,
         SplitterId::LogLeftHorizontal,
         SplitAxis::Horizontal,
@@ -97,79 +80,36 @@ fn tab_switch_and_focus_ring_and_splitter_drag() {
     let div_x = split.divider.x;
     let div_y = split.divider.y + 2;
 
-    let actions = route_terminal_event(
-        Event::Mouse(MouseEvent {
-            kind: MouseEventKind::Down(MouseButton::Left),
-            column: div_x,
-            row: div_y,
-            modifiers: KeyModifiers::NONE,
-        }),
-        &mut state,
-    );
-    for a in actions {
-        state.dispatch(a);
-    }
-    assert!(state.drag_state.is_some());
+    ts.send_mouse(MouseEventKind::Down(MouseButton::Left), div_x, div_y);
+    assert!(ts.state().drag_state.is_some());
 
-    route_terminal_event(
-        Event::Mouse(MouseEvent {
-            kind: MouseEventKind::Drag(MouseButton::Left),
-            column: div_x + 12,
-            row: div_y,
-            modifiers: KeyModifiers::NONE,
-        }),
-        &mut state,
-    );
-    let dragged_ratio = state.splitters.ratio(SplitterId::LogLeftHorizontal);
+    ts.send_mouse(MouseEventKind::Drag(MouseButton::Left), div_x + 12, div_y);
+    let dragged_ratio = ts.state().splitters.ratio(SplitterId::LogLeftHorizontal);
     assert!(dragged_ratio > initial_ratio);
 
-    route_terminal_event(
-        Event::Mouse(MouseEvent {
-            kind: MouseEventKind::Up(MouseButton::Left),
-            column: div_x + 12,
-            row: div_y,
-            modifiers: KeyModifiers::NONE,
-        }),
-        &mut state,
-    );
-    assert!(state.drag_state.is_none());
+    ts.send_mouse(MouseEventKind::Up(MouseButton::Left), div_x + 12, div_y);
+    assert!(ts.state().drag_state.is_none());
 
-    terminal.draw(|f| render_app(f, &mut state)).unwrap();
-    let split2 = state.splitters.split(
+    let _ = ts.render(120, 40);
+    let split2 = ts.state().splitters.split(
         container,
         SplitterId::LogLeftHorizontal,
         SplitAxis::Horizontal,
     );
     let dx2 = split2.divider.x;
     for _ in 0..2 {
-        let acts = route_terminal_event(
-            Event::Mouse(MouseEvent {
-                kind: MouseEventKind::Down(MouseButton::Left),
-                column: dx2,
-                row: div_y,
-                modifiers: KeyModifiers::NONE,
-            }),
-            &mut state,
-        );
-        for a in acts {
-            state.dispatch(a);
-        }
+        ts.send_mouse(MouseEventKind::Down(MouseButton::Left), dx2, div_y);
     }
-    let reset_ratio = state.splitters.ratio(SplitterId::LogLeftHorizontal);
+    let reset_ratio = ts.state().splitters.ratio(SplitterId::LogLeftHorizontal);
     assert!((reset_ratio - initial_ratio).abs() < 0.001);
     let _ = Rect::ZERO;
 }
 
 #[test]
 fn mouse_wheel_routes_to_hovered_pane_and_right_click_preselects() {
-    let mut state = AppState::new_with_config(
-        PathBuf::from("."),
-        None,
-        crate::config::AppConfig::load_defaults(),
-    );
     let oid1 = Oid::from_bytes([1u8; 20]);
     let oid2 = Oid::from_bytes([2u8; 20]);
-    state.repo_snapshot = Some(Arc::new(RepoSnapshot {
+    let snap = RepoSnapshot {
         repo_name: "demo".into(),
         workdir: ".".into(),
         git_dir: ".git".into(),
@@ -206,8 +146,9 @@ fn mouse_wheel_routes_to_hovered_pane_and_right_click_preselects() {
                 body: String::new(),
             },
         ],
-    }));
-    state.console_entries.push(GitConsoleEntry {
+    };
+    let mut ts = TestSession::with_snapshot(snap);
+    ts.state_mut().console.push_started(GitConsoleEntry {
         id: 1,
         started_at: Local::now(),
         duration_ms: Some(5),
@@ -221,92 +162,46 @@ fn mouse_wheel_routes_to_hovered_pane_and_right_click_preselects() {
         exit_code: Some(0),
     });
 
-    let backend = TestBackend::new(120, 40);
-    let mut terminal = Terminal::new(backend).unwrap();
+    ts.dispatch(Action::SwitchTab(WorkspaceTab::Console));
+    assert_eq!(ts.state().focused_pane, PaneId::ConsoleCommandList);
+    let _ = ts.render(120, 40);
+    ts.send_mouse(MouseEventKind::ScrollDown, 90, 10);
+    assert_eq!(ts.state().console.output_scroll(), 0);
 
-    state.dispatch(Action::SwitchTab(WorkspaceTab::Console));
-    assert_eq!(state.focused_pane, PaneId::ConsoleCommandList);
-    terminal.draw(|f| render_app(f, &mut state)).unwrap();
-    for a in route_terminal_event(
-        Event::Mouse(MouseEvent {
-            kind: MouseEventKind::ScrollDown,
-            column: 90,
-            row: 10,
-            modifiers: KeyModifiers::NONE,
-        }),
-        &mut state,
-    ) {
-        state.dispatch(a);
-    }
-    assert_eq!(state.console_output_scroll, 0);
-
-    state.console_entries[0].output_lines = (0..60)
+    ts.state_mut().console.entries_mut_for_test()[0].output_lines = (0..60)
         .map(|i| ConsoleLine {
             stream: ConsoleStream::Stdout,
             text: format!("line {i}"),
         })
         .collect();
-    terminal.draw(|f| render_app(f, &mut state)).unwrap();
-    let actions = route_terminal_event(
-        Event::Mouse(MouseEvent {
-            kind: MouseEventKind::ScrollDown,
-            column: 90,
-            row: 10,
-            modifiers: KeyModifiers::NONE,
-        }),
-        &mut state,
-    );
-    for a in actions {
-        state.dispatch(a);
-    }
-    assert!(state.console_output_scroll > 0);
-    assert_eq!(state.focused_pane, PaneId::ConsoleCommandList);
+    let _ = ts.render(120, 40);
+    ts.send_mouse(MouseEventKind::ScrollDown, 90, 10);
+    assert!(ts.state().console.output_scroll() > 0);
+    assert_eq!(ts.state().focused_pane, PaneId::ConsoleCommandList);
 
-    state.dispatch(Action::SwitchTab(WorkspaceTab::Log));
-    terminal.draw(|f| render_app(f, &mut state)).unwrap();
-    assert_eq!(state.log_graph.selected_idx, 0);
+    ts.dispatch(Action::SwitchTab(WorkspaceTab::Log));
+    let _ = ts.render(120, 40);
+    assert_eq!(ts.state().log.graph.selected_idx, 0);
 
-    let actions = route_terminal_event(
-        Event::Mouse(MouseEvent {
-            kind: MouseEventKind::Down(MouseButton::Right),
-            column: 40,
-            row: 5,
-            modifiers: KeyModifiers::NONE,
-        }),
-        &mut state,
-    );
-    for a in actions {
-        state.dispatch(a);
-    }
-    assert_eq!(state.log_graph.selected_idx, 1);
-    assert_eq!(state.modal_stack.len(), 1);
+    ts.send_mouse(MouseEventKind::Down(MouseButton::Right), 40, 5);
+    assert_eq!(ts.state().log.graph.selected_idx, 1);
+    assert_eq!(ts.state().modal_stack.len(), 1);
 
-    terminal.draw(|f| render_app(f, &mut state)).unwrap();
-    let actions = route_terminal_event(
-        Event::Mouse(MouseEvent {
-            kind: MouseEventKind::Down(MouseButton::Left),
-            column: 5,
-            row: 3,
-            modifiers: KeyModifiers::NONE,
-        }),
-        &mut state,
-    );
-    for a in actions {
-        state.dispatch(a);
-    }
-    assert!(state.modal_stack.is_empty());
-    assert_eq!(state.log_graph.selected_idx, 1);
+    let _ = ts.render(120, 40);
+    ts.send_mouse(MouseEventKind::Down(MouseButton::Left), 5, 3);
+    assert!(ts.state().modal_stack.is_empty());
+    assert_eq!(ts.state().log.graph.selected_idx, 1);
 }
 
 #[test]
 fn stale_epoch_events_are_silently_dropped_on_ui_arrival() {
-    let mut state = AppState::new_with_config(
-        PathBuf::from("."),
-        None,
-        crate::config::AppConfig::load_defaults(),
-    );
-    state.latest_repo_epoch = 5;
-    state.latest_stage_epoch = 4;
+    let mut ts = TestSession::new(super::test_state(".".into()));
+    ts.state_mut()
+        .request_slots
+        .note_dispatched(jbgit_core::RequestSlotId::RepoSnapshot, 5);
+    ts.state_mut()
+        .request_slots
+        .note_dispatched(jbgit_core::RequestSlotId::StageStatus, 4);
 
     let stale_snap = Arc::new(RepoSnapshot {
         repo_name: "stale".into(),
@@ -325,11 +220,11 @@ fn stale_epoch_events_are_silently_dropped_on_ui_arrival() {
         refs: vec![],
         commits: vec![],
     });
-    state.apply_engine_event(EngineEvent::RepoSnapshotLoaded {
+    ts.deliver_engine_event(EngineEvent::RepoSnapshotLoaded {
         snapshot: stale_snap,
         epoch: 3,
     });
-    assert!(state.repo_snapshot.is_none());
+    assert!(ts.state().repo_snapshot.is_none());
 
     let fresh_snap = Arc::new(RepoSnapshot {
         repo_name: "fresh".into(),
@@ -348,12 +243,15 @@ fn stale_epoch_events_are_silently_dropped_on_ui_arrival() {
         refs: vec![],
         commits: vec![],
     });
-    state.apply_engine_event(EngineEvent::RepoSnapshotLoaded {
+    ts.deliver_engine_event(EngineEvent::RepoSnapshotLoaded {
         snapshot: fresh_snap,
         epoch: 5,
     });
     assert_eq!(
-        state.repo_snapshot.as_ref().map(|s| s.repo_name.as_str()),
+        ts.state()
+            .repo_snapshot
+            .as_ref()
+            .map(|s| s.repo_name.as_str()),
         Some("fresh")
     );
 
@@ -365,11 +263,11 @@ fn stale_epoch_events_are_silently_dropped_on_ui_arrival() {
         }],
         ..Default::default()
     });
-    state.apply_engine_event(EngineEvent::StageStatusLoaded {
+    ts.deliver_engine_event(EngineEvent::StageStatusLoaded {
         status: stale_stage,
         epoch: 2,
     });
-    assert!(state.stage_status.is_none());
+    assert!(ts.state().stage_workbench.status().is_none());
 }
 
 #[test]
@@ -388,111 +286,64 @@ fn cjk_truncate_respects_display_width() {
 
 #[test]
 fn context_menu_cascading_submenu_mnemonics_hover_and_no_stacking() {
-    let mut state = AppState::new_with_config(
-        PathBuf::from("."),
-        None,
-        crate::config::AppConfig::load_defaults(),
-    );
-    state.stage_status = Some(Arc::new(StageStatusSnapshot {
-        unstaged: vec![
-            StageEntry {
-                path: "a.rs".into(),
-                old_path: None,
-                kind: FileStatusKind::Modified,
-            },
-            StageEntry {
-                path: "b.rs".into(),
-                old_path: None,
-                kind: FileStatusKind::Modified,
-            },
-        ],
-        ..Default::default()
-    }));
-    state.dispatch(Action::SwitchTab(WorkspaceTab::Commit));
-
-    let backend = TestBackend::new(120, 40);
-    let mut terminal = Terminal::new(backend).unwrap();
-    terminal.draw(|f| render_app(f, &mut state)).unwrap();
-
-    let actions = route_terminal_event(
-        Event::Mouse(MouseEvent {
-            kind: MouseEventKind::Down(MouseButton::Right),
-            column: 10,
-            row: 6,
-            modifiers: KeyModifiers::NONE,
+    let mut ts = TestSession::new(super::test_state(".".into()));
+    ts.deliver_engine_event(EngineEvent::StageStatusLoaded {
+        status: Arc::new(StageStatusSnapshot {
+            unstaged: vec![
+                StageEntry {
+                    path: "a.rs".into(),
+                    old_path: None,
+                    kind: FileStatusKind::Modified,
+                },
+                StageEntry {
+                    path: "b.rs".into(),
+                    old_path: None,
+                    kind: FileStatusKind::Modified,
+                },
+            ],
+            ..Default::default()
         }),
-        &mut state,
-    );
-    for a in actions {
-        state.dispatch(a);
-    }
-    assert_eq!(state.commit_stage_selected_idx, 2);
-    assert_eq!(state.modal_stack.len(), 1);
+        epoch: 1,
+    });
+    ts.dispatch(Action::SwitchTab(WorkspaceTab::Commit));
+    let _ = ts.render(120, 40);
 
-    terminal.draw(|f| render_app(f, &mut state)).unwrap();
-    route_terminal_event(
-        Event::Mouse(MouseEvent {
-            kind: MouseEventKind::Moved,
-            column: 14,
-            row: 8,
-            modifiers: KeyModifiers::NONE,
-        }),
-        &mut state,
-    );
+    ts.send_mouse(MouseEventKind::Down(MouseButton::Right), 10, 6);
+    assert_eq!(ts.state().stage_workbench.selected_idx(), 2);
+    assert_eq!(ts.state().modal_stack.len(), 1);
+
+    let _ = ts.render(120, 40);
+    ts.send_mouse(MouseEventKind::Moved, 14, 8);
     assert!(matches!(
-        state.modal_stack.last(),
+        ts.state().modal_stack.last(),
         Some(ModalLayer::ContextMenu { selected: 1, .. })
     ));
 
-    let dup_actions = route_terminal_event(
-        Event::Mouse(MouseEvent {
-            kind: MouseEventKind::Down(MouseButton::Right),
-            column: 14,
-            row: 8,
-            modifiers: KeyModifiers::NONE,
-        }),
-        &mut state,
-    );
-    assert!(dup_actions.is_empty());
+    let _ = ts.take_requests();
+    ts.send_mouse(MouseEventKind::Down(MouseButton::Right), 14, 8);
+    assert!(ts.take_requests().is_empty());
+    assert_eq!(ts.state().modal_stack.len(), 1);
 
-    let sub_actions = route_terminal_event(
-        Event::Key(KeyEvent::new(KeyCode::Char('p'), KeyModifiers::NONE)),
-        &mut state,
-    );
-    for a in sub_actions {
-        state.dispatch(a);
-    }
-    assert_eq!(state.modal_stack.len(), 2);
+    ts.send_key(KeyCode::Char('p'), KeyModifiers::NONE);
+    assert_eq!(ts.state().modal_stack.len(), 2);
     assert!(matches!(
-        state.modal_stack.last(),
+        ts.state().modal_stack.last(),
         Some(ModalLayer::ContextMenu { depth: 1, .. })
     ));
 
-    let run_actions = route_terminal_event(
-        Event::Key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::NONE)),
-        &mut state,
-    );
-    let mut effects = Vec::new();
-    for a in run_actions {
-        effects.extend(state.dispatch(a));
-    }
-    assert!(state.modal_stack.is_empty());
-    assert_eq!(effects.len(), 1);
+    ts.send_key(KeyCode::Char('s'), KeyModifiers::NONE);
+    assert!(ts.state().modal_stack.is_empty());
+    assert_eq!(ts.take_requests().len(), 1);
     let _ = (
-        ContextMenuAction::RefreshRepo,
         ContextMenuEntryKind::Submenu(vec![]),
-        ContextMenuItem::action("x", None, None, ContextMenuAction::RefreshRepo),
+        ContextMenuItem::run("x", None, None, vec![Action::RefreshAll]),
     );
 }
 
 #[test]
 fn index_lock_retry_replays_blocked_cli_command() {
-    let mut state = AppState::new_with_config(
-        PathBuf::from("."),
-        None,
-        crate::config::AppConfig::load_defaults(),
-    );
-    state.apply_engine_event(EngineEvent::IndexLockDetected {
+    let mut ts = TestSession::new(super::test_state(".".into()));
+    ts.deliver_engine_event(EngineEvent::IndexLockDetected {
         lock_path: ".git/index.lock".into(),
         message: "Unable to create '.git/index.lock': File exists.".into(),
         retry_args: vec!["add".into(), "--pathspec-from-file=-".into()],
@@ -500,24 +351,20 @@ fn index_lock_retry_replays_blocked_cli_command() {
         retry_is_read_only: false,
         retry_refresh_after: RefreshScope::StageStatus,
     });
-    assert_eq!(state.modal_stack.len(), 1);
+    assert_eq!(ts.state().modal_stack.len(), 1);
+    let _ = ts.take_requests();
 
-    let actions = route_terminal_event(
-        Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
-        &mut state,
-    );
-    let mut effects = Vec::new();
-    for a in actions {
-        effects.extend(state.dispatch(a));
-    }
-    assert!(state.modal_stack.is_empty());
-    assert_eq!(effects.len(), 1);
-    match &effects[0] {
-        Effect::RunCli {
+    ts.send_key(KeyCode::Enter, KeyModifiers::NONE);
+    assert!(ts.state().modal_stack.is_empty());
+    let reqs = ts.take_requests();
+    assert_eq!(reqs.len(), 1);
+    match &reqs[0].0 {
+        TaskRequest::RunGitCli {
             args,
             stdin_payload,
             is_read_only,
             refresh_after,
+            ..
         } => {
             assert_eq!(
                 args,
@@ -527,19 +374,14 @@ fn index_lock_retry_replays_blocked_cli_command() {
             assert!(!is_read_only);
             assert_eq!(*refresh_after, RefreshScope::StageStatus);
         }
-        other => panic!("expected RunCli retry effect, got {other:?}"),
+        other => panic!("expected RunGitCli retry request, got {other:?}"),
     }
 }
 
 #[test]
 fn detached_head_and_overflow_hover_tooltips_and_overflow_clicks() {
-    let mut state = AppState::new_with_config(
-        PathBuf::from("."),
-        None,
-        crate::config::AppConfig::load_defaults(),
-    );
     let oid = Oid::from_bytes([7u8; 20]);
-    state.repo_snapshot = Some(Arc::new(RepoSnapshot {
+    let snap = RepoSnapshot {
         repo_name: "demo".into(),
         workdir: ".".into(),
         git_dir: ".git".into(),
@@ -610,17 +452,10 @@ fn detached_head_and_overflow_hover_tooltips_and_overflow_clicks() {
             author_timestamp: 0,
             body: String::new(),
         }],
-    }));
-
-    state.i18n = Arc::new(crate::i18n::I18n::load("en-US", None));
-    let backend = TestBackend::new(100, 24);
-    let mut terminal = Terminal::new(backend).unwrap();
-    terminal.draw(|f| render_app(f, &mut state)).unwrap();
-
-    let row0_text = |buf: &ratatui::buffer::Buffer, y: u16| -> String {
-        (0..buf.area.width).map(|x| buf[(x, y)].symbol()).collect()
     };
-    let row_line = row0_text(terminal.backend().buffer(), 4);
+    let mut ts = TestSession::with_snapshot(snap);
+    let buf = ts.render(100, 24);
+    let row_line = super::row_text(&buf, 4);
     let col_of = |needle: &str| {
         let byte_idx = row_line.find(needle).unwrap();
         row_line[..byte_idx].width() as u16
@@ -628,66 +463,22 @@ fn detached_head_and_overflow_hover_tooltips_and_overflow_clicks() {
     let head_x = col_of("HEAD");
     let plus_x = col_of("+");
 
-    route_terminal_event(
-        Event::Mouse(MouseEvent {
-            kind: MouseEventKind::Moved,
-            column: head_x,
-            row: 4,
-            modifiers: KeyModifiers::NONE,
-        }),
-        &mut state,
-    );
-    terminal.draw(|f| render_app(f, &mut state)).unwrap();
-    let full_text: String = (0..24)
-        .map(|y| row0_text(terminal.backend().buffer(), y))
-        .collect::<Vec<_>>()
-        .join("\n");
+    ts.send_mouse(MouseEventKind::Moved, head_x, 4);
+    let buf = ts.render(100, 24);
+    let full_text = super::screen_text(&buf);
     assert!(full_text.contains("Detached HEAD"), "{full_text}");
 
-    route_terminal_event(
-        Event::Mouse(MouseEvent {
-            kind: MouseEventKind::Moved,
-            column: plus_x,
-            row: 4,
-            modifiers: KeyModifiers::NONE,
-        }),
-        &mut state,
-    );
-    terminal.draw(|f| render_app(f, &mut state)).unwrap();
-    let full_text: String = (0..24)
-        .map(|y| row0_text(terminal.backend().buffer(), y))
-        .collect::<Vec<_>>()
-        .join("\n");
+    ts.send_mouse(MouseEventKind::Moved, plus_x, 4);
+    let buf = ts.render(100, 24);
+    let full_text = super::screen_text(&buf);
     assert!(full_text.contains("All Commit References"), "{full_text}");
     assert!(full_text.contains("v1.0.1"), "{full_text}");
 
-    let left_acts = route_terminal_event(
-        Event::Mouse(MouseEvent {
-            kind: MouseEventKind::Down(MouseButton::Left),
-            column: plus_x,
-            row: 4,
-            modifiers: KeyModifiers::NONE,
-        }),
-        &mut state,
-    );
-    for a in left_acts {
-        state.dispatch(a);
-    }
-    assert!(state.modal_stack.is_empty());
+    ts.send_mouse(MouseEventKind::Down(MouseButton::Left), plus_x, 4);
+    assert!(ts.state().modal_stack.is_empty());
 
-    let right_acts = route_terminal_event(
-        Event::Mouse(MouseEvent {
-            kind: MouseEventKind::Down(MouseButton::Right),
-            column: plus_x,
-            row: 4,
-            modifiers: KeyModifiers::NONE,
-        }),
-        &mut state,
-    );
-    for a in right_acts {
-        state.dispatch(a);
-    }
-    assert_eq!(state.modal_stack.len(), 1);
+    ts.send_mouse(MouseEventKind::Down(MouseButton::Right), plus_x, 4);
+    assert_eq!(ts.state().modal_stack.len(), 1);
 }
 
 #[test]
@@ -719,12 +510,7 @@ fn long_edge_arrow_hover_click_jump_center_and_alt_left_return() {
         });
     }
 
-    let mut state = AppState::new_with_config(
-        PathBuf::from("."),
-        None,
-        crate::config::AppConfig::load_defaults(),
-    );
-    state.repo_snapshot = Some(Arc::new(RepoSnapshot {
+    let snap = RepoSnapshot {
         repo_name: "demo".into(),
         workdir: ".".into(),
         git_dir: ".git".into(),
@@ -748,101 +534,68 @@ fn long_edge_arrow_hover_click_jump_center_and_alt_left_return() {
             is_head: true,
         }],
         commits,
-    }));
-
-    let backend = TestBackend::new(120, 20);
-    let mut terminal = Terminal::new(backend).unwrap();
-    terminal.draw(|f| render_app(f, &mut state)).unwrap();
-
-    let row_text = |buf: &ratatui::buffer::Buffer, y: u16| -> String {
-        (0..buf.area.width).map(|x| buf[(x, y)].symbol()).collect()
     };
-    let row1 = row_text(terminal.backend().buffer(), 5);
+    let mut ts = TestSession::with_snapshot(snap);
+
+    let buf = ts.render(120, 20);
+    let row1 = super::row_text(&buf, 5);
     let arrow_byte = row1
         .find('▾')
         .expect("expected long-edge down arrow on row 1");
     let arrow_x = row1[..arrow_byte].width() as u16;
 
-    route_terminal_event(
-        Event::Mouse(MouseEvent {
-            kind: MouseEventKind::Moved,
-            column: arrow_x,
-            row: 5,
-            modifiers: KeyModifiers::NONE,
-        }),
-        &mut state,
-    );
-    terminal.draw(|f| render_app(f, &mut state)).unwrap();
-    let status_line = row_text(terminal.backend().buffer(), 19);
+    ts.send_mouse(MouseEventKind::Moved, arrow_x, 5);
+    let buf = ts.render(120, 20);
+    let status_line = super::row_text(&buf, 19);
     assert!(status_line.contains(&oid_n(41).short()), "{status_line}");
     assert!(status_line.contains("commit 41"), "{status_line}");
 
-    let acts = route_terminal_event(
-        Event::Mouse(MouseEvent {
-            kind: MouseEventKind::Down(MouseButton::Left),
-            column: arrow_x,
-            row: 5,
-            modifiers: KeyModifiers::NONE,
-        }),
-        &mut state,
-    );
-    for a in acts {
-        state.dispatch(a);
-    }
-    assert_eq!(state.log_graph.selected_idx, 41);
-    assert!(state.log_graph.scroll_offset > 0);
+    ts.send_mouse(MouseEventKind::Down(MouseButton::Left), arrow_x, 5);
+    assert_eq!(ts.state().log.graph.selected_idx, 41);
+    assert!(ts.state().log.graph.scroll_offset > 0);
 
-    let back_acts = route_terminal_event(
-        Event::Key(KeyEvent::new(KeyCode::Left, KeyModifiers::ALT)),
-        &mut state,
-    );
-    for a in back_acts {
-        state.dispatch(a);
-    }
-    assert_eq!(state.log_graph.selected_idx, 0);
+    ts.send_key(KeyCode::Left, KeyModifiers::ALT);
+    assert_eq!(ts.state().log.graph.selected_idx, 0);
 }
 
 #[test]
 fn stage_workbench_dual_presence_visual_select_and_amend_draft_restore() {
-    let mut state = AppState::new_with_config(
-        PathBuf::from("."),
-        None,
-        crate::config::AppConfig::load_defaults(),
-    );
-    state.stage_status = Some(Arc::new(StageStatusSnapshot {
-        staged: vec![StageEntry {
-            path: "src/foo.rs".into(),
-            old_path: None,
-            kind: FileStatusKind::Added,
-        }],
-        unstaged: vec![StageEntry {
-            path: "src/foo.rs".into(),
-            old_path: None,
-            kind: FileStatusKind::Modified,
-        }],
-        ..Default::default()
-    }));
-    state.dispatch(Action::SwitchTab(WorkspaceTab::Commit));
-    state.dispatch(Action::StageToggleGroupByDir);
+    let mut ts = TestSession::new(super::test_state(".".into()));
+    ts.deliver_engine_event(EngineEvent::StageStatusLoaded {
+        status: Arc::new(StageStatusSnapshot {
+            staged: vec![StageEntry {
+                path: "src/foo.rs".into(),
+                old_path: None,
+                kind: FileStatusKind::Added,
+            }],
+            unstaged: vec![StageEntry {
+                path: "src/foo.rs".into(),
+                old_path: None,
+                kind: FileStatusKind::Modified,
+            }],
+            ..Default::default()
+        }),
+        epoch: 1,
+    });
+    ts.dispatch(Action::SwitchTab(WorkspaceTab::Commit));
+    ts.dispatch(Action::StageToggleGroupByDir);
 
-    assert_eq!(state.stage_workbench.rows.len(), 4);
+    assert_eq!(ts.state().stage_workbench.rows().len(), 4);
 
-    state.dispatch(Action::SelectCommitStageRow(1));
+    ts.dispatch(Action::SelectCommitStageRow(1));
     assert_eq!(
-        state
+        ts.state()
             .stage_workbench
-            .current_diff_key
-            .as_ref()
+            .current_diff_key()
             .map(|k| k.side),
         Some(StageDiffSide::Staged)
     );
 
-    state.dispatch(Action::SelectCommitStageRow(3));
+    ts.dispatch(Action::SelectCommitStageRow(3));
     assert_eq!(
-        state
+        ts.state()
             .stage_workbench
-            .current_diff_key
-            .as_ref()
+            .current_diff_key()
             .map(|k| k.side),
         Some(StageDiffSide::Unstaged)
     );
@@ -873,25 +626,36 @@ fn stage_workbench_dual_presence_visual_select_and_amend_draft_restore() {
         is_truncated,
         is_too_large: false,
     });
-    state.apply_engine_event(EngineEvent::StageFileDiffLoaded { diff, epoch: 1 });
+    let epoch = ts
+        .state()
+        .request_slots
+        .latest(jbgit_core::RequestSlotId::StageFileDiff);
+    ts.deliver_engine_event(EngineEvent::StageFileDiffLoaded { diff, epoch });
 
-    state.dispatch(Action::FocusPane(PaneId::CommitDiffPreview));
-    state.dispatch(Action::StageDiffMoveCursor(3));
-    state.dispatch(Action::StageDiffToggleVisual);
-    let effs = state.dispatch(Action::StageDiffStageSelection);
-    match effs.into_iter().find(|e| matches!(e, Effect::ApplyStageBuffer { .. })) {
-        Some(Effect::ApplyStageBuffer { new_staged_bytes, .. }) => {
+    ts.dispatch(Action::FocusPane(PaneId::CommitDiffPreview));
+    ts.dispatch(Action::StageDiffMoveCursor(3));
+    ts.dispatch(Action::StageDiffToggleVisual);
+    let _ = ts.take_requests();
+    ts.dispatch(Action::StageDiffStageSelection);
+    let reqs = ts.take_requests();
+    match reqs
+        .into_iter()
+        .find_map(|(r, _)| match r {
+            TaskRequest::ApplyStageBuffer { new_staged_bytes, .. } => Some(new_staged_bytes),
+            _ => None,
+        }) {
+        Some(new_staged_bytes) => {
             assert_eq!(
                 new_staged_bytes,
                 b"fn a() {}\nfn staged_line() {}\nfn local_1() {}\n"
             );
         }
-        other => panic!("expected ApplyStageBuffer, got {other:?}"),
+        None => panic!("expected ApplyStageBuffer"),
     }
 
-    state.dispatch(Action::FocusPane(PaneId::CommitMessageEditor));
-    state.dispatch(Action::CommitEditorPaste("wip: my draft".into()));
-    state.apply_engine_event(EngineEvent::AmendPreviewLoaded {
+    ts.dispatch(Action::FocusPane(PaneId::CommitMessageEditor));
+    ts.dispatch(Action::CommitEditorPaste("wip: my draft".into()));
+    ts.deliver_engine_event(EngineEvent::AmendPreviewLoaded {
         preview: Some(AmendCommitPreview {
             short_sha: "a8f3d21".into(),
             message: "feat: previous commit".into(),
@@ -900,42 +664,43 @@ fn stage_workbench_dual_presence_visual_select_and_amend_draft_restore() {
                 old_path: None,
                 kind: FileStatusKind::Modified,
                 additions: 1,
-                deletions: 0,
+                deletions: 1,
                 is_binary: false,
                 exists_in_workdir: true,
                 old_oid: None,
                 new_oid: None,
             }],
         }),
+        epoch: 1,
     });
 
-    state.dispatch(Action::CommitToggleAmend);
-    assert!(state.stage_workbench.amend);
-    assert_eq!(state.stage_workbench.editor.text(), "feat: previous commit");
+    ts.dispatch(Action::CommitToggleAmend);
+    assert!(ts.state().stage_workbench.amend());
+    assert_eq!(
+        ts.state().stage_workbench.editor().text(),
+        "feat: previous commit"
+    );
     assert!(
-        state
+        ts.state()
             .stage_workbench
-            .rows
+            .rows()
             .iter()
             .any(|r| r.label.contains("Head Commit to Amend (a8f3d21)"))
     );
 
-    let backend = TestBackend::new(120, 40);
-    let mut terminal = Terminal::new(backend).unwrap();
-    terminal.draw(|f| render_app(f, &mut state)).unwrap();
+    let _ = ts.render(120, 40);
 
-    state.dispatch(Action::CommitToggleAmend);
-    assert!(!state.stage_workbench.amend);
-    assert_eq!(state.stage_workbench.editor.text(), "wip: my draft");
+    ts.dispatch(Action::CommitToggleAmend);
+    assert!(!ts.state().stage_workbench.amend());
+    assert_eq!(ts.state().stage_workbench.editor().text(), "wip: my draft");
 }
 
-fn draft_test_state(tag: &str) -> (AppState, PathBuf, PathBuf) {
-    let mut state = AppState::new_with_config(
-        PathBuf::from("."),
-        None,
-        crate::config::AppConfig::load_defaults(),
-    );
-    state.stage_status = Some(Arc::new(StageStatusSnapshot::default()));
+fn draft_test_session(tag: &str) -> (TestSession, PathBuf, PathBuf) {
+    let mut ts = TestSession::new(super::test_state(".".into()));
+    ts.deliver_engine_event(EngineEvent::StageStatusLoaded {
+        status: Arc::new(StageStatusSnapshot::default()),
+        epoch: 1,
+    });
     let dir = std::env::temp_dir().join(format!(
         "jbgit-test-draft-debounce-{tag}-{}",
         std::process::id()
@@ -943,100 +708,125 @@ fn draft_test_state(tag: &str) -> (AppState, PathBuf, PathBuf) {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let file = dir.join("jbgit-commit-draft");
-    state.stage_workbench.load_draft(file.clone());
-    state.dispatch(Action::SwitchTab(WorkspaceTab::Commit));
-    state.dispatch(Action::FocusPane(PaneId::CommitMessageEditor));
-    (state, dir, file)
+    ts.state_mut().stage_workbench.load_draft(file.clone());
+    ts.dispatch(Action::SwitchTab(WorkspaceTab::Commit));
+    ts.dispatch(Action::FocusPane(PaneId::CommitMessageEditor));
+    (ts, dir, file)
 }
 
 #[test]
 fn commit_draft_typing_is_debounced_then_written_in_background() {
-    let (mut state, dir, file) = draft_test_state("async");
-    for ch in "feat: twenty chars!!".chars() {
-        state.dispatch(Action::CommitEditorChar(ch));
-    }
+    let (mut ts, dir, file) = draft_test_session("async");
+    ts.type_str("feat: twenty chars!!");
     assert!(!file.exists(), "keystrokes must not write the draft synchronously");
-    assert!(state.stage_workbench.draft_dirty);
-    let due = state.stage_workbench.draft_save_deadline.expect("debounce armed");
-    assert!(state.next_deadline().is_some_and(|d| d <= due));
+    assert!(ts.state().stage_workbench.draft_dirty());
+    let due = ts
+        .state()
+        .stage_workbench
+        .draft_save_deadline_for_test()
+        .expect("debounce armed");
+    assert!(ts.next_deadline().is_some_and(|d| d <= due));
 
-    let mut effects = Vec::new();
-    state.flush_pending_at(due - Duration::from_millis(1), &mut effects);
-    state.stage_workbench.wait_draft_writes();
+    let _ = ts
+        .session
+        .advance_to(due - Duration::from_millis(1), Some(&ts.engine), &mut ts.host);
+    ts.state_mut().stage_workbench.wait_draft_writes();
     assert!(!file.exists());
 
-    state.flush_pending_at(due, &mut effects);
-    assert!(!state.stage_workbench.draft_dirty);
-    assert!(state.stage_workbench.draft_save_deadline.is_none());
-    state.stage_workbench.wait_draft_writes();
+    let _ = ts.session.advance_to(due, Some(&ts.engine), &mut ts.host);
+    assert!(!ts.state().stage_workbench.draft_dirty());
+    assert!(
+        ts.state()
+            .stage_workbench
+            .draft_save_deadline_for_test()
+            .is_none()
+    );
+    ts.state_mut().stage_workbench.wait_draft_writes();
     assert_eq!(std::fs::read_to_string(&file).unwrap(), "feat: twenty chars!!");
 
     for _ in 0..20 {
-        state.dispatch(Action::CommitEditorBackspace);
+        ts.dispatch(Action::CommitEditorBackspace);
     }
     assert!(file.exists());
-    let due = state.stage_workbench.draft_save_deadline.unwrap();
-    state.flush_pending_at(due, &mut effects);
-    state.stage_workbench.wait_draft_writes();
+    let due = ts
+        .state()
+        .stage_workbench
+        .draft_save_deadline_for_test()
+        .unwrap();
+    let _ = ts.session.advance_to(due, Some(&ts.engine), &mut ts.host);
+    ts.state_mut().stage_workbench.wait_draft_writes();
     assert!(!file.exists());
     let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
 fn commit_draft_flushes_synchronously_on_exit_and_submit() {
-    let (mut state, dir, file) = draft_test_state("flush");
-    state.dispatch(Action::CommitEditorPaste("wip: exit flush".into()));
+    let (mut ts, dir, file) = draft_test_session("flush");
+    ts.dispatch(Action::CommitEditorPaste("wip: exit flush".into()));
     assert!(!file.exists());
-    state.stage_workbench.flush_draft_sync();
+    let _ = ts.session.shutdown();
     assert_eq!(std::fs::read_to_string(&file).unwrap(), "wip: exit flush");
 
-    state.dispatch(Action::CommitEditorChar('!'));
-    let due = state.stage_workbench.draft_save_deadline.unwrap();
-    state.flush_pending_at(due, &mut Vec::new());
-    state.dispatch(Action::CommitEditorChar('?'));
-    state.stage_workbench.flush_draft_sync();
+    ts.dispatch(Action::CommitEditorChar('!'));
+    let due = ts
+        .state()
+        .stage_workbench
+        .draft_save_deadline_for_test()
+        .unwrap();
+    let _ = ts.session.advance_to(due, Some(&ts.engine), &mut ts.host);
+    ts.dispatch(Action::CommitEditorChar('?'));
+    let _ = ts.session.shutdown();
     assert_eq!(std::fs::read_to_string(&file).unwrap(), "wip: exit flush!?");
 
-    state.dispatch(Action::CommitEditorChar('+'));
-    let due = state.stage_workbench.draft_save_deadline.unwrap();
-    state.flush_pending_at(due, &mut Vec::new());
-    assert!(!state.stage_workbench.draft_dirty);
-    state.stage_workbench.flush_draft_sync();
+    ts.dispatch(Action::CommitEditorChar('+'));
+    let due = ts
+        .state()
+        .stage_workbench
+        .draft_save_deadline_for_test()
+        .unwrap();
+    let _ = ts.session.advance_to(due, Some(&ts.engine), &mut ts.host);
+    assert!(!ts.state().stage_workbench.draft_dirty());
+    let _ = ts.session.shutdown();
     assert_eq!(std::fs::read_to_string(&file).unwrap(), "wip: exit flush!?+");
 
-    state.dispatch(Action::CommitEditorChar('#'));
-    assert!(state.stage_workbench.draft_dirty);
-    state.dispatch(Action::SubmitCommit { and_push: false });
-    assert!(!state.stage_workbench.draft_dirty);
+    ts.dispatch(Action::CommitEditorChar('#'));
+    assert!(ts.state().stage_workbench.draft_dirty());
+    ts.dispatch(Action::SubmitCommit { and_push: false });
+    assert!(!ts.state().stage_workbench.draft_dirty());
     assert_eq!(std::fs::read_to_string(&file).unwrap(), "wip: exit flush!?+#");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
 fn stage_review_fixes_amend_diff_gutter_click_draft_persistence_and_push_confirm() {
-    let mut state = AppState::new_with_config(
-        PathBuf::from("."),
-        None,
-        crate::config::AppConfig::load_defaults(),
-    );
-    state.stage_status = Some(Arc::new(StageStatusSnapshot::default()));
+    let mut ts = TestSession::new(super::test_state(".".into()));
+    ts.deliver_engine_event(EngineEvent::StageStatusLoaded {
+        status: Arc::new(StageStatusSnapshot::default()),
+        epoch: 1,
+    });
     let tmp_dir = std::env::temp_dir().join(format!("jbgit-test-draft-{}", std::process::id()));
     let _ = std::fs::create_dir_all(&tmp_dir);
     let draft_file = tmp_dir.join("jbgit-commit-draft");
     let _ = std::fs::remove_file(&draft_file);
-    state.stage_workbench.load_draft(draft_file.clone());
-    state.dispatch(Action::SwitchTab(WorkspaceTab::Commit));
+    ts.state_mut().stage_workbench.load_draft(draft_file.clone());
+    ts.dispatch(Action::SwitchTab(WorkspaceTab::Commit));
 
-    state.dispatch(Action::FocusPane(PaneId::CommitMessageEditor));
-    state.dispatch(Action::CommitEditorPaste("draft: unsent note".into()));
-    assert!(state.commit_history_candidates().iter().any(|c| c == "draft: unsent note"));
-    state.stage_workbench.flush_draft_sync();
+    ts.dispatch(Action::FocusPane(PaneId::CommitMessageEditor));
+    ts.dispatch(Action::CommitEditorPaste("draft: unsent note".into()));
+    assert!(
+        ts.state()
+            .stage_workbench
+            .commit_history_candidates(ts.state().repo_snapshot.as_deref())
+            .iter()
+            .any(|c| c == "draft: unsent note")
+    );
+    let _ = ts.session.shutdown();
     let mut reloaded = AppState::new(PathBuf::from("."), None);
     reloaded.stage_workbench.load_draft(draft_file);
-    assert_eq!(reloaded.stage_workbench.editor.text(), "draft: unsent note");
+    assert_eq!(reloaded.stage_workbench.editor().text(), "draft: unsent note");
     let _ = std::fs::remove_dir_all(&tmp_dir);
 
-    state.apply_engine_event(EngineEvent::AmendPreviewLoaded {
+    ts.deliver_engine_event(EngineEvent::AmendPreviewLoaded {
         preview: Some(AmendCommitPreview {
             short_sha: "1122334".into(),
             message: "feat: head commit".into(),
@@ -1052,66 +842,69 @@ fn stage_review_fixes_amend_diff_gutter_click_draft_persistence_and_push_confirm
                 new_oid: None,
             }],
         }),
+        epoch: 1,
     });
-    let amend_effs = state.dispatch(Action::CommitToggleAmend);
+    let _ = ts.take_requests();
+    ts.dispatch(Action::CommitToggleAmend);
+    let reqs = ts.take_requests();
     assert!(
-        amend_effs
-            .iter()
-            .any(|e| matches!(e, Effect::RequestAmendPreview))
+        reqs.iter()
+            .any(|(r, _)| matches!(r, TaskRequest::LoadAmendPreview))
     );
-    let amend_file_idx = state
+    let amend_file_idx = ts
+        .state()
         .stage_workbench
-        .rows
+        .rows()
         .iter()
         .position(|r| matches!(r.kind, StageTreeRowKind::AmendFile { .. }))
         .expect("AmendFile row");
-    state.dispatch(Action::SelectCommitStageRow(amend_file_idx));
+    ts.dispatch(Action::SelectCommitStageRow(amend_file_idx));
     assert_eq!(
-        state
+        ts.state()
             .stage_workbench
-            .current_diff_key
-            .as_ref()
+            .current_diff_key()
             .map(|k| k.side),
         Some(StageDiffSide::AmendCommit)
     );
 
-    state.apply_engine_event(EngineEvent::AmendPreviewLoaded {
+    ts.deliver_engine_event(EngineEvent::AmendPreviewLoaded {
         preview: Some(AmendCommitPreview {
             short_sha: "5566778".into(),
             message: "feat: newer head commit".into(),
             files: vec![],
         }),
+        epoch: 2,
     });
-    assert_eq!(state.stage_workbench.editor.text(), "feat: newer head commit");
-    state.dispatch(Action::CommitToggleAmend);
+    assert_eq!(
+        ts.state().stage_workbench.editor().text(),
+        "feat: newer head commit"
+    );
+    ts.dispatch(Action::CommitToggleAmend);
 
-    state.stage_status = Some(Arc::new(StageStatusSnapshot {
-        staged: vec![StageEntry {
-            path: "src/lib.rs".into(),
-            old_path: None,
-            kind: FileStatusKind::Modified,
-        }],
-        unstaged: vec![StageEntry {
-            path: "src/lib.rs".into(),
-            old_path: None,
-            kind: FileStatusKind::Modified,
-        }],
-        ..Default::default()
-    }));
-    state.dispatch(Action::StageToggleGroupByDir);
-    state.dispatch(Action::SelectCommitStageRow(3));
+    ts.deliver_engine_event(EngineEvent::StageStatusLoaded {
+        status: Arc::new(StageStatusSnapshot {
+            staged: vec![StageEntry {
+                path: "src/lib.rs".into(),
+                old_path: None,
+                kind: FileStatusKind::Modified,
+            }],
+            unstaged: vec![StageEntry {
+                path: "src/lib.rs".into(),
+                old_path: None,
+                kind: FileStatusKind::Modified,
+            }],
+            ..Default::default()
+        }),
+        epoch: 2,
+    });
+    ts.dispatch(Action::StageToggleGroupByDir);
+    ts.dispatch(Action::SelectCommitStageRow(3));
     let vcs = b"let x = old_val;\n";
     let staged = b"let x = staged_val;\n";
     let local = b"let x = local_val;\n";
     let tracker = jbgit_core::StageLineTracker::new(vcs, staged, local);
     let (hunks, is_truncated) = tracker.build_interactive_hunks(false, DiffContext::Three, 20_000);
-    state.stage_workbench.current_diff_key = Some(StageDiffKey {
-        path: "src/lib.rs".into(),
-        old_path: None,
-        side: StageDiffSide::Unstaged,
-        context: DiffContext::Three,
-    });
-    state.apply_engine_event(EngineEvent::StageFileDiffLoaded {
+    ts.deliver_engine_event(EngineEvent::StageFileDiffLoaded {
         diff: Arc::new(ThreeDocStageDiff {
             key: StageDiffKey {
                 path: "src/lib.rs".into(),
@@ -1133,14 +926,10 @@ fn stage_review_fixes_amend_diff_gutter_click_draft_persistence_and_push_confirm
             is_truncated,
             is_too_large: false,
         }),
-        epoch: 1,
+        epoch: 9,
     });
 
-    let backend = TestBackend::new(120, 36);
-    let mut terminal = Terminal::new(backend).unwrap();
-    terminal.draw(|f| render_app(f, &mut state)).unwrap();
-
-    let buf = terminal.backend().buffer();
+    let buf = ts.render(120, 36);
     let mut gutter_pos = None;
     for y in 0..36 {
         for x in 0..120 {
@@ -1154,41 +943,23 @@ fn stage_review_fixes_amend_diff_gutter_click_draft_persistence_and_push_confirm
         }
     }
     let (gx, gy) = gutter_pos.expect("mixed 3-way gutter bar rendered");
-    let click_acts = route_terminal_event(
-        Event::Mouse(MouseEvent {
-            kind: MouseEventKind::Down(MouseButton::Left),
-            column: gx,
-            row: gy,
-            modifiers: KeyModifiers::NONE,
-        }),
-        &mut state,
-    );
-    for a in click_acts {
-        state.dispatch(a);
-    }
+    ts.send_mouse(MouseEventKind::Down(MouseButton::Left), gx, gy);
     assert!(matches!(
-        state.modal_stack.last(),
-        Some(ModalLayer::FloatingPopup {
-            kind: crate::app::PopupKind::ThreeWayInspector,
-            ..
-        })
+        ts.state().modal_stack.last(),
+        Some(ModalLayer::ThreeWayInspector { .. })
     ));
-    terminal.draw(|f| render_app(f, &mut state)).unwrap();
-    state.dispatch(Action::PopModal);
-    assert!(state.stage_workbench.three_way_range_idx.is_none());
+    let _ = ts.render(120, 36);
+    ts.dispatch(Action::PopModal);
+    assert!(ts.state().modal_stack.three_way_range_idx().is_none());
 
-    state.dispatch(Action::FocusPane(PaneId::CommitDiffPreview));
+    ts.dispatch(Action::FocusPane(PaneId::CommitDiffPreview));
     for ch in [']', 'c'] {
-        for a in route_terminal_event(
-            Event::Key(KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE)),
-            &mut state,
-        ) {
-            state.dispatch(a);
-        }
+        ts.send_key(KeyCode::Char(ch), KeyModifiers::NONE);
     }
-    assert_eq!(state.stage_workbench.diff_context, DiffContext::Three);
+    assert_eq!(ts.state().stage_workbench.diff_context(), DiffContext::Three);
 
-    let commit_effs = state.apply_engine_event(EngineEvent::CommitCompleted(CommitOutcome {
+    let _ = ts.take_requests();
+    ts.deliver_engine_event(EngineEvent::CommitCompleted(CommitOutcome {
         success: true,
         commit_oid: None,
         short_sha: Some("abc1234".into()),
@@ -1197,14 +968,25 @@ fn stage_review_fixes_amend_diff_gutter_click_draft_persistence_and_push_confirm
         and_push: true,
         preserved_message: None,
     }));
-    assert!(!commit_effs.iter().any(|e| matches!(
-        e,
-        Effect::RunCli { args, .. } if args.first().map(String::as_str) == Some("push")
-    )));
+    assert!(ts.take_git_ops().is_empty());
     assert!(matches!(
-        state.modal_stack.last(),
-        Some(ModalLayer::CriticalDialog { title, .. })
-            if title == state.i18n.t("dialog.push.confirm_title")
+        ts.state().modal_stack.last(),
+        Some(ModalLayer::Dialog(d))
+            if matches!(d.as_ref(), crate::dialogs::Dialog::Choice(c) if c.title == ts.state().i18n.t("dialog.push.confirm_title"))
+    ));
+    // Confirming Push and receiving PushRejected must open the --force-with-lease dialog.
+    ts.dispatch(Action::DialogConfirm);
+    let push_op = ts
+        .take_git_ops()
+        .into_iter()
+        .find(|op| matches!(op, jbgit_core::GitOp::Push { .. }))
+        .expect("confirming Commit & Push must emit typed GitOp::Push");
+    let rejected = jbgit_core::GitOpOutcome::failed(push_op, jbgit_core::GitFailure::PushRejected);
+    ts.deliver_engine_event(EngineEvent::GitOpFinished(rejected));
+    assert!(matches!(
+        ts.state().modal_stack.last(),
+        Some(ModalLayer::Dialog(d))
+            if matches!(d.as_ref(), crate::dialogs::Dialog::Choice(c) if c.title == ts.state().i18n.t("dialog.push.rejected_title"))
     ));
 }
 
@@ -1226,38 +1008,59 @@ stash_preview_ratio = [1, 1]
     )
     .unwrap();
 
-    let mut state = AppState::new(temp.path().to_path_buf(), None);
-    state.repo_snapshot = Some(Arc::new(RepoSnapshot {
-        repo_name: "demo".into(),
-        workdir: temp.path().to_path_buf(),
-        git_dir: temp.path().join(".git"),
-        common_dir: temp.path().join(".git"),
-        state: RepositoryState::Clean,
-        is_unborn_head: false,
-        user_name: None,
-        user_email: None,
-        recent_branches: vec![],
-        stashes: vec![StashEntry {
-            index: 0,
-            oid: Oid::from_bytes([2u8; 20]),
-            message: "WIP on main: test".into(),
-            timestamp: 1_700_000_000,
-        }],
-        ongoing_onto: None,
-        head_branch: Some("main".into()),
-        head_oid: Some(Oid::from_bytes([1u8; 20])),
-        refs: vec![],
-        commits: vec![],
-    }));
+    let mut ts = TestSession::new(AppState::new(temp.path().to_path_buf(), None));
+    ts.deliver_engine_event(EngineEvent::RepoSnapshotLoaded {
+        snapshot: Arc::new(RepoSnapshot {
+            repo_name: "demo".into(),
+            workdir: temp.path().to_path_buf(),
+            git_dir: temp.path().join(".git"),
+            common_dir: temp.path().join(".git"),
+            state: RepositoryState::Clean,
+            is_unborn_head: false,
+            user_name: None,
+            user_email: None,
+            recent_branches: vec![],
+            stashes: vec![StashEntry {
+                index: 0,
+                oid: Oid::from_bytes([2u8; 20]),
+                message: "WIP on main: test".into(),
+                timestamp: 1_700_000_000,
+            }],
+            ongoing_onto: None,
+            head_branch: Some("main".into()),
+            head_oid: Some(Oid::from_bytes([1u8; 20])),
+            refs: vec![],
+            commits: vec![],
+        }),
+        epoch: 1,
+    });
 
-    assert!((state.splitters.ratio(SplitterId::LogDetailsVertical) - 0.25).abs() < 1e-4);
-    assert!((state.splitters.ratio(SplitterId::LogDiffRightHorizontal) - 0.75).abs() < 1e-4);
-    assert!((state.splitters.ratio(SplitterId::LogDiffBottomVertical) - 0.40).abs() < 1e-4);
-    assert!((state.splitters.ratio(SplitterId::CommitLeftVertical) - 0.75).abs() < 1e-4);
-    assert!((state.splitters.ratio(SplitterId::StashPreviewVertical) - 0.50).abs() < 1e-4);
-
-    let backend = TestBackend::new(120, 40);
-    let mut terminal = Terminal::new(backend).unwrap();
+    assert!((ts.state().splitters.ratio(SplitterId::LogDetailsVertical) - 0.25).abs() < 1e-4);
+    assert!(
+        (ts.state()
+            .splitters
+            .ratio(SplitterId::LogDiffRightHorizontal)
+            - 0.75)
+            .abs()
+            < 1e-4
+    );
+    assert!(
+        (ts.state()
+            .splitters
+            .ratio(SplitterId::LogDiffBottomVertical)
+            - 0.40)
+            .abs()
+            < 1e-4
+    );
+    assert!((ts.state().splitters.ratio(SplitterId::CommitLeftVertical) - 0.75).abs() < 1e-4);
+    assert!(
+        (ts.state()
+            .splitters
+            .ratio(SplitterId::StashPreviewVertical)
+            - 0.50)
+            .abs()
+            < 1e-4
+    );
 
     let cases = [
         (
@@ -1303,23 +1106,27 @@ stash_preview_ratio = [1, 1]
     ];
 
     for (tab, dock, splitter_id, expected_axis, expected_default, delta) in cases {
-        state.dispatch(Action::SwitchTab(tab));
+        ts.dispatch(Action::SwitchTab(tab));
         if let Some(d) = dock {
-            state.details.diff_preview = true;
-            state.details.diff_dock = d;
+            ts.state_mut().log.details.diff_preview = true;
+            ts.state_mut().log.details.diff_dock = d;
         } else {
-            state.details.diff_preview = false;
+            ts.state_mut().log.details.diff_preview = false;
         }
-        terminal.draw(|f| render_app(f, &mut state)).unwrap();
+        let _ = ts.render(120, 40);
 
-        let (axis, container) = state
+        let (axis, container) = ts
+            .state()
             .splitter_containers
             .get(&splitter_id)
             .copied()
             .unwrap_or_else(|| panic!("splitter {splitter_id:?} not registered on {tab:?}"));
         assert_eq!(axis, expected_axis);
 
-        let split = state.splitters.split(container, splitter_id, expected_axis);
+        let split = ts
+            .state()
+            .splitters
+            .split(container, splitter_id, expected_axis);
         assert!(!split.collapsed);
         let (div_x, div_y, target_x, target_y) = match expected_axis {
             SplitAxis::Vertical => (
@@ -1336,80 +1143,43 @@ stash_preview_ratio = [1, 1]
             ),
         };
 
-        for a in route_terminal_event(
-            Event::Mouse(MouseEvent {
-                kind: MouseEventKind::Down(MouseButton::Left),
-                column: div_x,
-                row: div_y,
-                modifiers: KeyModifiers::NONE,
-            }),
-            &mut state,
-        ) {
-            state.dispatch(a);
-        }
-        assert!(state.drag_state.is_some());
+        ts.send_mouse(MouseEventKind::Down(MouseButton::Left), div_x, div_y);
+        assert!(ts.state().drag_state.is_some());
 
-        route_terminal_event(
-            Event::Mouse(MouseEvent {
-                kind: MouseEventKind::Drag(MouseButton::Left),
-                column: target_x,
-                row: target_y,
-                modifiers: KeyModifiers::NONE,
-            }),
-            &mut state,
-        );
-        let dragged = state.splitters.ratio(splitter_id);
+        ts.send_mouse(MouseEventKind::Drag(MouseButton::Left), target_x, target_y);
+        let dragged = ts.state().splitters.ratio(splitter_id);
         if delta > 0 {
             assert!(dragged > expected_default);
         } else {
             assert!(dragged < expected_default);
         }
 
-        route_terminal_event(
-            Event::Mouse(MouseEvent {
-                kind: MouseEventKind::Up(MouseButton::Left),
-                column: target_x,
-                row: target_y,
-                modifiers: KeyModifiers::NONE,
-            }),
-            &mut state,
-        );
+        ts.send_mouse(MouseEventKind::Up(MouseButton::Left), target_x, target_y);
 
-        terminal.draw(|f| render_app(f, &mut state)).unwrap();
-        let split2 = state.splitters.split(container, splitter_id, expected_axis);
+        let _ = ts.render(120, 40);
+        let split2 = ts
+            .state()
+            .splitters
+            .split(container, splitter_id, expected_axis);
         let (reset_x, reset_y) = match expected_axis {
             SplitAxis::Vertical => (split2.divider.x + 2, split2.divider.y),
             SplitAxis::Horizontal => (split2.divider.x, split2.divider.y + 2),
         };
         for _ in 0..2 {
-            for a in route_terminal_event(
-                Event::Mouse(MouseEvent {
-                    kind: MouseEventKind::Down(MouseButton::Left),
-                    column: reset_x,
-                    row: reset_y,
-                    modifiers: KeyModifiers::NONE,
-                }),
-                &mut state,
-            ) {
-                state.dispatch(a);
-            }
+            ts.send_mouse(MouseEventKind::Down(MouseButton::Left), reset_x, reset_y);
         }
         assert!(
-            (state.splitters.ratio(splitter_id) - expected_default).abs() < 1e-4,
+            (ts.state().splitters.ratio(splitter_id) - expected_default).abs() < 1e-4,
             "reset for {splitter_id:?} expected {expected_default}, got {}",
-            state.splitters.ratio(splitter_id)
+            ts.state().splitters.ratio(splitter_id)
         );
     }
 }
 
 #[test]
 fn console_overscroll_clamps_reverses_and_resizes_cleanly() {
-    let mut state = AppState::new_with_config(
-        PathBuf::from("."),
-        None,
-        crate::config::AppConfig::load_defaults(),
-    );
-    state.console_entries.push(GitConsoleEntry {
+    let mut ts = TestSession::new(super::test_state(".".into()));
+    ts.state_mut().console.push_started(GitConsoleEntry {
         id: 1,
         started_at: Local::now(),
         duration_ms: Some(12),
@@ -1422,130 +1192,128 @@ fn console_overscroll_clamps_reverses_and_resizes_cleanly() {
             .collect(),
         exit_code: Some(0),
     });
-    state.dispatch(Action::SwitchTab(WorkspaceTab::Console));
+    ts.dispatch(Action::SwitchTab(WorkspaceTab::Console));
 
-    let mut terminal = Terminal::new(TestBackend::new(120, 30)).unwrap();
-    terminal.draw(|f| render_app(f, &mut state)).unwrap();
-    let bound = state.scroll_metrics.console_output.expect("console bound recorded");
-    assert!(bound.max_scroll > 0);
+    let _ = ts.render(120, 30);
+    let max_scroll = ts
+        .state()
+        .console
+        .output_viewport()
+        .max_scroll()
+        .expect("console bound recorded");
+    assert!(max_scroll > 0);
 
     for _ in 0..100 {
-        state.dispatch(Action::ScrollConsoleOutput(3));
+        ts.dispatch(Action::ScrollConsoleOutput(3));
     }
-    assert_eq!(state.console_output_scroll, bound.max_scroll);
+    assert_eq!(ts.state().console.output_scroll(), max_scroll);
 
-    state.dispatch(Action::ScrollConsoleOutput(-3));
-    assert_eq!(state.console_output_scroll, bound.max_scroll.saturating_sub(3));
+    ts.dispatch(Action::ScrollConsoleOutput(-3));
+    assert_eq!(ts.state().console.output_scroll(), max_scroll.saturating_sub(3));
 
-    state.dispatch(Action::ScrollConsoleOutput(isize::MAX / 2));
-    assert_eq!(state.console_output_scroll, bound.max_scroll);
-    terminal.backend_mut().resize(120, 50);
-    terminal.draw(|f| render_app(f, &mut state)).unwrap();
-    let taller_bound = state.scroll_metrics.console_output.expect("taller bound recorded");
-    assert!(taller_bound.max_scroll < bound.max_scroll);
-    assert_eq!(state.console_output_scroll, taller_bound.max_scroll);
+    ts.dispatch(Action::ScrollConsoleOutput(isize::MAX / 2));
+    assert_eq!(ts.state().console.output_scroll(), max_scroll);
+    let _ = ts.render(120, 50);
+    let taller_max_scroll = ts
+        .state()
+        .console
+        .output_viewport()
+        .max_scroll()
+        .expect("taller bound recorded");
+    assert!(taller_max_scroll < max_scroll);
+    assert_eq!(ts.state().console.output_scroll(), taller_max_scroll);
 }
 
 #[test]
 fn log_diff_double_goto_bottom_no_overflow_and_reverses_immediately() {
-    let mut state = AppState::new_with_config(
+    let oid = super::oid_n(1);
+    let snap = (*super::make_snapshot(
         PathBuf::from("."),
-        None,
-        crate::config::AppConfig::load_defaults(),
-    );
-    let oid = Oid::from_bytes([1u8; 20]);
-    let changes = vec![FileChange {
-        path: "lib.rs".into(),
-        old_path: None,
-        kind: FileStatusKind::Modified,
-        additions: 60,
-        deletions: 0,
-        is_binary: false,
-        exists_in_workdir: true,
-        old_oid: None,
-        new_oid: None,
-    }];
-    let details = jbgit_core::CommitDetails {
-        oid,
-        parents: vec![],
-        author: PersonStamp {
-            name: "Dev".into(),
-            email: "dev@example.com".into(),
-            time: 1_700_000_000,
-            offset_minutes: 0,
-        },
-        committer: PersonStamp {
-            name: "Dev".into(),
-            email: "dev@example.com".into(),
-            time: 1_700_000_000,
-            offset_minutes: 0,
-        },
-        message: "feat: sample".into(),
-        signature: SignatureStatus::Unsigned,
-    };
+        vec![super::make_commit(1, vec![], "feat: sample")],
+    ))
+    .clone();
+    let mut ts = TestSession::with_snapshot(snap);
+    ts.advance_by(Duration::from_millis(35));
+
     let key = jbgit_core::DetailsKey::single(oid);
-    state.details.cache.insert(
-        key.clone(),
-        Arc::new(jbgit_core::CommitChangesBundle {
+    ts.deliver_engine_event(EngineEvent::CommitDetailsLoaded {
+        slot: jbgit_core::RequestSlotId::LogCommitDetails,
+        bundle: Arc::new(jbgit_core::CommitChangesBundle {
             key: key.clone(),
-            details: vec![details],
-            changes,
+            details: vec![super::make_details(oid, vec![], "feat: sample")],
+            changes: vec![FileChange {
+                path: "lib.rs".into(),
+                old_path: None,
+                kind: FileStatusKind::Modified,
+                additions: 60,
+                deletions: 0,
+                is_binary: false,
+                exists_in_workdir: true,
+                old_oid: None,
+                new_oid: None,
+            }],
         }),
-    );
+        epoch: 1,
+    });
+    ts.dispatch(Action::ToggleDiffPreview);
+    ts.advance_by(Duration::from_millis(35));
     let diff_key = FileDiffKey {
-        details: key.clone(),
+        details: key,
         path: "lib.rs".into(),
         old_path: None,
-        context: state.details.diff_context,
+        context: ts.state().log.details.diff.context,
     };
     let lines: Vec<DiffLine> = (0..80)
         .map(|i| DiffLine {
             kind: DiffLineKind::Added,
             old_lineno: None,
             new_lineno: Some(i + 1),
-            text: format!("let v{i} = {i};"),
-            word_ranges: vec![],
+            text: format!("line {i}"),
+            word_ranges: Vec::new(),
         })
         .collect();
-    state.details.diff_cache.insert(
-        diff_key.clone(),
-        Arc::new(FileDiff {
+    ts.deliver_engine_event(EngineEvent::FileDiffLoaded {
+        slot: jbgit_core::RequestSlotId::LogFileDiff,
+        diff: Arc::new(FileDiff {
             key: diff_key,
-            is_binary: false,
-            is_truncated: false,
-            is_too_large: false,
             hunks: vec![DiffHunk {
                 header: "@@ -0,0 +1,80 @@".into(),
                 lines,
             }],
+            is_binary: false,
+            is_truncated: false,
+            is_too_large: false,
         }),
+        epoch: 1,
+    });
+    ts.dispatch(Action::FocusPane(PaneId::LogDetailsDiff));
+
+    let _ = ts.render(120, 30);
+    let max_scroll = ts
+        .state()
+        .log
+        .details
+        .diff
+        .scroll
+        .max_scroll()
+        .expect("log_diff bound recorded");
+    assert!(max_scroll > 0);
+
+    ts.dispatch(Action::DiffScroll(crate::app::DiffScope::Log, isize::MAX / 2));
+    ts.dispatch(Action::DiffScroll(crate::app::DiffScope::Log, isize::MAX / 2));
+    assert_eq!(ts.state().log.details.diff.scroll.offset(), max_scroll);
+
+    ts.dispatch(Action::DiffScroll(crate::app::DiffScope::Log, -1));
+    assert_eq!(
+        ts.state().log.details.diff.scroll.offset(),
+        max_scroll - 1
     );
-    state.details.current_key = Some(key);
-    state.details.diff_preview = true;
-    state.active_tab = WorkspaceTab::Log;
-    state.focused_pane = PaneId::LogDetailsDiff;
-
-    let mut terminal = Terminal::new(TestBackend::new(120, 30)).unwrap();
-    terminal.draw(|f| render_app(f, &mut state)).unwrap();
-    let bound = state.scroll_metrics.log_diff.expect("log_diff bound recorded");
-    assert!(bound.max_scroll > 0);
-
-    state.dispatch(Action::ScrollDiff(isize::MAX / 2));
-    state.dispatch(Action::ScrollDiff(isize::MAX / 2));
-    assert_eq!(state.details.diff_scroll, bound.max_scroll);
-
-    state.dispatch(Action::ScrollDiff(-1));
-    assert_eq!(state.details.diff_scroll, bound.max_scroll - 1);
 }
 
 #[test]
 fn console_output_detail_navigation_keys_work() {
-    let mut state = AppState::new_with_config(
-        PathBuf::from("."),
-        None,
-        crate::config::AppConfig::load_defaults(),
-    );
-    state.console_entries.push(GitConsoleEntry {
+    let mut ts = TestSession::new(super::test_state(".".into()));
+    ts.state_mut().console.push_started(GitConsoleEntry {
         id: 1,
         started_at: Local::now(),
         duration_ms: Some(10),
@@ -1558,68 +1326,59 @@ fn console_output_detail_navigation_keys_work() {
             .collect(),
         exit_code: Some(0),
     });
-    state.dispatch(Action::SwitchTab(WorkspaceTab::Console));
-    state.dispatch(Action::FocusPane(PaneId::ConsoleOutputDetail));
+    ts.dispatch(Action::SwitchTab(WorkspaceTab::Console));
+    ts.dispatch(Action::FocusPane(PaneId::ConsoleOutputDetail));
 
-    let mut terminal = Terminal::new(TestBackend::new(120, 30)).unwrap();
-    terminal.draw(|f| render_app(f, &mut state)).unwrap();
-    let bound = state.scroll_metrics.console_output.expect("console bound recorded");
-    assert!(bound.viewport_h > 10);
-    assert!(bound.max_scroll > bound.viewport_h);
+    let _ = ts.render(120, 30);
+    let vp = ts.state().console.output_viewport();
+    let viewport_h = vp.viewport_height().expect("console viewport recorded");
+    let max_scroll = vp.max_scroll().expect("console bound recorded");
+    assert!(viewport_h > 10);
+    assert!(max_scroll > viewport_h);
 
-    let send_key = |state: &mut AppState, code: KeyCode, modifiers: KeyModifiers| {
-        let actions = route_terminal_event(
-            Event::Key(KeyEvent::new(code, modifiers)),
-            state,
-        );
-        for a in actions {
-            state.dispatch(a);
-        }
-    };
+    ts.send_key(KeyCode::PageDown, KeyModifiers::NONE);
+    let expected_page = viewport_h.saturating_sub(1);
+    assert_eq!(ts.state().console.output_scroll(), expected_page);
 
-    send_key(&mut state, KeyCode::PageDown, KeyModifiers::NONE);
-    let expected_page = bound.viewport_h.saturating_sub(1);
-    assert_eq!(state.console_output_scroll, expected_page);
+    ts.send_key(KeyCode::PageUp, KeyModifiers::NONE);
+    assert_eq!(ts.state().console.output_scroll(), 0);
 
-    send_key(&mut state, KeyCode::PageUp, KeyModifiers::NONE);
-    assert_eq!(state.console_output_scroll, 0);
+    ts.send_key(KeyCode::Char('d'), KeyModifiers::CONTROL);
+    let expected_half = (viewport_h / 2).max(1);
+    assert_eq!(ts.state().console.output_scroll(), expected_half);
+    ts.send_key(KeyCode::Char('u'), KeyModifiers::CONTROL);
+    assert_eq!(ts.state().console.output_scroll(), 0);
 
-    send_key(&mut state, KeyCode::Char('d'), KeyModifiers::CONTROL);
-    let expected_half = (bound.viewport_h / 2).max(1);
-    assert_eq!(state.console_output_scroll, expected_half);
-    send_key(&mut state, KeyCode::Char('u'), KeyModifiers::CONTROL);
-    assert_eq!(state.console_output_scroll, 0);
+    ts.send_key(KeyCode::Char('G'), KeyModifiers::SHIFT);
+    assert_eq!(ts.state().console.output_scroll(), max_scroll);
+    ts.send_key(KeyCode::Char('g'), KeyModifiers::NONE);
+    ts.send_key(KeyCode::Char('g'), KeyModifiers::NONE);
+    assert_eq!(ts.state().console.output_scroll(), 0);
 
-    send_key(&mut state, KeyCode::Char('G'), KeyModifiers::SHIFT);
-    assert_eq!(state.console_output_scroll, bound.max_scroll);
-    send_key(&mut state, KeyCode::Char('g'), KeyModifiers::NONE);
-    send_key(&mut state, KeyCode::Char('g'), KeyModifiers::NONE);
-    assert_eq!(state.console_output_scroll, 0);
-
-    send_key(&mut state, KeyCode::End, KeyModifiers::NONE);
-    assert_eq!(state.console_output_scroll, bound.max_scroll);
-    send_key(&mut state, KeyCode::Home, KeyModifiers::NONE);
-    assert_eq!(state.console_output_scroll, 0);
+    ts.send_key(KeyCode::End, KeyModifiers::NONE);
+    assert_eq!(ts.state().console.output_scroll(), max_scroll);
+    ts.send_key(KeyCode::Home, KeyModifiers::NONE);
+    assert_eq!(ts.state().console.output_scroll(), 0);
 
     let unbind_gb: crate::config::KeymapConfigOverlay =
         toml::from_str("[global]\nprepend_keymap = [{ on = [\"g\", \"b\"], run = \"noop\" }]\n")
             .unwrap();
-    state.config.keymap.merge_overlay(&unbind_gb);
-    send_key(&mut state, KeyCode::End, KeyModifiers::NONE);
-    assert_eq!(state.console_output_scroll, bound.max_scroll);
-    send_key(&mut state, KeyCode::Char('g'), KeyModifiers::NONE);
-    send_key(&mut state, KeyCode::Char('g'), KeyModifiers::NONE);
-    assert_eq!(state.console_output_scroll, 0);
+    ts.state_mut().config.keymap.merge_overlay(&unbind_gb);
+    ts.send_key(KeyCode::End, KeyModifiers::NONE);
+    assert_eq!(ts.state().console.output_scroll(), max_scroll);
+    ts.send_key(KeyCode::Char('g'), KeyModifiers::NONE);
+    ts.send_key(KeyCode::Char('g'), KeyModifiers::NONE);
+    assert_eq!(ts.state().console.output_scroll(), 0);
 
     let unbind_gg: crate::config::KeymapConfigOverlay =
         toml::from_str("[console]\nprepend_keymap = [{ on = [\"g\", \"g\"], run = \"noop\" }]\n")
             .unwrap();
-    state.config.keymap.merge_overlay(&unbind_gg);
-    send_key(&mut state, KeyCode::End, KeyModifiers::NONE);
-    assert_eq!(state.console_output_scroll, bound.max_scroll);
-    send_key(&mut state, KeyCode::Char('g'), KeyModifiers::NONE);
-    send_key(&mut state, KeyCode::Char('g'), KeyModifiers::NONE);
-    assert_eq!(state.console_output_scroll, bound.max_scroll);
+    ts.state_mut().config.keymap.merge_overlay(&unbind_gg);
+    ts.send_key(KeyCode::End, KeyModifiers::NONE);
+    assert_eq!(ts.state().console.output_scroll(), max_scroll);
+    ts.send_key(KeyCode::Char('g'), KeyModifiers::NONE);
+    ts.send_key(KeyCode::Char('g'), KeyModifiers::NONE);
+    assert_eq!(ts.state().console.output_scroll(), max_scroll);
 }
 
 #[test]
@@ -1714,7 +1473,7 @@ fn test_handle_external_editor_effects_noop_and_disabled() {
     assert_eq!(state.status_notice.as_deref(), Some(expected_disabled.as_str()));
 
     state.status_notice = None;
-    state.stage_workbench.editor.set_text("feat: keep message");
+    state.stage_workbench.editor_mut_for_test().set_text("feat: keep message");
     let refresh = handle_external_editor_effects_with(
         &[
             Effect::OpenExternalEditorMessage,
@@ -1727,18 +1486,14 @@ fn test_handle_external_editor_effects_noop_and_disabled() {
     );
     assert!(refresh);
     assert_eq!(state.status_notice, None);
-    assert_eq!(state.stage_workbench.editor.text(), "feat: keep message");
+    assert_eq!(state.stage_workbench.editor().text(), "feat: keep message");
 }
 
 #[test]
 fn commit_tab_diff_lru_cache_invalidation_debounce_and_effect_coalescing() {
-    let mut state = AppState::new_with_config(
-        PathBuf::from("."),
-        None,
-        crate::config::AppConfig::load_defaults(),
-    );
-    state.stage_workbench.tree_opts.group_by_dir = false;
-    state.dispatch(Action::SwitchTab(WorkspaceTab::Commit));
+    let mut ts = TestSession::new(super::test_state(".".into()));
+    ts.dispatch(Action::SwitchTab(WorkspaceTab::Commit));
+    ts.dispatch(Action::StageToggleGroupByDir);
 
     let status = Arc::new(StageStatusSnapshot {
         unstaged: vec![
@@ -1755,13 +1510,12 @@ fn commit_tab_diff_lru_cache_invalidation_debounce_and_effect_coalescing() {
         ],
         ..Default::default()
     });
-    let init_effs = state.apply_engine_event(EngineEvent::StageStatusLoaded {
-        status,
-        epoch: 1,
-    });
-    assert!(init_effs.iter().any(|e| matches!(
-        e,
-        Effect::RequestStageFileDiff(k) if k.path == "a.rs"
+    let _ = ts.take_requests();
+    ts.deliver_engine_event(EngineEvent::StageStatusLoaded { status, epoch: 1 });
+    let reqs = ts.take_requests();
+    assert!(reqs.iter().any(|(r, _)| matches!(
+        r,
+        TaskRequest::LoadStageFileDiff { key } if key.path == "a.rs"
     )));
 
     let make_stage_diff = |path: &str| {
@@ -1793,53 +1547,62 @@ fn commit_tab_diff_lru_cache_invalidation_debounce_and_effect_coalescing() {
         })
     };
 
-    state.dispatch(Action::SelectCommitStageRow(1));
+    ts.dispatch(Action::SelectCommitStageRow(1));
+    let _ = ts.take_requests();
     for step in 0..20 {
         let delta = if step % 2 == 0 { 1 } else { -1 };
-        let effs = state.dispatch(Action::ScrollCommitStage(delta));
+        ts.dispatch(Action::ScrollCommitStage(delta));
         assert!(
-            !effs.iter().any(|e| matches!(e, Effect::RequestStageFileDiff(_))),
+            ts.take_requests().is_empty(),
             "keyboard scroll must debounce stage diff request"
         );
     }
-    let effs = state.dispatch(Action::ScrollCommitStage(1));
-    assert!(!effs.iter().any(|e| matches!(e, Effect::RequestStageFileDiff(_))));
-    assert!(state.stage_workbench.pending_diff.is_some());
+    ts.dispatch(Action::ScrollCommitStage(1));
+    assert!(ts.take_requests().is_empty());
+    assert!(ts.state().stage_workbench.has_pending_diff_for_test());
 
-    let mut flushed = Vec::new();
-    state.flush_pending_at(
-        Instant::now() + crate::log_view::DETAILS_DEBOUNCE + Duration::from_millis(5),
-        &mut flushed,
-    );
+    ts.advance_by(crate::log_view::DETAILS_DEBOUNCE + Duration::from_millis(5));
+    let flushed = ts.take_requests();
     assert!(matches!(
         &flushed[..],
-        [Effect::RequestStageFileDiff(k)] if k.path == "b.rs"
+        [(TaskRequest::LoadStageFileDiff { key }, _)] if key.path == "b.rs"
     ));
 
-    state.dispatch(Action::SelectCommitStageRow(1));
-    state.apply_engine_event(EngineEvent::StageFileDiffLoaded {
+    ts.dispatch(Action::SelectCommitStageRow(1));
+    let epoch_a = ts
+        .state()
+        .request_slots
+        .latest(jbgit_core::RequestSlotId::StageFileDiff);
+    ts.deliver_engine_event(EngineEvent::StageFileDiffLoaded {
         diff: make_stage_diff("a.rs"),
-        epoch: 2,
+        epoch: epoch_a,
     });
-    state.dispatch(Action::SelectCommitStageRow(2));
-    state.apply_engine_event(EngineEvent::StageFileDiffLoaded {
+    ts.dispatch(Action::SelectCommitStageRow(2));
+    let epoch_b = ts
+        .state()
+        .request_slots
+        .latest(jbgit_core::RequestSlotId::StageFileDiff);
+    ts.deliver_engine_event(EngineEvent::StageFileDiffLoaded {
         diff: make_stage_diff("b.rs"),
-        epoch: 3,
+        epoch: epoch_b,
     });
 
-    let back_to_a = state.dispatch(Action::SelectCommitStageRow(1));
-    assert!(!back_to_a.iter().any(|e| matches!(e, Effect::RequestStageFileDiff(_))));
+    let _ = ts.take_requests();
+    ts.dispatch(Action::SelectCommitStageRow(1));
+    assert!(!ts.take_requests().iter().any(|(r, _)| matches!(
+        r,
+        TaskRequest::LoadStageFileDiff { .. }
+    )));
     assert_eq!(
-        state
+        ts.state()
             .stage_workbench
-            .current_diff
-            .as_ref()
+            .current_diff()
             .map(|d| d.key.path.as_str()),
         Some("a.rs")
     );
 
-    state.stage_workbench.diff_cursor_row = 1;
-    let _ = state.dispatch(Action::StageDiffStageSelection);
+    ts.state_mut().stage_workbench.set_diff_cursor_for_test(1);
+    ts.dispatch(Action::StageDiffStageSelection);
     let key_a = StageDiffKey {
         path: "a.rs".into(),
         old_path: None,
@@ -1852,8 +1615,8 @@ fn commit_tab_diff_lru_cache_invalidation_debounce_and_effect_coalescing() {
         side: StageDiffSide::Unstaged,
         context: DiffContext::Three,
     };
-    assert!(!state.stage_workbench.diff_cache.contains(&key_a));
-    assert!(state.stage_workbench.diff_cache.contains(&key_b));
+    assert!(!ts.state().stage_workbench.diff_cache_contains(&key_a));
+    assert!(ts.state().stage_workbench.diff_cache_contains(&key_b));
 
     let mut raw = Vec::new();
     for i in 0..10 {
@@ -1876,20 +1639,22 @@ fn commit_tab_diff_lru_cache_invalidation_debounce_and_effect_coalescing() {
         Effect::CopyToClipboard(s) if s == "keep-me"
     ));
 
-    state.dispatch(Action::SelectCommitStageRow(2));
-    assert!(state.stage_workbench.diff_cache.contains(&key_b));
-    let same_status = Arc::clone(state.stage_status.as_ref().unwrap());
-    let reload_effs = state.apply_engine_event(EngineEvent::StageStatusLoaded {
+    ts.dispatch(Action::SelectCommitStageRow(2));
+    assert!(ts.state().stage_workbench.diff_cache_contains(&key_b));
+    let same_status = Arc::clone(ts.state().stage_workbench.status().unwrap());
+    let _ = ts.take_requests();
+    ts.deliver_engine_event(EngineEvent::StageStatusLoaded {
         status: Arc::new((*same_status).clone()),
         epoch: 4,
     });
     assert!(
-        !state.stage_workbench.diff_cache.contains(&key_b),
+        !ts.state().stage_workbench.diff_cache_contains(&key_b),
         "identical StageStatusLoaded must still invalidate cached diffs after external edits"
     );
-    assert!(reload_effs.iter().any(|e| matches!(
-        e,
-        Effect::RequestStageFileDiff(k) if k.path == "b.rs"
+    let reload_reqs = ts.take_requests();
+    assert!(reload_reqs.iter().any(|(r, _)| matches!(
+        r,
+        TaskRequest::LoadStageFileDiff { key } if key.path == "b.rs"
     )));
 }
 
@@ -2014,4 +1779,488 @@ async fn coalescing_event_stream_does_not_poison_single_flight_waker() {
         next_ev,
         Some(Ok(Event::Key(k))) if k.code == KeyCode::Char('q')
     ));
+}
+
+#[test]
+fn cross_consumer_request_slots_coalesce_independently_and_filter_stale_events() {
+    use jbgit_core::{
+        CommitChangesBundle, ConflictDocument, DetailsKey, DiffContext, FileDiff, FileDiffKey,
+        RequestSlotId,
+    };
+
+    let mut ts = TestSession::new(super::test_state(".".into()));
+
+    let key_log = FileDiffKey {
+        details: DetailsKey::single(Oid::from_bytes([1; 20])),
+        path: "log.rs".into(),
+        old_path: None,
+        context: DiffContext::Three,
+    };
+    let key_fh = FileDiffKey {
+        details: DetailsKey::single(Oid::from_bytes([2; 20])),
+        path: "fh.rs".into(),
+        old_path: None,
+        context: DiffContext::Three,
+    };
+    let key_stash = FileDiffKey {
+        details: DetailsKey::single(Oid::from_bytes([3; 20])),
+        path: "stash.rs".into(),
+        old_path: None,
+        context: DiffContext::Three,
+    };
+
+    // Coalescing must preserve sibling consumer requests while collapsing duplicates within one slot.
+    let raw = vec![
+        Effect::RequestFileDiff {
+            slot: RequestSlotId::LogFileDiff,
+            key: key_log.clone(),
+        },
+        Effect::RequestFileDiff {
+            slot: RequestSlotId::FileHistoryDiff,
+            key: key_fh.clone(),
+        },
+        Effect::RequestFileDiff {
+            slot: RequestSlotId::StashFileDiff,
+            key: key_stash.clone(),
+        },
+        Effect::RequestAmendPreview,
+        Effect::LoadConflictDocument("c.rs".into()),
+    ];
+    let coalesced = crate::coalesce_effects(raw);
+    assert_eq!(coalesced.len(), 5, "sibling slots must not collapse each other");
+
+    ts.execute_effects(coalesced);
+    assert_eq!(ts.engine.recorded_len(), 5);
+    assert_eq!(ts.state().request_slots.latest(RequestSlotId::LogFileDiff), 1);
+    assert_eq!(
+        ts.state().request_slots.latest(RequestSlotId::FileHistoryDiff),
+        1
+    );
+    assert_eq!(ts.state().request_slots.latest(RequestSlotId::StashFileDiff), 1);
+    assert_eq!(ts.state().request_slots.latest(RequestSlotId::AmendPreview), 1);
+    assert_eq!(
+        ts.state().request_slots.latest(RequestSlotId::ConflictDocument),
+        1
+    );
+
+    // Advance AmendPreview, ConflictDocument, and LogCommitDetails epochs to 2.
+    ts.execute_effects(vec![
+        Effect::RequestAmendPreview,
+        Effect::LoadConflictDocument("c.rs".into()),
+        Effect::RequestCommitDetails {
+            slot: RequestSlotId::LogCommitDetails,
+            key: DetailsKey::single(Oid::from_bytes([9; 20])),
+        },
+        Effect::RequestCommitDetails {
+            slot: RequestSlotId::LogCommitDetails,
+            key: DetailsKey::single(Oid::from_bytes([10; 20])),
+        },
+    ]);
+
+    // Stale CommitDetailsLoaded (epoch 1 < 2) must be ignored.
+    let stale_bundle_key = DetailsKey::single(Oid::from_bytes([9; 20]));
+    ts.deliver_engine_event(EngineEvent::CommitDetailsLoaded {
+        slot: RequestSlotId::LogCommitDetails,
+        bundle: Arc::new(CommitChangesBundle {
+            key: stale_bundle_key.clone(),
+            details: vec![],
+            changes: vec![],
+        }),
+        epoch: 1,
+    });
+    assert!(
+        ts.state().diff_caches.details.peek(&stale_bundle_key).is_none(),
+        "stale CommitDetailsLoaded must be dropped"
+    );
+
+    // Stale AmendPreviewLoaded (epoch 1 < 2) must be ignored.
+    ts.deliver_engine_event(EngineEvent::AmendPreviewLoaded {
+        preview: Some(AmendCommitPreview {
+            short_sha: "old0000".into(),
+            message: "stale amend".into(),
+            files: vec![],
+        }),
+        epoch: 1,
+    });
+    assert!(
+        ts.state().stage_workbench.amend_preview().is_none(),
+        "stale AmendPreviewLoaded must be dropped"
+    );
+
+    // Stale ConflictDocumentLoaded (epoch 1 < 2) must be ignored.
+    ts.dispatch(Action::OpenConflictResolver("c.rs".into()));
+    let stale_doc = ConflictDocument::parse("c.rs", "stale\n", None, None);
+    ts.deliver_engine_event(EngineEvent::ConflictDocumentLoaded {
+        doc: stale_doc,
+        epoch: 1,
+    });
+    assert!(
+        ts.state()
+            .modal_stack
+            .conflict_merge()
+            .unwrap()
+            .doc
+            .is_none(),
+        "stale ConflictDocumentLoaded must be dropped"
+    );
+
+    // Meanwhile LogFileDiff epoch 1 is still current and lands cleanly.
+    ts.state_mut().log.details.diff.requested = Some(key_log.clone());
+    ts.deliver_engine_event(EngineEvent::FileDiffLoaded {
+        slot: RequestSlotId::LogFileDiff,
+        diff: Arc::new(FileDiff {
+            key: key_log.clone(),
+            hunks: vec![],
+            is_binary: false,
+            is_truncated: false,
+            is_too_large: false,
+        }),
+        epoch: 1,
+    });
+    assert!(ts.state().log.details.diff.requested.is_none());
+    assert!(ts.state().diff_caches.diffs.peek(&key_log).is_some());
+}
+
+#[test]
+fn stale_diff_responses_for_same_key_never_overwrite_fresh_state_or_cache() {
+    use jbgit_core::{DetailsKey, RequestSlotId};
+
+    let mut ts = TestSession::new(super::test_state(".".into()));
+    ts.dispatch(Action::SwitchTab(WorkspaceTab::Commit));
+    ts.deliver_engine_event(EngineEvent::StageStatusLoaded {
+        status: Arc::new(StageStatusSnapshot {
+            unstaged: vec![StageEntry {
+                path: "src/foo.rs".into(),
+                old_path: None,
+                kind: FileStatusKind::Modified,
+            }],
+            ..Default::default()
+        }),
+        epoch: 1,
+    });
+    // First StageFileDiff request -> epoch 1, then mutation triggers epoch 2 for the SAME key!
+    ts.dispatch(Action::SelectCommitStageRow(1));
+    let _ = ts.take_requests();
+    ts.state_mut().stage_workbench.on_git_op_succeeded();
+    ts.dispatch(Action::SelectCommitStageRow(1));
+    let reqs = ts.take_requests();
+    assert_eq!(ts.state().request_slots.latest(RequestSlotId::StageFileDiff), 2, "{reqs:?}");
+
+    let make_stage_diff = |content: &[u8]| {
+        let tracker = jbgit_core::StageLineTracker::new(b"", b"", content);
+        let (hunks, is_truncated) = tracker.build_interactive_hunks(false, DiffContext::Three, 20_000);
+        Arc::new(ThreeDocStageDiff {
+            key: StageDiffKey {
+                path: "src/foo.rs".into(),
+                old_path: None,
+                side: StageDiffSide::Unstaged,
+                context: DiffContext::Three,
+            },
+            vcs_exists: false,
+            staged_exists: false,
+            local_exists: true,
+            vcs_bytes: Vec::new(),
+            staged_bytes: Vec::new(),
+            local_bytes: content.to_vec(),
+            file_mode: 0o100644,
+            is_binary: false,
+            is_conflicted: false,
+            tracker,
+            hunks,
+            is_truncated,
+            is_too_large: false,
+        })
+    };
+
+    // Fresh epoch 2 arrives first, then stale epoch 1 arrives for the EXACT SAME StageDiffKey.
+    ts.deliver_engine_event(EngineEvent::StageFileDiffLoaded {
+        diff: make_stage_diff(b"fresh\n"),
+        epoch: 2,
+    });
+    ts.deliver_engine_event(EngineEvent::StageFileDiffLoaded {
+        diff: make_stage_diff(b"stale\n"),
+        epoch: 1,
+    });
+    assert_eq!(
+        ts.state()
+            .stage_workbench
+            .current_diff()
+            .map(|d| d.local_bytes.as_slice()),
+        Some(b"fresh\n".as_slice()),
+        "stale epoch 1 StageFileDiffLoaded must not overwrite fresh epoch 2 state"
+    );
+
+    // Same invariant for CompareWithLocal FileDiffLoaded: epoch 2 must not be overwritten by epoch 1.
+    let target = Oid::from_bytes([0x44; 20]);
+    let cmp_key = FileDiffKey {
+        details: DetailsKey::compare_with_local(target),
+        path: "src/foo.rs".into(),
+        old_path: None,
+        context: DiffContext::Three,
+    };
+    ts.state_mut()
+        .request_slots
+        .note_dispatched(RequestSlotId::LogFileDiff, 2);
+    ts.deliver_engine_event(EngineEvent::FileDiffLoaded {
+        slot: RequestSlotId::LogFileDiff,
+        diff: Arc::new(FileDiff {
+            key: cmp_key.clone(),
+            hunks: vec![],
+            is_binary: false,
+            is_truncated: false,
+            is_too_large: false,
+        }),
+        epoch: 2,
+    });
+    ts.deliver_engine_event(EngineEvent::FileDiffLoaded {
+        slot: RequestSlotId::LogFileDiff,
+        diff: Arc::new(FileDiff {
+            key: cmp_key.clone(),
+            hunks: vec![DiffHunk {
+                header: "@@ stale @@".into(),
+                lines: Vec::new(),
+            }],
+            is_binary: false,
+            is_truncated: false,
+            is_too_large: false,
+        }),
+        epoch: 1,
+    });
+    assert!(
+        ts.state()
+            .diff_caches
+            .peek_diff(&cmp_key)
+            .unwrap()
+            .hunks
+            .is_empty(),
+        "stale epoch 1 FileDiffLoaded must not overwrite fresh epoch 2 cache"
+    );
+}
+
+#[test]
+fn conflict_resolver_scroll_clamps_without_dead_zone_and_commit_editor_follows_cursor() {
+    use jbgit_core::{
+        ConflictDocument, DetailsKey, DiffContext, FileChange, FileDiff, FileDiffKey,
+        FileStatusKind, RepoSnapshot, RepositoryState, RequestSlotId, StashEntry,
+    };
+
+    let mut ts = TestSession::new(super::test_state(".".into()));
+
+    // 1. 3-Way Conflict Resolver: repeated PageDown clamps at max_scroll; single Up moves up 1 immediately.
+    ts.dispatch(Action::OpenConflictResolver("src/conflict.rs".into()));
+    let mut raw = String::new();
+    for i in 1..=60 {
+        raw.push_str(&format!("context line {i}\n"));
+    }
+    raw.push_str("<<<<<<< HEAD\nours\n=======\ntheirs\n>>>>>>> feat\n");
+    let doc = ConflictDocument::parse("src/conflict.rs", &raw, None, None);
+    ts.deliver_engine_event(EngineEvent::ConflictDocumentLoaded { doc, epoch: 1 });
+
+    let _ = ts.render(120, 24);
+    let max_scroll = ts
+        .state()
+        .modal_stack
+        .conflict_merge()
+        .unwrap()
+        .scroll
+        .max_scroll()
+        .expect("conflict_merge bound recorded");
+    assert!(max_scroll > 0);
+
+    for _ in 0..20 {
+        ts.dispatch(Action::ConflictScroll(10));
+    }
+    assert_eq!(
+        ts.state().modal_stack.conflict_merge().unwrap().scroll.offset(),
+        max_scroll,
+        "ConflictScroll must clamp at bottom without overscroll"
+    );
+    ts.dispatch(Action::ConflictScroll(-1));
+    assert_eq!(
+        ts.state().modal_stack.conflict_merge().unwrap().scroll.offset(),
+        max_scroll - 1,
+        "Single Up after bottom must immediately scroll up 1 line with zero dead-zone"
+    );
+    ts.dispatch(Action::PopModal);
+
+    // 2. CommitMessageEditor: typing 15 lines in a 5-line viewport keeps cursor inside visible window.
+    let ed = ts.state_mut().stage_workbench.editor_mut_for_test();
+    ed.bind_viewport(40, 5);
+    for i in 1..=15 {
+        ed.insert_paste(&format!("line {i}"));
+        if i < 15 {
+            ed.insert_newline();
+        }
+        assert!(
+            ed.cursor_line >= ed.scroll_row && ed.cursor_line < ed.scroll_row + 5,
+            "cursor {} must remain inside [{}..{}) while typing",
+            ed.cursor_line,
+            ed.scroll_row,
+            ed.scroll_row + 5
+        );
+    }
+    assert_eq!(ed.scroll_row, 10);
+    for _ in 0..14 {
+        ed.move_up();
+        assert!(
+            ed.cursor_line >= ed.scroll_row && ed.cursor_line < ed.scroll_row + 5,
+            "cursor {} must remain inside [{}..{}) while moving up",
+            ed.cursor_line,
+            ed.scroll_row,
+            ed.scroll_row + 5
+        );
+    }
+    assert_eq!(ed.scroll_row, 0);
+
+    // 3. Single global DiffCacheStore: a details+diff loaded in Log is reused with 0 requests in Stash.
+    let stash_oid = Oid::from_bytes([0xAB; 20]);
+    let details_key = DetailsKey::single(stash_oid);
+    let diff_key = FileDiffKey {
+        details: details_key.clone(),
+        path: "src/shared.rs".into(),
+        old_path: None,
+        context: DiffContext::Three,
+    };
+    ts.deliver_engine_event(EngineEvent::RepoSnapshotLoaded {
+        snapshot: Arc::new(RepoSnapshot {
+            repo_name: "demo".into(),
+            workdir: ".".into(),
+            git_dir: ".git".into(),
+            common_dir: ".git".into(),
+            state: RepositoryState::Clean,
+            is_unborn_head: false,
+            user_name: None,
+            user_email: None,
+            recent_branches: vec![],
+            stashes: vec![StashEntry {
+                index: 0,
+                oid: stash_oid,
+                message: "On main: cached stash".into(),
+                timestamp: 0,
+            }],
+            ongoing_onto: None,
+            head_branch: Some("main".into()),
+            head_oid: Some(stash_oid),
+            refs: vec![],
+            commits: vec![],
+        }),
+        epoch: 1,
+    });
+    ts.deliver_engine_event(EngineEvent::CommitDetailsLoaded {
+        slot: RequestSlotId::LogCommitDetails,
+        bundle: Arc::new(jbgit_core::CommitChangesBundle {
+            key: details_key,
+            details: vec![],
+            changes: vec![FileChange {
+                path: "src/shared.rs".into(),
+                old_path: None,
+                kind: FileStatusKind::Modified,
+                additions: 1,
+                deletions: 0,
+                is_binary: false,
+                exists_in_workdir: true,
+                old_oid: None,
+                new_oid: None,
+            }],
+        }),
+        epoch: 1,
+    });
+    ts.deliver_engine_event(EngineEvent::FileDiffLoaded {
+        slot: RequestSlotId::LogFileDiff,
+        diff: Arc::new(FileDiff {
+            key: diff_key,
+            hunks: vec![],
+            is_binary: false,
+            is_truncated: false,
+            is_too_large: false,
+        }),
+        epoch: 1,
+    });
+    let _ = ts.take_requests();
+    ts.dispatch(Action::SwitchTab(WorkspaceTab::Stash));
+    let reqs = ts.take_requests();
+    assert!(
+        !reqs.iter().any(|(r, _)| matches!(
+            r,
+            TaskRequest::LoadCommitDetails { .. } | TaskRequest::LoadFileDiff { .. }
+        )),
+        "Stash must reuse shared DiffCacheStore with zero redundant requests: {reqs:?}"
+    );
+}
+
+#[test]
+fn set_focus_blurs_inline_modes_and_log_navigation_clears_compare_override() {
+    use jbgit_core::{CommitSummary, DetailsKey, RepoSnapshot, RepositoryState};
+
+    let c1 = Oid::from_bytes([1u8; 20]);
+    let c2 = Oid::from_bytes([2u8; 20]);
+    let mut ts = TestSession::with_snapshot(RepoSnapshot {
+        repo_name: "demo".into(),
+        workdir: ".".into(),
+        git_dir: ".git".into(),
+        common_dir: ".git".into(),
+        state: RepositoryState::Clean,
+        is_unborn_head: false,
+        user_name: None,
+        user_email: None,
+        recent_branches: vec![],
+        stashes: vec![],
+        ongoing_onto: None,
+        head_branch: Some("main".into()),
+        head_oid: Some(c2),
+        refs: vec![],
+        commits: vec![
+            CommitSummary {
+                oid: c2,
+                parents: vec![c1],
+                author_name: "A".into(),
+                author_email: "a@b".into(),
+                timestamp: 2,
+                author_timestamp: 2,
+                subject: "second".into(),
+                body: String::new(),
+            },
+            CommitSummary {
+                oid: c1,
+                parents: vec![],
+                author_name: "A".into(),
+                author_email: "a@b".into(),
+                timestamp: 1,
+                author_timestamp: 1,
+                subject: "first".into(),
+                body: String::new(),
+            },
+        ],
+    });
+
+    // Leaving pane/tab automatically blurs inline edit states and zoomed diff.
+    ts.state_mut().log.filter.editing_text = true;
+    ts.state_mut().log.branches.searching = true;
+    ts.dispatch(Action::CommitFocusAuthorInput);
+    ts.state_mut().stage_workbench.select_diff_line(3, true);
+    ts.state_mut().log.details.diff.zoomed = true;
+
+    ts.dispatch(Action::SwitchTab(WorkspaceTab::Commit));
+    assert!(!ts.state().log.filter.editing_text);
+    assert!(!ts.state().log.branches.searching);
+    assert!(!ts.state().stage_workbench.editing_author());
+    assert!(ts.state().stage_workbench.visual_anchor_row().is_none());
+    assert!(!ts.state().log.details.diff.zoomed);
+
+    // Opening a modal blurs inline editors cleanly too.
+    ts.dispatch(Action::SwitchTab(WorkspaceTab::Log));
+    ts.dispatch(Action::FocusFilterText);
+    assert!(ts.state().log.filter.editing_text);
+    ts.dispatch(Action::OpenBranchesPopup {
+        query: String::new(),
+    });
+    assert!(!ts.state().log.filter.editing_text);
+    ts.dispatch(Action::PopModal);
+
+    // Unified commit-navigation exit clears compare_override & pending_select_path.
+    ts.state_mut().log.details.compare_override = Some(DetailsKey::compare_with_local(c2));
+    ts.state_mut().log.details.pending_select_path = Some("src/main.rs".into());
+    ts.dispatch(Action::ScrollLog(1));
+    assert!(ts.state().log.details.compare_override.is_none());
+    assert!(ts.state().log.details.pending_select_path.is_none());
 }

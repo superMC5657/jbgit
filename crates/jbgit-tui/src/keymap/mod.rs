@@ -2,6 +2,7 @@
 //! and searchable/executable command-help builder.
 
 pub mod actions;
+pub mod catalog;
 pub mod help;
 pub(crate) mod resolve;
 
@@ -383,115 +384,38 @@ pub struct KeyStroke {
     pub shift: bool,
 }
 
-fn parse_named_key(name: &str) -> Option<KeyCode> {
-    match name.to_ascii_lowercase().as_str() {
-        "enter" | "return" => Some(KeyCode::Enter),
-        "esc" | "escape" => Some(KeyCode::Esc),
-        "space" => Some(KeyCode::Char(' ')),
-        "tab" => Some(KeyCode::Tab),
-        "backtab" => Some(KeyCode::BackTab),
-        "backspace" => Some(KeyCode::Backspace),
-        "del" | "delete" => Some(KeyCode::Delete),
-        "up" => Some(KeyCode::Up),
-        "down" => Some(KeyCode::Down),
-        "left" => Some(KeyCode::Left),
-        "right" => Some(KeyCode::Right),
-        "home" => Some(KeyCode::Home),
-        "end" => Some(KeyCode::End),
-        "pageup" | "pgup" => Some(KeyCode::PageUp),
-        "pagedown" | "pgdn" => Some(KeyCode::PageDown),
-        f if f.starts_with('f') && f.len() > 1 && f[1..].chars().all(|c| c.is_ascii_digit()) => {
-            f[1..].parse::<u8>().ok().map(KeyCode::F)
-        }
-        _ => None,
+fn key_token_kind_to_code(kind: jbgit_core::KeyTokenKind) -> KeyCode {
+    use jbgit_core::KeyTokenKind;
+    match kind {
+        KeyTokenKind::Char(c) => KeyCode::Char(c),
+        KeyTokenKind::Enter => KeyCode::Enter,
+        KeyTokenKind::Esc => KeyCode::Esc,
+        KeyTokenKind::Tab => KeyCode::Tab,
+        KeyTokenKind::BackTab => KeyCode::BackTab,
+        KeyTokenKind::Backspace => KeyCode::Backspace,
+        KeyTokenKind::Insert => KeyCode::Insert,
+        KeyTokenKind::Delete => KeyCode::Delete,
+        KeyTokenKind::Up => KeyCode::Up,
+        KeyTokenKind::Down => KeyCode::Down,
+        KeyTokenKind::Left => KeyCode::Left,
+        KeyTokenKind::Right => KeyCode::Right,
+        KeyTokenKind::Home => KeyCode::Home,
+        KeyTokenKind::End => KeyCode::End,
+        KeyTokenKind::PageUp => KeyCode::PageUp,
+        KeyTokenKind::PageDown => KeyCode::PageDown,
+        KeyTokenKind::F(n) => KeyCode::F(n),
     }
 }
 
 impl KeyStroke {
     pub fn parse(s: &str) -> Option<Self> {
-        let s = s.trim();
-        if s.is_empty() {
-            return None;
-        }
-
-        // Bracketed notation, e.g. "<C-d>", "<A-1>", "<Space>", "<C-Enter>", "<F2>", "<C-S-k>"
-        if s.starts_with('<') && s.ends_with('>') && s.len() >= 3 {
-            let inner = &s[1..s.len() - 1];
-            let parts: Vec<&str> = inner.split('-').collect();
-            if parts.is_empty() {
-                return None;
-            }
-
-            let mut ctrl = false;
-            let mut alt = false;
-            let mut shift = false;
-
-            for &m in &parts[..parts.len() - 1] {
-                match m.to_ascii_lowercase().as_str() {
-                    "c" | "ctrl" | "control" => ctrl = true,
-                    "a" | "alt" => alt = true,
-                    "s" | "shift" => shift = true,
-                    _ => {}
-                }
-            }
-
-            let key_part = parts[parts.len() - 1];
-            let parsed_code = parse_named_key(key_part).or_else(|| {
-                let mut chars = key_part.chars();
-                let first = chars.next()?;
-                chars.next().is_none().then_some(KeyCode::Char(first))
-            })?;
-
-            // Normalize <S-Tab>/<BackTab> and standalone <S-x> (to uppercase 'X' + shift)
-            // so equality, matching, and display agree.
-            let (code, shift) =
-                if (parsed_code == KeyCode::Tab && shift) || parsed_code == KeyCode::BackTab {
-                    (KeyCode::BackTab, false)
-                } else if !ctrl
-                    && !alt
-                    && shift
-                    && let KeyCode::Char(c) = parsed_code
-                    && c.is_ascii_lowercase()
-                {
-                    (KeyCode::Char(c.to_ascii_uppercase()), true)
-                } else if !ctrl
-                    && !alt
-                    && let KeyCode::Char(c) = parsed_code
-                    && c.is_ascii_uppercase()
-                {
-                    (KeyCode::Char(c), true)
-                } else {
-                    (parsed_code, shift)
-                };
-
-            Some(KeyStroke {
-                code,
-                ctrl,
-                alt,
-                shift,
-            })
-        } else {
-            // Non-bracketed representation: "q", "G", "j", "k", "r", "?", etc.
-            let mut chars = s.chars();
-            let first = chars.next()?;
-            if chars.next().is_none() {
-                let shift = first.is_ascii_uppercase();
-                Some(KeyStroke {
-                    code: KeyCode::Char(first),
-                    ctrl: false,
-                    alt: false,
-                    shift,
-                })
-            } else {
-                let code = parse_named_key(s)?;
-                Some(KeyStroke {
-                    code,
-                    ctrl: false,
-                    alt: false,
-                    shift: false,
-                })
-            }
-        }
+        let token = jbgit_core::parse_key_token(s).ok()?;
+        Some(KeyStroke {
+            code: key_token_kind_to_code(token.kind),
+            ctrl: token.ctrl,
+            alt: token.alt,
+            shift: token.shift,
+        })
     }
 
     pub fn is_editor_chord(&self) -> bool {
@@ -798,62 +722,75 @@ mod tests {
 
         // 1. Default routing: "r" refreshes
         let ev_r = KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE);
-        let actions = route_dynamic_key(&ev_r, &mut state);
+        let actions = route_dynamic_key(&ev_r, &state);
         assert!(matches!(actions.as_deref(), Some([Action::RefreshAll])));
 
         // 2. Default routing: multi-key sequence "g" then "g" + Which-Key completions
         let ev_g = KeyEvent::new(KeyCode::Char('g'), KeyModifiers::NONE);
-        let first = route_dynamic_key(&ev_g, &mut state);
-        assert!(matches!(first.as_deref(), Some([]))); // prefix consumed
+        let first = route_dynamic_key(&ev_g, &state).expect("prefix action");
+        assert!(matches!(first.as_slice(), [Action::SetPendingKeySequence(_)]));
+        for a in first {
+            state.dispatch(a);
+        }
         let completions = pending_completions(&state);
         assert!(completions.iter().any(|(k, _)| k == "g"));
         assert!(completions.iter().any(|(k, _)| k == "r"));
         assert!(completions.iter().any(|(k, _)| k == "b"));
-        let second = route_dynamic_key(&ev_g, &mut state);
+        let second = route_dynamic_key(&ev_g, &state).expect("exact sequence");
         assert!(matches!(
-            second.as_deref(),
-            Some([Action::LogEdge { bottom: false }])
+            second.as_slice(),
+            [Action::ClearPendingKeySequence, Action::LogEdge { bottom: false }]
         ));
+        for a in second {
+            state.dispatch(a);
+        }
 
         // 2b. Esc cancels pending chord cleanly
-        let first_esc = route_dynamic_key(&ev_g, &mut state);
-        assert!(matches!(first_esc.as_deref(), Some([])));
+        let first_esc = route_dynamic_key(&ev_g, &state).expect("prefix");
+        assert!(matches!(first_esc.as_slice(), [Action::SetPendingKeySequence(_)]));
+        for a in first_esc {
+            state.dispatch(a);
+        }
         assert!(!state.pending_keys.is_empty());
-        let cancel = route_dynamic_key(&KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), &mut state);
-        assert!(matches!(cancel.as_deref(), Some([])));
+        let cancel = route_dynamic_key(&KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), &state)
+            .expect("cancel");
+        assert!(matches!(cancel.as_slice(), [Action::ClearPendingKeySequence]));
+        for a in cancel {
+            state.dispatch(a);
+        }
         assert!(state.pending_keys.is_empty());
 
         // 3. Diff scope routing: 'S' toggles side-by-side
         state.active_tab = WorkspaceTab::Log;
         state.focused_pane = PaneId::LogDetailsDiff;
-        state.details.diff_preview = true;
+        state.log.details.diff_preview = true;
         let ev_s_upper = KeyEvent::new(KeyCode::Char('S'), KeyModifiers::SHIFT);
-        let actions_s = route_dynamic_key(&ev_s_upper, &mut state);
+        let actions_s = route_dynamic_key(&ev_s_upper, &state);
         assert!(matches!(
             actions_s.as_deref(),
-            Some([Action::DiffToggleSideBySide])
+            Some([Action::DiffToggleSideBySide(crate::app::DiffScope::Log)])
         ));
 
         // 3b. Global remote keys: b (branches popup), f (fetch), P (push)
         state.focused_pane = PaneId::LogCommitTable;
         let ev_b = KeyEvent::new(KeyCode::Char('b'), KeyModifiers::NONE);
         assert!(matches!(
-            route_dynamic_key(&ev_b, &mut state).as_deref(),
+            route_dynamic_key(&ev_b, &state).as_deref(),
             Some([Action::OpenBranchesPopup { .. }])
         ));
         let ev_f = KeyEvent::new(KeyCode::Char('f'), KeyModifiers::NONE);
         assert!(matches!(
-            route_dynamic_key(&ev_f, &mut state).as_deref(),
+            route_dynamic_key(&ev_f, &state).as_deref(),
             Some([Action::RunGitOp(GitOp::Fetch)])
         ));
 
         // 4. Commit Diff: 'r' refreshes (does NOT rollback), while 'd' rolls back!
         state.active_tab = WorkspaceTab::Commit;
         state.focused_pane = PaneId::CommitDiffPreview;
-        let actions_r_diff = route_dynamic_key(&ev_r, &mut state);
+        let actions_r_diff = route_dynamic_key(&ev_r, &state);
         assert!(matches!(actions_r_diff.as_deref(), Some([Action::RefreshAll])));
         let ev_d = KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE);
-        let actions_d_diff = route_dynamic_key(&ev_d, &mut state);
+        let actions_d_diff = route_dynamic_key(&ev_d, &state);
         assert!(matches!(
             actions_d_diff.as_deref(),
             Some([Action::StageDiffRollbackSelection])
@@ -862,7 +799,7 @@ mod tests {
         // 4b. Ctrl+S submits commit in Commit view
         let ev_cs = KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL);
         assert!(matches!(
-            route_dynamic_key(&ev_cs, &mut state).as_deref(),
+            route_dynamic_key(&ev_cs, &state).as_deref(),
             Some([Action::SubmitCommit { and_push: false }])
         ));
 
@@ -876,19 +813,19 @@ key_bindings = [{ on = ["<F5>"], run = "refresh" }]
         )
         .unwrap();
         custom_config.keymap.merge_overlay(&ov);
-        let mut state_custom = AppState::new_with_config(PathBuf::from("."), None, custom_config);
+        let state_custom = AppState::new_with_config(PathBuf::from("."), None, custom_config);
 
         let ev_f5 = KeyEvent::new(KeyCode::F(5), KeyModifiers::NONE);
-        let actions_f5 = route_dynamic_key(&ev_f5, &mut state_custom);
+        let actions_f5 = route_dynamic_key(&ev_f5, &state_custom);
         assert!(matches!(actions_f5.as_deref(), Some([Action::RefreshAll])));
 
         // Pressing r does NOT refresh when replaced via key_bindings
-        let actions_r = route_dynamic_key(&ev_r, &mut state_custom);
+        let actions_r = route_dynamic_key(&ev_r, &state_custom);
         assert!(actions_r.is_none());
 
         // Existing global bindings like 'q' are preserved
         let ev_q = KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE);
-        let actions_q = route_dynamic_key(&ev_q, &mut state_custom);
+        let actions_q = route_dynamic_key(&ev_q, &state_custom);
         assert!(matches!(actions_q.as_deref(), Some([Action::Quit])));
     }
 
@@ -912,20 +849,20 @@ prepend_keymap = [
 
         // Unbound Ctrl+S no longer triggers SubmitCommit
         let ev_cs = KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL);
-        assert!(route_editor_dynamic_key(&ev_cs, &mut state).is_none());
+        assert!(route_editor_dynamic_key(&ev_cs, &state).is_none());
 
         // Custom <F9> triggers SubmitCommit inside editor
         let ev_f9 = KeyEvent::new(KeyCode::F(9), KeyModifiers::NONE);
         assert!(matches!(
-            route_editor_dynamic_key(&ev_f9, &mut state).as_deref(),
+            route_editor_dynamic_key(&ev_f9, &state).as_deref(),
             Some([Action::SubmitCommit { and_push: false }])
         ));
 
         // Plain 'A' or 'q' must NOT fire inside editor
         let ev_upper_a = KeyEvent::new(KeyCode::Char('A'), KeyModifiers::SHIFT);
-        assert!(route_editor_dynamic_key(&ev_upper_a, &mut state).is_none());
+        assert!(route_editor_dynamic_key(&ev_upper_a, &state).is_none());
         let ev_q = KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE);
-        assert!(route_editor_dynamic_key(&ev_q, &mut state).is_none());
+        assert!(route_editor_dynamic_key(&ev_q, &state).is_none());
     }
 
     #[test]
@@ -960,45 +897,47 @@ prepend_keymap = [
         let ev_upper_g = KeyEvent::new(KeyCode::Char('G'), KeyModifiers::SHIFT);
 
         assert!(matches!(
-            route_dynamic_key(&ev_j, &mut state).as_deref(),
+            route_dynamic_key(&ev_j, &state).as_deref(),
             Some([Action::ScrollConsoleList(1)])
         ));
         assert!(matches!(
-            route_dynamic_key(&ev_k, &mut state).as_deref(),
+            route_dynamic_key(&ev_k, &state).as_deref(),
             Some([Action::ScrollConsoleList(-1)])
         ));
         assert!(matches!(
-            route_dynamic_key(&ev_down, &mut state).as_deref(),
+            route_dynamic_key(&ev_down, &state).as_deref(),
             Some([Action::ScrollConsoleList(1)])
         ));
         assert!(matches!(
-            route_dynamic_key(&ev_up, &mut state).as_deref(),
+            route_dynamic_key(&ev_up, &state).as_deref(),
             Some([Action::ScrollConsoleList(-1)])
         ));
         assert!(matches!(
-            route_dynamic_key(&ev_upper_g, &mut state).as_deref(),
+            route_dynamic_key(&ev_upper_g, &state).as_deref(),
             Some([Action::SelectConsoleRow(usize::MAX)])
         ));
+        let g1 = route_dynamic_key(&ev_g, &state).expect("prefix");
+        assert!(matches!(g1.as_slice(), [Action::SetPendingKeySequence(_)]));
+        for a in g1 {
+            state.dispatch(a);
+        }
         assert!(matches!(
-            route_dynamic_key(&ev_g, &mut state).as_deref(),
-            Some([])
+            route_dynamic_key(&ev_g, &state).as_deref(),
+            Some([Action::ClearPendingKeySequence, Action::SelectConsoleRow(0)])
         ));
-        assert!(matches!(
-            route_dynamic_key(&ev_g, &mut state).as_deref(),
-            Some([Action::SelectConsoleRow(0)])
-        ));
+        state.dispatch(Action::ClearPendingKeySequence);
         assert!(matches!(
             crate::input::route_terminal_event(
-                crossterm::event::Event::Key(KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE)),
-                &mut state,
+                &crossterm::event::Event::Key(KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE)),
+                &state,
             )
             .as_slice(),
             [Action::ScrollConsoleList(10)]
         ));
         assert!(matches!(
             crate::input::route_terminal_event(
-                crossterm::event::Event::Key(KeyEvent::new(KeyCode::PageUp, KeyModifiers::NONE)),
-                &mut state,
+                &crossterm::event::Event::Key(KeyEvent::new(KeyCode::PageUp, KeyModifiers::NONE)),
+                &state,
             )
             .as_slice(),
             [Action::ScrollConsoleList(-10)]
@@ -1025,11 +964,11 @@ prepend_keymap = [
 
         state.focused_pane = PaneId::ConsoleOutputDetail;
         assert!(matches!(
-            route_dynamic_key(&ev_j, &mut state).as_deref(),
+            route_dynamic_key(&ev_j, &state).as_deref(),
             Some([Action::ScrollConsoleOutput(1)])
         ));
         assert!(matches!(
-            route_dynamic_key(&ev_k, &mut state).as_deref(),
+            route_dynamic_key(&ev_k, &state).as_deref(),
             Some([Action::ScrollConsoleOutput(-1)])
         ));
 
@@ -1062,7 +1001,7 @@ prepend_keymap = [
         let mut state = AppState::new_with_config(PathBuf::from("."), None, AppConfig::default());
         state.active_tab = WorkspaceTab::Log;
         state.focused_pane = PaneId::LogCommitTable;
-        state.details.diff_zoomed = true;
+        state.log.details.diff.zoomed = true;
 
         let ev_j = KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE);
         let ev_k = KeyEvent::new(KeyCode::Char('k'), KeyModifiers::NONE);
@@ -1070,38 +1009,46 @@ prepend_keymap = [
         let ev_upper_g = KeyEvent::new(KeyCode::Char('G'), KeyModifiers::SHIFT);
 
         assert!(matches!(
-            route_dynamic_key(&ev_j, &mut state).as_deref(),
-            Some([Action::ScrollDiff(1)])
+            route_dynamic_key(&ev_j, &state).as_deref(),
+            Some([Action::DiffScroll(crate::app::DiffScope::Log, 1)])
         ));
         assert!(matches!(
-            route_dynamic_key(&ev_k, &mut state).as_deref(),
-            Some([Action::ScrollDiff(-1)])
+            route_dynamic_key(&ev_k, &state).as_deref(),
+            Some([Action::DiffScroll(crate::app::DiffScope::Log, -1)])
         ));
         assert!(matches!(
-            route_dynamic_key(&ev_upper_g, &mut state).as_deref(),
-            Some([Action::ScrollDiff(crate::app::SCROLL_GOTO_BOTTOM)])
+            route_dynamic_key(&ev_upper_g, &state).as_deref(),
+            Some([Action::DiffScroll(
+                crate::app::DiffScope::Log,
+                crate::app::SCROLL_GOTO_BOTTOM
+            )])
         ));
+        let g1 = route_dynamic_key(&ev_g, &state).expect("prefix");
+        assert!(matches!(g1.as_slice(), [Action::SetPendingKeySequence(_)]));
+        for a in g1 {
+            state.dispatch(a);
+        }
         assert!(matches!(
-            route_dynamic_key(&ev_g, &mut state).as_deref(),
-            Some([])
+            route_dynamic_key(&ev_g, &state).as_deref(),
+            Some([
+                Action::ClearPendingKeySequence,
+                Action::DiffScroll(crate::app::DiffScope::Log, crate::app::SCROLL_GOTO_TOP)
+            ])
         ));
-        assert!(matches!(
-            route_dynamic_key(&ev_g, &mut state).as_deref(),
-            Some([Action::ScrollDiff(crate::app::SCROLL_GOTO_TOP)])
-        ));
+        state.dispatch(Action::ClearPendingKeySequence);
 
         // Switching away from Log clears diff_zoomed and never hijacks the destination tab.
         state.dispatch(Action::SwitchTab(WorkspaceTab::Commit));
-        assert!(!state.details.diff_zoomed);
+        assert!(!state.log.details.diff.zoomed);
         assert!(matches!(
-            route_dynamic_key(&ev_j, &mut state).as_deref(),
+            route_dynamic_key(&ev_j, &state).as_deref(),
             Some([Action::ScrollCommitStage(1)])
         ));
 
         // Even if diff_zoomed is set directly while on another tab, it must not hijack routing.
-        state.details.diff_zoomed = true;
+        state.log.details.diff.zoomed = true;
         assert!(matches!(
-            route_dynamic_key(&ev_j, &mut state).as_deref(),
+            route_dynamic_key(&ev_j, &state).as_deref(),
             Some([Action::ScrollCommitStage(1)])
         ));
     }

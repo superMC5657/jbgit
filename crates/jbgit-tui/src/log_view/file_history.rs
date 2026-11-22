@@ -3,12 +3,12 @@ use std::time::{Duration, Instant};
 
 use jbgit_core::{
     DetailsKey, DiffContext, FileDiff, FileDiffKey, FileHistoryBundle, FileHistoryEntry,
-    FileHistoryKey, LruCache,
+    FileHistoryKey,
 };
 
-use super::details_pane::{DiffRow, FileDiffRowsCache};
+use crate::diff_session::{DiffCacheStore, DiffRow, DiffSession};
 
-/// Chord window in `PopupKind::FileHistory` to disambiguate `gg` (jump to top) from `g` (locate in log).
+/// Chord window in `ModalLayer::FileHistory` to disambiguate `gg` (jump to top) from `g` (locate in log).
 pub const FILE_HISTORY_G_WINDOW: Duration = Duration::from_millis(350);
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -28,15 +28,9 @@ pub struct FileHistoryState {
     /// Anchor row for two-revision comparison (`Shift+Up`/`Down` or `Shift+Click`).
     pub anchor: Option<usize>,
     pub compare_with_local: bool,
-    pub diff_side_by_side: bool,
-    pub diff_context: DiffContext,
-    pub diff_scroll: usize,
-    pub diff_zoomed: bool,
     pub focus: FileHistoryFocus,
-    pub pending_diff: Option<(FileDiffKey, Instant)>,
-    pub requested_diff: Option<FileDiffKey>,
+    pub diff: DiffSession,
     pub pending_g: Option<Instant>,
-    pub(crate) diff_rows_cache: FileDiffRowsCache,
 }
 
 impl FileHistoryState {
@@ -49,20 +43,14 @@ impl FileHistoryState {
             selected: 0,
             anchor: None,
             compare_with_local: false,
-            diff_side_by_side: false,
-            diff_context,
-            diff_scroll: 0,
-            diff_zoomed: false,
             focus: FileHistoryFocus::Commits,
-            pending_diff: None,
-            requested_diff: None,
+            diff: DiffSession::new(diff_context),
             pending_g: None,
-            diff_rows_cache: FileDiffRowsCache::default(),
         }
     }
 
     pub fn diff_rows_for(&self, diff: &Arc<FileDiff>) -> Arc<[DiffRow]> {
-        self.diff_rows_cache.rows_for(diff, self.diff_side_by_side)
+        self.diff.rows_for(diff)
     }
 
     pub fn entries(&self) -> &[FileHistoryEntry] {
@@ -93,7 +81,7 @@ impl FileHistoryState {
                 path: self.key.path.clone(),
                 old_path: (cur.path_at_commit != self.key.path)
                     .then(|| cur.path_at_commit.clone()),
-                context: self.diff_context,
+                context: self.diff.context,
             })
         } else if let Some((older, newer)) = self.comparison_pair() {
             Some(FileDiffKey {
@@ -101,21 +89,21 @@ impl FileHistoryState {
                 path: newer.path_at_commit.clone(),
                 old_path: (older.path_at_commit != newer.path_at_commit)
                     .then(|| older.path_at_commit.clone()),
-                context: self.diff_context,
+                context: self.diff.context,
             })
         } else {
             Some(FileDiffKey {
                 details: DetailsKey::single(cur.oid),
                 path: cur.path_at_commit.clone(),
                 old_path: cur.old_path.clone(),
-                context: self.diff_context,
+                context: self.diff.context,
             })
         }
     }
 
     pub fn next_deadline(&self) -> Option<Instant> {
         [
-            self.pending_diff.as_ref().map(|(_, at)| *at),
+            self.diff.next_deadline(),
             self.pending_g.map(|t| t + FILE_HISTORY_G_WINDOW),
         ]
         .into_iter()
@@ -131,7 +119,7 @@ impl FileHistoryState {
         }
         if next != self.selected || !extend {
             self.selected = next;
-            self.diff_scroll = 0;
+            self.diff.scroll.reset();
         }
     }
 
@@ -157,31 +145,33 @@ impl FileHistoryState {
         self.loading = true;
         self.error = None;
         self.anchor = None;
-        self.diff_scroll = 0;
-        self.pending_diff = None;
-        self.requested_diff = None;
+        self.diff.scroll.reset();
+        self.diff.pending = None;
+        self.diff.requested = None;
         self.key.clone()
     }
 
     pub fn toggle_compare_local(&mut self) {
         self.compare_with_local = !self.compare_with_local;
-        self.diff_scroll = 0;
-        self.pending_diff = None;
+        self.diff.scroll.reset();
+        self.diff.pending = None;
     }
 
     pub fn toggle_side_by_side(&mut self) {
-        self.diff_side_by_side = !self.diff_side_by_side;
-        self.diff_scroll = 0;
+        self.diff.toggle_side_by_side();
     }
 
     pub fn cycle_context(&mut self) {
-        self.diff_context = self.diff_context.next();
-        self.diff_scroll = 0;
-        self.pending_diff = None;
+        self.diff.cycle_context();
     }
 
     pub fn toggle_zoom(&mut self) {
-        self.diff_zoomed = !self.diff_zoomed;
+        self.diff.toggle_zoom();
+    }
+
+    pub fn jump_diff_hunk(&mut self, delta: isize, store: &DiffCacheStore) {
+        let diff = self.desired_diff_key().and_then(|k| store.peek_diff(&k));
+        self.diff.jump_hunk(delta, diff);
     }
 
     pub fn set_focus(&mut self, focus: FileHistoryFocus) {
@@ -195,18 +185,8 @@ impl FileHistoryState {
         };
     }
 
-    pub fn fallback_diff_max_scroll(
-        &self,
-        diff_cache: &LruCache<FileDiffKey, Arc<FileDiff>>,
-    ) -> usize {
-        self.desired_diff_key()
-            .and_then(|k| diff_cache.peek(&k))
-            .map_or(usize::MAX, |d| {
-                if d.is_too_large || d.is_binary || d.hunks.is_empty() {
-                    0
-                } else {
-                    (self.diff_rows_for(d).len() + usize::from(d.is_truncated)).saturating_sub(1)
-                }
-            })
+    pub fn fallback_diff_max_scroll(&self, store: &DiffCacheStore) -> usize {
+        let diff = self.desired_diff_key().and_then(|k| store.peek_diff(&k));
+        self.diff.fallback_max_scroll(diff)
     }
 }

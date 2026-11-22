@@ -4,17 +4,16 @@ mod stage_status;
 mod worker_pool;
 
 pub use scan_config::{
-    AHEAD_BEHIND_BRANCH_LIMIT, AHEAD_BEHIND_TIME_BUDGET, AheadBehindUpdate, LARGE_INDEX_ENTRIES,
-    PendingAheadBehind, StatusScanConfig, StatusScanMode, StatusScanPolicy,
+    AheadBehindUpdate, LARGE_INDEX_ENTRIES, StatusScanConfig, StatusScanMode, StatusScanPolicy,
 };
-pub use snapshot::{
-    compute_ahead_behind_batch_sync, load_repo_snapshot_sync,
+#[cfg(test)]
+pub(crate) use scan_config::AHEAD_BEHIND_BRANCH_LIMIT;
+pub(crate) use snapshot::{
+    compute_ahead_behind_batch_sync, load_conflict_document_sync,
     load_repo_snapshot_with_config_sync,
 };
-pub(crate) use stage_status::delta_to_kind;
-pub use stage_status::{load_stage_status_sync, load_stage_status_with_config_sync};
-pub use worker_pool::{Git2WorkerPool, TaskPriority};
-pub(crate) use worker_pool::with_thread_repo;
+pub(crate) use stage_status::{delta_to_kind, load_stage_status_with_config_sync};
+pub(crate) use worker_pool::{Git2WorkerPool, TaskPriority, with_thread_repo};
 
 #[cfg(test)]
 mod tests {

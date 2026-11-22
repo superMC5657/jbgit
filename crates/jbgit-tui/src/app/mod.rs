@@ -2,18 +2,22 @@ mod action;
 mod dispatch;
 mod effects;
 mod events;
+mod git_workflows;
+mod modal_stack;
+mod scroll;
 mod state;
 mod types;
 
-pub use action::Action;
-pub use effects::execute_effects;
+pub use action::{Action, ChangesHost, DiffScope};
+pub use effects::execute_effects_with_host;
+pub use modal_stack::{ModalLayer, ModalStack};
+pub use scroll::ScrollViewport;
 pub use state::AppState;
 pub use types::{
-    ClickRecord, ConflictMergeState, ContainingBranchesJob, ContextMenuAction,
-    ContextMenuEntryKind, ContextMenuItem, DragState, EditorMoveKind, Effect, MENU_HOVER_DELAY,
-    MenuHover, MenuParent, ModalLayer, Notification, PopupKind, RenderContext,
-    SCROLL_GOTO_BOTTOM, SCROLL_GOTO_TOP, ScrollPane, SyntaxJob, SyntaxJobKey, SyntaxJobSlot,
-    SyntaxTarget, UiAsyncEvent, ViewportScrollMetrics, apply_scroll_delta,
+    ClickRecord, ConflictMergeState, ContainingBranchesJob, ContextMenuEntryKind, ContextMenuItem,
+    DragState, EditorMoveKind, Effect, MENU_HOVER_DELAY, MenuHover, MenuParent, Notification,
+    PopupKind, RenderContext, SCROLL_GOTO_BOTTOM, SCROLL_GOTO_TOP, ScrollPane, SyntaxJob,
+    SyntaxJobKey, SyntaxTarget, UiAsyncEvent, apply_scroll_delta,
 };
 pub(crate) use types::initial_menu_selection;
 

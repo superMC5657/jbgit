@@ -2,7 +2,7 @@
 //! three-state gutter bars, hunk-header inline action pills, visual line selection (`v`),
 //! hunk jumping (`n`/`p`/`]c`/`[c`), and 3-way inspector (`i`).
 
-use jbgit_core::{DiffLine, DiffLineKind, LineGutterMark, PaneId};
+use jbgit_core::{DiffLineKind, LineGutterMark, PaneId};
 use jbgit_engine::StageDiffSide;
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -13,8 +13,12 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::app::{AppState, RenderContext, ScrollPane};
 use crate::hit_test::{DiffHunkActionKind, HitTarget, StageDiffToolbarButton};
-use crate::stage_view::{StageDiffRow, StageWorkbenchState};
-use crate::syntax::{HighlightedDiff, render_diff_line_spans_with_tab};
+use crate::diff_session::DiffRow;
+use crate::stage_view::CommitWorkbench;
+use crate::syntax::HighlightedDiff;
+use crate::views::log_details::{
+    DiffLineRenderInput, diff_line_style, render_diff_side_cell, render_diff_unified_spans,
+};
 use crate::views::{fit_left_right_spans, render_pane_frame, render_toolbar, truncate_to_width};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -23,14 +27,13 @@ enum DiffHintMode {
     VisualLine,
 }
 
-fn diff_hint_mode(sw: &StageWorkbenchState) -> Option<DiffHintMode> {
+fn diff_hint_mode(sw: &CommitWorkbench) -> Option<DiffHintMode> {
     if sw
-        .current_diff_key
-        .as_ref()
+        .current_diff_key()
         .is_some_and(|k| k.side == StageDiffSide::AmendCommit)
     {
         Some(DiffHintMode::Amend)
-    } else if sw.visual_anchor_row.is_some() {
+    } else if sw.visual_anchor_row().is_some() {
         Some(DiffHintMode::VisualLine)
     } else {
         None
@@ -55,7 +58,7 @@ pub fn render_stage_diff_workbench(
     }
 
     let sw = &state.stage_workbench;
-    let subtitle = if let Some(key) = &sw.current_diff_key {
+    let subtitle = if let Some(key) = sw.current_diff_key() {
         let side_label = match key.side {
             StageDiffSide::Staged => state.i18n.t("view.commit.diff_staged_side"),
             StageDiffSide::Unstaged => state.i18n.t("view.commit.diff_unstaged_side"),
@@ -95,9 +98,9 @@ pub fn render_stage_diff_workbench(
     }
 
     let h = diff_area.height as usize;
-    let Some(diff) = &sw.current_diff else {
+    let Some(diff) = sw.current_diff() else {
         ctx.record_scroll_bound(ScrollPane::StageDiff, h, 0);
-        let msg = if sw.current_diff_key.is_some() {
+        let msg = if sw.current_diff_key().is_some() {
             state.i18n.t("view.commit.diff_loading")
         } else {
             state.i18n.t("view.commit.diff_select_prompt")
@@ -132,11 +135,10 @@ pub fn render_stage_diff_workbench(
     let total = rows.len() + usize::from(diff.is_truncated);
     let max_scroll = total.saturating_sub(h);
     ctx.record_scroll_bound(ScrollPane::StageDiff, h, max_scroll);
-    let scroll = sw.diff_scroll.min(max_scroll);
+    let scroll = sw.diff_scroll().offset().min(max_scroll);
     let theme = ctx.theme;
     let focused = ctx.focused_pane == PaneId::CommitDiffPreview;
     let visual_bounds = sw.selected_visual_bounds();
-    let num_w = 4usize;
     let tab_size = ctx.diff_tab_size();
 
     let empty_hl;
@@ -144,7 +146,7 @@ pub fn render_stage_diff_workbench(
         empty_hl = HighlightedDiff::default();
         &empty_hl
     } else {
-        match &sw.diff_syntax {
+        match sw.diff_syntax() {
             Some(cached) => cached,
             None => {
                 empty_hl = HighlightedDiff::default();
@@ -154,26 +156,12 @@ pub fn render_stage_diff_workbench(
     };
 
     let line_style = |kind: DiffLineKind, row_selected: bool, is_cursor: bool| -> (Style, Color, &'static str) {
-        let mut base = match kind {
-            DiffLineKind::Added => Style::default().fg(theme.fg_primary).bg(theme.diff_add_bg),
-            DiffLineKind::Deleted => Style::default().fg(theme.fg_primary).bg(theme.diff_del_bg),
-            DiffLineKind::Context => Style::default().fg(theme.fg_primary).bg(theme.bg_canvas),
-        };
+        let (mut base, word_bg, marker) = diff_line_style(theme, kind);
         if row_selected {
             base = base.bg(theme.bg_selection_focused);
         } else if is_cursor && focused {
             base = base.bg(theme.bg_hover);
         }
-        let word_bg = match kind {
-            DiffLineKind::Added => theme.diff_add_word_bg,
-            DiffLineKind::Deleted => theme.diff_del_word_bg,
-            DiffLineKind::Context => theme.bg_canvas,
-        };
-        let marker = match kind {
-            DiffLineKind::Added => "+",
-            DiffLineKind::Deleted => "-",
-            DiffLineKind::Context => " ",
-        };
         (base, word_bg, marker)
     };
 
@@ -192,65 +180,42 @@ pub fn render_stage_diff_workbench(
     };
 
     let gutter = Style::default().fg(theme.fg_muted).bg(theme.bg_panel);
-    let num = |n: Option<u32>| n.map_or_else(|| " ".repeat(num_w), |v| format!("{v:>num_w$}"));
     let width = diff_area.width as usize;
-
-    let side_cell = |hh: usize,
-                     line_idx: Option<usize>,
-                     custom_wr: Option<&[(usize, usize)]>,
-                     lineno: fn(&DiffLine) -> Option<u32>,
-                     cell_w: usize,
-                     row_sel: bool,
-                     is_cursor: bool|
-     -> Vec<Span<'static>> {
-        let mut spans = Vec::new();
-        match line_idx {
-            Some(li) => {
-                let l = &diff.hunks[hh].hunk.lines[li];
-                let mark = diff.hunks[hh]
-                    .line_meta
-                    .get(li)
-                    .map_or(LineGutterMark::None, |m| m.gutter_mark);
-                let toks = hl_diff
-                    .hunks
-                    .get(hh)
-                    .and_then(|h| h.get(li))
-                    .map(Vec::as_slice)
-                    .unwrap_or(&[]);
-                let (base, word_bg, marker) = line_style(l.kind, row_sel, is_cursor);
-                spans.push(gutter_bar(mark, is_cursor));
-                spans.push(Span::styled(format!("{} ", num(lineno(l))), gutter));
-                spans.push(Span::styled(marker.to_string(), base));
-                let text_w = cell_w.saturating_sub(num_w + 3);
-                let wr = custom_wr.unwrap_or(&l.word_ranges);
-                let mut line_body = render_diff_line_spans_with_tab(
-                    &l.text,
-                    toks,
-                    wr,
-                    text_w,
-                    tab_size,
-                    base,
-                    word_bg,
-                    theme.true_color,
-                );
-                let used: usize = line_body.iter().map(|s| s.content.width()).sum();
-                line_body.push(Span::styled(" ".repeat(text_w.saturating_sub(used)), base));
-                spans.extend(line_body);
-            }
-            None => {
-                spans.push(Span::styled(" ".repeat(num_w + 2), gutter));
-                spans.push(Span::styled(
-                    " ".repeat(cell_w.saturating_sub(num_w + 2)),
-                    Style::default().bg(theme.bg_panel),
-                ));
+    let make_input = {
+        let _ = ();
+        #[inline]
+        fn build<'a>(
+            diff: &'a jbgit_engine::ThreeDocStageDiff,
+            hl_diff: &'a HighlightedDiff,
+            hh: usize,
+            li: usize,
+            custom_word_ranges: Option<&'a [(usize, usize)]>,
+            style: (Style, Color, &'static str),
+            leading_gutter: Span<'static>,
+        ) -> DiffLineRenderInput<'a> {
+            let line = &diff.hunks[hh].hunk.lines[li];
+            let tokens = hl_diff
+                .hunks
+                .get(hh)
+                .and_then(|h| h.get(li))
+                .map(Vec::as_slice)
+                .unwrap_or(&[]);
+            DiffLineRenderInput {
+                line,
+                tokens,
+                custom_word_ranges,
+                base: style.0,
+                word_bg: style.1,
+                marker: style.2,
+                leading_gutter: Some(leading_gutter),
             }
         }
-        spans
+        build
     };
 
     for (vis_y, row_idx) in (scroll..total).take(h).enumerate() {
         let rect = Rect::new(diff_area.x, diff_area.y + vis_y as u16, diff_area.width, 1);
-        let is_cursor = row_idx == sw.diff_cursor_row;
+        let is_cursor = row_idx == sw.diff_cursor_row();
         let in_visual = visual_bounds.is_some_and(|(lo, hi)| row_idx >= lo && row_idx <= hi);
 
         match rows.get(row_idx) {
@@ -263,7 +228,7 @@ pub fn render_stage_diff_workbench(
                     rect,
                 );
             }
-            Some(StageDiffRow::Header(hh)) => {
+            Some(DiffRow::Header(hh)) => {
                 let hunk_idx = *hh;
                 let hunk = &diff.hunks[hunk_idx];
                 let bg = if is_cursor && focused {
@@ -353,40 +318,24 @@ pub fn render_stage_diff_workbench(
                     }
                 }
             }
-            Some(StageDiffRow::Unified(hh, l)) => {
+            Some(DiffRow::Unified(hh, l)) => {
                 let hunk_lines = &diff.hunks[*hh].hunk.lines;
-                let dl = &hunk_lines[*l];
                 let meta = diff.hunks[*hh].line_meta.get(*l);
                 let mark = meta.map_or(LineGutterMark::None, |m| m.gutter_mark);
                 let sr_idx = meta.and_then(|m| m.staged_range_idx);
-                let toks = hl_diff
-                    .hunks
-                    .get(*hh)
-                    .and_then(|h| h.get(*l))
-                    .map(Vec::as_slice)
-                    .unwrap_or(&[]);
-                let (base, word_bg, marker) = line_style(dl.kind, in_visual, is_cursor);
-                let mut spans = vec![
+                let lazy_wr = sw.word_diff_cache().unified_ranges(diff, *hh, *l, hunk_lines);
+                let style = line_style(hunk_lines[*l].kind, in_visual, is_cursor);
+                let inp = make_input(
+                    diff,
+                    hl_diff,
+                    *hh,
+                    *l,
+                    lazy_wr.as_deref(),
+                    style,
                     gutter_bar(mark, is_cursor),
-                    Span::styled(
-                        format!("{} {} ", num(dl.old_lineno), num(dl.new_lineno)),
-                        gutter,
-                    ),
-                    Span::styled(marker.to_string(), base),
-                ];
-                let text_w = width.saturating_sub(num_w * 2 + 4);
-                let lazy_wr = sw.word_diff_cache.unified_ranges(diff, *hh, *l, hunk_lines);
-                let wr = lazy_wr.as_deref().unwrap_or(&dl.word_ranges);
-                spans.extend(render_diff_line_spans_with_tab(
-                    &dl.text,
-                    toks,
-                    wr,
-                    text_w,
-                    tab_size,
-                    base,
-                    word_bg,
-                    theme.true_color,
-                ));
+                );
+                let base = inp.base;
+                let spans = render_diff_unified_spans(inp, width, tab_size, theme, gutter);
                 frame.render_widget(Paragraph::new(Line::from(spans)).style(base), rect);
                 ctx.hit_registry
                     .register(rect, 3, HitTarget::StageDiffLine { row_idx });
@@ -405,8 +354,8 @@ pub fn render_stage_diff_workbench(
                     );
                 }
             }
-            Some(StageDiffRow::Split(hh, left, right)) => {
-                let (lazy_l, lazy_r) = sw.word_diff_cache.split_ranges(
+            Some(DiffRow::Split(hh, left, right)) => {
+                let (lazy_l, lazy_r) = sw.word_diff_cache().split_ranges(
                     diff,
                     *hh,
                     *left,
@@ -414,27 +363,59 @@ pub fn render_stage_diff_workbench(
                     &diff.hunks[*hh].hunk.lines,
                 );
                 let half = width / 2;
-                let mut spans = side_cell(
-                    *hh,
-                    *left,
-                    lazy_l.as_deref(),
+                let side_meta = |opt_li: Option<usize>| {
+                    let li = opt_li?;
+                    let line = &diff.hunks[*hh].hunk.lines[li];
+                    let mark = diff.hunks[*hh]
+                        .line_meta
+                        .get(li)
+                        .map_or(LineGutterMark::None, |m| m.gutter_mark);
+                    let style = line_style(line.kind, in_visual, is_cursor);
+                    Some((mark, style, li))
+                };
+                let left_in = side_meta(*left).map(|(m, st, li)| {
+                    make_input(
+                        diff,
+                        hl_diff,
+                        *hh,
+                        li,
+                        lazy_l.as_deref(),
+                        st,
+                        gutter_bar(m, is_cursor),
+                    )
+                });
+                let right_in = side_meta(*right).map(|(m, st, li)| {
+                    make_input(
+                        diff,
+                        hl_diff,
+                        *hh,
+                        li,
+                        lazy_r.as_deref(),
+                        st,
+                        gutter_bar(m, is_cursor),
+                    )
+                });
+                let mut spans = render_diff_side_cell(
+                    left_in,
                     |l| l.old_lineno,
                     half,
-                    in_visual,
-                    is_cursor,
+                    true,
+                    tab_size,
+                    theme,
+                    gutter,
                 );
                 spans.push(Span::styled(
                     "│",
                     Style::default().fg(theme.border_splitter),
                 ));
-                spans.extend(side_cell(
-                    *hh,
-                    *right,
-                    lazy_r.as_deref(),
+                spans.extend(render_diff_side_cell(
+                    right_in,
                     |l| l.new_lineno,
                     width.saturating_sub(half + 1),
-                    in_visual,
-                    is_cursor,
+                    true,
+                    tab_size,
+                    theme,
+                    gutter,
                 ));
                 frame.render_widget(Paragraph::new(Line::from(spans)), rect);
                 ctx.hit_registry
@@ -491,19 +472,19 @@ fn render_stage_diff_toolbar(
 
     let mut buttons: Vec<(String, bool, StageDiffToolbarButton)> = vec![
         (
-            if sw.diff_side_by_side {
+            if sw.diff_side_by_side() {
                 state.i18n.t("view.commit.diff_split_btn")
             } else {
                 state.i18n.t("view.commit.diff_unified_btn")
             }
             .to_string(),
-            sw.diff_side_by_side,
+            sw.diff_side_by_side(),
             StageDiffToolbarButton::SideBySide,
         ),
         (
             state.i18n.t_fmt(
                 "view.commit.diff_context_btn",
-                &[("ctx", state.i18n.diff_context_label(sw.diff_context))],
+                &[("ctx", state.i18n.diff_context_label(sw.diff_context()))],
             ),
             false,
             StageDiffToolbarButton::Context,
@@ -520,7 +501,7 @@ fn render_stage_diff_toolbar(
         ),
     ];
 
-    if let Some(diff) = &sw.current_diff
+    if let Some(diff) = sw.current_diff()
         && (!diff.tracker.staged_blocks.is_empty() && !diff.tracker.unstaged_blocks.is_empty())
     {
         let label = if diff.key.side == StageDiffSide::Staged {

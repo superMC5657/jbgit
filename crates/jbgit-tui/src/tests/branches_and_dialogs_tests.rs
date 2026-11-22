@@ -2,8 +2,8 @@ use std::sync::Arc;
 
 use crossterm::event::{KeyCode, KeyModifiers, MouseButton, MouseEventKind};
 use jbgit_core::{
-    CommitSummary, GitOp, GitOpOutcome, OngoingKind, OngoingStep, RepositoryState, ResetMode,
-    StageEntry, StageStatusSnapshot, TodoAction, WorkspaceTab, FileStatusKind,
+    CommitSummary, FileStatusKind, GitOp, GitOpOutcome, OngoingKind, OngoingStep, RepositoryState,
+    ResetMode, StageEntry, StageStatusSnapshot, TodoAction, WorkspaceTab,
 };
 use jbgit_engine::EngineEvent;
 use ratatui::style::Modifier;
@@ -15,25 +15,24 @@ use crate::hit_test::{HitTarget, OngoingButton};
 use crate::views::overlays::context_menu_rect;
 
 use super::{
-    find_item, git_ops, key, local, mouse, oid, region_of, render, row_text, run, screen_text,
-    snapshot, state_with, top_menu, type_str,
+    TestSession, find_item, local, oid, row_text, screen_text, snapshot, top_menu,
 };
 
 #[test]
 fn branches_popup_fuzzy_search_highlights_and_opens_branch_actions() {
-    let mut state = state_with(snapshot());
-    state.dispatch(Action::SwitchTab(WorkspaceTab::Commit));
+    let mut ts = TestSession::with_snapshot(snapshot());
+    ts.dispatch(Action::SwitchTab(WorkspaceTab::Commit));
     // `b` opens the global Branches popup everywhere; `Ctrl+`` also works everywhere.
-    key(&mut state, KeyCode::Char('b'), KeyModifiers::NONE);
+    ts.send_key(KeyCode::Char('b'), KeyModifiers::NONE);
     assert!(matches!(
-        state.modal_stack.last(),
-        Some(ModalLayer::FloatingPopup { .. })
+        ts.state().modal_stack.last(),
+        Some(ModalLayer::BranchesPopup { .. })
     ));
-    state.dispatch(Action::PopModal);
-    key(&mut state, KeyCode::Char('`'), KeyModifiers::CONTROL);
+    ts.dispatch(Action::PopModal);
+    ts.send_key(KeyCode::Char('`'), KeyModifiers::CONTROL);
 
     // Grouped view: Recent → Local (folders) → Remote.
-    let rows = build_popup_rows(&state, "");
+    let rows = build_popup_rows(ts.state(), "");
     let pos = |pred: &dyn Fn(&PopupRow) -> bool| rows.iter().position(pred).unwrap();
     let recent = pos(&|r| matches!(r, PopupRow::Header(h) if h == "Recent"));
     let locals = pos(&|r| matches!(r, PopupRow::Header(h) if h == "Local Branches"));
@@ -47,16 +46,14 @@ fn branches_popup_fuzzy_search_highlights_and_opens_branch_actions() {
 
     // Typing filters instantly (no need to focus a search box).
     let started = std::time::Instant::now();
-    type_str(&mut state, "f/dl");
+    ts.type_str("f/dl");
     assert!(started.elapsed() < std::time::Duration::from_millis(500));
-    let (query, selected) = match state.modal_stack.last() {
-        Some(ModalLayer::FloatingPopup {
-            query, selected, ..
-        }) => (query.clone(), *selected),
+    let (query, selected) = match ts.state().modal_stack.last() {
+        Some(ModalLayer::BranchesPopup { query, selected }) => (query.clone(), *selected),
         other => panic!("{other:?}"),
     };
     assert_eq!(query, "f/dl");
-    let rows = build_popup_rows(&state, &query);
+    let rows = build_popup_rows(ts.state(), &query);
     let PopupRow::Branch(b) = &rows[selected] else {
         panic!("selection must be a branch row");
     };
@@ -66,43 +63,38 @@ fn branches_popup_fuzzy_search_highlights_and_opens_branch_actions() {
     assert_eq!(hl, "f/dl");
 
     // Highlighted characters render bold in #548AF7.
-    let term = render(&mut state, 120, 40);
-    let buf = term.backend().buffer();
-    let text = screen_text(buf);
+    let buf = ts.render(120, 40);
+    let text = screen_text(&buf);
     assert!(text.contains("Git Branches (jbgit)"), "{text}");
     let y = (0..40)
-        .find(|&y| row_text(buf, y).contains("feature/dag-layout"))
+        .find(|&y| row_text(&buf, y).contains("feature/dag-layout"))
         .unwrap();
-    let line = row_text(buf, y);
+    let line = row_text(&buf, y);
     let x0 = line.find("feature/dag-layout").unwrap();
     let x0 = line[..x0].chars().count() as u16;
     let cell = &buf[(x0, y)];
-    assert_eq!(cell.fg, state.theme.fg_accent_link);
+    assert_eq!(cell.fg, ts.state().theme.fg_accent_link);
     assert!(cell.modifier.contains(Modifier::BOLD));
     let plain = &buf[(x0 + 1, y)]; // 'e' is not matched
-    assert_ne!(plain.fg, state.theme.fg_accent_link);
+    assert_ne!(plain.fg, ts.state().theme.fg_accent_link);
 
     // Up / Down skip header rows.
-    key(&mut state, KeyCode::Down, KeyModifiers::NONE);
-    if let Some(ModalLayer::FloatingPopup {
-        selected, query, ..
-    }) = state.modal_stack.last()
-    {
-        let rows = build_popup_rows(&state, query);
+    ts.send_key(KeyCode::Down, KeyModifiers::NONE);
+    if let Some(ModalLayer::BranchesPopup { selected, query }) = ts.state().modal_stack.last() {
+        let rows = build_popup_rows(ts.state(), query);
         assert!(rows[*selected].selectable());
     }
-    key(&mut state, KeyCode::Up, KeyModifiers::NONE);
+    ts.send_key(KeyCode::Up, KeyModifiers::NONE);
 
     // Enter opens the cascading action submenu beside the popup.
-    let _ = render(&mut state, 120, 40);
-    key(&mut state, KeyCode::Enter, KeyModifiers::NONE);
-    let (items, _, depth) = top_menu(&state);
+    let _ = ts.render(120, 40);
+    ts.send_key(KeyCode::Enter, KeyModifiers::NONE);
+    let (items, _, depth) = top_menu(ts.state());
     assert_eq!(depth, 0);
     for label in [
         "Checkout",
-        "New Branch from 'feature/dag-layout'",
-        "Checkout and Rebase onto 'main'",
-        "Compare with 'main'",
+        "New Branch from",
+        "Checkout and Rebase onto",
         "Show Diff with Working Tree",
         "Rebase 'main' onto",
         "Merge 'feature/dag-layout' into 'main'",
@@ -115,21 +107,22 @@ fn branches_popup_fuzzy_search_highlights_and_opens_branch_actions() {
     }
     let Some(ModalLayer::ContextMenu {
         parent: Some(p), ..
-    }) = state.modal_stack.last()
+    }) = ts.state().modal_stack.last()
     else {
         panic!("submenu must hang off the popup");
     };
-    let sub = context_menu_rect(state.terminal_area, (0, 0), Some(*p), items);
+    let sub = context_menu_rect(ts.state().terminal_area, (0, 0), Some(*p), items);
     assert!(
         sub.x >= p.rect.right(),
         "submenu opens to the right of the popup"
     );
 
     // Running an action closes both the submenu and the popup.
-    let effects = key(&mut state, KeyCode::Char('c'), KeyModifiers::NONE);
-    assert!(state.modal_stack.is_empty());
+    let _ = ts.take_requests();
+    ts.send_key(KeyCode::Char('c'), KeyModifiers::NONE);
+    assert!(ts.state().modal_stack.is_empty());
     assert_eq!(
-        git_ops(&effects),
+        ts.take_git_ops(),
         vec![GitOp::Checkout {
             target: "feature/dag-layout".into(),
             detach: false,
@@ -139,15 +132,13 @@ fn branches_popup_fuzzy_search_highlights_and_opens_branch_actions() {
 
 #[test]
 fn remote_checkout_tracks_new_branch_or_asks_when_diverged() {
-    let mut state = state_with(snapshot());
-    let effects = run(
-        &mut state,
-        vec![Action::CheckoutRemoteBranch {
-            remote_ref: "origin/feature-new".into(),
-        }],
-    );
+    let mut ts = TestSession::with_snapshot(snapshot());
+    let _ = ts.take_requests();
+    ts.dispatch(Action::CheckoutRemoteBranch {
+        remote_ref: "origin/feature-new".into(),
+    });
     assert_eq!(
-        git_ops(&effects),
+        ts.take_git_ops(),
         vec![GitOp::CheckoutNewBranch {
             name: "feature-new".into(),
             start: "origin/feature-new".into(),
@@ -156,14 +147,11 @@ fn remote_checkout_tracks_new_branch_or_asks_when_diverged() {
     );
 
     // Local `feature/dag-layout` (c5) has 1 commit not in origin (c4) → dialog.
-    let effects = run(
-        &mut state,
-        vec![Action::CheckoutRemoteBranch {
-            remote_ref: "origin/feature/dag-layout".into(),
-        }],
-    );
-    assert!(git_ops(&effects).is_empty());
-    let Some(ModalLayer::Dialog(d)) = state.modal_stack.last() else {
+    ts.dispatch(Action::CheckoutRemoteBranch {
+        remote_ref: "origin/feature/dag-layout".into(),
+    });
+    assert!(ts.take_git_ops().is_empty());
+    let Some(ModalLayer::Dialog(d)) = ts.state().modal_stack.last() else {
         panic!("diverged checkout must ask");
     };
     let Dialog::Choice(c) = d.as_ref() else {
@@ -181,7 +169,7 @@ fn remote_checkout_tracks_new_branch_or_asks_when_diverged() {
 
 #[test]
 fn delete_branch_guard_and_restore_notification() {
-    let mut state = state_with(snapshot());
+    let mut ts = TestSession::with_snapshot(snapshot());
     // Use a branch with commits outside HEAD to exercise the unmerged delete guard.
     let mut snap = snapshot();
     snap.commits.insert(
@@ -194,20 +182,18 @@ fn delete_branch_guard_and_restore_notification() {
         },
     );
     snap.refs.push(local("topic", 40));
-    state.apply_engine_event(EngineEvent::RepoSnapshotLoaded {
+    ts.deliver_engine_event(EngineEvent::RepoSnapshotLoaded {
         snapshot: Arc::new(snap),
         epoch: 2,
     });
+    let _ = ts.take_requests();
 
     // Merged branch: plain `-d` straight away.
-    let effects = run(
-        &mut state,
-        vec![Action::PromptDeleteBranch {
-            name: "bugfix/unmerged".into(),
-        }],
-    );
+    ts.dispatch(Action::PromptDeleteBranch {
+        name: "bugfix/unmerged".into(),
+    });
     assert_eq!(
-        git_ops(&effects),
+        ts.take_git_ops(),
         vec![GitOp::DeleteBranch {
             name: "bugfix/unmerged".into(),
             force: false,
@@ -216,57 +202,50 @@ fn delete_branch_guard_and_restore_notification() {
     );
 
     // Unmerged: warning with commit count + Force Delete.
-    let effects = run(
-        &mut state,
-        vec![Action::PromptDeleteBranch {
-            name: "topic".into(),
-        }],
-    );
-    assert!(git_ops(&effects).is_empty());
-    let term = render(&mut state, 120, 40);
-    let text = screen_text(term.backend().buffer());
+    ts.dispatch(Action::PromptDeleteBranch {
+        name: "topic".into(),
+    });
+    assert!(ts.take_git_ops().is_empty());
+    let buf = ts.render(120, 40);
+    let text = screen_text(&buf);
     assert!(text.contains("Delete Unmerged Branch"), "{text}");
     assert!(text.contains("1 commit(s) not merged"), "{text}");
     assert!(text.contains("Force Delete (-D)"), "{text}");
     // Default focus is Cancel; Left moves to Force Delete.
-    key(&mut state, KeyCode::Left, KeyModifiers::NONE);
-    let effects = key(&mut state, KeyCode::Enter, KeyModifiers::NONE);
+    ts.send_key(KeyCode::Left, KeyModifiers::NONE);
+    ts.send_key(KeyCode::Enter, KeyModifiers::NONE);
     let op = GitOp::DeleteBranch {
         name: "topic".into(),
         force: true,
         tip: oid(40),
     };
-    assert_eq!(git_ops(&effects), vec![op.clone()]);
+    assert_eq!(ts.take_git_ops(), vec![op.clone()]);
 
     // Success → footer notification with [Restore Branch] → restores the tip.
-    state.apply_engine_event(EngineEvent::GitOpFinished(GitOpOutcome::ok(op)));
-    let term = render(&mut state, 120, 40);
-    let footer = row_text(term.backend().buffer(), 39);
+    ts.deliver_engine_event(EngineEvent::GitOpFinished(GitOpOutcome::ok(op)));
+    let buf = ts.render(120, 40);
+    let footer = row_text(&buf, 39);
     assert!(footer.contains("Deleted branch 'topic'"), "{footer}");
     assert!(footer.contains("[Restore Branch]"), "{footer}");
-    let r = region_of(&state, |t| matches!(t, HitTarget::NotificationAction));
-    let effects = mouse(
-        &mut state,
-        MouseEventKind::Down(MouseButton::Left),
-        r.x + 1,
-        r.y,
-    );
+    let r = ts.region_of(|t| matches!(t, HitTarget::NotificationAction));
+    ts.send_mouse(MouseEventKind::Down(MouseButton::Left), r.x + 1, r.y);
     assert_eq!(
-        git_ops(&effects),
+        ts.take_git_ops(),
         vec![GitOp::RestoreBranch {
             name: "topic".into(),
             oid: oid(40),
         }]
     );
-    assert!(state.notification.is_none());
+    assert!(ts.state().notification.is_none());
 }
 
 #[test]
 fn new_branch_dialog_validates_name_inline_and_blocks_confirm() {
-    let mut state = state_with(snapshot());
-    key(&mut state, KeyCode::Char('n'), KeyModifiers::NONE);
+    let mut ts = TestSession::with_snapshot(snapshot());
+    let _ = ts.take_requests();
+    ts.send_key(KeyCode::Char('n'), KeyModifiers::NONE);
     assert!(matches!(
-        state.modal_stack.last(),
+        ts.state().modal_stack.last(),
         Some(ModalLayer::Dialog(_))
     ));
 
@@ -276,39 +255,38 @@ fn new_branch_dialog_validates_name_inline_and_blocks_confirm() {
         ("-x", "cannot start with '-'"),
         ("main", "Branch 'main' already exists"),
     ] {
-        key(&mut state, KeyCode::Char('u'), KeyModifiers::CONTROL);
-        type_str(&mut state, input);
-        let term = render(&mut state, 120, 40);
-        let text = screen_text(term.backend().buffer());
+        ts.send_key(KeyCode::Char('u'), KeyModifiers::CONTROL);
+        ts.type_str(input);
+        let buf = ts.render(120, 40);
+        let text = screen_text(&buf);
         assert!(text.contains(err), "{input:?}: {text}");
-        let effects = key(&mut state, KeyCode::Enter, KeyModifiers::NONE);
-        assert!(git_ops(&effects).is_empty(), "{input:?} must not confirm");
+        ts.send_key(KeyCode::Enter, KeyModifiers::NONE);
+        assert!(ts.take_git_ops().is_empty(), "{input:?} must not confirm");
         assert!(matches!(
-            state.modal_stack.last(),
+            ts.state().modal_stack.last(),
             Some(ModalLayer::Dialog(_))
         ));
         // The OK button renders disabled (muted).
-        let ok = region_of(&state, |t| {
+        let ok = ts.region_of(|t| {
             matches!(
                 t,
                 HitTarget::DialogButton(crate::hit_test::DialogButtonKind::Confirm)
             )
         });
-        let buf = term.backend().buffer();
-        assert_eq!(buf[(ok.x + 1, ok.y)].fg, state.theme.fg_muted);
+        assert_eq!(buf[(ok.x + 1, ok.y)].fg, ts.state().theme.fg_muted);
     }
-    key(&mut state, KeyCode::Char('u'), KeyModifiers::CONTROL);
-    type_str(&mut state, "feature/ok");
-    let effects = key(&mut state, KeyCode::Enter, KeyModifiers::NONE);
+    ts.send_key(KeyCode::Char('u'), KeyModifiers::CONTROL);
+    ts.type_str("feature/ok");
+    ts.send_key(KeyCode::Enter, KeyModifiers::NONE);
     assert_eq!(
-        git_ops(&effects),
+        ts.take_git_ops(),
         vec![GitOp::CheckoutNewBranch {
             name: "feature/ok".into(),
             start: oid(12).to_string(),
             track: false,
         }]
     );
-    assert!(state.modal_stack.is_empty());
+    assert!(ts.state().modal_stack.is_empty());
 }
 
 #[test]
@@ -319,8 +297,8 @@ fn ongoing_banner_shows_state_progress_and_buttons_run_steps() {
         branch: Some("feat/dag".into()),
     };
     snap.ongoing_onto = Some("main".into());
-    let mut state = state_with(snap);
-    state.apply_engine_event(EngineEvent::StageStatusLoaded {
+    let mut ts = TestSession::with_snapshot(snap);
+    ts.deliver_engine_event(EngineEvent::StageStatusLoaded {
         status: Arc::new(StageStatusSnapshot {
             conflicted: vec![StageEntry {
                 path: "src/graph.rs".into(),
@@ -331,11 +309,12 @@ fn ongoing_banner_shows_state_progress_and_buttons_run_steps() {
         }),
         epoch: 1,
     });
+    let _ = ts.take_requests();
 
     for tab in [WorkspaceTab::Log, WorkspaceTab::Commit] {
-        state.dispatch(Action::SwitchTab(tab));
-        let term = render(&mut state, 140, 40);
-        let banner = row_text(term.backend().buffer(), 2);
+        ts.dispatch(Action::SwitchTab(tab));
+        let buf = ts.render(140, 40);
+        let banner = row_text(&buf, 2);
         assert!(
             banner.contains("⚠ REBASING feat/dag onto main (Step 2/5) — 1 conflicted file"),
             "{banner}"
@@ -343,40 +322,26 @@ fn ongoing_banner_shows_state_progress_and_buttons_run_steps() {
         for b in ["[ Resolve ]", "[ Continue ]", "[ Skip ]", "[ Abort ]"] {
             assert!(banner.contains(b), "{b} missing: {banner}");
         }
-        let header = row_text(term.backend().buffer(), 0);
+        let header = row_text(&buf, 0);
         assert!(header.contains("Rebasing 2/5"), "{header}");
     }
 
     // Continue is refused while conflicts remain.
-    let r = region_of(&state, |t| {
-        matches!(t, HitTarget::OngoingBanner(OngoingButton::Continue))
-    });
-    let effects = mouse(
-        &mut state,
-        MouseEventKind::Down(MouseButton::Left),
-        r.x + 2,
-        r.y,
-    );
-    assert!(git_ops(&effects).is_empty());
+    let r = ts.region_of(|t| matches!(t, HitTarget::OngoingBanner(OngoingButton::Continue)));
+    ts.send_mouse(MouseEventKind::Down(MouseButton::Left), r.x + 2, r.y);
+    assert!(ts.take_git_ops().is_empty());
     assert!(
-        state
+        ts.state()
             .status_notice
             .as_deref()
             .unwrap_or("")
             .contains("conflicted")
     );
 
-    let r = region_of(&state, |t| {
-        matches!(t, HitTarget::OngoingBanner(OngoingButton::Abort))
-    });
-    let effects = mouse(
-        &mut state,
-        MouseEventKind::Down(MouseButton::Left),
-        r.x + 2,
-        r.y,
-    );
+    let r = ts.region_of(|t| matches!(t, HitTarget::OngoingBanner(OngoingButton::Abort)));
+    ts.send_mouse(MouseEventKind::Down(MouseButton::Left), r.x + 2, r.y);
     assert_eq!(
-        git_ops(&effects),
+        ts.take_git_ops(),
         vec![GitOp::Ongoing {
             kind: OngoingKind::Rebase,
             step: OngoingStep::Abort,
@@ -384,19 +349,12 @@ fn ongoing_banner_shows_state_progress_and_buttons_run_steps() {
     );
 
     // Resolve jumps to the conflicted file in the Commit tab.
-    state.dispatch(Action::SwitchTab(WorkspaceTab::Log));
-    let _ = render(&mut state, 140, 40);
-    let r = region_of(&state, |t| {
-        matches!(t, HitTarget::OngoingBanner(OngoingButton::Resolve))
-    });
-    mouse(
-        &mut state,
-        MouseEventKind::Down(MouseButton::Left),
-        r.x + 2,
-        r.y,
-    );
-    assert_eq!(state.active_tab, WorkspaceTab::Commit);
-    let row = &state.stage_workbench.rows[state.commit_stage_selected_idx];
+    ts.dispatch(Action::SwitchTab(WorkspaceTab::Log));
+    let _ = ts.render(140, 40);
+    let r = ts.region_of(|t| matches!(t, HitTarget::OngoingBanner(OngoingButton::Resolve)));
+    ts.send_mouse(MouseEventKind::Down(MouseButton::Left), r.x + 2, r.y);
+    assert_eq!(ts.state().active_tab, WorkspaceTab::Commit);
+    let row = ts.state().stage_workbench.selected_row().unwrap();
     assert!(
         matches!(&row.kind, jbgit_core::StageTreeRowKind::File { path, .. } if path == "src/graph.rs")
     );
@@ -404,36 +362,37 @@ fn ongoing_banner_shows_state_progress_and_buttons_run_steps() {
 
 #[test]
 fn smart_operation_dialog_offers_stash_and_force_checkout() {
-    let mut state = state_with(snapshot());
+    let mut ts = TestSession::with_snapshot(snapshot());
     let op = GitOp::Checkout {
         target: "feature/dag-layout".into(),
         detach: false,
     };
-    state.git_ops_running = 1;
-    state.apply_engine_event(EngineEvent::GitOpFinished(GitOpOutcome::failed(
+    ts.state_mut().git_ops_running = 1;
+    ts.deliver_engine_event(EngineEvent::GitOpFinished(GitOpOutcome::failed(
         op.clone(),
         jbgit_core::GitFailure::LocalChangesOverwritten {
             files: vec!["src/app.rs".into()],
         },
     )));
-    assert_eq!(state.git_ops_running, 0);
-    let term = render(&mut state, 120, 40);
-    let text = screen_text(term.backend().buffer());
+    assert_eq!(ts.state().git_ops_running, 0);
+    let buf = ts.render(120, 40);
+    let text = screen_text(&buf);
     assert!(text.contains("Smart Checkout"), "{text}");
     assert!(text.contains("src/app.rs"), "{text}");
     assert!(text.contains("Force Checkout (Discard Local)"), "{text}");
-    let effects = key(&mut state, KeyCode::Char('s'), KeyModifiers::NONE);
-    assert_eq!(git_ops(&effects), vec![GitOp::Smart(Box::new(op))]);
-    assert!(state.modal_stack.is_empty());
+    let _ = ts.take_requests();
+    ts.send_key(KeyCode::Char('s'), KeyModifiers::NONE);
+    assert_eq!(ts.take_git_ops(), vec![GitOp::Smart(Box::new(op))]);
+    assert!(ts.state().modal_stack.is_empty());
 
     // Merge failures offer Smart Merge (no force option).
-    state.apply_engine_event(EngineEvent::GitOpFinished(GitOpOutcome::failed(
+    ts.deliver_engine_event(EngineEvent::GitOpFinished(GitOpOutcome::failed(
         GitOp::Merge {
             rev: "feature/dag-layout".into(),
         },
         jbgit_core::GitFailure::LocalChangesOverwritten { files: vec![] },
     )));
-    let Some(ModalLayer::Dialog(d)) = state.modal_stack.last() else {
+    let Some(ModalLayer::Dialog(d)) = ts.state().modal_stack.last() else {
         panic!()
     };
     let Dialog::Choice(c) = d.as_ref() else {
@@ -445,42 +404,42 @@ fn smart_operation_dialog_offers_stash_and_force_checkout() {
 
 #[test]
 fn reset_dialog_defaults_to_mixed_and_hard_needs_second_confirmation() {
-    let mut state = state_with(snapshot());
-    run(&mut state, vec![Action::SelectLogRow(3)]);
-    let items = crate::menus::log_commit_menu_items(&state);
+    let mut ts = TestSession::with_snapshot(snapshot());
+    ts.dispatch(Action::SelectLogRow(3));
+    let items = crate::menus::log_commit_menu_items(ts.state());
     let reset = find_item(&items, "Reset Current Branch to Here");
-    let ContextMenuEntryKind::Action(crate::app::ContextMenuAction::Run(actions)) = &reset.kind
-    else {
+    let ContextMenuEntryKind::Action(actions) = &reset.kind else {
         panic!()
     };
-    run(&mut state, actions.clone());
-    let term = render(&mut state, 120, 40);
-    let text = screen_text(term.backend().buffer());
+    let _ = ts.take_requests();
+    ts.dispatch_many(actions.clone());
+    let buf = ts.render(120, 40);
+    let text = screen_text(&buf);
     for m in ["( ) Soft", "(•) Mixed", "( ) Hard", "( ) Keep", "DATA LOSS"] {
         assert!(text.contains(m), "{m} missing: {text}");
     }
-    let effects = key(&mut state, KeyCode::Enter, KeyModifiers::NONE);
+    ts.send_key(KeyCode::Enter, KeyModifiers::NONE);
     assert_eq!(
-        git_ops(&effects),
+        ts.take_git_ops(),
         vec![GitOp::Reset {
             mode: ResetMode::Mixed,
             target: oid(9),
         }]
     );
 
-    run(&mut state, actions.clone());
-    key(&mut state, KeyCode::Char('h'), KeyModifiers::NONE);
-    let effects = key(&mut state, KeyCode::Enter, KeyModifiers::NONE);
+    ts.dispatch_many(actions.clone());
+    ts.send_key(KeyCode::Char('h'), KeyModifiers::NONE);
+    ts.send_key(KeyCode::Enter, KeyModifiers::NONE);
     assert!(
-        git_ops(&effects).is_empty(),
+        ts.take_git_ops().is_empty(),
         "hard reset needs a second confirmation"
     );
-    let term = render(&mut state, 120, 40);
-    assert!(screen_text(term.backend().buffer()).contains("ALL uncommitted changes"));
-    key(&mut state, KeyCode::Left, KeyModifiers::NONE);
-    let effects = key(&mut state, KeyCode::Enter, KeyModifiers::NONE);
+    let buf = ts.render(120, 40);
+    assert!(screen_text(&buf).contains("ALL uncommitted changes"));
+    ts.send_key(KeyCode::Left, KeyModifiers::NONE);
+    ts.send_key(KeyCode::Enter, KeyModifiers::NONE);
     assert_eq!(
-        git_ops(&effects),
+        ts.take_git_ops(),
         vec![GitOp::Reset {
             mode: ResetMode::Hard,
             target: oid(9),
@@ -488,11 +447,11 @@ fn reset_dialog_defaults_to_mixed_and_hard_needs_second_confirmation() {
     );
 
     // Keep mode via mnemonic.
-    run(&mut state, actions.clone());
-    key(&mut state, KeyCode::Char('k'), KeyModifiers::NONE);
-    let effects = key(&mut state, KeyCode::Enter, KeyModifiers::NONE);
+    ts.dispatch_many(actions.clone());
+    ts.send_key(KeyCode::Char('k'), KeyModifiers::NONE);
+    ts.send_key(KeyCode::Enter, KeyModifiers::NONE);
     assert_eq!(
-        git_ops(&effects),
+        ts.take_git_ops(),
         vec![GitOp::Reset {
             mode: ResetMode::Keep,
             target: oid(9),
@@ -502,27 +461,28 @@ fn reset_dialog_defaults_to_mixed_and_hard_needs_second_confirmation() {
 
 #[test]
 fn interactive_rebase_dialog_reorders_and_sets_actions() {
-    let mut state = state_with(snapshot());
-    run(&mut state, vec![Action::SelectLogRow(2)]); // c10
-    let items = crate::menus::log_commit_menu_items(&state);
-    let ContextMenuEntryKind::Action(crate::app::ContextMenuAction::Run(actions)) =
+    let mut ts = TestSession::with_snapshot(snapshot());
+    ts.dispatch(Action::SelectLogRow(2)); // c10
+    let items = crate::menus::log_commit_menu_items(ts.state());
+    let ContextMenuEntryKind::Action(actions) =
         &find_item(&items, "Interactive Rebase from Here").kind
     else {
         panic!()
     };
-    run(&mut state, actions.clone());
-    let term = render(&mut state, 140, 40);
-    let text = screen_text(term.backend().buffer());
+    let _ = ts.take_requests();
+    ts.dispatch_many(actions.clone());
+    let buf = ts.render(140, 40);
+    let text = screen_text(&buf);
     assert!(text.contains("Interactive Rebase from"), "{text}");
     // Entries: c10, c11, c12. Move c10 down, drop c11 (now first), fixup c12.
-    key(&mut state, KeyCode::Down, KeyModifiers::ALT);
-    key(&mut state, KeyCode::Up, KeyModifiers::NONE);
-    key(&mut state, KeyCode::Char('d'), KeyModifiers::NONE);
-    key(&mut state, KeyCode::Down, KeyModifiers::NONE);
-    key(&mut state, KeyCode::Down, KeyModifiers::NONE);
-    key(&mut state, KeyCode::Char('f'), KeyModifiers::NONE);
-    let effects = key(&mut state, KeyCode::Enter, KeyModifiers::NONE);
-    let ops = git_ops(&effects);
+    ts.send_key(KeyCode::Down, KeyModifiers::ALT);
+    ts.send_key(KeyCode::Up, KeyModifiers::NONE);
+    ts.send_key(KeyCode::Char('d'), KeyModifiers::NONE);
+    ts.send_key(KeyCode::Down, KeyModifiers::NONE);
+    ts.send_key(KeyCode::Down, KeyModifiers::NONE);
+    ts.send_key(KeyCode::Char('f'), KeyModifiers::NONE);
+    ts.send_key(KeyCode::Enter, KeyModifiers::NONE);
+    let ops = ts.take_git_ops();
     let [GitOp::RewriteHistory { base, todo }] = ops.as_slice() else {
         panic!("{ops:?}")
     };
@@ -538,12 +498,12 @@ fn interactive_rebase_dialog_reorders_and_sets_actions() {
     );
 
     // Squashing the first kept commit is rejected inline.
-    run(&mut state, actions.clone());
-    key(&mut state, KeyCode::Char('s'), KeyModifiers::NONE);
-    let effects = key(&mut state, KeyCode::Enter, KeyModifiers::NONE);
-    assert!(git_ops(&effects).is_empty());
+    ts.dispatch_many(actions.clone());
+    ts.send_key(KeyCode::Char('s'), KeyModifiers::NONE);
+    ts.send_key(KeyCode::Enter, KeyModifiers::NONE);
+    assert!(ts.take_git_ops().is_empty());
     assert!(matches!(
-        state.modal_stack.last(),
+        ts.state().modal_stack.last(),
         Some(ModalLayer::Dialog(_))
     ));
 }

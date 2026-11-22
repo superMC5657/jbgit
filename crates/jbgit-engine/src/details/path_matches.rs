@@ -5,11 +5,12 @@ use std::process::Stdio;
 use git2::{DiffOptions, Repository};
 use jbgit_core::{EpochToken, Oid, RepoSnapshot};
 
+use crate::cli::non_interactive_std_command;
 use crate::error::EngineError;
 use crate::pool::with_thread_repo;
 use crate::probe::RepoLocation;
 
-use super::{non_interactive_git_command, to_git2_oid};
+use super::to_git2_oid;
 
 /// Commits of `snapshot` touching any of `paths` (log `Paths` filter).
 ///
@@ -79,7 +80,7 @@ pub fn load_path_matches_cli(
     } else {
         &location.workdir
     };
-    let mut cmd = non_interactive_git_command(git, Some(cwd));
+    let mut cmd = non_interactive_std_command(git, Some(cwd));
     cmd.args(&args)
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
@@ -216,4 +217,116 @@ fn commit_touches_paths(
             .parents()
             .all(|p| p.tree().is_ok_and(|pt| touches(Some(&pt))))
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+    use std::path::Path;
+    use std::process::Command;
+
+    use jbgit_core::RequestEpoch;
+    use tempfile::TempDir;
+
+    use crate::cli::GitCliExecutor;
+    use crate::pool::load_repo_snapshot_with_config_sync;
+
+    use super::*;
+
+    fn git(dir: &Path, args: &[&str]) -> String {
+        let output = Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .env("GIT_AUTHOR_NAME", "Test User")
+            .env("GIT_AUTHOR_EMAIL", "test@example.com")
+            .env("GIT_COMMITTER_NAME", "Test User")
+            .env("GIT_COMMITTER_EMAIL", "test@example.com")
+            .output()
+            .expect("failed to execute git");
+        assert!(
+            output.status.success(),
+            "git {args:?} failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8_lossy(&output.stdout).into_owned()
+    }
+
+    fn write_file(dir: &Path, file: &str, content: &str) {
+        let path = dir.join(file);
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).unwrap();
+        }
+        fs::write(path, content).unwrap();
+    }
+
+    fn commit_files(dir: &Path, files: &[(&str, &str)], msg: &str) -> Oid {
+        for (f, c) in files {
+            write_file(dir, f, c);
+        }
+        git(dir, &["add", "."]);
+        git(dir, &["commit", "-m", msg]);
+        git(dir, &["rev-parse", "HEAD"]).trim().parse().unwrap()
+    }
+
+    #[test]
+    fn cli_and_git2_path_filter_match_treesame_and_cancel_when_stale() {
+        let tmp = TempDir::new().unwrap();
+        let d = tmp.path();
+        git(d, &["init", "-b", "main"]);
+        git(d, &["config", "core.autocrlf", "false"]);
+        git(d, &["config", "commit.gpgsign", "false"]);
+
+        let c1 = commit_files(
+            d,
+            &[("a.txt", "a1\n"), ("b.txt", "b1\n"), ("dir/c.txt", "c1\n")],
+            "c1",
+        );
+        commit_files(d, &[("dir/c.txt", "c2\n")], "m1");
+
+        git(d, &["checkout", "-b", "side", &c1.to_string()]);
+        commit_files(d, &[("b.txt", "b-side\n")], "s1");
+
+        git(d, &["checkout", "main"]);
+        git(d, &["merge", "--no-ff", "-m", "M1", "side"]);
+        let merge_treesame: Oid = git(d, &["rev-parse", "HEAD"]).trim().parse().unwrap();
+
+        let loc = RepoLocation::discover(d).unwrap();
+        let (snapshot, _) = load_repo_snapshot_with_config_sync(
+            &loc,
+            &RequestEpoch::new().issue(),
+            1000,
+            Default::default(),
+        )
+        .unwrap();
+        let git_bin = GitCliExecutor::detect().expect("git on PATH").info().path;
+        let epoch = RequestEpoch::new();
+
+        for set in [
+            vec!["a.txt".to_string()],
+            vec!["b.txt".to_string()],
+            vec!["dir".to_string()],
+            vec!["dir/c.txt".to_string(), "b.txt".to_string()],
+            vec!["missing.txt".to_string()],
+        ] {
+            let token = epoch.issue();
+            let cli = load_path_matches_cli(&git_bin, &loc, &set, &snapshot, &token).unwrap();
+            let lib = load_path_matches_git2(&loc, &set, &snapshot, &token).unwrap();
+            assert_eq!(cli, lib, "path set {set:?}");
+        }
+
+        let b = load_path_matches_cli(&git_bin, &loc, &["b.txt".to_string()], &snapshot, &epoch.issue())
+            .unwrap();
+        assert!(!b.contains(&merge_treesame));
+
+        let stale = epoch.issue();
+        let _newer = epoch.issue();
+        assert!(matches!(
+            load_path_matches_cli(&git_bin, &loc, &["a.txt".to_string()], &snapshot, &stale),
+            Err(EngineError::Cancelled)
+        ));
+        assert!(matches!(
+            load_path_matches_sync(&loc, &["a.txt".to_string()], &snapshot, &stale),
+            Err(EngineError::Cancelled)
+        ));
+    }
 }

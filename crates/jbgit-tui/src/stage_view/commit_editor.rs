@@ -1,5 +1,7 @@
 use unicode_width::UnicodeWidthChar;
 
+use crate::app::ScrollViewport;
+
 const MAX_EDITOR_UNDO: usize = 128;
 
 #[derive(Debug, Clone)]
@@ -22,6 +24,9 @@ pub struct CommitMessageEditor {
     pub cursor_line: usize,
     pub cursor_col: usize,
     pub scroll_row: usize,
+    scroll_vp: ScrollViewport,
+    viewport_width: usize,
+    viewport_height: usize,
     undo_stack: Vec<EditorSnapshot>,
     redo_stack: Vec<EditorSnapshot>,
 }
@@ -33,6 +38,9 @@ impl Default for CommitMessageEditor {
             cursor_line: 0,
             cursor_col: 0,
             scroll_row: 0,
+            scroll_vp: ScrollViewport::new(),
+            viewport_width: 0,
+            viewport_height: 0,
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
         }
@@ -40,6 +48,27 @@ impl Default for CommitMessageEditor {
 }
 
 impl CommitMessageEditor {
+    /// Binds the latest rendered text-area dimensions and immediately clamps
+    /// `scroll_row` so the cursor remains visible inside the viewport.
+    pub fn bind_viewport(&mut self, width: usize, height: usize) {
+        self.viewport_width = width;
+        self.viewport_height = height;
+        self.sync_scroll_to_cursor();
+    }
+
+    /// Recomputes and clamps `scroll_row` against the last known viewport dimensions
+    /// so the visual cursor row always stays within `[scroll_row, scroll_row + viewport_height)`.
+    pub fn sync_scroll_to_cursor(&mut self) {
+        if self.viewport_height == 0 {
+            return;
+        }
+        let width = self.viewport_width.max(1);
+        let (wrapped, (cur_row, _)) = self.visual_wrapped_lines(width);
+        self.scroll_vp
+            .ensure_visible(cur_row, wrapped.len(), self.viewport_height);
+        self.scroll_row = self.scroll_vp.offset();
+    }
+
     pub fn text(&self) -> String {
         self.lines.join("\n")
     }
@@ -58,7 +87,9 @@ impl CommitMessageEditor {
         };
         self.cursor_line = self.lines.len().saturating_sub(1);
         self.cursor_col = self.lines[self.cursor_line].chars().count();
+        self.scroll_vp.reset();
         self.scroll_row = 0;
+        self.sync_scroll_to_cursor();
     }
 
     pub fn clear(&mut self) {
@@ -68,6 +99,7 @@ impl CommitMessageEditor {
         self.lines = vec![String::new()];
         self.cursor_line = 0;
         self.cursor_col = 0;
+        self.scroll_vp.reset();
         self.scroll_row = 0;
     }
 
@@ -97,6 +129,7 @@ impl CommitMessageEditor {
         self.cursor_col = snap
             .cursor_col
             .min(self.lines[self.cursor_line].chars().count());
+        self.sync_scroll_to_cursor();
         true
     }
 
@@ -114,6 +147,7 @@ impl CommitMessageEditor {
         self.cursor_col = snap
             .cursor_col
             .min(self.lines[self.cursor_line].chars().count());
+        self.sync_scroll_to_cursor();
         true
     }
 
@@ -129,6 +163,7 @@ impl CommitMessageEditor {
         let b = Self::byte_idx_at(line, self.cursor_col);
         line.insert(b, ch);
         self.cursor_col += 1;
+        self.sync_scroll_to_cursor();
     }
 
     pub fn insert_newline(&mut self) {
@@ -139,6 +174,7 @@ impl CommitMessageEditor {
         self.cursor_line += 1;
         self.lines.insert(self.cursor_line, tail);
         self.cursor_col = 0;
+        self.sync_scroll_to_cursor();
     }
 
     pub fn insert_paste(&mut self, pasted: &str) {
@@ -171,6 +207,7 @@ impl CommitMessageEditor {
                 self.lines.insert(self.cursor_line, s);
             }
         }
+        self.sync_scroll_to_cursor();
     }
 
     pub fn backspace(&mut self) {
@@ -190,6 +227,7 @@ impl CommitMessageEditor {
             self.cursor_col = self.lines[self.cursor_line].chars().count();
             self.lines[self.cursor_line].push_str(&removed);
         }
+        self.sync_scroll_to_cursor();
     }
 
     pub fn delete_forward(&mut self) {
@@ -205,6 +243,7 @@ impl CommitMessageEditor {
             let next = self.lines.remove(self.cursor_line + 1);
             self.lines[self.cursor_line].push_str(&next);
         }
+        self.sync_scroll_to_cursor();
     }
 
     pub fn delete_word_backward(&mut self) {
@@ -226,6 +265,7 @@ impl CommitMessageEditor {
         let end = Self::byte_idx_at(line, self.cursor_col);
         line.replace_range(start..end, "");
         self.cursor_col = new_col;
+        self.sync_scroll_to_cursor();
     }
 
     pub fn move_left(&mut self) {
@@ -235,6 +275,7 @@ impl CommitMessageEditor {
             self.cursor_line -= 1;
             self.cursor_col = self.lines[self.cursor_line].chars().count();
         }
+        self.sync_scroll_to_cursor();
     }
 
     pub fn move_right(&mut self) {
@@ -245,6 +286,7 @@ impl CommitMessageEditor {
             self.cursor_line += 1;
             self.cursor_col = 0;
         }
+        self.sync_scroll_to_cursor();
     }
 
     pub fn move_up(&mut self) {
@@ -252,6 +294,7 @@ impl CommitMessageEditor {
             self.cursor_line -= 1;
             self.cursor_col = self.cursor_col.min(self.lines[self.cursor_line].chars().count());
         }
+        self.sync_scroll_to_cursor();
     }
 
     pub fn move_down(&mut self) {
@@ -259,14 +302,17 @@ impl CommitMessageEditor {
             self.cursor_line += 1;
             self.cursor_col = self.cursor_col.min(self.lines[self.cursor_line].chars().count());
         }
+        self.sync_scroll_to_cursor();
     }
 
     pub fn move_home(&mut self) {
         self.cursor_col = 0;
+        self.sync_scroll_to_cursor();
     }
 
     pub fn move_end(&mut self) {
         self.cursor_col = self.lines[self.cursor_line].chars().count();
+        self.sync_scroll_to_cursor();
     }
 
     pub fn subject_char_count(&self) -> usize {

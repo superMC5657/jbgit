@@ -401,4 +401,16 @@ mod tests {
         let mut filter = WorktreeEventFilter::new(root.clone(), root.join("missing.git"));
         assert!(filter.batch_is_relevant([root.join("a.txt").as_path()]));
     }
+
+    #[test]
+    fn mutation_guard_defers_and_merges_scopes() {
+        let guard = Arc::new(MutationGuard::new());
+        let token = guard.begin();
+        assert!(guard.is_mutating());
+        assert!(guard.record_or_defer(RefreshScope::StageStatus).is_none());
+        assert!(guard.record_or_defer(RefreshScope::RefsAndGraph).is_none());
+        drop(token);
+        assert!(!guard.is_mutating());
+        assert_eq!(guard.take_pending(), RefreshScope::All);
+    }
 }

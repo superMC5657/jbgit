@@ -72,7 +72,7 @@ pub fn render_console_tab(
         split.container,
     );
 
-    let count_s = state.console_entries.len().to_string();
+    let count_s = state.console.len().to_string();
     let list_sub = state
         .i18n
         .t_fmt("view.console.list_subtitle", &[("count", &count_s)]);
@@ -95,12 +95,12 @@ pub fn render_console_tab(
         );
 
         let detail_sub = state
-            .console_entries
-            .get(state.console_selected_idx)
+            .console
+            .selected_entry()
             .map(|e| {
                 let base = format!("#{} {}", e.id, e.timestamp_label());
                 let visible_h = split.second.height.saturating_sub(1) as usize;
-                let sv = console_scroll_view(e, visible_h, state.console_output_scroll);
+                let sv = console_scroll_view(e, visible_h, state.console.output_scroll());
                 if visible_h > 0 && sv.max_scroll > 0 {
                     let start = sv.scroll + 1;
                     let end = (sv.scroll + visible_h).min(sv.total_lines);
@@ -132,7 +132,7 @@ fn render_command_list(
         return;
     }
 
-    if state.console_entries.is_empty() {
+    if state.console.is_empty() {
         frame.render_widget(
             Paragraph::new(Span::styled(
                 state.i18n.t("view.console.empty_list"),
@@ -145,15 +145,16 @@ fn render_command_list(
 
     let visible_h = area.height as usize;
     let (selected, offset) = list_viewport(
-        state.console_entries.len(),
-        state.console_selected_idx,
+        state.console.len(),
+        state.console.selected_idx(),
         visible_h,
     );
 
     let focused = ctx.focused_pane == PaneId::ConsoleCommandList;
 
     for (vis_idx, entry) in state
-        .console_entries
+        .console
+        .entries()
         .iter()
         .skip(offset)
         .take(visible_h)
@@ -229,7 +230,7 @@ fn render_command_output(
         .register(area, 1, HitTarget::ConsoleOutputArea);
 
     let visible_h = area.height as usize;
-    let Some(entry) = state.console_entries.get(state.console_selected_idx) else {
+    let Some(entry) = state.console.selected_entry() else {
         ctx.record_scroll_bound(ScrollPane::ConsoleOutput, visible_h, 0);
         frame.render_widget(
             Paragraph::new(Span::styled(
@@ -306,7 +307,7 @@ fn render_command_output(
         }
     }
 
-    let sv = console_scroll_view(entry, visible_h, state.console_output_scroll);
+    let sv = console_scroll_view(entry, visible_h, state.console.output_scroll());
     debug_assert_eq!(sv.total_lines, lines.len());
     ctx.record_scroll_bound(ScrollPane::ConsoleOutput, visible_h, sv.max_scroll);
     let total_lines = sv.total_lines;
@@ -365,8 +366,7 @@ mod tests {
             None,
             AppConfig::load_defaults(),
         );
-        state.console_entries.push(entry);
-        state.console_selected_idx = 0;
+        state.console.push_started(entry);
         state
     }
 
@@ -516,7 +516,7 @@ mod tests {
             exit_code: Some(0),
         };
         let mut state = make_state(entry);
-        state.console_output_scroll = 999;
+        state.console.set_output_scroll_for_test(999);
 
         let theme = ThemePalette::darcula(true);
         let buf = render_with_theme(&theme, 80, 10, |f, area, ctx| {
@@ -582,7 +582,7 @@ mod tests {
         assert_eq!(buf_top[(119, 1)].symbol(), "┃");
 
         // At bottom -> 100% and thumb reaches bottom row (row 19).
-        state.console_output_scroll = usize::MAX;
+        state.console.set_output_scroll_for_test(usize::MAX);
         let buf_bot = render_output_with_theme(&state, &theme, 120, 20);
         let header_bot = row_text(&buf_bot, 0);
         assert!(header_bot.contains("(100%)"), "expected (100%) in header: {header_bot}");

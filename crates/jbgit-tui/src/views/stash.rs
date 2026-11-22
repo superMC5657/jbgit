@@ -12,7 +12,9 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::app::{AppState, RenderContext};
 use crate::hit_test::{HitTarget, StashButton};
-use crate::views::log_details::{DiffHost, render_changes_browser, render_diff_preview};
+use crate::views::log_details::{
+    ChangesBrowserProps, DiffHost, DiffPreviewProps, render_changes_browser, render_diff_preview,
+};
 use crate::views::{
     fit_left_right_spans, list_viewport, render_pane_frame, render_splitter_divider,
     row_background,
@@ -126,7 +128,7 @@ fn render_stash_list(
         return;
     }
     let focused = ctx.focused_pane == PaneId::StashList;
-    let (sel, offset) = list_viewport(stashes.len(), state.stash.selected, list.height as usize);
+    let (sel, offset) = list_viewport(stashes.len(), state.stash.selected(), list.height as usize);
     let now = chrono::Local::now().timestamp();
     for (vis, (i, s)) in stashes
         .iter()
@@ -210,9 +212,14 @@ fn render_stash_preview(
     render_changes_browser(
         frame,
         preview_split.first,
-        &state.stash.details,
-        DiffHost::Stash,
-        PaneId::StashDiffPreview,
+        ChangesBrowserProps {
+            changes: state.stash.changes(),
+            caches: &state.diff_caches,
+            host: DiffHost::Stash,
+            pane: PaneId::StashDiffPreview,
+            diff_preview: true,
+            merge_parent: 0,
+        },
         ctx,
     );
     if !preview_split.collapsed {
@@ -225,8 +232,8 @@ fn render_stash_preview(
         );
         let diff_sub = state
             .stash
-            .details
-            .selected_change()
+            .changes()
+            .selected_change(&state.diff_caches)
             .map(|c| state.i18n.t_fmt("view.log_details.diff_file", &[("path", &c.path)]))
             .unwrap_or_else(|| state.i18n.t("view.log_details.diff_preview").to_string());
         let diff_body = render_pane_frame(
@@ -239,9 +246,14 @@ fn render_stash_preview(
         render_diff_preview(
             frame,
             diff_body,
-            &state.stash.details,
-            DiffHost::Stash,
-            false,
+            DiffPreviewProps {
+                changes: state.stash.changes(),
+                diff_session: state.stash.diff(),
+                caches: &state.diff_caches,
+                host: DiffHost::Stash,
+                diff_dock: crate::log_view::DiffPreviewDock::Details,
+                zoomed: false,
+            },
             ctx,
         );
     }

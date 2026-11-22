@@ -5,7 +5,7 @@ mod commit_editor;
 mod workbench;
 
 pub use commit_editor::CommitMessageEditor;
-pub use workbench::{CommitBanner, RollbackUndoEntry, StageDiffRow, StageWorkbenchState};
+pub use workbench::{CommitContext, CommitWorkbench};
 
 #[cfg(test)]
 mod tests {
@@ -40,8 +40,8 @@ mod tests {
     }
 
     #[test]
-    fn sync_rows_caches_when_status_and_opts_unchanged() {
-        let mut sw = StageWorkbenchState::default();
+    fn stage_workbench_keeps_rows_and_selection_in_sync_automatically() {
+        let mut sw = CommitWorkbench::default();
         let snap = Arc::new(StageStatusSnapshot {
             staged: vec![jbgit_core::StageEntry {
                 path: "foo.rs".into(),
@@ -51,24 +51,14 @@ mod tests {
             ..Default::default()
         });
 
-        sw.sync_rows(Some(&snap));
-        assert_eq!(sw.rows.len(), 2);
+        sw.set_status(Some(Arc::clone(&snap)));
+        assert_eq!(sw.rows().len(), 2);
+        sw.select_row(1);
+        assert_eq!(sw.selected_idx(), 1);
+        assert_eq!(sw.selected_entry().map(|e| e.path), Some("foo.rs".into()));
 
-        sw.rows.clear();
-        sw.sync_rows(Some(&snap));
-        assert_eq!(
-            sw.rows.len(),
-            0,
-            "sync_rows should skip rebuild when status pointer and options are identical"
-        );
-
-        sw.tree_opts.show_ignored = true;
-        sw.sync_rows(Some(&snap));
-        assert_eq!(
-            sw.rows.len(),
-            2,
-            "sync_rows must rebuild when options change"
-        );
+        sw.toggle_show_ignored();
+        assert_eq!(sw.rows().len(), 2);
 
         let snap2 = Arc::new(StageStatusSnapshot {
             unstaged: vec![jbgit_core::StageEntry {
@@ -78,19 +68,19 @@ mod tests {
             }],
             ..Default::default()
         });
-        drop(snap);
-        sw.rows.clear();
-        sw.sync_rows(Some(&snap2));
-        assert_eq!(
-            sw.rows.len(),
-            2,
-            "sync_rows must rebuild for a distinct StageStatusSnapshot Arc"
-        );
+        sw.apply_status(Arc::clone(&snap2));
+        assert_eq!(sw.rows().len(), 2);
+        assert!(sw.selected_idx() < sw.rows().len());
+
+        // Clearing status empties rows and resets selection to 0.
+        sw.set_status(None);
+        assert!(sw.rows().is_empty());
+        assert_eq!(sw.selected_idx(), 0);
     }
 
     #[test]
     fn diff_rows_caches_until_diff_or_side_by_side_changes() {
-        let mut sw = StageWorkbenchState::default();
+        let mut sw = CommitWorkbench::default();
         let tracker = jbgit_core::StageLineTracker::new(b"", b"", b"");
         let diff1 = Arc::new(ThreeDocStageDiff {
             key: StageDiffKey {
@@ -114,7 +104,7 @@ mod tests {
             is_too_large: false,
         });
 
-        sw.current_diff = Some(Arc::clone(&diff1));
+        sw.set_diff_for_test(Some(Arc::clone(&diff1)));
         let r1 = sw.diff_rows();
         let r2 = sw.diff_rows();
         assert!(
@@ -122,7 +112,7 @@ mod tests {
             "diff_rows must return cached Arc slice on identical diff and mode"
         );
 
-        sw.diff_side_by_side = true;
+        sw.set_side_by_side_for_test(true);
         let r3 = sw.diff_rows();
         assert!(
             !Arc::ptr_eq(&r1, &r3),

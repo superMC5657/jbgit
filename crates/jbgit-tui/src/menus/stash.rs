@@ -6,7 +6,7 @@ use crate::dialogs::{
     ChoiceDialog, Dialog, InputDialog, InputIntent, InputValidation, stash_label,
 };
 use crate::hit_test::StashButton;
-use crate::keymap::KeyAction;
+use crate::keymap::{KeyAction, catalog};
 
 use super::{dialog, ellipsize, local_names, op, run};
 
@@ -29,28 +29,27 @@ fn stash_spec<'a>(state: &'a AppState, btn: StashButton) -> StashActionSpec<'a> 
     let index = entry.as_ref().map_or(0, |e| e.index);
     let label = entry.as_ref().map(stash_label).unwrap_or_default();
     let i18n = &state.i18n;
-    let km = &state.config.keymap;
     let no_stash = (!has).then(|| i18n.t("menu.stash.no_stash_selected"));
 
     match btn {
         StashButton::Apply => StashActionSpec {
             label: i18n.t("menu.stash.apply"),
             mnemonic: 'a',
-            shortcut: km.primary_key_for(&[KeymapScope::Stash], &KeyAction::StashApply),
+            shortcut: catalog::shortcut_for_action(state, &[KeymapScope::Stash], &KeyAction::StashApply),
             disabled_reason: no_stash,
             actions: op(GitOp::StashApply { index, pop: false }),
         },
         StashButton::Pop => StashActionSpec {
             label: i18n.t("menu.stash.pop"),
             mnemonic: 'p',
-            shortcut: km.primary_key_for(&[KeymapScope::Stash], &KeyAction::StashPop),
+            shortcut: catalog::shortcut_for_action(state, &[KeymapScope::Stash], &KeyAction::StashPop),
             disabled_reason: no_stash,
             actions: op(GitOp::StashApply { index, pop: true }),
         },
         StashButton::Branch => StashActionSpec {
             label: i18n.t("menu.stash.branch_from_stash"),
             mnemonic: 'b',
-            shortcut: km.primary_key_for(&[KeymapScope::Stash], &KeyAction::StashBranch),
+            shortcut: catalog::shortcut_for_action(state, &[KeymapScope::Stash], &KeyAction::StashBranch),
             disabled_reason: no_stash,
             actions: dialog(Dialog::Input(InputDialog::new(
                 i18n.t("dialog.stash.unstash_title"),
@@ -66,7 +65,7 @@ fn stash_spec<'a>(state: &'a AppState, btn: StashButton) -> StashActionSpec<'a> 
         StashButton::New => StashActionSpec {
             label: i18n.t("menu.stash.new_stash"),
             mnemonic: 'n',
-            shortcut: km.primary_key_for(&[KeymapScope::Stash], &KeyAction::StashNew),
+            shortcut: catalog::shortcut_for_action(state, &[KeymapScope::Stash], &KeyAction::StashNew),
             disabled_reason: None,
             actions: dialog(Dialog::Input(
                 InputDialog::new(
@@ -80,13 +79,10 @@ fn stash_spec<'a>(state: &'a AppState, btn: StashButton) -> StashActionSpec<'a> 
             )),
         },
         StashButton::Drop => {
-            let keys = km
-                .all_keys_for(&[KeymapScope::Stash], &KeyAction::StashDrop)
-                .join(" / ");
             StashActionSpec {
                 label: i18n.t("menu.stash.drop"),
                 mnemonic: 'd',
-                shortcut: (!keys.is_empty()).then_some(keys),
+                shortcut: catalog::all_shortcuts_for_action(state, &[KeymapScope::Stash], &KeyAction::StashDrop),
                 disabled_reason: no_stash,
                 actions: dialog(Dialog::Choice(ChoiceDialog::confirm(
                     i18n.t("dialog.stash.drop_title"),
@@ -105,7 +101,7 @@ fn stash_spec<'a>(state: &'a AppState, btn: StashButton) -> StashActionSpec<'a> 
             StashActionSpec {
                 label: i18n.t("menu.stash.clear_all"),
                 mnemonic: 'c',
-                shortcut: km.primary_key_for(&[KeymapScope::Stash], &KeyAction::StashClear),
+                shortcut: catalog::shortcut_for_action(state, &[KeymapScope::Stash], &KeyAction::StashClear),
                 disabled_reason: stashes.is_empty().then(|| i18n.t("menu.stash.no_stashes")),
                 actions: dialog(Dialog::Choice(ChoiceDialog::confirm(
                     i18n.t("dialog.stash.clear_title"),

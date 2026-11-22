@@ -8,7 +8,7 @@ use jbgit_core::graph::{
 };
 use jbgit_core::{
     BranchColorId, CommitSummary, EpochToken, FilterError, LogFilterSpec, Oid, RefInfo, RefKind,
-    RepoSnapshot, RequestEpoch,
+    RepoSnapshot, RequestSlot,
 };
 use ratatui::style::Color;
 use rustc_hash::{FxHashMap, FxHashSet};
@@ -333,8 +333,7 @@ pub struct LogGraphState {
     /// Bumped whenever filter inputs change; forces a visible-graph rebuild.
     pub filter_generation: u64,
     pub filter_error: Option<FilterError>,
-    pub graph_epochs: RequestEpoch,
-    in_flight_job: Option<GraphRebuildKey>,
+    graph_slot: RequestSlot<GraphRebuildKey>,
     pub rebuild_in_progress: bool,
 }
 
@@ -351,8 +350,7 @@ impl Default for LogGraphState {
             forward_history: Vec::new(),
             filter_generation: 0,
             filter_error: None,
-            graph_epochs: RequestEpoch::new(),
-            in_flight_job: None,
+            graph_slot: RequestSlot::new(),
             rebuild_in_progress: false,
         }
     }
@@ -419,9 +417,8 @@ impl LogGraphState {
     ) {
         let Some(snap) = repo_snapshot else {
             self.cached = None;
-            self.in_flight_job = None;
+            self.graph_slot.invalidate();
             self.rebuild_in_progress = false;
-            let _ = self.graph_epochs.issue();
             return;
         };
         let (snapshot_stale, visible_stale) = self.is_stale_for(snap);
@@ -465,9 +462,8 @@ impl LogGraphState {
         }
         let cached = self.cached.as_mut().expect("cache built above");
         cached.filter_generation = self.filter_generation;
-        self.in_flight_job = None;
+        self.graph_slot.invalidate();
         self.rebuild_in_progress = false;
-        let _ = self.graph_epochs.issue();
 
         self.preserve_selection_after_rebuild(selected_oid, anchor_oid);
     }
@@ -492,9 +488,7 @@ impl LogGraphState {
             filter_generation: self.filter_generation,
             options: self.options,
         };
-        if self.in_flight_job.as_ref() == Some(&key) {
-            return None;
-        }
+        let token = self.graph_slot.begin_token(key)?;
         let base = if !snapshot_stale {
             self.cached.as_ref().map(|c| CachedGraphBase {
                 permanent: Arc::clone(&c.permanent),
@@ -506,8 +500,6 @@ impl LogGraphState {
         } else {
             None
         };
-        let token = self.graph_epochs.issue();
-        self.in_flight_job = Some(key);
         self.rebuild_in_progress = true;
         Some(LogGraphJob {
             token,
@@ -526,7 +518,7 @@ impl LogGraphState {
         if rebuilt.token.is_stale() {
             return false;
         }
-        self.in_flight_job = None;
+        self.graph_slot.clear_in_flight();
         self.rebuild_in_progress = false;
         let (selected_oid, anchor_oid) = self.capture_selection_oids();
         self.cached = Some(rebuilt.cached);

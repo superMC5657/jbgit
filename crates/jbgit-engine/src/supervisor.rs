@@ -5,19 +5,30 @@ use std::sync::{Arc, Mutex};
 
 use jbgit_core::{
     AmendCommitPreview, CommitChangesBundle, ConflictDocument, ConsoleStream, DetailsKey,
-    EpochToken, EpochTracker, FileDiff, FileDiffKey, FileHistoryBundle, FileHistoryKey,
-    GitConsoleEntry, GitOp, GitOpOutcome, LruCache, Oid, RefreshScope, RepoSnapshot,
-    SignatureStatus, StageStatusSnapshot, StageTarget,
+    EpochToken, FileDiff, FileDiffKey, FileHistoryBundle, FileHistoryKey, FileStatusKind,
+    GitConsoleEntry, GitOp, GitOpOutcome, LruCache, Oid, RefreshScope, RepoSnapshot, RequestSlotId,
+    SignatureStatus, SlotRegistry, StageNodeKind, StageStatusSnapshot, StageTarget,
 };
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 
 use crate::cli::{CliCommand, CliStreamEvent, GitCliExecutor, GitExecutableInfo};
+use crate::details::{
+    load_commit_details_sync, load_file_diff_with_oids_sync, load_file_history_sync,
+    load_path_matches_sync, verify_commit_signature_sync,
+};
 use crate::error::EngineError;
-use crate::pool::{AheadBehindUpdate, Git2WorkerPool, StatusScanConfig, TaskPriority};
-use crate::probe::{RepoLocation, probe_repo_state};
+use crate::pool::{
+    AheadBehindUpdate, Git2WorkerPool, StatusScanConfig, TaskPriority,
+    compute_ahead_behind_batch_sync, load_conflict_document_sync,
+    load_repo_snapshot_with_config_sync, load_stage_status_with_config_sync,
+};
+use crate::probe::RepoLocation;
 use crate::stage::{
     CommitOutcome, CommitPrecheckInfo, CommitRequest, StageDiffKey, ThreeDocStageDiff,
-    build_commit_cli_args,
+    apply_stage_buffer_sync, discard_targets_sync, execute_commit_cli_async,
+    execute_commit_git2_sync, load_amend_preview_sync, load_stage_file_diff_sync,
+    probe_commit_precheck_sync, stage_all_tracked_sync, stage_targets_sync, undo_last_commit_sync,
+    unstage_targets_sync, write_worktree_buffer_sync,
 };
 use crate::watcher::{MutationGuard, RepoWatcher};
 
@@ -25,38 +36,32 @@ const DEFAULT_MAX_COMMITS: usize = 50_000;
 
 #[derive(Debug, Clone)]
 pub enum TaskRequest {
-    LoadRepoSnapshot {
-        epoch: u64,
-    },
+    LoadRepoSnapshot,
     /// Commit metadata + (net) changed-file list for the selected commits.
     LoadCommitDetails {
+        slot: RequestSlotId,
         key: DetailsKey,
-        epoch: u64,
     },
     /// Line diff of one file of a details selection (diff preview).
     LoadFileDiff {
+        slot: RequestSlotId,
         key: FileDiffKey,
         known_oids: Option<(Option<Oid>, Option<Oid>)>,
-        epoch: u64,
     },
     /// Commit history of a single file (`--follow` rename tracking).
     LoadFileHistory {
         key: FileHistoryKey,
-        epoch: u64,
     },
     /// Commits of `snapshot` touching any of `paths` (log `Paths` filter).
     LoadPathMatches {
         paths: Vec<String>,
         snapshot: Arc<RepoSnapshot>,
-        epoch: u64,
     },
     LoadStageStatus {
         include_ignored: bool,
-        epoch: u64,
     },
     LoadStageFileDiff {
         key: StageDiffKey,
-        epoch: u64,
     },
     LoadAmendPreview,
     ProbeCommitPrecheck,
@@ -106,6 +111,35 @@ pub enum TaskRequest {
     },
 }
 
+impl TaskRequest {
+    /// Returns the consumer slot whose single-flight epoch governs this request, if any.
+    pub const fn slot(&self) -> Option<RequestSlotId> {
+        match self {
+            Self::LoadRepoSnapshot => Some(RequestSlotId::RepoSnapshot),
+            Self::LoadCommitDetails { slot, .. } => Some(*slot),
+            Self::LoadFileDiff { slot, .. } => Some(*slot),
+            Self::LoadFileHistory { .. } => Some(RequestSlotId::FileHistoryList),
+            Self::LoadPathMatches { .. } => Some(RequestSlotId::PathFilter),
+            Self::LoadStageStatus { .. } => Some(RequestSlotId::StageStatus),
+            Self::LoadStageFileDiff { .. } => Some(RequestSlotId::StageFileDiff),
+            Self::LoadAmendPreview => Some(RequestSlotId::AmendPreview),
+            Self::LoadConflictDocument { .. } => Some(RequestSlotId::ConflictDocument),
+            Self::ProbeCommitPrecheck
+            | Self::ApplyStageBuffer { .. }
+            | Self::WriteWorktreeBuffer { .. }
+            | Self::StageTargets { .. }
+            | Self::StageAllTracked
+            | Self::UnstageTargets { .. }
+            | Self::DiscardTargets { .. }
+            | Self::ExecuteCommit { .. }
+            | Self::UndoLastCommit
+            | Self::RunGitCli { .. }
+            | Self::RunGitOp { .. }
+            | Self::SaveConflictResolution { .. } => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum EngineEvent {
     RepoSnapshotLoaded {
@@ -119,6 +153,7 @@ pub enum EngineEvent {
         updates: Vec<AheadBehindUpdate>,
     },
     CommitDetailsLoaded {
+        slot: RequestSlotId,
         bundle: Arc<CommitChangesBundle>,
         epoch: u64,
     },
@@ -127,6 +162,7 @@ pub enum EngineEvent {
         status: SignatureStatus,
     },
     FileDiffLoaded {
+        slot: RequestSlotId,
         diff: Arc<FileDiff>,
         epoch: u64,
     },
@@ -149,6 +185,7 @@ pub enum EngineEvent {
     },
     AmendPreviewLoaded {
         preview: Option<AmendCommitPreview>,
+        epoch: u64,
     },
     CommitPrecheckLoaded {
         info: CommitPrecheckInfo,
@@ -181,89 +218,147 @@ pub enum EngineEvent {
     GitOpFinished(GitOpOutcome),
     ConflictDocumentLoaded {
         doc: ConflictDocument,
+        epoch: u64,
     },
     Error(String),
 }
 
-pub struct EngineHandle {
-    pub location: RepoLocation,
-    pub epochs: EpochTracker,
-    pub git_info: Option<GitExecutableInfo>,
-    task_tx: UnboundedSender<TaskRequest>,
-}
+/// Narrow engine dispatch seam shared between the real [`EngineSupervisor`]
+/// handle and deterministic local test doubles.
+pub trait EngineBackend: Send + Sync {
+    /// Submits a [`TaskRequest`] to the backend.
+    ///
+    /// Returns `Some(epoch)` when the request is bound to a [`RequestSlotId`],
+    /// automatically advancing that slot's monotonic counter.
+    fn dispatch(&self, req: TaskRequest) -> Option<u64>;
 
-impl EngineHandle {
-    pub fn send(&self, req: TaskRequest) {
-        let _ = self.task_tx.send(req);
+    fn request_repo_snapshot(&self) -> u64 {
+        self.dispatch(TaskRequest::LoadRepoSnapshot)
+            .expect("LoadRepoSnapshot always has a slot")
     }
 
-    pub fn request_repo_snapshot(&self) -> u64 {
-        let epoch = self.epochs.repo_snapshot.next_epoch();
-        self.send(TaskRequest::LoadRepoSnapshot { epoch });
-        epoch
+    fn request_stage_status(&self, include_ignored: bool) -> u64 {
+        self.dispatch(TaskRequest::LoadStageStatus { include_ignored })
+            .expect("LoadStageStatus always has a slot")
     }
 
-    pub fn request_stage_status(&self, include_ignored: bool) -> u64 {
-        let epoch = self.epochs.stage_status.next_epoch();
-        self.send(TaskRequest::LoadStageStatus {
-            include_ignored,
-            epoch,
-        });
-        epoch
+    fn request_commit_details(&self, slot: RequestSlotId, key: DetailsKey) -> u64 {
+        self.dispatch(TaskRequest::LoadCommitDetails { slot, key })
+            .expect("LoadCommitDetails always has a slot")
     }
 
-    pub fn request_commit_details(&self, key: DetailsKey) -> u64 {
-        let epoch = self.epochs.commit_details.next_epoch();
-        self.send(TaskRequest::LoadCommitDetails { key, epoch });
-        epoch
+    fn request_file_diff(&self, slot: RequestSlotId, key: FileDiffKey) -> u64 {
+        self.request_file_diff_with_oids(slot, key, None)
     }
 
-    pub fn request_file_diff(&self, key: FileDiffKey) -> u64 {
-        self.request_file_diff_with_oids(key, None)
-    }
-
-    pub fn request_file_diff_with_oids(
+    fn request_file_diff_with_oids(
         &self,
+        slot: RequestSlotId,
         key: FileDiffKey,
         known_oids: Option<(Option<Oid>, Option<Oid>)>,
     ) -> u64 {
-        let epoch = self.epochs.file_diff.next_epoch();
-        self.send(TaskRequest::LoadFileDiff {
+        self.dispatch(TaskRequest::LoadFileDiff {
+            slot,
             key,
             known_oids,
-            epoch,
-        });
+        })
+        .expect("LoadFileDiff always has a slot")
+    }
+
+    fn request_file_history(&self, key: FileHistoryKey) -> u64 {
+        self.dispatch(TaskRequest::LoadFileHistory { key })
+            .expect("LoadFileHistory always has a slot")
+    }
+
+    fn request_path_matches(&self, paths: Vec<String>, snapshot: Arc<RepoSnapshot>) -> u64 {
+        self.dispatch(TaskRequest::LoadPathMatches { paths, snapshot })
+            .expect("LoadPathMatches always has a slot")
+    }
+
+    fn request_stage_file_diff(&self, key: StageDiffKey) -> u64 {
+        self.dispatch(TaskRequest::LoadStageFileDiff { key })
+            .expect("LoadStageFileDiff always has a slot")
+    }
+
+    fn request_amend_preview(&self) -> u64 {
+        self.dispatch(TaskRequest::LoadAmendPreview)
+            .expect("LoadAmendPreview always has a slot")
+    }
+
+    fn request_conflict_document(&self, path: String) -> u64 {
+        self.dispatch(TaskRequest::LoadConflictDocument { path })
+            .expect("LoadConflictDocument always has a slot")
+    }
+
+    fn request_commit_precheck(&self) {
+        let _ = self.dispatch(TaskRequest::ProbeCommitPrecheck);
+    }
+}
+
+/// Deterministic in-memory [`EngineBackend`] adapter for fast, sleep-free tests.
+#[derive(Debug, Default)]
+pub struct RecordingEngineBackend {
+    slots: SlotRegistry,
+    recorded: Mutex<Vec<(TaskRequest, Option<u64>)>>,
+}
+
+impl RecordingEngineBackend {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn take_recorded(&self) -> Vec<(TaskRequest, Option<u64>)> {
+        std::mem::take(&mut *self.recorded.lock().unwrap_or_else(|e| e.into_inner()))
+    }
+
+    pub fn recorded_len(&self) -> usize {
+        self.recorded.lock().unwrap_or_else(|e| e.into_inner()).len()
+    }
+
+    pub fn latest_epoch(&self, slot: RequestSlotId) -> u64 {
+        self.slots.epoch_for(slot).current()
+    }
+}
+
+impl EngineBackend for RecordingEngineBackend {
+    fn dispatch(&self, req: TaskRequest) -> Option<u64> {
+        let epoch = req.slot().map(|slot| self.slots.next_epoch(slot));
+        self.recorded
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push((req, epoch));
         epoch
     }
+}
 
-    pub fn request_file_history(&self, key: FileHistoryKey) -> u64 {
-        let epoch = self.epochs.file_history.next_epoch();
-        self.send(TaskRequest::LoadFileHistory { key, epoch });
+struct ScheduledTask {
+    req: TaskRequest,
+    token: Option<EpochToken>,
+}
+
+pub struct EngineHandle {
+    location: RepoLocation,
+    slots: SlotRegistry,
+    git_info: Option<GitExecutableInfo>,
+    task_tx: UnboundedSender<ScheduledTask>,
+}
+
+impl EngineHandle {
+    pub fn location(&self) -> &RepoLocation {
+        &self.location
+    }
+
+    pub fn git_info(&self) -> Option<&GitExecutableInfo> {
+        self.git_info.as_ref()
+    }
+}
+
+impl EngineBackend for EngineHandle {
+    fn dispatch(&self, req: TaskRequest) -> Option<u64> {
+        let token = req.slot().map(|slot| self.slots.issue(slot));
+        let epoch = token.as_ref().map(EpochToken::epoch);
+        let _ = self.task_tx.send(ScheduledTask { req, token });
         epoch
-    }
-
-    pub fn request_path_matches(&self, paths: Vec<String>, snapshot: Arc<RepoSnapshot>) -> u64 {
-        let epoch = self.epochs.path_filter.next_epoch();
-        self.send(TaskRequest::LoadPathMatches {
-            paths,
-            snapshot,
-            epoch,
-        });
-        epoch
-    }
-
-    pub fn request_stage_file_diff(&self, key: StageDiffKey) -> u64 {
-        let epoch = self.epochs.stage_diff.next_epoch();
-        self.send(TaskRequest::LoadStageFileDiff { key, epoch });
-        epoch
-    }
-
-    pub fn request_amend_preview(&self) {
-        self.send(TaskRequest::LoadAmendPreview);
-    }
-
-    pub fn request_commit_precheck(&self) {
-        self.send(TaskRequest::ProbeCommitPrecheck);
     }
 }
 
@@ -289,7 +384,7 @@ where
 struct SupervisorContext {
     location: RepoLocation,
     scan_config: StatusScanConfig,
-    epochs: EpochTracker,
+    slots: SlotRegistry,
     pool: Arc<Git2WorkerPool>,
     cli: Option<Arc<GitCliExecutor>>,
     mutation_guard: Arc<MutationGuard>,
@@ -315,13 +410,13 @@ impl EngineSupervisor {
         enable_watcher: bool,
         scan_config: StatusScanConfig,
     ) -> Result<(EngineHandle, UnboundedReceiver<EngineEvent>), EngineError> {
-        let epochs = EpochTracker::default();
+        let slots = SlotRegistry::new();
         let pool = Arc::new(Git2WorkerPool::new(4));
         let cli = GitCliExecutor::detect().ok();
         let git_info = cli.as_ref().map(GitCliExecutor::info);
         let mutation_guard = Arc::new(MutationGuard::new());
 
-        let (task_tx, mut task_rx) = mpsc::unbounded_channel::<TaskRequest>();
+        let (task_tx, mut task_rx) = mpsc::unbounded_channel::<ScheduledTask>();
         let (event_tx, event_rx) = mpsc::unbounded_channel::<EngineEvent>();
 
         let watcher = if enable_watcher {
@@ -348,7 +443,7 @@ impl EngineSupervisor {
         let ctx = SupervisorContext {
             location: location.clone(),
             scan_config,
-            epochs: epochs.clone(),
+            slots: slots.clone(),
             pool,
             cli: cli.map(Arc::new),
             mutation_guard,
@@ -359,15 +454,15 @@ impl EngineSupervisor {
 
         tokio::spawn(async move {
             let _keep_watcher = watcher;
-            while let Some(req) = task_rx.recv().await {
-                handle_task_request(&ctx, req);
+            while let Some(task) = task_rx.recv().await {
+                handle_task_request(&ctx, task);
             }
         });
 
         Ok((
             EngineHandle {
                 location,
-                epochs,
+                slots,
                 git_info,
                 task_tx,
             },
@@ -376,48 +471,65 @@ impl EngineSupervisor {
     }
 }
 
-fn handle_task_request(ctx: &SupervisorContext, req: TaskRequest) {
+fn handle_task_request(ctx: &SupervisorContext, task: ScheduledTask) {
+    let ScheduledTask { req, token } = task;
     match req {
-        TaskRequest::LoadRepoSnapshot { epoch } => spawn_load_repo_snapshot(ctx, epoch),
-        TaskRequest::LoadCommitDetails { key, epoch } => {
-            spawn_load_commit_details(ctx, key, epoch);
+        TaskRequest::LoadRepoSnapshot => {
+            spawn_load_repo_snapshot(ctx, token.expect("RepoSnapshot token"));
+        }
+        TaskRequest::LoadCommitDetails { slot, key } => {
+            spawn_load_commit_details(ctx, slot, key, token.expect("CommitDetails token"));
         }
         TaskRequest::LoadFileDiff {
+            slot,
             key,
             known_oids,
-            epoch,
         } => {
             let pool = Arc::clone(&ctx.pool);
             let loc = ctx.location.clone();
-            let token = EpochToken::new(ctx.epochs.file_diff.clone(), epoch);
+            let token = token.expect("FileDiff token");
+            let epoch = token.epoch();
             spawn_epoch_task(
                 &ctx.event_tx,
-                async move { pool.load_file_diff(loc, key, known_oids, token).await },
-                move |diff| EngineEvent::FileDiffLoaded { diff, epoch },
+                async move {
+                    pool.run_epoch(TaskPriority::Interactive, token, move |tok| {
+                        load_file_diff_with_oids_sync(&loc, &key, known_oids, tok).map(Arc::new)
+                    })
+                    .await
+                },
+                move |diff| EngineEvent::FileDiffLoaded { slot, diff, epoch },
             );
         }
-        TaskRequest::LoadFileHistory { key, epoch } => {
+        TaskRequest::LoadFileHistory { key } => {
             let pool = Arc::clone(&ctx.pool);
             let loc = ctx.location.clone();
-            let token = EpochToken::new(ctx.epochs.file_history.clone(), epoch);
+            let token = token.expect("FileHistory token");
+            let epoch = token.epoch();
             spawn_epoch_task(
                 &ctx.event_tx,
-                async move { pool.load_file_history(loc, key, token).await },
+                async move {
+                    pool.run_epoch(TaskPriority::Interactive, token, move |tok| {
+                        load_file_history_sync(&loc, &key, tok).map(Arc::new)
+                    })
+                    .await
+                },
                 move |bundle| EngineEvent::FileHistoryLoaded { bundle, epoch },
             );
         }
-        TaskRequest::LoadPathMatches {
-            paths,
-            snapshot,
-            epoch,
-        } => {
+        TaskRequest::LoadPathMatches { paths, snapshot } => {
             let pool = Arc::clone(&ctx.pool);
             let loc = ctx.location.clone();
-            let token = EpochToken::new(ctx.epochs.path_filter.clone(), epoch);
+            let token = token.expect("PathMatches token");
+            let epoch = token.epoch();
             let reported = paths.clone();
             spawn_epoch_task(
                 &ctx.event_tx,
-                async move { pool.load_path_matches(loc, paths, snapshot, token).await },
+                async move {
+                    pool.run_epoch(TaskPriority::Background, token, move |tok| {
+                        load_path_matches_sync(&loc, &paths, &snapshot, tok).map(Arc::new)
+                    })
+                    .await
+                },
                 move |matches| EngineEvent::PathMatchesLoaded {
                     paths: reported,
                     matches,
@@ -425,40 +537,54 @@ fn handle_task_request(ctx: &SupervisorContext, req: TaskRequest) {
                 },
             );
         }
-        TaskRequest::LoadStageStatus {
-            include_ignored,
-            epoch,
-        } => {
+        TaskRequest::LoadStageStatus { include_ignored } => {
             let pool = Arc::clone(&ctx.pool);
             let loc = ctx.location.clone();
             let scan_config = ctx.scan_config;
-            let token = EpochToken::new(ctx.epochs.stage_status.clone(), epoch);
+            let token = token.expect("StageStatus token");
+            let epoch = token.epoch();
             spawn_epoch_task(
                 &ctx.event_tx,
                 async move {
-                    pool.load_stage_status_with_config(loc, include_ignored, scan_config, token)
-                        .await
+                    pool.run_epoch(TaskPriority::Background, token, move |tok| {
+                        load_stage_status_with_config_sync(&loc, include_ignored, scan_config, tok)
+                            .map(Arc::new)
+                    })
+                    .await
                 },
                 move |status| EngineEvent::StageStatusLoaded { status, epoch },
             );
         }
-        TaskRequest::LoadStageFileDiff { key, epoch } => {
+        TaskRequest::LoadStageFileDiff { key } => {
             let pool = Arc::clone(&ctx.pool);
             let loc = ctx.location.clone();
-            let token = EpochToken::new(ctx.epochs.stage_diff.clone(), epoch);
+            let token = token.expect("StageFileDiff token");
+            let epoch = token.epoch();
             spawn_epoch_task(
                 &ctx.event_tx,
-                async move { pool.load_stage_file_diff(loc, key, token).await },
+                async move {
+                    pool.run_epoch(TaskPriority::Interactive, token, move |tok| {
+                        load_stage_file_diff_sync(&loc, &key, tok).map(Arc::new)
+                    })
+                    .await
+                },
                 move |diff| EngineEvent::StageFileDiffLoaded { diff, epoch },
             );
         }
         TaskRequest::LoadAmendPreview => {
             let pool = Arc::clone(&ctx.pool);
             let loc = ctx.location.clone();
+            let token = token.expect("AmendPreview token");
+            let epoch = token.epoch();
             spawn_epoch_task(
                 &ctx.event_tx,
-                async move { pool.load_amend_preview(loc).await },
-                move |preview| EngineEvent::AmendPreviewLoaded { preview },
+                async move {
+                    pool.run_epoch(TaskPriority::Background, token, move |_| {
+                        load_amend_preview_sync(&loc)
+                    })
+                    .await
+                },
+                move |preview| EngineEvent::AmendPreviewLoaded { preview, epoch },
             );
         }
         TaskRequest::ProbeCommitPrecheck => {
@@ -467,8 +593,11 @@ fn handle_task_request(ctx: &SupervisorContext, req: TaskRequest) {
             let tx = ctx.event_tx.clone();
             tokio::spawn(async move {
                 let info = pool
-                    .probe_commit_precheck(loc, TaskPriority::Background)
-                    .await;
+                    .run_with(TaskPriority::Background, move || {
+                        Ok(probe_commit_precheck_sync(&loc))
+                    })
+                    .await
+                    .unwrap_or_default();
                 let _ = tx.send(EngineEvent::CommitPrecheckLoaded { info });
             });
         }
@@ -478,8 +607,10 @@ fn handle_task_request(ctx: &SupervisorContext, req: TaskRequest) {
             file_mode,
             remove_from_index,
         } => spawn_guarded_mutation(ctx, RefreshScope::StageStatus, move |pool, loc| async move {
-            pool.apply_stage_buffer(loc, path, new_staged_bytes, file_mode, remove_from_index)
-                .await
+            pool.run_with(TaskPriority::Interactive, move || {
+                apply_stage_buffer_sync(&loc, &path, &new_staged_bytes, file_mode, remove_from_index)
+            })
+            .await
         }),
         TaskRequest::WriteWorktreeBuffer {
             path,
@@ -488,29 +619,46 @@ fn handle_task_request(ctx: &SupervisorContext, req: TaskRequest) {
             ctx,
             RefreshScope::WorktreeStatus,
             move |pool, loc| async move {
-                pool.write_worktree_buffer(loc, path, new_local_bytes).await
+                pool.run_with(TaskPriority::Interactive, move || {
+                    write_worktree_buffer_sync(&loc, &path, &new_local_bytes)
+                })
+                .await
             },
         ),
         TaskRequest::StageTargets { targets } => {
             spawn_guarded_mutation(ctx, RefreshScope::StageStatus, move |pool, loc| async move {
-                pool.stage_targets(loc, targets).await
+                pool.run_with(TaskPriority::Interactive, move || {
+                    stage_targets_sync(&loc, &targets)
+                })
+                .await
             });
         }
         TaskRequest::StageAllTracked => {
             spawn_guarded_mutation(ctx, RefreshScope::StageStatus, move |pool, loc| async move {
-                pool.stage_all_tracked(loc).await
+                pool.run_with(TaskPriority::Interactive, move || {
+                    stage_all_tracked_sync(&loc)
+                })
+                .await
             });
         }
         TaskRequest::UnstageTargets { targets } => {
             spawn_guarded_mutation(ctx, RefreshScope::StageStatus, move |pool, loc| async move {
-                pool.unstage_targets(loc, targets).await
+                pool.run_with(TaskPriority::Interactive, move || {
+                    unstage_targets_sync(&loc, &targets)
+                })
+                .await
             });
         }
         TaskRequest::DiscardTargets { targets } => {
             spawn_guarded_mutation(
                 ctx,
                 RefreshScope::WorktreeStatus,
-                move |pool, loc| async move { pool.discard_targets(loc, targets).await },
+                move |pool, loc| async move {
+                    pool.run_with(TaskPriority::Interactive, move || {
+                        discard_targets_sync(&loc, &targets)
+                    })
+                    .await
+                },
             );
         }
         TaskRequest::ExecuteCommit { id, request } => spawn_execute_commit(ctx, id, request),
@@ -519,25 +667,40 @@ fn handle_task_request(ctx: &SupervisorContext, req: TaskRequest) {
         TaskRequest::LoadConflictDocument { path } => {
             let pool = Arc::clone(&ctx.pool);
             let loc = ctx.location.clone();
-            let tx = ctx.event_tx.clone();
-            tokio::spawn(async move {
-                match pool.load_conflict_document(loc, path).await {
-                    Ok(doc) => {
-                        let _ = tx.send(EngineEvent::ConflictDocumentLoaded { doc });
-                    }
-                    Err(e) => {
-                        let _ = tx.send(EngineEvent::Error(e.to_string()));
-                    }
-                }
-            });
+            let token = token.expect("ConflictDocument token");
+            let epoch = token.epoch();
+            spawn_epoch_task(
+                &ctx.event_tx,
+                async move {
+                    pool.run_epoch(TaskPriority::Interactive, token, move |_| {
+                        load_conflict_document_sync(&loc, &path)
+                    })
+                    .await
+                },
+                move |doc| EngineEvent::ConflictDocumentLoaded { doc, epoch },
+            );
         }
         TaskRequest::SaveConflictResolution {
             path,
             content,
             stage,
         } => spawn_guarded_mutation(ctx, RefreshScope::StageStatus, move |pool, loc| async move {
-            pool.save_conflict_resolution(loc, path, content, stage)
-                .await
+            pool.run_with(TaskPriority::Interactive, move || {
+                write_worktree_buffer_sync(&loc, &path, &content)?;
+                if stage {
+                    stage_targets_sync(
+                        &loc,
+                        &[StageTarget {
+                            path,
+                            old_path: None,
+                            status_kind: FileStatusKind::Conflicted,
+                            group_kind: StageNodeKind::Conflicted,
+                        }],
+                    )?;
+                }
+                Ok(())
+            })
+            .await
         }),
         TaskRequest::RunGitCli {
             id,
@@ -549,33 +712,39 @@ fn handle_task_request(ctx: &SupervisorContext, req: TaskRequest) {
     }
 }
 
-fn spawn_load_repo_snapshot(ctx: &SupervisorContext, epoch: u64) {
+fn spawn_load_repo_snapshot(ctx: &SupervisorContext, token: EpochToken) {
     let pool = Arc::clone(&ctx.pool);
     let loc = ctx.location.clone();
     let scan_config = ctx.scan_config;
-    let token = EpochToken::new(ctx.epochs.repo_snapshot.clone(), epoch);
+    let epoch = token.epoch();
     let tx = ctx.event_tx.clone();
     tokio::spawn(async move {
-        match pool
-            .load_repo_snapshot_with_pending(
-                loc.clone(),
-                token.clone(),
-                DEFAULT_MAX_COMMITS,
-                scan_config,
-            )
-            .await
-        {
+        let loc_snap = loc.clone();
+        let snap_res = pool
+            .run_epoch(TaskPriority::Background, token.clone(), move |tok| {
+                let (snap, pending) = load_repo_snapshot_with_config_sync(
+                    &loc_snap,
+                    tok,
+                    DEFAULT_MAX_COMMITS,
+                    scan_config,
+                )?;
+                Ok((Arc::new(snap), pending))
+            })
+            .await;
+
+        match snap_res {
             Ok((snapshot, pending)) => {
                 let _ = tx.send(EngineEvent::RepoSnapshotLoaded { snapshot, epoch });
                 if !pending.is_empty() && !token.is_stale() {
-                    match pool.compute_ahead_behind_batch(loc, pending, token).await {
-                        Ok(updates) if !updates.is_empty() => {
-                            let _ = tx.send(EngineEvent::RefAheadBehindBackfilled {
-                                epoch,
-                                updates,
-                            });
-                        }
-                        Ok(_) | Err(_) => {}
+                    let backfill_res = pool
+                        .run_epoch(TaskPriority::Background, token, move |tok| {
+                            compute_ahead_behind_batch_sync(&loc, &pending, tok)
+                        })
+                        .await;
+                    if let Ok(updates) = backfill_res
+                        && !updates.is_empty()
+                    {
+                        let _ = tx.send(EngineEvent::RefAheadBehindBackfilled { epoch, updates });
                     }
                 }
             }
@@ -587,15 +756,26 @@ fn spawn_load_repo_snapshot(ctx: &SupervisorContext, epoch: u64) {
     });
 }
 
-fn spawn_load_commit_details(ctx: &SupervisorContext, key: DetailsKey, epoch: u64) {
+fn spawn_load_commit_details(
+    ctx: &SupervisorContext,
+    slot: RequestSlotId,
+    key: DetailsKey,
+    token: EpochToken,
+) {
     let pool = Arc::clone(&ctx.pool);
     let loc = ctx.location.clone();
-    let token = EpochToken::new(ctx.epochs.commit_details.clone(), epoch);
+    let epoch = token.epoch();
     let tx = ctx.event_tx.clone();
     let sig_cache = Arc::clone(&ctx.sig_cache);
-    let sig_epoch = ctx.epochs.commit_signature.clone();
+    let sig_epoch = ctx.slots.epoch_for(RequestSlotId::CommitSignature).clone();
     tokio::spawn(async move {
-        match pool.load_commit_details(loc.clone(), key, token).await {
+        let loc_details = loc.clone();
+        let res = pool
+            .run_epoch(TaskPriority::Interactive, token, move |tok| {
+                load_commit_details_sync(&loc_details, &key, tok).map(Arc::new)
+            })
+            .await;
+        match res {
             Ok(mut bundle) => {
                 let mut unverified_oids = Vec::new();
                 {
@@ -611,7 +791,11 @@ fn spawn_load_commit_details(ctx: &SupervisorContext, key: DetailsKey, epoch: u6
                         }
                     }
                 }
-                let _ = tx.send(EngineEvent::CommitDetailsLoaded { bundle, epoch });
+                let _ = tx.send(EngineEvent::CommitDetailsLoaded {
+                    slot,
+                    bundle,
+                    epoch,
+                });
                 if !unverified_oids.is_empty() {
                     let sig_token = sig_epoch.issue();
                     let git_dir = loc.git_dir;
@@ -620,7 +804,7 @@ fn spawn_load_commit_details(ctx: &SupervisorContext, key: DetailsKey, epoch: u6
                             if sig_token.is_stale() {
                                 break;
                             }
-                            let status = crate::details::verify_commit_signature_sync(&git_dir, oid);
+                            let status = verify_commit_signature_sync(&git_dir, oid);
                             {
                                 let mut cache =
                                     sig_cache.lock().unwrap_or_else(|e| e.into_inner());
@@ -647,98 +831,53 @@ fn spawn_execute_commit(ctx: &SupervisorContext, id: u64, request: CommitRequest
     let guard = Arc::clone(&ctx.mutation_guard);
     tokio::spawn(async move {
         let token = guard.begin();
+        let loc_pre = loc.clone();
         let precheck = pool
-            .probe_commit_precheck(loc.clone(), TaskPriority::Interactive)
-            .await;
+            .run_with(TaskPriority::Interactive, move || {
+                Ok(probe_commit_precheck_sync(&loc_pre))
+            })
+            .await
+            .unwrap_or_default();
         let use_cli =
             ((precheck.has_commit_hooks && request.run_hooks) || precheck.gpg_sign)
                 && cli_exec.is_some();
 
-        let outcome = if use_cli {
-            if request.stage_all_tracked
-                && let Err(e) = pool.stage_all_tracked(loc.clone()).await
-            {
-                drop(token);
-                let _ = tx.send(EngineEvent::CommitCompleted(CommitOutcome {
-                    success: false,
-                    commit_oid: None,
-                    short_sha: None,
-                    summary: "Stage all tracked failed".to_string(),
-                    error_output: Some(e.to_string()),
-                    and_push: false,
-                    preserved_message: Some(request.message),
-                }));
-                return;
-            }
-            let (args, stdin_payload) = build_commit_cli_args(&request);
-            let cli = cli_exec.expect("checked is_some");
-            let res = cli
-                .execute(
-                    CliCommand {
-                        id,
-                        workdir: &loc.workdir,
-                        git_dir: &loc.git_dir,
-                        args: &args,
-                        stdin_payload: Some(&stdin_payload),
-                        is_read_only: false,
-                        env: &[],
-                    },
-                    |ev| forward_cli_event(&tx, ev),
-                )
-                .await;
-
-            match res {
-                Ok(out) if out.exit_code == 0 => {
-                    let oid = crate::pool::with_thread_repo(&loc.git_dir, |r| {
-                        Ok(probe_repo_state(r).head_oid)
+        let (outcome, index_lock) = if use_cli {
+            if request.stage_all_tracked {
+                let loc_stage = loc.clone();
+                if let Err(e) = pool
+                    .run_with(TaskPriority::Interactive, move || {
+                        stage_all_tracked_sync(&loc_stage)
                     })
-                    .ok()
-                    .flatten();
-                    let short = oid.map(|o| o.short());
-                    let label = short.clone().unwrap_or_default();
-                    CommitOutcome {
-                        success: true,
-                        commit_oid: oid,
-                        short_sha: short,
-                        summary: if request.amend {
-                            format!("Amended commit {label}")
-                        } else {
-                            format!("Committed {label}")
-                        },
-                        error_output: None,
-                        and_push: request.and_push,
-                        preserved_message: None,
-                    }
-                }
-                Ok(out) => {
-                    let mut combined = out.stderr_lines.clone();
-                    if combined.is_empty() {
-                        combined = out.stdout_lines;
-                    } else if !out.stdout_lines.is_empty() {
-                        combined.extend(out.stdout_lines);
-                    }
-                    CommitOutcome {
+                    .await
+                {
+                    drop(token);
+                    let _ = tx.send(EngineEvent::CommitCompleted(CommitOutcome {
                         success: false,
                         commit_oid: None,
                         short_sha: None,
-                        summary: format!("Commit failed (exit {})", out.exit_code),
-                        error_output: Some(combined.join("\n")),
+                        summary: "Stage all tracked failed".to_string(),
+                        error_output: Some(e.to_string()),
                         and_push: false,
                         preserved_message: Some(request.message),
-                    }
+                    }));
+                    return;
                 }
-                Err(e) => CommitOutcome {
-                    success: false,
-                    commit_oid: None,
-                    short_sha: None,
-                    summary: "Commit failed".to_string(),
-                    error_output: Some(e.to_string()),
-                    and_push: false,
-                    preserved_message: Some(request.message),
-                },
             }
+            let cli = cli_exec.expect("checked is_some");
+            let fwd = tx.clone();
+            execute_commit_cli_async(cli.as_ref(), &loc, id, request, move |ev| {
+                forward_cli_event(&fwd, ev);
+            })
+            .await
         } else {
-            match pool.execute_commit_git2(loc, request.clone()).await {
+            let req_for_git2 = request.clone();
+            let outcome = match pool
+                .run_with(TaskPriority::Interactive, move || {
+                    execute_commit_git2_sync(&loc, &req_for_git2)
+                })
+                .await
+            {
                 Ok(o) => o,
                 Err(e) => CommitOutcome {
                     success: false,
@@ -749,12 +888,23 @@ fn spawn_execute_commit(ctx: &SupervisorContext, id: u64, request: CommitRequest
                     and_push: false,
                     preserved_message: Some(request.message),
                 },
-            }
+            };
+            (outcome, None)
         };
 
         let ok = outcome.success;
         drop(token);
         let deferred = guard.take_pending();
+        if let Some(conflict) = index_lock {
+            let _ = tx.send(EngineEvent::IndexLockDetected {
+                lock_path: conflict.lock_path,
+                message: conflict.message,
+                retry_args: conflict.retry_args,
+                retry_stdin: conflict.retry_stdin,
+                retry_is_read_only: conflict.retry_is_read_only,
+                retry_refresh_after: RefreshScope::All,
+            });
+        }
         let _ = tx.send(EngineEvent::CommitCompleted(outcome));
         if ok {
             let _ = tx.send(EngineEvent::ExternalFsChanged(
@@ -771,7 +921,11 @@ fn spawn_undo_last_commit(ctx: &SupervisorContext) {
     let guard = Arc::clone(&ctx.mutation_guard);
     tokio::spawn(async move {
         let token = guard.begin();
-        let res = pool.undo_last_commit(loc).await;
+        let res = pool
+            .run_with(TaskPriority::Interactive, move || {
+                undo_last_commit_sync(&loc)
+            })
+            .await;
         drop(token);
         let deferred = guard.take_pending();
         match res {
@@ -803,13 +957,27 @@ fn spawn_run_git_op(ctx: &SupervisorContext, op: GitOp) {
         let read_only = op.is_read_only();
         let token = (!read_only).then(|| guard.begin());
         let fwd = tx.clone();
-        let outcome = crate::ops::run_git_op(&cli_exec, &loc, &ids, op, move |ev| {
+        let res = crate::ops::run_git_op(cli_exec.as_ref(), &loc, &ids, op, move |ev| {
             forward_cli_event(&fwd, ev);
         })
         .await;
         drop(token);
         let deferred = guard.take_pending();
-        let _ = tx.send(EngineEvent::GitOpFinished(outcome));
+        if let Some(conflict) = res.index_lock {
+            let _ = tx.send(EngineEvent::IndexLockDetected {
+                lock_path: conflict.lock_path,
+                message: conflict.message,
+                retry_args: conflict.retry_args,
+                retry_stdin: conflict.retry_stdin,
+                retry_is_read_only: conflict.retry_is_read_only,
+                retry_refresh_after: if read_only {
+                    RefreshScope::None
+                } else {
+                    RefreshScope::All
+                },
+            });
+        }
+        let _ = tx.send(EngineEvent::GitOpFinished(res.outcome));
         if !read_only {
             let _ = tx.send(EngineEvent::ExternalFsChanged(
                 RefreshScope::All.merge(deferred),

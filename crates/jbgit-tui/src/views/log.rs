@@ -35,14 +35,14 @@ pub fn render_log_tab(
         return;
     }
 
-    if state.details.diff_zoomed {
+    if state.log.details.diff.zoomed {
         render_zoomed_diff(frame, area, state, ctx);
         return;
     }
 
     let mut main_area = area;
     let mut bottom_diff_area: Option<Rect> = None;
-    if state.details.diff_preview && state.details.diff_dock == DiffPreviewDock::Bottom {
+    if state.log.details.diff_preview && state.log.details.diff_dock == DiffPreviewDock::Bottom {
         let bottom_split =
             state
                 .splitters
@@ -65,7 +65,7 @@ pub fn render_log_tab(
         }
     }
 
-    let collapsed = state.branches.is_collapsed(state.terminal_area.width);
+    let collapsed = state.log.branches.is_collapsed(state.terminal_area.width);
     let mut mid_right_area = if collapsed {
         let stripe_w = STRIPE_WIDTH.min(main_area.width);
         render_branches_stripe(
@@ -105,7 +105,7 @@ pub fn render_log_tab(
     };
 
     let mut right_diff_area: Option<Rect> = None;
-    if state.details.diff_preview && state.details.diff_dock == DiffPreviewDock::Right {
+    if state.log.details.diff_preview && state.log.details.diff_dock == DiffPreviewDock::Right {
         let dock_split = state.splitters.split(
             mid_right_area,
             SplitterId::LogDiffRightHorizontal,
@@ -147,8 +147,8 @@ pub fn render_log_tab(
             if s.is_unborn_head {
                 state.i18n.t("view.log.unborn_head").to_string()
             } else {
-                let visible = state.log_graph.visible_count();
-                let sel = state.log_graph.selected_range();
+                let visible = state.log.graph.visible_count();
+                let sel = state.log.graph.selected_range();
                 let sel_n = sel.end() - sel.start() + 1;
                 let total_s = s.commits.len().to_string();
                 let vis_s = visible.to_string();
@@ -244,7 +244,7 @@ fn render_filter_bar(
     );
     let mut x = area.x;
     let right = area.right();
-    let filter = &state.log_filter;
+    let filter = &state.log.filter;
 
     // ⚙ Presentation, pinned to the far right.
     let gear = " ⚙ ";
@@ -312,7 +312,7 @@ fn render_filter_bar(
         theme.bg_elevated
     };
     let box_text = format!(" ⌕ {shown}{cursor}{}", " ".repeat(pad));
-    let err = state.log_graph.filter_error.is_some();
+    let err = state.log.graph.filter_error.is_some();
     put(
         frame,
         &mut x,
@@ -420,14 +420,14 @@ fn render_commits_table(
         return;
     };
 
-    let Some(cached) = &state.log_graph.cached else {
+    let Some(cached) = &state.log.graph.cached else {
         return;
     };
 
     if snap.commits.is_empty() || cached.visible_count() == 0 {
         let msg = if snap.is_unborn_head {
             state.i18n.t("view.log.empty_unborn")
-        } else if !state.log_filter.spec.is_empty() {
+        } else if !state.log.filter.spec.is_empty() {
             state.i18n.t("view.log.empty_filtered")
         } else {
             state.i18n.t("view.log.empty_none")
@@ -442,9 +442,9 @@ fn render_commits_table(
     // Viewport virtualization: only `offset .. offset + height` rows are touched.
     let visible_h = area.height as usize;
     let total = cached.visible_count();
-    let selected = state.log_graph.selected_idx.min(total.saturating_sub(1));
+    let selected = state.log.graph.selected_idx.min(total.saturating_sub(1));
     let max_off = total.saturating_sub(visible_h);
-    let mut offset = state.log_graph.scroll_offset.min(max_off);
+    let mut offset = state.log.graph.scroll_offset.min(max_off);
     if selected < offset {
         offset = selected;
     } else if visible_h > 0 && selected >= offset + visible_h {
@@ -455,7 +455,7 @@ fn render_commits_table(
     let rows_len = end - offset;
 
     let focused = ctx.focused_pane == PaneId::LogCommitTable;
-    let presentation = &state.presentation;
+    let presentation = &state.log.presentation;
     let mut edges_cache = cached.edges_cache.borrow_mut();
     let mut elem_gen = PrintElementGenerator::with_cache(
         &cached.permanent,
@@ -463,7 +463,7 @@ fn render_commits_table(
         snap.head_oid,
         &mut edges_cache,
     );
-    let matcher = state.log_filter.compiled_text_matcher();
+    let matcher = state.log.filter.compiled_text_matcher();
 
     struct PreparedLogRow {
         visible_row: VisibleRowIdx,
@@ -481,7 +481,7 @@ fn render_commits_table(
         let commit = cached
             .commit_at_visible_row(snap, row_idx)
             .expect("visible row maps to valid commit");
-        let is_sel = state.log_graph.is_row_selected(row_idx);
+        let is_sel = state.log.graph.is_row_selected(row_idx);
         let is_in_current_branch = presentation.highlight_current_branch
             && cached.current_branch_reachable.contains(perm_id as usize);
         let is_hovered = matches!(
@@ -603,7 +603,7 @@ fn render_commits_table(
         if text_w == 0 {
             continue;
         }
-        let is_sel = state.log_graph.is_row_selected(row_idx);
+        let is_sel = state.log.graph.is_row_selected(row_idx);
         let is_head = snap.head_oid == Some(commit.oid);
         let main_w = text_w.saturating_sub(right_cols);
         let main_rect = Rect::new(text_x, row_y, main_w, 1);
@@ -619,8 +619,8 @@ fn render_commits_table(
                 .refs_for_oid(snap, commit.oid)
                 .chain(head_marker.as_ref()),
             GroupOptions {
-                compact: state.compact_refs,
-                show_tag_names: state.show_tag_names,
+                compact: state.log.presentation.compact_refs,
+                show_tag_names: state.log.presentation.show_tag_names,
             },
         );
 

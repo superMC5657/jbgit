@@ -11,7 +11,8 @@ use unicode_width::UnicodeWidthStr;
 use crate::app::{AppState, ModalLayer, Notification, RenderContext};
 use crate::config::KeymapScope;
 use crate::hit_test::{GraphHitKind, HitTarget};
-use crate::keymap::actions::{is_action_applicable, is_log_diff_zoomed};
+use crate::keymap::actions::is_action_applicable;
+use crate::keymap::catalog::{self, ContextMode};
 use crate::keymap::resolve::{
     KeyResolveCtx, collect_claimed_keys, push_unique_seq, resolve_key_in_scopes,
 };
@@ -323,26 +324,6 @@ fn overflow_display_width(hidden: usize) -> usize {
     }
 }
 
-fn footer_pill_label(state: &AppState, run: &KeyAction, fallback_desc: Option<&str>) -> String {
-    let key = match run {
-        KeyAction::CompareOrDiff | KeyAction::CompareVersions
-            if state.active_tab == WorkspaceTab::Log
-                && (state.focused_pane == PaneId::LogChangesTree
-                    || (state.focused_pane == PaneId::LogDetailsDiff
-                        && !state.details.diff_preview)) =>
-        {
-            Some("view.footer.pill.diff_toggle")
-        }
-        KeyAction::ZoomDiff if is_log_diff_zoomed(state) => Some("view.footer.pill.exit_zoom"),
-        _ => run.footer_pill_key(),
-    };
-    match key {
-        Some(k) => state.i18n.t(k).to_string(),
-        None if matches!(run, KeyAction::Noop) => String::new(),
-        None => fallback_desc.unwrap_or(run.as_str()).to_string(),
-    }
-}
-
 fn resolve_help_pill(
     state: &AppState,
     filter_speed_search: bool,
@@ -441,7 +422,7 @@ fn collect_scope_pills(
             raw_pills.push(RawPill {
                 action: Some(b.run.clone()),
                 key: key_disp,
-                label: footer_pill_label(ctx.state, &b.run, b.desc.as_deref()),
+                label: catalog::footer_pill_label(ctx.state, &b.run, b.desc.as_deref()),
             });
             seen_actions.push(b.run.clone());
         }
@@ -452,161 +433,124 @@ fn collect_footer_hints(state: &AppState) -> FooterHints {
     let km = &state.config.keymap;
     let t = |k: &str| state.i18n.t(k).to_string();
 
-    if state.active_tab == WorkspaceTab::Log && state.log_filter.editing_text {
-        return FooterHints {
-            pills: vec![
-                FooterPill::new("Enter", t("view.footer.pill.apply")),
-                FooterPill::new("Esc", t("view.footer.pill.cancel")),
-                FooterPill::new("Alt+R", t("view.footer.pill.regex")),
-                FooterPill::new("Alt+C", t("view.footer.pill.case")),
-            ],
-            help: None,
-        };
-    }
-
-    if state.active_tab == WorkspaceTab::Log
-        && state.focused_pane == PaneId::LogBranchesTree
-        && (state.branches.searching
-            || (km.tree_speed_search && !state.branches.query.is_empty()))
-    {
-        return FooterHints {
-            pills: vec![
-                FooterPill::new(t("view.footer.pill.type_key"), t("view.footer.pill.filter")),
-                FooterPill::new("Enter", t("view.footer.pill.apply")),
-                FooterPill::new("Esc", t("view.footer.pill.cancel")),
-            ],
-            help: None,
-        };
-    }
-
-    if is_log_diff_zoomed(state) {
-        let diff_scopes = [KeymapScope::Diff];
-        let mut claimed_keys = Vec::new();
-        let mut seen_actions = Vec::new();
-        let mut raw_pills = Vec::new();
-        let ctx = KeyResolveCtx {
-            state,
-            filter_speed_search: false,
-            editor_only: false,
-            claimed_keys: &claimed_keys,
-        };
-        collect_scope_pills(
-            &ctx,
-            &diff_scopes,
-            0,
-            false,
-            &mut seen_actions,
-            &mut raw_pills,
-        );
-        for pill in &mut raw_pills {
-            if pill.action.as_ref() == Some(&KeyAction::ZoomDiff) && pill.key != "Esc" {
-                pill.key = format!("{}/Esc", pill.key);
-            }
+    match catalog::context_mode(state) {
+        ContextMode::FilterTextEditing => {
+            return FooterHints {
+                pills: catalog::filter_editing_hints(state)
+                    .into_iter()
+                    .map(|h| FooterPill::new(h.key, h.label))
+                    .collect(),
+                help: None,
+            };
         }
-        collect_claimed_keys(
-            km.bindings_for(KeymapScope::Diff),
-            state,
-            false,
-            &mut claimed_keys,
-            None,
-        );
-        return FooterHints {
-            pills: merge_paired_pills(raw_pills, state),
-            help: resolve_help_pill(state, false, &claimed_keys),
-        };
-    }
+        ContextMode::BranchSpeedSearch => {
+            return FooterHints {
+                pills: catalog::branch_speed_search_hints(state)
+                    .into_iter()
+                    .map(|h| FooterPill::new(h.key, h.label))
+                    .collect(),
+                help: None,
+            };
+        }
+        ContextMode::ZoomedDiff => {
+            let diff_scopes = [KeymapScope::Diff];
+            let mut claimed_keys = Vec::new();
+            let mut seen_actions = Vec::new();
+            let mut raw_pills = Vec::new();
+            let ctx = KeyResolveCtx {
+                state,
+                filter_speed_search: false,
+                editor_only: false,
+                claimed_keys: &claimed_keys,
+            };
+            collect_scope_pills(
+                &ctx,
+                &diff_scopes,
+                0,
+                false,
+                &mut seen_actions,
+                &mut raw_pills,
+            );
+            for pill in &mut raw_pills {
+                if pill.action.as_ref() == Some(&KeyAction::ZoomDiff) && pill.key != "Esc" {
+                    pill.key = format!("{}/Esc", pill.key);
+                }
+            }
+            collect_claimed_keys(
+                km.bindings_for(KeymapScope::Diff),
+                state,
+                false,
+                &mut claimed_keys,
+                None,
+            );
+            return FooterHints {
+                pills: merge_paired_pills(raw_pills, state),
+                help: resolve_help_pill(state, false, &claimed_keys),
+            };
+        }
+        ContextMode::CommitEditor { editing_author } => {
+            let commit_scopes = [KeymapScope::Commit];
+            let mut seen_actions = Vec::new();
+            let mut raw_pills = Vec::new();
+            let ctx = KeyResolveCtx {
+                state,
+                filter_speed_search: false,
+                editor_only: true,
+                claimed_keys: &[],
+            };
+            collect_scope_pills(
+                &ctx,
+                &commit_scopes,
+                0,
+                false,
+                &mut seen_actions,
+                &mut raw_pills,
+            );
 
-    if state.active_tab == WorkspaceTab::Commit && state.focused_pane == PaneId::CommitMessageEditor
-    {
-        let commit_scopes = [KeymapScope::Commit];
-        let mut seen_actions = Vec::new();
-        let mut raw_pills = Vec::new();
-        let ctx = KeyResolveCtx {
-            state,
-            filter_speed_search: false,
-            editor_only: true,
-            claimed_keys: &[],
-        };
-        collect_scope_pills(
-            &ctx,
-            &commit_scopes,
-            0,
-            false,
-            &mut seen_actions,
-            &mut raw_pills,
-        );
+            let (esc_hint, edit_hint) =
+                catalog::commit_editor_structural_hints(state, editing_author);
+            let esc_label = if editing_author {
+                esc_hint.label
+            } else {
+                t("view.footer.pill.back")
+            };
+            raw_pills.push(RawPill {
+                action: None,
+                key: esc_hint.key,
+                label: esc_label,
+            });
+            raw_pills.push(RawPill {
+                action: None,
+                key: edit_hint.key,
+                label: edit_hint.label,
+            });
 
-        let (nav_key, nav_label) = if state.stage_workbench.editing_author {
-            ("Enter/Esc", t("view.footer.pill.apply"))
-        } else {
-            ("Esc", t("view.footer.pill.back"))
-        };
-        raw_pills.push(RawPill {
-            action: None,
-            key: nav_key.to_string(),
-            label: nav_label,
-        });
-        raw_pills.push(RawPill {
-            action: None,
-            key: "Ctrl+E".to_string(),
-            label: t("view.footer.pill.edit"),
-        });
-
-        return FooterHints {
-            pills: merge_paired_pills(raw_pills, state),
-            help: None,
-        };
+            return FooterHints {
+                pills: merge_paired_pills(raw_pills, state),
+                help: None,
+            };
+        }
+        ContextMode::Normal => {}
     }
 
     let shadow_scopes = scopes_for_context(state);
     let in_branch_tree =
         state.active_tab == WorkspaceTab::Log && state.focused_pane == PaneId::LogBranchesTree;
     let filter_speed_search = in_branch_tree && km.tree_speed_search;
-
-    let leading_lit = if filter_speed_search {
-        Some((t("view.footer.pill.type_key"), t("view.footer.pill.search")))
-    } else if state.active_tab == WorkspaceTab::Stash && state.focused_pane == PaneId::StashList {
-        Some(("Enter".to_string(), t("view.footer.pill.inspect")))
-    } else if state.active_tab == WorkspaceTab::Console
-        && state.focused_pane == PaneId::ConsoleCommandList
-    {
-        Some(("Enter".to_string(), t("view.footer.pill.detail")))
-    } else {
-        None
-    };
-
-    let mut after_primary_lit = if matches!(
-        state.focused_pane,
-        PaneId::LogChangesTree
-            | PaneId::LogDetailsDiff
-            | PaneId::CommitDiffPreview
-            | PaneId::StashDiffPreview
-            | PaneId::ConsoleOutputDetail
-    ) {
-        Some(("Esc".to_string(), t("view.footer.pill.back")))
-    } else if state.focused_pane == PaneId::CommitChangesTree
-        && !state.stage_workbench.diff_collapsed
-        && state
-            .stage_workbench
-            .rows
-            .get(state.commit_stage_selected_idx)
-            .is_some_and(|r| !r.is_container())
-    {
-        Some(("Enter".to_string(), t("view.footer.pill.diff")))
-    } else {
-        None
-    };
+    let structural = catalog::normal_structural_hints(state);
+    let mut after_primary_lit = structural.after_primary;
+    let mut console_probe = structural.console_probe_fallback;
 
     let mut claimed_keys: Vec<KeySequence> = Vec::new();
     let mut non_global_claimed_keys: Vec<KeySequence> = Vec::new();
     let mut seen_actions: Vec<KeyAction> = Vec::new();
     let mut raw_pills: Vec<RawPill> = Vec::new();
 
-    if let Some((k, l)) = leading_lit {
+    if let Some(lead) = structural.leading {
         raw_pills.push(RawPill {
-            action: None,
-            key: k,
-            label: l,
+            action: lead.action,
+            key: lead.key,
+            label: lead.label,
         });
     }
 
@@ -641,29 +585,24 @@ fn collect_footer_hints(state: &AppState) -> FooterHints {
             }
 
             if scope == KeymapScope::Console
-                && state.active_tab == WorkspaceTab::Console
-                && state.focused_pane == PaneId::ConsoleCommandList
-                && km
-                    .primary_key_for(&[KeymapScope::Global], &KeyAction::GitStatusProbe)
-                    .is_none()
+                && let Some(probe) = console_probe.take()
             {
-                let probe_key = crate::keymap::actions::DEFAULT_CONSOLE_PROBE_CHAR.to_string();
-                raw_pills.push(RawPill {
-                    action: Some(KeyAction::GitStatusProbe),
-                    key: probe_key.clone(),
-                    label: t("view.footer.pill.status_probe"),
-                });
-                if let Some(seq) = KeySequence::parse(&[probe_key]) {
+                if let Some(seq) = KeySequence::parse(std::slice::from_ref(&probe.key)) {
                     push_unique_seq(&mut claimed_keys, &seq);
                     push_unique_seq(&mut non_global_claimed_keys, &seq);
                 }
+                raw_pills.push(RawPill {
+                    action: probe.action,
+                    key: probe.key,
+                    label: probe.label,
+                });
             }
 
-            if let Some((k, l)) = after_primary_lit.take() {
+            if let Some(lit) = after_primary_lit.take() {
                 raw_pills.push(RawPill {
-                    action: None,
-                    key: k,
-                    label: l,
+                    action: lit.action,
+                    key: lit.key,
+                    label: lit.label,
                 });
             }
         }

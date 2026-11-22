@@ -1,29 +1,25 @@
-use jbgit_core::{GitOp, PaneId, StageNodeKind};
+use jbgit_core::{GitOp, PaneId, PatchSource, StageNodeKind};
 use jbgit_engine::StageDiffSide;
 
-use crate::app::{Action, AppState, ContextMenuAction, ContextMenuItem};
+use crate::app::{Action, AppState, ContextMenuItem, DiffScope};
 use crate::config::KeymapScope;
 use crate::dialogs::{ChoiceDialog, Dialog};
 use crate::hit_test::DiffHunkActionKind;
-use crate::keymap::KeyAction;
+use crate::keymap::{KeyAction, catalog};
 
-use super::{dialog, diff_patch_args, op, run};
+use super::{dialog, op, run};
 
 /// `Git.Stage.Tree.Menu` for the stage tree row `idx` (plus selection).
 pub fn stage_tree_menu_items(state: &AppState, idx: usize) -> Vec<ContextMenuItem> {
     let i18n = &state.i18n;
-    let km = &state.config.keymap;
-    let stage_sc = km.primary_key_for(&[KeymapScope::Commit], &KeyAction::ToggleStage);
-    let discard_sc = km
-        .all_keys_for(&[KeymapScope::Commit], &KeyAction::DiscardChanges)
-        .join(" / ");
-    let discard_sc = (!discard_sc.is_empty()).then_some(discard_sc);
-    let edit_sc = km.primary_key_for(&[KeymapScope::Commit], &KeyAction::EditFile);
-    let row = state.stage_workbench.rows.get(idx);
+    let stage_sc = catalog::shortcut_for_action(state, &[KeymapScope::Commit], &KeyAction::ToggleStage);
+    let discard_sc = catalog::all_shortcuts_for_action(state, &[KeymapScope::Commit], &KeyAction::DiscardChanges);
+    let edit_sc = catalog::shortcut_for_action(state, &[KeymapScope::Commit], &KeyAction::EditFile);
+    let row = state.stage_workbench.rows().get(idx);
     let group = row.map(|r| r.group_kind());
     let targets = state
-        .stage_status
-        .as_ref()
+        .stage_workbench
+        .status()
         .map(|s| {
             state
                 .stage_workbench
@@ -93,20 +89,20 @@ pub fn stage_tree_menu_items(state: &AppState, idx: usize) -> Vec<ContextMenuIte
     if let Some(g) = group {
         if g.can_stage() {
             items.push(
-                ContextMenuItem::action(
+                run(
                     i18n.t("menu.stage.stage"),
                     Some('s'),
                     stage_sc.as_deref(),
-                    ContextMenuAction::StageSelected,
+                    vec![Action::StageActionSelected],
                 )
                 .icon("+"),
             );
             items.push(
-                ContextMenuItem::action(
+                run(
                     i18n.t("menu.stage.discard_changes"),
                     Some('d'),
                     discard_sc.as_deref(),
-                    ContextMenuAction::DiscardSelected,
+                    vec![Action::DiscardPromptSelected],
                 )
                 .icon("↶"),
             );
@@ -123,11 +119,11 @@ pub fn stage_tree_menu_items(state: &AppState, idx: usize) -> Vec<ContextMenuIte
         }
         if g.can_unstage() {
             items.push(
-                ContextMenuItem::action(
+                run(
                     i18n.t("menu.stage.unstage"),
                     Some('u'),
                     stage_sc.as_deref(),
-                    ContextMenuAction::UnstageSelected,
+                    vec![Action::UnstageActionSelected],
                 )
                 .icon("−"),
             );
@@ -198,7 +194,7 @@ pub fn stage_tree_menu_items(state: &AppState, idx: usize) -> Vec<ContextMenuIte
         )
         .enabled_if(file_path.is_some(), i18n.t("menu.stage.select_file")),
     );
-    let history_sc = km.primary_key_for(&[KeymapScope::Commit], &KeyAction::FileHistory);
+    let history_sc = catalog::shortcut_for_action(state, &[KeymapScope::Commit], &KeyAction::FileHistory);
     let history_action = file_path
         .as_ref()
         .map(|p| {
@@ -219,13 +215,17 @@ pub fn stage_tree_menu_items(state: &AppState, idx: usize) -> Vec<ContextMenuIte
         .enabled_if(file_path.is_some(), i18n.t("menu.stage.select_file"))
         .enabled_if(!untracked && !ignored, i18n.t("menu.stage.only_tracked_history")),
     );
-    let patch_args = diff_patch_args(group == Some(StageNodeKind::Staged), &paths);
     items.push(
         run(
             i18n.t("menu.stage.create_patch_clipboard"),
             Some('c'),
             None,
-            op(GitOp::PatchToClipboard { args: patch_args }),
+            op(GitOp::PatchToClipboard {
+                source: PatchSource::StagePaths {
+                    staged: group == Some(StageNodeKind::Staged),
+                    paths: paths.clone(),
+                },
+            }),
         )
         .enabled_if(has_paths, i18n.t("common.select_files")),
     );
@@ -240,11 +240,11 @@ pub fn stage_tree_menu_items(state: &AppState, idx: usize) -> Vec<ContextMenuIte
         .enabled_if(has_paths, i18n.t("common.select_files")),
     );
     if let Some(p) = &file_path {
-        items.push(ContextMenuItem::action(
+        items.push(run(
             i18n.t("menu.stage.open_external_editor"),
             Some('e'),
             edit_sc.as_deref(),
-            ContextMenuAction::OpenExternalEditorFile(p.clone()),
+            vec![Action::OpenExternalEditorFile(Some(p.clone()))],
         ));
     }
     let count_s = paths.len().to_string();
@@ -276,7 +276,7 @@ pub fn stage_tree_menu_items(state: &AppState, idx: usize) -> Vec<ContextMenuIte
 }
 
 fn diff_side_and_path(state: &AppState) -> (Option<StageDiffSide>, Option<String>) {
-    let key = state.stage_workbench.current_diff_key.as_ref();
+    let key = state.stage_workbench.current_diff_key();
     (key.map(|k| k.side), key.map(|k| k.path.clone()))
 }
 
@@ -286,26 +286,26 @@ fn stage_diff_common_items(
     path: Option<String>,
 ) -> Vec<ContextMenuItem> {
     let i18n = &state.i18n;
-    let km = &state.config.keymap;
-    let sbs_sc = km.primary_key_for(&[KeymapScope::Diff], &KeyAction::ToggleSideBySide);
-    let three_sc = km.primary_key_for(&[KeymapScope::Diff], &KeyAction::ThreeWayInspector);
-    let edit_sc = km.primary_key_for(&[KeymapScope::Commit], &KeyAction::EditFile);
+    let sbs_sc = catalog::shortcut_for_action(state, &[KeymapScope::Diff], &KeyAction::ToggleSideBySide);
+    let three_sc = catalog::shortcut_for_action(state, &[KeymapScope::Diff], &KeyAction::ThreeWayInspector);
+    let edit_sc = catalog::shortcut_for_action(state, &[KeymapScope::Commit], &KeyAction::EditFile);
     let staged = side == Some(StageDiffSide::Staged);
     let paths: Vec<String> = path.iter().cloned().collect();
-    let patch = diff_patch_args(staged, &paths);
     vec![
         run(
             i18n.t("menu.stage.copy_patch"),
             Some('c'),
             None,
-            op(GitOp::PatchToClipboard { args: patch }),
+            op(GitOp::PatchToClipboard {
+                source: PatchSource::StagePaths { staged, paths },
+            }),
         )
         .enabled_if(path.is_some(), i18n.t("menu.stage.no_file_selected")),
         run(
             i18n.t("menu.stage.toggle_side_by_side"),
             Some('t'),
             sbs_sc.as_deref(),
-            vec![Action::StageDiffToggleSideBySide],
+            vec![Action::DiffToggleSideBySide(DiffScope::Stage)],
         ),
         run(
             i18n.t("menu.stage.inspect_three_way"),
@@ -332,17 +332,11 @@ fn stage_diff_common_items(
 /// Right-click on the Commit tab's diff (hunk / line) view.
 pub fn stage_diff_menu_items(state: &AppState) -> Vec<ContextMenuItem> {
     let i18n = &state.i18n;
-    let km = &state.config.keymap;
-    let stage_sc = km
-        .primary_key_for(&[KeymapScope::Diff], &KeyAction::StageSelection)
-        .or_else(|| km.primary_key_for(&[KeymapScope::Diff], &KeyAction::ToggleStage));
-    let unstage_sc = km
-        .primary_key_for(&[KeymapScope::Diff], &KeyAction::UnstageSelection)
-        .or_else(|| km.primary_key_for(&[KeymapScope::Diff], &KeyAction::ToggleStage));
-    let rollback_sc = km
-        .all_keys_for(&[KeymapScope::Diff], &KeyAction::RollbackSelection)
-        .join(" / ");
-    let rollback_sc = (!rollback_sc.is_empty()).then_some(rollback_sc);
+    let stage_sc = catalog::shortcut_for_action(state, &[KeymapScope::Diff], &KeyAction::StageSelection)
+        .or_else(|| catalog::shortcut_for_action(state, &[KeymapScope::Diff], &KeyAction::ToggleStage));
+    let unstage_sc = catalog::shortcut_for_action(state, &[KeymapScope::Diff], &KeyAction::UnstageSelection)
+        .or_else(|| catalog::shortcut_for_action(state, &[KeymapScope::Diff], &KeyAction::ToggleStage));
+    let rollback_sc = catalog::all_shortcuts_for_action(state, &[KeymapScope::Diff], &KeyAction::RollbackSelection);
     let (side, path) = diff_side_and_path(state);
     let editable = matches!(side, Some(StageDiffSide::Staged | StageDiffSide::Unstaged));
     let staged = side == Some(StageDiffSide::Staged);

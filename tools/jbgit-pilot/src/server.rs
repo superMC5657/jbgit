@@ -13,7 +13,7 @@ use crate::keys::{encode_key, encode_sgr_click, encode_sgr_hover, encode_sgr_scr
 use crate::protocol::{CommandEnvelope, PilotAction, ResponseEnvelope};
 use crate::sandbox::{init_sandbox_repo, write_custom_test_config};
 use crate::screen::{
-    build_screen_resp, extract_latest_osc52_clipboard, find_text_matches, inspect_row_spans,
+    Osc52ClipboardScanner, build_screen_resp, find_text_matches, inspect_row_spans,
     make_error_resp, screen_has_content, summarize_palette,
 };
 
@@ -35,6 +35,7 @@ pub struct ServeOptions {
 
 pub(crate) struct SharedPtyState {
     pub(crate) parser: vt100::Parser,
+    pub(crate) osc52: Osc52ClipboardScanner,
     pub(crate) last_output: Instant,
     pub(crate) cols: u16,
     pub(crate) rows: u16,
@@ -134,6 +135,7 @@ pub fn run_serve(opts: ServeOptions) -> Result<()> {
 
     let shared = Arc::new(Mutex::new(SharedPtyState {
         parser: vt100::Parser::new(nz_rows, nz_cols, 0),
+        osc52: Osc52ClipboardScanner::default(),
         last_output: Instant::now(),
         cols: opts.cols.max(1),
         rows: opts.rows.max(1),
@@ -161,6 +163,7 @@ pub fn run_serve(opts: ServeOptions) -> Result<()> {
                     }
                     if let Ok(mut guard) = shared_reader.lock() {
                         guard.parser.process(&buf[..n]);
+                        guard.osc52.feed(&buf[..n]);
                         guard.last_output = Instant::now();
                     }
                 }
@@ -229,7 +232,6 @@ pub fn run_serve(opts: ServeOptions) -> Result<()> {
                 &shared,
                 &mut child,
                 &mut exit_code,
-                &log_path,
             );
             write_resp_atomic(&opts.session_dir, &resp_path, &resp)?;
 
@@ -263,7 +265,6 @@ fn handle_action(
     shared: &Arc<Mutex<SharedPtyState>>,
     child: &mut Box<dyn portable_pty::Child + Send + Sync>,
     exit_code: &mut Option<i32>,
-    log_path: &Path,
 ) -> ResponseEnvelope {
     let id = env.id;
     let res: Result<ResponseEnvelope> = (|| match env.action {
@@ -327,8 +328,13 @@ fn handle_action(
             Ok(build_screen_resp(id, shared, *exit_code))
         }
         PilotAction::Clipboard => {
-            let raw = fs::read(log_path).unwrap_or_default();
-            let clip = extract_latest_osc52_clipboard(&raw).unwrap_or_default();
+            let clip = shared
+                .lock()
+                .unwrap()
+                .osc52
+                .latest()
+                .unwrap_or_default()
+                .to_string();
             let mut resp = build_screen_resp(id, shared, *exit_code);
             resp.screen = None;
             resp.clipboard = Some(clip);

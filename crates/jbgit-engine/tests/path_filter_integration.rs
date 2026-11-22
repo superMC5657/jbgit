@@ -1,19 +1,16 @@
-//! The native `git log --full-history` path filter must
-//! return exactly the commits the libgit2 per-commit tree diff returns,
-//! including TREESAME merges, evil merges and tag-only history.
+//! Integration tests for path filtering through the public [`EngineSupervisor`] seam.
 
 use std::collections::HashSet;
 use std::fs;
 use std::path::Path;
 use std::process::Command;
+use std::sync::Arc;
+use std::time::Duration;
 
-use jbgit_core::{Oid, RepoSnapshot, RequestEpoch};
-use jbgit_engine::pool::load_repo_snapshot_sync;
-use jbgit_engine::{
-    EngineError, GitCliExecutor, RepoLocation, load_path_matches_cli, load_path_matches_git2,
-    load_path_matches_sync,
-};
+use jbgit_core::{Oid, RepoSnapshot};
+use jbgit_engine::{EngineBackend, EngineEvent, EngineSupervisor, RepoLocation};
 use tempfile::TempDir;
+use tokio::sync::mpsc::UnboundedReceiver;
 
 fn git(dir: &Path, args: &[&str]) -> String {
     let output = Command::new("git")
@@ -54,28 +51,30 @@ fn rev(dir: &Path, spec: &str) -> Oid {
     git(dir, &["rev-parse", spec]).trim().parse().unwrap()
 }
 
-struct Fixture {
-    _tmp: TempDir,
-    loc: RepoLocation,
-    snapshot: RepoSnapshot,
-    merge_treesame: Oid,
-    merge_evil: Oid,
-    tag_only: Oid,
+async fn recv_matching<T>(
+    rx: &mut UnboundedReceiver<EngineEvent>,
+    mut predicate: impl FnMut(EngineEvent) -> Option<T>,
+) -> T {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while let Some(ev) = rx.recv().await {
+            if let Some(val) = predicate(ev) {
+                return val;
+            }
+        }
+        panic!("engine event channel closed before expected event");
+    })
+    .await
+    .expect("timed out waiting for engine event")
 }
 
-/// ```text
-///   c1 ── m1 ─────── M1 ── m2 ── M2(evil, a.txt)   main
-///    \              /        \  /
-///     s1(b.txt) ───┘          s2(a.txt)            side / side2
-///    \
-///     t1(b.txt)   reachable only through tag `orphan-tag`
-/// ```
-fn fixture() -> Fixture {
+#[tokio::test]
+async fn path_filter_through_engine_handles_treesame_evil_merges_and_tags() {
     let tmp = TempDir::new().unwrap();
     let d = tmp.path();
     git(d, &["init", "-b", "main"]);
     git(d, &["config", "core.autocrlf", "false"]);
     git(d, &["config", "commit.gpgsign", "false"]);
+
     let c1 = commit(
         d,
         &[("a.txt", "a1\n"), ("b.txt", "b1\n"), ("dir/c.txt", "c1\n")],
@@ -106,72 +105,41 @@ fn fixture() -> Fixture {
     let merge_evil = rev(d, "HEAD");
 
     let loc = RepoLocation::discover(d).unwrap();
-    let snapshot = load_repo_snapshot_sync(&loc, &RequestEpoch::new().issue(), 1000).unwrap();
-    Fixture {
-        _tmp: tmp,
-        loc,
-        snapshot,
-        merge_treesame,
-        merge_evil,
-        tag_only,
-    }
-}
+    let (handle, mut rx) = EngineSupervisor::start(loc, false).unwrap();
 
-fn paths(list: &[&str]) -> Vec<String> {
-    list.iter().map(ToString::to_string).collect()
-}
+    let snap_epoch = handle.request_repo_snapshot();
+    let snapshot: Arc<RepoSnapshot> = recv_matching(&mut rx, |ev| match ev {
+        EngineEvent::RepoSnapshotLoaded { snapshot, epoch } if epoch == snap_epoch => {
+            Some(snapshot)
+        }
+        _ => None,
+    })
+    .await;
 
-#[test]
-fn git_log_path_filter_matches_libgit2_treesame_semantics() {
-    let fx = fixture();
-    let git_bin = GitCliExecutor::detect().expect("git on PATH").info().path;
-    let epoch = RequestEpoch::new();
+    let query = |paths: Vec<String>| handle.request_path_matches(paths, Arc::clone(&snapshot));
 
-    for set in [
-        paths(&["a.txt"]),
-        paths(&["b.txt"]),
-        paths(&["dir"]),
-        paths(&["dir/c.txt", "b.txt"]),
-        paths(&["missing.txt"]),
-    ] {
-        let token = epoch.issue();
-        let cli = load_path_matches_cli(&git_bin, &fx.loc, &set, &fx.snapshot, &token).unwrap();
-        let lib = load_path_matches_git2(&fx.loc, &set, &fx.snapshot, &token).unwrap();
-        assert_eq!(cli, lib, "path set {set:?}");
-        let via_sync = load_path_matches_sync(&fx.loc, &set, &fx.snapshot, &token).unwrap();
-        assert_eq!(via_sync, lib, "path set {set:?}");
-    }
+    let e_b = query(vec!["b.txt".into()]);
+    let b: Arc<HashSet<Oid>> = recv_matching(&mut rx, |ev| match ev {
+        EngineEvent::PathMatchesLoaded { matches, epoch, .. } if epoch == e_b => Some(matches),
+        _ => None,
+    })
+    .await;
+    assert!(!b.contains(&merge_treesame), "TREESAME merge must be excluded");
+    assert!(b.contains(&tag_only), "tag-only history must be walked");
 
-    let token = epoch.issue();
-    let b = load_path_matches_cli(&git_bin, &fx.loc, &paths(&["b.txt"]), &fx.snapshot, &token)
-        .unwrap();
-    assert!(!b.contains(&fx.merge_treesame), "TREESAME merge must be excluded");
-    assert!(b.contains(&fx.tag_only), "tag-only history must be walked");
+    let e_a = query(vec!["a.txt".into()]);
+    let a = recv_matching(&mut rx, |ev| match ev {
+        EngineEvent::PathMatchesLoaded { matches, epoch, .. } if epoch == e_a => Some(matches),
+        _ => None,
+    })
+    .await;
+    assert!(a.contains(&merge_evil), "evil merge differs from every parent");
 
-    let a = load_path_matches_cli(&git_bin, &fx.loc, &paths(&["a.txt"]), &fx.snapshot, &token)
-        .unwrap();
-    assert!(a.contains(&fx.merge_evil), "evil merge differs from every parent");
-
-    let none: HashSet<Oid> = load_path_matches_cli(
-        &git_bin,
-        &fx.loc,
-        &paths(&["missing.txt"]),
-        &fx.snapshot,
-        &token,
-    )
-    .unwrap();
+    let e_none = query(vec!["missing.txt".into()]);
+    let none = recv_matching(&mut rx, |ev| match ev {
+        EngineEvent::PathMatchesLoaded { matches, epoch, .. } if epoch == e_none => Some(matches),
+        _ => None,
+    })
+    .await;
     assert!(none.is_empty());
-}
-
-#[test]
-fn git_log_path_filter_honours_cancellation() {
-    let fx = fixture();
-    let git_bin = GitCliExecutor::detect().expect("git on PATH").info().path;
-    let epoch = RequestEpoch::new();
-    let stale = epoch.issue();
-    let _newer = epoch.issue();
-    let res = load_path_matches_cli(&git_bin, &fx.loc, &paths(&["a.txt"]), &fx.snapshot, &stale);
-    assert!(matches!(res, Err(EngineError::Cancelled)), "{res:?}");
-    let res = load_path_matches_sync(&fx.loc, &paths(&["a.txt"]), &fx.snapshot, &stale);
-    assert!(matches!(res, Err(EngineError::Cancelled)), "{res:?}");
 }

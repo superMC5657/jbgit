@@ -1,18 +1,17 @@
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::AtomicBool;
 use std::time::{Duration, Instant};
 
 use jbgit_core::{
-    ConflictDocument, DetailsKey, EpochToken, FileDiff, FileDiffKey, FileHistoryKey, GitOp,
-    ModalButton, Oid, PaneId, RefreshScope, RepoSnapshot, SplitAxis, SplitterId,
+    ConflictDocument, DetailsKey, EpochToken, FileDiff, FileDiffKey, FileHistoryKey, GitOp, Oid,
+    PaneId, RefreshScope, RepoSnapshot, RequestSlotId, SplitAxis, SplitterId,
 };
 use jbgit_engine::{StageDiffKey, ThreeDocStageDiff};
 use ratatui::layout::Rect;
 
-use crate::dialogs::Dialog;
 use crate::graph::state::LogGraphRebuilt;
 use crate::hit_test::HitTarget;
-use crate::log_view::{DiffPreviewDock, FilterField, PresentationToggle};
+use crate::log_view::{DiffPreviewDock, FilterField};
 use crate::syntax::HighlightedDiff;
 use crate::theme::{BranchColorManager, GlyphMode, ThemePalette};
 
@@ -34,7 +33,7 @@ pub fn apply_scroll_delta(current: usize, delta: isize, max_scroll: usize) -> us
     }
 }
 
-/// Identifies each bounded scrollable viewport tracked by `ViewportScrollMetrics`.
+/// Identifies each bounded scrollable viewport rendered in a frame.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ScrollPane {
     ConsoleOutput,
@@ -43,52 +42,7 @@ pub enum ScrollPane {
     StashDiff,
     StageDiff,
     FileHistoryDiff,
-}
-
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub struct PaneScrollBound {
-    pub viewport_h: usize,
-    pub max_scroll: usize,
-}
-
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub struct ViewportScrollMetrics {
-    pub console_output: Option<PaneScrollBound>,
-    pub log_diff: Option<PaneScrollBound>,
-    pub log_details: Option<PaneScrollBound>,
-    pub stash_diff: Option<PaneScrollBound>,
-    pub stage_diff: Option<PaneScrollBound>,
-    pub file_history_diff: Option<PaneScrollBound>,
-}
-
-impl ViewportScrollMetrics {
-    /// Returns the last recorded scroll bound for `pane`, if rendered.
-    pub fn bound(&self, pane: ScrollPane) -> Option<PaneScrollBound> {
-        match pane {
-            ScrollPane::ConsoleOutput => self.console_output,
-            ScrollPane::LogDiff => self.log_diff,
-            ScrollPane::LogDetails => self.log_details,
-            ScrollPane::StashDiff => self.stash_diff,
-            ScrollPane::StageDiff => self.stage_diff,
-            ScrollPane::FileHistoryDiff => self.file_history_diff,
-        }
-    }
-
-    /// Records the rendered viewport height and maximum scroll offset for `pane`.
-    pub fn record(&mut self, pane: ScrollPane, viewport_h: usize, max_scroll: usize) {
-        let bound = Some(PaneScrollBound {
-            viewport_h,
-            max_scroll,
-        });
-        match pane {
-            ScrollPane::ConsoleOutput => self.console_output = bound,
-            ScrollPane::LogDiff => self.log_diff = bound,
-            ScrollPane::LogDetails => self.log_details = bound,
-            ScrollPane::StashDiff => self.stash_diff = bound,
-            ScrollPane::StageDiff => self.stage_diff = bound,
-            ScrollPane::FileHistoryDiff => self.file_history_diff = bound,
-        }
-    }
+    ConflictMerge,
 }
 
 pub struct RenderContext<'a> {
@@ -103,11 +57,13 @@ pub struct RenderContext<'a> {
     pub graph_renderer: Option<&'a mut crate::graph::GraphRenderer>,
     pub i18n: Option<&'a crate::i18n::I18n>,
     pub config: Option<&'a crate::config::AppConfig>,
-    pub scroll_metrics: Option<&'a mut ViewportScrollMetrics>,
+    pub scroll_bounds: Option<&'a mut Vec<(ScrollPane, usize, usize)>>,
+    pub commit_editor_viewport: Option<&'a mut Option<(usize, usize)>>,
     pub splitter_containers: Option<&'a mut Vec<(SplitterId, SplitAxis, Rect)>>,
 }
 
 impl<'a> RenderContext<'a> {
+    #[cfg(test)]
     pub fn minimal(
         theme: &'a ThemePalette,
         glyph_mode: GlyphMode,
@@ -125,7 +81,8 @@ impl<'a> RenderContext<'a> {
             graph_renderer: None,
             i18n: None,
             config: None,
-            scroll_metrics: None,
+            scroll_bounds: None,
+            commit_editor_viewport: None,
             splitter_containers: None,
         }
     }
@@ -148,7 +105,8 @@ impl<'a> RenderContext<'a> {
             graph_renderer: None,
             i18n: self.i18n,
             config: self.config,
-            scroll_metrics: None,
+            scroll_bounds: None,
+            commit_editor_viewport: None,
             splitter_containers: None,
         }
     }
@@ -161,10 +119,17 @@ impl<'a> RenderContext<'a> {
         self.i18n.map_or("Cancel", |i| i.cancel())
     }
 
-    /// Records the rendered scroll geometry for `pane` into this frame's metrics.
+    /// Records the rendered scroll geometry for `pane` to be bound to its [`ScrollViewport`].
     pub fn record_scroll_bound(&mut self, pane: ScrollPane, viewport_h: usize, max_scroll: usize) {
-        if let Some(m) = self.scroll_metrics.as_deref_mut() {
-            m.record(pane, viewport_h, max_scroll);
+        if let Some(bounds) = self.scroll_bounds.as_deref_mut() {
+            bounds.push((pane, viewport_h, max_scroll));
+        }
+    }
+
+    /// Records the rendered commit-message editor inner viewport `(width, height)`.
+    pub fn record_commit_editor_viewport(&mut self, inner_w: usize, inner_h: usize) {
+        if let Some(slot) = self.commit_editor_viewport.as_deref_mut() {
+            *slot = Some((inner_w, inner_h));
         }
     }
 
@@ -226,33 +191,8 @@ impl<'a> RenderContext<'a> {
 }
 
 #[derive(Debug, Clone)]
-pub enum ContextMenuAction {
-    RefreshRepo,
-    RunReadOnlyProbe(Vec<String>),
-    TogglePresentation(PresentationToggle),
-    SetGraphRenderer(crate::graph::GraphRendererMode),
-    BranchesApplyFilter,
-    BranchesNavigate,
-    BranchesToggleFavorite,
-    BranchesToggleGroupByDir,
-    BranchesToggleShowTags,
-    BranchesToggleNavigateOnSelect,
-    OpenGoTo,
-    StageSelected,
-    UnstageSelected,
-    StageAllTracked,
-    DiscardSelected,
-    StageToggleGroupByDir,
-    StageToggleShowIgnored,
-    StageExpandAll(bool),
-    OpenExternalEditorFile(String),
-    /// Arbitrary follow-up actions (Git workflows).
-    Run(Vec<Action>),
-}
-
-#[derive(Debug, Clone)]
 pub enum ContextMenuEntryKind {
-    Action(ContextMenuAction),
+    Action(Vec<Action>),
     Submenu(Vec<ContextMenuItem>),
     /// `├─────┤` group divider (never selectable).
     Separator,
@@ -271,22 +211,6 @@ pub struct ContextMenuItem {
 }
 
 impl ContextMenuItem {
-    pub fn action(
-        label: impl Into<String>,
-        mnemonic: Option<char>,
-        shortcut: Option<&str>,
-        action: ContextMenuAction,
-    ) -> Self {
-        Self {
-            label: label.into(),
-            mnemonic,
-            shortcut: shortcut.map(ToString::to_string),
-            icon: None,
-            disabled_reason: None,
-            kind: ContextMenuEntryKind::Action(action),
-        }
-    }
-
     /// Item running arbitrary [`Action`]s.
     pub fn run(
         label: impl Into<String>,
@@ -294,7 +218,27 @@ impl ContextMenuItem {
         shortcut: Option<&str>,
         actions: Vec<Action>,
     ) -> Self {
-        Self::action(label, mnemonic, shortcut, ContextMenuAction::Run(actions))
+        Self {
+            label: label.into(),
+            mnemonic,
+            shortcut: shortcut.map(ToString::to_string),
+            icon: None,
+            disabled_reason: None,
+            kind: ContextMenuEntryKind::Action(actions),
+        }
+    }
+
+    /// Item built directly from a [`crate::keymap::catalog::CommandResult`].
+    pub fn from_command(
+        label: impl Into<String>,
+        mnemonic: Option<char>,
+        shortcut: Option<&str>,
+        result: Result<Vec<Action>, String>,
+    ) -> Self {
+        match result {
+            Ok(actions) => Self::run(label, mnemonic, shortcut, actions),
+            Err(reason) => Self::run(label, mnemonic, shortcut, Vec::new()).enabled_if(false, reason),
+        }
     }
 
     pub fn submenu(
@@ -401,14 +345,6 @@ pub enum PopupKind {
     ChooseParent,
     /// Commit message history picker (`Ctrl+M` / `[🕘]`).
     CommitHistory,
-    /// Three-way comparison card (`HEAD / Staged / Worktree`) for mixed `StagedRange`.
-    ThreeWayInspector,
-    /// Built-in three-pane conflict merge resolver (`Ours | Result | Theirs`).
-    ConflictMerge,
-    /// Single-file commit history inspector (`--follow` rename tracking + diff).
-    FileHistory,
-    /// Hook or commit failure output dialog.
-    HookError,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -416,47 +352,7 @@ pub struct ConflictMergeState {
     pub path: String,
     pub doc: Option<ConflictDocument>,
     pub selected_block: usize,
-    pub scroll: usize,
-}
-
-#[derive(Debug, Clone)]
-pub enum ModalLayer {
-    /// Layer 2: Floating Popup (Branches Speed-Search, Shortcuts Help).
-    FloatingPopup {
-        kind: PopupKind,
-        query: String,
-        selected: usize,
-    },
-    /// Layer 3: Right-click Context Menu (supports cascading submenus via `depth`).
-    ContextMenu {
-        anchor: (u16, u16),
-        items: Vec<ContextMenuItem>,
-        selected: usize,
-        depth: u8,
-        /// Set for cascading submenus (placed beside the parent, flipping left).
-        parent: Option<MenuParent>,
-    },
-    /// Layer 4: input / choice / message / rebase-todo dialog.
-    Dialog(Box<Dialog>),
-    /// Layer 4: Critical Modal Dialog.
-    CriticalDialog {
-        title: String,
-        body: String,
-        confirm_label: String,
-        cancel_label: String,
-        selected_button: ModalButton,
-        confirm_effect: Option<Effect>,
-    },
-}
-
-impl ModalLayer {
-    pub const fn z_level(&self) -> u8 {
-        match self {
-            Self::FloatingPopup { .. } => 20,
-            Self::ContextMenu { depth, .. } => 30u8.saturating_add(depth.saturating_mul(2)),
-            Self::CriticalDialog { .. } | Self::Dialog(_) => 40,
-        }
-    }
+    pub scroll: super::ScrollViewport,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -514,6 +410,22 @@ pub struct SyntaxJob {
     pub cancel: Arc<AtomicBool>,
 }
 
+impl SyntaxJob {
+    pub fn run(self) -> Option<UiAsyncEvent> {
+        let highlighted = match &self.target {
+            SyntaxTarget::File(diff) => HighlightedDiff::build_cancellable_file(diff, &self.cancel),
+            SyntaxTarget::Stage(diff) => {
+                HighlightedDiff::build_cancellable_stage(diff, &self.cancel)
+            }
+        }?;
+        Some(UiAsyncEvent::SyntaxHighlighted {
+            key: self.key,
+            epoch: self.epoch,
+            highlighted: Arc::new(highlighted),
+        })
+    }
+}
+
 /// Off-UI-thread `ReachableNodes::containing_branches` walk for one commit.
 #[derive(Debug, Clone)]
 pub struct ContainingBranchesJob {
@@ -561,8 +473,14 @@ pub enum UiAsyncEvent {
 pub enum Effect {
     RefreshRepoAndStage,
     RefreshScope(RefreshScope),
-    RequestCommitDetails(DetailsKey),
-    RequestFileDiff(FileDiffKey),
+    RequestCommitDetails {
+        slot: RequestSlotId,
+        key: DetailsKey,
+    },
+    RequestFileDiff {
+        slot: RequestSlotId,
+        key: FileDiffKey,
+    },
     RequestFileHistory(FileHistoryKey),
     RequestPathMatches(Vec<String>, Arc<RepoSnapshot>),
     RequestStageFileDiff(StageDiffKey),
@@ -606,49 +524,4 @@ pub enum Effect {
     /// High-level Git write operation.
     GitOp(GitOp),
     Quit,
-}
-
-#[derive(Debug)]
-pub struct SyntaxJobSlot<K> {
-    pub epoch: u64,
-    pub cancel: Option<Arc<AtomicBool>>,
-    pub in_flight: Option<K>,
-}
-
-impl<K> Default for SyntaxJobSlot<K> {
-    fn default() -> Self {
-        Self {
-            epoch: 0,
-            cancel: None,
-            in_flight: None,
-        }
-    }
-}
-
-impl<K: PartialEq + Clone> SyntaxJobSlot<K> {
-    pub fn invalidate(&mut self) {
-        if let Some(prev) = self.cancel.take() {
-            prev.store(true, Ordering::Relaxed);
-        }
-        self.epoch = self.epoch.wrapping_add(1);
-        self.in_flight = None;
-    }
-
-    pub fn begin(&mut self, key: &K) -> Option<(u64, Arc<AtomicBool>)> {
-        if self.in_flight.as_ref() == Some(key) {
-            return None;
-        }
-        self.invalidate();
-        let cancel = Arc::new(AtomicBool::new(false));
-        self.cancel = Some(Arc::clone(&cancel));
-        self.in_flight = Some(key.clone());
-        Some((self.epoch, cancel))
-    }
-
-    pub fn finish(&mut self, key: &K, epoch: u64) -> bool {
-        if self.in_flight.as_ref() == Some(key) && epoch == self.epoch {
-            self.in_flight = None;
-        }
-        epoch >= self.epoch
-    }
 }

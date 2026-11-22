@@ -1,14 +1,17 @@
 use std::fs;
 use std::path::Path;
 
-use git2::{Commit, DiffFindOptions, IndexEntry, IndexTime, ObjectType, Repository, ResetType, Signature};
 use git2::build::CheckoutBuilder;
+use git2::{Commit, DiffFindOptions, IndexEntry, IndexTime, ObjectType, ResetType, Signature};
 use jbgit_core::{
     AmendCommitPreview, DetailsKey, DiffContext, DiffHunk, DiffLine, DiffLineKind, EpochToken,
-    FileChange, FileDiff, FileDiffKey, FileStatusKind, MAX_DIFF_FILE_BYTES, Oid, StageDiffHunk,
+    FileChange, FileDiff, FileDiffKey, FileStatusKind, MAX_DIFF_LINES, Oid, StageDiffHunk,
     StageLineTracker, StageNodeKind, StageTarget,
 };
 
+use crate::blob_reader::{
+    CheckedBlob, read_head_tree_path, read_index_entry, read_tree_path, read_worktree_path,
+};
 use crate::error::EngineError;
 use crate::pool::{delta_to_kind, with_thread_repo};
 use crate::probe::{RepoLocation, to_core_oid};
@@ -94,156 +97,7 @@ pub struct CommitOutcome {
     pub preserved_message: Option<String>,
 }
 
-const MAX_STAGE_DIFF_LINES: usize = 20_000;
-
-enum StageReadSide {
-    Missing,
-    TooLarge { mode: Option<u32> },
-    Loaded {
-        bytes: Vec<u8>,
-        mode: Option<u32>,
-        is_binary: bool,
-    },
-}
-
-impl StageReadSide {
-    fn is_too_large(&self) -> bool {
-        matches!(self, Self::TooLarge { .. })
-    }
-
-    fn exists(&self) -> bool {
-        !matches!(self, Self::Missing)
-    }
-
-    fn mode(&self) -> Option<u32> {
-        match self {
-            Self::Missing => None,
-            Self::TooLarge { mode } | Self::Loaded { mode, .. } => *mode,
-        }
-    }
-
-    fn into_parts(self) -> (Option<Vec<u8>>, Option<u32>, bool) {
-        match self {
-            Self::Loaded {
-                bytes,
-                mode,
-                is_binary,
-            } => (Some(bytes), mode, is_binary),
-            Self::TooLarge { mode } => (None, mode, false),
-            Self::Missing => (None, None, false),
-        }
-    }
-}
-
-fn read_blob_if_within_limit(
-    repo: &Repository,
-    oid: git2::Oid,
-    mode: u32,
-) -> StageReadSide {
-    if let Ok(odb) = repo.odb()
-        && let Ok((size, ObjectType::Blob)) = odb.read_header(oid)
-        && size > MAX_DIFF_FILE_BYTES
-    {
-        return StageReadSide::TooLarge { mode: Some(mode) };
-    }
-    match repo.find_blob(oid) {
-        Ok(blob) => {
-            if blob.size() > MAX_DIFF_FILE_BYTES {
-                return StageReadSide::TooLarge { mode: Some(mode) };
-            }
-            let content = blob.content();
-            let is_bin = blob.is_binary() || content.contains(&0);
-            StageReadSide::Loaded {
-                bytes: content.to_vec(),
-                mode: Some(mode),
-                is_binary: is_bin,
-            }
-        }
-        Err(_) => StageReadSide::Loaded {
-            bytes: Vec::new(),
-            mode: Some(mode),
-            is_binary: false,
-        },
-    }
-}
-
-fn read_tree_entry(repo: &Repository, tree: &git2::Tree<'_>, rel_path: &str) -> StageReadSide {
-    let Ok(entry) = tree.get_path(Path::new(rel_path)) else {
-        return StageReadSide::Missing;
-    };
-    let mode = entry.filemode() as u32;
-    if entry.kind() != Some(ObjectType::Blob) {
-        return StageReadSide::Missing;
-    }
-    read_blob_if_within_limit(repo, entry.id(), mode)
-}
-
-fn read_head_tree_entry(repo: &Repository, rel_path: &str) -> StageReadSide {
-    let Ok(head) = repo.head() else {
-        return StageReadSide::Missing;
-    };
-    let Ok(commit) = head.peel_to_commit() else {
-        return StageReadSide::Missing;
-    };
-    let Ok(tree) = commit.tree() else {
-        return StageReadSide::Missing;
-    };
-    read_tree_entry(repo, &tree, rel_path)
-}
-
-fn read_index_entry(repo: &Repository, rel_path: &str) -> (StageReadSide, bool) {
-    let Ok(index) = repo.index() else {
-        return (StageReadSide::Missing, false);
-    };
-    let path_obj = Path::new(rel_path);
-    let is_conflicted = index.has_conflicts()
-        && (1..=3).any(|stage| index.get_path(path_obj, stage).is_some());
-
-    if let Some(entry) = index.get_path(path_obj, 0) {
-        let mode = entry.mode;
-        return (
-            read_blob_if_within_limit(repo, entry.id, mode),
-            is_conflicted,
-        );
-    }
-    (StageReadSide::Missing, is_conflicted)
-}
-
-fn read_worktree_file(workdir: &Path, rel_path: &str) -> StageReadSide {
-    let full = workdir.join(rel_path);
-    let Ok(meta) = fs::metadata(&full) else {
-        return StageReadSide::Missing;
-    };
-    #[cfg(unix)]
-    let mode = {
-        use std::os::unix::fs::PermissionsExt;
-        Some(if meta.permissions().mode() & 0o111 != 0 {
-            0o100755
-        } else {
-            0o100644
-        })
-    };
-    #[cfg(not(unix))]
-    let mode = Some(0o100644);
-
-    if meta.len() > MAX_DIFF_FILE_BYTES as u64 {
-        return StageReadSide::TooLarge { mode };
-    }
-    let Ok(bytes) = fs::read(&full) else {
-        return StageReadSide::Missing;
-    };
-    if bytes.len() > MAX_DIFF_FILE_BYTES {
-        return StageReadSide::TooLarge { mode };
-    }
-    let is_bin = bytes.iter().take(8192).any(|&b| b == 0);
-    StageReadSide::Loaded {
-        bytes,
-        mode,
-        is_binary: is_bin,
-    }
-}
-
-pub fn load_stage_file_diff_sync(
+pub(crate) fn load_stage_file_diff_sync(
     location: &RepoLocation,
     key: &StageDiffKey,
     token: &EpochToken,
@@ -266,16 +120,16 @@ pub fn load_stage_file_diff_sync(
                         .parent(0)
                         .ok()
                         .and_then(|p| p.tree().ok())
-                        .map(|t| read_tree_entry(repo, &t, vcs_lookup))
-                        .unwrap_or(StageReadSide::Missing);
+                        .map(|t| read_tree_path(repo, &t, vcs_lookup))
+                        .unwrap_or(CheckedBlob::Missing);
                     let head_res = commit
                         .tree()
                         .ok()
-                        .map(|t| read_tree_entry(repo, &t, &key.path))
-                        .unwrap_or(StageReadSide::Missing);
+                        .map(|t| read_tree_path(repo, &t, &key.path))
+                        .unwrap_or(CheckedBlob::Missing);
                     (parent_res, head_res)
                 }
-                None => (StageReadSide::Missing, StageReadSide::Missing),
+                None => (CheckedBlob::Missing, CheckedBlob::Missing),
             };
 
             if token.is_stale() {
@@ -334,7 +188,7 @@ pub fn load_stage_file_diff_sync(
                 return Err(EngineError::Cancelled);
             }
             let (hunks, is_truncated) =
-                tracker.build_interactive_hunks(true, key.context, MAX_STAGE_DIFF_LINES);
+                tracker.build_interactive_hunks(true, key.context, MAX_DIFF_LINES);
             if token.is_stale() {
                 return Err(EngineError::Cancelled);
             }
@@ -363,9 +217,9 @@ pub fn load_stage_file_diff_sync(
             &key.path
         };
 
-        let vcs_side = read_head_tree_entry(repo, vcs_lookup);
+        let vcs_side = read_head_tree_path(repo, vcs_lookup);
         let (staged_side, is_conflicted) = read_index_entry(repo, &key.path);
-        let local_side = read_worktree_file(&location.workdir, &key.path);
+        let local_side = read_worktree_path(&location.workdir, &key.path);
 
         if token.is_stale() {
             return Err(EngineError::Cancelled);
@@ -434,7 +288,7 @@ pub fn load_stage_file_diff_sync(
         let (mut hunks, is_truncated) = tracker.build_interactive_hunks(
             key.side == StageDiffSide::Staged,
             key.context,
-            MAX_STAGE_DIFF_LINES,
+            MAX_DIFF_LINES,
         );
         if token.is_stale() {
             return Err(EngineError::Cancelled);
@@ -446,7 +300,7 @@ pub fn load_stage_file_diff_sync(
             for (idx, t) in String::from_utf8_lossy(&local_bytes)
                 .lines()
                 .enumerate()
-                .take(MAX_STAGE_DIFF_LINES)
+                .take(MAX_DIFF_LINES)
             {
                 if idx % 64 == 0 && token.is_stale() {
                     return Err(EngineError::Cancelled);
@@ -462,7 +316,7 @@ pub fn load_stage_file_diff_sync(
                     },
                     old_lineno: Some(idx as u32 + 1),
                     new_lineno: Some(idx as u32 + 1),
-                    text: t.replace('\t', "    "),
+                    text: t.trim_end_matches('\r').to_string(),
                     word_ranges: Vec::new(),
                 });
             }
@@ -499,7 +353,7 @@ pub fn load_stage_file_diff_sync(
 
 /// Writes `new_staged_bytes` directly into `.git/objects` and `.git/index` via
 /// `git2::Index::add_frombuffer`, never touching the working tree.
-pub fn apply_stage_buffer_sync(
+pub(crate) fn apply_stage_buffer_sync(
     location: &RepoLocation,
     path: &str,
     new_staged_bytes: &[u8],
@@ -548,7 +402,7 @@ pub fn apply_stage_buffer_sync(
 }
 
 /// Atomically writes `new_local_bytes` back to the worktree file (used for partial rollback & undo).
-pub fn write_worktree_buffer_sync(
+pub(crate) fn write_worktree_buffer_sync(
     location: &RepoLocation,
     path: &str,
     new_local_bytes: &[u8],
@@ -561,7 +415,7 @@ pub fn write_worktree_buffer_sync(
     Ok(())
 }
 
-pub fn stage_targets_sync(
+pub(crate) fn stage_targets_sync(
     location: &RepoLocation,
     targets: &[StageTarget],
 ) -> Result<(), EngineError> {
@@ -587,7 +441,7 @@ pub fn stage_targets_sync(
     })
 }
 
-pub fn stage_all_tracked_sync(location: &RepoLocation) -> Result<(), EngineError> {
+pub(crate) fn stage_all_tracked_sync(location: &RepoLocation) -> Result<(), EngineError> {
     with_thread_repo(&location.git_dir, |repo| {
         let mut index = repo.index()?;
         index.update_all(["*"], None)?;
@@ -596,7 +450,7 @@ pub fn stage_all_tracked_sync(location: &RepoLocation) -> Result<(), EngineError
     })
 }
 
-pub fn unstage_targets_sync(
+pub(crate) fn unstage_targets_sync(
     location: &RepoLocation,
     targets: &[StageTarget],
 ) -> Result<(), EngineError> {
@@ -628,7 +482,7 @@ pub fn unstage_targets_sync(
     })
 }
 
-pub fn discard_targets_sync(
+pub(crate) fn discard_targets_sync(
     location: &RepoLocation,
     targets: &[StageTarget],
 ) -> Result<(), EngineError> {
@@ -658,7 +512,7 @@ pub fn discard_targets_sync(
     })
 }
 
-pub fn load_amend_preview_sync(
+pub(crate) fn load_amend_preview_sync(
     location: &RepoLocation,
 ) -> Result<Option<AmendCommitPreview>, EngineError> {
     with_thread_repo(&location.git_dir, |repo| {
@@ -719,7 +573,7 @@ pub fn load_amend_preview_sync(
     })
 }
 
-pub fn probe_commit_precheck_sync(location: &RepoLocation) -> CommitPrecheckInfo {
+pub(crate) fn probe_commit_precheck_sync(location: &RepoLocation) -> CommitPrecheckInfo {
     with_thread_repo(&location.git_dir, |repo| {
         let cfg = repo.config().ok();
         let user_name = cfg.as_ref().and_then(|c| c.get_string("user.name").ok());
@@ -815,7 +669,7 @@ fn append_signoff_if_needed(message: &str, name: &str, email: &str) -> String {
 }
 
 /// Fast-path commit using `git2` (used when no commit hooks or GPG signing are active).
-pub fn execute_commit_git2_sync(
+pub(crate) fn execute_commit_git2_sync(
     location: &RepoLocation,
     req: &CommitRequest,
 ) -> Result<CommitOutcome, EngineError> {
@@ -896,7 +750,7 @@ pub fn execute_commit_git2_sync(
 }
 
 /// Builds CLI arguments for `git commit --file=-` when hooks or GPG signing are active.
-pub fn build_commit_cli_args(req: &CommitRequest) -> (Vec<String>, Vec<u8>) {
+pub(crate) fn build_commit_cli_args(req: &CommitRequest) -> (Vec<String>, Vec<u8>) {
     let mut args = vec!["commit".to_string(), "--file=-".to_string()];
     if req.amend {
         args.push("--amend".to_string());
@@ -915,8 +769,107 @@ pub fn build_commit_cli_args(req: &CommitRequest) -> (Vec<String>, Vec<u8>) {
     (args, req.message.as_bytes().to_vec())
 }
 
+/// Executes a CLI commit (`hooks` or `gpg_sign`) through [`crate::cli::GitCliRunner`],
+/// returning both the [`CommitOutcome`] and any detected `index.lock` conflict.
+pub(crate) async fn execute_commit_cli_async<R, F>(
+    cli: &R,
+    loc: &RepoLocation,
+    id: u64,
+    request: CommitRequest,
+    on_cli: F,
+) -> (CommitOutcome, Option<crate::cli::IndexLockConflict>)
+where
+    R: crate::cli::GitCliRunner,
+    F: Fn(crate::cli::CliStreamEvent) + Send + Sync,
+{
+    let (args, stdin_payload) = build_commit_cli_args(&request);
+    let res = cli
+        .execute_boxed(
+            crate::cli::CliCommand {
+                id,
+                workdir: &loc.workdir,
+                git_dir: &loc.git_dir,
+                args: &args,
+                stdin_payload: Some(&stdin_payload),
+                is_read_only: false,
+                env: &[],
+            },
+            &on_cli,
+        )
+        .await;
+
+    match res {
+        Ok(out) if out.exit_code == 0 => {
+            let oid = with_thread_repo(&loc.git_dir, |r| {
+                Ok(crate::probe::probe_repo_state(r).head_oid)
+            })
+            .ok()
+            .flatten();
+            let short = oid.map(|o| o.short());
+            let label = short.clone().unwrap_or_default();
+            (
+                CommitOutcome {
+                    success: true,
+                    commit_oid: oid,
+                    short_sha: short,
+                    summary: if request.amend {
+                        format!("Amended commit {label}")
+                    } else {
+                        format!("Committed {label}")
+                    },
+                    error_output: None,
+                    and_push: request.and_push,
+                    preserved_message: None,
+                },
+                None,
+            )
+        }
+        Ok(out) => {
+            let index_lock =
+                out.index_lock_conflict
+                    .map(|(lock_path, message)| crate::cli::IndexLockConflict {
+                        lock_path,
+                        message,
+                        retry_args: args,
+                        retry_stdin: Some(stdin_payload),
+                        retry_is_read_only: false,
+                    });
+            let mut combined = out.stderr_lines.clone();
+            if combined.is_empty() {
+                combined = out.stdout_lines;
+            } else if !out.stdout_lines.is_empty() {
+                combined.extend(out.stdout_lines);
+            }
+            (
+                CommitOutcome {
+                    success: false,
+                    commit_oid: None,
+                    short_sha: None,
+                    summary: format!("Commit failed (exit {})", out.exit_code),
+                    error_output: Some(combined.join("\n")),
+                    and_push: false,
+                    preserved_message: Some(request.message),
+                },
+                index_lock,
+            )
+        }
+        Err(e) => (
+            CommitOutcome {
+                success: false,
+                commit_oid: None,
+                short_sha: None,
+                summary: "Commit failed".to_string(),
+                error_output: Some(e.to_string()),
+                and_push: false,
+                preserved_message: Some(request.message),
+            },
+            None,
+        ),
+    }
+}
+
 /// Soft-resets `HEAD` back to `HEAD~1` (`Git.Uncommit`), preserving all changes in Index.
-pub fn undo_last_commit_sync(location: &RepoLocation) -> Result<String, EngineError> {
+pub(crate) fn undo_last_commit_sync(location: &RepoLocation) -> Result<String, EngineError> {
     with_thread_repo(&location.git_dir, |repo| {
         let head = repo.head()?;
         let commit = head.peel_to_commit()?;

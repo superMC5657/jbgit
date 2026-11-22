@@ -119,6 +119,78 @@ pub(crate) fn resolve_key_in_scopes(
     None
 }
 
+/// Resolves the active display key for `action` across `scopes`, respecting
+/// higher-priority scope shadowing, `noop` overrides, and speed-search capture.
+pub(crate) fn resolve_action_shortcut(
+    state: &AppState,
+    scopes: &[KeymapScope],
+    action: &KeyAction,
+) -> Option<String> {
+    let ctx = KeyResolveCtx {
+        state,
+        filter_speed_search: false,
+        editor_only: false,
+        claimed_keys: &[],
+    };
+    let km = &state.config.keymap;
+    for (scope_idx, &scope) in scopes.iter().enumerate() {
+        for (binding_idx, binding) in km.bindings_for(scope).iter().enumerate() {
+            if binding.run == *action
+                && let Some(key) =
+                    resolve_key_in_scopes(&ctx, scopes, scope_idx, binding_idx, binding)
+            {
+                return Some(key);
+            }
+        }
+    }
+    None
+}
+
+/// Resolves all unshadowed display keys for `action` across `scopes` (checking
+/// higher-priority scope shadowing, `noop` overrides, and `preferred_scopes` order).
+pub(crate) fn resolve_all_action_shortcuts(
+    state: &AppState,
+    active_scopes: &[KeymapScope],
+    preferred_scopes: &[KeymapScope],
+    action: &KeyAction,
+) -> Vec<String> {
+    let ctx = KeyResolveCtx {
+        state,
+        filter_speed_search: false,
+        editor_only: false,
+        claimed_keys: &[],
+    };
+    let mut combined = active_scopes.to_vec();
+    for &s in preferred_scopes {
+        if !combined.contains(&s) {
+            combined.push(s);
+        }
+    }
+    let km = &state.config.keymap;
+    let mut out = Vec::new();
+    for &pref in preferred_scopes {
+        let Some(scope_idx) = combined.iter().position(|&s| s == pref) else {
+            continue;
+        };
+        for (binding_idx, binding) in km.bindings_for(pref).iter().enumerate() {
+            if binding.run == *action
+                && let Some(seq) = binding.parsed_seq()
+                && is_candidate_usable(&ctx, &combined, 0, scope_idx, binding_idx, seq, action)
+                && let Some(disp) = binding.display_key()
+                && !out.iter().any(|existing| existing == disp)
+            {
+                out.push(disp.to_string());
+            }
+        }
+    }
+    if out.is_empty()
+        && let Some(primary) = resolve_action_shortcut(state, &combined, action)
+    {
+        out.push(primary);
+    }
+    out
+}
+
 pub(crate) fn push_unique_seq(out: &mut Vec<KeySequence>, seq: &KeySequence) {
     if !out.contains(seq) {
         out.push(seq.clone());

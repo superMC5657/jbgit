@@ -1,35 +1,46 @@
-//! `[3 Stash]` workbench state (`git4idea/stash/ui`): stash list selection
-//! paired with a `DetailsPaneState` so the right pane reuses
-//! `CommitChangesBrowser` + `DiffPreview`.
+//! `[3 Stash]` workbench (`git4idea/stash/ui`): encapsulates stash list
+//! selection paired with shared [`ChangesTreeSession`] + [`DiffSession`]
+//! reading from the single global [`DiffCacheStore`].
 
 use std::sync::Arc;
 
-use jbgit_core::{DetailsKey, FileDiffKey, RepoSnapshot, StashEntry};
+use jbgit_core::{
+    DetailsKey, DiffContext, FileDiff, FileDiffKey, RepoSnapshot, RequestSlotId, StashEntry,
+};
 
-use crate::app::Effect;
-use crate::log_view::DetailsPaneState;
+use crate::app::{Action, ChangesHost, DiffScope, Effect};
+use crate::diff_session::{ChangesTreeSession, DiffCacheStore, DiffSession};
 
-#[derive(Debug)]
-pub struct StashTabState {
-    pub selected: usize,
-    pub details: DetailsPaneState,
-    pub requested_details: Option<DetailsKey>,
+#[derive(Debug, Default)]
+pub struct StashWorkbench {
+    selected: usize,
+    changes: ChangesTreeSession,
+    diff: DiffSession,
+    requested_details: Option<DetailsKey>,
 }
 
-impl Default for StashTabState {
-    fn default() -> Self {
+impl StashWorkbench {
+    pub fn with_diff_context(context: DiffContext) -> Self {
         Self {
             selected: 0,
-            details: DetailsPaneState {
-                diff_preview: true,
-                ..Default::default()
-            },
+            changes: ChangesTreeSession::default(),
+            diff: DiffSession::new(context),
             requested_details: None,
         }
     }
-}
 
-impl StashTabState {
+    pub fn selected(&self) -> usize {
+        self.selected
+    }
+
+    pub fn changes(&self) -> &ChangesTreeSession {
+        &self.changes
+    }
+
+    pub fn diff(&self) -> &DiffSession {
+        &self.diff
+    }
+
     pub fn selected_entry<'a>(&self, stashes: &'a [StashEntry]) -> Option<&'a StashEntry> {
         stashes.get(self.selected.min(stashes.len().saturating_sub(1)))
     }
@@ -39,17 +50,116 @@ impl StashTabState {
             .map(|s| DetailsKey::single(s.oid))
     }
 
-    pub fn changes_len(&self) -> usize {
-        self.details.change_rows().len()
+    pub fn changes_len(&self, store: &DiffCacheStore) -> usize {
+        self.changes.change_rows(store).len()
     }
 
-    pub fn diff_key(&self) -> Option<FileDiffKey> {
-        self.details.desired_diff_key()
+    pub fn diff_key(&self, store: &DiffCacheStore) -> Option<FileDiffKey> {
+        self.changes.desired_diff_key(store, self.diff.context)
+    }
+
+    pub fn scroll_diff(&mut self, delta: isize, store: &DiffCacheStore) {
+        let diff = self.diff_key(store).and_then(|k| store.peek_diff(&k));
+        let fallback = self.diff.fallback_max_scroll(diff);
+        self.diff.scroll.scroll_by(delta, fallback);
+    }
+
+    pub fn bind_diff_viewport(&mut self, viewport_h: usize, max_scroll: usize) {
+        self.diff.scroll.bind_bound(viewport_h, max_scroll);
+    }
+
+    pub fn on_details_loaded(&mut self, key: &DetailsKey) {
+        if self.requested_details.as_ref() == Some(key) {
+            self.requested_details = None;
+        }
+    }
+
+    pub fn on_file_diff_loaded(&mut self, key: &FileDiffKey) {
+        if self.diff.requested.as_ref() == Some(key) {
+            self.diff.requested = None;
+        }
+    }
+
+    pub fn on_error(&mut self) {
+        self.diff.requested = None;
+    }
+
+    pub fn pending_syntax_diff(&self, store: &DiffCacheStore) -> Option<Arc<FileDiff>> {
+        let dk = self.diff_key(store)?;
+        if store.peek_syntax(&dk).is_none() {
+            store.peek_diff(&dk).cloned()
+        } else {
+            None
+        }
+    }
+
+    pub fn dispatch(
+        &mut self,
+        action: &Action,
+        store: &DiffCacheStore,
+        snap: Option<&RepoSnapshot>,
+    ) -> bool {
+        match action {
+            Action::StashSelect(idx) => {
+                let len = snap.map_or(0, |s| s.stashes.len());
+                if len > 0 {
+                    self.selected = (*idx).min(len - 1);
+                    self.changes.selected = 0;
+                    self.diff.scroll.reset();
+                }
+            }
+            Action::StashMove(delta) => {
+                let len = snap.map_or(0, |s| s.stashes.len());
+                if len > 0 {
+                    let next = (self.selected as isize + delta).clamp(0, len as isize - 1);
+                    self.selected = next as usize;
+                    self.changes.selected = 0;
+                    self.diff.scroll.reset();
+                }
+            }
+            Action::ChangesMove(ChangesHost::Stash, delta) => {
+                self.changes.move_selection(*delta, store);
+                self.diff.scroll.reset();
+            }
+            Action::ChangesSelect(ChangesHost::Stash, idx) => {
+                self.changes.select_row(*idx, store);
+                self.diff.scroll.reset();
+            }
+            Action::ChangesExpand(ChangesHost::Stash, expand) => {
+                self.changes.expand_or_collapse(*expand, store);
+            }
+            Action::ChangesToggleGroupByDir(ChangesHost::Stash) => {
+                self.changes.toggle_group_by_dir();
+            }
+            Action::ChangesExpandAll(ChangesHost::Stash, expand) => {
+                self.changes.expand_all(*expand, store);
+            }
+            Action::DiffNextFile(DiffScope::Stash, delta) => {
+                self.changes.select_next_file(*delta, store);
+                self.diff.scroll.reset();
+            }
+            Action::DiffJumpHunk(DiffScope::Stash, delta) => {
+                let diff = self.diff_key(store).and_then(|k| store.peek_diff(&k));
+                self.diff.jump_hunk(*delta, diff);
+            }
+            Action::DiffToggleSideBySide(DiffScope::Stash) => {
+                self.diff.toggle_side_by_side();
+            }
+            Action::DiffCycleContext(DiffScope::Stash) => {
+                self.diff.cycle_context();
+            }
+            Action::DiffScroll(DiffScope::Stash, delta) => {
+                self.scroll_diff(*delta, store);
+            }
+            _ => return false,
+        }
+        true
     }
 
     pub fn reconcile_requests(
         &mut self,
         snap: Option<&Arc<RepoSnapshot>>,
+        store: &DiffCacheStore,
         active: bool,
         effects: &mut Vec<Effect>,
     ) {
@@ -61,32 +171,38 @@ impl StashTabState {
         };
         if snap.stashes.is_empty() {
             self.selected = 0;
-            self.details.current_key = None;
+            self.changes.current_key = None;
             return;
         }
         self.selected = self.selected.min(snap.stashes.len() - 1);
         let desired = self.details_key(&snap.stashes);
-        if desired != self.details.current_key {
-            self.details.current_key = desired.clone();
-            self.details.changes_selected = 0;
-            self.details.diff_scroll = 0;
+        if desired != self.changes.current_key {
+            self.changes.current_key = desired.clone();
+            self.changes.selected = 0;
+            self.diff.scroll.reset();
         }
         let Some(key) = desired else {
             return;
         };
-        if !self.details.cache.contains(&key) {
+        if !store.details.contains(&key) {
             if self.requested_details.as_ref() != Some(&key) {
                 self.requested_details = Some(key.clone());
-                effects.push(Effect::RequestCommitDetails(key));
+                effects.push(Effect::RequestCommitDetails {
+                    slot: RequestSlotId::StashCommitDetails,
+                    key,
+                });
             }
             return;
         }
-        if let Some(dk) = self.diff_key()
-            && !self.details.diff_cache.contains(&dk)
-            && self.details.requested_diff.as_ref() != Some(&dk)
+        if let Some(dk) = self.diff_key(store)
+            && !store.diffs.contains(&dk)
+            && self.diff.requested.as_ref() != Some(&dk)
         {
-            self.details.requested_diff = Some(dk.clone());
-            effects.push(Effect::RequestFileDiff(dk));
+            self.diff.requested = Some(dk.clone());
+            effects.push(Effect::RequestFileDiff {
+                slot: RequestSlotId::StashFileDiff,
+                key: dk,
+            });
         }
     }
 }

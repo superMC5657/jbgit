@@ -22,7 +22,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Paragraph};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
-use crate::app::{AppState, RenderContext, ViewportScrollMetrics};
+use crate::app::{AppState, RenderContext};
 use crate::hit_test::HitTarget;
 use crate::theme::ThemePalette;
 use crate::widgets::{DividerProps, OneCellSplitter};
@@ -128,14 +128,15 @@ pub fn render_app(frame: &mut Frame<'_>, state: &mut AppState) {
     };
     if state.active_tab == WorkspaceTab::Log {
         // Pane header + filter bar sit above the commit table.
-        state.log_graph.last_viewport_h = body_h.saturating_sub(2) as usize;
+        state.log.graph.last_viewport_h = body_h.saturating_sub(2) as usize;
     }
 
     // Register splitter containers separately after collecting them from layout helpers
     let mut splitter_containers = Vec::new();
     let mut hit_registry = std::mem::take(&mut state.hit_registry);
-    let mut graph_renderer = std::mem::take(&mut state.graph_renderer);
-    let mut scroll_metrics = ViewportScrollMetrics::default();
+    let mut graph_renderer = std::mem::take(&mut state.log.graph_renderer);
+    let mut scroll_bounds = Vec::new();
+    let mut commit_editor_viewport = None;
     graph_renderer.begin_frame();
 
     {
@@ -150,7 +151,8 @@ pub fn render_app(frame: &mut Frame<'_>, state: &mut AppState) {
             graph_renderer: Some(&mut graph_renderer),
             i18n: Some(&state.i18n),
             config: Some(&state.config),
-            scroll_metrics: Some(&mut scroll_metrics),
+            scroll_bounds: Some(&mut scroll_bounds),
+            commit_editor_viewport: Some(&mut commit_editor_viewport),
             splitter_containers: Some(&mut splitter_containers),
         };
 
@@ -185,8 +187,8 @@ pub fn render_app(frame: &mut Frame<'_>, state: &mut AppState) {
     }
 
     state.hit_registry = hit_registry;
-    state.graph_renderer = graph_renderer;
-    state.clamp_scroll_metrics(scroll_metrics);
+    state.log.graph_renderer = graph_renderer;
+    state.bind_rendered_scroll_bounds(&scroll_bounds, commit_editor_viewport);
     for (id, axis, rect) in splitter_containers {
         state.splitter_containers.insert(id, (axis, rect));
     }

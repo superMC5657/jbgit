@@ -9,11 +9,11 @@
 # pass `--target-dir tools/jbgit-pilot/target`)
 cargo build -p jbgit-tui
 
-# Build the pilot driver
-cargo build --manifest-path tools/jbgit-pilot/Cargo.toml
+# Build the pilot driver (workspace member)
+cargo build -p jbgit-pilot
 ```
 
-Binary path: `.\tools\jbgit-pilot\target\debug\jbgit-pilot.exe`
+Binary path: `.\target\debug\jbgit-pilot.exe`
 
 ## 2. Pre-built Sandbox Scenarios (Zero Git Setup Needed)
 
@@ -31,14 +31,14 @@ Creates `.pilot/sandbox-repo` + bare remote `.pilot/sandbox-remote.git` with:
 - Isolated empty config dir (does not touch user global config)
 
 ```powershell
-.\tools\jbgit-pilot\target\debug\jbgit-pilot.exe serve --sandbox --cols 140 --rows 40
+.\target\debug\jbgit-pilot.exe serve --sandbox --cols 140 --rows 40
 ```
 
 ### Scenario B: Merge Conflict (`--scenario conflict`)
 Creates `.pilot/sandbox-repo` in an active **`git merge` conflict** state (`conflict_app.txt` has real `<<<<<<<` / `=======` / `>>>>>>>` conflict markers) for testing the ongoing conflict banner and 3-way conflict resolver:
 
 ```powershell
-.\tools\jbgit-pilot\target\debug\jbgit-pilot.exe serve --scenario conflict --cols 140 --rows 40
+.\target\debug\jbgit-pilot.exe serve --scenario conflict --cols 140 --rows 40
 ```
 
 ### Scenario C: Custom Theme & Keymap Config (`--custom-config`)
@@ -48,7 +48,7 @@ Can be combined with `--sandbox` (or `--repo <dir>`) to auto-generate `.pilot/cu
 - `keymap.toml`: `footer_max_lines = 2`, unbinds `r`/`b`/`n`/`<C-s>` via `noop`, rebinds `refresh -> <F8>`, `toggle_branches_popup -> <F6>`, `new_branch -> <F7>`, `commit -> <F9>`, and adds custom chord `["g", "x"] -> refresh`
 
 ```powershell
-.\tools\jbgit-pilot\target\debug\jbgit-pilot.exe serve --sandbox --custom-config --cols 140 --rows 40
+.\target\debug\jbgit-pilot.exe serve --sandbox --custom-config --cols 140 --rows 40
 ```
 
 ## 3. Interactive AI Testing Commands
@@ -57,37 +57,37 @@ Every action command injects real PTY input, waits for screen output to settle, 
 
 ```powershell
 # Read current screen
-.\tools\jbgit-pilot\target\debug\jbgit-pilot.exe screen
+.\target\debug\jbgit-pilot.exe screen
 
 # Send keys (single chars, named keys, or modifier combos)
-.\tools\jbgit-pilot\target\debug\jbgit-pilot.exe key b
-.\tools\jbgit-pilot\target\debug\jbgit-pilot.exe key Down Down Enter
-.\tools\jbgit-pilot\target\debug\jbgit-pilot.exe key Ctrl+s
-.\tools\jbgit-pilot\target\debug\jbgit-pilot.exe key Shift+F10
-.\tools\jbgit-pilot\target\debug\jbgit-pilot.exe key F8
-.\tools\jbgit-pilot\target\debug\jbgit-pilot.exe key Alt+r
+.\target\debug\jbgit-pilot.exe key b
+.\target\debug\jbgit-pilot.exe key Down Down Enter
+.\target\debug\jbgit-pilot.exe key Ctrl+s
+.\target\debug\jbgit-pilot.exe key Shift+F10
+.\target\debug\jbgit-pilot.exe key F8
+.\target\debug\jbgit-pilot.exe key Alt+r
 
 # Type UTF-8 text into focused search box / commit editor / dialog input
-.\tools\jbgit-pilot\target\debug\jbgit-pilot.exe type "fix: test commit"
+.\target\debug\jbgit-pilot.exe type "fix: test commit"
 
 # Locate UI text to get exact 0-based (col, row) coordinates, then hover / left-click / right-click / scroll
-.\tools\jbgit-pilot\target\debug\jbgit-pilot.exe find "Commit"
-.\tools\jbgit-pilot\target\debug\jbgit-pilot.exe hover 12 1
-.\tools\jbgit-pilot\target\debug\jbgit-pilot.exe click 12 1
-.\tools\jbgit-pilot\target\debug\jbgit-pilot.exe rclick 45 5
-.\tools\jbgit-pilot\target\debug\jbgit-pilot.exe scroll down 45 5 --steps 3
+.\target\debug\jbgit-pilot.exe find "Commit"
+.\target\debug\jbgit-pilot.exe hover 12 1
+.\target\debug\jbgit-pilot.exe click 12 1
+.\target\debug\jbgit-pilot.exe rclick 45 5
+.\target\debug\jbgit-pilot.exe scroll down 45 5 --steps 3
 
 # Inspect real RGB colors & OSC 52 clipboard output
-.\tools\jbgit-pilot\target\debug\jbgit-pilot.exe colors
-.\tools\jbgit-pilot\target\debug\jbgit-pilot.exe inspect-row 39
-.\tools\jbgit-pilot\target\debug\jbgit-pilot.exe clipboard
+.\target\debug\jbgit-pilot.exe colors
+.\target\debug\jbgit-pilot.exe inspect-row 39
+.\target\debug\jbgit-pilot.exe clipboard
 
 # Resize terminal dynamically & wait for async git ops
-.\tools\jbgit-pilot\target\debug\jbgit-pilot.exe resize 80 24
-.\tools\jbgit-pilot\target\debug\jbgit-pilot.exe wait-idle
+.\target\debug\jbgit-pilot.exe resize 80 24
+.\target\debug\jbgit-pilot.exe wait-idle
 
 # Cleanly quit jbgit and close the PTY session
-.\tools\jbgit-pilot\target\debug\jbgit-pilot.exe stop
+.\target\debug\jbgit-pilot.exe stop
 ```
 
 Raw PTY output (including any stderr panic backtrace) is saved at `.pilot/pty_raw.log`.

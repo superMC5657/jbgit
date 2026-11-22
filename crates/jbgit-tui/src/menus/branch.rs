@@ -2,10 +2,8 @@ use jbgit_core::{GitOp, OngoingKind, OngoingStep, RefKind};
 
 use crate::app::{Action, AppState, ContextMenuItem};
 use crate::config::KeymapScope;
-use crate::dialogs::{
-    ChoiceDialog, Dialog, InputDialog, InputIntent, InputValidation, new_branch_dialog,
-};
-use crate::keymap::KeyAction;
+use crate::dialogs::new_branch_dialog;
+use crate::keymap::{KeyAction, catalog};
 
 use super::{dialog, ellipsize, local_names, op, run};
 
@@ -15,24 +13,20 @@ pub fn branch_menu_items(state: &AppState, name: &str, kind: RefKind) -> Vec<Con
         return Vec::new();
     };
     let i18n = &state.i18n;
-    let km = &state.config.keymap;
-    let checkout_sc = km.primary_key_for(&[KeymapScope::Branch], &KeyAction::Checkout);
-    let new_branch_sc = km.primary_key_for(&[KeymapScope::Branch], &KeyAction::NewBranch);
-    let pull_sc = km.primary_key_for(&[KeymapScope::Global], &KeyAction::GitPull);
-    let push_sc = km.primary_key_for(&[KeymapScope::Global], &KeyAction::GitPush);
-    let rename_sc = km.primary_key_for(&[KeymapScope::Branch], &KeyAction::RenameBranch);
-    let delete_sc = km
-        .all_keys_for(&[KeymapScope::Branch], &KeyAction::DeleteBranch)
-        .join(" / ");
-    let delete_sc = (!delete_sc.is_empty()).then_some(delete_sc);
-    let fav_sc = km.primary_key_for(&[KeymapScope::Branch], &KeyAction::ToggleFavorite);
+    let checkout_sc = catalog::shortcut_for_action(state, &[KeymapScope::Branch], &KeyAction::Checkout);
+    let new_branch_sc = catalog::shortcut_for_action(state, &[KeymapScope::Branch], &KeyAction::NewBranch);
+    let pull_sc = catalog::shortcut_for_action(state, &[KeymapScope::Global], &KeyAction::GitPull);
+    let push_sc = catalog::shortcut_for_action(state, &[KeymapScope::Global], &KeyAction::GitPush);
+    let rename_sc = catalog::shortcut_for_action(state, &[KeymapScope::Branch], &KeyAction::RenameBranch);
+    let delete_sc = catalog::all_shortcuts_for_action(state, &[KeymapScope::Branch], &KeyAction::DeleteBranch);
+    let fav_sc = catalog::shortcut_for_action(state, &[KeymapScope::Branch], &KeyAction::ToggleFavorite);
 
     let current = snap.head_branch.clone();
     let cur = current.clone().unwrap_or_else(|| "HEAD".to_string());
     let no_ongoing = state.require_no_ongoing();
     let detached = current.is_none();
     let star_item = |full: &str, short: &str| {
-        let fav = state.branches.settings.favorites.is_favorite(full, short);
+        let fav = state.log.branches.settings.favorites.is_favorite(full, short);
         run(
             if fav {
                 i18n.t("menu.branch.unmark_favorite")
@@ -60,18 +54,13 @@ pub fn branch_menu_items(state: &AppState, name: &str, kind: RefKind) -> Vec<Con
             let is_current = current.as_deref() == Some(name.as_str());
             let full = format!("refs/heads/{name}");
             items.push(
-                run(
+                ContextMenuItem::from_command(
                     i18n.t("menu.branch.checkout"),
                     Some('c'),
                     checkout_sc.as_deref(),
-                    op(GitOp::Checkout {
-                        target: name.clone(),
-                        detach: false,
-                    }),
+                    catalog::branch_checkout(state, &name, kind),
                 )
-                .icon("⎇")
-                .enabled_if(!is_current, i18n.t_fmt("menu.branch.already_checked_out", &[("name", &name)]))
-                .require(no_ongoing.clone()),
+                .icon("⎇"),
             );
             items.push(
                 run(
@@ -192,38 +181,26 @@ pub fn branch_menu_items(state: &AppState, name: &str, kind: RefKind) -> Vec<Con
                 .icon("↑"),
             );
             items.push(ContextMenuItem::separator());
-            let mut existing = local_names(state);
-            existing.retain(|n| n != &name);
-            items.push(run(
+            items.push(ContextMenuItem::from_command(
                 i18n.t("menu.branch.rename"),
                 Some('e'),
                 rename_sc.as_deref(),
-                dialog(Dialog::Input(InputDialog::new(
-                    i18n.t_fmt("dialog.rename_branch.title", &[("name", &name)]),
-                    i18n.t("dialog.rename_branch.prompt"),
-                    name.clone(),
-                    InputValidation::RefName {
-                        what: "Branch",
-                        existing,
-                    },
-                    InputIntent::RenameBranch { old: name.clone() },
-                ))),
+                catalog::branch_rename(state, &name, kind),
             ));
             items.push(
-                run(
+                ContextMenuItem::from_command(
                     i18n.t("menu.branch.delete"),
                     Some('d'),
                     delete_sc.as_deref(),
-                    vec![Action::PromptDeleteBranch { name: name.clone() }],
+                    catalog::branch_delete(state, &name, kind),
                 )
-                .icon("✕")
-                .enabled_if(!is_current, i18n.t("menu.branch.cannot_delete_current")),
+                .icon("✕"),
             );
             items.push(ContextMenuItem::separator());
             items.push(star_item(&full, &name));
         }
         RefKind::RemoteBranch => {
-            let (remote, short) = name.split_once('/').unwrap_or(("origin", name));
+            let (_remote, short) = name.split_once('/').unwrap_or(("origin", name));
             let full = format!("refs/remotes/{name}");
             let target_oid = snap
                 .refs
@@ -231,16 +208,13 @@ pub fn branch_menu_items(state: &AppState, name: &str, kind: RefKind) -> Vec<Con
                 .find(|r| r.kind == RefKind::RemoteBranch && r.name == name)
                 .map(|r| r.target_oid);
             items.push(
-                run(
+                ContextMenuItem::from_command(
                     i18n.t("menu.branch.checkout"),
                     Some('c'),
                     checkout_sc.as_deref(),
-                    vec![Action::CheckoutRemoteBranch {
-                        remote_ref: name.to_string(),
-                    }],
+                    catalog::branch_checkout(state, name, RefKind::RemoteBranch),
                 )
-                .icon("⎇")
-                .require(no_ongoing.clone()),
+                .icon("⎇"),
             );
             items.push(
                 run(
@@ -299,26 +273,11 @@ pub fn branch_menu_items(state: &AppState, name: &str, kind: RefKind) -> Vec<Con
             );
             items.push(ContextMenuItem::separator());
             items.push(
-                run(
+                ContextMenuItem::from_command(
                     i18n.t("menu.branch.delete"),
                     Some('d'),
                     None,
-                    dialog(Dialog::Choice(ChoiceDialog::confirm(
-                        i18n.t("menu.branch.delete_remote_title"),
-                        vec![
-                            i18n.t_fmt(
-                                "menu.branch.delete_remote_prompt",
-                                &[("short", short), ("remote", remote)],
-                            ),
-                            i18n.t("menu.branch.delete_remote_warn").into(),
-                        ],
-                        i18n.t("menu.branch.delete_remote_title"),
-                        i18n.cancel(),
-                        op(GitOp::DeleteRemoteBranch {
-                            remote: remote.to_string(),
-                            branch: short.to_string(),
-                        }),
-                    ))),
+                    catalog::branch_delete(state, name, RefKind::RemoteBranch),
                 )
                 .icon("✕"),
             );
@@ -327,17 +286,13 @@ pub fn branch_menu_items(state: &AppState, name: &str, kind: RefKind) -> Vec<Con
         }
         RefKind::Tag => {
             items.push(
-                run(
+                ContextMenuItem::from_command(
                     i18n.t("menu.branch.checkout"),
                     Some('c'),
                     None,
-                    op(GitOp::Checkout {
-                        target: name.to_string(),
-                        detach: true,
-                    }),
+                    catalog::branch_checkout(state, name, RefKind::Tag),
                 )
-                .icon("⌖")
-                .require(no_ongoing.clone()),
+                .icon("⌖"),
             );
             items.push(run(
                 i18n.t_fmt("menu.branch.new_branch_from", &[("name", &ellipsize(name, 24))]),

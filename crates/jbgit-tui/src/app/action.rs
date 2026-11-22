@@ -1,10 +1,32 @@
-use jbgit_core::{ConflictChoice, GitOp, Oid, PaneId, SplitterId, WorkspaceTab};
+use std::time::Instant;
+
+use crossterm::event::KeyEvent;
+use jbgit_core::{
+    ConflictChoice, GitOp, Oid, PaneId, RefreshScope, SplitterId, StageTarget, WorkspaceTab,
+};
+use jbgit_engine::CommitRequest;
 
 use crate::dialogs::Dialog;
-use crate::hit_test::DiffHunkActionKind;
+use crate::hit_test::{DiffHunkActionKind, HitTarget};
 use crate::log_view::{FileHistoryFocus, FilterField, PresentationToggle};
 
-use super::{ContextMenuItem, EditorMoveKind, MenuParent, PopupKind};
+use super::{ContextMenuItem, DragState, EditorMoveKind, MenuParent, PopupKind};
+
+/// Target host for shared changed-files tree actions (`[2 Log]` or `[3 Stash]`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChangesHost {
+    Log,
+    Stash,
+}
+
+/// Target host for shared diff viewer actions across all four workbenches.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DiffScope {
+    Log,
+    Stash,
+    FileHistory,
+    Stage,
+}
 
 #[derive(Debug, Clone)]
 pub enum Action {
@@ -27,10 +49,66 @@ pub enum Action {
         items: Vec<ContextMenuItem>,
         depth: u8,
     },
+    /// Pre-selects `target` (when needed) and opens its context menu at `anchor`.
+    OpenContextMenuForTarget {
+        target: HitTarget,
+        anchor: (u16, u16),
+    },
     PopModal,
     PopContextMenus,
-    ConfirmCriticalDialog,
+    DiscardTargetsConfirmed(Vec<StageTarget>),
+    ExecuteCommitConfirmed(CommitRequest),
+    RetryCliCommand {
+        args: Vec<String>,
+        stdin_payload: Option<Vec<u8>>,
+        is_read_only: bool,
+        refresh_after: RefreshScope,
+    },
     ResetSplitter(SplitterId),
+
+    // ── Pure input-routing state transitions ──
+    SetPendingKeySequence(Vec<KeyEvent>),
+    ClearPendingKeySequence,
+    ModalPaste(String),
+    DialogKey(KeyEvent),
+    DialogSelectOption {
+        idx: usize,
+        confirm: bool,
+    },
+    DialogToggleCheckbox,
+    PopupSetState {
+        query: String,
+        selected: usize,
+    },
+    ContextMenuSetSelected {
+        depth: u8,
+        idx: usize,
+    },
+    ContextMenuActivateItem {
+        depth: u8,
+        idx: usize,
+    },
+    MouseMove {
+        col: u16,
+        row: u16,
+    },
+    MouseRecordClick {
+        col: u16,
+        row: u16,
+    },
+    SetDragState(Option<DragState>),
+    DragSplitter {
+        col: u16,
+        row: u16,
+    },
+    StageDiffSelectLine {
+        row_idx: usize,
+        extend: bool,
+    },
+    StageDiffClearVisualAnchor,
+    StageClearBracketJump,
+    CommitEditorFocusBody,
+    FileHistorySetPendingG(Option<Instant>),
 
     // ── Branches Dashboard (left pane) ──
     ToggleBranchesPane,
@@ -94,21 +172,21 @@ pub enum Action {
     NavLogBack,
     NavLogForward,
 
-    // ── Changes / details / diff (right pane) ──
-    ChangesMove(isize),
-    ChangesSelectRow(usize),
-    ChangesExpand(bool),
-    ChangesToggleGroupByDir,
-    ChangesExpandAll(bool),
+    // ── Shared Changes Tree & Diff Viewer (Log / Stash / File History / Stage) ──
+    ChangesMove(ChangesHost, isize),
+    ChangesSelect(ChangesHost, usize),
+    ChangesExpand(ChangesHost, bool),
+    ChangesToggleGroupByDir(ChangesHost),
+    ChangesExpandAll(ChangesHost, bool),
     SwitchMergeParent,
     ToggleDiffPreview,
     DiffCycleDock,
     ZoomDiff(bool),
-    DiffNextFile(isize),
-    DiffJumpHunk(isize),
-    DiffToggleSideBySide,
-    DiffCycleContext,
-    ScrollDiff(isize),
+    DiffNextFile(DiffScope, isize),
+    DiffJumpHunk(DiffScope, isize),
+    DiffToggleSideBySide(DiffScope),
+    DiffCycleContext(DiffScope),
+    DiffScroll(DiffScope, isize),
     ScrollDetails(isize),
     CopyText(String),
     FlushPendingDetails,
@@ -133,12 +211,7 @@ pub enum Action {
     StashAll,
     ResolveConflictsNotice,
     StageDiffMoveCursor(isize),
-    StageDiffScroll(isize),
-    StageDiffJumpHunk(isize),
-    StageDiffNextFile(isize),
     StageDiffToggleVisual,
-    StageDiffToggleSideBySide,
-    StageDiffCycleContext,
     StageDiffSwitchSide,
     StageDiffStageSelection,
     StageDiffUnstageSelection,
@@ -235,16 +308,6 @@ pub enum Action {
     NotificationDismiss,
     StashSelect(usize),
     StashMove(isize),
-    StashChangesSelect(usize),
-    StashChangesMove(isize),
-    StashChangesExpand(bool),
-    StashChangesToggleGroupByDir,
-    StashChangesExpandAll(bool),
-    StashDiffToggleSideBySide,
-    StashDiffCycleContext,
-    StashDiffJumpHunk(isize),
-    StashDiffNextFile(isize),
-    StashDiffScroll(isize),
 
     // ── Log changes operations & single-file history ──
     FilterLogByPath(String),
@@ -267,12 +330,9 @@ pub enum Action {
     },
     FileHistoryToggleFollow,
     FileHistoryToggleCompareLocal,
-    FileHistoryToggleSideBySide,
-    FileHistoryCycleContext,
     FileHistoryToggleZoom,
     FileHistorySetFocus(FileHistoryFocus),
     FileHistoryToggleFocus,
-    FileHistoryScrollDiff(isize),
     FileHistoryJumpToLog,
     FileHistoryEscape,
 }

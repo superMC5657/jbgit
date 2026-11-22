@@ -1,4 +1,6 @@
+use std::future::Future;
 use std::path::{Path, PathBuf};
+use std::pin::Pin;
 use std::process::Stdio;
 use std::time::Instant;
 
@@ -11,6 +13,58 @@ use crate::error::EngineError;
 
 const PATHSPEC_FROM_FILE_THRESHOLD: usize = 32;
 
+/// Structured `index.lock` conflict surfaced by any CLI-backed operation so
+/// the supervisor can emit a uniform [`crate::EngineEvent::IndexLockDetected`].
+#[derive(Debug, Clone)]
+pub(crate) struct IndexLockConflict {
+    pub lock_path: PathBuf,
+    pub message: String,
+    pub retry_args: Vec<String>,
+    pub retry_stdin: Option<Vec<u8>>,
+    pub retry_is_read_only: bool,
+}
+
+/// Narrow subprocess seam between `jbgit-engine` command compilers (`ops`, `stage`)
+/// and the underlying `git` executable (real subprocess in production vs
+/// deterministic recording double in tests).
+pub(crate) trait GitCliRunner: Send + Sync {
+    fn execute_boxed<'a>(
+        &'a self,
+        req: CliCommand<'a>,
+        on_event: &'a (dyn Fn(CliStreamEvent) + Send + Sync),
+    ) -> Pin<Box<dyn Future<Output = Result<GitCliOutput, EngineError>> + Send + 'a>>;
+}
+
+impl GitCliRunner for GitCliExecutor {
+    fn execute_boxed<'a>(
+        &'a self,
+        req: CliCommand<'a>,
+        on_event: &'a (dyn Fn(CliStreamEvent) + Send + Sync),
+    ) -> Pin<Box<dyn Future<Output = Result<GitCliOutput, EngineError>> + Send + 'a>> {
+        Box::pin(async move { self.execute(req, on_event).await })
+    }
+}
+
+/// Single canonical non-interactive `std::process::Command` constructor for `git`
+/// (used by both `GitCliExecutor::detect` and synchronous read-only helpers in `details`).
+pub(crate) fn non_interactive_std_command(git: &Path, cwd: Option<&Path>) -> std::process::Command {
+    let mut cmd = std::process::Command::new(git);
+    if let Some(dir) = cwd {
+        cmd.current_dir(dir);
+    }
+    cmd.env("GIT_OPTIONAL_LOCKS", "0")
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GIT_PAGER", "cat")
+        .env("LC_ALL", "C.UTF-8")
+        .stdin(Stdio::null());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    }
+    cmd
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GitExecutableInfo {
     pub path: PathBuf,
@@ -20,6 +74,7 @@ pub struct GitExecutableInfo {
 #[derive(Debug, Clone)]
 pub struct GitCliOutput {
     pub exit_code: i32,
+    #[allow(dead_code)]
     pub duration_ms: u64,
     pub stdout_lines: Vec<String>,
     pub stderr_lines: Vec<String>,
@@ -73,15 +128,8 @@ pub struct CliCommand<'a> {
 impl GitCliExecutor {
     pub fn detect() -> Result<Self, EngineError> {
         let git_bin = find_git_executable().ok_or(EngineError::GitNotFound)?;
-        let mut cmd = std::process::Command::new(&git_bin);
-        cmd.arg("--version")
-            .env("GIT_PAGER", "cat")
-            .env("GIT_TERMINAL_PROMPT", "0");
-        #[cfg(windows)]
-        {
-            use std::os::windows::process::CommandExt;
-            cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
-        }
+        let mut cmd = non_interactive_std_command(&git_bin, None);
+        cmd.arg("--version");
         let output = cmd.output().map_err(|_| EngineError::GitNotFound)?;
         let version_string = String::from_utf8_lossy(&output.stdout).trim().to_string();
 
@@ -303,4 +351,24 @@ fn find_git_executable() -> Option<PathBuf> {
         }
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pathspec_from_file_threshold() {
+        let small: Vec<String> = (0..10).map(|i| format!("file_{i}.rs")).collect();
+        let (args_s, stdin_s) = prepare_pathspec_args(vec!["add".into()], &small);
+        assert!(stdin_s.is_none());
+        assert!(args_s.contains(&"--".to_string()));
+
+        let large: Vec<String> = (0..40).map(|i| format!("file_{i}.rs")).collect();
+        let (args_l, stdin_l) = prepare_pathspec_args(vec!["add".into()], &large);
+        assert!(args_l.contains(&"--pathspec-from-file=-".to_string()));
+        assert!(args_l.contains(&"--pathspec-file-nul".to_string()));
+        let payload = stdin_l.expect("expected nul-delimited stdin payload");
+        assert_eq!(payload.iter().filter(|&&b| b == 0).count(), 40);
+    }
 }

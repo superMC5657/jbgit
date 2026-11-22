@@ -17,7 +17,7 @@ fn resume_terminal_after_external_cmd(
     state: &mut AppState,
 ) {
     *term_guard = TerminalGuard::enter().ok();
-    state.graph_renderer.invalidate();
+    state.log.graph_renderer.invalidate();
 }
 
 pub(crate) fn is_external_editor_disabled_val(val: Option<&str>) -> bool {
@@ -170,7 +170,7 @@ where
                 state.stage_workbench.flush_draft_sync();
                 let tmp_path = std::env::temp_dir()
                     .join(format!("jbgit-commit-editmsg-{}.txt", std::process::id()));
-                if let Err(e) = std::fs::write(&tmp_path, state.stage_workbench.editor.text()) {
+                if let Err(e) = std::fs::write(&tmp_path, state.stage_workbench.editor().text()) {
                     set_editor_failed_notice(state, &e.to_string());
                     state.needs_redraw = true;
                     continue;
@@ -179,16 +179,9 @@ where
                 match run_external_editor_command(&bin, &args, &tmp_path, state, term_guard) {
                     Ok(()) => {
                         if let Ok(updated) = std::fs::read_to_string(&tmp_path) {
-                            let prev = state.stage_workbench.editor.text();
-                            if !state.stage_workbench.amend
-                                && !prev.trim().is_empty()
-                                && prev.trim() != updated.trim()
-                            {
-                                state.stage_workbench.push_history(&prev);
-                            }
-                            state.stage_workbench.editor.set_text(&updated);
-                            state.stage_workbench.empty_message_error = false;
-                            state.stage_workbench.mark_draft_dirty(std::time::Instant::now());
+                            state
+                                .stage_workbench
+                                .apply_external_message(&updated, std::time::Instant::now());
                         }
                     }
                     Err(err) => {

@@ -9,10 +9,137 @@ use ratatui::widgets::Paragraph;
 use unicode_width::UnicodeWidthStr;
 
 use crate::app::{AppState, RenderContext, ScrollPane};
+use crate::diff_session::{ChangesTreeSession, DiffCacheStore, DiffRow, DiffSession, FileDiffRowsCache};
 use crate::hit_test::{DiffToolbarButton, HitTarget};
-use crate::log_view::{DetailsPaneState, DiffPreviewDock, DiffRow, FileDiffRowsCache};
-use crate::syntax::{HighlightedDiff, render_diff_line_spans_with_tab};
+use crate::log_view::DiffPreviewDock;
+use crate::syntax::{HighlightedDiff, SyntaxToken, render_diff_line_spans_with_tab};
+use crate::theme::ThemePalette;
 use crate::views::{render_pane_frame, render_toolbar, truncate_to_width};
+
+/// Shared base line style, word-diff highlight background, and prefix glyph
+/// reused by both Log/Stash/FileHistory diffs and Staging Workbench diffs.
+pub(crate) fn diff_line_style(theme: &ThemePalette, kind: DiffLineKind) -> (Style, Color, &'static str) {
+    match kind {
+        DiffLineKind::Added => (
+            Style::default().fg(theme.fg_primary).bg(theme.diff_add_bg),
+            theme.diff_add_word_bg,
+            "+",
+        ),
+        DiffLineKind::Deleted => (
+            Style::default().fg(theme.fg_primary).bg(theme.diff_del_bg),
+            theme.diff_del_word_bg,
+            "-",
+        ),
+        DiffLineKind::Context => (
+            Style::default().fg(theme.fg_primary).bg(theme.bg_canvas),
+            theme.bg_canvas,
+            " ",
+        ),
+    }
+}
+
+pub(crate) struct DiffLineRenderInput<'a> {
+    pub line: &'a DiffLine,
+    pub tokens: &'a [SyntaxToken],
+    pub custom_word_ranges: Option<&'a [(usize, usize)]>,
+    pub base: Style,
+    pub word_bg: Color,
+    pub marker: &'static str,
+    pub leading_gutter: Option<Span<'static>>,
+}
+
+const DIFF_LINE_NUM_W: usize = 4;
+
+fn format_lineno(n: Option<u32>) -> String {
+    n.map_or_else(
+        || " ".repeat(DIFF_LINE_NUM_W),
+        |v| format!("{v:>DIFF_LINE_NUM_W$}"),
+    )
+}
+
+pub(crate) fn render_diff_unified_spans(
+    input: DiffLineRenderInput<'_>,
+    width: usize,
+    tab_size: usize,
+    theme: &ThemePalette,
+    gutter: Style,
+) -> Vec<Span<'static>> {
+    let has_gutter = usize::from(input.leading_gutter.is_some());
+    let mut spans = Vec::with_capacity(6);
+    if let Some(g) = input.leading_gutter {
+        spans.push(g);
+    }
+    spans.push(Span::styled(
+        format!(
+            "{} {} ",
+            format_lineno(input.line.old_lineno),
+            format_lineno(input.line.new_lineno)
+        ),
+        gutter,
+    ));
+    spans.push(Span::styled(input.marker.to_string(), input.base));
+    let text_w = width.saturating_sub(DIFF_LINE_NUM_W * 2 + 3 + has_gutter);
+    let wr = input.custom_word_ranges.unwrap_or(&input.line.word_ranges);
+    spans.extend(render_diff_line_spans_with_tab(
+        &input.line.text,
+        input.tokens,
+        wr,
+        text_w,
+        tab_size,
+        input.base,
+        input.word_bg,
+        theme.true_color,
+    ));
+    spans
+}
+
+pub(crate) fn render_diff_side_cell(
+    input: Option<DiffLineRenderInput<'_>>,
+    lineno: fn(&DiffLine) -> Option<u32>,
+    cell_w: usize,
+    has_leading_gutter: bool,
+    tab_size: usize,
+    theme: &ThemePalette,
+    gutter: Style,
+) -> Vec<Span<'static>> {
+    let g_cols = usize::from(has_leading_gutter);
+    let mut spans = Vec::new();
+    match input {
+        Some(inp) => {
+            if let Some(g) = inp.leading_gutter {
+                spans.push(g);
+            }
+            spans.push(Span::styled(format!("{} ", format_lineno(lineno(inp.line))), gutter));
+            spans.push(Span::styled(inp.marker.to_string(), inp.base));
+            let text_w = cell_w.saturating_sub(DIFF_LINE_NUM_W + 2 + g_cols);
+            let wr = inp.custom_word_ranges.unwrap_or(&inp.line.word_ranges);
+            let mut body = render_diff_line_spans_with_tab(
+                &inp.line.text,
+                inp.tokens,
+                wr,
+                text_w,
+                tab_size,
+                inp.base,
+                inp.word_bg,
+                theme.true_color,
+            );
+            let used: usize = body.iter().map(|s| s.content.width()).sum();
+            body.push(Span::styled(
+                " ".repeat(text_w.saturating_sub(used)),
+                inp.base,
+            ));
+            spans.extend(body);
+        }
+        None => {
+            spans.push(Span::styled(" ".repeat(DIFF_LINE_NUM_W + 1 + g_cols), gutter));
+            spans.push(Span::styled(
+                " ".repeat(cell_w.saturating_sub(DIFF_LINE_NUM_W + 1 + g_cols)),
+                Style::default().bg(theme.bg_panel),
+            ));
+        }
+    }
+    spans
+}
 
 use super::commit_details::render_commit_details;
 use super::{DiffHost, muted_line};
@@ -23,7 +150,7 @@ pub fn render_details_or_diff(
     state: &AppState,
     ctx: &mut RenderContext<'_>,
 ) {
-    if state.details.diff_preview && state.details.diff_dock == DiffPreviewDock::Details {
+    if state.log.details.diff_preview && state.log.details.diff_dock == DiffPreviewDock::Details {
         render_docked_diff(frame, area, state, ctx);
     } else {
         let body = render_pane_frame(frame, area, PaneId::LogDetailsDiff, "", ctx);
@@ -38,8 +165,9 @@ pub fn render_docked_diff(
     ctx: &mut RenderContext<'_>,
 ) {
     let subtitle = state
+        .log
         .details
-        .selected_change()
+        .selected_change(&state.diff_caches)
         .map(|c| ctx.t_fmt("view.log_details.diff_file", &[("path", &c.path)]))
         .unwrap_or_else(|| ctx.t("view.log_details.diff_preview").to_string());
     let body = render_pane_frame(frame, area, PaneId::LogDetailsDiff, &subtitle, ctx);
@@ -55,14 +183,15 @@ pub fn render_zoomed_diff(
     if area.height == 0 {
         return;
     }
-    let files = state.details.file_row_positions();
+    let files = state.log.details.file_row_positions(&state.diff_caches);
     let pos = files
         .iter()
-        .position(|&p| p == state.details.changes_selected)
+        .position(|&p| p == state.log.details.changes.selected)
         .map_or(0, |i| i + 1);
     let path = state
+        .log
         .details
-        .selected_change()
+        .selected_change(&state.diff_caches)
         .map(|c| c.path.clone())
         .unwrap_or_default();
     let header = ctx.t_fmt(
@@ -96,7 +225,19 @@ fn render_diff_view(
     ctx: &mut RenderContext<'_>,
     zoomed: bool,
 ) {
-    render_diff_preview(frame, area, &state.details, DiffHost::Log, zoomed, ctx);
+    render_diff_preview(
+        frame,
+        area,
+        DiffPreviewProps {
+            changes: &state.log.details.changes,
+            diff_session: &state.log.details.diff,
+            caches: &state.diff_caches,
+            host: DiffHost::Log,
+            diff_dock: state.log.details.diff_dock,
+            zoomed,
+        },
+        ctx,
+    );
 }
 
 pub struct FileDiffRenderProps<'a> {
@@ -157,7 +298,6 @@ pub fn render_file_diff_body(
     ctx.record_scroll_bound(scroll_pane, h, max_scroll);
     let scroll = diff_scroll.min(max_scroll);
     let theme = ctx.theme;
-    let num_w = 4usize;
     let tab_size = ctx.diff_tab_size();
     let empty_hl;
     let hl_diff: &HighlightedDiff = if !ctx.diff_syntax_enabled() {
@@ -173,73 +313,33 @@ pub fn render_file_diff_body(
         }
     };
 
-    let line_style = |kind: DiffLineKind| -> (Style, Color, &'static str) {
-        match kind {
-            DiffLineKind::Added => (
-                Style::default().fg(theme.fg_primary).bg(theme.diff_add_bg),
-                theme.diff_add_word_bg,
-                "+",
-            ),
-            DiffLineKind::Deleted => (
-                Style::default().fg(theme.fg_primary).bg(theme.diff_del_bg),
-                theme.diff_del_word_bg,
-                "-",
-            ),
-            DiffLineKind::Context => (
-                Style::default().fg(theme.fg_primary).bg(theme.bg_canvas),
-                theme.bg_canvas,
-                " ",
-            ),
-        }
-    };
     let gutter = Style::default().fg(theme.fg_muted).bg(theme.bg_panel);
-    let num = |n: Option<u32>| n.map_or_else(|| " ".repeat(num_w), |v| format!("{v:>num_w$}"));
-
-    let side_cell = |hh: usize,
-                     line_idx: Option<usize>,
-                     custom_wr: Option<&[(usize, usize)]>,
-                     lineno: fn(&DiffLine) -> Option<u32>,
-                     width: usize|
-     -> Vec<Span<'static>> {
-        let mut spans = Vec::new();
-        match line_idx {
-            Some(li) => {
-                let l = &diff.hunks[hh].lines[li];
-                let toks = hl_diff
-                    .hunks
-                    .get(hh)
-                    .and_then(|h| h.get(li))
-                    .map(Vec::as_slice)
-                    .unwrap_or(&[]);
-                let (base, word_bg, marker) = line_style(l.kind);
-                spans.push(Span::styled(format!("{} ", num(lineno(l))), gutter));
-                spans.push(Span::styled(marker.to_string(), base));
-                let text_w = width.saturating_sub(num_w + 2);
-                let wr = custom_wr.unwrap_or(&l.word_ranges);
-                let mut body = render_diff_line_spans_with_tab(
-                    &l.text,
-                    toks,
-                    wr,
-                    text_w,
-                    tab_size,
-                    base,
-                    word_bg,
-                    theme.true_color,
-                );
-                let used: usize = body.iter().map(|s| s.content.width()).sum();
-                body.push(Span::styled(" ".repeat(text_w.saturating_sub(used)), base));
-                spans.extend(body);
-            }
-            None => {
-                spans.push(Span::styled(" ".repeat(num_w + 1), gutter));
-                spans.push(Span::styled(
-                    " ".repeat(width.saturating_sub(num_w + 1)),
-                    Style::default().bg(theme.bg_panel),
-                ));
-            }
+    fn make_file_input<'a>(
+        diff: &'a FileDiff,
+        hl_diff: &'a HighlightedDiff,
+        theme: &ThemePalette,
+        hh: usize,
+        li: usize,
+        custom_word_ranges: Option<&'a [(usize, usize)]>,
+    ) -> DiffLineRenderInput<'a> {
+        let line = &diff.hunks[hh].lines[li];
+        let tokens = hl_diff
+            .hunks
+            .get(hh)
+            .and_then(|h| h.get(li))
+            .map(Vec::as_slice)
+            .unwrap_or(&[]);
+        let (base, word_bg, marker) = diff_line_style(theme, line.kind);
+        DiffLineRenderInput {
+            line,
+            tokens,
+            custom_word_ranges,
+            base,
+            word_bg,
+            marker,
+            leading_gutter: None,
         }
-        spans
-    };
+    }
 
     let width = body.width as usize;
     for (vis_y, row_idx) in (scroll..total).take(h).enumerate() {
@@ -258,34 +358,10 @@ pub fn render_file_diff_body(
             .style(Style::default().bg(theme.diff_mod_bg)),
             Some(DiffRow::Unified(hh, l)) => {
                 let hunk_lines = &diff.hunks[*hh].lines;
-                let dl = &hunk_lines[*l];
-                let toks = hl_diff
-                    .hunks
-                    .get(*hh)
-                    .and_then(|h| h.get(*l))
-                    .map(Vec::as_slice)
-                    .unwrap_or(&[]);
-                let (base, word_bg, marker) = line_style(dl.kind);
-                let mut spans = vec![
-                    Span::styled(
-                        format!("{} {} ", num(dl.old_lineno), num(dl.new_lineno)),
-                        gutter,
-                    ),
-                    Span::styled(marker.to_string(), base),
-                ];
-                let text_w = width.saturating_sub(num_w * 2 + 3);
                 let lazy_wr = rows_cache.word_cache.unified_ranges(diff, *hh, *l, hunk_lines);
-                let wr = lazy_wr.as_deref().unwrap_or(&dl.word_ranges);
-                spans.extend(render_diff_line_spans_with_tab(
-                    &dl.text,
-                    toks,
-                    wr,
-                    text_w,
-                    tab_size,
-                    base,
-                    word_bg,
-                    theme.true_color,
-                ));
+                let inp = make_file_input(diff, hl_diff, theme, *hh, *l, lazy_wr.as_deref());
+                let base = inp.base;
+                let spans = render_diff_unified_spans(inp, width, tab_size, theme, gutter);
                 Line::from(spans).style(base)
             }
             Some(DiffRow::Split(hh, left, right)) => {
@@ -297,17 +373,29 @@ pub fn render_file_diff_body(
                     &diff.hunks[*hh].lines,
                 );
                 let half = width / 2;
-                let mut spans = side_cell(*hh, *left, lazy_l.as_deref(), |l| l.old_lineno, half);
+                let mut spans = render_diff_side_cell(
+                    left.map(|li| make_file_input(diff, hl_diff, theme, *hh, li, lazy_l.as_deref())),
+                    |l| l.old_lineno,
+                    half,
+                    false,
+                    tab_size,
+                    theme,
+                    gutter,
+                );
                 spans.push(Span::styled(
                     "│",
                     Style::default().fg(theme.border_splitter),
                 ));
-                spans.extend(side_cell(
-                    *hh,
-                    *right,
-                    lazy_r.as_deref(),
+                spans.extend(render_diff_side_cell(
+                    right.map(|li| {
+                        make_file_input(diff, hl_diff, theme, *hh, li, lazy_r.as_deref())
+                    }),
                     |l| l.new_lineno,
                     width - half - 1,
+                    false,
+                    tab_size,
+                    theme,
+                    gutter,
                 ));
                 Line::from(spans)
             }
@@ -316,32 +404,47 @@ pub fn render_file_diff_body(
     }
 }
 
+pub struct DiffPreviewProps<'a> {
+    pub changes: &'a ChangesTreeSession,
+    pub diff_session: &'a DiffSession,
+    pub caches: &'a DiffCacheStore,
+    pub host: DiffHost,
+    pub diff_dock: DiffPreviewDock,
+    pub zoomed: bool,
+}
+
 pub fn render_diff_preview(
     frame: &mut Frame<'_>,
     area: Rect,
-    d: &DetailsPaneState,
-    host: DiffHost,
-    zoomed: bool,
+    props: DiffPreviewProps<'_>,
     ctx: &mut RenderContext<'_>,
 ) {
+    let DiffPreviewProps {
+        changes,
+        diff_session,
+        caches,
+        host,
+        diff_dock,
+        zoomed,
+    } = props;
     if area.width == 0 || area.height == 0 {
         return;
     }
     let mut buttons = vec![
         (
-            if d.diff_side_by_side {
+            if diff_session.side_by_side {
                 ctx.t("view.log_details.side_by_side_btn")
             } else {
                 ctx.t("view.log_details.unified_btn")
             }
             .to_string(),
-            d.diff_side_by_side,
+            diff_session.side_by_side,
             DiffToolbarButton::SideBySide,
         ),
         (
             ctx.t_fmt(
                 "view.log_details.ctx_btn",
-                &[("ctx", ctx.diff_context_label(d.diff_context))],
+                &[("ctx", ctx.diff_context_label(diff_session.context))],
             ),
             false,
             DiffToolbarButton::Context,
@@ -358,9 +461,9 @@ pub fn render_diff_preview(
             buttons.push((
                 ctx.t_fmt(
                     "view.log_details.dock_btn",
-                    &[("dock", ctx.diff_dock_label(d.diff_dock))],
+                    &[("dock", ctx.diff_dock_label(diff_dock))],
                 ),
-                d.diff_dock != DiffPreviewDock::Details,
+                diff_dock != DiffPreviewDock::Details,
                 DiffToolbarButton::Dock,
             ));
         }
@@ -391,9 +494,9 @@ pub fn render_diff_preview(
     );
 
     let h = body.height as usize;
-    let Some(change) = d.selected_change() else {
+    let Some(change) = changes.selected_change(caches) else {
         ctx.record_scroll_bound(host.scroll_pane(), h, 0);
-        let msg = if d.current_bundle().is_none() {
+        let msg = if changes.current_bundle(caches).is_none() {
             ctx.t("common.loading")
         } else {
             ctx.t("view.log_details.select_file_diff")
@@ -401,7 +504,8 @@ pub fn render_diff_preview(
         frame.render_widget(muted_line(ctx, msg), body);
         return;
     };
-    let Some(diff) = d.current_diff() else {
+    let desired_key = changes.desired_diff_key(caches, diff_session.context);
+    let Some(diff) = desired_key.as_ref().and_then(|k| caches.peek_diff(k)) else {
         ctx.record_scroll_bound(host.scroll_pane(), h, 0);
         if change.is_binary {
             frame.render_widget(muted_line(ctx, ctx.t("view.log_details.binary_diff")), body);
@@ -410,15 +514,19 @@ pub fn render_diff_preview(
         }
         return;
     };
+    let cached_syntax = desired_key
+        .as_ref()
+        .and_then(|k| caches.peek_syntax(k))
+        .map(Arc::as_ref);
     render_file_diff_body(
         frame,
         body,
         FileDiffRenderProps {
             diff,
-            rows_cache: &d.diff_rows_cache,
-            cached_syntax: d.current_diff_syntax().map(Arc::as_ref),
-            side_by_side: d.diff_side_by_side,
-            diff_scroll: d.diff_scroll,
+            rows_cache: &diff_session.rows_cache,
+            cached_syntax,
+            side_by_side: diff_session.side_by_side,
+            diff_scroll: diff_session.scroll.offset(),
             scroll_pane: host.scroll_pane(),
         },
         ctx,

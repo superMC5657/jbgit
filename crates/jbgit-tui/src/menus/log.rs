@@ -1,12 +1,14 @@
-use jbgit_core::{ChangeRowKind, DetailsMode, FileStatusKind, GitOp, Oid, RefKind, TodoAction};
+use jbgit_core::{
+    ChangeRowKind, DetailsMode, FileStatusKind, GitOp, Oid, PatchSource, RefKind, TodoAction,
+};
 
-use crate::app::{Action, AppState, ContextMenuAction, ContextMenuItem};
+use crate::app::{Action, AppState, ContextMenuItem, DiffScope, PopupKind};
 use crate::config::KeymapScope;
 use crate::dialogs::{
     ChoiceDialog, Dialog, InputDialog, InputIntent, InputValidation, MessageDialog, MessageIntent,
     RebaseTodoDialog, new_branch_dialog, reset_dialog,
 };
-use crate::keymap::KeyAction;
+use crate::keymap::{KeyAction, catalog};
 
 use super::{branch_menu_items, dialog, ellipsize, local_names, op, run};
 
@@ -15,7 +17,7 @@ pub fn log_commit_menu_items(state: &AppState) -> Vec<ContextMenuItem> {
     let Some(snap) = state.repo_snapshot.as_deref() else {
         return Vec::new();
     };
-    let Some(primary) = state.log_commit_at(state.log_graph.selected_idx).cloned() else {
+    let Some(primary) = state.log_commit_at(state.log.graph.selected_idx).cloned() else {
         return Vec::new();
     };
     let oids = state.selected_commits_oldest_first();
@@ -28,14 +30,13 @@ pub fn log_commit_menu_items(state: &AppState) -> Vec<ContextMenuItem> {
     let cur = branch.clone().unwrap_or_else(|| "HEAD".into());
     let no_ongoing = state.require_no_ongoing();
     let i18n = &state.i18n;
-    let km = &state.config.keymap;
-    let checkout_sc = km.primary_key_for(&[KeymapScope::Log], &KeyAction::Checkout);
-    let compare_sc = km.primary_key_for(&[KeymapScope::Log], &KeyAction::CompareOrDiff);
-    let uncommit_sc = km.primary_key_for(&[KeymapScope::Log], &KeyAction::Uncommit);
-    let reword_sc = km.primary_key_for(&[KeymapScope::Log], &KeyAction::Reword);
-    let new_branch_sc = km.primary_key_for(&[KeymapScope::Log], &KeyAction::NewBranch);
-    let copy_sc = km.primary_key_for(&[KeymapScope::Log], &KeyAction::CopyHash);
-    let goto_sc = km.primary_key_for(&[KeymapScope::Log], &KeyAction::GotoRevision);
+    let checkout_sc = catalog::shortcut_for_action(state, &[KeymapScope::Log], &KeyAction::Checkout);
+    let compare_sc = catalog::shortcut_for_action(state, &[KeymapScope::Log], &KeyAction::CompareOrDiff);
+    let uncommit_sc = catalog::shortcut_for_action(state, &[KeymapScope::Log], &KeyAction::Uncommit);
+    let reword_sc = catalog::shortcut_for_action(state, &[KeymapScope::Log], &KeyAction::Reword);
+    let new_branch_sc = catalog::shortcut_for_action(state, &[KeymapScope::Log], &KeyAction::NewBranch);
+    let copy_sc = catalog::shortcut_for_action(state, &[KeymapScope::Log], &KeyAction::CopyHash);
+    let goto_sc = catalog::shortcut_for_action(state, &[KeymapScope::Log], &KeyAction::GotoRevision);
     let need_single = |what: &str| i18n.t_fmt("menu.log.need_single", &[("what", what)]);
     let mut items = Vec::new();
 
@@ -171,66 +172,25 @@ pub fn log_commit_menu_items(state: &AppState) -> Vec<ContextMenuItem> {
         .enabled_if(single, need_single(reset_lbl))
         .require(no_ongoing.clone()),
     );
-    let is_head = single && head == Some(primary.oid);
-    items.push(
-        run(
-            i18n.t("menu.log.uncommit"),
-            Some('u'),
-            uncommit_sc.as_deref(),
-            vec![Action::UncommitHead],
-        )
-            .enabled_if(is_head, i18n.t("menu.log.uncommit_only_head"))
-            .enabled_if(
-                !primary.parents.is_empty(),
-                i18n.t("menu.log.uncommit_root"),
-            )
-            .require(no_ongoing.clone()),
-    );
+    items.push(ContextMenuItem::from_command(
+        i18n.t("menu.log.uncommit"),
+        Some('u'),
+        uncommit_sc.as_deref(),
+        catalog::commit_uncommit(state),
+    ));
     items.push(ContextMenuItem::separator());
 
     // ── History rewriting ──
     let reword_lbl = i18n.t("menu.log.reword");
-    let reword_title = i18n.t_fmt("menu.log.reword_title", &[("short", &short)]);
-    let reword = if !single {
-        run(reword_lbl, Some('w'), reword_sc.as_deref(), Vec::new())
-            .enabled_if(false, need_single(reword_lbl))
-    } else if is_head {
-        run(
+    items.push(
+        ContextMenuItem::from_command(
             reword_lbl,
             Some('w'),
             reword_sc.as_deref(),
-            dialog(Dialog::Message(MessageDialog::new(
-                reword_title,
-                primary.full_message(),
-                MessageIntent::RewordHead,
-            ))),
+            catalog::commit_reword(state),
         )
-        .require(no_ongoing.clone())
-    } else {
-        match state.rewrite_plan(primary.oid, "reword") {
-            Ok(plan) => {
-                let mut todo = plan.entries.clone();
-                todo[0].action = TodoAction::Reword;
-                run(
-                    reword_lbl,
-                    Some('w'),
-                    reword_sc.as_deref(),
-                    dialog(Dialog::Message(MessageDialog::new(
-                        reword_title,
-                        plan.messages[0].clone(),
-                        MessageIntent::Rewrite {
-                            base: plan.base,
-                            todo,
-                            entry: 0,
-                        },
-                    ))),
-                )
-            }
-            Err(e) => run(reword_lbl, Some('w'), reword_sc.as_deref(), Vec::new())
-                .enabled_if(false, e),
-        }
-    };
-    items.push(reword.icon("✎"));
+        .icon("✎"),
+    );
     items.push(squash_item(state, &oids));
     let fixup_lbl = i18n.t("menu.log.fixup");
     let fixup = if single {
@@ -378,26 +338,6 @@ pub fn log_commit_menu_items(state: &AppState) -> Vec<ContextMenuItem> {
         .first()
         .and_then(|o| snap.commit(o))
         .and_then(|c| c.parents.first().copied());
-    let patch_args = match oids.as_slice() {
-        [one] => vec![
-            "format-patch".to_string(),
-            "--stdout".into(),
-            "-1".into(),
-            one.to_string(),
-        ],
-        [_, .., newest] => {
-            let mut args = vec!["format-patch".to_string(), "--stdout".into()];
-            match oldest_parent {
-                Some(b) => args.push(format!("{b}..{newest}")),
-                None => {
-                    args.push("--root".into());
-                    args.push(newest.to_string());
-                }
-            }
-            args
-        }
-        [] => Vec::new(),
-    };
     items.push(ContextMenuItem::submenu(
         i18n.t("menu.log.create_patch"),
         Some('a'),
@@ -407,7 +347,7 @@ pub fn log_commit_menu_items(state: &AppState) -> Vec<ContextMenuItem> {
                 Some('s'),
                 None,
                 op(GitOp::CreatePatchFiles {
-                    oids: newest_first,
+                    oids: newest_first.clone(),
                     base: oldest_parent,
                 }),
             ),
@@ -415,15 +355,23 @@ pub fn log_commit_menu_items(state: &AppState) -> Vec<ContextMenuItem> {
                 i18n.t("menu.log.copy_patch_clipboard"),
                 Some('c'),
                 None,
-                op(GitOp::PatchToClipboard { args: patch_args }),
+                op(GitOp::PatchToClipboard {
+                    source: PatchSource::Commits {
+                        oids: newest_first,
+                        base: oldest_parent,
+                    },
+                }),
             ),
         ],
     ));
-    items.push(ContextMenuItem::action(
+    items.push(run(
         i18n.t("menu.log.goto_revision"),
         Some('g'),
         goto_sc.as_deref(),
-        ContextMenuAction::OpenGoTo,
+        vec![Action::OpenPopup {
+            kind: PopupKind::GoToRevision,
+            initial_query: String::new(),
+        }],
     ));
     items.push(run(i18n.t("menu.log.go_to_child"), None, Some("←"), vec![Action::GoToChild]));
     items.push(run(
@@ -494,126 +442,91 @@ fn squash_item(state: &AppState, oids: &[Oid]) -> ContextMenuItem {
 
 fn drop_item(state: &AppState, oids: &[Oid]) -> ContextMenuItem {
     let i18n = &state.i18n;
-    let drop_sc = state
-        .config
-        .keymap
-        .all_keys_for(&[KeymapScope::Log], &KeyAction::DropCommit)
-        .join(" / ");
-    let drop_sc = (!drop_sc.is_empty()).then_some(drop_sc);
+    let drop_sc = catalog::all_shortcuts_for_action(state, &[KeymapScope::Log], &KeyAction::DropCommit);
     let count_s = oids.len().to_string();
     let label = if oids.len() > 1 {
         i18n.t_fmt("menu.log.drop_many", &[("count", &count_s)])
     } else {
         i18n.t("menu.log.drop_commit").to_string()
     };
-    let Some(&oldest) = oids.first() else {
-        return run(label, Some('x'), drop_sc.as_deref(), Vec::new())
-            .enabled_if(false, i18n.t("menu.log.drop_no_selection"));
-    };
-    match state.rewrite_plan(oldest, "drop") {
-        Ok(plan) => {
-            let mut todo = plan.entries.clone();
-            let mut subjects = Vec::new();
-            for e in &mut todo {
-                if oids.contains(&e.oid) {
-                    e.action = TodoAction::Drop;
-                    subjects.push(format!(
-                        "  • {} {}",
-                        e.oid.short(),
-                        ellipsize(&e.subject, 44)
-                    ));
-                }
-            }
-            if subjects.len() != oids.len() {
-                return run(label, Some('x'), drop_sc.as_deref(), Vec::new())
-                    .enabled_if(false, i18n.t("menu.log.drop_not_reachable"));
-            }
-            let mut body = vec![i18n.t_fmt("menu.log.drop_confirm_body", &[("count", &count_s)])];
-            body.extend(subjects);
-            run(
-                label,
-                Some('x'),
-                drop_sc.as_deref(),
-                dialog(Dialog::Choice(ChoiceDialog::confirm(
-                    i18n.t("menu.log.drop_confirm_title"),
-                    body,
-                    i18n.t("menu.log.drop_confirm_btn"),
-                    i18n.cancel(),
-                    op(GitOp::RewriteHistory {
-                        base: plan.base,
-                        todo,
-                    }),
-                ))),
-            )
-            .icon("✕")
-        }
-        Err(e) => run(label, Some('x'), drop_sc.as_deref(), Vec::new()).enabled_if(false, e),
+    let item = ContextMenuItem::from_command(
+        label,
+        Some('x'),
+        drop_sc.as_deref(),
+        catalog::commit_drop(state, oids),
+    );
+    if item.disabled_reason.is_none() {
+        item.icon("✕")
+    } else {
+        item
     }
 }
 
 /// Right-click on the Log diff preview.
 pub fn log_diff_menu_items(state: &AppState) -> Vec<ContextMenuItem> {
     let i18n = &state.i18n;
-    let km = &state.config.keymap;
-    let sbs_sc = km.primary_key_for(&[KeymapScope::Diff], &KeyAction::ToggleSideBySide);
-    let ctx_sc = km.primary_key_for(&[KeymapScope::Diff], &KeyAction::CycleDiffContext);
-    let zoom_sc = km.primary_key_for(&[KeymapScope::Diff], &KeyAction::ZoomDiff);
-    let change = state.details.selected_change().map(|c| c.path.clone());
-    let oids = state
+    let sbs_sc = catalog::shortcut_for_action(state, &[KeymapScope::Diff], &KeyAction::ToggleSideBySide);
+    let ctx_sc = catalog::shortcut_for_action(state, &[KeymapScope::Diff], &KeyAction::CycleDiffContext);
+    let zoom_sc = catalog::shortcut_for_action(state, &[KeymapScope::Diff], &KeyAction::ZoomDiff);
+    let change = state
+        .log
         .details
+        .selected_change(&state.diff_caches)
+        .map(|c| c.path.clone());
+    let oids = state
+        .log
+        .details
+        .changes
         .current_key
         .as_ref()
         .map(|k| k.oids.clone())
         .unwrap_or_default();
-    let patch = match (oids.as_slice(), &change) {
-        ([one], Some(p)) => vec![
-            "show".to_string(),
-            "--format=".into(),
-            "--patch".into(),
-            one.to_string(),
-            "--".into(),
-            p.clone(),
-        ],
-        _ => Vec::new(),
+    let patch_source = match (oids.as_slice(), &change) {
+        ([one], Some(p)) => Some(PatchSource::CommitFile {
+            oid: *one,
+            path: p.clone(),
+        }),
+        _ => None,
     };
     vec![
         run(
             i18n.t("menu.log.toggle_side_by_side"),
             Some('s'),
             sbs_sc.as_deref(),
-            vec![Action::DiffToggleSideBySide],
+            vec![Action::DiffToggleSideBySide(DiffScope::Log)],
         ),
         run(
             i18n.t("menu.log.cycle_context"),
             Some('c'),
             ctx_sc.as_deref(),
-            vec![Action::DiffCycleContext],
+            vec![Action::DiffCycleContext(DiffScope::Log)],
         ),
         run(
             i18n.t("menu.log.copy_patch_file"),
             Some('p'),
             None,
-            op(GitOp::PatchToClipboard {
-                args: patch.clone(),
-            }),
+            patch_source
+                .as_ref()
+                .map(|source| op(GitOp::PatchToClipboard { source: source.clone() }))
+                .unwrap_or_default(),
         )
-        .enabled_if(!patch.is_empty(), i18n.t("menu.log.copy_patch_need_file")),
+        .enabled_if(patch_source.is_some(), i18n.t("menu.log.copy_patch_need_file")),
         run(
             i18n.t("menu.log.fullscreen_diff"),
             Some('z'),
             zoom_sc.as_deref(),
-            vec![Action::ZoomDiff(!state.details.diff_zoomed)],
+            vec![Action::ZoomDiff(!state.log.details.diff.zoomed)],
         ),
     ]
 }
 
 /// Right-click / keyboard menu for `[2 Log]` Changes tree (`PaneId::LogChangesTree`).
 pub fn log_change_menu_items(state: &AppState) -> Vec<ContextMenuItem> {
-    let Some(bundle) = state.details.current_bundle() else {
+    let Some(bundle) = state.log.details.current_bundle(&state.diff_caches) else {
         return Vec::new();
     };
-    let rows = state.details.change_rows();
-    let Some(row) = rows.get(state.details.changes_selected) else {
+    let rows = state.log.details.change_rows(&state.diff_caches);
+    let Some(row) = rows.get(state.log.details.changes.selected) else {
         return Vec::new();
     };
 
@@ -629,7 +542,7 @@ pub fn log_change_menu_items(state: &AppState) -> Vec<ContextMenuItem> {
     let no_ongoing = state.require_no_ongoing();
 
     let exists_in_workdir = is_file
-        && match state.stage_status.as_deref() {
+        && match state.stage_workbench.status().map(std::sync::Arc::as_ref) {
             Some(st)
                 if st
                     .unstaged
@@ -643,10 +556,13 @@ pub fn log_change_menu_items(state: &AppState) -> Vec<ContextMenuItem> {
         };
 
     let i18n = &state.i18n;
-    let km = &state.config.keymap;
-    let diff_sc = km.primary_key_for(&[KeymapScope::Log], &KeyAction::CompareOrDiff);
-    let zoom_sc = km.primary_key_for(&[KeymapScope::Log, KeymapScope::Diff], &KeyAction::ZoomDiff);
-    let hist_sc = km.primary_key_for(&[KeymapScope::Log], &KeyAction::FileHistory);
+    let diff_sc = catalog::shortcut_for_action(state, &[KeymapScope::Log], &KeyAction::CompareOrDiff);
+    let zoom_sc = catalog::shortcut_for_action(
+        state,
+        &[KeymapScope::Log, KeymapScope::Diff],
+        &KeyAction::ZoomDiff,
+    );
+    let hist_sc = catalog::shortcut_for_action(state, &[KeymapScope::Log], &KeyAction::FileHistory);
 
     let need_file = i18n.t("menu.log_change.need_file");
     let need_single = i18n.t("menu.log_change.need_single_commit");
@@ -779,14 +695,10 @@ pub fn log_change_menu_items(state: &AppState) -> Vec<ContextMenuItem> {
     ));
     let patch_actions = match single_oid {
         Some(oid) if is_file => op(GitOp::PatchToClipboard {
-            args: vec![
-                "show".to_string(),
-                "--format=".into(),
-                "--patch".into(),
-                oid.to_string(),
-                "--".into(),
-                row_path,
-            ],
+            source: PatchSource::CommitFile {
+                oid,
+                path: row_path,
+            },
         }),
         _ => Vec::new(),
     };

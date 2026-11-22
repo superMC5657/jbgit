@@ -1,29 +1,15 @@
 //! Which-Key prefix completion hints and searchable/executable command-help rows.
 
 use crossterm::event::KeyModifiers;
-use jbgit_core::{PaneId, WorkspaceTab};
 
 use crate::app::AppState;
 use crate::config::keymap_config::{KeyBindingConfig, KeymapScope};
 
 use super::actions::{is_action_applicable, scopes_for_context};
+use super::catalog::{self, ContextMode};
 use super::{KEY_CHORD_WINDOW, KeyAction, KeyStroke};
 
-pub fn localized_action_desc(
-    state: &AppState,
-    run: &KeyAction,
-    fallback_desc: Option<&str>,
-) -> String {
-    let i18n_key = format!("help.action.{}", run.as_str());
-    let loc = state.i18n.t(&i18n_key);
-    if loc != i18n_key {
-        loc.to_string()
-    } else if let Some(d) = fallback_desc {
-        d.to_string()
-    } else {
-        run.as_str().to_string()
-    }
-}
+pub use super::catalog::localized_action_desc;
 
 /// Returns `(next_key_display, description)` pairs for the currently pending prefix sequence.
 pub fn pending_completions(state: &AppState) -> Vec<(String, String)> {
@@ -158,42 +144,35 @@ fn current_context_rows(state: &AppState) -> Vec<HelpRow> {
     let pane_title = i18n.pane_title(state.focused_pane);
     let mut out = Vec::new();
 
-    if state.active_tab == WorkspaceTab::Commit && state.focused_pane == PaneId::CommitMessageEditor
-    {
-        for action in [
-            KeyAction::Commit,
-            KeyAction::CommitAndPush,
-            KeyAction::ToggleAmend,
-            KeyAction::ToggleSignoff,
-            KeyAction::CommitHistory,
-        ] {
-            let keys = km.editor_keys_for(&[KeymapScope::Commit], &action);
+    if let ContextMode::CommitEditor { editing_author } = catalog::context_mode(state) {
+        for action in catalog::commit_editor_actions() {
+            let keys = km.editor_keys_for(&[KeymapScope::Commit], action);
             if !keys.is_empty() {
                 out.push(HelpRow::Entry {
                     keys: keys.join(" / "),
-                    desc: localized_action_desc(state, &action, None),
+                    desc: localized_action_desc(state, action, None),
                     scope_tag: pane_title.to_string(),
-                    run: Some(action),
+                    run: Some(action.clone()),
                 });
             }
         }
+        let (esc_hint, _) = catalog::commit_editor_structural_hints(state, editing_author);
         out.push(HelpRow::Entry {
-            keys: "Esc".to_string(),
-            desc: i18n.t("help.action.back_to_changes").to_string(),
+            keys: esc_hint.key,
+            desc: esc_hint.label,
             scope_tag: pane_title.to_string(),
             run: None,
         });
         return out;
     }
 
-    if state.active_tab == WorkspaceTab::Console
-        && state.focused_pane == PaneId::ConsoleCommandList
-    {
+    let structural = catalog::normal_structural_hints(state);
+    if let Some(probe) = structural.console_probe_fallback {
         out.push(HelpRow::Entry {
-            keys: super::actions::console_status_probe_key(km),
+            keys: probe.key,
             desc: localized_action_desc(state, &KeyAction::GitStatusProbe, None),
             scope_tag: pane_title.to_string(),
-            run: Some(KeyAction::GitStatusProbe),
+            run: probe.action,
         });
     }
 
@@ -209,14 +188,12 @@ fn current_context_rows(state: &AppState) -> Vec<HelpRow> {
         ));
     }
 
-    if state.active_tab == WorkspaceTab::Console
-        && state.focused_pane == PaneId::ConsoleOutputDetail
-    {
+    if let Some(trailing) = structural.help_trailing {
         out.push(HelpRow::Entry {
-            keys: "Esc".to_string(),
-            desc: i18n.t("help.action.back_to_commands").to_string(),
+            keys: trailing.key,
+            desc: trailing.label,
             scope_tag: pane_title.to_string(),
-            run: None,
+            run: trailing.action,
         });
     }
 
@@ -237,9 +214,7 @@ fn current_context_rows(state: &AppState) -> Vec<HelpRow> {
 }
 
 fn advanced_tool_rows(state: &AppState) -> Vec<HelpRow> {
-    let i18n = &state.i18n;
-    let scope = i18n.t("help.scope.advanced").to_string();
-    let km = &state.config.keymap;
+    let scope = state.i18n.t("help.scope.advanced").to_string();
     let all_scopes = &[
         KeymapScope::Global,
         KeymapScope::Log,
@@ -249,36 +224,19 @@ fn advanced_tool_rows(state: &AppState) -> Vec<HelpRow> {
         KeymapScope::Stash,
         KeymapScope::Console,
     ];
-    let key_or = |run: &KeyAction, default_key: &str| -> String {
-        km.primary_key_for(all_scopes, run)
-            .unwrap_or_else(|| default_key.to_string())
-    };
-    vec![
-        HelpRow::Entry {
-            keys: key_or(&KeyAction::Palette, "—"),
-            desc: localized_action_desc(state, &KeyAction::Palette, None),
-            scope_tag: scope.clone(),
-            run: Some(KeyAction::Palette),
-        },
-        HelpRow::Entry {
-            keys: key_or(&KeyAction::ToggleGlyphMode, "F12"),
-            desc: localized_action_desc(state, &KeyAction::ToggleGlyphMode, None),
-            scope_tag: scope.clone(),
-            run: Some(KeyAction::ToggleGlyphMode),
-        },
-        HelpRow::Entry {
-            keys: key_or(&KeyAction::CycleGraphRenderer, "F8"),
-            desc: localized_action_desc(state, &KeyAction::CycleGraphRenderer, None),
-            scope_tag: scope.clone(),
-            run: Some(KeyAction::CycleGraphRenderer),
-        },
-        HelpRow::Entry {
-            keys: key_or(&KeyAction::GitStatusProbe, "Console: p"),
-            desc: localized_action_desc(state, &KeyAction::GitStatusProbe, None),
-            scope_tag: scope,
-            run: Some(KeyAction::GitStatusProbe),
-        },
-    ]
+    catalog::advanced_tool_actions()
+        .iter()
+        .map(|&(run, default_key)| {
+            let keys = catalog::shortcut_for_action(state, all_scopes, run)
+                .unwrap_or_else(|| default_key.to_string());
+            HelpRow::Entry {
+                keys,
+                desc: localized_action_desc(state, run, None),
+                scope_tag: scope.clone(),
+                run: Some(run.clone()),
+            }
+        })
+        .collect()
 }
 
 pub fn build_help_rows(state: &AppState, query: &str) -> Vec<HelpRow> {

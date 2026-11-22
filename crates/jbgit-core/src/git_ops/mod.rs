@@ -8,7 +8,7 @@ mod outcome;
 mod rebase;
 mod refs;
 
-pub use ops::{GitOp, GitStep, OngoingKind, OngoingStep, ResetMode, short_rev};
+pub use ops::{GitOp, OngoingKind, OngoingStep, PatchSource, ResetMode, short_rev};
 pub use outcome::{GitFailure, GitOpOutcome, StashEntry, classify_failure};
 pub use rebase::{RewritePlan, TodoAction, TodoEntry, default_squash_messages, render_todo};
 pub use refs::{
@@ -148,39 +148,7 @@ mod tests {
     }
 
     #[test]
-    fn steps_for_common_ops() {
-        let push = GitOp::Push {
-            branch: "feat".into(),
-            remote: "origin".into(),
-            set_upstream: true,
-            force_with_lease: false,
-            up_to: Some(oid(7)),
-        };
-        assert_eq!(
-            push.simple_steps().unwrap()[0].args,
-            vec![
-                "push".to_string(),
-                "--set-upstream".into(),
-                "origin".into(),
-                format!("{}:refs/heads/feat", oid(7)),
-            ]
-        );
-        let remote_co = GitOp::CheckoutNewBranch {
-            name: "feature-new".into(),
-            start: "origin/feature-new".into(),
-            track: true,
-        };
-        assert_eq!(
-            remote_co.simple_steps().unwrap()[0].args,
-            vec![
-                "checkout",
-                "-b",
-                "feature-new",
-                "--track",
-                "origin/feature-new"
-            ]
-        );
-        assert!(GitOp::Smart(Box::new(remote_co)).simple_steps().is_none());
+    fn stash_entry_parses_branch_and_message() {
         let stash = StashEntry {
             index: 0,
             oid: oid(1),
@@ -190,43 +158,19 @@ mod tests {
         assert_eq!(stash.branch(), Some("main"));
         assert_eq!(stash.short_message(), "wip parser");
 
-        let root_fixup = GitOp::FixupCommit {
-            target: oid(1),
-            base: None,
-            autosquash: true,
-        };
-        let steps = root_fixup.simple_steps().unwrap();
-        assert_eq!(steps[1].args.last().map(String::as_str), Some("--root"));
-
-        let root_patch = GitOp::CreatePatchFiles {
-            oids: vec![oid(2), oid(1)],
-            base: None,
-        };
-        assert_eq!(
-            root_patch.simple_steps().unwrap()[0].args,
-            vec!["format-patch", "-o", ".", "--root", &oid(2).to_string()]
-        );
-
         let restore = GitOp::CheckoutPaths {
             rev: oid(3).to_string(),
-            paths: vec!["src/main.rs".into(), "dir with space/a.txt".into()],
+            paths: vec!["src/main.rs".into()],
         };
         assert!(!restore.is_read_only());
-        assert_eq!(
-            restore.simple_steps().unwrap()[0].args,
-            vec![
-                "checkout",
-                &oid(3).to_string(),
-                "--",
-                "src/main.rs",
-                "dir with space/a.txt"
-            ]
+        assert!(
+            GitOp::PatchToClipboard {
+                source: PatchSource::CommitFile {
+                    oid: oid(3),
+                    path: "src/main.rs".into(),
+                }
+            }
+            .is_read_only()
         );
-        let many_paths: Vec<String> = (0..35).map(|i| format!("f{i}.txt")).collect();
-        let restore_many = GitOp::CheckoutPaths {
-            rev: "HEAD~1".into(),
-            paths: many_paths,
-        };
-        assert!(restore_many.simple_steps().is_none());
     }
 }

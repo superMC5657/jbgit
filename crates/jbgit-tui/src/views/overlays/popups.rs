@@ -30,36 +30,14 @@ pub(super) fn render_floating_popup(
         crate::branches_popup::render_branches_popup(frame, screen, state, ctx, query, selected, z);
         return;
     }
-    if kind == PopupKind::ConflictMerge {
-        crate::views::conflict_merge::render_conflict_merge_modal(frame, screen, state, ctx, z);
-        return;
-    }
-    if kind == PopupKind::FileHistory {
-        crate::views::file_history::render_file_history_modal(frame, screen, state, ctx, z);
-        return;
-    }
     let (max_w, max_h) = match kind {
         PopupKind::PalettePreview => (100, 38),
         PopupKind::ShortcutsHelp => (90, 38),
         PopupKind::GoToRevision => (64, 7),
         PopupKind::ChooseParent => (68, 12),
         PopupKind::CommitHistory => (76, 18),
-        PopupKind::ThreeWayInspector => (84, 22),
-        PopupKind::HookError => (84, 20),
         _ => (64, 18),
     };
-    let width = screen.width.min(max_w);
-    let height = screen.height.min(max_h);
-    let x = screen
-        .x
-        .saturating_add(screen.width.saturating_sub(width) / 2);
-    let y = screen
-        .y
-        .saturating_add(screen.height.saturating_sub(height) / 2);
-    let rect = Rect::new(x, y, width, height);
-
-    frame.render_widget(Clear, rect);
-
     let title = match kind {
         PopupKind::ShortcutsHelp => {
             let t = ctx.t("help.shortcuts_title");
@@ -78,12 +56,47 @@ pub(super) fn render_floating_popup(
         PopupKind::GoToRevision => ctx.t("popup.goto_title").to_string(),
         PopupKind::ChooseParent => ctx.t("popup.choose_parent_title").to_string(),
         PopupKind::CommitHistory => ctx.t("popup.commit_history_title").to_string(),
-        PopupKind::ThreeWayInspector => ctx.t("popup.three_way_title").to_string(),
-        PopupKind::ConflictMerge => format!(" {} ", ctx.t("menu.stage.resolve_conflicts")),
-        PopupKind::FileHistory => String::new(),
-        PopupKind::HookError => ctx.t("popup.hook_error_title").to_string(),
     };
 
+    let inner = render_centered_popup_box(frame, screen, ctx, max_w, max_h, title, z);
+
+    match kind {
+        PopupKind::PalettePreview => render_palette_preview(frame, inner, ctx),
+        PopupKind::ShortcutsHelp => {
+            render_shortcuts_help_popup(frame, inner, state, ctx, query, selected, z);
+        }
+        PopupKind::FilterEditor(field) => {
+            render_filter_editor_popup(frame, inner, state, ctx, field, query, selected);
+        }
+        PopupKind::GoToRevision => render_goto_revision_popup(frame, inner, state, ctx, query),
+        PopupKind::ChooseParent => render_choose_parent_popup(frame, inner, state, ctx, selected),
+        PopupKind::BranchesQuickView => {}
+        PopupKind::CommitHistory => {
+            render_commit_history_popup(frame, inner, state, ctx, query, selected);
+        }
+    }
+}
+
+fn render_centered_popup_box(
+    frame: &mut Frame<'_>,
+    screen: Rect,
+    ctx: &mut RenderContext<'_>,
+    max_w: u16,
+    max_h: u16,
+    title: String,
+    z: u8,
+) -> Rect {
+    let width = screen.width.min(max_w);
+    let height = screen.height.min(max_h);
+    let x = screen
+        .x
+        .saturating_add(screen.width.saturating_sub(width) / 2);
+    let y = screen
+        .y
+        .saturating_add(screen.height.saturating_sub(height) / 2);
+    let rect = Rect::new(x, y, width, height);
+
+    frame.render_widget(Clear, rect);
     let block = Block::default()
         .title(Span::styled(
             title,
@@ -97,26 +110,33 @@ pub(super) fn render_floating_popup(
 
     let inner = block.inner(rect);
     frame.render_widget(block, rect);
-    // Block clicks inside popup from triggering backdrop close
     ctx.hit_registry.register(rect, z + 1, HitTarget::DialogBody);
+    inner
+}
 
-    match kind {
-        PopupKind::PalettePreview => render_palette_preview(frame, inner, ctx),
-        PopupKind::ShortcutsHelp => {
-            render_shortcuts_help_popup(frame, inner, state, ctx, query, selected, z);
-        }
-        PopupKind::FilterEditor(field) => {
-            render_filter_editor_popup(frame, inner, state, ctx, field, query, selected);
-        }
-        PopupKind::GoToRevision => render_goto_revision_popup(frame, inner, state, ctx, query),
-        PopupKind::ChooseParent => render_choose_parent_popup(frame, inner, state, ctx, selected),
-        PopupKind::BranchesQuickView | PopupKind::ConflictMerge | PopupKind::FileHistory => {}
-        PopupKind::CommitHistory => {
-            render_commit_history_popup(frame, inner, state, ctx, query, selected);
-        }
-        PopupKind::ThreeWayInspector => render_three_way_inspector_popup(frame, inner, state, ctx),
-        PopupKind::HookError => render_hook_error_popup(frame, inner, state, ctx),
-    }
+pub(super) fn render_three_way_inspector_modal(
+    frame: &mut Frame<'_>,
+    screen: Rect,
+    state: &AppState,
+    ctx: &mut RenderContext<'_>,
+    range_idx: Option<usize>,
+    z: u8,
+) {
+    let title = ctx.t("popup.three_way_title").to_string();
+    let inner = render_centered_popup_box(frame, screen, ctx, 84, 22, title, z);
+    render_three_way_inspector_popup(frame, inner, state, ctx, range_idx);
+}
+
+pub(super) fn render_hook_error_modal(
+    frame: &mut Frame<'_>,
+    screen: Rect,
+    ctx: &mut RenderContext<'_>,
+    output: &str,
+    z: u8,
+) {
+    let title = ctx.t("popup.hook_error_title").to_string();
+    let inner = render_centered_popup_box(frame, screen, ctx, 84, 20, title, z);
+    render_hook_error_popup(frame, inner, ctx, output);
 }
 
 fn render_shortcuts_help_popup(
@@ -451,7 +471,7 @@ fn render_choose_parent_popup(
     selected: usize,
 ) {
     let mut lines = Vec::new();
-    if let Some(commit) = state.log_commit_at(state.log_graph.selected_idx)
+    if let Some(commit) = state.log_commit_at(state.log.graph.selected_idx)
         && let Some(snap) = &state.repo_snapshot
     {
         let sel = selected.min(commit.parents.len().saturating_sub(1));
@@ -498,7 +518,9 @@ fn render_commit_history_popup(
     query: &str,
     selected: usize,
 ) {
-    let candidates = state.commit_history_candidates();
+    let candidates = state
+        .stage_workbench
+        .commit_history_candidates(state.repo_snapshot.as_deref());
     let q_low = query.to_ascii_lowercase();
     let filtered: Vec<(usize, &String)> = candidates
         .iter()
@@ -556,10 +578,11 @@ fn render_three_way_inspector_popup(
     inner: Rect,
     state: &AppState,
     ctx: &RenderContext<'_>,
+    range_idx: Option<usize>,
 ) {
     let mut lines = Vec::new();
-    if let Some(diff) = &state.stage_workbench.current_diff
-        && let Some(range) = state.stage_workbench.three_way_range_for_popup()
+    if let Some(diff) = state.stage_workbench.current_diff()
+        && let Some(range) = state.stage_workbench.three_way_range_for_popup(range_idx)
     {
         let max_w = inner.width.saturating_sub(4) as usize;
         let local_rows = diff.tracker.local_doc.slice_display(range.local_range);
@@ -655,13 +678,14 @@ fn render_three_way_inspector_popup(
 fn render_hook_error_popup(
     frame: &mut Frame<'_>,
     inner: Rect,
-    state: &AppState,
     ctx: &RenderContext<'_>,
+    output: &str,
 ) {
-    let msg = state
-        .hook_error_output
-        .as_deref()
-        .unwrap_or_else(|| ctx.t("popup.hook_error_fallback"));
+    let msg = if output.is_empty() {
+        ctx.t("popup.hook_error_fallback")
+    } else {
+        output
+    };
     let mut lines: Vec<Line<'_>> = msg
         .lines()
         .map(|l| {

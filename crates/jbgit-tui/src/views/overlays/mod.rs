@@ -3,12 +3,8 @@ mod popups;
 mod tooltip;
 mod which_key;
 
-use jbgit_core::ModalButton;
 use ratatui::Frame;
 use ratatui::layout::Rect;
-use ratatui::style::{Modifier, Style};
-use ratatui::text::Span;
-use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 use unicode_width::UnicodeWidthStr;
 
 use crate::app::{AppState, ModalLayer, RenderContext};
@@ -35,11 +31,35 @@ pub fn render_modals(
         }
 
         match layer {
-            ModalLayer::FloatingPopup {
-                kind,
-                query,
-                selected,
-            } => popups::render_floating_popup(frame, screen, state, ctx, *kind, query, *selected, z),
+            ModalLayer::BranchesPopup { query, selected } => {
+                crate::branches_popup::render_branches_popup(
+                    frame, screen, state, ctx, query, *selected, z,
+                );
+            }
+            ModalLayer::ShortcutsHelp { .. }
+            | ModalLayer::PalettePreview
+            | ModalLayer::FilterEditor { .. }
+            | ModalLayer::GoToRevision { .. }
+            | ModalLayer::ChooseParent { .. }
+            | ModalLayer::CommitHistory { .. } => {
+                let kind = layer.popup_kind().expect("popup kind");
+                let (query, selected) = layer.popup_query_and_selected().unwrap_or(("", 0));
+                popups::render_floating_popup(frame, screen, state, ctx, kind, query, selected, z);
+            }
+            ModalLayer::FileHistory(_) => {
+                crate::views::file_history::render_file_history_modal(frame, screen, state, ctx, z);
+            }
+            ModalLayer::ConflictResolver(_) => {
+                crate::views::conflict_merge::render_conflict_merge_modal(
+                    frame, screen, state, ctx, z,
+                );
+            }
+            ModalLayer::ThreeWayInspector { range_idx } => {
+                popups::render_three_way_inspector_modal(frame, screen, state, ctx, *range_idx, z);
+            }
+            ModalLayer::HookError { output } => {
+                popups::render_hook_error_modal(frame, screen, ctx, output, z);
+            }
             ModalLayer::ContextMenu {
                 anchor,
                 items,
@@ -50,24 +70,6 @@ pub fn render_modals(
                 frame, screen, ctx, *anchor, *parent, items, *selected, *depth, z,
             ),
             ModalLayer::Dialog(d) => crate::views::dialogs::render_dialog(frame, screen, ctx, d, z),
-            ModalLayer::CriticalDialog {
-                title,
-                body,
-                confirm_label,
-                cancel_label,
-                selected_button,
-                ..
-            } => render_critical_dialog(
-                frame,
-                screen,
-                ctx,
-                title,
-                body,
-                confirm_label,
-                cancel_label,
-                *selected_button,
-                z,
-            ),
         }
     }
 }
@@ -114,104 +116,5 @@ pub fn draw_shadow(frame: &mut Frame<'_>, screen: Rect, rect: Rect) {
                 cell.set_bg(shade).set_fg(dim);
             }
         }
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
-fn render_critical_dialog(
-    frame: &mut Frame<'_>,
-    screen: Rect,
-    ctx: &mut RenderContext<'_>,
-    title: &str,
-    body: &str,
-    confirm_label: &str,
-    cancel_label: &str,
-    selected_button: ModalButton,
-    z: u8,
-) {
-    let width = screen.width.clamp(screen.width.min(28), 60);
-    let height = screen.height.clamp(screen.height.min(7), 12);
-    let x = screen
-        .x
-        .saturating_add(screen.width.saturating_sub(width) / 2);
-    let y = screen
-        .y
-        .saturating_add(screen.height.saturating_sub(height) / 2);
-    let rect = Rect::new(x, y, width, height);
-
-    frame.render_widget(Clear, rect);
-
-    let block = Block::default()
-        .title(Span::styled(
-            format!(" {title} "),
-            Style::default()
-                .fg(ctx.theme.status_conflicted)
-                .add_modifier(Modifier::BOLD),
-        ))
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(ctx.theme.status_conflicted))
-        .style(Style::default().bg(ctx.theme.bg_elevated));
-
-    let inner = block.inner(rect);
-    frame.render_widget(block, rect);
-    ctx.hit_registry.register(rect, z + 1, HitTarget::DialogBody);
-
-    let body_h = inner.height.saturating_sub(2);
-    let body_rect = Rect::new(inner.x, inner.y, inner.width, body_h);
-    frame.render_widget(
-        Paragraph::new(body)
-            .wrap(Wrap { trim: false })
-            .style(Style::default().fg(ctx.theme.fg_primary)),
-        body_rect,
-    );
-
-    if inner.height >= 2 {
-        let btn_y = inner.y.saturating_add(inner.height.saturating_sub(1));
-        let btn0 = format!(" [{confirm_label}] ");
-        let btn1 = format!(" [{cancel_label}] ");
-        let btn0_rect = Rect::new(inner.x.saturating_add(1), btn_y, btn0.width() as u16, 1);
-        let btn1_rect = Rect::new(
-            btn0_rect
-                .x
-                .saturating_add(btn0_rect.width)
-                .saturating_add(2),
-            btn_y,
-            btn1.width() as u16,
-            1,
-        );
-
-        let s0 = if selected_button == ModalButton::Confirm {
-            Style::default()
-                .fg(ctx.theme.fg_bright)
-                .bg(ctx.theme.border_focused)
-                .add_modifier(Modifier::BOLD)
-        } else {
-            Style::default()
-                .fg(ctx.theme.fg_primary)
-                .bg(ctx.theme.bg_panel)
-        };
-        let s1 = if selected_button == ModalButton::Cancel {
-            Style::default()
-                .fg(ctx.theme.fg_bright)
-                .bg(ctx.theme.border_focused)
-                .add_modifier(Modifier::BOLD)
-        } else {
-            Style::default()
-                .fg(ctx.theme.fg_primary)
-                .bg(ctx.theme.bg_panel)
-        };
-
-        frame.render_widget(Paragraph::new(Span::styled(btn0, s0)), btn0_rect);
-        frame.render_widget(Paragraph::new(Span::styled(btn1, s1)), btn1_rect);
-        ctx.hit_registry.register(
-            btn0_rect,
-            z + 2,
-            HitTarget::ModalButton(ModalButton::Confirm),
-        );
-        ctx.hit_registry.register(
-            btn1_rect,
-            z + 2,
-            HitTarget::ModalButton(ModalButton::Cancel),
-        );
     }
 }

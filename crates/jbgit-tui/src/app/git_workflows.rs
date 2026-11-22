@@ -5,13 +5,12 @@
 use std::collections::HashSet;
 
 use jbgit_core::{
-    ChangeRowKind, DetailsKey, GitFailure, GitOp, GitOpOutcome, Oid, OngoingKind, PaneId,
-    RefKind, RepoSnapshot, RewritePlan, StageNodeKind, StageTreeRowKind, WorkspaceTab,
-    is_protected_branch,
+    GitFailure, GitOp, GitOpOutcome, Oid, OngoingKind, PaneId, RefKind, RepoSnapshot, RewritePlan,
+    StageNodeKind, StageTreeRowKind, WorkspaceTab, is_protected_branch,
 };
 
 use crate::app::{
-    Action, AppState, ConflictMergeState, Effect, ModalLayer, Notification, PopupKind,
+    Action, AppState, ConflictMergeState, Effect, ModalLayer, Notification,
 };
 use crate::branches_popup::first_selectable_row;
 use crate::dialogs::{
@@ -29,12 +28,14 @@ impl AppState {
     }
 
     pub(crate) fn conflicted_count(&self) -> usize {
-        self.stage_status.as_ref().map_or(0, |s| s.conflicted.len())
+        self.stage_workbench
+            .status()
+            .map_or(0, |s| s.conflicted.len())
     }
 
     pub(crate) fn has_staged_changes(&self) -> bool {
-        self.stage_status
-            .as_ref()
+        self.stage_workbench
+            .status()
             .is_some_and(|s| !s.staged.is_empty())
     }
 
@@ -78,7 +79,8 @@ impl AppState {
             return Vec::new();
         };
         let selected: HashSet<Oid> = self
-            .log_graph
+            .log
+            .graph
             .selected_oids(self.repo_snapshot.as_ref())
             .into_iter()
             .collect();
@@ -98,7 +100,7 @@ impl AppState {
     }
 
     fn push_dialog(&mut self, d: Dialog) {
-        self.modal_stack.push(ModalLayer::Dialog(Box::new(d)));
+        self.push_modal(ModalLayer::Dialog(Box::new(d)));
     }
 
     fn run_actions(&mut self, actions: Vec<Action>, effects: &mut Vec<Effect>) {
@@ -177,17 +179,16 @@ impl AppState {
                 self.modal_stack
                     .retain(|l| !matches!(l, ModalLayer::ContextMenu { .. }));
                 let selected = first_selectable_row(self, query);
-                self.modal_stack.push(ModalLayer::FloatingPopup {
-                    kind: PopupKind::BranchesQuickView,
+                self.push_modal(ModalLayer::BranchesPopup {
                     query: query.clone(),
                     selected,
                 });
             }
             Action::ToggleFavoriteRef { full, short } => {
-                let on = self.branches.settings.favorites.toggle(full, short);
-                self.branches.save_settings();
+                let on = self.log.branches.settings.favorites.toggle(full, short);
+                self.log.branches.save_settings();
                 let snap = self.repo_snapshot.clone();
-                self.branches.sync_model(snap.as_ref(), true);
+                self.log.branches.sync_model(snap.as_ref(), true);
                 self.status_notice = Some(self.i18n.t_fmt(
                     if on {
                         "toast.favorite_added"
@@ -210,17 +211,9 @@ impl AppState {
             }
             Action::CompareWithCurrent { branch } => self.compare_with_current(branch),
             Action::CompareVersions { base, target } => {
-                self.active_tab = WorkspaceTab::Log;
-                self.focused_pane = PaneId::LogChangesTree;
-                self.details.diff_preview = true;
-                self.details.pending_select_path = None;
-                self.details.compare_override = Some(DetailsKey::compare_versions(*base, *target));
-                let b_s = base.short();
-                let t_s = target.short();
-                self.status_notice = Some(self.i18n.t_fmt(
-                    "toast.comparing_versions",
-                    &[("base", &b_s), ("target", &t_s)],
-                ));
+                self.set_focus(WorkspaceTab::Log, PaneId::LogChangesTree);
+                self.log
+                    .start_compare_versions(*base, *target, &self.i18n, &mut self.status_notice);
             }
             Action::CompareWithLocal { target } => {
                 self.start_compare_with_local(*target, None);
@@ -229,16 +222,12 @@ impl AppState {
                 self.start_compare_with_local(*target, Some(path.clone()));
             }
             Action::OpenConflictResolver(path) => {
-                self.conflict_merge = Some(ConflictMergeState {
+                self.blur_active_pane(false);
+                self.modal_stack.open_conflict_resolver(ConflictMergeState {
                     path: path.clone(),
                     doc: None,
                     selected_block: 0,
-                    scroll: 0,
-                });
-                self.modal_stack.push(ModalLayer::FloatingPopup {
-                    kind: PopupKind::ConflictMerge,
-                    query: String::new(),
-                    selected: 0,
+                    scroll: crate::app::ScrollViewport::new(),
                 });
                 effects.push(Effect::LoadConflictDocument(path.clone()));
             }
@@ -246,7 +235,7 @@ impl AppState {
                 effects.push(Effect::OpenExternalMergetool(path.clone()));
             }
             Action::ConflictSelectBlock(delta) => {
-                if let Some(cm) = &mut self.conflict_merge
+                if let Some(cm) = self.modal_stack.conflict_merge_mut()
                     && let Some(doc) = &cm.doc
                     && doc.conflict_count > 0
                 {
@@ -256,7 +245,7 @@ impl AppState {
                 }
             }
             Action::ConflictSetBlock(idx) => {
-                if let Some(cm) = &mut self.conflict_merge
+                if let Some(cm) = self.modal_stack.conflict_merge_mut()
                     && let Some(doc) = &cm.doc
                     && *idx < doc.conflict_count
                 {
@@ -264,7 +253,7 @@ impl AppState {
                 }
             }
             Action::ConflictApplyChoice(choice) => {
-                if let Some(cm) = &mut self.conflict_merge
+                if let Some(cm) = self.modal_stack.conflict_merge_mut()
                     && let Some(doc) = &mut cm.doc
                 {
                     doc.set_choice(cm.selected_block, *choice);
@@ -274,67 +263,65 @@ impl AppState {
                 }
             }
             Action::ConflictAcceptAll(choice) => {
-                if let Some(cm) = &mut self.conflict_merge
+                if let Some(cm) = self.modal_stack.conflict_merge_mut()
                     && let Some(doc) = &mut cm.doc
                 {
                     doc.accept_all(*choice);
                 }
             }
             Action::ConflictScroll(delta) => {
-                if let Some(cm) = &mut self.conflict_merge {
-                    cm.scroll = (cm.scroll as isize + delta).max(0) as usize;
-                }
+                self.scroll_pane(crate::app::ScrollPane::ConflictMerge, *delta);
             }
             Action::ConflictSaveAndStage => {
-                if let Some(cm) = &self.conflict_merge
+                if let Some(cm) = self.modal_stack.conflict_merge()
                     && let Some(doc) = &cm.doc
                 {
                     let all_resolved = doc.unresolved_count() == 0;
                     let path = doc.path.clone();
                     let content = doc.render_merged().into_bytes();
+                    let unresolved = doc.unresolved_count();
                     effects.push(Effect::SaveConflictResolution {
                         path: path.clone(),
                         content,
                         stage: all_resolved,
                     });
                     self.status_notice = Some(if all_resolved {
-                        self.i18n.t_fmt("toast.saved_staged_conflict", &[("path", &path)])
+                        self.i18n
+                            .t_fmt("toast.saved_staged_conflict", &[("path", &path)])
                     } else {
-                        let count_s = doc.unresolved_count().to_string();
+                        let count_s = unresolved.to_string();
                         self.i18n.t_fmt(
                             "toast.saved_unresolved_conflict",
                             &[("path", &path), ("count", &count_s)],
                         )
                     });
-                    self.conflict_merge = None;
-                    self.modal_stack.pop();
+                    self.modal_stack.close_conflict_resolver();
                 }
             }
             Action::PromptDeleteBranch { name } => self.prompt_delete_branch(name, effects),
             Action::PromptPush { branch, up_to } => self.prompt_push(branch, *up_to),
             Action::UncommitHead => {
-                self.active_tab = WorkspaceTab::Commit;
-                self.focused_pane = PaneId::CommitMessageEditor;
+                self.set_focus(WorkspaceTab::Commit, PaneId::CommitMessageEditor);
                 self.status_notice = Some(self.i18n.t("toast.uncommitting_head").into());
                 effects.push(Effect::UndoLastCommit);
             }
             Action::OngoingResolve => {
-                self.active_tab = WorkspaceTab::Commit;
-                self.focused_pane = PaneId::CommitChangesTree;
-                self.stage_workbench
-                    .sync_rows(self.stage_status.as_ref());
-                let first_conflict = self.stage_workbench.rows.iter().enumerate().find_map(|(i, r)| {
-                    match &r.kind {
-                        StageTreeRowKind::File {
-                            group_kind: StageNodeKind::Conflicted,
-                            path,
-                            ..
-                        } => Some((i, path.clone())),
-                        _ => None,
-                    }
-                });
+                self.set_focus(WorkspaceTab::Commit, PaneId::CommitChangesTree);
+                let first_conflict =
+                    self.stage_workbench
+                        .rows()
+                        .iter()
+                        .enumerate()
+                        .find_map(|(i, r)| match &r.kind {
+                            StageTreeRowKind::File {
+                                group_kind: StageNodeKind::Conflicted,
+                                path,
+                                ..
+                            } => Some((i, path.clone())),
+                            _ => None,
+                        });
                 if let Some((pos, path)) = first_conflict {
-                    self.commit_stage_selected_idx = pos;
+                    self.stage_workbench.select_row(pos);
                     let _ = self.dispatch_git_action(&Action::OpenConflictResolver(path), effects);
                 } else {
                     self.status_notice = Some(self.i18n.t("toast.no_conflicts_banner").into());
@@ -348,104 +335,19 @@ impl AppState {
                 }
             }
             Action::NotificationDismiss => self.notification = None,
-            Action::StashSelect(idx) => {
-                let len = self.snapshot().map_or(0, |s| s.stashes.len());
-                if len > 0 {
-                    self.stash.selected = (*idx).min(len - 1);
-                    self.stash.details.changes_selected = 0;
-                    self.stash.details.diff_scroll = 0;
-                }
-            }
-            Action::StashMove(delta) => {
-                let len = self.snapshot().map_or(0, |s| s.stashes.len());
-                if len > 0 {
-                    let next = (self.stash.selected as isize + delta).clamp(0, len as isize - 1);
-                    let _ = self.dispatch_git_action(&Action::StashSelect(next as usize), effects);
-                }
-            }
-            Action::StashChangesSelect(idx) => {
-                let len = self.stash.changes_len();
-                if len > 0 {
-                    self.stash.details.changes_selected = (*idx).min(len - 1);
-                    self.stash.details.diff_scroll = 0;
-                }
-            }
-            Action::StashChangesMove(delta) => {
-                let len = self.stash.changes_len();
-                if len > 0 {
-                    let next = (self.stash.details.changes_selected as isize + delta)
-                        .clamp(0, len as isize - 1);
-                    self.stash.details.changes_selected = next as usize;
-                    self.stash.details.diff_scroll = 0;
-                }
-            }
-            Action::StashChangesExpand(expand) => {
-                let rows = self.stash.details.change_rows();
-                if let Some(row) = rows.get(self.stash.details.changes_selected)
-                    && matches!(row.kind, ChangeRowKind::Dir { .. })
-                {
-                    if *expand {
-                        self.stash.details.changes_collapsed.remove(&row.key);
-                    } else {
-                        self.stash
-                            .details
-                            .changes_collapsed
-                            .insert(row.key.clone());
-                    }
-                }
-            }
-            Action::StashChangesToggleGroupByDir => {
-                self.stash.details.changes_group_by_dir = !self.stash.details.changes_group_by_dir;
-                self.stash.details.changes_selected = 0;
-            }
-            Action::StashChangesExpandAll(expand) => {
-                if *expand {
-                    self.stash.details.changes_collapsed.clear();
-                } else if let Some(bundle) = self.stash.details.current_bundle() {
-                    let all = jbgit_core::build_change_rows(
-                        &bundle.changes,
-                        true,
-                        &rustc_hash::FxHashSet::default(),
-                    );
-                    self.stash.details.changes_collapsed = all
-                        .into_iter()
-                        .filter(|r| r.depth == 0 && matches!(r.kind, ChangeRowKind::Dir { .. }))
-                        .map(|r| r.key)
-                        .collect();
-                    self.stash.details.changes_selected = 0;
-                }
-            }
-            Action::StashDiffToggleSideBySide => {
-                self.stash.details.diff_side_by_side = !self.stash.details.diff_side_by_side;
-            }
-            Action::StashDiffCycleContext => {
-                self.stash.details.diff_context = self.stash.details.diff_context.next();
-            }
-            Action::StashDiffJumpHunk(delta) => {
-                self.stash.details.jump_diff_hunk(*delta);
-            }
-            Action::StashDiffNextFile(delta) => {
-                self.stash.details.select_next_file(*delta);
-            }
-            Action::StashDiffScroll(delta) => {
-                self.scroll_pane(crate::app::ScrollPane::StashDiff, *delta);
-            }
             _ => return false,
         }
         true
     }
 
     fn start_compare_with_local(&mut self, target: Oid, select_path: Option<String>) {
-        self.active_tab = WorkspaceTab::Log;
-        self.focused_pane = PaneId::LogChangesTree;
-        self.details.diff_preview = true;
-        self.details.pending_select_path = select_path;
-        self.details.compare_override = Some(DetailsKey::compare_with_local(target));
-        let t_s = target.short();
-        self.status_notice = Some(self.i18n.t_fmt(
-            "toast.comparing_local",
-            &[("target", &t_s)],
-        ));
+        self.set_focus(WorkspaceTab::Log, PaneId::LogChangesTree);
+        self.log.start_compare_with_local(
+            target,
+            select_path,
+            &self.i18n,
+            &mut self.status_notice,
+        );
     }
 
     fn checkout_remote(&mut self, remote_ref: &str, effects: &mut Vec<Effect>) {
@@ -559,40 +461,15 @@ impl AppState {
     }
 
     fn compare_with_current(&mut self, branch: &str) {
-        let Some(snap) = self.repo_snapshot.clone() else {
-            return;
-        };
-        let current = snap
-            .head_branch
-            .clone()
-            .unwrap_or_else(|| "HEAD".to_string());
-        let (Some(a), Some(b)) = (snap.resolve_revision(branch), snap.head_oid) else {
-            self.status_notice = Some(
-                self.i18n
-                    .t_fmt("toast.cannot_compare_branch", &[("name", branch)]),
-            );
-            return;
-        };
-        let only_a = snap.count_exclusive(a, b);
-        let only_b = snap.count_exclusive(b, a);
-        self.active_tab = WorkspaceTab::Log;
-        self.focused_pane = PaneId::LogCommitTable;
-        self.log_filter.spec.branch =
-            jbgit_core::BranchFilter::from_names(vec![branch.to_string(), current.clone()]);
-        self.log_graph.filter_generation = self.log_graph.filter_generation.wrapping_add(1);
-        self.ensure_graph_cache();
-        self.log_graph.jump_to_oid(self.repo_snapshot.as_ref(), &a);
-        let oa = only_a.to_string();
-        let ob = only_b.to_string();
-        self.status_notice = Some(self.i18n.t_fmt(
-            "toast.compare_summary",
-            &[
-                ("branch", branch),
-                ("current", &current),
-                ("only_a", &oa),
-                ("only_b", &ob),
-            ],
-        ));
+        self.set_focus(WorkspaceTab::Log, PaneId::LogCommitTable);
+        let _ = self.log.compare_with_current(
+            branch,
+            self.repo_snapshot.as_ref(),
+            &self.branch_colors,
+            self.async_graph_enabled,
+            &self.i18n,
+            &mut self.status_notice,
+        );
     }
 
     fn prompt_delete_branch(&mut self, name: &str, effects: &mut Vec<Effect>) {
@@ -794,7 +671,7 @@ impl AppState {
                     self.status_notice = Some(self.i18n.t_fmt("toast.created_patches", &[("count", &count_s)]));
                 }
                 GitOp::RewordHead { .. } | GitOp::RewriteHistory { .. } => {
-                    self.log_graph.anchor = None;
+                    self.log.graph.anchor = None;
                 }
                 _ => {}
             }

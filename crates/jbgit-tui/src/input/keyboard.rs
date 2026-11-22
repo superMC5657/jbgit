@@ -1,14 +1,14 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use jbgit_core::{ChangeRowKind, ModalButton, PaneId, WorkspaceTab};
+use jbgit_core::{ChangeRowKind, PaneId, WorkspaceTab};
 
-use crate::app::{Action, AppState, ModalLayer, PopupKind};
-use crate::input_menus::{
-    route_conflict_merge_key, route_context_menu_key, route_dialog,
-};
+use crate::app::{Action, AppState, ChangesHost, DiffScope, ModalLayer, PopupKind};
 use crate::input_stage::{route_commit_changes_tree_key, route_commit_priority_key};
 use crate::log_view::{complete_last_token, filter_suggestions};
 
-use super::keyboard_context_menu;
+use super::menus::{
+    keyboard_context_menu, route_conflict_merge_key, route_context_menu_key,
+    route_stash_fallback_key,
+};
 
 fn plain_char(key: &KeyEvent) -> Option<char> {
     match key.code {
@@ -22,7 +22,7 @@ fn plain_char(key: &KeyEvent) -> Option<char> {
     }
 }
 
-pub(crate) fn route_key(key: KeyEvent, state: &mut AppState) -> Vec<Action> {
+pub(crate) fn route_key(key: KeyEvent, state: &AppState) -> Vec<Action> {
     if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
         return vec![Action::Quit];
     }
@@ -59,6 +59,16 @@ pub(crate) fn route_key(key: KeyEvent, state: &mut AppState) -> Vec<Action> {
         return actions;
     }
 
+    let clear_bracket = state.active_tab == WorkspaceTab::Commit
+        && state.focused_pane == PaneId::CommitDiffPreview
+        && state.stage_workbench.bracket_jump_at().is_some()
+        && !matches!(key.code, KeyCode::Char(']') | KeyCode::Char('['));
+
+    let mut prefix = Vec::new();
+    if clear_bracket {
+        prefix.push(Action::StageClearBracketJump);
+    }
+
     if state.active_tab == WorkspaceTab::Console
         && state.focused_pane == PaneId::ConsoleCommandList
         && state.pending_keys.is_empty()
@@ -74,59 +84,51 @@ pub(crate) fn route_key(key: KeyEvent, state: &mut AppState) -> Vec<Action> {
             )
             .is_none()
     {
-        return vec![crate::keymap::actions::git_status_probe_action()];
+        prefix.push(crate::keymap::actions::git_status_probe_action());
+        return prefix;
     }
 
     if let Some(actions) = crate::keymap::route_dynamic_key(&key, state) {
-        return actions;
+        prefix.extend(actions);
+        return prefix;
     }
 
-    route_pane_fallback_key(key, state)
+    if !state.pending_keys.is_empty() {
+        prefix.push(Action::ClearPendingKeySequence);
+    }
+    prefix.extend(route_pane_fallback_key(key, state));
+    prefix
 }
 
-fn route_modal_key(key: KeyEvent, state: &mut AppState) -> Vec<Action> {
-    let Some(top) = state.modal_stack.last_mut() else {
+fn route_modal_key(key: KeyEvent, state: &AppState) -> Vec<Action> {
+    let Some(top) = state.modal_stack.last() else {
         return Vec::new();
     };
     match top {
-        ModalLayer::CriticalDialog {
-            selected_button, ..
-        } => match key.code {
-            KeyCode::Esc | KeyCode::Char('n') | KeyCode::Char('q') => vec![Action::PopModal],
-            KeyCode::Left | KeyCode::Right | KeyCode::Tab => {
-                *selected_button = selected_button.toggle();
-                state.needs_redraw = true;
-                Vec::new()
-            }
-            KeyCode::Enter | KeyCode::Char('y') => {
-                if *selected_button == ModalButton::Confirm || key.code == KeyCode::Char('y') {
-                    vec![Action::ConfirmCriticalDialog]
-                } else {
-                    vec![Action::PopModal]
-                }
-            }
+        ModalLayer::ContextMenu { .. } => route_context_menu_key(key, state),
+        ModalLayer::Dialog(_) => vec![Action::DialogKey(key)],
+        ModalLayer::FileHistory(_) => route_file_history_key(&key, state),
+        ModalLayer::ConflictResolver(_) => route_conflict_merge_key(&key, state),
+        ModalLayer::ThreeWayInspector { .. } | ModalLayer::HookError { .. } => match key.code {
+            KeyCode::Esc | KeyCode::Enter => vec![Action::PopModal],
             _ => Vec::new(),
         },
-        ModalLayer::ContextMenu { .. } => route_context_menu_key(key, state),
-        ModalLayer::Dialog(_) => route_dialog(&key, state),
-        ModalLayer::FloatingPopup {
-            kind,
-            query,
-            selected,
-        } => {
-            let kind = *kind;
-            if kind == PopupKind::BranchesQuickView {
-                return crate::branches_popup::route_branches_popup_key(&key, state);
-            }
-            if kind == PopupKind::ConflictMerge {
-                return route_conflict_merge_key(&key, state);
-            }
-            if kind == PopupKind::ShortcutsHelp {
-                return route_shortcuts_help_key(&key, state);
-            }
-            if kind == PopupKind::FileHistory {
-                return route_file_history_key(&key, state);
-            }
+        ModalLayer::BranchesPopup { .. } => {
+            crate::branches_popup::route_branches_popup_key(&key, state)
+        }
+        ModalLayer::ShortcutsHelp { .. } => route_shortcuts_help_key(&key, state),
+        ModalLayer::PalettePreview => match key.code {
+            KeyCode::Esc => vec![Action::PopModal],
+            _ => Vec::new(),
+        },
+        ModalLayer::FilterEditor { .. }
+        | ModalLayer::GoToRevision { .. }
+        | ModalLayer::ChooseParent { .. }
+        | ModalLayer::CommitHistory { .. } => {
+            let kind = top.popup_kind().expect("popup kind");
+            let (query_ref, selected_val) = top.popup_query_and_selected().unwrap_or(("", 0));
+            let query = query_ref.to_string();
+            let selected = selected_val;
             match key.code {
                 KeyCode::Esc => vec![Action::PopModal],
                 KeyCode::Enter => match kind {
@@ -134,27 +136,27 @@ fn route_modal_key(key: KeyEvent, state: &mut AppState) -> Vec<Action> {
                         Action::PopModal,
                         Action::ApplyFilterField {
                             field,
-                            expr: query.clone(),
+                            expr: query,
                         },
                     ],
                     PopupKind::GoToRevision => {
-                        vec![Action::PopModal, Action::GoToRevision(query.clone())]
+                        vec![Action::PopModal, Action::GoToRevision(query)]
                     }
                     PopupKind::ChooseParent => {
-                        let idx = *selected;
-                        vec![Action::PopModal, Action::GoToParent(idx)]
+                        vec![Action::PopModal, Action::GoToParent(selected)]
                     }
                     PopupKind::CommitHistory => {
                         let q_low = query.to_ascii_lowercase();
-                        let sel = *selected;
-                        let candidates = state.commit_history_candidates();
+                        let candidates = state
+                            .stage_workbench
+                            .commit_history_candidates(state.repo_snapshot.as_deref());
                         let mapped = candidates
                             .iter()
                             .enumerate()
                             .filter(|(_, m)| {
                                 q_low.is_empty() || m.to_ascii_lowercase().contains(&q_low)
                             })
-                            .nth(sel)
+                            .nth(selected)
                             .map(|(i, _)| i);
                         if let Some(idx) = mapped {
                             vec![Action::PopModal, Action::CommitApplyHistory(idx)]
@@ -171,7 +173,7 @@ fn route_modal_key(key: KeyEvent, state: &mut AppState) -> Vec<Action> {
                 {
                     let idx = (d as usize) - ('1' as usize);
                     let pcount = state
-                        .log_commit_at(state.log_graph.selected_idx)
+                        .log_commit_at(state.log.graph.selected_idx)
                         .map_or(0, |c| c.parents.len());
                     if idx < pcount {
                         vec![Action::PopModal, Action::GoToParent(idx)]
@@ -182,39 +184,42 @@ fn route_modal_key(key: KeyEvent, state: &mut AppState) -> Vec<Action> {
                 KeyCode::Tab => {
                     if let PopupKind::FilterEditor(field) = kind {
                         let snap = state.repo_snapshot.as_deref();
-                        let suggestions = filter_suggestions(field, snap, query);
-                        if let Some(s) = suggestions.get(*selected) {
-                            *query = complete_last_token(query, s);
-                            *selected = 0;
-                            state.needs_redraw = true;
+                        let suggestions = filter_suggestions(field, snap, &query);
+                        if let Some(s) = suggestions.get(selected) {
+                            return vec![Action::PopupSetState {
+                                query: complete_last_token(&query, s),
+                                selected: 0,
+                            }];
                         }
                     }
                     Vec::new()
                 }
                 KeyCode::Backspace => {
-                    query.pop();
-                    *selected = 0;
-                    state.needs_redraw = true;
-                    Vec::new()
+                    let mut next_q = query;
+                    next_q.pop();
+                    vec![Action::PopupSetState {
+                        query: next_q,
+                        selected: 0,
+                    }]
                 }
-                KeyCode::Up => {
-                    *selected = selected.saturating_sub(1);
-                    state.needs_redraw = true;
-                    Vec::new()
-                }
-                KeyCode::Down => {
-                    *selected = selected.saturating_add(1);
-                    state.needs_redraw = true;
-                    Vec::new()
-                }
+                KeyCode::Up => vec![Action::PopupSetState {
+                    query,
+                    selected: selected.saturating_sub(1),
+                }],
+                KeyCode::Down => vec![Action::PopupSetState {
+                    query,
+                    selected: selected.saturating_add(1),
+                }],
                 KeyCode::Char(ch)
                     if !key.modifiers.contains(KeyModifiers::CONTROL)
                         && !key.modifiers.contains(KeyModifiers::ALT) =>
                 {
-                    query.push(ch);
-                    *selected = 0;
-                    state.needs_redraw = true;
-                    Vec::new()
+                    let mut next_q = query;
+                    next_q.push(ch);
+                    vec![Action::PopupSetState {
+                        query: next_q,
+                        selected: 0,
+                    }]
                 }
                 _ => Vec::new(),
             }
@@ -222,7 +227,7 @@ fn route_modal_key(key: KeyEvent, state: &mut AppState) -> Vec<Action> {
     }
 }
 
-fn route_pane_fallback_key(key: KeyEvent, state: &mut AppState) -> Vec<Action> {
+fn route_pane_fallback_key(key: KeyEvent, state: &AppState) -> Vec<Action> {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     let alt = key.modifiers.contains(KeyModifiers::ALT);
     let shift = key.modifiers.contains(KeyModifiers::SHIFT);
@@ -277,7 +282,7 @@ fn route_pane_fallback_key(key: KeyEvent, state: &mut AppState) -> Vec<Action> {
             KeyCode::Right if alt => vec![Action::NavLogForward],
             KeyCode::Right if shift => {
                 let parents = state
-                    .log_commit_at(state.log_graph.selected_idx)
+                    .log_commit_at(state.log.graph.selected_idx)
                     .map_or(0, |c| c.parents.len());
                 if parents > 2 {
                     vec![Action::OpenPopup {
@@ -291,28 +296,29 @@ fn route_pane_fallback_key(key: KeyEvent, state: &mut AppState) -> Vec<Action> {
             KeyCode::Right => vec![Action::GoToParent(0)],
             KeyCode::Left => vec![Action::GoToChild],
             KeyCode::Enter => vec![Action::FocusPane(PaneId::LogChangesTree)],
-            KeyCode::Esc if state.log_graph.anchor.is_some() => {
-                vec![Action::SelectLogRow(state.log_graph.selected_idx)]
+            KeyCode::Esc if state.log.graph.anchor.is_some() => {
+                vec![Action::SelectLogRow(state.log.graph.selected_idx)]
             }
             _ => Vec::new(),
         },
         PaneId::LogChangesTree => match key.code {
-            KeyCode::PageDown => vec![Action::ChangesMove(10)],
-            KeyCode::PageUp => vec![Action::ChangesMove(-10)],
-            KeyCode::Right => vec![Action::ChangesExpand(true)],
-            KeyCode::Left => vec![Action::ChangesExpand(false)],
+            KeyCode::PageDown => vec![Action::ChangesMove(ChangesHost::Log, 10)],
+            KeyCode::PageUp => vec![Action::ChangesMove(ChangesHost::Log, -10)],
+            KeyCode::Right => vec![Action::ChangesExpand(ChangesHost::Log, true)],
+            KeyCode::Left => vec![Action::ChangesExpand(ChangesHost::Log, false)],
             KeyCode::Enter if ctrl => vec![Action::ZoomDiff(true)],
             KeyCode::Enter => {
                 let row = state
+                    .log
                     .details
-                    .change_rows()
-                    .get(state.details.changes_selected)
+                    .change_rows(&state.diff_caches)
+                    .get(state.log.details.changes.selected)
                     .map(|r| (matches!(r.kind, ChangeRowKind::Dir { .. }), r.expanded));
                 match row {
-                    Some((true, expanded)) => vec![Action::ChangesExpand(!expanded)],
+                    Some((true, expanded)) => vec![Action::ChangesExpand(ChangesHost::Log, !expanded)],
                     Some((false, _)) => {
                         let mut acts = Vec::new();
-                        if !state.details.diff_preview {
+                        if !state.log.details.diff_preview {
                             acts.push(Action::ToggleDiffPreview);
                         }
                         acts.push(Action::FocusPane(PaneId::LogDetailsDiff));
@@ -322,16 +328,18 @@ fn route_pane_fallback_key(key: KeyEvent, state: &mut AppState) -> Vec<Action> {
                 }
             }
             KeyCode::Esc => vec![Action::FocusPane(PaneId::LogCommitTable)],
-            KeyCode::Char('v') if !ctrl && !alt => vec![Action::ChangesToggleGroupByDir],
-            KeyCode::Char('e') if !ctrl && !alt => vec![Action::ChangesExpandAll(true)],
-            KeyCode::Char('E') if !ctrl && !alt => vec![Action::ChangesExpandAll(false)],
+            KeyCode::Char('v') if !ctrl && !alt => {
+                vec![Action::ChangesToggleGroupByDir(ChangesHost::Log)]
+            }
+            KeyCode::Char('e') if !ctrl && !alt => vec![Action::ChangesExpandAll(ChangesHost::Log, true)],
+            KeyCode::Char('E') if !ctrl && !alt => vec![Action::ChangesExpandAll(ChangesHost::Log, false)],
             _ => Vec::new(),
         },
-        PaneId::LogDetailsDiff if state.details.diff_preview => {
-            let page = state.log_graph.last_viewport_h.max(4) as isize / 2;
+        PaneId::LogDetailsDiff if state.log.details.diff_preview => {
+            let page = state.log.graph.last_viewport_h.max(4) as isize / 2;
             match key.code {
-                KeyCode::PageDown => vec![Action::ScrollDiff(page)],
-                KeyCode::PageUp => vec![Action::ScrollDiff(-page)],
+                KeyCode::PageDown => vec![Action::DiffScroll(DiffScope::Log, page)],
+                KeyCode::PageUp => vec![Action::DiffScroll(DiffScope::Log, -page)],
                 KeyCode::Enter if ctrl => vec![Action::ZoomDiff(true)],
                 KeyCode::Esc => vec![
                     Action::ToggleDiffPreview,
@@ -363,34 +371,17 @@ fn route_pane_fallback_key(key: KeyEvent, state: &mut AppState) -> Vec<Action> {
         }
         PaneId::CommitChangesTree => route_commit_changes_tree_key(&key, state),
         PaneId::CommitDiffPreview => crate::input_stage::route_commit_diff_fallback_key(&key, state),
-        PaneId::StashList | PaneId::StashDiffPreview => {
-            crate::input_menus::route_stash_fallback_key(&key, state)
-        }
+        PaneId::StashList | PaneId::StashDiffPreview => route_stash_fallback_key(&key, state),
         _ => Vec::new(),
     }
 }
 
-fn route_shortcuts_help_key(key: &KeyEvent, state: &mut AppState) -> Vec<Action> {
+fn route_shortcuts_help_key(key: &KeyEvent, state: &AppState) -> Vec<Action> {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     let alt = key.modifiers.contains(KeyModifiers::ALT);
     let (query, selected) = match state.modal_stack.last() {
-        Some(ModalLayer::FloatingPopup {
-            kind: PopupKind::ShortcutsHelp,
-            query,
-            selected,
-        }) => (query.clone(), *selected),
+        Some(ModalLayer::ShortcutsHelp { query, selected }) => (query.clone(), *selected),
         _ => return Vec::new(),
-    };
-
-    let set = |state: &mut AppState, q: String, sel: usize| {
-        if let Some(ModalLayer::FloatingPopup {
-            query, selected, ..
-        }) = state.modal_stack.last_mut()
-        {
-            *query = q;
-            *selected = sel;
-        }
-        state.needs_redraw = true;
     };
 
     match key.code {
@@ -405,8 +396,10 @@ fn route_shortcuts_help_key(key: &KeyEvent, state: &mut AppState) -> Vec<Action>
                 _ => 8,
             };
             let next = crate::keymap::step_help_selection(&rows, selected, delta);
-            set(state, query, next);
-            Vec::new()
+            vec![Action::PopupSetState {
+                query,
+                selected: next,
+            }]
         }
         KeyCode::Enter => {
             let rows = crate::keymap::build_help_rows(state, &query);
@@ -427,24 +420,30 @@ fn route_shortcuts_help_key(key: &KeyEvent, state: &mut AppState) -> Vec<Action>
         KeyCode::Char('u') if ctrl => {
             let rows = crate::keymap::build_help_rows(state, "");
             let first = crate::keymap::first_help_entry(&rows);
-            set(state, String::new(), first);
-            Vec::new()
+            vec![Action::PopupSetState {
+                query: String::new(),
+                selected: first,
+            }]
         }
         KeyCode::Backspace => {
             let mut q = query;
             q.pop();
             let rows = crate::keymap::build_help_rows(state, &q);
             let first = crate::keymap::first_help_entry(&rows);
-            set(state, q, first);
-            Vec::new()
+            vec![Action::PopupSetState {
+                query: q,
+                selected: first,
+            }]
         }
         KeyCode::Char(ch) if !ctrl && !alt => {
             let mut q = query;
             q.push(ch);
             let rows = crate::keymap::build_help_rows(state, &q);
             let first = crate::keymap::first_help_entry(&rows);
-            set(state, q, first);
-            Vec::new()
+            vec![Action::PopupSetState {
+                query: q,
+                selected: first,
+            }]
         }
         _ => Vec::new(),
     }
@@ -454,11 +453,11 @@ fn route_shortcuts_help_key(key: &KeyEvent, state: &mut AppState) -> Vec<Action>
 fn route_diff_zoomed_fallback(key: &KeyEvent, page: isize) -> Vec<Action> {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     match key.code {
-        KeyCode::PageDown => vec![Action::ScrollDiff(page)],
-        KeyCode::Char(' ') => vec![Action::ScrollDiff(page)],
-        KeyCode::PageUp => vec![Action::ScrollDiff(-page)],
-        KeyCode::Home => vec![Action::ScrollDiff(crate::app::SCROLL_GOTO_TOP)],
-        KeyCode::End => vec![Action::ScrollDiff(crate::app::SCROLL_GOTO_BOTTOM)],
+        KeyCode::PageDown => vec![Action::DiffScroll(DiffScope::Log, page)],
+        KeyCode::Char(' ') => vec![Action::DiffScroll(DiffScope::Log, page)],
+        KeyCode::PageUp => vec![Action::DiffScroll(DiffScope::Log, -page)],
+        KeyCode::Home => vec![Action::DiffScroll(DiffScope::Log, crate::app::SCROLL_GOTO_TOP)],
+        KeyCode::End => vec![Action::DiffScroll(DiffScope::Log, crate::app::SCROLL_GOTO_BOTTOM)],
         KeyCode::Char('P') => vec![Action::SwitchMergeParent],
         KeyCode::Enter if ctrl => vec![Action::ZoomDiff(false)],
         KeyCode::Esc => vec![Action::ZoomDiff(false)],
@@ -468,19 +467,24 @@ fn route_diff_zoomed_fallback(key: &KeyEvent, page: isize) -> Vec<Action> {
 
 /// Log-tab keys that must win over global shortcuts: zoomed diff, filter text
 /// typing and Branches search mode.
-fn route_log_priority_key(key: &KeyEvent, state: &mut AppState) -> Option<Vec<Action>> {
+fn route_log_priority_key(key: &KeyEvent, state: &AppState) -> Option<Vec<Action>> {
     let alt = key.modifiers.contains(KeyModifiers::ALT);
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
 
-    if state.details.diff_zoomed {
+    if state.log.details.diff.zoomed {
         if let Some(actions) = crate::keymap::route_dynamic_key(key, state) {
             return Some(actions);
         }
+        let mut out = Vec::new();
+        if !state.pending_keys.is_empty() {
+            out.push(Action::ClearPendingKeySequence);
+        }
         let page = state.terminal_area.height.max(6) as isize / 2;
-        return Some(route_diff_zoomed_fallback(key, page));
+        out.extend(route_diff_zoomed_fallback(key, page));
+        return Some(out);
     }
 
-    if state.log_filter.editing_text {
+    if state.log.filter.editing_text {
         return Some(match key.code {
             KeyCode::Esc | KeyCode::Enter | KeyCode::Down | KeyCode::Tab => {
                 vec![Action::FilterTextDone]
@@ -497,8 +501,8 @@ fn route_log_priority_key(key: &KeyEvent, state: &mut AppState) -> Option<Vec<Ac
     }
 
     if state.focused_pane == PaneId::LogBranchesTree {
-        let active_search = state.branches.searching;
-        let speed_active = state.config.keymap.tree_speed_search && !state.branches.query.is_empty();
+        let active_search = state.log.branches.searching;
+        let speed_active = state.config.keymap.tree_speed_search && !state.log.branches.query.is_empty();
         if active_search {
             match key.code {
                 KeyCode::Enter => return Some(vec![Action::BranchesSearchDone]),
@@ -529,123 +533,118 @@ fn route_log_priority_key(key: &KeyEvent, state: &mut AppState) -> Option<Vec<Ac
     None
 }
 
-fn route_file_history_key(key: &KeyEvent, state: &mut AppState) -> Vec<Action> {
-    let Some(fh) = state.file_history.as_mut() else {
+fn route_file_history_key(key: &KeyEvent, state: &AppState) -> Vec<Action> {
+    let Some(fh) = state.modal_stack.file_history() else {
         return vec![Action::FileHistoryEscape];
     };
+    let had_pending_g = fh.pending_g.is_some();
     let pending_g = fh
         .pending_g
-        .take()
-        .is_some_and(|t| t.elapsed() <= crate::log_view::FILE_HISTORY_G_WINDOW);
-    let diff_zoomed = fh.diff_zoomed;
+        .is_some_and(|t| state.now().saturating_duration_since(t) <= crate::log_view::FILE_HISTORY_G_WINDOW);
+    let diff_zoomed = fh.diff.zoomed;
     let diff_focused = fh.focus == crate::log_view::FileHistoryFocus::Diff || diff_zoomed;
 
+    let mut prefix = Vec::new();
+    if had_pending_g {
+        prefix.push(Action::FileHistorySetPendingG(None));
+    }
+
     if key.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) {
-        return match key.code {
-            KeyCode::Esc => vec![Action::FileHistoryEscape],
-            KeyCode::Tab | KeyCode::BackTab => vec![Action::FileHistoryToggleFocus],
-            _ => Vec::new(),
-        };
+        match key.code {
+            KeyCode::Esc => prefix.push(Action::FileHistoryEscape),
+            KeyCode::Tab | KeyCode::BackTab => prefix.push(Action::FileHistoryToggleFocus),
+            _ => {}
+        }
+        return prefix;
     }
 
     let shift = key.modifiers.contains(KeyModifiers::SHIFT);
     if pending_g {
         if key.code == KeyCode::Esc {
-            state.needs_redraw = true;
-            return Vec::new();
+            return prefix;
         }
         if key.code == KeyCode::Char('g') && !shift {
-            return if diff_focused {
-                vec![Action::FileHistoryScrollDiff(crate::app::SCROLL_GOTO_TOP)]
+            if diff_focused {
+                prefix.push(Action::DiffScroll(
+                    DiffScope::FileHistory,
+                    crate::app::SCROLL_GOTO_TOP,
+                ));
             } else {
-                vec![Action::FileHistorySelect {
+                prefix.push(Action::FileHistorySelect {
                     idx: 0,
                     extend: false,
-                }]
-            };
+                });
+            }
+            return prefix;
         }
     }
 
-    match key.code {
-        KeyCode::Esc => vec![Action::FileHistoryEscape],
-        KeyCode::Tab | KeyCode::BackTab => vec![Action::FileHistoryToggleFocus],
-        KeyCode::Enter => vec![Action::FileHistoryJumpToLog],
+    let action = match key.code {
+        KeyCode::Esc => Some(Action::FileHistoryEscape),
+        KeyCode::Tab | KeyCode::BackTab => Some(Action::FileHistoryToggleFocus),
+        KeyCode::Enter => Some(Action::FileHistoryJumpToLog),
         KeyCode::Char('g') if !shift => {
-            if let Some(fh) = state.file_history.as_mut() {
-                fh.pending_g = Some(std::time::Instant::now());
-            }
-            state.needs_redraw = true;
-            Vec::new()
+            return vec![Action::FileHistorySetPendingG(Some(state.now()))];
         }
-        KeyCode::Char('f') => vec![Action::FileHistoryToggleFollow],
-        KeyCode::Char('l') => vec![Action::FileHistoryToggleCompareLocal],
-        KeyCode::Char('S') => vec![Action::FileHistoryToggleSideBySide],
-        KeyCode::Char('w') => vec![Action::FileHistoryCycleContext],
-        KeyCode::Char('z') | KeyCode::F(4) => vec![Action::FileHistoryToggleZoom],
-        KeyCode::Up if shift && !diff_zoomed => {
-            vec![Action::FileHistoryMove {
-                delta: -1,
-                extend: true,
-            }]
-        }
-        KeyCode::Down if shift && !diff_zoomed => {
-            vec![Action::FileHistoryMove {
-                delta: 1,
-                extend: true,
-            }]
-        }
+        KeyCode::Char('f') => Some(Action::FileHistoryToggleFollow),
+        KeyCode::Char('l') => Some(Action::FileHistoryToggleCompareLocal),
+        KeyCode::Char('S') => Some(Action::DiffToggleSideBySide(DiffScope::FileHistory)),
+        KeyCode::Char('w') => Some(Action::DiffCycleContext(DiffScope::FileHistory)),
+        KeyCode::Char('[') => Some(Action::DiffJumpHunk(DiffScope::FileHistory, -1)),
+        KeyCode::Char(']') => Some(Action::DiffJumpHunk(DiffScope::FileHistory, 1)),
+        KeyCode::Char('z') | KeyCode::F(4) => Some(Action::FileHistoryToggleZoom),
+        KeyCode::Up if shift && !diff_zoomed => Some(Action::FileHistoryMove {
+            delta: -1,
+            extend: true,
+        }),
+        KeyCode::Down if shift && !diff_zoomed => Some(Action::FileHistoryMove {
+            delta: 1,
+            extend: true,
+        }),
         KeyCode::Down | KeyCode::Char('j') if diff_focused => {
-            vec![Action::FileHistoryScrollDiff(1)]
+            Some(Action::DiffScroll(DiffScope::FileHistory, 1))
         }
         KeyCode::Up | KeyCode::Char('k') if diff_focused => {
-            vec![Action::FileHistoryScrollDiff(-1)]
+            Some(Action::DiffScroll(DiffScope::FileHistory, -1))
         }
-        KeyCode::PageDown if diff_focused => {
-            vec![Action::FileHistoryScrollDiff(10)]
-        }
-        KeyCode::PageUp if diff_focused => vec![Action::FileHistoryScrollDiff(-10)],
-        KeyCode::Home if diff_focused => {
-            vec![Action::FileHistoryScrollDiff(crate::app::SCROLL_GOTO_TOP)]
-        }
-        KeyCode::End | KeyCode::Char('G') if diff_focused => {
-            vec![Action::FileHistoryScrollDiff(crate::app::SCROLL_GOTO_BOTTOM)]
-        }
-        KeyCode::Down | KeyCode::Char('j') if !diff_zoomed => {
-            vec![Action::FileHistoryMove {
-                delta: 1,
-                extend: false,
-            }]
-        }
-        KeyCode::Up | KeyCode::Char('k') if !diff_zoomed => {
-            vec![Action::FileHistoryMove {
-                delta: -1,
-                extend: false,
-            }]
-        }
-        KeyCode::PageDown if !diff_zoomed => {
-            vec![Action::FileHistoryMove {
-                delta: 10,
-                extend: false,
-            }]
-        }
-        KeyCode::PageUp if !diff_zoomed => {
-            vec![Action::FileHistoryMove {
-                delta: -10,
-                extend: false,
-            }]
-        }
-        KeyCode::Home if !diff_zoomed => {
-            vec![Action::FileHistorySelect {
-                idx: 0,
-                extend: false,
-            }]
-        }
-        KeyCode::End | KeyCode::Char('G') if !diff_zoomed => {
-            vec![Action::FileHistorySelect {
-                idx: usize::MAX,
-                extend: false,
-            }]
-        }
-        _ => Vec::new(),
+        KeyCode::PageDown if diff_focused => Some(Action::DiffScroll(DiffScope::FileHistory, 10)),
+        KeyCode::PageUp if diff_focused => Some(Action::DiffScroll(DiffScope::FileHistory, -10)),
+        KeyCode::Home if diff_focused => Some(Action::DiffScroll(
+            DiffScope::FileHistory,
+            crate::app::SCROLL_GOTO_TOP,
+        )),
+        KeyCode::End | KeyCode::Char('G') if diff_focused => Some(Action::DiffScroll(
+            DiffScope::FileHistory,
+            crate::app::SCROLL_GOTO_BOTTOM,
+        )),
+        KeyCode::Down | KeyCode::Char('j') if !diff_zoomed => Some(Action::FileHistoryMove {
+            delta: 1,
+            extend: false,
+        }),
+        KeyCode::Up | KeyCode::Char('k') if !diff_zoomed => Some(Action::FileHistoryMove {
+            delta: -1,
+            extend: false,
+        }),
+        KeyCode::PageDown if !diff_zoomed => Some(Action::FileHistoryMove {
+            delta: 10,
+            extend: false,
+        }),
+        KeyCode::PageUp if !diff_zoomed => Some(Action::FileHistoryMove {
+            delta: -10,
+            extend: false,
+        }),
+        KeyCode::Home if !diff_zoomed => Some(Action::FileHistorySelect {
+            idx: 0,
+            extend: false,
+        }),
+        KeyCode::End | KeyCode::Char('G') if !diff_zoomed => Some(Action::FileHistorySelect {
+            idx: usize::MAX,
+            extend: false,
+        }),
+        _ => None,
+    };
+    if let Some(a) = action {
+        prefix.push(a);
     }
+    prefix
 }

@@ -34,7 +34,7 @@ pub fn render_conflict_merge_modal(
     draw_shadow(frame, screen, rect);
     frame.render_widget(Clear, rect);
 
-    let Some(cm) = &state.conflict_merge else {
+    let Some(cm) = state.modal_stack.conflict_merge() else {
         return;
     };
     let i18n = &state.i18n;
@@ -130,7 +130,9 @@ pub fn render_conflict_merge_modal(
 
     let body_h = inner.height.saturating_sub(3) as usize;
     let rows = doc.three_pane_rows();
-    let scroll = cm.scroll.min(rows.len().saturating_sub(body_h.max(1)));
+    let max_scroll = rows.len().saturating_sub(body_h.max(1));
+    ctx.record_scroll_bound(crate::app::ScrollPane::ConflictMerge, body_h.max(1), max_scroll);
+    let scroll = cm.scroll.offset().min(max_scroll);
     for (vis, row) in rows.iter().skip(scroll).take(body_h).enumerate() {
         let y = inner.y + 1 + vis as u16;
         let line_rect = Rect::new(inner.x, y, inner.width, 1);
