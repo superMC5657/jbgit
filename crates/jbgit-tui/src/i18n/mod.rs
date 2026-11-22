@@ -474,9 +474,10 @@ impl I18n {
 fn normalize_lang_code(code: &str) -> String {
     let trimmed = code.trim();
     let lower = trimmed.to_ascii_lowercase();
+    let base = lower.split(['.', '@']).next().unwrap_or("");
     if lower.starts_with("zh") {
         "zh-CN".to_string()
-    } else if lower.starts_with("en") || lower == "c" || lower == "posix" {
+    } else if lower.starts_with("en") || base == "c" || base == "posix" {
         "en-US".to_string()
     } else {
         trimmed.to_string()
@@ -693,6 +694,18 @@ custom_extra = "自定义内容"
     fn test_auto_locale_returns_valid_lang() {
         let detected = detect_system_language();
         assert!(detected == "zh-CN" || detected == "en-US", "unexpected {detected}");
+    }
+
+    #[test]
+    fn test_normalize_lang_code_handles_posix_and_utf8_variants() {
+        assert_eq!(normalize_lang_code("C"), "en-US");
+        assert_eq!(normalize_lang_code("C.UTF-8"), "en-US");
+        assert_eq!(normalize_lang_code("c.utf8"), "en-US");
+        assert_eq!(normalize_lang_code("POSIX"), "en-US");
+        assert_eq!(normalize_lang_code("POSIX.UTF-8"), "en-US");
+        assert_eq!(normalize_lang_code("en_US.UTF-8"), "en-US");
+        assert_eq!(normalize_lang_code("zh_CN.UTF-8"), "zh-CN");
+        assert_eq!(normalize_lang_code("ja-JP"), "ja-JP");
     }
 
     #[test]

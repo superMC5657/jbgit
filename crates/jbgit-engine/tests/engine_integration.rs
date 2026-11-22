@@ -18,8 +18,8 @@ use jbgit_engine::{
 use tempfile::TempDir;
 use tokio::sync::mpsc::UnboundedReceiver;
 
-fn git(dir: &Path, args: &[&str]) {
-    let output = Command::new("git")
+fn git_output(dir: &Path, args: &[&str]) -> std::process::Output {
+    Command::new("git")
         .args(args)
         .current_dir(dir)
         .env("GIT_AUTHOR_NAME", "Test User")
@@ -27,7 +27,11 @@ fn git(dir: &Path, args: &[&str]) {
         .env("GIT_COMMITTER_NAME", "Test User")
         .env("GIT_COMMITTER_EMAIL", "test@example.com")
         .output()
-        .expect("failed to execute git");
+        .expect("failed to execute git")
+}
+
+fn git(dir: &Path, args: &[&str]) {
+    let output = git_output(dir, args);
     assert!(
         output.status.success(),
         "git {:?} failed: stdout={}, stderr={}",
@@ -1440,12 +1444,15 @@ async fn stage_diff_index_entry_conflict_vs_normal_detection() {
     git(dir, &["add", "."]);
     git(dir, &["commit", "-m", "theirs"]);
 
-    let merge_out = Command::new("git")
-        .args(["merge", "branch_a"])
-        .current_dir(dir)
-        .output()
-        .unwrap();
-    assert!(!merge_out.status.success(), "expected merge conflict");
+    let merge_out = git_output(dir, &["merge", "branch_a"]);
+    assert!(
+        !merge_out.status.success()
+            && String::from_utf8_lossy(&merge_out.stdout).contains("CONFLICT"),
+        "expected merge conflict, got status={:?}, stdout={}, stderr={}",
+        merge_out.status,
+        String::from_utf8_lossy(&merge_out.stdout),
+        String::from_utf8_lossy(&merge_out.stderr),
+    );
 
     let loc = RepoLocation::discover(dir).unwrap();
     let (handle, mut rx) = EngineSupervisor::start(loc, false).unwrap();
