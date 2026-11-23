@@ -83,10 +83,14 @@ pub enum RequestSlotId {
     ConflictDocument = 12,
     Annotate = 13,
     AnnotateDiff = 14,
+    RemoteTagCheck = 15,
+    PushOutgoing = 16,
+    PushCommitDetails = 17,
+    PushFileDiff = 18,
 }
 
 impl RequestSlotId {
-    pub const COUNT: usize = 15;
+    pub const COUNT: usize = 19;
 
     #[inline]
     pub const fn index(self) -> usize {

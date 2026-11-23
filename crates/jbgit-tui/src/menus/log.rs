@@ -274,6 +274,22 @@ pub fn log_commit_menu_items(state: &AppState) -> Vec<ContextMenuItem> {
             }),
         );
     }
+    let pill_tags: Vec<String> = snap
+        .refs
+        .iter()
+        .filter(|r| r.target_oid == primary.oid && r.kind == RefKind::Tag)
+        .map(|r| r.name.clone())
+        .collect();
+    for tag_name in pill_tags.iter().take(4) {
+        items.push(
+            ContextMenuItem::submenu(
+                i18n.t_fmt("menu.log.tag_sub", &[("name", &ellipsize(tag_name, 28))]),
+                None,
+                branch_menu_items(state, tag_name, RefKind::Tag),
+            )
+            .icon("🏷"),
+        );
+    }
     let new_branch_lbl = i18n.t("menu.log.new_branch_here");
     items.push(
         run(

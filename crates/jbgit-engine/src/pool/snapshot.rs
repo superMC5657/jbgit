@@ -129,6 +129,26 @@ pub fn load_repo_snapshot_with_config_sync(
                     .map_or_else(|| oid.short(), |r| r.name.clone())
             });
 
+        let remote_names = match repo.remotes() {
+            Ok(remotes) => {
+                let mut names: Vec<String> = remotes
+                    .iter()
+                    .flatten()
+                    .flatten()
+                    .filter(|s| !s.is_empty())
+                    .map(ToString::to_string)
+                    .collect();
+                names.sort_by(|a, b| match (a == "origin", b == "origin") {
+                    (true, false) => std::cmp::Ordering::Less,
+                    (false, true) => std::cmp::Ordering::Greater,
+                    _ => jbgit_core::natural_cmp(a, b),
+                });
+                names.dedup();
+                names
+            }
+            Err(_) => Vec::new(),
+        };
+
         Ok((
             RepoSnapshot {
                 repo_name: location.repo_name.clone(),
@@ -146,6 +166,7 @@ pub fn load_repo_snapshot_with_config_sync(
                 recent_branches,
                 stashes,
                 ongoing_onto,
+                remote_names,
             },
             pending_ahead_behind,
         ))

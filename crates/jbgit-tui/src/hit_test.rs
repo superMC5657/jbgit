@@ -134,6 +134,19 @@ pub enum AnnotateToolbarButton {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PushOptionKind {
+    Tags,
+    Force,
+    SetUpstream,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PushActionButtonKind {
+    Confirm,
+    Cancel,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GraphHitKind {
     Node {
         commit_oid: Oid,
@@ -281,6 +294,18 @@ pub enum HitTarget {
     AnnotateToolbar(AnnotateToolbarButton),
     AnnotateArea,
     AnnotateDiffArea,
+    PushTargetBranch,
+    PushRemotePicker,
+    PushRemoteOption(usize),
+    PushCompletionItem(usize),
+    PushCommitRow(usize),
+    PushCommitListArea,
+    PushFileRow(usize),
+    PushFileListArea,
+    PushDiffArea,
+    PushDiffBackButton,
+    PushOption(PushOptionKind),
+    PushActionButton(PushActionButtonKind),
     ModalBackdrop {
         layer_z: u8,
     },
@@ -304,6 +329,9 @@ impl HitTarget {
                 | HitTarget::FileHistoryDiffArea
                 | HitTarget::AnnotateArea
                 | HitTarget::AnnotateDiffArea
+                | HitTarget::PushCommitListArea
+                | HitTarget::PushFileListArea
+                | HitTarget::PushDiffArea
                 | HitTarget::DialogBody
                 | HitTarget::MenuBody { .. }
                 | HitTarget::ModalBackdrop { .. }

@@ -705,7 +705,6 @@ pub fn execute_action(run: &KeyAction, state: &AppState) -> Option<Vec<Action>> 
                 && state.focused_pane == PaneId::LogBranchesTree
                 && let Some(node) = state.log.branches.selected_node()
                 && let BranchNodeKind::Leaf(kind) = node.kind
-                && kind != RefKind::Tag
                 && let Some(name) = node.ref_name.as_deref()
             {
                 let existing = local_names(state);
@@ -1246,7 +1245,19 @@ pub fn branch_delete(state: &AppState, name: &str, kind: RefKind) -> CommandResu
                 }),
             ))))
         }
-        RefKind::Tag => Err(String::new()),
+        RefKind::Tag => {
+            if snap
+                .refs
+                .iter()
+                .any(|r| r.kind == RefKind::Tag && r.name == name)
+            {
+                Ok(vec![Action::PromptDeleteTag {
+                    name: name.to_string(),
+                }])
+            } else {
+                Err(i18n.t_fmt("toast.tag_not_found", &[("name", name)]))
+            }
+        }
     }
 }
 

@@ -110,6 +110,7 @@ fn route_modal_key(key: KeyEvent, state: &AppState) -> Vec<Action> {
         ModalLayer::Dialog(_) => vec![Action::DialogKey(key)],
         ModalLayer::FileHistory(_) => route_file_history_key(&key, state),
         ModalLayer::Annotate(_) => route_annotate_key(&key, state),
+        ModalLayer::PushDialog(_) => route_push_dialog_key(&key, state),
         ModalLayer::ConflictResolver(_) => route_conflict_merge_key(&key, state),
         ModalLayer::ThreeWayInspector { .. } | ModalLayer::HookError { .. } => match key.code {
             KeyCode::Esc | KeyCode::Enter => vec![Action::PopModal],
@@ -825,4 +826,118 @@ fn route_annotate_key(key: &KeyEvent, state: &AppState) -> Vec<Action> {
         prefix.push(a);
     }
     prefix
+}
+
+fn route_push_dialog_key(key: &KeyEvent, state: &AppState) -> Vec<Action> {
+    let Some(pd) = state.modal_stack.push_dialog() else {
+        return vec![Action::PushEscape];
+    };
+    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    let alt = key.modifiers.contains(KeyModifiers::ALT);
+    let plain = !ctrl && !alt;
+
+    if pd.editing_target {
+        return match key.code {
+            KeyCode::Esc => vec![Action::PushEditTargetCancel],
+            KeyCode::Enter => vec![Action::PushEditTargetConfirm],
+            KeyCode::Tab => vec![Action::PushEditTargetAcceptCompletion(None)],
+            KeyCode::Up => vec![Action::PushEditTargetMoveCompletion(-1)],
+            KeyCode::Down => vec![Action::PushEditTargetMoveCompletion(1)],
+            KeyCode::Backspace => vec![Action::PushEditTargetBackspace],
+            KeyCode::Char('u') if ctrl => vec![Action::PushEditTargetClear],
+            KeyCode::Char(c) if plain && !c.is_control() => vec![Action::PushEditTargetChar(c)],
+            _ => Vec::new(),
+        };
+    }
+
+    if pd.picking_remote {
+        return match key.code {
+            KeyCode::Esc => vec![Action::PushToggleRemotePicker],
+            KeyCode::Enter => vec![Action::PushToggleRemotePicker],
+            KeyCode::Up | KeyCode::Char('k') if plain => vec![Action::PushMoveRemotePicker(-1)],
+            KeyCode::Down | KeyCode::Char('j') if plain => vec![Action::PushMoveRemotePicker(1)],
+            _ => Vec::new(),
+        };
+    }
+
+    if ctrl || alt {
+        return match key.code {
+            KeyCode::Esc => vec![Action::PushEscape],
+            KeyCode::Enter if ctrl || alt => vec![Action::PushConfirm],
+            KeyCode::Tab | KeyCode::BackTab => vec![Action::PushFocusPrev],
+            _ => Vec::new(),
+        };
+    }
+
+    use crate::log_view::PushDialogFocus;
+    let diff_focused = pd.show_diff && pd.focus == PushDialogFocus::Files;
+    match key.code {
+        KeyCode::Esc => vec![Action::PushEscape],
+        KeyCode::Tab => vec![Action::PushFocusNext],
+        KeyCode::BackTab => vec![Action::PushFocusPrev],
+        KeyCode::Char('e') => vec![Action::PushStartEditTarget],
+        KeyCode::Char('r') => vec![Action::PushToggleRemotePicker],
+        KeyCode::Char('t') => vec![Action::PushCycleTags],
+        KeyCode::Char('f') => vec![Action::PushCycleForce],
+        KeyCode::Char('u') => vec![Action::PushToggleSetUpstream],
+        KeyCode::Char('d') => vec![Action::PushToggleDiff],
+        KeyCode::Char('S') if pd.show_diff => vec![Action::DiffToggleSideBySide(DiffScope::Push)],
+        KeyCode::Char('c') if pd.show_diff => vec![Action::DiffCycleContext(DiffScope::Push)],
+        KeyCode::Char('[') if pd.show_diff => vec![Action::DiffJumpHunk(DiffScope::Push, -1)],
+        KeyCode::Char(']') if pd.show_diff => vec![Action::DiffJumpHunk(DiffScope::Push, 1)],
+        KeyCode::Enter => match pd.focus {
+            PushDialogFocus::Target => vec![Action::PushStartEditTarget],
+            PushDialogFocus::Files => vec![Action::PushToggleDiff],
+            PushDialogFocus::Commits => vec![Action::PushConfirm],
+        },
+        KeyCode::Down | KeyCode::Char('j') => match pd.focus {
+            PushDialogFocus::Commits => vec![Action::PushMoveCommit(1)],
+            PushDialogFocus::Files if diff_focused => vec![Action::DiffScroll(DiffScope::Push, 1)],
+            PushDialogFocus::Files => vec![Action::PushMoveFile(1)],
+            PushDialogFocus::Target => vec![Action::PushFocusNext],
+        },
+        KeyCode::Up | KeyCode::Char('k') => match pd.focus {
+            PushDialogFocus::Commits => vec![Action::PushMoveCommit(-1)],
+            PushDialogFocus::Files if diff_focused => {
+                vec![Action::DiffScroll(DiffScope::Push, -1)]
+            }
+            PushDialogFocus::Files => vec![Action::PushMoveFile(-1)],
+            PushDialogFocus::Target => vec![Action::PushFocusPrev],
+        },
+        KeyCode::PageDown => match pd.focus {
+            PushDialogFocus::Commits => vec![Action::PushMoveCommit(10)],
+            PushDialogFocus::Files if diff_focused => {
+                vec![Action::DiffScroll(DiffScope::Push, 10)]
+            }
+            PushDialogFocus::Files => vec![Action::PushMoveFile(10)],
+            PushDialogFocus::Target => Vec::new(),
+        },
+        KeyCode::PageUp => match pd.focus {
+            PushDialogFocus::Commits => vec![Action::PushMoveCommit(-10)],
+            PushDialogFocus::Files if diff_focused => {
+                vec![Action::DiffScroll(DiffScope::Push, -10)]
+            }
+            PushDialogFocus::Files => vec![Action::PushMoveFile(-10)],
+            PushDialogFocus::Target => Vec::new(),
+        },
+        KeyCode::Home => match pd.focus {
+            PushDialogFocus::Commits => vec![Action::PushSelectCommit(0)],
+            PushDialogFocus::Files if diff_focused => vec![Action::DiffScroll(
+                DiffScope::Push,
+                crate::app::SCROLL_GOTO_TOP,
+            )],
+            PushDialogFocus::Files => vec![Action::PushSelectFile(0)],
+            PushDialogFocus::Target => Vec::new(),
+        },
+        KeyCode::End | KeyCode::Char('G') => match pd.focus {
+            PushDialogFocus::Commits => vec![Action::PushSelectCommit(usize::MAX)],
+            PushDialogFocus::Files if diff_focused => vec![Action::DiffScroll(
+                DiffScope::Push,
+                crate::app::SCROLL_GOTO_BOTTOM,
+            )],
+            PushDialogFocus::Files => vec![Action::PushSelectFile(usize::MAX)],
+            PushDialogFocus::Target => Vec::new(),
+        },
+        _ => Vec::new(),
+    }
 }

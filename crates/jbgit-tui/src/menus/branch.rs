@@ -2,7 +2,7 @@ use jbgit_core::{GitOp, OngoingKind, OngoingStep, RefKind};
 
 use crate::app::{Action, AppState, ContextMenuItem};
 use crate::config::KeymapScope;
-use crate::dialogs::new_branch_dialog;
+use crate::dialogs::{ChoiceDialog, Dialog, new_branch_dialog};
 use crate::keymap::{KeyAction, catalog};
 
 use super::{dialog, ellipsize, local_names, op, run};
@@ -285,21 +285,26 @@ pub fn branch_menu_items(state: &AppState, name: &str, kind: RefKind) -> Vec<Con
             items.push(star_item(&full, short));
         }
         RefKind::Tag => {
+            let remotes = state.available_remotes();
             items.push(
                 ContextMenuItem::from_command(
                     i18n.t("menu.branch.checkout"),
                     Some('c'),
-                    None,
+                    checkout_sc.as_deref(),
                     catalog::branch_checkout(state, name, RefKind::Tag),
                 )
                 .icon("⌖"),
             );
-            items.push(run(
-                i18n.t_fmt("menu.branch.new_branch_from", &[("name", &ellipsize(name, 24))]),
-                Some('n'),
-                None,
-                dialog(new_branch_dialog(name, name, local_names(state), "", i18n)),
-            ));
+            items.push(
+                run(
+                    i18n.t_fmt("menu.branch.new_branch_from", &[("name", &ellipsize(name, 24))]),
+                    Some('n'),
+                    new_branch_sc.as_deref(),
+                    dialog(new_branch_dialog(name, name, local_names(state), "", i18n)),
+                )
+                .icon("+"),
+            );
+            items.push(ContextMenuItem::separator());
             items.push(run(
                 i18n.t_fmt("menu.branch.compare_with", &[("cur", &ellipsize(&cur, 24))]),
                 Some('o'),
@@ -322,6 +327,98 @@ pub fn branch_menu_items(state: &AppState, name: &str, kind: RefKind) -> Vec<Con
                 )
                 .require(no_ongoing.clone()),
             );
+            items.push(ContextMenuItem::separator());
+
+            let push_tag_dialog = |remote: &str| {
+                dialog(Dialog::Choice(ChoiceDialog::confirm_with_default(
+                    i18n.t("dialog.push_tag.title"),
+                    vec![i18n.t_fmt(
+                        "dialog.push_tag.body",
+                        &[("name", name), ("remote", remote)],
+                    )],
+                    i18n.t("dialog.push.push_btn"),
+                    i18n.cancel(),
+                    false,
+                    true,
+                    op(GitOp::PushTag {
+                        remote: remote.to_string(),
+                        name: name.to_string(),
+                        force: false,
+                    }),
+                )))
+            };
+            let push_item = match remotes.as_slice() {
+                [] => run(i18n.t("menu.branch.push_tag"), Some('p'), None, Vec::new())
+                    .enabled_if(false, i18n.t("menu.branch.no_remote_configured")),
+                [only] => run(
+                    i18n.t_fmt("menu.branch.push_tag_to", &[("remote", only)]),
+                    Some('p'),
+                    None,
+                    push_tag_dialog(only),
+                ),
+                many => ContextMenuItem::submenu(
+                    i18n.t("menu.branch.push_tag"),
+                    Some('p'),
+                    many.iter()
+                        .map(|rm| run(rm.clone(), None, None, push_tag_dialog(rm)))
+                        .collect(),
+                ),
+            };
+            items.push(push_item.icon("↑"));
+
+            items.push(
+                ContextMenuItem::from_command(
+                    i18n.t("menu.branch.delete_tag"),
+                    Some('d'),
+                    delete_sc.as_deref(),
+                    catalog::branch_delete(state, name, RefKind::Tag),
+                )
+                .icon("✕"),
+            );
+
+            let del_remote_dialog = |remote: &str| {
+                dialog(Dialog::Choice(ChoiceDialog::confirm(
+                    i18n.t("menu.branch.delete_remote_tag_title"),
+                    vec![
+                        i18n.t_fmt(
+                            "menu.branch.delete_remote_prompt",
+                            &[("short", name), ("remote", remote)],
+                        ),
+                        i18n.t("menu.branch.delete_remote_warn").into(),
+                    ],
+                    i18n.t("menu.branch.delete_remote_tag_title"),
+                    i18n.cancel(),
+                    op(GitOp::DeleteRemoteTag {
+                        remote: remote.to_string(),
+                        name: name.to_string(),
+                    }),
+                )))
+            };
+            let del_remote_item = match remotes.as_slice() {
+                [] => run(
+                    i18n.t("menu.branch.delete_tag_on_remote"),
+                    Some('r'),
+                    None,
+                    Vec::new(),
+                )
+                .enabled_if(false, i18n.t("menu.branch.no_remote_configured")),
+                [only] => run(
+                    i18n.t_fmt("menu.branch.delete_tag_on_named_remote", &[("remote", only)]),
+                    Some('r'),
+                    None,
+                    del_remote_dialog(only),
+                ),
+                many => ContextMenuItem::submenu(
+                    i18n.t("menu.branch.delete_tag_on_remote"),
+                    Some('r'),
+                    many.iter()
+                        .map(|rm| run(rm.clone(), None, None, del_remote_dialog(rm)))
+                        .collect(),
+                ),
+            };
+            items.push(del_remote_item.icon("✕"));
+
+            items.push(ContextMenuItem::separator());
             items.push(run(
                 i18n.t("menu.branch.copy_tag_name"),
                 Some('y'),

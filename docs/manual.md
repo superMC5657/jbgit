@@ -94,13 +94,14 @@ jbgit 默认采用**零冲突统一键位（`preset = "default"`）**，并通�
 | `<Space>` | 添加 / 取消收藏当前分支（置顶显示） |
 | `<Enter>` | 按选中分支过滤提交日志 |
 | `J` | 跳转至选中分支对应的提交记录 |
-| `c` / `n` / `<Ctrl-Alt-n>` / `<F2>` / `d` / `<Del>` | 检出 (`c`) / 新建分支 (`n`/`Ctrl+Alt+N`) / 重命名 (`F2`) / 删除分支 (`d`/`Del`) |
+| `c` / `n` / `<Ctrl-Alt-n>` / `<F2>` / `d` / `<Del>` | 检出 (`c`) / 新建分支 (`n`/`Ctrl+Alt+N`) / 重命名 (`F2`) / 删除分支或 Tag (`d`/`Del`) |
+| **Tag 节点右键菜单** | 检出（游离 HEAD）、从 Tag 新建分支、对比/合并、推送单个 Tag、删除本地 Tag（若远端存在同名 Tag 可勾选同时删除；删除后支持通知栏 `<Alt-z>` 一键恢复）、删除远端 Tag |
 
 ### 全局分支浮窗 (Branches Popup)
 
 | 快捷键 | 功能描述 |
 | :--- | :--- |
-| `直接打字` / `<Ctrl-u>` | Speed Search 模糊速查过滤分支 / 清空输入 |
+| `直接打字` / `<Ctrl-u>` | Speed Search 模糊速查过滤分支与 Tag / 清空输入 |
 | `<Enter>` / `<Right>` | 打开选中分支的操作子菜单（检出、新建、重命名、删除、对比等） |
 | `<Ctrl-Alt-n>` | 从当前 HEAD 新建分支（跟随 `new_branch` 修饰键配置） |
 | `<Alt-f>` / `<Esc>` | 执行远程 Fetch / 关闭浮窗 |
@@ -198,8 +199,19 @@ jbgit 默认采用**零冲突统一键位（`preset = "default"`）**，并通�
 | **上下文级联菜单** | `j`/`k`/`↑`/`↓`/`Home`/`End` 选择；`→` 展开子菜单；`←`/`Esc` 关闭当前层；`<Enter>`/`<Space>` 确认；`<Del>` 触发删除项；按高亮助记字母直达 |
 | **快捷键命令面板 (`?`)** | 直接打字模糊搜索；`↑`/`↓`/`PgUp`/`PgDn` 选行；`<Enter>` 执行高亮命令；`<Ctrl-u>` 清空；`<Esc>`（或空查询按 `?`）关闭 |
 | **交互式变基待办 (Rebase Todo)** | `j`/`k`/`↑`/`↓` 选行；`J`/`K` 或 `<Alt/Shift-Up/Down>` 调整提交顺序；`<Space>` 循环动词；`p` pick / `r` 或 `w` reword / `s` squash / `f` fixup / `d` drop；`<Enter>` 执行；`<Esc>` 取消 |
-| **输入 / 消息 / 选择 / 危险确认弹窗** | 单行输入：`<Tab>`/`↑`/`↓` 切复选框、`<Ctrl-u>` 清空、`<Enter>` 确认；多行消息：`<Enter>` 换行、`<Ctrl-s>`/`<Ctrl-Enter>`/`<Alt-Enter>` 确认；单选/确认：`↑`/`↓`/`←`/`→`/`<Tab>` 切换、助记键或 `y`/`n`/`q` 快速响应、`<Esc>` 取消 |
+| **输入 / 消息 / 选择 / 危险确认弹窗** | 单行输入：`<Tab>`/`↑`/`↓` 切复选框、`<Ctrl-u>` 清空、`<Enter>` 确认；多行消息：`<Enter>` 换行、`<Ctrl-s>`/`<Ctrl-Enter>`/`<Alt-Enter>` 确认；单选/确认：`↑`/`↓`/`←`/`→`/`<Tab>` 切换、`<Space>` 切换可选复选框、助记键或 `y`/`n`/`q` 快速响应、`<Esc>` 取消 |
 | **筛选与跳转浮窗** | `FilterEditor` 支持 `<Tab>` 自动补全候选；`ChooseParent` 支持 `1`–`9` 数字键直选父提交 |
+
+**完整 Push 推送浮窗**（全局按 `P`，或在分支/提交菜单选择 `Push…` / `Push up to Here` 打开；包含 `Target | Outgoing Commits | Changed Files / Diff` 三栏预览）：
+
+| 快捷键 | 功能描述 |
+| :--- | :--- |
+| `<Tab>` / `<Shift-Tab>` | 在 `Target` / `Outgoing Commits` / `Changed Files` 三栏之间循环切换焦点 |
+| `e` / `r` | 内联编辑目标分支名（支持 `<Tab>` 补全远端分支、`↑`/`↓` 选候选、`<Ctrl-u>` 清空、`<Enter>` 确认并刷新待推提交） / 切换远端仓库 (`r`) |
+| `j` / `k` / `<PageUp>` / `<PageDown>` / `g g` / `G` | 浏览待推提交列表、右侧变更文件树或文件差异 |
+| `d` / `<Enter>` *(Files 栏)* | 打开或关闭当前选中变更文件的 Diff 预览（Diff 内支持 `S` 并排对比、`c` 上下文行数、`[`/`]` Hunk 跳转） |
+| `t` / `f` / `u` | 循环切换 Tag 模式 (`None` / `Current branch (--follow-tags)` / `All (--tags)`) / 强推模式 (`No` / `With lease` / `Force`，受 `[push].protected_branches` 保护拦截) / 勾选 `Set upstream` |
+| `<Enter>` / `<Ctrl-Enter>` / `<Esc>` | 执行推送（若因非快进被拒绝，弹窗提供 `Merge & Retry` / `Rebase & Retry` 串行拉取合入并重试） / 取消关闭 |
 
 ---
 
@@ -312,6 +324,10 @@ file_history_vertical_ratio = [ 2, 3 ]
 ignore_whitespace = false
 detect_moves = false
 gutter_width = 28
+
+[push]
+# 受保护目标分支名（支持 glob 模式），命中时禁用强推并隐藏被拒后的强推重试按钮
+protected_branches = [ "main", "master" ]
 ```
 
 > 提示：若在同一配置层中同时存在 `jbgit.toml` 和 `theme.toml`，且 `theme.toml` 未显式设置 `flavor` 或 `[glyphs].mode`，则会继承该层 `jbgit.toml` 中的 `[general].flavor` 与 `[graph].glyph_mode`。

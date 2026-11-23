@@ -72,6 +72,9 @@ fn render_modal_layer(
         ModalLayer::Annotate(ann) => {
             crate::views::annotate::render_annotate_modal(frame, screen, state, ann, ctx, z);
         }
+        ModalLayer::PushDialog(pd) => {
+            crate::views::push_dialog::render_push_dialog_modal(frame, screen, state, pd, ctx, z);
+        }
         ModalLayer::ConflictResolver(_) => {
             crate::views::conflict_merge::render_conflict_merge_modal(
                 frame, screen, state, ctx, z,

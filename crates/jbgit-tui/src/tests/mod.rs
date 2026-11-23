@@ -6,6 +6,7 @@ mod footer_and_keymap_tests;
 mod log_tests;
 mod runtime_and_editor_tests;
 mod session_tests;
+mod tag_and_push_tests;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -173,6 +174,7 @@ pub(super) fn make_snapshot(workdir: PathBuf, commits: Vec<CommitSummary>) -> Ar
         recent_branches: vec!["main".into()],
         stashes: Vec::new(),
         ongoing_onto: None,
+        remote_names: Vec::new(),
     })
 }
 

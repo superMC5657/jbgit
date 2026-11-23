@@ -81,6 +81,18 @@ pub fn execute_effects_with_host(
                             .request_slots
                             .note_dispatched(RequestSlotId::Annotate, epoch);
                     }
+                    Effect::CheckRemoteTag { remote, tag } => {
+                        let epoch = handle.request_check_remote_tag(remote, tag);
+                        state
+                            .request_slots
+                            .note_dispatched(RequestSlotId::RemoteTagCheck, epoch);
+                    }
+                    Effect::RequestOutgoing(key) => {
+                        let epoch = handle.request_outgoing(key);
+                        state
+                            .request_slots
+                            .note_dispatched(RequestSlotId::PushOutgoing, epoch);
+                    }
                     Effect::RequestPathMatches(paths, snapshot) => {
                         let epoch = handle.request_path_matches(paths, snapshot);
                         state

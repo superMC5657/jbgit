@@ -3,9 +3,8 @@ use jbgit_core::{ChangeRowKind, PaneId, WorkspaceTab};
 
 use crate::app::{Action, AppState, ChangesHost, DiffScope, DragState, PopupKind};
 use crate::hit_test::{
-    BranchesToolbarButton, ChangesToolbarButton, DiffToolbarButton, FileHistoryToolbarButton,
-    AnnotateToolbarButton,
-    GraphHitKind, HitTarget,
+    AnnotateToolbarButton, BranchesToolbarButton, ChangesToolbarButton, DiffToolbarButton,
+    FileHistoryToolbarButton, GraphHitKind, HitTarget, PushActionButtonKind, PushOptionKind,
 };
 use crate::input_stage::route_stage_left_click;
 
@@ -133,6 +132,15 @@ fn route_mouse_scroll(col: u16, row: u16, delta: isize, state: &AppState) -> Vec
             }
             HitTarget::AnnotateDiffArea => {
                 return vec![Action::DiffScroll(DiffScope::Annotate, delta)];
+            }
+            HitTarget::PushCommitRow(_) | HitTarget::PushCommitListArea => {
+                return vec![Action::PushMoveCommit(delta / 3)];
+            }
+            HitTarget::PushFileRow(_) | HitTarget::PushFileListArea => {
+                return vec![Action::PushMoveFile(delta / 3)];
+            }
+            HitTarget::PushDiffArea => {
+                return vec![Action::DiffScroll(DiffScope::Push, delta)];
             }
             _ => {}
         }
@@ -436,6 +444,42 @@ fn route_mouse_left_down(
             AnnotateToolbarButton::SelectionHistory => vec![Action::AnnotateShowSelectionHistory],
             AnnotateToolbarButton::LocateInLog => vec![Action::AnnotateJumpToLog],
         },
+        HitTarget::PushTargetBranch => vec![Action::PushStartEditTarget],
+        HitTarget::PushRemotePicker => vec![Action::PushToggleRemotePicker],
+        HitTarget::PushRemoteOption(idx) => vec![Action::PushSelectRemote(idx)],
+        HitTarget::PushCompletionItem(idx) => {
+            vec![Action::PushEditTargetAcceptCompletion(Some(idx))]
+        }
+        HitTarget::PushCommitRow(idx) => vec![
+            Action::PushSetFocus(crate::log_view::PushDialogFocus::Commits),
+            Action::PushSelectCommit(idx),
+        ],
+        HitTarget::PushCommitListArea => vec![Action::PushSetFocus(
+            crate::log_view::PushDialogFocus::Commits,
+        )],
+        HitTarget::PushFileRow(idx) => {
+            let mut actions = vec![
+                Action::PushSetFocus(crate::log_view::PushDialogFocus::Files),
+                Action::PushSelectFile(idx),
+            ];
+            if is_double {
+                actions.push(Action::PushToggleDiff);
+            }
+            actions
+        }
+        HitTarget::PushFileListArea | HitTarget::PushDiffArea => {
+            vec![Action::PushSetFocus(crate::log_view::PushDialogFocus::Files)]
+        }
+        HitTarget::PushDiffBackButton => vec![Action::PushToggleDiff],
+        HitTarget::PushOption(opt) => match opt {
+            PushOptionKind::Tags => vec![Action::PushCycleTags],
+            PushOptionKind::Force => vec![Action::PushCycleForce],
+            PushOptionKind::SetUpstream => vec![Action::PushToggleSetUpstream],
+        },
+        HitTarget::PushActionButton(btn) => match btn {
+            PushActionButtonKind::Confirm => vec![Action::PushConfirm],
+            PushActionButtonKind::Cancel => vec![Action::PushEscape],
+        },
         HitTarget::Pane(pane) => vec![Action::FocusPane(pane)],
         other => {
             if let Some(actions) = route_overlay_and_stash_click(&other, state, is_double) {
@@ -475,6 +519,18 @@ fn route_mouse_right_down(col: u16, row: u16, state: &AppState) -> Vec<Action> {
             | HitTarget::FileHistoryListArea
             | HitTarget::FileHistoryDiffArea
             | HitTarget::AnnotateToolbar(_)
+            | HitTarget::PushTargetBranch
+            | HitTarget::PushRemotePicker
+            | HitTarget::PushRemoteOption(_)
+            | HitTarget::PushCompletionItem(_)
+            | HitTarget::PushCommitRow(_)
+            | HitTarget::PushCommitListArea
+            | HitTarget::PushFileRow(_)
+            | HitTarget::PushFileListArea
+            | HitTarget::PushDiffArea
+            | HitTarget::PushDiffBackButton
+            | HitTarget::PushOption(_)
+            | HitTarget::PushActionButton(_)
     ) {
         return Vec::new();
     }

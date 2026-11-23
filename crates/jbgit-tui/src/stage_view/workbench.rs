@@ -1503,6 +1503,10 @@ impl CommitWorkbench {
                             .as_ref()
                             .and_then(|u| u.split_once('/').map(|(r, _)| r.to_string()))
                             .unwrap_or_else(|| ctx.default_remote.to_string());
+                        let remote_branch = upstream
+                            .as_ref()
+                            .and_then(|u| u.split_once('/').map(|(_, rb)| rb.to_string()))
+                            .unwrap_or_else(|| branch.clone());
                         let set_upstream = upstream.is_none();
                         let sha = outcome.short_sha.as_deref().unwrap_or("commit");
                         let body: Vec<String> = ctx
@@ -1525,8 +1529,10 @@ impl CommitWorkbench {
                                 vec![Action::RunGitOp(GitOp::Push {
                                     branch,
                                     remote,
+                                    remote_branch,
                                     set_upstream,
-                                    force_with_lease: false,
+                                    force: jbgit_core::PushForce::None,
+                                    tags: jbgit_core::PushTagMode::None,
                                     up_to: None,
                                 })],
                             ),

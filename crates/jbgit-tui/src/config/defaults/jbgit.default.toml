@@ -38,6 +38,10 @@ ignore_whitespace = false
 detect_moves = false
 gutter_width = 28
 
+[push]
+# 受保护分支（支持通配符 glob）；对其启用强推时将在 Push 对话框中禁用并提示原因
+protected_branches = ["main", "master"]
+
 [layout]
 # --- Log 提交历史视图 ---
 # 横向三栏比例: [左侧分支树, 中间提交图谱, 右侧变更与详情区]

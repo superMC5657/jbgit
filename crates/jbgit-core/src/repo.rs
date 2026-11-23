@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
-use crate::{Oid, RewritePlan, TodoEntry, is_protected_branch};
+use crate::{Oid, RewritePlan, TodoEntry, is_protected_branch, natural_cmp};
 
 /// Typed reason a commit range cannot be rewritten by interactive rebase.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -152,9 +152,47 @@ pub struct RepoSnapshot {
     pub stashes: Vec<crate::StashEntry>,
     /// Ref name (or short SHA) a paused rebase is replaying onto.
     pub ongoing_onto: Option<String>,
+    /// Configured remote names (`git remote`), sorted with `origin` first.
+    pub remote_names: Vec<String>,
 }
 
 impl RepoSnapshot {
+    /// Returns deduplicated remote names (`origin` first, then natural order)
+    /// combining configured [`Self::remote_names`] with prefixes inferred from
+    /// remote-tracking refs and branch upstreams.
+    pub fn available_remotes(&self) -> Vec<String> {
+        let mut seen = HashSet::new();
+        let mut out = Vec::new();
+        let mut push_unique = |name: &str| {
+            let trimmed = name.trim();
+            if !trimmed.is_empty() && seen.insert(trimmed.to_string()) {
+                out.push(trimmed.to_string());
+            }
+        };
+        for name in &self.remote_names {
+            push_unique(name);
+        }
+        for r in &self.refs {
+            if r.kind == RefKind::RemoteBranch
+                && let Some((rm, _)) = r.name.split_once('/')
+            {
+                push_unique(rm);
+            }
+            if r.kind == RefKind::LocalBranch
+                && let Some(up) = r.upstream.as_deref()
+                && let Some((rm, _)) = up.split_once('/')
+            {
+                push_unique(rm);
+            }
+        }
+        out.sort_by(|a, b| match (a == "origin", b == "origin") {
+            (true, false) => std::cmp::Ordering::Less,
+            (false, true) => std::cmp::Ordering::Greater,
+            _ => natural_cmp(a, b),
+        });
+        out
+    }
+
     pub fn local_branch(&self, name: &str) -> Option<&RefInfo> {
         self.refs
             .iter()
@@ -407,5 +445,37 @@ mod tests {
         assert_eq!(snap.resolve_revision("0303"), Some(oid(3)));
         assert_eq!(snap.resolve_revision("HEAD~9"), None);
         assert_eq!(snap.resolve_revision("nope"), None);
+    }
+
+    #[test]
+    fn available_remotes_merges_and_prioritizes_origin() {
+        let snap = RepoSnapshot {
+            remote_names: vec!["zebra".into(), "origin".into()],
+            refs: vec![
+                RefInfo {
+                    name: "main".into(),
+                    full_name: "refs/heads/main".into(),
+                    target_oid: Oid::ZERO,
+                    kind: RefKind::LocalBranch,
+                    upstream: Some("upstream/main".into()),
+                    ahead_behind: None,
+                    is_head: true,
+                },
+                RefInfo {
+                    name: "fork/feat".into(),
+                    full_name: "refs/remotes/fork/feat".into(),
+                    target_oid: Oid::ZERO,
+                    kind: RefKind::RemoteBranch,
+                    upstream: None,
+                    ahead_behind: None,
+                    is_head: false,
+                },
+            ],
+            ..Default::default()
+        };
+        assert_eq!(
+            snap.available_remotes(),
+            vec!["origin", "fork", "upstream", "zebra"]
+        );
     }
 }

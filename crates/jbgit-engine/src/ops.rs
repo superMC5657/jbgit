@@ -8,9 +8,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use jbgit_core::{
-    GitFailure, GitOp, GitOpOutcome, PatchSource, classify_failure, render_todo,
-};
+use jbgit_core::{GitFailure, GitOp, GitOpOutcome, PatchSource, classify_failure, render_todo};
 
 use crate::cli::{
     CliCommand, CliStreamEvent, GitCliRunner, IndexLockConflict, prepare_pathspec_args,
@@ -147,12 +145,44 @@ pub(crate) fn compile_simple_steps(op: &GitOp) -> Option<Vec<CompiledStep>> {
             name,
             target,
             message,
+            force,
         } => {
             let mut args = vec!["tag".to_string()];
+            if *force {
+                args.push("-f".to_string());
+            }
             if let Some(m) = message.as_ref().filter(|m| !m.trim().is_empty()) {
                 args.extend(["-a".to_string(), "-m".to_string(), m.clone()]);
             }
-            args.extend([name.clone(), target.to_string()]);
+            args.extend(["--".to_string(), name.clone(), target.to_string()]);
+            vec![CompiledStep::new(args)]
+        }
+        GitOp::DeleteTag { name, .. } => {
+            vec![CompiledStep::new(["tag", "-d", "--", name.as_str()])]
+        }
+        GitOp::RestoreTag { name, oid } => vec![CompiledStep::new(vec![
+            "tag".to_string(),
+            "--".to_string(),
+            name.clone(),
+            oid.to_string(),
+        ])],
+        GitOp::DeleteRemoteTag { remote, name } => vec![CompiledStep::new([
+            "push",
+            remote.as_str(),
+            "--delete",
+            &format!("refs/tags/{name}"),
+        ])],
+        GitOp::PushTag {
+            remote,
+            name,
+            force,
+        } => {
+            let mut args = vec!["push".to_string()];
+            if *force {
+                args.push("--force".to_string());
+            }
+            args.push(remote.clone());
+            args.push(format!("refs/tags/{name}:refs/tags/{name}"));
             vec![CompiledStep::new(args)]
         }
         GitOp::Merge { rev } => {
@@ -193,21 +223,31 @@ pub(crate) fn compile_simple_steps(op: &GitOp) -> Option<Vec<CompiledStep>> {
         GitOp::Push {
             branch,
             remote,
+            remote_branch,
             set_upstream,
-            force_with_lease,
+            force,
+            tags,
             up_to,
         } => {
-            let mut args = vec!["push".to_string()];
+            let mut args = vec!["push".to_string(), "--porcelain".to_string()];
             if *set_upstream {
                 args.push("--set-upstream".to_string());
             }
-            if *force_with_lease {
-                args.push("--force-with-lease".to_string());
+            if let Some(flag) = force.flag() {
+                args.push(flag.to_string());
+            }
+            if let Some(flag) = tags.flag() {
+                args.push(flag.to_string());
             }
             args.push(remote.clone());
+            let target_branch = if remote_branch.is_empty() {
+                branch.as_str()
+            } else {
+                remote_branch.as_str()
+            };
             match up_to {
-                Some(oid) => args.push(format!("{oid}:refs/heads/{branch}")),
-                None => args.push(format!("refs/heads/{branch}:refs/heads/{branch}")),
+                Some(oid) => args.push(format!("{oid}:refs/heads/{target_branch}")),
+                None => args.push(format!("refs/heads/{branch}:refs/heads/{target_branch}")),
             }
             vec![CompiledStep::new(args)]
         }
@@ -342,6 +382,7 @@ pub(crate) fn compile_simple_steps(op: &GitOp) -> Option<Vec<CompiledStep>> {
         GitOp::RewriteHistory { .. }
         | GitOp::AddToIgnore { .. }
         | GitOp::DeleteFiles { .. }
+        | GitOp::Sequence(_)
         | GitOp::Smart(_) => return None,
     };
     Some(steps)
@@ -598,11 +639,40 @@ impl<R: GitCliRunner> Runner<'_, R> {
                     index_lock: None,
                 }
             }
+            GitOp::Sequence(ops) => self.run_sequence(ops).await,
             GitOp::Smart(inner) => Box::pin(self.run_smart(*inner)).await,
             _ => GitOpRunResult {
                 outcome: GitOpOutcome::failed(op, GitFailure::Other("unsupported operation".into())),
                 index_lock: None,
             },
+        }
+    }
+
+    async fn run_sequence(&self, ops: Vec<GitOp>) -> GitOpRunResult {
+        let mut combined_stderr = Vec::new();
+        let mut last_stdout = Vec::new();
+        let mut any_stash_kept = false;
+        for inner in &ops {
+            let mut res = match inner.clone() {
+                GitOp::Smart(s) => Box::pin(self.run_smart(*s)).await,
+                other => Box::pin(self.run_plain(other)).await,
+            };
+            combined_stderr.extend(res.outcome.stderr.iter().cloned());
+            last_stdout = res.outcome.stdout.clone();
+            any_stash_kept |= res.outcome.stash_kept;
+            if !res.outcome.success {
+                res.outcome.stderr = combined_stderr;
+                res.outcome.stash_kept = any_stash_kept;
+                return res;
+            }
+        }
+        let mut outcome = GitOpOutcome::ok(GitOp::Sequence(ops));
+        outcome.stdout = last_stdout;
+        outcome.stderr = combined_stderr;
+        outcome.stash_kept = any_stash_kept;
+        GitOpRunResult {
+            outcome,
+            index_lock: None,
         }
     }
 
@@ -740,7 +810,7 @@ mod tests {
     use std::pin::Pin;
     use std::sync::Mutex;
 
-    use jbgit_core::{Oid, OngoingKind, OngoingStep, ResetMode};
+    use jbgit_core::{Oid, OngoingKind, OngoingStep, PushForce, PushTagMode, ResetMode};
 
     use crate::cli::GitCliOutput;
     use crate::error::EngineError;
@@ -857,17 +927,126 @@ mod tests {
         let push = GitOp::Push {
             branch: "feat".into(),
             remote: "origin".into(),
+            remote_branch: "feat".into(),
             set_upstream: true,
-            force_with_lease: false,
+            force: PushForce::None,
+            tags: PushTagMode::None,
             up_to: Some(oid(7)),
         };
         assert_eq!(
             compile_simple_steps(&push).unwrap()[0].args,
             vec![
                 "push".to_string(),
+                "--porcelain".into(),
                 "--set-upstream".into(),
                 "origin".into(),
                 format!("{}:refs/heads/feat", oid(7)),
+            ]
+        );
+
+        let push_custom = GitOp::Push {
+            branch: "local-feat".into(),
+            remote: "upstream".into(),
+            remote_branch: "team/feat".into(),
+            set_upstream: false,
+            force: PushForce::WithLease,
+            tags: PushTagMode::Follow,
+            up_to: None,
+        };
+        assert_eq!(
+            compile_simple_steps(&push_custom).unwrap()[0].args,
+            vec![
+                "push",
+                "--porcelain",
+                "--force-with-lease",
+                "--follow-tags",
+                "upstream",
+                "refs/heads/local-feat:refs/heads/team/feat",
+            ]
+        );
+
+        let push_force_all = GitOp::Push {
+            branch: "dev".into(),
+            remote: "origin".into(),
+            remote_branch: String::new(),
+            set_upstream: false,
+            force: PushForce::Force,
+            tags: PushTagMode::All,
+            up_to: None,
+        };
+        assert_eq!(
+            compile_simple_steps(&push_force_all).unwrap()[0].args,
+            vec![
+                "push",
+                "--porcelain",
+                "--force",
+                "--tags",
+                "origin",
+                "refs/heads/dev:refs/heads/dev",
+            ]
+        );
+
+        let tag_light = GitOp::CreateTag {
+            name: "-tricky".into(),
+            target: oid(1),
+            message: None,
+            force: true,
+        };
+        assert_eq!(
+            compile_simple_steps(&tag_light).unwrap()[0].args,
+            vec!["tag", "-f", "--", "-tricky", &oid(1).to_string()]
+        );
+
+        let tag_ann = GitOp::CreateTag {
+            name: "v1.0".into(),
+            target: oid(1),
+            message: Some("release".into()),
+            force: false,
+        };
+        assert_eq!(
+            compile_simple_steps(&tag_ann).unwrap()[0].args,
+            vec!["tag", "-a", "-m", "release", "--", "v1.0", &oid(1).to_string()]
+        );
+
+        let tag_del = GitOp::DeleteTag {
+            name: "v1.0".into(),
+            tip: oid(1),
+        };
+        assert_eq!(
+            compile_simple_steps(&tag_del).unwrap()[0].args,
+            vec!["tag", "-d", "--", "v1.0"]
+        );
+
+        let tag_restore = GitOp::RestoreTag {
+            name: "v1.0".into(),
+            oid: oid(1),
+        };
+        assert_eq!(
+            compile_simple_steps(&tag_restore).unwrap()[0].args,
+            vec!["tag", "--", "v1.0", &oid(1).to_string()]
+        );
+
+        let tag_del_remote = GitOp::DeleteRemoteTag {
+            remote: "origin".into(),
+            name: "v1.0".into(),
+        };
+        assert_eq!(
+            compile_simple_steps(&tag_del_remote).unwrap()[0].args,
+            vec!["push", "origin", "--delete", "refs/tags/v1.0"]
+        );
+
+        let tag_push = GitOp::PushTag {
+            remote: "origin".into(),
+            name: "v1.0".into(),
+            force: true,
+        };
+        assert_eq!(
+            compile_simple_steps(&tag_push).unwrap()[0].args,
+            vec![
+                "push",
+                "--force",
+                "origin",
+                "refs/tags/v1.0:refs/tags/v1.0",
             ]
         );
 
@@ -946,8 +1125,10 @@ mod tests {
             GitOp::Push {
                 branch: "main".into(),
                 remote: "origin".into(),
+                remote_branch: "main".into(),
                 set_upstream: false,
-                force_with_lease: false,
+                force: PushForce::None,
+                tags: PushTagMode::None,
                 up_to: None,
             },
             |_| {},
@@ -958,7 +1139,10 @@ mod tests {
         assert!(res.index_lock.is_none());
         let calls = runner.calls();
         assert!(!calls[0].is_read_only);
-        assert_eq!(calls[0].args, vec!["push", "origin", "refs/heads/main:refs/heads/main"]);
+        assert_eq!(
+            calls[0].args,
+            vec!["push", "--porcelain", "origin", "refs/heads/main:refs/heads/main"]
+        );
         assert!(calls[0].stdin.is_none());
         assert!(calls[0].env.is_empty());
 
@@ -989,5 +1173,47 @@ mod tests {
             .expect("index.lock conflict must be surfaced");
         assert_eq!(conflict.retry_args, vec!["checkout", "main"]);
         assert_eq!(conflict.lock_path, PathBuf::from("/repo/.git/index.lock"));
+    }
+
+    #[tokio::test]
+    async fn sequence_stops_on_first_failure_preserving_inner_op_and_failure() {
+        let runner = RecordingCliRunner::with_responses(vec![
+            GitCliOutput {
+                exit_code: 0,
+                duration_ms: 2,
+                stdout_lines: Vec::new(),
+                stderr_lines: Vec::new(),
+                index_lock_conflict: None,
+            },
+            GitCliOutput {
+                exit_code: 1,
+                duration_ms: 3,
+                stdout_lines: Vec::new(),
+                stderr_lines: vec!["CONFLICT (content): Merge conflict in src/lib.rs".into()],
+                index_lock_conflict: None,
+            },
+        ]);
+        let ids = AtomicU64::new(1);
+        let seq = GitOp::Sequence(vec![
+            GitOp::Fetch,
+            GitOp::Rebase {
+                onto: "origin/main".into(),
+                branch: None,
+            },
+            GitOp::Push {
+                branch: "main".into(),
+                remote: "origin".into(),
+                remote_branch: "main".into(),
+                set_upstream: false,
+                force: PushForce::None,
+                tags: PushTagMode::None,
+                up_to: None,
+            },
+        ]);
+        let res = run_git_op(&runner, &dummy_loc(), &ids, seq, |_| {}).await;
+        assert!(!res.outcome.success);
+        assert_eq!(res.outcome.failure, Some(GitFailure::Conflicts));
+        assert!(matches!(res.outcome.op, GitOp::Rebase { .. }));
+        assert_eq!(runner.calls().len(), 2);
     }
 }

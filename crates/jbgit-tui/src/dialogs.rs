@@ -143,6 +143,7 @@ impl InputDialog {
                         name: value,
                         target: *target,
                         message: None,
+                        force: false,
                     })]
                 }
             }
@@ -201,6 +202,20 @@ impl ChoiceOption {
 }
 
 #[derive(Debug, Clone)]
+pub struct ChoiceCheckbox {
+    pub label: String,
+    pub checked: bool,
+    pub checked_actions: Vec<Action>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeleteTagRemoteProbe {
+    pub name: String,
+    pub tip: Oid,
+    pub remote: String,
+}
+
+#[derive(Debug, Clone)]
 pub struct ChoiceDialog {
     pub title: String,
     pub body: Vec<String>,
@@ -212,6 +227,8 @@ pub struct ChoiceDialog {
     pub confirm_label: String,
     /// Red title / border (dangerous operation).
     pub danger: bool,
+    pub checkbox: Option<ChoiceCheckbox>,
+    pub remote_tag_probe: Option<DeleteTagRemoteProbe>,
 }
 
 impl ChoiceDialog {
@@ -228,6 +245,8 @@ impl ChoiceDialog {
             radio: false,
             confirm_label: String::new(),
             danger: false,
+            checkbox: None,
+            remote_tag_probe: None,
         }
     }
 
@@ -246,6 +265,8 @@ impl ChoiceDialog {
             radio: true,
             confirm_label: confirm_label.into(),
             danger: false,
+            checkbox: None,
+            remote_tag_probe: None,
         }
     }
 
@@ -349,6 +370,7 @@ impl MessageDialog {
                     name: name.clone(),
                     target: *target,
                     message: (!msg.trim().is_empty()).then_some(msg),
+                    force: false,
                 })]
             }
             MessageIntent::TodoEntry { idx } => vec![Action::SetTodoMessage {
@@ -437,7 +459,15 @@ impl Dialog {
     pub fn confirm_actions(&self, i18n: &I18n) -> Option<Vec<Action>> {
         match self {
             Self::Input(d) => d.can_confirm(i18n).then(|| d.confirm_actions(i18n)),
-            Self::Choice(d) => d.options.get(d.selected).map(|o| o.actions.clone()),
+            Self::Choice(d) => {
+                if d.selected == 0
+                    && let Some(cb) = &d.checkbox
+                    && cb.checked
+                {
+                    return Some(cb.checked_actions.clone());
+                }
+                d.options.get(d.selected).map(|o| o.actions.clone())
+            }
             Self::Message(d) => Some(d.confirm_actions(i18n)),
             Self::RebaseTodo(d) => d.error(i18n).is_none().then(|| d.confirm_actions()),
         }
@@ -493,6 +523,12 @@ pub fn route_dialog_key(dialog: &mut Dialog, key: &KeyEvent, i18n: &I18n) -> Dia
                 }
                 KeyCode::Down | KeyCode::Right | KeyCode::Tab => {
                     d.selected = (d.selected + 1) % len;
+                    DialogKey::Redraw
+                }
+                KeyCode::Char(' ') if plain && d.checkbox.is_some() => {
+                    if let Some(cb) = d.checkbox.as_mut() {
+                        cb.checked = !cb.checked;
+                    }
                     DialogKey::Redraw
                 }
                 KeyCode::Char(c) if plain => {

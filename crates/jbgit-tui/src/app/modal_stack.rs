@@ -8,7 +8,7 @@ use std::time::Instant;
 use ratatui::layout::Rect;
 
 use crate::dialogs::Dialog;
-use crate::log_view::{AnnotateState, FileHistoryState, FilterField};
+use crate::log_view::{AnnotateState, FileHistoryState, FilterField, PushDialogState};
 use crate::views::overlays::{context_menu_rect, menu_item_row_y};
 
 use super::{
@@ -53,6 +53,8 @@ pub enum ModalLayer {
     FileHistory(Box<FileHistoryState>),
     /// Layer 2: self-contained per-line git blame / annotate viewer.
     Annotate(Box<AnnotateState>),
+    /// Layer 2: full Push dialog (`target`, outgoing commits, files/diff preview, options).
+    PushDialog(Box<PushDialogState>),
     /// Layer 2: self-contained three-pane conflict resolver (`Ours | Result | Theirs`).
     ConflictResolver(Box<ConflictMergeState>),
     /// Layer 2: three-way hunk inspector (`HEAD / Staged / Worktree`).
@@ -164,6 +166,7 @@ impl ModalLayer {
             | Self::CommitHistory { .. }
             | Self::FileHistory(_)
             | Self::Annotate(_)
+            | Self::PushDialog(_)
             | Self::ConflictResolver(_)
             | Self::ThreeWayInspector { .. }
             | Self::HookError { .. } => 20,
@@ -293,6 +296,38 @@ impl ModalStack {
             .layers
             .iter()
             .rposition(|l| matches!(l, ModalLayer::Annotate(_)))
+        {
+            self.layers.remove(pos);
+        }
+    }
+
+    pub fn push_dialog(&self) -> Option<&PushDialogState> {
+        self.layers.iter().rev().find_map(|l| match l {
+            ModalLayer::PushDialog(pd) => Some(pd.as_ref()),
+            _ => None,
+        })
+    }
+
+    pub fn push_dialog_mut(&mut self) -> Option<&mut PushDialogState> {
+        self.layers.iter_mut().rev().find_map(|l| match l {
+            ModalLayer::PushDialog(pd) => Some(pd.as_mut()),
+            _ => None,
+        })
+    }
+
+    pub fn open_push_dialog(&mut self, pd: PushDialogState) {
+        if let Some(ModalLayer::PushDialog(existing)) = self.layers.last_mut() {
+            **existing = pd;
+        } else {
+            self.layers.push(ModalLayer::PushDialog(Box::new(pd)));
+        }
+    }
+
+    pub fn close_push_dialog(&mut self) {
+        if let Some(pos) = self
+            .layers
+            .iter()
+            .rposition(|l| matches!(l, ModalLayer::PushDialog(_)))
         {
             self.layers.remove(pos);
         }

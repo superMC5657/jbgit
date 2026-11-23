@@ -323,6 +323,24 @@ impl Default for AnnotateSection {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PushSection {
+    #[serde(default = "default_protected_branches")]
+    pub protected_branches: Vec<String>,
+}
+
+fn default_protected_branches() -> Vec<String> {
+    vec!["main".to_string(), "master".to_string()]
+}
+
+impl Default for PushSection {
+    fn default() -> Self {
+        Self {
+            protected_branches: default_protected_branches(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct JbgitConfig {
     #[serde(default)]
@@ -333,6 +351,8 @@ pub struct JbgitConfig {
     pub diff: DiffSection,
     #[serde(default)]
     pub annotate: AnnotateSection,
+    #[serde(default)]
+    pub push: PushSection,
     #[serde(default)]
     pub layout: LayoutSection,
     #[serde(default)]
@@ -653,6 +673,11 @@ impl JbgitConfig {
                 self.annotate.gutter_width = gw.clamp(16, 60);
             }
         }
+        if let Some(push) = &overlay.push
+            && let Some(pb) = &push.protected_branches
+        {
+            self.push.protected_branches = pb.clone();
+        }
         if let Some(lo) = &overlay.layout {
             if let Some(r) = lo.log_ratio {
                 self.layout.log_ratio = r;
@@ -714,8 +739,14 @@ pub struct JbgitConfigOverlay {
     pub graph: Option<GraphSectionOverlay>,
     pub diff: Option<DiffSectionOverlay>,
     pub annotate: Option<AnnotateSectionOverlay>,
+    pub push: Option<PushSectionOverlay>,
     pub layout: Option<LayoutSectionOverlay>,
     pub performance: Option<PerformanceSectionOverlay>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct PushSectionOverlay {
+    pub protected_branches: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

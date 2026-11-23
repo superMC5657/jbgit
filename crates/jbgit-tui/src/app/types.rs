@@ -4,8 +4,8 @@ use std::time::{Duration, Instant};
 
 use jbgit_core::{
     BlameBundle, BlameKey, ConflictDocument, DetailsKey, EpochToken, FileDiff, FileDiffKey,
-    FileHistoryKey, GitOp, Oid, PaneId, RefreshScope, RepoSnapshot, RequestSlotId, SplitAxis,
-    SplitterId,
+    FileHistoryKey, GitOp, Oid, OutgoingKey, PaneId, RefreshScope, RepoSnapshot, RequestSlotId,
+    SplitAxis, SplitterId,
 };
 use jbgit_engine::{StageDiffKey, ThreeDocStageDiff};
 use ratatui::layout::Rect;
@@ -45,6 +45,7 @@ pub enum ScrollPane {
     FileHistoryDiff,
     Annotate,
     AnnotateDiff,
+    PushDiff,
     ConflictMerge,
 }
 
@@ -521,6 +522,11 @@ pub enum Effect {
     },
     RequestFileHistory(FileHistoryKey),
     RequestBlame(BlameKey),
+    CheckRemoteTag {
+        remote: String,
+        tag: String,
+    },
+    RequestOutgoing(OutgoingKey),
     RequestPathMatches(Vec<String>, Arc<RepoSnapshot>),
     RequestStageFileDiff(StageDiffKey),
     RequestSyntaxHighlight(SyntaxJob),

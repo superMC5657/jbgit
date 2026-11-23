@@ -1,6 +1,72 @@
-use crate::{Oid, RepositoryState};
+use crate::{Oid, RefreshScope, RepositoryState};
 
 use super::TodoEntry;
+
+/// Tag push mode for [`GitOp::Push`].
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub enum PushTagMode {
+    #[default]
+    None,
+    /// `--follow-tags`
+    Follow,
+    /// `--tags`
+    All,
+}
+
+impl PushTagMode {
+    pub const ALL: [Self; 3] = [Self::None, Self::Follow, Self::All];
+
+    pub const fn flag(self) -> Option<&'static str> {
+        match self {
+            Self::None => None,
+            Self::Follow => Some("--follow-tags"),
+            Self::All => Some("--tags"),
+        }
+    }
+
+    pub const fn next(self) -> Self {
+        match self {
+            Self::None => Self::Follow,
+            Self::Follow => Self::All,
+            Self::All => Self::None,
+        }
+    }
+}
+
+/// Force-push mode for [`GitOp::Push`].
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub enum PushForce {
+    #[default]
+    None,
+    /// `--force-with-lease`
+    WithLease,
+    /// `--force`
+    Force,
+}
+
+impl PushForce {
+    pub const ALL: [Self; 3] = [Self::None, Self::WithLease, Self::Force];
+
+    pub const fn flag(self) -> Option<&'static str> {
+        match self {
+            Self::None => None,
+            Self::WithLease => Some("--force-with-lease"),
+            Self::Force => Some("--force"),
+        }
+    }
+
+    pub const fn is_force(self) -> bool {
+        !matches!(self, Self::None)
+    }
+
+    pub const fn next(self) -> Self {
+        match self {
+            Self::None => Self::WithLease,
+            Self::WithLease => Self::Force,
+            Self::Force => Self::None,
+        }
+    }
+}
 
 /// Returns a 7-char prefix when `rev` is a full 40-hex SHA-1 hash, otherwise `rev` as-is.
 pub fn short_rev(rev: &str) -> &str {
@@ -176,6 +242,24 @@ pub enum GitOp {
         name: String,
         target: Oid,
         message: Option<String>,
+        force: bool,
+    },
+    DeleteTag {
+        name: String,
+        tip: Oid,
+    },
+    RestoreTag {
+        name: String,
+        oid: Oid,
+    },
+    DeleteRemoteTag {
+        remote: String,
+        name: String,
+    },
+    PushTag {
+        remote: String,
+        name: String,
+        force: bool,
     },
     Merge {
         rev: String,
@@ -201,10 +285,13 @@ pub enum GitOp {
     Push {
         branch: String,
         remote: String,
+        remote_branch: String,
         set_upstream: bool,
-        force_with_lease: bool,
+        force: PushForce,
+        tags: PushTagMode,
         up_to: Option<Oid>,
     },
+    Sequence(Vec<GitOp>),
     UpdateBranch {
         branch: String,
         remote: String,
@@ -287,6 +374,12 @@ impl GitOp {
                 format!("Delete remote branch '{remote}/{branch}'")
             }
             Self::CreateTag { name, .. } => format!("Create tag '{name}'"),
+            Self::DeleteTag { name, .. } => format!("Delete tag '{name}'"),
+            Self::RestoreTag { name, .. } => format!("Restore tag '{name}'"),
+            Self::DeleteRemoteTag { remote, name } => {
+                format!("Delete remote tag '{remote}/{name}'")
+            }
+            Self::PushTag { remote, name, .. } => format!("Push tag '{name}' to '{remote}'"),
             Self::Merge { rev } => format!("Merge '{rev}'"),
             Self::Rebase { onto, branch } => match branch {
                 Some(b) => format!("Rebase '{b}' onto '{onto}'"),
@@ -305,7 +398,24 @@ impl GitOp {
                     "Pull".to_string()
                 }
             }
-            Self::Push { branch, .. } => format!("Push '{branch}'"),
+            Self::Push {
+                branch,
+                remote,
+                remote_branch,
+                ..
+            } => {
+                let target = if remote_branch.is_empty() {
+                    branch.as_str()
+                } else {
+                    remote_branch.as_str()
+                };
+                format!("Push '{branch}' → '{remote}/{target}'")
+            }
+            Self::Sequence(ops) => ops
+                .iter()
+                .map(Self::label)
+                .collect::<Vec<_>>()
+                .join(" → "),
             Self::UpdateBranch { branch, .. } => format!("Update '{branch}'"),
             Self::RewordHead { .. } => "Reword HEAD".to_string(),
             Self::RewriteHistory { todo, .. } => format!("Rewrite {} commit(s)", todo.len()),
@@ -363,6 +473,34 @@ impl GitOp {
     }
 
     pub fn is_read_only(&self) -> bool {
-        matches!(self, Self::PatchToClipboard { .. })
+        match self {
+            Self::PatchToClipboard { .. } => true,
+            Self::Sequence(ops) => ops.iter().all(Self::is_read_only),
+            _ => false,
+        }
+    }
+
+    /// Minimal [`RefreshScope`] needed after running this operation.
+    pub fn refresh_scope(&self) -> RefreshScope {
+        match self {
+            Self::PatchToClipboard { .. } => RefreshScope::None,
+            Self::CreateBranch { .. }
+            | Self::RenameBranch { .. }
+            | Self::DeleteBranch { .. }
+            | Self::RestoreBranch { .. }
+            | Self::DeleteRemoteBranch { .. }
+            | Self::CreateTag { .. }
+            | Self::DeleteTag { .. }
+            | Self::RestoreTag { .. }
+            | Self::DeleteRemoteTag { .. }
+            | Self::PushTag { .. }
+            | Self::Fetch
+            | Self::Push { .. }
+            | Self::UpdateBranch { .. } => RefreshScope::RefsAndGraph,
+            Self::Sequence(ops) => ops
+                .iter()
+                .fold(RefreshScope::None, |acc, op| acc.merge(op.refresh_scope())),
+            _ => RefreshScope::All,
+        }
     }
 }

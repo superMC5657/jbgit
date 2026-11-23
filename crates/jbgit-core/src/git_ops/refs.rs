@@ -169,3 +169,12 @@ pub fn is_protected_branch(name: &str) -> bool {
         "main" | "master" | "develop" | "development" | "trunk" | "release" | "production"
     ) || name.starts_with("release/")
 }
+
+/// Returns `true` if `branch` matches any non-empty glob pattern in `patterns`.
+pub fn matches_protected_branch_patterns(branch: &str, patterns: &[String]) -> bool {
+    patterns
+        .iter()
+        .map(|p| p.trim())
+        .filter(|p| !p.is_empty())
+        .any(|pat| crate::glob_match(pat, branch))
+}

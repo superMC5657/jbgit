@@ -6,16 +6,17 @@ use std::sync::{Arc, Mutex};
 use jbgit_core::{
     AmendCommitPreview, BlameBundle, BlameKey, CommitChangesBundle, ConflictDocument, ConsoleStream,
     DetailsKey, EpochToken, FileDiff, FileDiffKey, FileHistoryBundle, FileHistoryKey,
-    FileStatusKind, GitConsoleEntry, GitOp, GitOpOutcome, LruCache, Oid, RefreshScope,
-    RepoSnapshot, RequestSlotId, SignatureStatus, SlotRegistry, StageNodeKind,
-    StageStatusSnapshot, StageTarget,
+    FileStatusKind, GitConsoleEntry, GitOp, GitOpOutcome, LruCache, Oid, OutgoingBundle,
+    OutgoingKey, RefreshScope, RepoSnapshot, RequestSlotId, SignatureStatus, SlotRegistry,
+    StageNodeKind, StageStatusSnapshot, StageTarget,
 };
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 
 use crate::cli::{CliCommand, CliStreamEvent, GitCliExecutor, GitExecutableInfo};
 use crate::details::{
-    load_blame_sync, load_commit_details_sync, load_file_diff_with_oids_sync,
-    load_file_history_sync, load_path_matches_sync, verify_commit_signature_sync,
+    check_remote_tag_async, load_blame_sync, load_commit_details_sync,
+    load_file_diff_with_oids_sync, load_file_history_sync, load_outgoing_sync,
+    load_path_matches_sync, verify_commit_signature_sync,
 };
 use crate::error::EngineError;
 use crate::pool::{
@@ -63,6 +64,15 @@ pub enum TaskRequest {
     /// Per-line blame annotation (`git blame --porcelain`).
     LoadBlame {
         key: BlameKey,
+    },
+    /// Silent check whether `refs/tags/<tag>` exists on `remote`.
+    CheckRemoteTag {
+        remote: String,
+        tag: String,
+    },
+    /// Pending commits and net file count for the Push dialog.
+    LoadOutgoing {
+        key: OutgoingKey,
     },
     /// Commits of `snapshot` touching any of `paths` (log `Paths` filter).
     LoadPathMatches {
@@ -132,6 +142,8 @@ impl TaskRequest {
             Self::LoadFileDiff { slot, .. } => Some(*slot),
             Self::LoadFileHistory { .. } => Some(RequestSlotId::FileHistoryList),
             Self::LoadBlame { .. } => Some(RequestSlotId::Annotate),
+            Self::CheckRemoteTag { .. } => Some(RequestSlotId::RemoteTagCheck),
+            Self::LoadOutgoing { .. } => Some(RequestSlotId::PushOutgoing),
             Self::LoadPathMatches { .. } => Some(RequestSlotId::PathFilter),
             Self::LoadStageStatus { .. } => Some(RequestSlotId::StageStatus),
             Self::LoadStageFileDiff { .. } => Some(RequestSlotId::StageFileDiff),
@@ -191,6 +203,16 @@ pub enum EngineEvent {
         key: BlameKey,
         kind: BlameFailureKind,
         message: String,
+        epoch: u64,
+    },
+    RemoteTagChecked {
+        remote: String,
+        tag: String,
+        exists: Option<bool>,
+        epoch: u64,
+    },
+    OutgoingLoaded {
+        bundle: Arc<OutgoingBundle>,
         epoch: u64,
     },
     PathMatchesLoaded {
@@ -296,6 +318,16 @@ pub trait EngineBackend: Send + Sync {
     fn request_blame(&self, key: BlameKey) -> u64 {
         self.dispatch(TaskRequest::LoadBlame { key })
             .expect("LoadBlame always has a slot")
+    }
+
+    fn request_check_remote_tag(&self, remote: String, tag: String) -> u64 {
+        self.dispatch(TaskRequest::CheckRemoteTag { remote, tag })
+            .expect("CheckRemoteTag always has a slot")
+    }
+
+    fn request_outgoing(&self, key: OutgoingKey) -> u64 {
+        self.dispatch(TaskRequest::LoadOutgoing { key })
+            .expect("LoadOutgoing always has a slot")
     }
 
     fn request_path_matches(&self, paths: Vec<String>, snapshot: Arc<RepoSnapshot>) -> u64 {
@@ -588,6 +620,47 @@ fn handle_task_request(ctx: &SupervisorContext, task: ScheduledTask) {
                     }
                 }
             });
+        }
+        TaskRequest::CheckRemoteTag { remote, tag } => {
+            let loc = ctx.location.clone();
+            let git_exe = ctx
+                .cli
+                .as_ref()
+                .map(|c| c.info().path)
+                .unwrap_or_else(|| PathBuf::from("git"));
+            let token = token.expect("CheckRemoteTag token");
+            let epoch = token.epoch();
+            let tx = ctx.event_tx.clone();
+            tokio::spawn(async move {
+                if token.is_stale() {
+                    return;
+                }
+                let exists = check_remote_tag_async(&git_exe, &loc, &remote, &tag).await;
+                if !token.is_stale() {
+                    let _ = tx.send(EngineEvent::RemoteTagChecked {
+                        remote,
+                        tag,
+                        exists,
+                        epoch,
+                    });
+                }
+            });
+        }
+        TaskRequest::LoadOutgoing { key } => {
+            let pool = Arc::clone(&ctx.pool);
+            let loc = ctx.location.clone();
+            let token = token.expect("LoadOutgoing token");
+            let epoch = token.epoch();
+            spawn_epoch_task(
+                &ctx.event_tx,
+                async move {
+                    pool.run_epoch(TaskPriority::Interactive, token, move |tok| {
+                        load_outgoing_sync(&loc, &key, tok).map(Arc::new)
+                    })
+                    .await
+                },
+                move |bundle| EngineEvent::OutgoingLoaded { bundle, epoch },
+            );
         }
         TaskRequest::LoadPathMatches { paths, snapshot } => {
             let pool = Arc::clone(&ctx.pool);
@@ -1028,6 +1101,7 @@ fn spawn_run_git_op(ctx: &SupervisorContext, op: GitOp) {
     let ids = Arc::clone(&ctx.op_ids);
     tokio::spawn(async move {
         let read_only = op.is_read_only();
+        let refresh = op.refresh_scope();
         let token = (!read_only).then(|| guard.begin());
         let fwd = tx.clone();
         let res = crate::ops::run_git_op(cli_exec.as_ref(), &loc, &ids, op, move |ev| {
@@ -1043,18 +1117,13 @@ fn spawn_run_git_op(ctx: &SupervisorContext, op: GitOp) {
                 retry_args: conflict.retry_args,
                 retry_stdin: conflict.retry_stdin,
                 retry_is_read_only: conflict.retry_is_read_only,
-                retry_refresh_after: if read_only {
-                    RefreshScope::None
-                } else {
-                    RefreshScope::All
-                },
+                retry_refresh_after: refresh,
             });
         }
         let _ = tx.send(EngineEvent::GitOpFinished(res.outcome));
-        if !read_only {
-            let _ = tx.send(EngineEvent::ExternalFsChanged(
-                RefreshScope::All.merge(deferred),
-            ));
+        let merged = refresh.merge(deferred);
+        if merged != RefreshScope::None {
+            let _ = tx.send(EngineEvent::ExternalFsChanged(merged));
         }
     });
 }

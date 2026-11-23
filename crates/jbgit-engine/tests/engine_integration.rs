@@ -1842,3 +1842,432 @@ async fn selection_history_traces_line_range_and_crosses_renames() {
     assert_eq!(sel.entries[0].path_at_commit, "renamed_funcs.rs");
     assert_eq!(sel.entries[2].path_at_commit, "funcs.rs");
 }
+
+async fn run_git_op(
+    handle: &jbgit_engine::EngineHandle,
+    rx: &mut UnboundedReceiver<EngineEvent>,
+    op: jbgit_core::GitOp,
+) -> jbgit_core::GitOpOutcome {
+    let _ = handle.dispatch(jbgit_engine::TaskRequest::RunGitOp { op });
+    recv_matching(rx, |ev| match ev {
+        EngineEvent::GitOpFinished(outcome) => Some(outcome),
+        _ => None,
+    })
+    .await
+}
+
+async fn check_remote_tag(
+    handle: &jbgit_engine::EngineHandle,
+    rx: &mut UnboundedReceiver<EngineEvent>,
+    remote: &str,
+    tag: &str,
+) -> Option<bool> {
+    let epoch = handle
+        .dispatch(jbgit_engine::TaskRequest::CheckRemoteTag {
+            remote: remote.to_string(),
+            tag: tag.to_string(),
+        })
+        .expect("CheckRemoteTag epoch");
+    let expected_remote = remote.to_string();
+    let expected_tag = tag.to_string();
+    recv_matching(rx, |ev| match ev {
+        EngineEvent::ConsoleStarted(_) => {
+            panic!("read-only CheckRemoteTag must not emit ConsoleStarted");
+        }
+        EngineEvent::RemoteTagChecked {
+            remote,
+            tag,
+            exists,
+            epoch: e,
+        } if e == epoch && remote == expected_remote && tag == expected_tag => Some(exists),
+        _ => None,
+    })
+    .await
+}
+
+async fn load_outgoing(
+    handle: &jbgit_engine::EngineHandle,
+    rx: &mut UnboundedReceiver<EngineEvent>,
+    key: jbgit_core::OutgoingKey,
+) -> Arc<jbgit_core::OutgoingBundle> {
+    let epoch = handle
+        .dispatch(jbgit_engine::TaskRequest::LoadOutgoing { key: key.clone() })
+        .expect("LoadOutgoing epoch");
+    recv_matching(rx, |ev| match ev {
+        EngineEvent::ConsoleStarted(_) => {
+            panic!("read-only LoadOutgoing must not emit ConsoleStarted");
+        }
+        EngineEvent::OutgoingLoaded { bundle, epoch: e } if e == epoch && bundle.key == key => {
+            Some(bundle)
+        }
+        _ => None,
+    })
+    .await
+}
+
+#[tokio::test]
+async fn tag_management_lifecycle_push_remote_check_overwrite_delete_and_restore() {
+    use jbgit_core::{GitFailure, GitOp};
+
+    let bare_dir = TempDir::new().unwrap();
+    git(bare_dir.path(), &["init", "--bare", "-b", "main"]);
+
+    let local_dir = TempDir::new().unwrap();
+    let dir = local_dir.path();
+    git(dir, &["init", "-b", "main"]);
+    git(dir, &["config", "user.name", "Tester"]);
+    git(dir, &["config", "user.email", "tester@example.com"]);
+    git(
+        dir,
+        &["remote", "add", "origin", bare_dir.path().to_str().unwrap()],
+    );
+
+    fs::write(dir.join("file.txt"), "c1\n").unwrap();
+    git(dir, &["add", "."]);
+    git(dir, &["commit", "-m", "c1"]);
+    let c1 = rev(dir, "HEAD");
+
+    fs::write(dir.join("file.txt"), "c2\n").unwrap();
+    git(dir, &["add", "."]);
+    git(dir, &["commit", "-m", "c2"]);
+    let c2 = rev(dir, "HEAD");
+    git(dir, &["push", "-u", "origin", "main"]);
+
+    let loc = RepoLocation::discover(dir).unwrap();
+    let (handle, mut rx) = EngineSupervisor::start(loc, false).unwrap();
+
+    // Create annotated tag v1.0 on c1.
+    let out = run_git_op(
+        &handle,
+        &mut rx,
+        GitOp::CreateTag {
+            name: "v1.0".into(),
+            target: c1,
+            message: Some("release 1.0".into()),
+            force: false,
+        },
+    )
+    .await;
+    assert!(out.success, "{out:?}");
+    assert_eq!(rev(dir, "v1.0^{}"), c1);
+
+    // Creating duplicate tag without force fails with TagAlreadyExists.
+    let dup = run_git_op(
+        &handle,
+        &mut rx,
+        GitOp::CreateTag {
+            name: "v1.0".into(),
+            target: c2,
+            message: None,
+            force: false,
+        },
+    )
+    .await;
+    assert!(!dup.success);
+    assert_eq!(dup.failure, Some(GitFailure::TagAlreadyExists));
+
+    // Overwriting with force = true moves local tag to c2.
+    let overwrite = run_git_op(
+        &handle,
+        &mut rx,
+        GitOp::CreateTag {
+            name: "v1.0".into(),
+            target: c2,
+            message: None,
+            force: true,
+        },
+    )
+    .await;
+    assert!(overwrite.success, "{overwrite:?}");
+    assert_eq!(rev(dir, "v1.0^{}"), c2);
+
+    // Remote does not have v1.0 yet.
+    assert_eq!(
+        check_remote_tag(&handle, &mut rx, "origin", "v1.0").await,
+        Some(false)
+    );
+
+    // Push tag to origin, then remote check reports Some(true).
+    let push_tag = run_git_op(
+        &handle,
+        &mut rx,
+        GitOp::PushTag {
+            remote: "origin".into(),
+            name: "v1.0".into(),
+            force: false,
+        },
+    )
+    .await;
+    assert!(push_tag.success, "{push_tag:?}");
+    assert_eq!(
+        check_remote_tag(&handle, &mut rx, "origin", "v1.0").await,
+        Some(true)
+    );
+
+    // Move local v1.0 back to c1; non-forced PushTag fails with TagAlreadyExists.
+    let move_back = run_git_op(
+        &handle,
+        &mut rx,
+        GitOp::CreateTag {
+            name: "v1.0".into(),
+            target: c1,
+            message: None,
+            force: true,
+        },
+    )
+    .await;
+    assert!(move_back.success, "{move_back:?}");
+
+    let push_conflict = run_git_op(
+        &handle,
+        &mut rx,
+        GitOp::PushTag {
+            remote: "origin".into(),
+            name: "v1.0".into(),
+            force: false,
+        },
+    )
+    .await;
+    assert!(!push_conflict.success);
+    assert_eq!(push_conflict.failure, Some(GitFailure::TagAlreadyExists));
+
+    // Force push tag succeeds and updates remote tag target.
+    let force_push_tag = run_git_op(
+        &handle,
+        &mut rx,
+        GitOp::PushTag {
+            remote: "origin".into(),
+            name: "v1.0".into(),
+            force: true,
+        },
+    )
+    .await;
+    assert!(force_push_tag.success, "{force_push_tag:?}");
+    assert_eq!(rev(bare_dir.path(), "refs/tags/v1.0^{}"), c1);
+
+    // Delete remote tag, verify CheckRemoteTag now returns Some(false).
+    let del_remote = run_git_op(
+        &handle,
+        &mut rx,
+        GitOp::DeleteRemoteTag {
+            remote: "origin".into(),
+            name: "v1.0".into(),
+        },
+    )
+    .await;
+    assert!(del_remote.success, "{del_remote:?}");
+    assert_eq!(
+        check_remote_tag(&handle, &mut rx, "origin", "v1.0").await,
+        Some(false)
+    );
+
+    // Delete local tag, verify gone, then RestoreTag restores it at c1.
+    let del_local = run_git_op(
+        &handle,
+        &mut rx,
+        GitOp::DeleteTag {
+            name: "v1.0".into(),
+            tip: c1,
+        },
+    )
+    .await;
+    assert!(del_local.success, "{del_local:?}");
+    let listed = git_output(dir, &["tag", "-l", "v1.0"]);
+    assert!(String::from_utf8_lossy(&listed.stdout).trim().is_empty());
+
+    let restored = run_git_op(
+        &handle,
+        &mut rx,
+        GitOp::RestoreTag {
+            name: "v1.0".into(),
+            oid: c1,
+        },
+    )
+    .await;
+    assert!(restored.success, "{restored:?}");
+    assert_eq!(rev(dir, "v1.0^{}"), c1);
+}
+
+#[tokio::test]
+async fn outgoing_commits_and_push_rejected_sequence_retry() {
+    use jbgit_core::{
+        GitFailure, GitOp, OutgoingKey, PushForce, PushTagMode, parse_push_porcelain,
+    };
+
+    let bare_dir = TempDir::new().unwrap();
+    git(bare_dir.path(), &["init", "--bare", "-b", "main"]);
+
+    let work_a = TempDir::new().unwrap();
+    let dir_a = work_a.path();
+    git(dir_a, &["init", "-b", "main"]);
+    git(dir_a, &["config", "user.name", "Tester A"]);
+    git(dir_a, &["config", "user.email", "a@example.com"]);
+    git(
+        dir_a,
+        &["remote", "add", "origin", bare_dir.path().to_str().unwrap()],
+    );
+
+    fs::write(dir_a.join("base.txt"), "base\n").unwrap();
+    git(dir_a, &["add", "."]);
+    git(dir_a, &["commit", "-m", "c1: base"]);
+    git(dir_a, &["push", "-u", "origin", "main"]);
+
+    // Second clone used later to advance remote main independently.
+    let work_b = TempDir::new().unwrap();
+    let dir_b = work_b.path();
+    git(dir_b, &["clone", bare_dir.path().to_str().unwrap(), "."]);
+    git(dir_b, &["config", "user.name", "Tester B"]);
+    git(dir_b, &["config", "user.email", "b@example.com"]);
+
+    let loc = RepoLocation::discover(dir_a).unwrap();
+    let (handle, mut rx) = EngineSupervisor::start(loc, false).unwrap();
+
+    // 1. Up-to-date branch: remote_exists = true, 0 commits, 0 files.
+    let up_to_date = load_outgoing(
+        &handle,
+        &mut rx,
+        OutgoingKey {
+            branch: "main".into(),
+            remote: "origin".into(),
+            remote_branch: "main".into(),
+            up_to: None,
+        },
+    )
+    .await;
+    assert!(up_to_date.remote_exists);
+    assert!(up_to_date.commits.is_empty());
+    assert_eq!(up_to_date.files_changed, 0);
+
+    // 2. Branch whose remote ref does not exist yet.
+    git(dir_a, &["checkout", "-b", "feat"]);
+    fs::write(dir_a.join("a.txt"), "a1\n").unwrap();
+    git(dir_a, &["add", "."]);
+    git(dir_a, &["commit", "-m", "f1: add a.txt"]);
+    let f1 = rev(dir_a, "HEAD");
+
+    fs::write(dir_a.join("b.txt"), "b1\n").unwrap();
+    git(dir_a, &["add", "."]);
+    git(dir_a, &["commit", "-m", "f2: add b.txt"]);
+    let f2 = rev(dir_a, "HEAD");
+
+    let new_branch_bundle = load_outgoing(
+        &handle,
+        &mut rx,
+        OutgoingKey {
+            branch: "feat".into(),
+            remote: "origin".into(),
+            remote_branch: "feat".into(),
+            up_to: None,
+        },
+    )
+    .await;
+    assert!(!new_branch_bundle.remote_exists);
+    assert_eq!(new_branch_bundle.commits.len(), 2);
+    assert_eq!(new_branch_bundle.commits[0].oid, f2);
+    assert_eq!(new_branch_bundle.commits[1].oid, f1);
+    assert_eq!(new_branch_bundle.files_changed, 2);
+
+    // Truncated with up_to: Some(f1).
+    let truncated_bundle = load_outgoing(
+        &handle,
+        &mut rx,
+        OutgoingKey {
+            branch: "feat".into(),
+            remote: "origin".into(),
+            remote_branch: "feat".into(),
+            up_to: Some(f1),
+        },
+    )
+    .await;
+    assert_eq!(truncated_bundle.commits.len(), 1);
+    assert_eq!(truncated_bundle.commits[0].oid, f1);
+    assert_eq!(truncated_bundle.files_changed, 1);
+
+    // 3. Ahead on existing remote branch `main`.
+    git(dir_a, &["checkout", "main"]);
+    fs::write(dir_a.join("m2.txt"), "m2\n").unwrap();
+    git(dir_a, &["add", "."]);
+    git(dir_a, &["commit", "-m", "m2"]);
+    fs::write(dir_a.join("m3.txt"), "m3\n").unwrap();
+    git(dir_a, &["add", "."]);
+    git(dir_a, &["commit", "-m", "m3"]);
+
+    let ahead_bundle = load_outgoing(
+        &handle,
+        &mut rx,
+        OutgoingKey {
+            branch: "main".into(),
+            remote: "origin".into(),
+            remote_branch: "main".into(),
+            up_to: None,
+        },
+    )
+    .await;
+    assert!(ahead_bundle.remote_exists);
+    assert_eq!(ahead_bundle.commits.len(), 2);
+    assert_eq!(ahead_bundle.files_changed, 2);
+
+    // 4. Advance bare remote from work_b -> local push gets rejected -> Sequence(Fetch + Rebase + Push) succeeds.
+    fs::write(dir_b.join("remote_only.txt"), "from b\n").unwrap();
+    git(dir_b, &["add", "."]);
+    git(dir_b, &["commit", "-m", "remote commit"]);
+    git(dir_b, &["push", "origin", "main"]);
+
+    let push_main = GitOp::Push {
+        branch: "main".into(),
+        remote: "origin".into(),
+        remote_branch: "main".into(),
+        set_upstream: false,
+        force: PushForce::None,
+        tags: PushTagMode::None,
+        up_to: None,
+    };
+    let rejected = run_git_op(&handle, &mut rx, push_main.clone()).await;
+    assert!(!rejected.success);
+    assert_eq!(rejected.failure, Some(GitFailure::PushRejected));
+
+    let recovered = run_git_op(
+        &handle,
+        &mut rx,
+        GitOp::Sequence(vec![
+            GitOp::Fetch,
+            GitOp::Rebase {
+                onto: "origin/main".into(),
+                branch: None,
+            },
+            push_main,
+        ]),
+    )
+    .await;
+    assert!(recovered.success, "{recovered:?}");
+    let summary = parse_push_porcelain(&recovered.stdout);
+    assert!(summary.commit_range.is_some(), "{:?}", recovered.stdout);
+    assert_eq!(rev(bare_dir.path(), "refs/heads/main"), rev(dir_a, "HEAD"));
+    assert!(dir_a.join("remote_only.txt").exists());
+
+    // 5. Push with Follow tags pushes reachable annotated tag and porcelain summary reports it.
+    fs::write(dir_a.join("m4.txt"), "m4\n").unwrap();
+    git(dir_a, &["add", "."]);
+    git(dir_a, &["commit", "-m", "m4"]);
+    git(dir_a, &["tag", "-a", "v2.0", "-m", "v2 release"]);
+
+    let follow = run_git_op(
+        &handle,
+        &mut rx,
+        GitOp::Push {
+            branch: "main".into(),
+            remote: "origin".into(),
+            remote_branch: "main".into(),
+            set_upstream: false,
+            force: PushForce::None,
+            tags: PushTagMode::Follow,
+            up_to: None,
+        },
+    )
+    .await;
+    assert!(follow.success, "{follow:?}");
+    let follow_summary = parse_push_porcelain(&follow.stdout);
+    assert_eq!(follow_summary.pushed_tags, 1, "{:?}", follow.stdout);
+    assert!(follow_summary.commit_range.is_some());
+    assert_eq!(rev(bare_dir.path(), "refs/tags/v2.0^{}"), rev(dir_a, "HEAD"));
+}

@@ -13,6 +13,8 @@ pub enum GitFailure {
     Conflicts,
     /// `git branch -d` on an unmerged branch.
     NotFullyMerged,
+    /// Tag already exists locally or on the remote.
+    TagAlreadyExists,
     /// Push rejected (non-fast-forward / stale info).
     PushRejected,
     /// Anything else (first meaningful stderr line).
@@ -69,6 +71,13 @@ pub fn classify_failure(lines: &[String]) -> GitFailure {
     }
     if joined.contains("is not fully merged") {
         return GitFailure::NotFullyMerged;
+    }
+    if (joined.contains("tag '") && joined.contains("already exists"))
+        || (joined.contains("refs/tags/") && joined.contains("already exists"))
+        || (joined.contains("[rejected]") && joined.contains("already exists"))
+        || joined.contains("(already exists)")
+    {
+        return GitFailure::TagAlreadyExists;
     }
     if joined.contains("[rejected]")
         || joined.contains("non-fast-forward")
@@ -147,4 +156,82 @@ impl StashEntry {
             None => &self.message,
         }
     }
+}
+
+/// Summary extracted from `git push --porcelain` stdout lines.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PushOutcomeSummary {
+    pub branch_up_to_date: bool,
+    pub new_branch: Option<String>,
+    pub forced_update: bool,
+    pub commit_range: Option<String>,
+    pub pushed_tags: usize,
+}
+
+fn is_hex_range_token(s: &str) -> bool {
+    let Some((a, b)) = s.split_once("...") .or_else(|| s.split_once("..")) else {
+        return false;
+    };
+    !a.is_empty()
+        && !b.is_empty()
+        && a.bytes().all(|c| c.is_ascii_hexdigit())
+        && b.bytes().all(|c| c.is_ascii_hexdigit())
+}
+
+/// Parses `git push --porcelain` stdout lines into a [`PushOutcomeSummary`].
+///
+/// Format: `<flag>\t<from>:<to>\t<summary> [(<reason>)]`
+pub fn parse_push_porcelain(stdout: &[String]) -> PushOutcomeSummary {
+    let mut out = PushOutcomeSummary::default();
+    for raw in stdout {
+        let line = raw.trim_end_matches('\r');
+        let mut parts = line.splitn(3, '\t');
+        let Some(flag_str) = parts.next() else {
+            continue;
+        };
+        let Some(refspec) = parts.next() else {
+            continue;
+        };
+        let Some(summary_raw) = parts.next() else {
+            continue;
+        };
+        let mut chars = flag_str.chars();
+        let Some(flag) = chars.next() else {
+            continue;
+        };
+        if chars.next().is_some() || !matches!(flag, ' ' | '+' | '-' | '*' | '!' | '=') {
+            continue;
+        }
+        let Some((_from, to)) = refspec.split_once(':') else {
+            continue;
+        };
+        let summary = summary_raw.trim();
+        let summary_head = summary.split(" (").next().unwrap_or(summary).trim();
+        if to.starts_with("refs/tags/") || summary.contains("[new tag]") {
+            if matches!(flag, '*' | ' ' | '+') {
+                out.pushed_tags += 1;
+            }
+        } else if to.starts_with("refs/heads/") || summary.contains("[new branch]") {
+            match flag {
+                '*' => {
+                    out.new_branch =
+                        Some(to.strip_prefix("refs/heads/").unwrap_or(to).to_string());
+                }
+                '=' => {
+                    out.branch_up_to_date = true;
+                }
+                '+' => {
+                    out.forced_update = true;
+                    if is_hex_range_token(summary_head) {
+                        out.commit_range = Some(summary_head.to_string());
+                    }
+                }
+                ' ' if is_hex_range_token(summary_head) => {
+                    out.commit_range = Some(summary_head.to_string());
+                }
+                _ => {}
+            }
+        }
+    }
+    out
 }

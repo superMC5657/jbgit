@@ -13,6 +13,7 @@ pub mod log_branches;
 pub mod log_details;
 pub mod overlays;
 pub mod palette_preview;
+pub mod push_dialog;
 pub mod stash;
 
 use jbgit_core::{PaneId, SplitAxis, SplitterId, WorkspaceTab};

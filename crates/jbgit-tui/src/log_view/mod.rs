@@ -8,6 +8,7 @@ mod details_pane;
 mod file_history;
 mod filter_bar;
 mod presentation;
+mod push_dialog;
 mod workbench;
 
 pub use annotate::{AnnotateError, AnnotateFocus, AnnotateNavFrame, AnnotateState};
@@ -22,6 +23,7 @@ pub use filter_bar::{
 pub use presentation::{
     LogPresentation, PresentationToggle, format_absolute_time, format_relative_time,
 };
+pub use push_dialog::{PushDialogFocus, PushDialogState};
 pub use workbench::{LogDispatchCtx, LogReconcileCtx, LogWorkbench};
 
 #[cfg(test)]

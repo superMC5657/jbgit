@@ -28,11 +28,11 @@ pub use details::{
     BlameBundle, BlameCommit, BlameKey, BlameLine, BlameOptions, ChangeRowKind, ChangeTreeRow,
     CommitChangesBundle, CommitDetails, DetailsKey, DetailsMode, DiffContext, DiffHunk, DiffLine,
     DiffLineKind, EAGER_WORD_DIFF_PAIR_BUDGET, FileChange, FileDiff, FileDiffKey,
-    FileHistoryBundle, FileHistoryEntry, FileHistoryKey, MAX_DIFF_FILE_BYTES,
-    MAX_SELECTION_HISTORY_LINES, MAX_WORD_DIFF_LINE_BYTES, MessageLineKind, PersonStamp,
-    SideBySideRow, SignatureStatus, apply_word_diff, apply_word_diff_with_budget,
-    build_change_rows, classify_message_line, issue_ref_ranges, parse_unified_patch_hunks,
-    side_by_side_rows, word_diff,
+    FileHistoryBundle, FileHistoryEntry, FileHistoryKey, MAX_DIFF_FILE_BYTES, MAX_OUTGOING_COMMITS,
+    MAX_SELECTION_HISTORY_LINES, MAX_WORD_DIFF_LINE_BYTES, MessageLineKind, OutgoingBundle,
+    OutgoingKey, PersonStamp, SideBySideRow, SignatureStatus, apply_word_diff,
+    apply_word_diff_with_budget, build_change_rows, classify_message_line, issue_ref_ranges,
+    parse_unified_patch_hunks, side_by_side_rows, word_diff,
 };
 pub use epoch::{EpochToken, RequestEpoch, RequestSlot, RequestSlotId, RequestSlotTable, SlotRegistry};
 pub use filter::{
@@ -40,10 +40,11 @@ pub use filter::{
     TextMatcher, UserFilter, UserMatcher, glob_match,
 };
 pub use git_ops::{
-    GitFailure, GitOp, GitOpOutcome, OngoingKind, OngoingStep, PatchSource, RefNameError,
-    ResetMode, RewritePlan, StashEntry, TodoAction, TodoEntry, classify_failure,
-    default_squash_messages, fuzzy_indices, is_protected_branch, parse_recent_checkouts,
-    render_todo, short_rev, validate_ref_name, validate_ref_name_typed,
+    GitFailure, GitOp, GitOpOutcome, OngoingKind, OngoingStep, PatchSource, PushForce,
+    PushOutcomeSummary, PushTagMode, RefNameError, ResetMode, RewritePlan, StashEntry, TodoAction,
+    TodoEntry, classify_failure, default_squash_messages, fuzzy_indices, is_protected_branch,
+    matches_protected_branch_patterns, parse_push_porcelain, parse_recent_checkouts, render_todo,
+    short_rev, validate_ref_name, validate_ref_name_typed,
 };
 pub use key_token::{KeyToken, KeyTokenError, KeyTokenKind, parse_key_token};
 pub use lru::LruCache;

@@ -230,7 +230,8 @@ fn render_choice(
     } else {
         d.options.len()
     };
-    let h = (body.len() + opt_rows + 5) as u16;
+    let cb_rows = if d.checkbox.is_some() { 2 } else { 0 };
+    let h = (body.len() + opt_rows + cb_rows + 5) as u16;
     let rect = centered(screen, width, h);
     let inner = frame_block(frame, screen, ctx, rect, &d.title, d.danger, z);
     let mut y = inner.y;
@@ -248,6 +249,25 @@ fn render_choice(
         y += 1;
     }
     y += 1;
+    if let Some(cb) = &d.checkbox
+        && y < inner.bottom().saturating_sub(2)
+    {
+        let cb_rect = Rect::new(inner.x, y, inner.width, 1);
+        frame.render_widget(
+            Paragraph::new(Span::styled(
+                format!(
+                    " [{}] {}   (Space)",
+                    if cb.checked { "x" } else { " " },
+                    truncate_to_width(&cb.label, inner_w.saturating_sub(15))
+                ),
+                Style::default().fg(ctx.theme.fg_primary),
+            )),
+            cb_rect,
+        );
+        ctx.hit_registry
+            .register(cb_rect, z + 2, HitTarget::DialogCheckbox);
+        y += 2;
+    }
     if d.radio {
         for (i, o) in d.options.iter().enumerate() {
             if y + 1 >= inner.bottom() {

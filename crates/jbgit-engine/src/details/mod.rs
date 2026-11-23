@@ -6,7 +6,9 @@ mod blame;
 mod commit_changes;
 mod file_diff;
 mod file_history;
+mod outgoing;
 mod path_matches;
+mod remote_tag;
 
 use jbgit_core::{Oid, PersonStamp};
 
@@ -20,7 +22,11 @@ pub(crate) use file_diff::load_file_diff_with_oids_sync;
 pub(crate) use file_history::load_file_history_sync;
 #[cfg(test)]
 pub(crate) use file_history::{parse_file_history_z, parse_line_history};
+pub(crate) use outgoing::load_outgoing_sync;
 pub(crate) use path_matches::load_path_matches_sync;
+pub(crate) use remote_tag::check_remote_tag_async;
+#[cfg(test)]
+pub(crate) use remote_tag::parse_ls_remote_tag_exists;
 
 pub(super) fn to_git2_oid(oid: &Oid) -> Result<git2::Oid, EngineError> {
     git2::Oid::from_bytes(oid.as_bytes()).map_err(EngineError::from)
@@ -280,5 +286,16 @@ mod tests {
         assert_eq!(entries[2].old_path.as_deref(), Some("old name.rs"));
         assert_eq!(entries[2].path_at_commit, "dir with space/中文 文件.rs");
         assert_eq!((entries[2].additions, entries[2].deletions), (1, 1));
+    }
+
+    #[test]
+    fn parse_ls_remote_tag_exists_matches_lightweight_and_annotated() {
+        let out = b"1111111111111111111111111111111111111111\trefs/tags/v1.0\n\
+2222222222222222222222222222222222222222\trefs/tags/v2.0\n\
+3333333333333333333333333333333333333333\trefs/tags/v2.0^{}\n";
+        assert!(parse_ls_remote_tag_exists(out, "v1.0"));
+        assert!(parse_ls_remote_tag_exists(out, "v2.0"));
+        assert!(!parse_ls_remote_tag_exists(out, "v1.0.0"));
+        assert!(!parse_ls_remote_tag_exists(b"", "v1.0"));
     }
 }

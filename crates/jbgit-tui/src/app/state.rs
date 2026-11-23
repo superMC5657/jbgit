@@ -13,7 +13,9 @@ use rustc_hash::FxHashMap;
 use crate::console_workbench::ConsoleWorkbench;
 use crate::diff_session::DiffCacheStore;
 use crate::hit_test::{HitTarget, HitTestRegistry};
-use crate::log_view::{AnnotateState, FILE_HISTORY_G_WINDOW, FileHistoryState, LogWorkbench};
+use crate::log_view::{
+    AnnotateState, FILE_HISTORY_G_WINDOW, FileHistoryState, LogWorkbench, PushDialogState,
+};
 use crate::stage_view::CommitWorkbench;
 use crate::stash_view::StashWorkbench;
 use crate::theme::{BranchColorManager, GlyphMode, ThemePalette};
@@ -70,6 +72,8 @@ pub struct AppState {
     pub(crate) menu_hover: Option<MenuHover>,
     /// Number of Git write operations in flight.
     pub(crate) git_ops_running: usize,
+    /// Outgoing commit count visible when the user confirmed the last Push dialog.
+    pub(crate) last_push_expected_commits: Option<usize>,
     pub(crate) pending_keys: Vec<crossterm::event::KeyEvent>,
     pub(crate) pending_key_at: Option<std::time::Instant>,
     /// Virtual monotonic clock injected by [`crate::session::TuiSession`]
@@ -169,6 +173,7 @@ impl AppState {
             notification: None,
             menu_hover: None,
             git_ops_running: 0,
+            last_push_expected_commits: None,
             stash,
             config,
             i18n,
@@ -283,6 +288,23 @@ impl AppState {
                     ann.diff.scroll.scroll_by(delta, fallback);
                 }
             }
+            ScrollPane::PushDiff => {
+                let fallback = self
+                    .modal_stack
+                    .push_dialog()
+                    .and_then(|pd| pd.desired_diff_key(&self.diff_caches))
+                    .and_then(|key| self.diff_caches.peek_diff(&key))
+                    .map_or(usize::MAX, |d| {
+                        d.hunks
+                            .iter()
+                            .map(|h| h.lines.len() + 1)
+                            .sum::<usize>()
+                            .saturating_sub(1)
+                    });
+                if let Some(pd) = self.modal_stack.push_dialog_mut() {
+                    pd.diff.scroll.scroll_by(delta, fallback);
+                }
+            }
             ScrollPane::ConflictMerge => {
                 if let Some(cm) = self.modal_stack.conflict_merge_mut() {
                     let fallback = cm
@@ -334,6 +356,11 @@ impl AppState {
                         ann.diff.scroll.bind_bound(viewport_h, max_scroll);
                     }
                 }
+                ScrollPane::PushDiff => {
+                    if let Some(pd) = self.modal_stack.push_dialog_mut() {
+                        pd.diff.scroll.bind_bound(viewport_h, max_scroll);
+                    }
+                }
                 ScrollPane::ConflictMerge => {
                     if let Some(cm) = self.modal_stack.conflict_merge_mut() {
                         cm.scroll.bind_bound(viewport_h, max_scroll);
@@ -353,6 +380,7 @@ impl AppState {
             || self.git_ops_running > 0
             || self.modal_stack.file_history().is_some_and(|fh| fh.loading)
             || self.modal_stack.annotate().is_some_and(|ann| ann.loading)
+            || self.modal_stack.push_dialog().is_some_and(|pd| pd.loading)
             || self.console.has_running()
     }
 
@@ -370,6 +398,9 @@ impl AppState {
             self.modal_stack
                 .annotate()
                 .and_then(AnnotateState::next_deadline),
+            self.modal_stack
+                .push_dialog()
+                .and_then(PushDialogState::next_deadline),
             self.menu_hover.map(|h| h.due),
             chord,
         ]
@@ -485,6 +516,40 @@ impl AppState {
                 }
             } else {
                 ann.diff.pending = Some((key, at));
+            }
+        }
+        if let Some(pd) = self.modal_stack.push_dialog_mut()
+            && let Some((key, at)) = pd.details_pending.take()
+        {
+            if at <= now {
+                if !self.diff_caches.details.contains(&key)
+                    && pd.details_requested.as_ref() != Some(&key)
+                {
+                    pd.details_requested = Some(key.clone());
+                    effects.push(Effect::RequestCommitDetails {
+                        slot: RequestSlotId::PushCommitDetails,
+                        key,
+                    });
+                }
+            } else {
+                pd.details_pending = Some((key, at));
+            }
+        }
+        if let Some(pd) = self.modal_stack.push_dialog_mut()
+            && let Some((key, at)) = pd.diff.pending.take()
+        {
+            if at <= now {
+                if !self.diff_caches.diffs.contains(&key)
+                    && pd.diff.requested.as_ref() != Some(&key)
+                {
+                    pd.diff.requested = Some(key.clone());
+                    effects.push(Effect::RequestFileDiff {
+                        slot: RequestSlotId::PushFileDiff,
+                        key,
+                    });
+                }
+            } else {
+                pd.diff.pending = Some((key, at));
             }
         }
     }

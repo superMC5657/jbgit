@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use rustc_hash::FxHashSet;
 
-use crate::{FileStatusKind, Oid};
+use crate::{CommitSummary, FileStatusKind, Oid};
 
 /// What a [`DetailsKey`] represents.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
@@ -197,6 +197,28 @@ pub struct FileHistoryBundle {
     pub key: FileHistoryKey,
     pub entries: Vec<FileHistoryEntry>,
     /// True when the result hit the max entry limit (e.g. 500).
+    pub truncated: bool,
+}
+
+/// Maximum number of commits loaded into the Push outgoing preview list.
+pub const MAX_OUTGOING_COMMITS: usize = 1_000;
+
+/// Identity of an outgoing-commits query (`remote/remote_branch..branch`).
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct OutgoingKey {
+    pub branch: String,
+    pub remote: String,
+    pub remote_branch: String,
+    pub up_to: Option<Oid>,
+}
+
+/// Commits and net changed-file count pending push for [`OutgoingKey`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OutgoingBundle {
+    pub key: OutgoingKey,
+    pub commits: Vec<CommitSummary>,
+    pub files_changed: usize,
+    pub remote_exists: bool,
     pub truncated: bool,
 }
 

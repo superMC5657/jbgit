@@ -5,8 +5,9 @@
 use std::collections::HashSet;
 
 use jbgit_core::{
-    GitFailure, GitOp, GitOpOutcome, Oid, OngoingKind, PaneId, RefKind, RepoSnapshot, RewritePlan,
-    StageNodeKind, StageTreeRowKind, WorkspaceTab, is_protected_branch,
+    GitFailure, GitOp, GitOpOutcome, Oid, OngoingKind, PaneId, PushForce, RefKind, RepoSnapshot,
+    RewritePlan, StageNodeKind, StageTreeRowKind, WorkspaceTab, is_protected_branch,
+    matches_protected_branch_patterns, parse_push_porcelain,
 };
 
 use crate::app::{
@@ -14,8 +15,10 @@ use crate::app::{
 };
 use crate::branches_popup::first_selectable_row;
 use crate::dialogs::{
-    ChoiceDialog, ChoiceOption, Dialog, InputDialog, InputIntent, InputValidation,
+    ChoiceDialog, ChoiceOption, DeleteTagRemoteProbe, Dialog, InputDialog, InputIntent,
+    InputValidation,
 };
+use crate::log_view::PushDialogState;
 
 impl AppState {
     pub(crate) fn snapshot(&self) -> Option<&RepoSnapshot> {
@@ -299,7 +302,8 @@ impl AppState {
                 }
             }
             Action::PromptDeleteBranch { name } => self.prompt_delete_branch(name, effects),
-            Action::PromptPush { branch, up_to } => self.prompt_push(branch, *up_to),
+            Action::PromptDeleteTag { name } => self.prompt_delete_tag(name, effects),
+            Action::PromptPush { branch, up_to } => self.prompt_push(branch, *up_to, effects),
             Action::UncommitHead => {
                 self.set_focus(WorkspaceTab::Commit, PaneId::CommitMessageEditor);
                 self.status_notice = Some(self.i18n.t("toast.uncommitting_head").into());
@@ -534,69 +538,97 @@ impl AppState {
         )));
     }
 
-    pub(crate) fn default_remote(&self) -> String {
+    pub(crate) fn available_remotes(&self) -> Vec<String> {
         self.snapshot()
-            .and_then(|s| {
-                s.refs
-                    .iter()
-                    .find(|r| r.kind == RefKind::RemoteBranch)
-                    .and_then(|r| r.name.split_once('/').map(|(rm, _)| rm.to_string()))
-            })
+            .map(RepoSnapshot::available_remotes)
+            .unwrap_or_default()
+    }
+
+    pub(crate) fn default_remote(&self) -> String {
+        self.available_remotes()
+            .into_iter()
+            .next()
             .unwrap_or_else(|| "origin".to_string())
     }
 
-    fn prompt_push(&mut self, branch: &str, up_to: Option<Oid>) {
+    fn prompt_delete_tag(&mut self, name: &str, effects: &mut Vec<Effect>) {
+        let Some(snap) = self.repo_snapshot.clone() else {
+            return;
+        };
+        let Some(tag_ref) = snap
+            .refs
+            .iter()
+            .find(|r| r.kind == RefKind::Tag && r.name == name)
+        else {
+            self.status_notice = Some(self.i18n.t_fmt("toast.tag_not_found", &[("name", name)]));
+            return;
+        };
+        let tip = tag_ref.target_oid;
+        let i18n = self.i18n.clone();
+        let short = tip.short();
+        let mut dlg = ChoiceDialog::confirm(
+            i18n.t("dialog.delete_tag.title"),
+            vec![i18n.t_fmt(
+                "dialog.delete_tag.body",
+                &[("name", name), ("short", &short)],
+            )],
+            i18n.t("dialog.delete_tag.confirm_btn"),
+            i18n.cancel(),
+            vec![Action::RunGitOp(GitOp::DeleteTag {
+                name: name.to_string(),
+                tip,
+            })],
+        );
+        if let Some(remote) = self.available_remotes().into_iter().next() {
+            dlg.remote_tag_probe = Some(DeleteTagRemoteProbe {
+                name: name.to_string(),
+                tip,
+                remote: remote.clone(),
+            });
+            effects.push(Effect::CheckRemoteTag {
+                remote,
+                tag: name.to_string(),
+            });
+        }
+        self.push_dialog(Dialog::Choice(dlg));
+    }
+
+    fn prompt_push(&mut self, branch: &str, up_to: Option<Oid>, effects: &mut Vec<Effect>) {
         let Some(snap) = self.repo_snapshot.clone() else {
             return;
         };
         let local = snap.local_branch(branch);
         let upstream = local.and_then(|l| l.upstream.clone());
-        let remote = upstream
+        let mut remotes = snap.available_remotes();
+        let preferred_remote = upstream
             .as_ref()
             .and_then(|u| u.split_once('/').map(|(r, _)| r.to_string()))
             .unwrap_or_else(|| self.default_remote());
-        let set_upstream = upstream.is_none();
-        let i18n = self.i18n.clone();
-        let mut body = Vec::new();
-        match (up_to, local.and_then(|l| l.ahead_behind)) {
-            (Some(oid), _) => {
-                let oid_s = oid.short();
-                body.push(i18n.t_fmt("dialog.push.up_to_body", &[("branch", branch), ("oid", &oid_s)]));
-            }
-            (None, Some((ahead, behind))) => {
-                let ahead_s = ahead.to_string();
-                body.push(i18n.t_fmt(
-                    "dialog.push.normal_body",
-                    &[("ahead", &ahead_s), ("remote", &remote), ("branch", branch)],
-                ));
-                if behind > 0 {
-                    let behind_s = behind.to_string();
-                    body.push(i18n.t_fmt("dialog.push.behind_warn", &[("behind", &behind_s)]));
-                }
-            }
-            (None, None) => body.push(i18n.t_fmt(
-                "dialog.push.new_branch_body",
-                &[("branch", branch), ("remote", &remote)],
-            )),
+        if !remotes.contains(&preferred_remote) {
+            remotes.push(preferred_remote.clone());
         }
-        let op = |force| {
-            Action::RunGitOp(GitOp::Push {
-                branch: branch.to_string(),
-                remote: remote.clone(),
-                set_upstream,
-                force_with_lease: force,
-                up_to,
-            })
-        };
-        self.push_dialog(Dialog::Choice(ChoiceDialog::buttons(
-            i18n.t_fmt("dialog.push.title", &[("branch", branch), ("remote", &remote)]),
-            body,
-            vec![
-                ChoiceOption::new(i18n.t("dialog.push.push_btn"), Some('p'), vec![op(false)]),
-                ChoiceOption::new(i18n.t("dialog.push.force_push_btn"), Some('f'), vec![op(true)]).danger(),
-                ChoiceOption::new(i18n.cancel(), Some('c'), Vec::new()),
-            ],
-        )));
+        let remote_idx = remotes
+            .iter()
+            .position(|r| r == &preferred_remote)
+            .unwrap_or(0);
+        let remote_branch = upstream
+            .as_ref()
+            .and_then(|u| u.split_once('/').map(|(_, rb)| rb.to_string()))
+            .unwrap_or_else(|| branch.to_string());
+        let set_upstream = upstream.is_none();
+        let pd = PushDialogState::new(
+            branch.to_string(),
+            remotes,
+            remote_idx,
+            remote_branch,
+            set_upstream,
+            up_to,
+            jbgit_core::DiffContext::from_lines(self.config.jbgit.diff.context_lines),
+        );
+        let key = pd.outgoing_key();
+        self.blur_active_pane(false);
+        self.modal_stack.open_push_dialog(pd);
+        effects.push(Effect::RequestOutgoing(key));
     }
 
     /// Reacts to a finished [`GitOp`]: notices, Smart Operation dialog,
@@ -627,6 +659,31 @@ impl AppState {
                             })],
                         )),
                     });
+                }
+                GitOp::DeleteTag { name, tip } => {
+                    self.notify_deleted_tag(name, *tip);
+                }
+                GitOp::Sequence(ops) => {
+                    if let Some(GitOp::DeleteTag { name, tip }) = ops.first() {
+                        self.notify_deleted_tag(name, *tip);
+                    }
+                    if let Some(GitOp::Push {
+                        branch,
+                        remote,
+                        remote_branch,
+                        ..
+                    }) = ops.last()
+                    {
+                        self.notify_push_summary(branch, remote, remote_branch, &outcome.stdout);
+                    }
+                }
+                GitOp::Push {
+                    branch,
+                    remote,
+                    remote_branch,
+                    ..
+                } => {
+                    self.notify_push_summary(branch, remote, remote_branch, &outcome.stdout);
                 }
                 GitOp::Merge { rev } => {
                     let snap = self.snapshot();
@@ -786,30 +843,147 @@ impl AppState {
                     )));
                 }
             }
+            Some(GitFailure::TagAlreadyExists) => {
+                match &op {
+                    GitOp::CreateTag {
+                        name,
+                        target,
+                        message,
+                        force: false,
+                    } => {
+                        self.push_dialog(Dialog::Choice(ChoiceDialog::confirm(
+                            i18n.t("dialog.tag_exists.title"),
+                            vec![i18n.t_fmt("dialog.tag_exists.local_body", &[("name", name)])],
+                            i18n.t("dialog.tag_exists.overwrite_btn"),
+                            i18n.cancel(),
+                            vec![Action::RunGitOp(GitOp::CreateTag {
+                                name: name.clone(),
+                                target: *target,
+                                message: message.clone(),
+                                force: true,
+                            })],
+                        )));
+                    }
+                    GitOp::PushTag {
+                        remote,
+                        name,
+                        force: false,
+                    } => {
+                        self.push_dialog(Dialog::Choice(ChoiceDialog::confirm(
+                            i18n.t("dialog.tag_exists.title"),
+                            vec![i18n.t_fmt(
+                                "dialog.tag_exists.remote_body",
+                                &[("name", name), ("remote", remote)],
+                            )],
+                            i18n.t("dialog.tag_exists.force_push_btn"),
+                            i18n.cancel(),
+                            vec![Action::RunGitOp(GitOp::PushTag {
+                                remote: remote.clone(),
+                                name: name.clone(),
+                                force: true,
+                            })],
+                        )));
+                    }
+                    _ => {
+                        self.notify_error(i18n.t_fmt("toast.op_failed", &[("label", &label)]));
+                    }
+                }
+            }
             Some(GitFailure::PushRejected) => {
                 if let GitOp::Push {
                     branch,
                     remote,
+                    remote_branch,
                     set_upstream,
+                    force,
+                    tags,
                     up_to,
-                    force_with_lease: false,
                 } = &op
                 {
-                    self.push_dialog(Dialog::Choice(ChoiceDialog::confirm(
+                    let target_branch = if remote_branch.is_empty() {
+                        branch.as_str()
+                    } else {
+                        remote_branch.as_str()
+                    };
+                    let target_ref = format!("{remote}/{target_branch}");
+                    let is_current = self
+                        .snapshot()
+                        .and_then(|s| s.head_branch.as_deref())
+                        .is_none_or(|cur| cur == branch);
+                    let is_protected = matches_protected_branch_patterns(
+                        target_branch,
+                        &self.config.jbgit.push.protected_branches,
+                    );
+                    let retry_push = GitOp::Push {
+                        branch: branch.clone(),
+                        remote: remote.clone(),
+                        remote_branch: target_branch.to_string(),
+                        set_upstream: *set_upstream,
+                        force: *force,
+                        tags: *tags,
+                        up_to: *up_to,
+                    };
+                    let mut options = Vec::new();
+                    if is_current {
+                        options.push(ChoiceOption::new(
+                            i18n.t("dialog.push.merge_retry_btn"),
+                            Some('m'),
+                            vec![Action::RunGitOp(GitOp::Sequence(vec![
+                                GitOp::Fetch,
+                                GitOp::Merge {
+                                    rev: target_ref.clone(),
+                                },
+                                retry_push.clone(),
+                            ]))],
+                        ));
+                    }
+                    options.push(ChoiceOption::new(
+                        i18n.t("dialog.push.rebase_retry_btn"),
+                        Some('r'),
+                        vec![Action::RunGitOp(GitOp::Sequence(vec![
+                            GitOp::Fetch,
+                            GitOp::Rebase {
+                                onto: target_ref.clone(),
+                                branch: (!is_current).then(|| branch.clone()),
+                            },
+                            retry_push,
+                        ]))],
+                    ));
+                    if !force.is_force() && !is_protected {
+                        options.push(
+                            ChoiceOption::new(
+                                i18n.t("dialog.push.force_push_btn"),
+                                Some('f'),
+                                vec![Action::RunGitOp(GitOp::Push {
+                                    branch: branch.clone(),
+                                    remote: remote.clone(),
+                                    remote_branch: target_branch.to_string(),
+                                    set_upstream: *set_upstream,
+                                    force: PushForce::WithLease,
+                                    tags: *tags,
+                                    up_to: *up_to,
+                                })],
+                            )
+                            .danger(),
+                        );
+                    }
+                    options.push(ChoiceOption::new(i18n.cancel(), Some('c'), Vec::new()));
+                    let mut body = vec![i18n.t_fmt(
+                        "dialog.push.rejected_body",
+                        &[("remote", remote), ("branch", target_branch)],
+                    )];
+                    if is_protected {
+                        body.push(i18n.t_fmt(
+                            "dialog.push_full.protected_force_blocked",
+                            &[("branch", target_branch)],
+                        ));
+                    } else {
+                        body.push(i18n.t("dialog.push.rejected_hint").into());
+                    }
+                    self.push_dialog(Dialog::Choice(ChoiceDialog::buttons(
                         i18n.t("dialog.push.rejected_title"),
-                        vec![
-                            i18n.t_fmt("dialog.push.rejected_body", &[("remote", remote), ("branch", branch)]),
-                            i18n.t("dialog.push.rejected_hint").into(),
-                        ],
-                        i18n.t("dialog.push.force_push_btn"),
-                        i18n.cancel(),
-                        vec![Action::RunGitOp(GitOp::Push {
-                            branch: branch.clone(),
-                            remote: remote.clone(),
-                            set_upstream: *set_upstream,
-                            force_with_lease: true,
-                            up_to: *up_to,
-                        })],
+                        body,
+                        options,
                     )));
                 } else {
                     self.notify_error(i18n.t_fmt("toast.push_rejected_notice", &[("label", &label)]));
@@ -826,6 +1000,99 @@ impl AppState {
             }
             None => self.notify_error(i18n.t_fmt("toast.op_failed", &[("label", &label)])),
         }
+    }
+
+    fn notify_deleted_tag(&mut self, name: &str, tip: Oid) {
+        let short_s = tip.short();
+        self.notification = Some(Notification {
+            text: self
+                .i18n
+                .t_fmt("toast.deleted_tag", &[("name", name), ("short", &short_s)]),
+            is_error: false,
+            action: Some((
+                self.i18n.t("toast.restore_tag_btn").into(),
+                vec![Action::RunGitOp(GitOp::RestoreTag {
+                    name: name.to_string(),
+                    oid: tip,
+                })],
+            )),
+        });
+    }
+
+    fn notify_push_summary(
+        &mut self,
+        branch: &str,
+        remote: &str,
+        remote_branch: &str,
+        stdout: &[String],
+    ) {
+        let expected_commits = self.last_push_expected_commits.take();
+        let parsed = parse_push_porcelain(stdout);
+        let target_branch = if remote_branch.is_empty() {
+            branch
+        } else {
+            remote_branch
+        };
+        let target = format!("{remote}/{target_branch}");
+
+        let range_commits = parsed.commit_range.as_deref().and_then(|r| {
+            let (old_hex, new_hex) = r.split_once("...").or_else(|| r.split_once(".."))?;
+            let snap = self.snapshot()?;
+            let old_oid = snap.resolve_revision(old_hex)?;
+            let new_oid = snap.resolve_revision(new_hex)?;
+            Some(snap.count_exclusive(new_oid, old_oid))
+        });
+
+        let mut parts = Vec::new();
+        if let Some(new_b) = &parsed.new_branch {
+            let full_new = format!("{remote}/{new_b}");
+            parts.push(
+                self.i18n
+                    .t_fmt("toast.push_summary.new_branch", &[("target", &full_new)]),
+            );
+            if let Some(count) = expected_commits.filter(|&n| n > 0) {
+                let c_s = count.to_string();
+                parts.push(
+                    self.i18n
+                        .t_fmt("toast.push_summary.commits", &[("count", &c_s)]),
+                );
+            }
+        } else if parsed.branch_up_to_date {
+            parts.push(
+                self.i18n
+                    .t_fmt("toast.push_summary.up_to_date", &[("target", &target)]),
+            );
+        } else if let Some(count) = range_commits.or(expected_commits) {
+            let c_s = count.to_string();
+            let commits_part = self
+                .i18n
+                .t_fmt("toast.push_summary.commits", &[("count", &c_s)]);
+            parts.push(self.i18n.t_fmt(
+                "toast.push_summary.pushed_to",
+                &[("commits", &commits_part), ("target", &target)],
+            ));
+        } else {
+            parts.push(self.i18n.t_fmt(
+                "toast.push_summary.pushed_branch",
+                &[("branch", branch), ("target", &target)],
+            ));
+        }
+
+        if parsed.pushed_tags > 0 {
+            let t_s = parsed.pushed_tags.to_string();
+            parts.push(
+                self.i18n
+                    .t_fmt("toast.push_summary.tags", &[("count", &t_s)]),
+            );
+        }
+
+        let summary = parts.join(" · ");
+        self.status_notice = Some(summary.clone());
+        self.notification = Some(Notification {
+            text: summary,
+            is_error: false,
+            action: None,
+        });
     }
 
     fn notify_error(&mut self, text: String) {

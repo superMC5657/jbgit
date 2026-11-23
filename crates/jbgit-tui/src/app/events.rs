@@ -1,9 +1,9 @@
 use std::sync::Arc;
 
-use jbgit_core::{RequestSlotId, WorkspaceTab};
+use jbgit_core::{GitOp, RequestSlotId, WorkspaceTab};
 use jbgit_engine::{BlameFailureKind, EngineEvent};
 
-use crate::dialogs::{ChoiceDialog, Dialog};
+use crate::dialogs::{ChoiceCheckbox, ChoiceDialog, Dialog};
 use crate::log_view::{AnnotateError, PathMatches};
 
 use super::{Action, AppState, Effect, ModalLayer, SyntaxJobKey, UiAsyncEvent};
@@ -180,6 +180,16 @@ impl AppState {
                 if slot == RequestSlotId::StashCommitDetails {
                     self.stash.on_details_loaded(&bundle.key);
                 }
+                if slot == RequestSlotId::PushCommitDetails
+                    && let Some(pd) = self.modal_stack.push_dialog_mut()
+                {
+                    if pd.details_requested.as_ref() == Some(&bundle.key) {
+                        pd.details_requested = None;
+                    }
+                    if pd.desired_details_key().as_ref() == Some(&bundle.key) {
+                        pd.selected_file = pd.selected_file.min(bundle.changes.len().saturating_sub(1));
+                    }
+                }
                 self.diff_caches.insert_details(bundle);
             }
             EngineEvent::CommitSignatureVerified { oid, status } => {
@@ -213,6 +223,13 @@ impl AppState {
                             ann.diff.requested = None;
                         }
                     }
+                    RequestSlotId::PushFileDiff => {
+                        if let Some(pd) = self.modal_stack.push_dialog_mut()
+                            && pd.diff.requested.as_ref() == Some(&diff.key)
+                        {
+                            pd.diff.requested = None;
+                        }
+                    }
                     _ => {}
                 }
                 let log_wants = self.log.details.diff_visible()
@@ -233,7 +250,13 @@ impl AppState {
                     .and_then(|ann| ann.desired_diff_key(head_oid))
                     .as_ref()
                     == Some(&diff.key);
-                let is_wanted = log_wants || stash_wants || fh_wants || ann_wants;
+                let push_wants = self
+                    .modal_stack
+                    .push_dialog()
+                    .and_then(|pd| pd.desired_diff_key(&self.diff_caches))
+                    .as_ref()
+                    == Some(&diff.key);
+                let is_wanted = log_wants || stash_wants || fh_wants || ann_wants || push_wants;
                 self.diff_caches.insert_diff(Arc::clone(&diff));
                 if is_wanted && self.diff_caches.peek_syntax(&diff.key).is_none() {
                     self.schedule_file_syntax(diff, &mut effects);
@@ -349,6 +372,68 @@ impl AppState {
                         BlameFailureKind::Binary => AnnotateError::Binary,
                         BlameFailureKind::Other => AnnotateError::Message(message),
                     });
+                }
+            }
+            EngineEvent::RemoteTagChecked {
+                remote,
+                tag,
+                exists,
+                epoch,
+            } => {
+                if !self
+                    .request_slots
+                    .accept(RequestSlotId::RemoteTagCheck, epoch)
+                {
+                    return effects;
+                }
+                if exists == Some(true)
+                    && let Some(ModalLayer::Dialog(dlg)) = self.modal_stack.last_mut()
+                    && let Dialog::Choice(choice) = dlg.as_mut()
+                    && let Some(probe) = choice.remote_tag_probe.clone()
+                    && probe.remote == remote
+                    && probe.name == tag
+                {
+                    choice.checkbox = Some(ChoiceCheckbox {
+                        label: self
+                            .i18n
+                            .t_fmt("dialog.delete_tag.also_remote", &[("remote", &remote)]),
+                        checked: false,
+                        checked_actions: vec![Action::RunGitOp(GitOp::Sequence(vec![
+                            GitOp::DeleteTag {
+                                name: probe.name.clone(),
+                                tip: probe.tip,
+                            },
+                            GitOp::DeleteRemoteTag {
+                                remote: probe.remote,
+                                name: probe.name,
+                            },
+                        ]))],
+                    });
+                }
+            }
+            EngineEvent::OutgoingLoaded { bundle, epoch } => {
+                if !self
+                    .request_slots
+                    .accept(RequestSlotId::PushOutgoing, epoch)
+                {
+                    return effects;
+                }
+                if let Some(pd) = self.modal_stack.push_dialog_mut()
+                    && pd.outgoing_key() == bundle.key
+                {
+                    pd.loading = false;
+                    pd.error = None;
+                    pd.outgoing = Some(bundle);
+                    pd.selected_commit = 0;
+                    pd.commit_scroll = 0;
+                    pd.selected_file = 0;
+                    pd.file_scroll = 0;
+                    pd.show_diff = false;
+                    pd.details_requested = None;
+                    pd.details_pending = None;
+                    pd.diff.requested = None;
+                    pd.diff.pending = None;
+                    pd.diff.scroll.reset();
                 }
             }
             EngineEvent::PathMatchesLoaded {
@@ -474,6 +559,14 @@ impl AppState {
                     ann.diff.requested = None;
                     if ann.bundle.is_none() && ann.error.is_none() {
                         ann.error = Some(AnnotateError::Message(msg.clone()));
+                    }
+                }
+                if let Some(pd) = self.modal_stack.push_dialog_mut() {
+                    pd.loading = false;
+                    pd.details_requested = None;
+                    pd.diff.requested = None;
+                    if pd.outgoing.is_none() && pd.error.is_none() {
+                        pd.error = Some(msg.clone());
                     }
                 }
                 self.status_notice = Some(self.i18n.t_fmt("toast.engine_error", &[("msg", &msg)]));

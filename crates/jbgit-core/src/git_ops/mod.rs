@@ -8,17 +8,22 @@ mod outcome;
 mod rebase;
 mod refs;
 
-pub use ops::{GitOp, OngoingKind, OngoingStep, PatchSource, ResetMode, short_rev};
-pub use outcome::{GitFailure, GitOpOutcome, StashEntry, classify_failure};
+pub use ops::{
+    GitOp, OngoingKind, OngoingStep, PatchSource, PushForce, PushTagMode, ResetMode, short_rev,
+};
+pub use outcome::{
+    GitFailure, GitOpOutcome, PushOutcomeSummary, StashEntry, classify_failure,
+    parse_push_porcelain,
+};
 pub use rebase::{RewritePlan, TodoAction, TodoEntry, default_squash_messages, render_todo};
 pub use refs::{
-    RefNameError, fuzzy_indices, is_protected_branch, parse_recent_checkouts, validate_ref_name,
-    validate_ref_name_typed,
+    RefNameError, fuzzy_indices, is_protected_branch, matches_protected_branch_patterns,
+    parse_recent_checkouts, validate_ref_name, validate_ref_name_typed,
 };
 
 #[cfg(test)]
 mod tests {
-    use crate::Oid;
+    use crate::{Oid, RefreshScope};
 
     use super::*;
 
@@ -172,5 +177,104 @@ mod tests {
             }
             .is_read_only()
         );
+    }
+
+    #[test]
+    fn tag_and_push_ops_labels_scopes_failures_and_porcelain() {
+        let del = GitOp::DeleteTag {
+            name: "v1.0".into(),
+            tip: oid(4),
+        };
+        assert_eq!(del.label(), "Delete tag 'v1.0'");
+        assert_eq!(del.refresh_scope(), RefreshScope::RefsAndGraph);
+
+        let restore = GitOp::RestoreTag {
+            name: "v1.0".into(),
+            oid: oid(4),
+        };
+        assert_eq!(restore.label(), "Restore tag 'v1.0'");
+        assert_eq!(restore.refresh_scope(), RefreshScope::RefsAndGraph);
+
+        let del_remote = GitOp::DeleteRemoteTag {
+            remote: "origin".into(),
+            name: "v1.0".into(),
+        };
+        assert_eq!(del_remote.label(), "Delete remote tag 'origin/v1.0'");
+        assert_eq!(del_remote.refresh_scope(), RefreshScope::RefsAndGraph);
+
+        let push_tag = GitOp::PushTag {
+            remote: "origin".into(),
+            name: "v1.0".into(),
+            force: false,
+        };
+        assert_eq!(push_tag.label(), "Push tag 'v1.0' to 'origin'");
+        assert_eq!(push_tag.refresh_scope(), RefreshScope::RefsAndGraph);
+
+        let push = GitOp::Push {
+            branch: "feat".into(),
+            remote: "upstream".into(),
+            remote_branch: "feat-v2".into(),
+            set_upstream: true,
+            force: PushForce::WithLease,
+            tags: PushTagMode::Follow,
+            up_to: None,
+        };
+        assert_eq!(push.label(), "Push 'feat' → 'upstream/feat-v2'");
+        assert_eq!(push.refresh_scope(), RefreshScope::RefsAndGraph);
+
+        let seq = GitOp::Sequence(vec![
+            GitOp::Fetch,
+            GitOp::Rebase {
+                onto: "origin/main".into(),
+                branch: None,
+            },
+            push.clone(),
+        ]);
+        assert!(seq.label().contains("Fetch → Rebase onto 'origin/main' → Push"));
+        assert_eq!(seq.refresh_scope(), RefreshScope::All);
+
+        assert_eq!(
+            classify_failure(&["fatal: tag 'v1.0' already exists".to_string()]),
+            GitFailure::TagAlreadyExists
+        );
+        assert_eq!(
+            classify_failure(&[
+                "To /tmp/remote.git".into(),
+                " ! [rejected]        v1.0 -> v1.0 (already exists)".into(),
+            ]),
+            GitFailure::TagAlreadyExists
+        );
+        assert_eq!(
+            classify_failure(&[
+                " ! [rejected]        main -> main (non-fast-forward)".into(),
+            ]),
+            GitFailure::PushRejected
+        );
+
+        let parsed = parse_push_porcelain(&[
+            "To /tmp/remote.git".into(),
+            "*\trefs/heads/feat:refs/heads/feat\t[new branch]".into(),
+            "*\trefs/tags/v1.0:refs/tags/v1.0\t[new tag]".into(),
+            " \trefs/tags/v1.1:refs/tags/v1.1\ta1b2c3d..e4f5a6b".into(),
+            "Done".into(),
+        ]);
+        assert_eq!(parsed.new_branch.as_deref(), Some("feat"));
+        assert_eq!(parsed.pushed_tags, 2);
+        assert!(!parsed.branch_up_to_date);
+
+        let parsed_ff = parse_push_porcelain(&[
+            " \trefs/heads/main:refs/heads/main\t0123abc..4567def".into(),
+        ]);
+        assert_eq!(parsed_ff.commit_range.as_deref(), Some("0123abc..4567def"));
+
+        let parsed_up = parse_push_porcelain(&[
+            "=\trefs/heads/main:refs/heads/main\t[up to date]".into(),
+        ]);
+        assert!(parsed_up.branch_up_to_date);
+
+        let patterns = vec!["main".into(), "release/*".into()];
+        assert!(matches_protected_branch_patterns("main", &patterns));
+        assert!(matches_protected_branch_patterns("release/1.2", &patterns));
+        assert!(!matches_protected_branch_patterns("feat/push", &patterns));
     }
 }

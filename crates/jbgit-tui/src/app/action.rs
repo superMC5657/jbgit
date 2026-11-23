@@ -8,7 +8,7 @@ use jbgit_engine::CommitRequest;
 
 use crate::dialogs::Dialog;
 use crate::hit_test::{DiffHunkActionKind, HitTarget};
-use crate::log_view::{AnnotateFocus, FileHistoryFocus, FilterField, PresentationToggle};
+use crate::log_view::{AnnotateFocus, FileHistoryFocus, FilterField, PresentationToggle, PushDialogFocus};
 
 use super::{ContextMenuItem, DragState, EditorMoveKind, MenuParent, PopupKind};
 
@@ -26,6 +26,7 @@ pub enum DiffScope {
     Stash,
     FileHistory,
     Annotate,
+    Push,
     Stage,
 }
 
@@ -299,6 +300,9 @@ pub enum Action {
     PromptDeleteBranch {
         name: String,
     },
+    PromptDeleteTag {
+        name: String,
+    },
     PromptPush {
         branch: String,
         up_to: Option<Oid>,
@@ -375,4 +379,30 @@ pub enum Action {
     AnnotateGotoLineCancel,
     AnnotateSetPendingG(Option<Instant>),
     AnnotateEscape,
+
+    // ── Push modal ──
+    PushFocusNext,
+    PushFocusPrev,
+    PushSetFocus(PushDialogFocus),
+    PushMoveCommit(isize),
+    PushSelectCommit(usize),
+    PushMoveFile(isize),
+    PushSelectFile(usize),
+    PushToggleDiff,
+    PushStartEditTarget,
+    PushEditTargetChar(char),
+    PushEditTargetBackspace,
+    PushEditTargetClear,
+    PushEditTargetMoveCompletion(isize),
+    PushEditTargetAcceptCompletion(Option<usize>),
+    PushEditTargetConfirm,
+    PushEditTargetCancel,
+    PushToggleRemotePicker,
+    PushMoveRemotePicker(isize),
+    PushSelectRemote(usize),
+    PushCycleTags,
+    PushCycleForce,
+    PushToggleSetUpstream,
+    PushConfirm,
+    PushEscape,
 }

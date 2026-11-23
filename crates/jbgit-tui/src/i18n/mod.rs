@@ -363,6 +363,16 @@ impl I18n {
                 &[("remote", remote), ("branch", branch)],
             ),
             GitOp::CreateTag { name, .. } => self.t_fmt("git_op.create_tag", &[("name", name)]),
+            GitOp::DeleteTag { name, .. } => self.t_fmt("git_op.delete_tag", &[("name", name)]),
+            GitOp::RestoreTag { name, .. } => self.t_fmt("git_op.restore_tag", &[("name", name)]),
+            GitOp::DeleteRemoteTag { remote, name } => self.t_fmt(
+                "git_op.delete_remote_tag",
+                &[("remote", remote), ("name", name)],
+            ),
+            GitOp::PushTag { remote, name, .. } => self.t_fmt(
+                "git_op.push_tag",
+                &[("remote", remote), ("name", name)],
+            ),
             GitOp::Merge { rev } => self.t_fmt("git_op.merge", &[("rev", rev)]),
             GitOp::Rebase { onto, branch } => match branch {
                 Some(b) => self.t_fmt("git_op.rebase_branch", &[("branch", b), ("onto", onto)]),
@@ -389,7 +399,27 @@ impl I18n {
                     self.t("git_op.pull").to_string()
                 }
             }
-            GitOp::Push { branch, .. } => self.t_fmt("git_op.push", &[("branch", branch)]),
+            GitOp::Push {
+                branch,
+                remote,
+                remote_branch,
+                ..
+            } => {
+                let target = if remote_branch.is_empty() {
+                    branch.as_str()
+                } else {
+                    remote_branch.as_str()
+                };
+                self.t_fmt(
+                    "git_op.push_target",
+                    &[("branch", branch), ("remote", remote), ("target", target)],
+                )
+            }
+            GitOp::Sequence(ops) => ops
+                .iter()
+                .map(|inner| self.git_op_label(inner))
+                .collect::<Vec<_>>()
+                .join(" → "),
             GitOp::UpdateBranch { branch, .. } => {
                 self.t_fmt("git_op.update_branch", &[("branch", branch)])
             }

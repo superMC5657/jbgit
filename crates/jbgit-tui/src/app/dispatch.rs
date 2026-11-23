@@ -5,7 +5,7 @@ use jbgit_core::{PaneId, RefreshScope, WorkspaceTab};
 use crate::dialogs::{ChoiceDialog, Dialog};
 use crate::log_view::{
     AnnotateFocus, AnnotateNavFrame, AnnotateState, DETAILS_DEBOUNCE, FileHistoryState,
-    LogDispatchCtx, LogReconcileCtx,
+    LogDispatchCtx, LogReconcileCtx, PushDialogFocus,
 };
 
 use super::{
@@ -178,6 +178,16 @@ impl AppState {
                             }
                         }
                     }
+                    ModalLayer::PushDialog(pd) if pd.editing_target => {
+                        let clean: String = text
+                            .chars()
+                            .filter(|c| *c != '\n' && *c != '\r' && !c.is_control())
+                            .collect();
+                        if !clean.is_empty() {
+                            pd.target_draft.push_str(&clean);
+                            pd.completion_selected = 0;
+                        }
+                    }
                     _ => {}
                 }
             }
@@ -219,11 +229,20 @@ impl AppState {
                 }
             }
             Action::DialogToggleCheckbox => {
-                if let Some(ModalLayer::Dialog(d)) = self.modal_stack.last_mut()
-                    && let crate::dialogs::Dialog::Input(i) = d.as_mut()
-                    && let Some((_, on)) = i.checkbox.as_mut()
-                {
-                    *on = !*on;
+                if let Some(ModalLayer::Dialog(d)) = self.modal_stack.last_mut() {
+                    match d.as_mut() {
+                        crate::dialogs::Dialog::Input(i) => {
+                            if let Some((_, on)) = i.checkbox.as_mut() {
+                                *on = !*on;
+                            }
+                        }
+                        crate::dialogs::Dialog::Choice(c) => {
+                            if let Some(cb) = c.checkbox.as_mut() {
+                                cb.checked = !cb.checked;
+                            }
+                        }
+                        _ => {}
+                    }
                 }
             }
             Action::PopupSetState { query, selected } => {
@@ -446,6 +465,7 @@ impl AppState {
                     }
                     || self.dispatch_file_history_action(&other, &mut effects)
                     || self.dispatch_annotate_action(&other, &mut effects)
+                    || self.dispatch_push_action(&other, &mut effects)
                     || self.dispatch_git_action(&other, &mut effects);
                 if !handled {
                     let default_remote = self.default_remote();
@@ -478,6 +498,7 @@ impl AppState {
         self.reconcile_log_requests(now, effects);
         self.reconcile_file_history_requests(now, effects);
         self.reconcile_annotate_requests(now, effects);
+        self.reconcile_push_dialog_requests(now, effects);
         self.stage_workbench.reconcile_requests(
             self.active_tab == WorkspaceTab::Commit,
             now,
@@ -1118,6 +1139,451 @@ impl AppState {
             && ann.diff.pending.as_ref().map(|(k, _)| k) != Some(&desired_key)
         {
             ann.diff.pending = Some((desired_key, now + DETAILS_DEBOUNCE));
+        }
+    }
+
+    fn dispatch_push_action(&mut self, action: &Action, effects: &mut Vec<Effect>) -> bool {
+        let snap = self.repo_snapshot.clone();
+        match action {
+            Action::PushFocusNext => {
+                if let Some(pd) = self.modal_stack.push_dialog_mut() {
+                    pd.focus = match pd.focus {
+                        PushDialogFocus::Target => PushDialogFocus::Commits,
+                        PushDialogFocus::Commits => PushDialogFocus::Files,
+                        PushDialogFocus::Files => PushDialogFocus::Target,
+                    };
+                }
+            }
+            Action::PushFocusPrev => {
+                if let Some(pd) = self.modal_stack.push_dialog_mut() {
+                    pd.focus = match pd.focus {
+                        PushDialogFocus::Target => PushDialogFocus::Files,
+                        PushDialogFocus::Commits => PushDialogFocus::Target,
+                        PushDialogFocus::Files => PushDialogFocus::Commits,
+                    };
+                }
+            }
+            Action::PushSetFocus(focus) => {
+                if let Some(pd) = self.modal_stack.push_dialog_mut() {
+                    pd.focus = *focus;
+                }
+            }
+            Action::PushMoveCommit(delta) => {
+                if let Some(pd) = self.modal_stack.push_dialog_mut() {
+                    let len = pd.visible_commits().len();
+                    if len > 0 {
+                        let next = (pd.selected_commit as isize + *delta)
+                            .clamp(0, len as isize - 1) as usize;
+                        if next != pd.selected_commit {
+                            pd.selected_commit = next;
+                            pd.selected_file = 0;
+                            pd.file_scroll = 0;
+                            pd.show_diff = false;
+                            pd.diff.scroll.reset();
+                            pd.diff.pending = None;
+                            pd.diff.requested = None;
+                        }
+                    }
+                }
+            }
+            Action::PushSelectCommit(idx) => {
+                if let Some(pd) = self.modal_stack.push_dialog_mut() {
+                    let len = pd.visible_commits().len();
+                    if len > 0 {
+                        let next = (*idx).min(len - 1);
+                        if next != pd.selected_commit {
+                            pd.selected_commit = next;
+                            pd.selected_file = 0;
+                            pd.file_scroll = 0;
+                            pd.show_diff = false;
+                            pd.diff.scroll.reset();
+                            pd.diff.pending = None;
+                            pd.diff.requested = None;
+                        }
+                    }
+                }
+            }
+            Action::PushMoveFile(delta) => {
+                if let Some(pd) = self.modal_stack.push_dialog_mut() {
+                    let len = pd.selected_file_changes(&self.diff_caches).len();
+                    if len > 0 {
+                        let next = (pd.selected_file as isize + *delta)
+                            .clamp(0, len as isize - 1) as usize;
+                        if next != pd.selected_file {
+                            pd.selected_file = next;
+                            pd.diff.scroll.reset();
+                            pd.diff.pending = None;
+                            pd.diff.requested = None;
+                        }
+                    }
+                }
+            }
+            Action::PushSelectFile(idx) => {
+                if let Some(pd) = self.modal_stack.push_dialog_mut() {
+                    let len = pd.selected_file_changes(&self.diff_caches).len();
+                    if len > 0 {
+                        let next = (*idx).min(len - 1);
+                        if next != pd.selected_file {
+                            pd.selected_file = next;
+                            pd.diff.scroll.reset();
+                            pd.diff.pending = None;
+                            pd.diff.requested = None;
+                        }
+                    }
+                }
+            }
+            Action::PushToggleDiff => {
+                if let Some(pd) = self.modal_stack.push_dialog_mut() {
+                    if pd.show_diff {
+                        pd.show_diff = false;
+                        pd.diff.pending = None;
+                        pd.diff.scroll.reset();
+                    } else if !pd.selected_file_changes(&self.diff_caches).is_empty() {
+                        pd.show_diff = true;
+                        pd.focus = PushDialogFocus::Files;
+                        pd.diff.scroll.reset();
+                    }
+                }
+            }
+            Action::DiffJumpHunk(DiffScope::Push, delta) => {
+                if let Some(pd) = self.modal_stack.push_dialog_mut() {
+                    let diff = pd
+                        .desired_diff_key(&self.diff_caches)
+                        .and_then(|k| self.diff_caches.peek_diff(&k));
+                    pd.diff.jump_hunk(*delta, diff);
+                }
+            }
+            Action::DiffToggleSideBySide(DiffScope::Push) => {
+                if let Some(pd) = self.modal_stack.push_dialog_mut() {
+                    pd.diff.toggle_side_by_side();
+                }
+            }
+            Action::DiffCycleContext(DiffScope::Push) => {
+                if let Some(pd) = self.modal_stack.push_dialog_mut() {
+                    pd.diff.cycle_context();
+                }
+            }
+            Action::DiffScroll(DiffScope::Push, delta) => {
+                self.scroll_pane(ScrollPane::PushDiff, *delta);
+            }
+            Action::PushStartEditTarget => {
+                if let Some(pd) = self.modal_stack.push_dialog_mut() {
+                    pd.editing_target = true;
+                    pd.picking_remote = false;
+                    pd.target_draft = pd.remote_branch.clone();
+                    pd.completion_selected = 0;
+                    pd.focus = PushDialogFocus::Target;
+                }
+            }
+            Action::PushEditTargetChar(ch) => {
+                if !ch.is_control()
+                    && let Some(pd) = self.modal_stack.push_dialog_mut()
+                    && pd.editing_target
+                {
+                    pd.target_draft.push(*ch);
+                    pd.completion_selected = 0;
+                }
+            }
+            Action::PushEditTargetBackspace => {
+                if let Some(pd) = self.modal_stack.push_dialog_mut()
+                    && pd.editing_target
+                {
+                    pd.target_draft.pop();
+                    pd.completion_selected = 0;
+                }
+            }
+            Action::PushEditTargetClear => {
+                if let Some(pd) = self.modal_stack.push_dialog_mut()
+                    && pd.editing_target
+                {
+                    pd.target_draft.clear();
+                    pd.completion_selected = 0;
+                }
+            }
+            Action::PushEditTargetMoveCompletion(delta) => {
+                if let Some(pd) = self.modal_stack.push_dialog_mut()
+                    && pd.editing_target
+                {
+                    let len = pd.completion_candidates(snap.as_deref()).len();
+                    if len > 0 {
+                        pd.completion_selected =
+                            (pd.completion_selected as isize + *delta).rem_euclid(len as isize)
+                                as usize;
+                    }
+                }
+            }
+            Action::PushEditTargetAcceptCompletion(opt_idx) => {
+                if let Some(pd) = self.modal_stack.push_dialog_mut()
+                    && pd.editing_target
+                {
+                    let cands = pd.completion_candidates(snap.as_deref());
+                    let idx = opt_idx.unwrap_or(pd.completion_selected);
+                    if let Some(choice) = cands.get(idx) {
+                        pd.target_draft = choice.clone();
+                        pd.completion_selected = 0;
+                    }
+                }
+            }
+            Action::PushEditTargetConfirm => {
+                enum EditOutcome {
+                    Err(String),
+                    Reload(jbgit_core::OutgoingKey),
+                    Same,
+                }
+                let outcome = if let Some(pd) = self.modal_stack.push_dialog_mut()
+                    && pd.editing_target
+                {
+                    if let Some(err) = pd.target_validation_error(&self.i18n) {
+                        Some(EditOutcome::Err(err))
+                    } else {
+                        let next_branch = pd.target_draft.trim().to_string();
+                        pd.editing_target = false;
+                        pd.completion_selected = 0;
+                        if next_branch != pd.remote_branch {
+                            pd.remote_branch = next_branch;
+                            pd.loading = true;
+                            pd.error = None;
+                            pd.outgoing = None;
+                            pd.selected_commit = 0;
+                            pd.commit_scroll = 0;
+                            pd.selected_file = 0;
+                            pd.file_scroll = 0;
+                            pd.show_diff = false;
+                            pd.details_requested = None;
+                            pd.details_pending = None;
+                            pd.diff.requested = None;
+                            pd.diff.pending = None;
+                            Some(EditOutcome::Reload(pd.outgoing_key()))
+                        } else {
+                            Some(EditOutcome::Same)
+                        }
+                    }
+                } else {
+                    None
+                };
+                match outcome {
+                    Some(EditOutcome::Err(err)) => {
+                        self.status_notice = Some(err);
+                    }
+                    Some(EditOutcome::Reload(key)) => {
+                        effects.push(Effect::RequestOutgoing(key));
+                    }
+                    _ => {}
+                }
+            }
+            Action::PushEditTargetCancel => {
+                if let Some(pd) = self.modal_stack.push_dialog_mut() {
+                    pd.editing_target = false;
+                    pd.target_draft.clear();
+                    pd.completion_selected = 0;
+                }
+            }
+            Action::PushToggleRemotePicker => {
+                if let Some(pd) = self.modal_stack.push_dialog_mut() {
+                    if pd.remotes.len() > 1 {
+                        pd.picking_remote = !pd.picking_remote;
+                        pd.editing_target = false;
+                        pd.focus = PushDialogFocus::Target;
+                    } else {
+                        pd.picking_remote = false;
+                    }
+                }
+            }
+            Action::PushMoveRemotePicker(delta) => {
+                let key = if let Some(pd) = self.modal_stack.push_dialog_mut()
+                    && pd.picking_remote
+                    && pd.remotes.len() > 1
+                {
+                    let len = pd.remotes.len();
+                    let next =
+                        (pd.remote_idx as isize + *delta).rem_euclid(len as isize) as usize;
+                    if next != pd.remote_idx {
+                        pd.remote_idx = next;
+                        pd.loading = true;
+                        pd.error = None;
+                        pd.outgoing = None;
+                        pd.selected_commit = 0;
+                        pd.commit_scroll = 0;
+                        pd.selected_file = 0;
+                        pd.file_scroll = 0;
+                        pd.show_diff = false;
+                        pd.details_requested = None;
+                        pd.details_pending = None;
+                        pd.diff.requested = None;
+                        pd.diff.pending = None;
+                        Some(pd.outgoing_key())
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+                if let Some(k) = key {
+                    effects.push(Effect::RequestOutgoing(k));
+                }
+            }
+            Action::PushSelectRemote(idx) => {
+                let key = if let Some(pd) = self.modal_stack.push_dialog_mut() {
+                    pd.picking_remote = false;
+                    let len = pd.remotes.len();
+                    if len > 0 {
+                        let next = (*idx).min(len - 1);
+                        if next != pd.remote_idx {
+                            pd.remote_idx = next;
+                            pd.loading = true;
+                            pd.error = None;
+                            pd.outgoing = None;
+                            pd.selected_commit = 0;
+                            pd.commit_scroll = 0;
+                            pd.selected_file = 0;
+                            pd.file_scroll = 0;
+                            pd.show_diff = false;
+                            pd.details_requested = None;
+                            pd.details_pending = None;
+                            pd.diff.requested = None;
+                            pd.diff.pending = None;
+                            Some(pd.outgoing_key())
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+                if let Some(k) = key {
+                    effects.push(Effect::RequestOutgoing(k));
+                }
+            }
+            Action::PushCycleTags => {
+                if let Some(pd) = self.modal_stack.push_dialog_mut() {
+                    pd.tags = pd.tags.next();
+                }
+            }
+            Action::PushCycleForce => {
+                if let Some(pd) = self.modal_stack.push_dialog_mut() {
+                    pd.force = pd.force.next();
+                }
+            }
+            Action::PushToggleSetUpstream => {
+                if let Some(pd) = self.modal_stack.push_dialog_mut() {
+                    pd.set_upstream = !pd.set_upstream;
+                }
+            }
+            Action::PushConfirm => {
+                let check = self.modal_stack.push_dialog().map(|pd| {
+                    pd.can_push(&self.config.jbgit.push.protected_branches, &self.i18n)
+                        .map(|()| (pd.visible_commits().len(), pd.build_push_op()))
+                });
+                match check {
+                    Some(Ok((expected_count, op))) => {
+                        self.last_push_expected_commits = Some(expected_count);
+                        self.modal_stack.close_push_dialog();
+                        effects.extend(self.dispatch(Action::RunGitOp(op)));
+                    }
+                    Some(Err(reason)) => {
+                        self.status_notice = Some(reason);
+                    }
+                    None => {}
+                }
+            }
+            Action::PushEscape => {
+                enum EscOutcome {
+                    CancelEdit,
+                    CloseRemote,
+                    CloseDiff,
+                    CloseModal,
+                }
+                let outcome = self.modal_stack.push_dialog().map(|pd| {
+                    if pd.editing_target {
+                        EscOutcome::CancelEdit
+                    } else if pd.picking_remote {
+                        EscOutcome::CloseRemote
+                    } else if pd.show_diff {
+                        EscOutcome::CloseDiff
+                    } else {
+                        EscOutcome::CloseModal
+                    }
+                });
+                match outcome {
+                    Some(EscOutcome::CancelEdit) => {
+                        if let Some(pd) = self.modal_stack.push_dialog_mut() {
+                            pd.editing_target = false;
+                            pd.target_draft.clear();
+                            pd.completion_selected = 0;
+                        }
+                    }
+                    Some(EscOutcome::CloseRemote) => {
+                        if let Some(pd) = self.modal_stack.push_dialog_mut() {
+                            pd.picking_remote = false;
+                        }
+                    }
+                    Some(EscOutcome::CloseDiff) => {
+                        if let Some(pd) = self.modal_stack.push_dialog_mut() {
+                            pd.show_diff = false;
+                            pd.diff.pending = None;
+                            pd.diff.scroll.reset();
+                        }
+                    }
+                    Some(EscOutcome::CloseModal) | None => {
+                        self.modal_stack.close_push_dialog();
+                    }
+                }
+            }
+            _ => return false,
+        }
+        true
+    }
+
+    pub fn reconcile_push_dialog_requests(&mut self, now: Instant, effects: &mut Vec<Effect>) {
+        let desired_details = match self.modal_stack.push_dialog_mut() {
+            Some(pd) => match pd.desired_details_key() {
+                Some(k) => Some(k),
+                None => {
+                    pd.details_pending = None;
+                    None
+                }
+            },
+            None => return,
+        };
+        if let Some(key) = desired_details {
+            if self.diff_caches.details.contains(&key) {
+                if let Some(pd) = self.modal_stack.push_dialog_mut() {
+                    pd.details_pending = None;
+                    let len = pd.selected_file_changes(&self.diff_caches).len();
+                    pd.selected_file = pd.selected_file.min(len.saturating_sub(1));
+                }
+            } else if let Some(pd) = self.modal_stack.push_dialog_mut()
+                && pd.details_requested.as_ref() != Some(&key)
+                && pd.details_pending.as_ref().map(|(k, _)| k) != Some(&key)
+            {
+                pd.details_pending = Some((key, now + DETAILS_DEBOUNCE));
+            }
+        }
+
+        let desired_diff = match self.modal_stack.push_dialog() {
+            Some(pd) => pd.desired_diff_key(&self.diff_caches),
+            None => return,
+        };
+        let Some(diff_key) = desired_diff else {
+            if let Some(pd) = self.modal_stack.push_dialog_mut() {
+                pd.diff.pending = None;
+            }
+            return;
+        };
+        if let Some(cached) = self.diff_caches.get_diff(&diff_key) {
+            if let Some(pd) = self.modal_stack.push_dialog_mut() {
+                pd.diff.pending = None;
+            }
+            if self.diff_caches.get_syntax(&diff_key).is_none() {
+                self.schedule_file_syntax(cached, effects);
+            }
+        } else if let Some(pd) = self.modal_stack.push_dialog_mut()
+            && pd.diff.requested.as_ref() != Some(&diff_key)
+            && pd.diff.pending.as_ref().map(|(k, _)| k) != Some(&diff_key)
+        {
+            pd.diff.pending = Some((diff_key, now + DETAILS_DEBOUNCE));
         }
     }
 }
