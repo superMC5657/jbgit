@@ -354,6 +354,7 @@ pub fn is_action_applicable(run: &KeyAction, state: &AppState) -> bool {
         | KeyAction::GitPull
         | KeyAction::GitPush
         | KeyAction::UpdateProject
+        | KeyAction::ConfigureRemotes
         | KeyAction::Palette
         | KeyAction::ToggleGlyphMode
         | KeyAction::CycleGraphRenderer => true,
@@ -533,6 +534,11 @@ pub fn execute_action(run: &KeyAction, state: &AppState) -> Option<Vec<Action>> 
             }
             Some(vec![Action::RunGitOp(GitOp::Pull { rebase: false })])
         }
+        KeyAction::ConfigureRemotes => Some(if state.repo_snapshot.is_some() {
+            vec![Action::OpenRemotes]
+        } else {
+            vec![Action::Notice(state.i18n.t("toast.repo_not_loaded").into())]
+        }),
         KeyAction::UpdateProject => Some(match state.update_project_blocker() {
             Some(msg) => vec![Action::Notice(msg)],
             None => vec![Action::RunGitOp(

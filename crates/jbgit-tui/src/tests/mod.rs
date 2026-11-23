@@ -5,6 +5,7 @@ mod file_history_and_changes_tests;
 mod footer_and_keymap_tests;
 mod log_tests;
 mod merge_and_update_tests;
+mod remotes_and_credentials_tests;
 mod runtime_and_editor_tests;
 mod session_tests;
 mod tag_and_push_tests;
@@ -36,6 +37,18 @@ use crate::session::{SessionInput, TestHost, TuiSession, TurnReport};
 
 pub(super) fn oid(n: u8) -> Oid {
     Oid::from_bytes([n; 20])
+}
+
+/// Configured remotes `names` with `https://example.com/<name>.git` URLs.
+pub(super) fn remote_infos(names: &[&str]) -> Vec<jbgit_core::RemoteInfo> {
+    names
+        .iter()
+        .map(|n| jbgit_core::RemoteInfo {
+            name: (*n).to_string(),
+            fetch_url: Some(format!("https://example.com/{n}.git")),
+            push_url: None,
+        })
+        .collect()
 }
 
 pub(super) fn oid_n(n: u8) -> Oid {
@@ -175,7 +188,7 @@ pub(super) fn make_snapshot(workdir: PathBuf, commits: Vec<CommitSummary>) -> Ar
         recent_branches: vec!["main".into()],
         stashes: Vec::new(),
         ongoing_onto: None,
-        remote_names: Vec::new(),
+        remotes: Vec::new(),
     })
 }
 

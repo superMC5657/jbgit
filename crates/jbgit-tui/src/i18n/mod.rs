@@ -270,6 +270,7 @@ impl I18n {
         let what = match what_key {
             "Branch" | "branch" | "validation.what.branch" => self.t("validation.what.branch"),
             "Tag" | "tag" | "validation.what.tag" => self.t("validation.what.tag"),
+            "Remote" | "remote" | "validation.what.remote" => self.t("validation.what.remote"),
             other => other,
         };
         let what_lower = what.to_ascii_lowercase();
@@ -382,6 +383,20 @@ impl I18n {
                 &[("rev", rev)],
             ),
             GitOp::UpdateProject { .. } => self.t("git_op.update_project").to_string(),
+            GitOp::AddRemote { name, .. } => self.t_fmt("git_op.add_remote", &[("name", name)]),
+            GitOp::RenameRemote { old, new } => {
+                self.t_fmt("git_op.rename_remote", &[("old", old), ("new", new)])
+            }
+            GitOp::RemoveRemote { name } => self.t_fmt("git_op.remove_remote", &[("name", name)]),
+            GitOp::SetRemoteUrl { name, push, .. } => self.t_fmt(
+                if *push {
+                    "git_op.set_remote_push_url"
+                } else {
+                    "git_op.set_remote_url"
+                },
+                &[("name", name)],
+            ),
+            GitOp::FetchRemote { name } => self.t_fmt("git_op.fetch_remote", &[("name", name)]),
             GitOp::Rebase { onto, branch } => match branch {
                 Some(b) => self.t_fmt("git_op.rebase_branch", &[("branch", b), ("onto", onto)]),
                 None => self.t_fmt("git_op.rebase_onto", &[("onto", onto)]),

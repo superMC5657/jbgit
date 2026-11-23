@@ -514,6 +514,7 @@ fn route_mouse_right_down(col: u16, row: u16, state: &AppState) -> Vec<Action> {
             | HitTarget::DialogCheckbox
             | HitTarget::ModalButton(_)
             | HitTarget::BranchPopupStar(_)
+            | HitTarget::RemotesRow(_)
             | HitTarget::BranchPopupFetch
             | HitTarget::BranchPopupSettings
             | HitTarget::FileHistoryRow { .. }

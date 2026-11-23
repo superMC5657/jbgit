@@ -14,6 +14,7 @@ use jbgit_core::{
     UpdateMode, UpdatedRange, classify_failure, render_todo,
 };
 
+use crate::askpass::AskpassEnv;
 use crate::cli::{
     CliCommand, CliStreamEvent, GitCliRunner, IndexLockConflict, prepare_pathspec_args,
 };
@@ -191,6 +192,34 @@ pub(crate) fn compile_simple_steps(op: &GitOp) -> Option<Vec<CompiledStep>> {
             args.push(remote.clone());
             args.push(format!("refs/tags/{name}:refs/tags/{name}"));
             vec![CompiledStep::new(args)]
+        }
+        GitOp::AddRemote { name, url } => vec![CompiledStep::new([
+            "remote",
+            "add",
+            "--",
+            name.as_str(),
+            url.as_str(),
+        ])],
+        GitOp::RenameRemote { old, new } => vec![CompiledStep::new([
+            "remote",
+            "rename",
+            "--",
+            old.as_str(),
+            new.as_str(),
+        ])],
+        GitOp::RemoveRemote { name } => {
+            vec![CompiledStep::new(["remote", "remove", "--", name.as_str()])]
+        }
+        GitOp::SetRemoteUrl { name, url, push } => {
+            let mut args = vec!["remote".to_string(), "set-url".to_string()];
+            if *push {
+                args.push("--push".to_string());
+            }
+            args.extend(["--".to_string(), name.clone(), url.clone()]);
+            vec![CompiledStep::new(args)]
+        }
+        GitOp::FetchRemote { name } => {
+            vec![CompiledStep::new(["fetch", "--prune", name.as_str()])]
         }
         GitOp::Merge { rev, options } => vec![compile_merge(rev, options)],
         GitOp::Rebase { onto, branch } => {
@@ -554,23 +583,38 @@ fn compile_patch_source(source: &PatchSource) -> Vec<CompiledStep> {
     }
 }
 
+/// Whether a compiled step talks to a remote (and may need credentials).
+pub(crate) fn is_network_step(args: &[String]) -> bool {
+    matches!(
+        args.first().map(String::as_str),
+        Some("fetch" | "pull" | "push" | "ls-remote")
+    )
+}
+
 /// Runs `op` to completion through [`GitCliRunner`] and reports both the
 /// classified [`GitOpOutcome`] and any `index.lock` conflict.
+///
+/// `askpass` (when set) is added to the environment of network steps only
+/// (`fetch` / `pull` / `push` / `ls-remote`), so credential prompts reach the
+/// TUI; local commands never see it.
 pub(crate) async fn run_git_op<R, F>(
     cli: &R,
     loc: &RepoLocation,
     ids: &AtomicU64,
     op: GitOp,
+    askpass: Option<&AskpassEnv>,
     on_cli: F,
 ) -> GitOpRunResult
 where
     R: GitCliRunner,
     F: Fn(CliStreamEvent) + Send + Sync,
 {
+    let askpass_vars = askpass.map(AskpassEnv::vars).unwrap_or_default();
     let runner = Runner {
         cli,
         loc,
         ids,
+        askpass_vars: &askpass_vars,
         on_cli: &on_cli,
     };
     match op {
@@ -583,12 +627,26 @@ struct Runner<'a, R: GitCliRunner> {
     cli: &'a R,
     loc: &'a RepoLocation,
     ids: &'a AtomicU64,
+    askpass_vars: &'a [(String, String)],
     on_cli: &'a (dyn Fn(CliStreamEvent) + Send + Sync),
 }
 
 impl<R: GitCliRunner> Runner<'_, R> {
     async fn step(&self, step: &CompiledStep, read_only: bool) -> StepResult {
         let id = OP_CONSOLE_ID_BASE + self.ids.fetch_add(1, Ordering::Relaxed);
+        let with_askpass;
+        let env: &[(String, String)] =
+            if !self.askpass_vars.is_empty() && is_network_step(&step.args) {
+                with_askpass = step
+                    .env
+                    .iter()
+                    .chain(self.askpass_vars.iter())
+                    .cloned()
+                    .collect::<Vec<_>>();
+                &with_askpass
+            } else {
+                &step.env
+            };
         let res = self
             .cli
             .execute_boxed(
@@ -599,7 +657,7 @@ impl<R: GitCliRunner> Runner<'_, R> {
                     args: &step.args,
                     stdin_payload: step.stdin.as_deref(),
                     is_read_only: read_only,
-                    env: &step.env,
+                    env,
                 },
                 self.on_cli,
             )
@@ -1384,6 +1442,92 @@ mod tests {
         Oid::from_bytes([b; 20])
     }
 
+    fn compiled_args(op: &GitOp) -> Vec<Vec<String>> {
+        compile_simple_steps(op)
+            .expect("simple op")
+            .into_iter()
+            .map(|s| s.args)
+            .collect()
+    }
+
+    #[test]
+    fn remote_management_ops_compile_to_git_remote() {
+        let v = |xs: &[&str]| vec![xs.iter().map(ToString::to_string).collect::<Vec<_>>()];
+        assert_eq!(
+            compiled_args(&GitOp::AddRemote {
+                name: "fork".into(),
+                url: "https://u:secret@h/x.git".into(),
+            }),
+            v(&["remote", "add", "--", "fork", "https://u:secret@h/x.git"])
+        );
+        assert_eq!(
+            compiled_args(&GitOp::RenameRemote {
+                old: "fork".into(),
+                new: "mine".into(),
+            }),
+            v(&["remote", "rename", "--", "fork", "mine"])
+        );
+        assert_eq!(
+            compiled_args(&GitOp::RemoveRemote { name: "mine".into() }),
+            v(&["remote", "remove", "--", "mine"])
+        );
+        assert_eq!(
+            compiled_args(&GitOp::SetRemoteUrl {
+                name: "o".into(),
+                url: "u".into(),
+                push: false,
+            }),
+            v(&["remote", "set-url", "--", "o", "u"])
+        );
+        assert_eq!(
+            compiled_args(&GitOp::SetRemoteUrl {
+                name: "o".into(),
+                url: "u".into(),
+                push: true,
+            }),
+            v(&["remote", "set-url", "--push", "--", "o", "u"])
+        );
+        assert_eq!(
+            compiled_args(&GitOp::FetchRemote { name: "fork".into() }),
+            v(&["fetch", "--prune", "fork"])
+        );
+        assert_eq!(compiled_args(&GitOp::Fetch), v(&["fetch", "--all", "--prune"]));
+    }
+
+    #[tokio::test]
+    async fn askpass_env_reaches_network_steps_only() {
+        let env = AskpassEnv::new(PathBuf::from("/bin/jbgit"), "pipe", "tok");
+        let runner = RecordingCliRunner::with_responses(Vec::new());
+        let ids = AtomicU64::new(1);
+        let seq = GitOp::Sequence(vec![
+            GitOp::AddRemote {
+                name: "fork".into(),
+                url: "u".into(),
+            },
+            GitOp::FetchRemote { name: "fork".into() },
+            GitOp::Pull { rebase: false },
+            GitOp::Checkout {
+                target: "main".into(),
+                detach: false,
+            },
+        ]);
+        let res = run_git_op(&runner, &dummy_loc(), &ids, seq, Some(&env), |_| {}).await;
+        assert!(res.outcome.success);
+        let calls = runner.calls();
+        let has = |c: &RecordedCall, k: &str| c.env.iter().any(|(n, _)| n == k);
+        assert_eq!(calls.len(), 4);
+        assert!(!has(&calls[0], "GIT_ASKPASS"), "remote add is local");
+        assert!(has(&calls[1], "GIT_ASKPASS") && has(&calls[1], "JBGIT_ASKPASS_TOKEN"));
+        assert!(has(&calls[1], "SSH_ASKPASS_REQUIRE"));
+        assert!(has(&calls[2], "GIT_ASKPASS"), "pull keeps GIT_EDITOR and adds askpass");
+        assert!(has(&calls[2], "GIT_EDITOR"));
+        assert!(calls[3].env.is_empty(), "checkout is local");
+
+        let plain = RecordingCliRunner::with_responses(Vec::new());
+        let _ = run_git_op(&plain, &dummy_loc(), &ids, GitOp::Fetch, None, |_| {}).await;
+        assert!(plain.calls()[0].env.is_empty());
+    }
+
     fn dummy_loc() -> RepoLocation {
         RepoLocation {
             workdir: PathBuf::from("/repo"),
@@ -1640,6 +1784,7 @@ mod tests {
                 tags: PushTagMode::None,
                 up_to: None,
             },
+            None,
             |_| {},
         )
         .await;
@@ -1673,6 +1818,7 @@ mod tests {
                 target: "main".into(),
                 detach: false,
             },
+            None,
             |_| {},
         )
         .await;
@@ -1719,7 +1865,7 @@ mod tests {
                 up_to: None,
             },
         ]);
-        let res = run_git_op(&runner, &dummy_loc(), &ids, seq, |_| {}).await;
+        let res = run_git_op(&runner, &dummy_loc(), &ids, seq, None, |_| {}).await;
         assert!(!res.outcome.success);
         assert_eq!(res.outcome.failure, Some(GitFailure::Conflicts));
         assert!(matches!(res.outcome.op, GitOp::Rebase { .. }));
@@ -1856,7 +2002,7 @@ mod tests {
             save_changes: true,
             update_other_branches: true,
         };
-        let res = run_git_op(&detached, &dummy_loc(), &ids, op.clone(), |_| {}).await;
+        let res = run_git_op(&detached, &dummy_loc(), &ids, op.clone(), None, |_| {}).await;
         assert!(!res.outcome.success);
         assert!(matches!(res.outcome.failure, Some(GitFailure::Other(ref m)) if m.contains("detached")));
         assert_eq!(detached.calls().len(), 1, "nothing is stashed or fetched");
@@ -1868,7 +2014,7 @@ mod tests {
             stderr_lines: Vec::new(),
             index_lock_conflict: None,
         }]);
-        let res = run_git_op(&untracked, &dummy_loc(), &ids, op, |_| {}).await;
+        let res = run_git_op(&untracked, &dummy_loc(), &ids, op, None, |_| {}).await;
         assert!(matches!(res.outcome.failure, Some(GitFailure::Other(ref m)) if m.contains("no upstream")));
         let calls = untracked.calls();
         assert_eq!(calls.len(), 1);

@@ -25,6 +25,7 @@
   - [4. `theme.toml`：主题预设与语义配色](#4-themetoml主题预设与语义配色)
   - [5. `keymap.toml`：快捷键预设与增量覆盖](#5-keymaptoml快捷键预设与增量覆盖)
   - [6. 常用 `run` 动作标识符参考](#6-常用-run-动作标识符参考)
+- [四、远端与凭据 (Remotes & Credentials)](#四远端与凭据-remotes--credentials)
 
 ---
 
@@ -57,6 +58,7 @@ jbgit 默认采用**零冲突统一键位（`preset = "default"`）**，并通�
 | `b` / `g b` / `` <Ctrl-`> `` / `<Ctrl-~>` / `<Alt-b>`*(非 Log 页)* | 呼出全局分支速查浮窗（`<Esc>` 关闭） |
 | `f` / `p` / `P` | 远程同步：**Fetch (`f`)** / **Pull (`p`)** / **Push… (`P`)** |
 | `<Alt-u>` | **Update Project**（三套预设一致）：贮藏本地改动 → `fetch --all --prune` → 当前分支按 `[update].mode` 合并或变基 upstream → 其他跟踪分支仅快进 → 恢复改动；完成通知 `<Alt-z>`「查看」打开只读 Range 筛选的 Log。头部分支胶囊中的 `↓N` 计数可点击打开模式选择 |
+| `<Alt-r>` | **Configure Remotes…**：远端列表（添加 / 重命名 / 编辑 URL / 删除 / 获取），详见[四、远端与凭据](#四远端与凭据-remotes--credentials) |
 | `<Ctrl-Alt-n>` | 从当前 HEAD 新建分支 |
 | `<Alt-z>` / `<Alt-x>` | 触发当前底部通知栏的快捷动作 / 关闭通知 |
 | `<F8>` / `<F12>` | 循环切换图谱渲染引擎（Auto / Vector / Cell） / 切换图标模式（Nerd Font / Unicode） |
@@ -97,6 +99,7 @@ jbgit 默认采用**零冲突统一键位（`preset = "default"`）**，并通�
 | `J` | 跳转至选中分支对应的提交记录 |
 | `c` / `n` / `<Ctrl-Alt-n>` / `<F2>` / `d` / `<Del>` | 检出 (`c`) / 新建分支 (`n`/`Ctrl+Alt+N`) / 重命名 (`F2`) / 删除分支或 Tag (`d`/`Del`) |
 | **Tag 节点右键菜单** | 检出（游离 HEAD）、从 Tag 新建分支、对比/合并、推送单个 Tag、删除本地 Tag（若远端存在同名 Tag 可勾选同时删除；删除后支持通知栏 `<Alt-z>` 一键恢复）、删除远端 Tag |
+| **Remote 分组 / `<remote>` 节点右键菜单** | `Fetch '<remote>'`（仅获取该远端，`git fetch --prune <remote>`） / `Configure Remotes…` |
 
 ### 全局分支浮窗 (Branches Popup)
 
@@ -107,6 +110,7 @@ jbgit 默认采用**零冲突统一键位（`preset = "default"`）**，并通�
 | `<Ctrl-Alt-n>` | 从当前 HEAD 新建分支（跟随 `new_branch` 修饰键配置） |
 | `<Alt-f>` / `<Esc>` | 执行远程 Fetch / 关闭浮窗 |
 | 顶部 `↓ Update Project…` | 选择 `Follow Git config` / `Merge` / `Rebase` 后执行 Update Project（仅在非游离 HEAD 时显示） |
+| 顶部 `⚙ Configure Remotes…` | 打开远端管理窗口（同 `<Alt-r>`） |
 
 ### 提交工作台 (Commit View)
 
@@ -453,10 +457,47 @@ prepend_keymap = [
 
 | 作用域 | 可用 `run` 动作标识符 |
 | :--- | :--- |
-| `global` | `quit`, `help`, `context_menu`, `refresh`, `tab_commit`, `tab_log`, `tab_branches`, `tab_stash`, `tab_console`, `focus_next`, `focus_prev`, `toggle_branches_popup`, `toggle_branches_pane`, `git_fetch`, `git_pull`, `git_push`, `goto_revision`, `palette`, `toggle_glyph_mode`, `cycle_graph_renderer`, `git_status_probe`, `noop` |
+| `global` | `quit`, `help`, `context_menu`, `refresh`, `tab_commit`, `tab_log`, `tab_branches`, `tab_stash`, `tab_console`, `focus_next`, `focus_prev`, `toggle_branches_popup`, `toggle_branches_pane`, `git_fetch`, `git_pull`, `git_push`, `update_project`, `configure_remotes`, `goto_revision`, `palette`, `toggle_glyph_mode`, `cycle_graph_renderer`, `git_status_probe`, `noop` |
 | `log` | `cursor_down`, `cursor_up`, `goto_top`, `goto_bottom`, `page_down_half`, `page_up_half`, `goto_revision`, `focus_filter`, `toggle_branches_pane`, `compare_or_diff`, `zoom_diff`, `copy_hash`, `checkout`, `new_branch`, `uncommit`, `reword`, `drop_commit`, `choose_parent`, `toggle_group`, `file_history`, `annotate` |
 | `branch` | `branch_search`, `toggle_favorite`, `checkout`, `new_branch`, `rename_branch`, `delete_branch`, `navigate_branch` |
 | `commit` | `cursor_down`, `cursor_up`, `goto_top`, `goto_bottom`, `toggle_stage`, `stage_selection`, `unstage_selection`, `focus_commit_msg`, `commit`, `commit_and_push`, `toggle_amend`, `toggle_signoff`, `commit_history`, `select_all`, `discard_changes`, `toggle_group`, `edit_file`, `file_history`, `annotate` |
 | `diff` | `cursor_down`, `cursor_up`, `goto_top`, `goto_bottom`, `prev_hunk`, `next_hunk`, `prev_file`, `next_file`, `toggle_side_by_side`, `cycle_diff_context`, `cycle_diff_dock`, `zoom_diff`, `toggle_stage`, `stage_selection`, `unstage_selection`, `toggle_visual`, `rollback_selection`, `undo_rollback`, `switch_diff_side`, `three_way_inspector` |
 | `stash` | `cursor_down`, `cursor_up`, `goto_top`, `goto_bottom`, `stash_new`, `stash_apply`, `stash_pop`, `stash_drop`, `stash_branch`, `stash_clear`, `toggle_group` |
 | `console` | `cursor_down`, `cursor_up`, `goto_top`, `goto_bottom`, `page_down_half`, `page_up_half` |
+
+---
+
+## 四、远端与凭据 (Remotes & Credentials)
+
+### 1. 远端管理 (`Configure Remotes…`)
+
+入口：全局 `<Alt-r>`、分支浮窗顶部 `⚙ Configure Remotes…`、分支树 `Remote` 分组或 `<remote>` 节点的右键菜单。窗口列出每个远端的获取 URL 与推送 URL（未单独设置时显示「与获取 URL 相同」）；URL 中的密码部分始终脱敏显示（`https://user:***@host/x.git`），控制台回放的命令行与错误信息同样脱敏。
+
+| 快捷键 | 功能描述 |
+| :--- | :--- |
+| `↑` / `↓` / `j` / `k` / `g` / `G` | 选择远端（打开时默认选中当前分支 upstream 所在远端 → `origin` → 第一个远端） |
+| `a` / `n` / `<Insert>` | 添加远端：先输入名称（按 `git check-ref-format` 规则校验并查重），再输入 URL 或本地路径（仅做非空 / 无空白校验，不联网验证）。成功后通知栏 `<Alt-z>` 可「获取 '<name>'」 |
+| `r` / `<F2>` | 重命名远端（`git remote rename`，远端跟踪分支随之改名） |
+| `e` / `<Enter>` / 双击 | 编辑获取 URL（`git remote set-url`） |
+| `p` | 编辑推送 URL（`git remote set-url --push`） |
+| `d` / `<Del>` | 删除远端（二次确认，提示将删除的 `refs/remotes/<name>/*` 数量及失去 upstream 的本地分支数） |
+| `f` | 仅获取该远端（`git fetch --prune <name>`；全局 `f` 仍为 `fetch --all --prune`） |
+| `<Esc>` / `q` | 关闭 |
+
+未显式指定远端时（Push 默认目标、删除 Tag 时的远端探测等），jbgit 依次选择：当前分支 upstream 所在远端 → `origin` → 第一个已配置远端。
+
+### 2. HTTPS / SSH 凭据交互（askpass 回调桥）
+
+jbgit 运行的所有 git 子进程都设置 `GIT_TERMINAL_PROMPT=0`，不会在终端里卡住等待输入。没有配置 credential helper / ssh-agent 时，联网操作（Fetch、Pull、Push、Update Project、远端 Tag / 分支删除、单远端 Fetch）需要的用户名、密码、令牌或 SSH 私钥口令改由 jbgit 的 **Git 凭据** 对话框收集：
+
+1. jbgit 启动时创建一个**仅当前用户可访问**的本地通道（Windows：带当前用户 SID 专属 DACL 的命名管道，拒绝远程客户端；Unix：`$XDG_RUNTIME_DIR` 或临时目录下 `0700` 目录中的 `0600` socket；不使用 TCP 端口），并生成 32 字节随机会话令牌。
+2. 仅对联网命令（`fetch` / `pull` / `push` / `ls-remote`）设置 `GIT_ASKPASS`、`SSH_ASKPASS`（均指向当前 `jbgit` 可执行文件）、`SSH_ASKPASS_REQUIRE=force`、`JBGIT_ASKPASS_ADDR`、`JBGIT_ASKPASS_TOKEN`；本地命令不设置。
+3. git / ssh 以 `jbgit "<提示>"` 形式回调；该进程出示令牌连回会话（令牌不匹配立即断开），提示在 TUI 中以对话框显示。多个 git 进程同时请求时按先后顺序逐个显示。
+4. 提示含 `Password` / `passphrase` / `token` / `PIN` 时输入以 `•` 掩码显示，`<Tab>` 切换明文；支持粘贴；`<Ctrl-u>` 清空；`<Enter>` 发送；`<Esc>` 取消（askpass 以退出码 1 结束，git 随即失败）。单次提示 120 秒未回答自动取消。
+5. 认证失败（`Authentication failed`、`Permission denied (publickey)`、`could not read Username` 等）会弹出「身份验证失败」对话框，给出配置 credential helper（`git config --global credential.helper manager` 等）或 `ssh-add` 的指引。
+
+**jbgit 不保存任何凭据**：输入值只在内存中（用后清零）转交给等待的 askpass 进程，不进入控制台、日志、草稿或任何文件；环境变量（含会话令牌）也从不在控制台显示。若你配置了 credential helper，git 会在认证成功后自行调用其 `store`，jbgit 不干预。
+
+> 后台的「远端是否存在同名 Tag」探测（`ls-remote`，5 秒超时）不会弹出凭据对话框，需要认证时视为「未知」。
+>
+> 脚本化 / 沙箱测试可设置 `JBGIT_ASKPASS_RESPONDER=cancel`（总是取消）或 `JBGIT_ASKPASS_RESPONDER=value:<文本>`（总是回答该文本）替代对话框。

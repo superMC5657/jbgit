@@ -316,6 +316,12 @@ pub enum Action {
     RememberMergeOptions(MergeOptions),
     /// `Update Project…` mode chooser.
     PromptUpdateProject,
+    /// `Configure Remotes…` modal (`GitConfigureRemotesDialog`).
+    OpenRemotes,
+    /// Move the Remotes modal selection by a delta.
+    RemotesMove(isize),
+    /// Select a row of the Remotes modal (`usize::MAX` = last).
+    RemotesSelect(usize),
     /// Show only `oids` in the Log (read-only Range chip, `GitUpdateInfoAsLog`).
     FilterLogByRange {
         label: String,

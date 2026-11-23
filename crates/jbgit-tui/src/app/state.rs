@@ -77,6 +77,10 @@ pub struct AppState {
     /// Update Project stopped on conflicts with local changes still stashed:
     /// pop them once the ongoing operation is continued / aborted.
     pub(crate) pending_update_stash: bool,
+    /// Askpass prompts waiting for the credential dialog (FIFO).
+    pub(crate) credentials: crate::app::CredentialQueue,
+    /// Remote to select in the Remotes modal once the snapshot lists it.
+    pub(crate) pending_remote_selection: Option<String>,
     pub(crate) pending_keys: Vec<crossterm::event::KeyEvent>,
     pub(crate) pending_key_at: Option<std::time::Instant>,
     /// Virtual monotonic clock injected by [`crate::session::TuiSession`]
@@ -178,6 +182,8 @@ impl AppState {
             git_ops_running: 0,
             last_push_expected_commits: None,
             pending_update_stash: false,
+            credentials: crate::app::CredentialQueue::default(),
+            pending_remote_selection: None,
             stash,
             config,
             i18n,
@@ -386,6 +392,7 @@ impl AppState {
             || self.modal_stack.annotate().is_some_and(|ann| ann.loading)
             || self.modal_stack.push_dialog().is_some_and(|pd| pd.loading)
             || self.console.has_running()
+            || !self.credentials.is_empty()
     }
 
     /// Next instant the main loop must wake up for (details debounce, menu hover, or key chord timeout).

@@ -33,6 +33,7 @@ key_bindings = [
     { on = [ "P" ], run = "git_push", desc = "推送当前分支 (Push…)", show_hint = true },
     { on = [ "f" ], run = "git_fetch", desc = "获取远程更新 (Fetch)" },
     { on = [ "<A-u>" ], run = "update_project", desc = "更新项目 (Update Project)" },
+    { on = [ "<A-r>" ], run = "configure_remotes", desc = "管理远端 (Configure Remotes…)" },
     { on = [ "r" ], run = "refresh", desc = "刷新 Git 仓库状态", show_hint = true },
     { on = [ "<F5>" ], run = "refresh", desc = "刷新 Git 仓库状态" },
     { on = [ "?" ], run = "help", desc = "打开可搜索快捷键帮助 / 命令面板", show_hint = true },

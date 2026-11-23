@@ -533,8 +533,12 @@ impl TuiSession {
 
 /// Discovers the repository at `target_path`, starts the background
 /// [`EngineSupervisor`], and builds a production [`TuiSession`].
+///
+/// `askpass` is the credential-bridge environment of this session's
+/// [`jbgit_engine::askpass::AskpassServer`] (network operations only).
 pub fn init_engine_and_session(
     target_path: PathBuf,
+    askpass: Option<jbgit_engine::askpass::AskpassEnv>,
 ) -> (
     Option<EngineHandle>,
     Option<UnboundedReceiver<EngineEvent>>,
@@ -546,7 +550,7 @@ pub fn init_engine_and_session(
             let workdir = loc.workdir.clone();
             let config = crate::config::AppConfig::load(Some(&workdir));
             let scan_config = config.jbgit.performance.to_engine_config();
-            match EngineSupervisor::start_with_config(loc, true, scan_config) {
+            match EngineSupervisor::start_with_askpass(loc, true, scan_config, askpass) {
                 Ok((handle, rx)) => {
                     let s = AppState::new_with_config(workdir, None, config);
                     (Some(handle), Some(rx), s)

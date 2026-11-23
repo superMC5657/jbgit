@@ -506,6 +506,8 @@ pub enum UiAsyncEvent {
         names: Vec<String>,
     },
     LogGraphRebuilt(Box<LogGraphRebuilt>),
+    /// Credential prompt from the `GIT_ASKPASS` / `SSH_ASKPASS` bridge.
+    Askpass(jbgit_engine::askpass::AskpassRequest),
 }
 
 #[derive(Debug, Clone)]

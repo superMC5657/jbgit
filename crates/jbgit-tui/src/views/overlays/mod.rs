@@ -75,6 +75,9 @@ fn render_modal_layer(
         ModalLayer::PushDialog(pd) => {
             crate::views::push_dialog::render_push_dialog_modal(frame, screen, state, pd, ctx, z);
         }
+        ModalLayer::Remotes(rs) => {
+            crate::remotes_view::render_remotes_modal(frame, screen, state, rs, ctx, z);
+        }
         ModalLayer::ConflictResolver(_) => {
             crate::views::conflict_merge::render_conflict_merge_modal(
                 frame, screen, state, ctx, z,

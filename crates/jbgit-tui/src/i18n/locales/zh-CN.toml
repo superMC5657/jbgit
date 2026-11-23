@@ -63,6 +63,8 @@ state_rebasing = "变基中"
 state_rebasing_i = "交互式变基中"
 
 [menu.branch]
+fetch_remote = "获取 '{name}'"
+configure_remotes = "管理远端…"
 merge_options = "将 '{name}' 合并到 '{cur}'…"
 checkout = "检出"
 checkout_and_rebase = "检出并变基到 '{cur}'"
@@ -558,6 +560,7 @@ arrow_jump_prefix = " {arrow} 跳转至{dir} "
 arrow_jump_suffix = " (点击跳转，Alt+Left 返回)"
 
 [view.footer.pill]
+configure_remotes = "远端"
 update_project = "更新"
 apply = "确认"
 cancel = "取消"
@@ -845,6 +848,7 @@ exit_status = "退出码 {code} ({ms} ms)"
 no_output = " (无输出)"
 
 [view.branches_popup]
+configure_remotes_btn = " ⚙ 管理远端…"
 update_project_btn = "  ↓ 更新项目…"
 title = "Git 分支速查"
 fetch_btn = " ↻ 获取远程 "
@@ -917,6 +921,12 @@ yesterday = "昨天"
 days_ago = "{n}天前"
 
 [toast]
+credentials_requested = "Git 需要凭据 — 请在对话框中输入（Esc 取消）"
+credentials_cancelled = "已取消凭据输入"
+remote_added = "已添加远端 '{name}'"
+fetch_remote_btn = "获取 '{name}'"
+auth_failed = "{label}：身份验证失败"
+remote_exists = "远端 '{name}' 已存在"
 squash_staged = "压缩合并的变更已暂存 — 请在 [1 提交] 中检查说明并提交"
 merge_staged = "合并已在提交前停下 — 变更已暂存，请在 [1 提交] 中提交"
 not_fast_forward = "{label}：无法快进"
@@ -1007,6 +1017,12 @@ external_editor_disabled = "当前无头/自动化环境已禁用外部编辑器
 external_editor_failed = "外部编辑器调用失败：{error}"
 
 [git_op]
+add_remote = "添加远端 '{name}'"
+rename_remote = "重命名远端 '{old}' → '{new}'"
+remove_remote = "删除远端 '{name}'"
+set_remote_url = "设置 '{name}' 的 URL"
+set_remote_push_url = "设置 '{name}' 的推送 URL"
+fetch_remote = "获取 '{name}'"
 squash_merge = "压缩合并 '{rev}'"
 update_project = "更新项目"
 checkout = "检出 '{target}'"
@@ -1070,6 +1086,7 @@ err_merge_commits = "无法{verb}：到 HEAD 的路径中包含合并提交"
 err_protected = "无法{verb}：该提交已推送至受保护分支 '{branch}'"
 
 [validation]
+what.remote = "远端"
 what.branch = "分支"
 what.tag = "标签"
 empty = "{what}名称不能为空"
@@ -1130,6 +1147,7 @@ sample_subject = "feat: 提交主题示例"
 ruler_heading = "字形宽度标尺 — 每个符号都应精确位于两个 │ 标记之间"
 
 [help]
+action.configure_remotes = "管理远端（添加 / 重命名 / 编辑 URL / 删除 / 获取）"
 shortcuts_title = "快捷键帮助与命令面板 (输入搜索，Enter 执行，Esc 关闭)"
 current_context = "── 当前上下文：{pane} ──"
 search_placeholder = "输入关键字过滤命令或快捷键 (如 push / Diff / Ctrl+S)"
@@ -1257,3 +1275,45 @@ init_file_generated = "已生成配置文件：{path}"
 init_ok = "配置文件已成功生成于：{dir}"
 init_err = "初始化配置文件失败：{err}"
 engine_err = "引擎错误：{err}"
+
+[dialog.remotes]
+add_name_title = "添加远端"
+add_title = "添加远端 '{name}'"
+name_prompt = "远端名称："
+url_prompt = "'{name}' 的 URL 或路径（不会联网校验）："
+url_title = "编辑 '{name}' 的 URL"
+push_url_title = "编辑 '{name}' 的推送 URL"
+rename_title = "重命名远端 '{name}'"
+url_empty = "URL 不能为空"
+url_spaces = "URL 不能包含空白字符"
+remove_title = "删除远端 '{name}'"
+remove_body = "从本仓库配置中删除远端 '{name}'？"
+remove_tracking = "其 {count} 个远端跟踪分支（refs/remotes/{name}/*）将被删除。"
+remove_upstreams = "{count} 个跟踪它的本地分支将失去 upstream。"
+remove_btn = "删除"
+
+[dialog.credential]
+title = "Git 凭据"
+hint_plain = "Enter 发送 · Esc 取消"
+hint_masked = "输入已隐藏 · Tab 显示 · Enter 发送 · Esc 取消"
+hint_revealed = "输入可见 · Tab 隐藏 · Enter 发送 · Esc 取消"
+no_store = "jbgit 不保存任何凭据；若配置了 credential helper，可能由其保存。"
+
+[dialog.auth_failed]
+title = "身份验证失败"
+body = "{label} 被远端拒绝：凭据缺失或错误。"
+https_hint = "HTTPS：配置 credential helper，让 git 记住你的令牌："
+https_cmd = "  git config --global credential.helper manager   （或 store / osxkeychain / libsecret）"
+ssh_hint = "SSH：将密钥加入 ssh-agent，或确认公钥已在服务端登记："
+ssh_cmd = "  ssh-add ~/.ssh/id_ed25519   ·   ssh -T git@<host>"
+no_store = "jbgit 仅把提示转发到对话框，自身从不保存凭据。"
+
+[view.remotes]
+title = "管理远端"
+empty = "尚未配置远端。按 a 添加。"
+none_selected = "未选中远端"
+fetch_label = "获取 "
+push_label = "推送 "
+no_url = "（无 URL）"
+push_same = "（与获取 URL 相同）"
+hint = "a 添加 · r 重命名 · e 编辑 URL · p 推送 URL · d/Del 删除 · f 获取 · Esc 关闭"

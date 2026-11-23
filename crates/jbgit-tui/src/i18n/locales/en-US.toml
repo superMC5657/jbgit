@@ -63,6 +63,8 @@ state_rebasing = "REBASING"
 state_rebasing_i = "REBASING -i"
 
 [menu.branch]
+fetch_remote = "Fetch '{name}'"
+configure_remotes = "Configure Remotes…"
 merge_options = "Merge '{name}' into '{cur}'…"
 checkout = "Checkout"
 checkout_and_rebase = "Checkout and Rebase onto '{cur}'"
@@ -558,6 +560,7 @@ arrow_jump_prefix = " {arrow} Jump to {dir} "
 arrow_jump_suffix = " (Click to jump, Alt+Left to return)"
 
 [view.footer.pill]
+configure_remotes = "Remotes"
 update_project = "Update"
 apply = "Apply"
 cancel = "Cancel"
@@ -845,6 +848,7 @@ exit_status = "EXIT {code} ({ms} ms)"
 no_output = " (no output)"
 
 [view.branches_popup]
+configure_remotes_btn = " ⚙ Configure Remotes…"
 update_project_btn = "  ↓ Update Project…"
 title = "Git Branches"
 fetch_btn = " ↻ Fetch "
@@ -917,6 +921,12 @@ yesterday = "Yesterday"
 days_ago = "{n}d ago"
 
 [toast]
+credentials_requested = "Git is asking for credentials — answer in the dialog (Esc cancels)"
+credentials_cancelled = "Credential prompt cancelled"
+remote_added = "Added remote '{name}'"
+fetch_remote_btn = "Fetch '{name}'"
+auth_failed = "{label}: authentication failed"
+remote_exists = "Remote '{name}' already exists"
 squash_staged = "Squash merge staged — review the message and commit in [1 Commit]"
 merge_staged = "Merge stopped before committing — changes are staged, commit in [1 Commit]"
 not_fast_forward = "{label}: not possible to fast-forward"
@@ -1007,6 +1017,12 @@ external_editor_disabled = "External editor is disabled in headless/automated mo
 external_editor_failed = "External editor failed: {error}"
 
 [git_op]
+add_remote = "Add remote '{name}'"
+rename_remote = "Rename remote '{old}' → '{new}'"
+remove_remote = "Remove remote '{name}'"
+set_remote_url = "Set URL of '{name}'"
+set_remote_push_url = "Set push URL of '{name}'"
+fetch_remote = "Fetch '{name}'"
 squash_merge = "Squash merge '{rev}'"
 update_project = "Update Project"
 checkout = "Checkout '{target}'"
@@ -1070,6 +1086,7 @@ err_merge_commits = "Cannot {verb}: the range up to HEAD contains merge commits"
 err_protected = "Cannot {verb}: commit is already pushed to protected branch '{branch}'"
 
 [validation]
+what.remote = "Remote"
 what.branch = "Branch"
 what.tag = "Tag"
 empty = "{what} name cannot be empty"
@@ -1130,6 +1147,7 @@ sample_subject = "feat: commit subject"
 ruler_heading = "Glyph ruler — every glyph must sit exactly between two │ markers"
 
 [help]
+action.configure_remotes = "Configure remotes (add / rename / edit URL / remove / fetch)"
 shortcuts_title = "Shortcuts & Command Palette (Type to filter, Enter to run, Esc to close)"
 current_context = "── Current Context: {pane} ──"
 search_placeholder = "Type to filter actions, scopes or keys (e.g. push / Diff / Ctrl+S)"
@@ -1257,3 +1275,45 @@ init_file_generated = "Generated configuration file: {path}"
 init_ok = "Configuration files generated successfully at: {dir}"
 init_err = "Error initializing configuration: {err}"
 engine_err = "Engine error: {err}"
+
+[dialog.remotes]
+add_name_title = "Add Remote"
+add_title = "Add Remote '{name}'"
+name_prompt = "Remote name:"
+url_prompt = "URL or path of '{name}' (not checked over the network):"
+url_title = "Edit URL of '{name}'"
+push_url_title = "Edit Push URL of '{name}'"
+rename_title = "Rename Remote '{name}'"
+url_empty = "URL cannot be empty"
+url_spaces = "URL cannot contain whitespace"
+remove_title = "Remove Remote '{name}'"
+remove_body = "Remove remote '{name}' from this repository's configuration?"
+remove_tracking = "Its {count} remote-tracking branch(es) (refs/remotes/{name}/*) will be deleted."
+remove_upstreams = "{count} local branch(es) tracking it will lose their upstream."
+remove_btn = "Remove"
+
+[dialog.credential]
+title = "Git Credentials"
+hint_plain = "Enter to send · Esc to cancel"
+hint_masked = "Input hidden · Tab to show · Enter to send · Esc to cancel"
+hint_revealed = "Input visible · Tab to hide · Enter to send · Esc to cancel"
+no_store = "jbgit never stores credentials; a configured credential helper may save them."
+
+[dialog.auth_failed]
+title = "Authentication Failed"
+body = "{label} was rejected by the remote: missing or wrong credentials."
+https_hint = "HTTPS: configure a credential helper so git can remember your token:"
+https_cmd = "  git config --global credential.helper manager   (or: store / osxkeychain / libsecret)"
+ssh_hint = "SSH: load your key into an agent, or check that the public key is registered:"
+ssh_cmd = "  ssh-add ~/.ssh/id_ed25519   ·   ssh -T git@<host>"
+no_store = "jbgit forwards prompts to a dialog but never stores credentials itself."
+
+[view.remotes]
+title = "Configure Remotes"
+empty = "No remotes configured. Press a to add one."
+none_selected = "No remote selected"
+fetch_label = "fetch "
+push_label = "push  "
+no_url = "(no URL)"
+push_same = "(same as fetch)"
+hint = "a Add · r Rename · e Edit URL · p Push URL · d/Del Remove · f Fetch · Esc Close"

@@ -1906,6 +1906,142 @@ async fn load_outgoing(
 }
 
 #[tokio::test]
+async fn snapshot_lists_remotes_with_fetch_and_push_urls() {
+    let dir_guard = TempDir::new().unwrap();
+    let dir = dir_guard.path();
+    git(dir, &["init", "-b", "main"]);
+    fs::write(dir.join("a.txt"), "a\n").unwrap();
+    git(dir, &["add", "."]);
+    git(dir, &["commit", "-m", "init"]);
+
+    let loc = RepoLocation::discover(dir).unwrap();
+    let (handle, mut rx) = EngineSupervisor::start(loc, false).unwrap();
+    let snap = fetch_snapshot(&handle, &mut rx).await;
+    assert!(snap.remotes.is_empty());
+    assert_eq!(snap.default_remote(), None);
+
+    git(dir, &["remote", "add", "zeta", "https://u:secret@example.com/z.git"]);
+    git(dir, &["remote", "add", "origin", "https://example.com/o.git"]);
+    git(dir, &["config", "remote.pushonly.pushurl", "ssh://git@example.com/p.git"]);
+    let snap = fetch_snapshot(&handle, &mut rx).await;
+    let names: Vec<&str> = snap.remote_names().collect();
+    assert_eq!(names, vec!["origin", "pushonly", "zeta"]);
+    assert_eq!(snap.default_remote().as_deref(), Some("origin"));
+
+    let zeta = snap.remote("zeta").unwrap();
+    assert_eq!(zeta.fetch_url.as_deref(), Some("https://u:secret@example.com/z.git"));
+    assert_eq!(zeta.push_url, None);
+    assert_eq!(zeta.display_fetch_url(), "https://u:***@example.com/z.git");
+    assert!(!format!("{snap:?}").contains("secret"));
+
+    let push_only = snap.remote("pushonly").unwrap();
+    assert_eq!(push_only.fetch_url, None);
+    assert_eq!(push_only.push_url.as_deref(), Some("ssh://git@example.com/p.git"));
+    assert_eq!(push_only.effective_push_url(), Some("ssh://git@example.com/p.git"));
+}
+
+#[tokio::test]
+async fn remote_lifecycle_add_fetch_rename_set_url_and_remove() {
+    use jbgit_core::{GitFailure, GitOp};
+
+    let upstream_guard = TempDir::new().unwrap();
+    let upstream = upstream_guard.path();
+    git(upstream, &["init", "-b", "main"]);
+    fs::write(upstream.join("u.txt"), "u\n").unwrap();
+    git(upstream, &["add", "."]);
+    git(upstream, &["commit", "-m", "upstream"]);
+    git(upstream, &["branch", "feature"]);
+
+    let local_guard = TempDir::new().unwrap();
+    let dir = local_guard.path();
+    git(dir, &["init", "-b", "main"]);
+    fs::write(dir.join("l.txt"), "l\n").unwrap();
+    git(dir, &["add", "."]);
+    git(dir, &["commit", "-m", "local"]);
+
+    let loc = RepoLocation::discover(dir).unwrap();
+    let (handle, mut rx) = EngineSupervisor::start(loc, false).unwrap();
+    let url = upstream.to_str().unwrap().to_string();
+
+    let added = run_git_op(
+        &handle,
+        &mut rx,
+        GitOp::AddRemote {
+            name: "fork".into(),
+            url: url.clone(),
+        },
+    )
+    .await;
+    assert!(added.success, "{added:?}");
+
+    let dup = run_git_op(
+        &handle,
+        &mut rx,
+        GitOp::AddRemote {
+            name: "fork".into(),
+            url: url.clone(),
+        },
+    )
+    .await;
+    assert!(!dup.success);
+    assert_eq!(dup.failure, Some(GitFailure::RemoteAlreadyExists));
+
+    let fetched = run_git_op(&handle, &mut rx, GitOp::FetchRemote { name: "fork".into() }).await;
+    assert!(fetched.success, "{fetched:?}");
+    let snap = fetch_snapshot(&handle, &mut rx).await;
+    let tracking: Vec<&str> = snap
+        .tracking_refs_of("fork")
+        .iter()
+        .map(|r| r.name.as_str())
+        .collect();
+    assert_eq!(tracking, vec!["fork/feature", "fork/main"]);
+
+    let renamed = run_git_op(
+        &handle,
+        &mut rx,
+        GitOp::RenameRemote {
+            old: "fork".into(),
+            new: "mine".into(),
+        },
+    )
+    .await;
+    assert!(renamed.success, "{renamed:?}");
+    let snap = fetch_snapshot(&handle, &mut rx).await;
+    assert!(snap.remote("fork").is_none());
+    assert_eq!(snap.remote("mine").unwrap().fetch_url.as_deref(), Some(url.as_str()));
+    let tracking: Vec<&str> = snap
+        .tracking_refs_of("mine")
+        .iter()
+        .map(|r| r.name.as_str())
+        .collect();
+    assert_eq!(tracking, vec!["mine/feature", "mine/main"]);
+    assert!(snap.tracking_refs_of("fork").is_empty());
+
+    let push_url = "https://u:pw@example.com/mine.git";
+    let set = run_git_op(
+        &handle,
+        &mut rx,
+        GitOp::SetRemoteUrl {
+            name: "mine".into(),
+            url: push_url.into(),
+            push: true,
+        },
+    )
+    .await;
+    assert!(set.success, "{set:?}");
+    let snap = fetch_snapshot(&handle, &mut rx).await;
+    let mine = snap.remote("mine").unwrap();
+    assert_eq!(mine.push_url.as_deref(), Some(push_url));
+    assert_eq!(mine.fetch_url.as_deref(), Some(url.as_str()));
+
+    let removed = run_git_op(&handle, &mut rx, GitOp::RemoveRemote { name: "mine".into() }).await;
+    assert!(removed.success, "{removed:?}");
+    let snap = fetch_snapshot(&handle, &mut rx).await;
+    assert!(snap.remotes.is_empty());
+    assert!(!snap.refs.iter().any(|r| r.kind == RefKind::RemoteBranch));
+}
+
+#[tokio::test]
 async fn tag_management_lifecycle_push_remote_check_overwrite_delete_and_restore() {
     use jbgit_core::{GitFailure, GitOp};
 

@@ -457,6 +457,39 @@ fn merge_options_item(state: &AppState, name: &str, cur: &str) -> ContextMenuIte
     )
 }
 
+/// Menu of the branches pane `Remote` category / `<remote>` group nodes.
+pub fn remote_group_menu_items(state: &AppState, remote: Option<&str>) -> Vec<ContextMenuItem> {
+    let i18n = &state.i18n;
+    let mut items = Vec::new();
+    if let Some(name) = remote.filter(|n| {
+        state
+            .repo_snapshot
+            .as_deref()
+            .is_some_and(|s| s.remote(n).is_some())
+    }) {
+        items.push(ContextMenuItem::run(
+            i18n.t_fmt("menu.branch.fetch_remote", &[("name", name)]),
+            Some('f'),
+            None,
+            vec![Action::RunGitOp(GitOp::FetchRemote {
+                name: name.to_string(),
+            })],
+        ));
+    }
+    let sc = catalog::shortcut_for_action(
+        state,
+        &[crate::config::KeymapScope::Global],
+        &crate::keymap::KeyAction::ConfigureRemotes,
+    );
+    items.push(ContextMenuItem::run(
+        i18n.t("menu.branch.configure_remotes"),
+        Some('c'),
+        sc.as_deref(),
+        vec![Action::OpenRemotes],
+    ));
+    items
+}
+
 pub fn ongoing_menu_items(state: &AppState, kind: OngoingKind) -> Vec<ContextMenuItem> {
     let i18n = &state.i18n;
     let kind_title = i18n.ongoing_title(kind);

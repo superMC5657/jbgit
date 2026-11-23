@@ -111,6 +111,7 @@ fn route_modal_key(key: KeyEvent, state: &AppState) -> Vec<Action> {
         ModalLayer::FileHistory(_) => route_file_history_key(&key, state),
         ModalLayer::Annotate(_) => route_annotate_key(&key, state),
         ModalLayer::PushDialog(_) => route_push_dialog_key(&key, state),
+        ModalLayer::Remotes(_) => crate::remotes_view::route_remotes_key(&key, state),
         ModalLayer::ConflictResolver(_) => route_conflict_merge_key(&key, state),
         ModalLayer::ThreeWayInspector { .. } | ModalLayer::HookError { .. } => match key.code {
             KeyCode::Esc | KeyCode::Enter => vec![Action::PopModal],

@@ -489,6 +489,30 @@ pub enum GitOp {
         name: String,
         force: bool,
     },
+    /// `git remote add <name> <url>`.
+    AddRemote {
+        name: String,
+        url: String,
+    },
+    /// `git remote rename <old> <new>` (remote-tracking refs follow).
+    RenameRemote {
+        old: String,
+        new: String,
+    },
+    /// `git remote remove <name>` (drops its remote-tracking refs).
+    RemoveRemote {
+        name: String,
+    },
+    /// `git remote set-url [--push] <name> <url>`.
+    SetRemoteUrl {
+        name: String,
+        url: String,
+        push: bool,
+    },
+    /// `git fetch --prune <name>` for one remote ([`GitOp::Fetch`] stays `--all`).
+    FetchRemote {
+        name: String,
+    },
     Merge {
         rev: String,
         options: MergeOptions,
@@ -617,6 +641,17 @@ impl GitOp {
                 format!("Delete remote tag '{remote}/{name}'")
             }
             Self::PushTag { remote, name, .. } => format!("Push tag '{name}' to '{remote}'"),
+            Self::AddRemote { name, .. } => format!("Add remote '{name}'"),
+            Self::RenameRemote { old, new } => format!("Rename remote '{old}' → '{new}'"),
+            Self::RemoveRemote { name } => format!("Remove remote '{name}'"),
+            Self::SetRemoteUrl { name, push, .. } => {
+                if *push {
+                    format!("Set push URL of '{name}'")
+                } else {
+                    format!("Set URL of '{name}'")
+                }
+            }
+            Self::FetchRemote { name } => format!("Fetch '{name}'"),
             Self::Merge { rev, options } => {
                 if options.squash {
                     format!("Squash merge '{rev}'")
@@ -716,6 +751,24 @@ impl GitOp {
         )
     }
 
+    /// Operations that talk to a remote (credential prompts may be needed).
+    pub fn is_network(&self) -> bool {
+        match self {
+            Self::Fetch
+            | Self::FetchRemote { .. }
+            | Self::Pull { .. }
+            | Self::Push { .. }
+            | Self::PushTag { .. }
+            | Self::DeleteRemoteTag { .. }
+            | Self::DeleteRemoteBranch { .. }
+            | Self::UpdateBranch { .. }
+            | Self::UpdateProject { .. } => true,
+            Self::Sequence(ops) => ops.iter().any(Self::is_network),
+            Self::Smart(inner) => inner.is_network(),
+            _ => false,
+        }
+    }
+
     pub fn is_read_only(&self) -> bool {
         match self {
             Self::PatchToClipboard { .. } => true,
@@ -738,6 +791,11 @@ impl GitOp {
             | Self::RestoreTag { .. }
             | Self::DeleteRemoteTag { .. }
             | Self::PushTag { .. }
+            | Self::AddRemote { .. }
+            | Self::RenameRemote { .. }
+            | Self::RemoveRemote { .. }
+            | Self::SetRemoteUrl { .. }
+            | Self::FetchRemote { .. }
             | Self::Fetch
             | Self::Push { .. }
             | Self::UpdateBranch { .. } => RefreshScope::RefsAndGraph,

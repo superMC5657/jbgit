@@ -1,4 +1,5 @@
 mod action;
+mod credentials;
 mod dispatch;
 mod effects;
 mod events;
@@ -9,6 +10,7 @@ mod state;
 mod types;
 
 pub use action::{Action, ChangesHost, DiffScope};
+pub use credentials::CredentialQueue;
 pub use effects::execute_effects_with_host;
 pub use modal_stack::{ModalLayer, ModalStack};
 pub use scroll::ScrollViewport;

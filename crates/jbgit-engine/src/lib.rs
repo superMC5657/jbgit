@@ -1,3 +1,4 @@
+pub mod askpass;
 pub(crate) mod blob_reader;
 pub(crate) mod cli;
 pub(crate) mod details;

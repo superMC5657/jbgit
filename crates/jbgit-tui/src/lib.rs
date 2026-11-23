@@ -16,6 +16,7 @@ mod input_stage;
 pub mod keymap;
 mod log_view;
 mod menus;
+mod remotes_view;
 pub mod session;
 mod stage_view;
 mod stash_view;

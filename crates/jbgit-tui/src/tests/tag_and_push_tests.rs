@@ -40,7 +40,7 @@ fn tag_menus_handle_no_remote_single_remote_multiple_remotes_and_log_submenus() 
         head_oid: Some(oid(1)),
         refs: vec![main_head.clone(), tag_ref("v1.0", 1)],
         commits: vec![make_commit(1, vec![], "init")],
-        remote_names: vec![],
+        remotes: vec![],
         ..Default::default()
     };
     let state_no_remote = test_state(no_remote_snap.workdir.clone());
@@ -69,7 +69,7 @@ fn tag_menus_handle_no_remote_single_remote_multiple_remotes_and_log_submenus() 
 
     // 2. Single remote (`origin`) + tag attached to HEAD commit in Log menu.
     let mut single_snap = snapshot();
-    single_snap.remote_names = vec!["origin".into()];
+    single_snap.remotes = super::remote_infos(&["origin"]);
     single_snap.refs.push(tag_ref("v1.0", 12));
     let mut ts_single = TestSession::with_snapshot(single_snap);
     let items = branch_menu_items(ts_single.state(), "v1.0", RefKind::Tag);
@@ -108,7 +108,7 @@ fn tag_menus_handle_no_remote_single_remote_multiple_remotes_and_log_submenus() 
 
     // 3. Multiple remotes (`origin`, `upstream`): Push Tag / Delete Tag on Remote use submenus.
     let mut multi_snap = snapshot();
-    multi_snap.remote_names = vec!["upstream".into(), "origin".into()];
+    multi_snap.remotes = super::remote_infos(&["upstream", "origin"]);
     multi_snap.refs.push(remote("upstream/main", 2));
     multi_snap.refs.push(tag_ref("v1.0", 12));
     let ts_multi = TestSession::with_snapshot(multi_snap);
@@ -131,7 +131,7 @@ fn tag_menus_handle_no_remote_single_remote_multiple_remotes_and_log_submenus() 
 #[test]
 fn delete_tag_probes_remote_checkbox_restore_notification_and_tag_exists_overwrite() {
     let mut snap = snapshot();
-    snap.remote_names = vec!["origin".into()];
+    snap.remotes = super::remote_infos(&["origin"]);
     snap.refs.push(tag_ref("v1.0", 12));
     let mut ts = TestSession::with_snapshot(snap);
     let _ = ts.take_requests();
@@ -288,7 +288,7 @@ fn delete_tag_probes_remote_checkbox_restore_notification_and_tag_exists_overwri
 #[test]
 fn push_dialog_preview_target_completion_up_to_protected_branches_and_retry() {
     let mut snap = snapshot();
-    snap.remote_names = vec!["origin".into()];
+    snap.remotes = super::remote_infos(&["origin"]);
     let commits_list = snap.commits.clone();
     let mut ts = TestSession::with_snapshot(snap);
     let _ = ts.take_requests();

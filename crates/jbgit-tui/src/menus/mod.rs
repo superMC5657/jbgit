@@ -8,7 +8,7 @@ mod log;
 mod stage;
 mod stash;
 
-pub use branch::{branch_menu_items, ongoing_menu_items, ref_menu_items};
+pub use branch::{branch_menu_items, ongoing_menu_items, ref_menu_items, remote_group_menu_items};
 pub use log::{
     annotate_menu_items, log_change_menu_items, log_commit_menu_items, log_diff_menu_items,
 };

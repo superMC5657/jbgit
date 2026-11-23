@@ -55,6 +55,8 @@ pub enum ModalLayer {
     Annotate(Box<AnnotateState>),
     /// Layer 2: full Push dialog (`target`, outgoing commits, files/diff preview, options).
     PushDialog(Box<PushDialogState>),
+    /// Layer 2: `Configure Remotes…` list (add / rename / edit URL / remove / fetch).
+    Remotes(crate::remotes_view::RemotesState),
     /// Layer 2: self-contained three-pane conflict resolver (`Ours | Result | Theirs`).
     ConflictResolver(Box<ConflictMergeState>),
     /// Layer 2: three-way hunk inspector (`HEAD / Staged / Worktree`).
@@ -167,6 +169,7 @@ impl ModalLayer {
             | Self::FileHistory(_)
             | Self::Annotate(_)
             | Self::PushDialog(_)
+            | Self::Remotes(_)
             | Self::ConflictResolver(_)
             | Self::ThreeWayInspector { .. }
             | Self::HookError { .. } => 20,

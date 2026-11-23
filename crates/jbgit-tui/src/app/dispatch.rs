@@ -124,6 +124,7 @@ impl AppState {
                 };
                 match top {
                     ModalLayer::Dialog(d) => match d.as_mut() {
+                        crate::dialogs::Dialog::Credential(c) => c.push_str(&text),
                         crate::dialogs::Dialog::Input(inp) => {
                             let clean: String =
                                 text.chars().filter(|c| *c != '\n' && *c != '\r').collect();
@@ -384,7 +385,9 @@ impl AppState {
             }
             Action::PopModal => {
                 self.menu_hover = None;
-                self.modal_stack.pop();
+                if !self.answer_credential(false) {
+                    self.modal_stack.pop();
+                }
                 if self.modal_stack.annotate().is_none() {
                     self.blame_syntax.invalidate();
                 }
@@ -435,6 +438,9 @@ impl AppState {
             Action::Resize | Action::TickSpinner => {
                 if matches!(action, Action::TickSpinner) {
                     self.spinner_frame = self.spinner_frame.wrapping_add(1);
+                    if !self.credentials.is_empty() {
+                        self.sync_credential_dialog();
+                    }
                 }
             }
             Action::CopyText(text) => {

@@ -1,11 +1,15 @@
 use std::io::Write;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use crossterm::event::EventStream;
 use futures::StreamExt;
 use jbgit_engine::EngineBackend;
+use jbgit_engine::askpass::{
+    AskpassRequest, AskpassResponder, AskpassServer, ChannelResponder, FixedResponder,
+};
 use jbgit_tui::graph::GraphicsCapabilities;
 use jbgit_tui::terminal::TerminalGuard;
 use jbgit_tui::{
@@ -48,14 +52,62 @@ fn parse_cli_args() -> Option<PathBuf> {
     }
 }
 
+/// `GIT_ASKPASS` / `SSH_ASKPASS` helper mode: `jbgit <prompt>` when launched
+/// by git / ssh with the session variables set, or the explicit (hidden)
+/// `jbgit askpass <prompt>`. Never listed in `--help`.
+fn askpass_client_mode() -> Option<i32> {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.first().map(String::as_str) == Some("askpass") {
+        return Some(jbgit_engine::askpass::run_client(&args[1..].join(" ")));
+    }
+    jbgit_engine::askpass::client_invocation(&args).map(jbgit_engine::askpass::run_client)
+}
+
+/// Starts this session's credential bridge. `JBGIT_ASKPASS_RESPONDER=cancel`
+/// or `=value:<text>` swaps the dialog for a deterministic responder
+/// (`jbgit-pilot` sandboxes / scripted QA).
+fn start_askpass(
+    ui_tx: tokio::sync::mpsc::UnboundedSender<UiAsyncEvent>,
+) -> Option<AskpassServer> {
+    let responder: Arc<dyn AskpassResponder> =
+        match std::env::var("JBGIT_ASKPASS_RESPONDER").ok().as_deref() {
+            Some("cancel") => Arc::new(FixedResponder::cancelling()),
+            Some(v) if v.starts_with("value:") => {
+                Arc::new(FixedResponder::answering(&v["value:".len()..]))
+            }
+            _ => {
+                let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<AskpassRequest>();
+                tokio::spawn(async move {
+                    while let Some(req) = rx.recv().await {
+                        if let Err(e) = ui_tx.send(UiAsyncEvent::Askpass(req))
+                            && let UiAsyncEvent::Askpass(req) = e.0
+                        {
+                            req.respond(None);
+                        }
+                    }
+                });
+                Arc::new(ChannelResponder::new(tx))
+            }
+        };
+    AskpassServer::start(responder).ok()
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
+    if let Some(code) = askpass_client_mode() {
+        std::process::exit(code);
+    }
     let Some(target_path) = parse_cli_args() else {
         return Ok(());
     };
 
-    let (engine_handle, mut engine_rx, mut session) = init_engine_and_session(target_path);
     let (ui_async_tx, mut ui_async_rx) = tokio::sync::mpsc::unbounded_channel::<UiAsyncEvent>();
+    let askpass_server = start_askpass(ui_async_tx.clone());
+    let askpass_env = askpass_server
+        .as_ref()
+        .and_then(|s| s.env_for_current_exe().ok());
+    let (engine_handle, mut engine_rx, mut session) =
+        init_engine_and_session(target_path, askpass_env);
     tokio::task::spawn_blocking(jbgit_tui::syntax::warmup_syntax_assets);
 
     let mut host = ProdHost::new(Some(TerminalGuard::enter()?), ui_async_tx);
@@ -169,5 +221,6 @@ async fn main() -> Result<()> {
         let _ = std::io::stdout().write_all(&release);
     }
     drop(host.term_guard);
+    drop(askpass_server);
     Ok(())
 }

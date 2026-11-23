@@ -17,6 +17,7 @@ impl AppState {
                     self.needs_redraw = true;
                 }
             }
+            UiAsyncEvent::Askpass(req) => self.enqueue_credential(req),
             UiAsyncEvent::LogGraphRebuilt(rebuilt) => {
                 if self.log.graph.apply_rebuilt(*rebuilt) {
                     if let Some(err) = &self.log.graph.filter_error {
@@ -159,6 +160,7 @@ impl AppState {
                 self.log.graph.on_snapshot_loaded();
                 self.log.details.reset_containing();
                 self.repo_snapshot = Some(snapshot);
+                self.apply_pending_remote_selection();
             }
             EngineEvent::RefAheadBehindBackfilled { epoch, updates } => {
                 if self

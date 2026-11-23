@@ -274,6 +274,8 @@ pub enum HitTarget {
     DialogCheckbox,
     BranchPopupRow(usize),
     BranchPopupStar(usize),
+    /// Row of the `Configure Remotes…` modal.
+    RemotesRow(usize),
     BranchPopupFetch,
     BranchPopupSettings,
     OngoingBanner(OngoingButton),

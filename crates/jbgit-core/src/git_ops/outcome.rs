@@ -19,6 +19,10 @@ pub enum GitFailure {
     PushRejected,
     /// `merge --ff-only` (or a fast-forward-only update) on diverged history.
     NotFastForward,
+    /// HTTPS credentials rejected / missing, or SSH key refused.
+    AuthenticationFailed,
+    /// `git remote add` / `rename` onto an existing remote name.
+    RemoteAlreadyExists,
     /// Anything else (first meaningful stderr line).
     Other(String),
 }
@@ -26,6 +30,12 @@ pub enum GitFailure {
 /// Classifies the combined stderr/stdout of a failed `git` step.
 pub fn classify_failure(lines: &[String]) -> GitFailure {
     let joined = lines.join("\n");
+    if is_authentication_failure(&joined) {
+        return GitFailure::AuthenticationFailed;
+    }
+    if joined.contains("error: remote ") && joined.contains(" already exists") {
+        return GitFailure::RemoteAlreadyExists;
+    }
     let collect_files = |marker: &str| -> Vec<String> {
         let mut files = Vec::new();
         let mut in_list = false;
@@ -98,7 +108,23 @@ pub fn classify_failure(lines: &[String]) -> GitFailure {
         .find(|l| l.starts_with("error:") || l.starts_with("fatal:"))
         .or_else(|| lines.iter().map(|l| l.trim()).find(|l| !l.is_empty()))
         .unwrap_or("git command failed");
-    GitFailure::Other(first.to_string())
+    GitFailure::Other(crate::redact_urls_in(first))
+}
+
+/// Credential / key rejection messages from git, git-remote-http(s) and ssh.
+fn is_authentication_failure(joined: &str) -> bool {
+    const MARKERS: [&str; 9] = [
+        "Authentication failed",
+        "Permission denied (publickey",
+        "could not read Username",
+        "could not read Password",
+        "Invalid username or password",
+        "HTTP Basic: Access denied",
+        "terminal prompts disabled",
+        "The requested URL returned error: 401",
+        "The requested URL returned error: 403",
+    ];
+    MARKERS.iter().any(|m| joined.contains(m))
 }
 
 /// One branch moved by Update Project (`GitUpdatedRanges`).

@@ -237,6 +237,23 @@ pub fn route_overlay_and_stash_click(
         HitTarget::DialogButton(DialogButtonKind::Confirm) => vec![Action::DialogConfirm],
         HitTarget::DialogButton(DialogButtonKind::Cancel) => vec![Action::PopModal],
         HitTarget::DialogCheckbox => vec![Action::DialogToggleCheckbox],
+        HitTarget::RemotesRow(idx) => {
+            let mut out = vec![Action::RemotesSelect(*idx)];
+            if is_double {
+                let probe = crate::remotes_view::RemotesState { selected: *idx };
+                if let Some(r) = crate::remotes_view::selected_remote(state, &probe) {
+                    out.push(Action::OpenDialog(Box::new(
+                        crate::dialogs::set_remote_url_dialog(
+                            state.repo_snapshot.as_deref(),
+                            &r.name,
+                            false,
+                            &state.i18n,
+                        ),
+                    )));
+                }
+            }
+            out
+        }
         HitTarget::BranchPopupRow(idx) => {
             let idx = *idx;
             let query = match state.modal_stack.last() {
@@ -639,6 +656,18 @@ pub(crate) fn build_menu_items_for_target(
                 }
                 Some((jbgit_core::BranchNodeKind::Leaf(jbgit_core::RefKind::Head), None)) => {
                     let mut b = menus::branch_menu_items(state, "", jbgit_core::RefKind::Head);
+                    b.push(ContextMenuItem::separator());
+                    b
+                }
+                Some((
+                    jbgit_core::BranchNodeKind::Category(jbgit_core::BranchCategory::Remote)
+                    | jbgit_core::BranchNodeKind::RemoteGroup,
+                    _,
+                )) => {
+                    let group = node
+                        .filter(|n| n.kind == jbgit_core::BranchNodeKind::RemoteGroup)
+                        .map(|n| n.label.clone());
+                    let mut b = menus::remote_group_menu_items(state, group.as_deref());
                     b.push(ContextMenuItem::separator());
                     b
                 }

@@ -105,6 +105,105 @@ pub struct RefInfo {
     pub is_head: bool,
 }
 
+/// One configured remote (`git remote -v`).
+///
+/// URLs keep their original value (credentials included) so operations can
+/// use them, but the [`Debug`] output and every display path go through
+/// [`redact_url`].
+#[derive(Clone, Default, PartialEq, Eq)]
+pub struct RemoteInfo {
+    pub name: String,
+    /// `remote.<name>.url` (`None` when only a push URL is configured).
+    pub fetch_url: Option<String>,
+    /// `remote.<name>.pushurl` (`None` = pushes go to `fetch_url`).
+    pub push_url: Option<String>,
+}
+
+impl RemoteInfo {
+    /// Effective push URL (`pushurl`, falling back to `url`).
+    pub fn effective_push_url(&self) -> Option<&str> {
+        self.push_url.as_deref().or(self.fetch_url.as_deref())
+    }
+
+    /// Fetch URL with credentials masked (empty when unset).
+    pub fn display_fetch_url(&self) -> String {
+        self.fetch_url.as_deref().map(redact_url).unwrap_or_default()
+    }
+
+    /// Explicit push URL with credentials masked (`None` when not configured).
+    pub fn display_push_url(&self) -> Option<String> {
+        self.push_url.as_deref().map(redact_url)
+    }
+}
+
+impl std::fmt::Debug for RemoteInfo {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RemoteInfo")
+            .field("name", &self.name)
+            .field("fetch_url", &self.fetch_url.as_deref().map(redact_url))
+            .field("push_url", &self.push_url.as_deref().map(redact_url))
+            .finish()
+    }
+}
+
+/// Masks the password part of a URL's userinfo
+/// (`https://u:secret@h/x.git` → `https://u:***@h/x.git`).
+///
+/// URLs without `scheme://user:password@` (scp-style `git@host:path`, plain
+/// paths, `ssh://git@host`) are returned unchanged.
+pub fn redact_url(url: &str) -> String {
+    let Some(scheme_end) = url.find("://") else {
+        return url.to_string();
+    };
+    let rest = &url[scheme_end + 3..];
+    let authority_end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+    let authority = &rest[..authority_end];
+    let Some(at) = authority.rfind('@') else {
+        return url.to_string();
+    };
+    let userinfo = &authority[..at];
+    let Some(colon) = userinfo.find(':') else {
+        return url.to_string();
+    };
+    if colon + 1 == userinfo.len() {
+        return url.to_string();
+    }
+    format!(
+        "{}{}:***{}",
+        &url[..scheme_end + 3],
+        &userinfo[..colon],
+        &rest[at..]
+    )
+}
+
+/// Applies [`redact_url`] to every `scheme://…` token of a free-form line
+/// (console command lines, error messages).
+pub fn redact_urls_in(text: &str) -> String {
+    if !text.contains("://") || !text.contains('@') {
+        return text.to_string();
+    }
+    let mut out = String::with_capacity(text.len());
+    let mut token = String::new();
+    let flush = |token: &mut String, out: &mut String| {
+        if token.contains("://") {
+            out.push_str(&redact_url(token));
+        } else {
+            out.push_str(token);
+        }
+        token.clear();
+    };
+    for ch in text.chars() {
+        if ch.is_whitespace() || matches!(ch, '\'' | '"' | '<' | '>') {
+            flush(&mut token, &mut out);
+            out.push(ch);
+        } else {
+            token.push(ch);
+        }
+    }
+    flush(&mut token, &mut out);
+    out
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct CommitSummary {
     pub oid: Oid,
@@ -152,13 +251,69 @@ pub struct RepoSnapshot {
     pub stashes: Vec<crate::StashEntry>,
     /// Ref name (or short SHA) a paused rebase is replaying onto.
     pub ongoing_onto: Option<String>,
-    /// Configured remote names (`git remote`), sorted with `origin` first.
-    pub remote_names: Vec<String>,
+    /// Configured remotes (`git remote -v`), sorted with `origin` first.
+    pub remotes: Vec<RemoteInfo>,
 }
 
 impl RepoSnapshot {
+    /// Configured remote names in snapshot order (`origin` first).
+    pub fn remote_names(&self) -> impl Iterator<Item = &str> {
+        self.remotes.iter().map(|r| r.name.as_str())
+    }
+
+    pub fn remote(&self, name: &str) -> Option<&RemoteInfo> {
+        self.remotes.iter().find(|r| r.name == name)
+    }
+
+    /// Remote part of a remote-tracking short name (`fork/team/x` → `fork`),
+    /// preferring the longest configured remote name that prefixes it.
+    pub fn remote_of_tracking<'a>(&self, tracking: &'a str) -> Option<&'a str> {
+        let configured = self
+            .remotes
+            .iter()
+            .map(|r| r.name.as_str())
+            .filter(|n| {
+                tracking.len() > n.len()
+                    && tracking.starts_with(n)
+                    && tracking.as_bytes()[n.len()] == b'/'
+            })
+            .max_by_key(|n| n.len());
+        match configured {
+            Some(n) => Some(&tracking[..n.len()]),
+            None => tracking.split_once('/').map(|(r, _)| r),
+        }
+    }
+
+    /// Remote-tracking refs (`refs/remotes/<name>/*`) that belong to `remote`.
+    pub fn tracking_refs_of(&self, remote: &str) -> Vec<&RefInfo> {
+        self.refs
+            .iter()
+            .filter(|r| {
+                r.kind == RefKind::RemoteBranch && self.remote_of_tracking(&r.name) == Some(remote)
+            })
+            .collect()
+    }
+
+    /// Remote used when none is given explicitly: the current branch's
+    /// upstream remote → `origin` → the first configured remote.
+    pub fn default_remote(&self) -> Option<String> {
+        if let Some(up) = self.head_ref().and_then(|r| r.upstream.as_deref())
+            && let Some(remote) = self.remote_of_tracking(up)
+            && (self.remotes.is_empty() || self.remote(remote).is_some())
+        {
+            return Some(remote.to_string());
+        }
+        if self.remote("origin").is_some() {
+            return Some("origin".to_string());
+        }
+        self.remotes
+            .first()
+            .map(|r| r.name.clone())
+            .or_else(|| self.available_remotes().into_iter().next())
+    }
+
     /// Returns deduplicated remote names (`origin` first, then natural order)
-    /// combining configured [`Self::remote_names`] with prefixes inferred from
+    /// combining configured [`Self::remotes`] with prefixes inferred from
     /// remote-tracking refs and branch upstreams.
     pub fn available_remotes(&self) -> Vec<String> {
         let mut seen = HashSet::new();
@@ -169,8 +324,8 @@ impl RepoSnapshot {
                 out.push(trimmed.to_string());
             }
         };
-        for name in &self.remote_names {
-            push_unique(name);
+        for remote in &self.remotes {
+            push_unique(&remote.name);
         }
         for r in &self.refs {
             if r.kind == RefKind::RemoteBranch
@@ -447,10 +602,76 @@ mod tests {
         assert_eq!(snap.resolve_revision("nope"), None);
     }
 
+    fn remote(name: &str) -> RemoteInfo {
+        RemoteInfo {
+            name: name.into(),
+            fetch_url: Some(format!("https://example.com/{name}.git")),
+            push_url: None,
+        }
+    }
+
+    fn local(name: &str, upstream: Option<&str>, is_head: bool) -> RefInfo {
+        RefInfo {
+            name: name.into(),
+            full_name: format!("refs/heads/{name}"),
+            target_oid: Oid::ZERO,
+            kind: RefKind::LocalBranch,
+            upstream: upstream.map(Into::into),
+            ahead_behind: None,
+            is_head,
+        }
+    }
+
+    #[test]
+    fn redacts_url_passwords_only() {
+        assert_eq!(redact_url("https://u:secret@h/x.git"), "https://u:***@h/x.git");
+        assert_eq!(
+            redact_url("https://u:p%40ss@host:8443/a/b?x=1"),
+            "https://u:***@host:8443/a/b?x=1"
+        );
+        assert_eq!(redact_url("https://token@h/x.git"), "https://token@h/x.git");
+        assert_eq!(redact_url("ssh://git@h:22/x.git"), "ssh://git@h:22/x.git");
+        assert_eq!(redact_url("git@github.com:o/r.git"), "git@github.com:o/r.git");
+        assert_eq!(redact_url("/srv/repos/x.git"), "/srv/repos/x.git");
+        assert_eq!(redact_url("https://h/x@y.git"), "https://h/x@y.git");
+        assert_eq!(
+            redact_urls_in("git remote add fork https://u:pw@h/x.git"),
+            "git remote add fork https://u:***@h/x.git"
+        );
+        assert_eq!(redact_urls_in("plain text"), "plain text");
+        let info = RemoteInfo {
+            name: "o".into(),
+            fetch_url: Some("https://u:secret@h/x.git".into()),
+            push_url: Some("https://u:other@h/y.git".into()),
+        };
+        let dbg = format!("{info:?}");
+        assert!(!dbg.contains("secret") && !dbg.contains("other"), "{dbg}");
+        assert_eq!(info.display_fetch_url(), "https://u:***@h/x.git");
+        assert_eq!(info.effective_push_url(), Some("https://u:other@h/y.git"));
+    }
+
+    #[test]
+    fn default_remote_prefers_upstream_then_origin_then_first() {
+        let mut snap = RepoSnapshot {
+            head_branch: Some("main".into()),
+            remotes: vec![remote("origin"), remote("my/fork"), remote("zeta")],
+            refs: vec![local("main", Some("my/fork/main"), true)],
+            ..Default::default()
+        };
+        assert_eq!(snap.default_remote().as_deref(), Some("my/fork"));
+        snap.refs = vec![local("main", None, true)];
+        assert_eq!(snap.default_remote().as_deref(), Some("origin"));
+        snap.remotes = vec![remote("zeta"), remote("alpha")];
+        assert_eq!(snap.default_remote().as_deref(), Some("zeta"));
+        snap.remotes.clear();
+        assert_eq!(snap.default_remote(), None);
+        assert_eq!(snap.remote_of_tracking("origin/feat/x"), Some("origin"));
+    }
+
     #[test]
     fn available_remotes_merges_and_prioritizes_origin() {
         let snap = RepoSnapshot {
-            remote_names: vec!["zebra".into(), "origin".into()],
+            remotes: vec![remote("zebra"), remote("origin")],
             refs: vec![
                 RefInfo {
                     name: "main".into(),

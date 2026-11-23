@@ -234,7 +234,7 @@ impl GitCliExecutor {
                             on_event(CliStreamEvent::Output {
                                 id,
                                 stream: ConsoleStream::Stdout,
-                                line: line.clone(),
+                                line: jbgit_core::redact_urls_in(&line),
                             });
                             stdout_lines.push(line);
                         }
@@ -247,7 +247,7 @@ impl GitCliExecutor {
                             on_event(CliStreamEvent::Output {
                                 id,
                                 stream: ConsoleStream::Stderr,
-                                line: line.clone(),
+                                line: jbgit_core::redact_urls_in(&line),
                             });
                             stderr_lines.push(line);
                         }
@@ -303,13 +303,16 @@ async fn next_line<R: tokio::io::AsyncBufRead + Unpin>(
     }
 }
 
+/// Console command line: environment is never shown and URL credentials
+/// (`https://user:password@host`) are masked.
 fn format_args_for_display(args: &[String]) -> String {
     args.iter()
         .map(|arg| {
+            let arg = jbgit_core::redact_urls_in(arg);
             if arg.contains(' ') || arg.is_empty() {
                 format!("\"{arg}\"")
             } else {
-                arg.clone()
+                arg
             }
         })
         .collect::<Vec<_>>()
@@ -356,6 +359,18 @@ fn find_git_executable() -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn console_command_line_masks_url_credentials() {
+        let args: Vec<String> = ["remote", "add", "fork", "https://u:secret@h/x.git"]
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+        assert_eq!(
+            format_args_for_display(&args),
+            "remote add fork https://u:***@h/x.git"
+        );
+    }
 
     #[test]
     fn pathspec_from_file_threshold() {

@@ -11,7 +11,7 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::app::RenderContext;
 use crate::dialogs::{
-    ChoiceDialog, Dialog, InputDialog, MergeDialog, MergeDialogRow, MessageDialog,
+    ChoiceDialog, CredentialDialog, Dialog, InputDialog, MergeDialog, MergeDialogRow, MessageDialog,
     RebaseTodoDialog,
 };
 use crate::hit_test::{DialogButtonKind, HitTarget};
@@ -137,7 +137,79 @@ pub fn render_dialog(
         Dialog::Message(d) => render_message(frame, screen, ctx, d, z),
         Dialog::RebaseTodo(d) => render_rebase(frame, screen, ctx, d, z),
         Dialog::Merge(d) => render_merge(frame, screen, ctx, d, z),
+        Dialog::Credential(d) => render_credential(frame, screen, ctx, d, z),
     }
+}
+
+fn render_credential(
+    frame: &mut Frame<'_>,
+    screen: Rect,
+    ctx: &mut RenderContext<'_>,
+    d: &CredentialDialog,
+    z: u8,
+) {
+    let rect = centered(screen, 72, 10);
+    let title = ctx.t("dialog.credential.title").to_string();
+    let inner = frame_block(frame, screen, ctx, rect, &title, false, z);
+    let w = inner.width as usize;
+    let shown = d.display_value();
+    let hint_key = if !d.masked {
+        "dialog.credential.hint_plain"
+    } else if d.revealed {
+        "dialog.credential.hint_revealed"
+    } else {
+        "dialog.credential.hint_masked"
+    };
+    let lines = vec![
+        Line::from(Span::styled(
+            format!(" {}", truncate_to_width(&d.prompt, w.saturating_sub(2))),
+            Style::default()
+                .fg(ctx.theme.fg_primary)
+                .add_modifier(Modifier::BOLD),
+        )),
+        Line::from(Span::styled(
+            format!(" {}▏", truncate_to_width(&shown, w.saturating_sub(4)))
+                + &" ".repeat(w.saturating_sub(shown.width() + 3)),
+            Style::default()
+                .fg(ctx.theme.fg_bright)
+                .bg(ctx.theme.bg_panel)
+                .add_modifier(Modifier::UNDERLINED),
+        )),
+        Line::from(Span::styled(
+            format!(" {}", truncate_to_width(ctx.t(hint_key), w.saturating_sub(2))),
+            Style::default().fg(ctx.theme.fg_muted),
+        )),
+        Line::from(Span::styled(
+            format!(" {}", truncate_to_width(ctx.t("dialog.credential.no_store"), w.saturating_sub(2))),
+            Style::default().fg(ctx.theme.fg_muted),
+        )),
+    ];
+    frame.render_widget(Paragraph::new(lines), inner);
+    let by = inner.bottom().saturating_sub(1);
+    render_buttons(
+        frame,
+        ctx,
+        inner.x + 1,
+        by,
+        inner.right(),
+        &[
+            DialogButtonSpec {
+                label: ctx.ok().into(),
+                selected: true,
+                enabled: true,
+                danger: false,
+                target: HitTarget::DialogButton(DialogButtonKind::Confirm),
+            },
+            DialogButtonSpec {
+                label: ctx.cancel().into(),
+                selected: false,
+                enabled: true,
+                danger: false,
+                target: HitTarget::DialogButton(DialogButtonKind::Cancel),
+            },
+        ],
+        z,
+    );
 }
 
 fn render_merge(

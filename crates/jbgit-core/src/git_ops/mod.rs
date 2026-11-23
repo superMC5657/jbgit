@@ -101,6 +101,51 @@ mod tests {
     }
 
     #[test]
+    fn classify_authentication_and_remote_exists() {
+        let line = |s: &str| vec![s.to_string()];
+        for msg in [
+            "remote: HTTP Basic: Access denied",
+            "fatal: Authentication failed for 'https://h/x.git/'",
+            "git@h: Permission denied (publickey).",
+            "fatal: could not read Username for 'https://h': terminal prompts disabled",
+            "fatal: could not read Password for 'https://u@h': No such device or address",
+        ] {
+            assert_eq!(classify_failure(&line(msg)), GitFailure::AuthenticationFailed, "{msg}");
+        }
+        assert_eq!(
+            classify_failure(&line("error: remote fork already exists.")),
+            GitFailure::RemoteAlreadyExists
+        );
+        assert_eq!(
+            classify_failure(&line("fatal: tag 'v1' already exists")),
+            GitFailure::TagAlreadyExists
+        );
+    }
+
+    #[test]
+    fn remote_ops_are_classified_for_network_and_refresh() {
+        let fetch_one = GitOp::FetchRemote { name: "fork".into() };
+        assert!(fetch_one.is_network());
+        assert!(GitOp::Smart(Box::new(GitOp::Pull { rebase: false })).is_network());
+        assert!(GitOp::Sequence(vec![GitOp::Fetch, GitOp::Checkout {
+            target: "x".into(),
+            detach: false
+        }])
+        .is_network());
+        for local in [
+            GitOp::AddRemote { name: "f".into(), url: "u".into() },
+            GitOp::RenameRemote { old: "f".into(), new: "g".into() },
+            GitOp::RemoveRemote { name: "f".into() },
+            GitOp::SetRemoteUrl { name: "f".into(), url: "u".into(), push: true },
+        ] {
+            assert!(!local.is_network(), "{}", local.label());
+            assert_eq!(local.refresh_scope(), RefreshScope::RefsAndGraph);
+        }
+        assert_eq!(fetch_one.refresh_scope(), RefreshScope::RefsAndGraph);
+        assert_eq!(fetch_one.label(), "Fetch 'fork'");
+    }
+
+    #[test]
     fn todo_is_editor_free_and_rewords_via_exec() {
         let mut todo = vec![
             TodoEntry::pick(oid(1), "one"),

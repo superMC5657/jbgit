@@ -12,6 +12,7 @@ use jbgit_core::{
 };
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 
+use crate::askpass::AskpassEnv;
 use crate::cli::{CliCommand, CliStreamEvent, GitCliExecutor, GitExecutableInfo};
 use crate::details::{
     check_remote_tag_async, load_blame_sync, load_commit_details_sync,
@@ -451,6 +452,8 @@ struct SupervisorContext {
     event_tx: UnboundedSender<EngineEvent>,
     op_ids: Arc<AtomicU64>,
     sig_cache: Arc<Mutex<LruCache<Oid, SignatureStatus>>>,
+    /// Credential bridge for network [`GitOp`]s (`None` = prompts fail fast).
+    askpass: Option<Arc<AskpassEnv>>,
 }
 
 pub struct EngineSupervisor;
@@ -469,6 +472,17 @@ impl EngineSupervisor {
         location: RepoLocation,
         enable_watcher: bool,
         scan_config: StatusScanConfig,
+    ) -> Result<(EngineHandle, UnboundedReceiver<EngineEvent>), EngineError> {
+        Self::start_with_askpass(location, enable_watcher, scan_config, None)
+    }
+
+    /// Variant of [`Self::start_with_config`] whose network operations route
+    /// credential prompts through `askpass` (Spec 12 Issue 08).
+    pub fn start_with_askpass(
+        location: RepoLocation,
+        enable_watcher: bool,
+        scan_config: StatusScanConfig,
+        askpass: Option<AskpassEnv>,
     ) -> Result<(EngineHandle, UnboundedReceiver<EngineEvent>), EngineError> {
         let slots = SlotRegistry::new();
         let pool = Arc::new(Git2WorkerPool::new(4));
@@ -510,6 +524,7 @@ impl EngineSupervisor {
             event_tx,
             op_ids: Arc::new(AtomicU64::new(1)),
             sig_cache: Arc::new(Mutex::new(LruCache::new(256))),
+            askpass: askpass.map(Arc::new),
         };
 
         tokio::spawn(async move {
@@ -1099,14 +1114,22 @@ fn spawn_run_git_op(ctx: &SupervisorContext, op: GitOp) {
     let tx = ctx.event_tx.clone();
     let guard = Arc::clone(&ctx.mutation_guard);
     let ids = Arc::clone(&ctx.op_ids);
+    let askpass = ctx.askpass.clone();
     tokio::spawn(async move {
         let read_only = op.is_read_only();
         let refresh = op.refresh_scope();
         let token = (!read_only).then(|| guard.begin());
         let fwd = tx.clone();
-        let res = crate::ops::run_git_op(cli_exec.as_ref(), &loc, &ids, op, move |ev| {
-            forward_cli_event(&fwd, ev);
-        })
+        let res = crate::ops::run_git_op(
+            cli_exec.as_ref(),
+            &loc,
+            &ids,
+            op,
+            askpass.as_deref(),
+            move |ev| {
+                forward_cli_event(&fwd, ev);
+            },
+        )
         .await;
         drop(token);
         let deferred = guard.take_pending();

@@ -56,7 +56,8 @@ pub use refs::{
     group_refs_for_table, shorten_group_label, shorten_ref_name,
 };
 pub use repo::{
-    CommitSummary, RefInfo, RefKind, RefreshScope, RepoSnapshot, RepositoryState, RewritePlanError,
+    CommitSummary, RefInfo, RefKind, RefreshScope, RemoteInfo, RepoSnapshot, RepositoryState,
+    RewritePlanError, redact_url, redact_urls_in,
 };
 pub use stage::{
     AmendCommitPreview, FileStatusKind, StageEntry, StageNodeKind, StageStatusSnapshot,

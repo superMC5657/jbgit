@@ -148,6 +148,9 @@ impl AppState {
             Action::RunGitOp(op) => self.start_git_op(op.clone(), effects),
             Action::OpenDialog(d) => self.push_dialog((**d).clone()),
             Action::DialogConfirm => {
+                if self.answer_credential(true) {
+                    return true;
+                }
                 let Some(ModalLayer::Dialog(d)) = self.modal_stack.last() else {
                     return true;
                 };
@@ -319,6 +322,17 @@ impl AppState {
                 }
             }
             Action::PromptUpdateProject => self.prompt_update_project(),
+            Action::OpenRemotes => {
+                self.modal_stack
+                    .retain(|l| !matches!(l, ModalLayer::ContextMenu { .. } | ModalLayer::Remotes(_)));
+                self.blur_active_pane(false);
+                let rs = crate::remotes_view::RemotesState::for_snapshot(self.snapshot());
+                self.push_modal(ModalLayer::Remotes(rs));
+            }
+            Action::RemotesMove(delta) => crate::remotes_view::apply_selection(self, None, *delta),
+            Action::RemotesSelect(idx) => {
+                crate::remotes_view::apply_selection(self, Some(*idx), 0);
+            }
             Action::UncommitHead => {
                 self.set_focus(WorkspaceTab::Commit, PaneId::CommitMessageEditor);
                 self.status_notice = Some(self.i18n.t("toast.uncommitting_head").into());
@@ -559,10 +573,10 @@ impl AppState {
             .unwrap_or_default()
     }
 
+    /// Current upstream's remote → `origin` → first configured remote.
     pub(crate) fn default_remote(&self) -> String {
-        self.available_remotes()
-            .into_iter()
-            .next()
+        self.snapshot()
+            .and_then(RepoSnapshot::default_remote)
             .unwrap_or_else(|| "origin".to_string())
     }
 
@@ -946,6 +960,20 @@ impl AppState {
                 GitOp::UpdateProject { .. } => {
                     self.notify_update_info(outcome.update_info.as_ref());
                 }
+                GitOp::AddRemote { name, .. } => {
+                    let text = self.i18n.t_fmt("toast.remote_added", &[("name", name)]);
+                    self.status_notice = Some(text.clone());
+                    self.notification = Some(Notification {
+                        text,
+                        is_error: false,
+                        action: Some((
+                            self.i18n.t_fmt("toast.fetch_remote_btn", &[("name", name)]),
+                            vec![Action::RunGitOp(GitOp::FetchRemote { name: name.clone() })],
+                        )),
+                    });
+                    self.select_remote_in_modal(name);
+                }
+                GitOp::RenameRemote { new, .. } => self.select_remote_in_modal(new),
                 GitOp::Ongoing {
                     step: OngoingStep::Continue | OngoingStep::Abort,
                     ..
@@ -1265,10 +1293,69 @@ impl AppState {
             ) => {
                 self.notify_error(i18n.t_fmt("toast.overwritten_notice", &[("label", &label)]));
             }
+            Some(GitFailure::AuthenticationFailed) => {
+                let body = vec![
+                    i18n.t_fmt("dialog.auth_failed.body", &[("label", &label)]),
+                    String::new(),
+                    i18n.t("dialog.auth_failed.https_hint").to_string(),
+                    i18n.t("dialog.auth_failed.https_cmd").to_string(),
+                    i18n.t("dialog.auth_failed.ssh_hint").to_string(),
+                    i18n.t("dialog.auth_failed.ssh_cmd").to_string(),
+                    String::new(),
+                    i18n.t("dialog.auth_failed.no_store").to_string(),
+                ];
+                self.status_notice = Some(i18n.t_fmt("toast.auth_failed", &[("label", &label)]));
+                self.push_dialog(Dialog::Choice(ChoiceDialog::buttons(
+                    i18n.t("dialog.auth_failed.title"),
+                    body,
+                    vec![
+                        ChoiceOption::new(
+                            i18n.t("toast.show_console_btn"),
+                            Some('s'),
+                            vec![Action::SwitchTab(WorkspaceTab::Console)],
+                        ),
+                        ChoiceOption::new(i18n.t("common.close"), Some('c'), Vec::new()),
+                    ],
+                )));
+            }
+            Some(GitFailure::RemoteAlreadyExists) => {
+                let name = match &op {
+                    GitOp::AddRemote { name, .. } => name.clone(),
+                    GitOp::RenameRemote { new, .. } => new.clone(),
+                    _ => String::new(),
+                };
+                self.notify_error(i18n.t_fmt("toast.remote_exists", &[("name", &name)]));
+            }
             Some(GitFailure::Other(msg)) => {
                 self.notify_error(i18n.t_fmt("toast.op_failed_msg", &[("label", &label), ("error", &msg)]));
             }
             None => self.notify_error(i18n.t_fmt("toast.op_failed", &[("label", &label)])),
+        }
+    }
+
+    /// Moves the open Remotes modal's selection onto `name` once it appears.
+    fn select_remote_in_modal(&mut self, name: &str) {
+        self.pending_remote_selection = Some(name.to_string());
+        self.apply_pending_remote_selection();
+    }
+
+    /// Applies [`Self::select_remote_in_modal`] when the refreshed snapshot
+    /// lists the remote (called after every snapshot load).
+    pub(crate) fn apply_pending_remote_selection(&mut self) {
+        let Some(name) = self.pending_remote_selection.clone() else {
+            return;
+        };
+        let Some(idx) = self
+            .snapshot()
+            .and_then(|s| s.remotes.iter().position(|r| r.name == name))
+        else {
+            return;
+        };
+        self.pending_remote_selection = None;
+        for layer in self.modal_stack.iter_mut() {
+            if let ModalLayer::Remotes(rs) = layer {
+                rs.selected = idx;
+            }
         }
     }
 

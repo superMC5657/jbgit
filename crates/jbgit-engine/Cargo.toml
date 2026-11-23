@@ -9,12 +9,22 @@ jbgit-core.workspace = true
 
 chrono.workspace = true
 crossbeam-channel.workspace = true
+getrandom.workspace = true
 git2.workspace = true
 imara-diff.workspace = true
 notify.workspace = true
 notify-debouncer-mini.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
+zeroize.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true, features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_System_Threading",
+] }
 
 [dev-dependencies]
 tempfile.workspace = true

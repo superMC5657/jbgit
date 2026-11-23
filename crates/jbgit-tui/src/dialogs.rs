@@ -9,6 +9,7 @@ use jbgit_core::{
     GitOp, MergeOptions, Oid, RepoSnapshot, ResetMode, StashEntry, TodoAction, TodoEntry,
     default_squash_messages,
 };
+use jbgit_engine::askpass::Secret;
 
 use crate::app::Action;
 use crate::i18n::I18n;
@@ -22,6 +23,8 @@ pub enum InputValidation {
         existing: Vec<String>,
     },
     NonEmpty,
+    /// Remote URL / path: non-empty and no whitespace (no network check).
+    RemoteUrl,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -46,6 +49,19 @@ pub enum InputIntent {
     /// New local name for a remote branch whose local namesake diverged.
     RemoteCheckoutAs {
         start: String,
+    },
+    /// Step 1 of Add Remote: the name (step 2 asks for the URL).
+    AddRemoteName,
+    AddRemoteUrl {
+        name: String,
+    },
+    RenameRemote {
+        old: String,
+    },
+    /// Fetch URL (`push = false`) or push URL of `name`.
+    SetRemoteUrl {
+        name: String,
+        push: bool,
     },
 }
 
@@ -91,6 +107,16 @@ impl InputDialog {
                 .trim()
                 .is_empty()
                 .then(|| i18n.t("common.cannot_be_empty").to_string()),
+            InputValidation::RemoteUrl => {
+                let v = self.value.trim();
+                if v.is_empty() {
+                    Some(i18n.t("dialog.remotes.url_empty").to_string())
+                } else if v.chars().any(char::is_whitespace) {
+                    Some(i18n.t("dialog.remotes.url_spaces").to_string())
+                } else {
+                    None
+                }
+            }
             InputValidation::RefName { what, existing } => {
                 let refs: Vec<&str> = existing.iter().map(String::as_str).collect();
                 i18n.validate_ref_name(&self.value, &refs, what).err()
@@ -166,7 +192,171 @@ impl InputDialog {
                     track: true,
                 })]
             }
+            InputIntent::AddRemoteName => vec![Action::OpenDialog(Box::new(Dialog::Input(
+                InputDialog::new(
+                    i18n.t_fmt("dialog.remotes.add_title", &[("name", &value)]),
+                    i18n.t_fmt("dialog.remotes.url_prompt", &[("name", &value)]),
+                    "",
+                    InputValidation::RemoteUrl,
+                    InputIntent::AddRemoteUrl { name: value },
+                ),
+            )))],
+            InputIntent::AddRemoteUrl { name } => vec![Action::RunGitOp(GitOp::AddRemote {
+                name: name.clone(),
+                url: value,
+            })],
+            InputIntent::RenameRemote { old } => vec![Action::RunGitOp(GitOp::RenameRemote {
+                old: old.clone(),
+                new: value,
+            })],
+            InputIntent::SetRemoteUrl { name, push } => {
+                vec![Action::RunGitOp(GitOp::SetRemoteUrl {
+                    name: name.clone(),
+                    url: value,
+                    push: *push,
+                })]
+            }
         }
+    }
+}
+
+/// Configured remote names except `skip` (duplicate check of remote dialogs).
+fn other_remote_names(snap: Option<&RepoSnapshot>, skip: Option<&str>) -> Vec<String> {
+    snap.map(|s| {
+        s.remote_names()
+            .filter(|n| Some(*n) != skip)
+            .map(ToString::to_string)
+            .collect()
+    })
+    .unwrap_or_default()
+}
+
+/// `Add Remote` step 1 (name; `origin` is suggested when no remote exists).
+pub fn add_remote_dialog(snap: Option<&RepoSnapshot>, i18n: &I18n) -> Dialog {
+    let suggested = if snap.is_some_and(|s| s.remotes.is_empty()) {
+        "origin"
+    } else {
+        ""
+    };
+    Dialog::Input(InputDialog::new(
+        i18n.t("dialog.remotes.add_name_title"),
+        i18n.t("dialog.remotes.name_prompt"),
+        suggested,
+        InputValidation::RefName {
+            what: "validation.what.remote",
+            existing: other_remote_names(snap, None),
+        },
+        InputIntent::AddRemoteName,
+    ))
+}
+
+pub fn rename_remote_dialog(snap: Option<&RepoSnapshot>, old: &str, i18n: &I18n) -> Dialog {
+    Dialog::Input(InputDialog::new(
+        i18n.t_fmt("dialog.remotes.rename_title", &[("name", old)]),
+        i18n.t("dialog.remotes.name_prompt"),
+        old,
+        InputValidation::RefName {
+            what: "validation.what.remote",
+            existing: snap
+                .map(|s| s.remote_names().map(ToString::to_string).collect())
+                .unwrap_or_default(),
+        },
+        InputIntent::RenameRemote {
+            old: old.to_string(),
+        },
+    ))
+}
+
+/// Edit the fetch URL (`push = false`) or push URL of `name`. The current
+/// value is pre-filled as stored (the user is editing their own config).
+pub fn set_remote_url_dialog(
+    snap: Option<&RepoSnapshot>,
+    name: &str,
+    push: bool,
+    i18n: &I18n,
+) -> Dialog {
+    let remote = snap.and_then(|s| s.remote(name));
+    let current = if push {
+        remote.and_then(|r| r.effective_push_url())
+    } else {
+        remote.and_then(|r| r.fetch_url.as_deref())
+    }
+    .unwrap_or_default();
+    let title_key = if push {
+        "dialog.remotes.push_url_title"
+    } else {
+        "dialog.remotes.url_title"
+    };
+    Dialog::Input(InputDialog::new(
+        i18n.t_fmt(title_key, &[("name", name)]),
+        i18n.t_fmt("dialog.remotes.url_prompt", &[("name", name)]),
+        current,
+        InputValidation::RemoteUrl,
+        InputIntent::SetRemoteUrl {
+            name: name.to_string(),
+            push,
+        },
+    ))
+}
+
+/// Masked input answering a `GIT_ASKPASS` / `SSH_ASKPASS` prompt. The value
+/// lives in a zeroizing buffer and never appears in `Debug` output.
+#[derive(Clone)]
+pub struct CredentialDialog {
+    /// Id of the queued askpass request this dialog answers.
+    pub id: u64,
+    pub prompt: String,
+    pub masked: bool,
+    /// Masked value temporarily shown in clear text (`Tab`).
+    pub revealed: bool,
+    pub value: Secret,
+}
+
+impl CredentialDialog {
+    pub fn new(id: u64, prompt: impl Into<String>, masked: bool) -> Self {
+        Self {
+            id,
+            prompt: prompt.into(),
+            masked,
+            revealed: false,
+            // Pre-sized so typing never reallocates (and leaves copies behind).
+            value: Secret::new(String::with_capacity(256)),
+        }
+    }
+
+    pub fn push_str(&mut self, text: &str) {
+        for c in text.chars().filter(|c| !c.is_control()) {
+            self.value.push(c);
+        }
+    }
+
+    pub fn clear(&mut self) {
+        self.value = Secret::new(String::with_capacity(256));
+    }
+
+    /// Text drawn in the input line (bullets while masked).
+    pub fn display_value(&self) -> String {
+        if self.masked && !self.revealed {
+            "•".repeat(self.value.chars().count())
+        } else {
+            self.value.to_string()
+        }
+    }
+
+    /// Moves the typed value out, leaving an empty buffer behind.
+    pub fn take_value(&mut self) -> Secret {
+        std::mem::replace(&mut self.value, Secret::new(String::new()))
+    }
+}
+
+impl std::fmt::Debug for CredentialDialog {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CredentialDialog")
+            .field("id", &self.id)
+            .field("prompt", &self.prompt)
+            .field("masked", &self.masked)
+            .field("value", &"<redacted>")
+            .finish()
     }
 }
 
@@ -622,6 +812,7 @@ pub enum Dialog {
     Message(MessageDialog),
     RebaseTodo(RebaseTodoDialog),
     Merge(MergeDialog),
+    Credential(CredentialDialog),
 }
 
 impl Dialog {
@@ -641,6 +832,9 @@ impl Dialog {
             Self::Message(d) => Some(d.confirm_actions(i18n)),
             Self::RebaseTodo(d) => d.error(i18n).is_none().then(|| d.confirm_actions()),
             Self::Merge(d) => d.options.validate().is_ok().then(|| d.confirm_actions()),
+            // Answered by `AppState::answer_credential` (the secret never
+            // travels inside an `Action`).
+            Self::Credential(_) => Some(Vec::new()),
         }
     }
 }
@@ -662,6 +856,26 @@ pub fn route_dialog_key(dialog: &mut Dialog, key: &KeyEvent, i18n: &I18n) -> Dia
         return DialogKey::Cancel;
     }
     match dialog {
+        Dialog::Credential(d) => match key.code {
+            KeyCode::Enter => DialogKey::Confirm,
+            KeyCode::Backspace => {
+                d.value.pop();
+                DialogKey::Redraw
+            }
+            KeyCode::Char('u') if ctrl => {
+                d.clear();
+                DialogKey::Redraw
+            }
+            KeyCode::Tab | KeyCode::BackTab if d.masked => {
+                d.revealed = !d.revealed;
+                DialogKey::Redraw
+            }
+            KeyCode::Char(c) if plain && !c.is_control() => {
+                d.value.push(c);
+                DialogKey::Redraw
+            }
+            _ => DialogKey::None,
+        },
         Dialog::Input(d) => match key.code {
             KeyCode::Enter => DialogKey::Confirm,
             KeyCode::Backspace => {

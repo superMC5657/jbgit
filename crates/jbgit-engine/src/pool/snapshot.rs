@@ -2,7 +2,7 @@ use std::path::Path;
 
 use git2::{BranchType, Repository, Sort};
 use jbgit_core::{
-    CommitSummary, ConflictDocument, EpochToken, Oid, RefInfo, RefKind, RepoSnapshot,
+    CommitSummary, ConflictDocument, EpochToken, Oid, RefInfo, RefKind, RemoteInfo, RepoSnapshot,
 };
 
 use crate::error::EngineError;
@@ -129,25 +129,7 @@ pub fn load_repo_snapshot_with_config_sync(
                     .map_or_else(|| oid.short(), |r| r.name.clone())
             });
 
-        let remote_names = match repo.remotes() {
-            Ok(remotes) => {
-                let mut names: Vec<String> = remotes
-                    .iter()
-                    .flatten()
-                    .flatten()
-                    .filter(|s| !s.is_empty())
-                    .map(ToString::to_string)
-                    .collect();
-                names.sort_by(|a, b| match (a == "origin", b == "origin") {
-                    (true, false) => std::cmp::Ordering::Less,
-                    (false, true) => std::cmp::Ordering::Greater,
-                    _ => jbgit_core::natural_cmp(a, b),
-                });
-                names.dedup();
-                names
-            }
-            Err(_) => Vec::new(),
-        };
+        let remotes = collect_remotes(repo);
 
         Ok((
             RepoSnapshot {
@@ -166,11 +148,50 @@ pub fn load_repo_snapshot_with_config_sync(
                 recent_branches,
                 stashes,
                 ongoing_onto,
-                remote_names,
+                remotes,
             },
             pending_ahead_behind,
         ))
     })
+}
+
+/// Reads `remote.*` from the repository config (cheap, no network), sorted
+/// with `origin` first then natural order.
+fn collect_remotes(repo: &Repository) -> Vec<RemoteInfo> {
+    let Ok(names) = repo.remotes() else {
+        return Vec::new();
+    };
+    let mut out: Vec<RemoteInfo> = names
+        .iter()
+        .flatten()
+        .flatten()
+        .filter(|s| !s.is_empty())
+        .map(|name| {
+            let (fetch_url, push_url) = match repo.find_remote(name) {
+                Ok(r) => (
+                    r.url().ok().filter(|u| !u.is_empty()).map(ToString::to_string),
+                    r.pushurl()
+                        .ok()
+                        .flatten()
+                        .filter(|u| !u.is_empty())
+                        .map(ToString::to_string),
+                ),
+                Err(_) => (None, None),
+            };
+            RemoteInfo {
+                name: name.to_string(),
+                fetch_url,
+                push_url,
+            }
+        })
+        .collect();
+    out.sort_by(|a, b| match (a.name == "origin", b.name == "origin") {
+        (true, false) => std::cmp::Ordering::Less,
+        (false, true) => std::cmp::Ordering::Greater,
+        _ => jbgit_core::natural_cmp(&a.name, &b.name),
+    });
+    out.dedup_by(|a, b| a.name == b.name);
+    out
 }
 
 pub fn compute_ahead_behind_batch_sync(
