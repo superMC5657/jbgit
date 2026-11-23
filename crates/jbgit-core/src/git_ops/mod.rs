@@ -9,11 +9,12 @@ mod rebase;
 mod refs;
 
 pub use ops::{
-    GitOp, OngoingKind, OngoingStep, PatchSource, PushForce, PushTagMode, ResetMode, short_rev,
+    FastForward, GitOp, MergeOptionConflict, MergeOptions, OngoingKind, OngoingStep, PatchSource,
+    PushForce, PushTagMode, ResetMode, UpdateMode, short_rev,
 };
 pub use outcome::{
-    GitFailure, GitOpOutcome, PushOutcomeSummary, StashEntry, classify_failure,
-    parse_push_porcelain,
+    GitFailure, GitOpOutcome, PushOutcomeSummary, SkippedBranch, StashEntry, UpdateInfo,
+    UpdatedRange, classify_failure, parse_push_porcelain,
 };
 pub use rebase::{RewritePlan, TodoAction, TodoEntry, default_squash_messages, render_todo};
 pub use refs::{
@@ -276,5 +277,184 @@ mod tests {
         assert!(matches_protected_branch_patterns("main", &patterns));
         assert!(matches_protected_branch_patterns("release/1.2", &patterns));
         assert!(!matches_protected_branch_patterns("feat/push", &patterns));
+    }
+
+    #[test]
+    fn merge_options_validate_covers_every_incompatible_pair() {
+        let msg = || Some("custom".to_string());
+        let ok = |o: MergeOptions| assert_eq!(o.validate(), Ok(()), "{o:?}");
+        let clash = |o: MergeOptions, c: MergeOptionConflict| {
+            assert_eq!(o.validate(), Err(c), "{o:?}");
+        };
+        ok(MergeOptions::default());
+        for ff in FastForward::ALL {
+            ok(MergeOptions {
+                ff,
+                allow_unrelated: true,
+                strategy: Some("ours".into()),
+                strategy_option: Some("theirs".into()),
+                ..Default::default()
+            });
+        }
+        ok(MergeOptions {
+            squash: true,
+            no_commit: true,
+            ..Default::default()
+        });
+        ok(MergeOptions {
+            ff: FastForward::NoFf,
+            no_commit: true,
+            ..Default::default()
+        });
+        ok(MergeOptions {
+            ff: FastForward::NoFf,
+            message: msg(),
+            ..Default::default()
+        });
+        // Blank messages do not count as `-m`.
+        ok(MergeOptions {
+            squash: true,
+            message: Some("  \n ".into()),
+            ..Default::default()
+        });
+
+        clash(
+            MergeOptions {
+                squash: true,
+                ff: FastForward::NoFf,
+                ..Default::default()
+            },
+            MergeOptionConflict::SquashNoFf,
+        );
+        clash(
+            MergeOptions {
+                squash: true,
+                ff: FastForward::FfOnly,
+                ..Default::default()
+            },
+            MergeOptionConflict::SquashFfOnly,
+        );
+        clash(
+            MergeOptions {
+                squash: true,
+                message: msg(),
+                ..Default::default()
+            },
+            MergeOptionConflict::SquashMessage,
+        );
+        clash(
+            MergeOptions {
+                ff: FastForward::FfOnly,
+                message: msg(),
+                ..Default::default()
+            },
+            MergeOptionConflict::FfOnlyMessage,
+        );
+        clash(
+            MergeOptions {
+                ff: FastForward::FfOnly,
+                no_commit: true,
+                ..Default::default()
+            },
+            MergeOptionConflict::FfOnlyNoCommit,
+        );
+        clash(
+            MergeOptions {
+                no_commit: true,
+                message: msg(),
+                ..Default::default()
+            },
+            MergeOptionConflict::MessageNoCommit,
+        );
+        assert_eq!(
+            MergeOptionConflict::SquashNoFf.flags(),
+            ("--squash", "--no-ff")
+        );
+    }
+
+    #[test]
+    fn merge_options_remember_roundtrip_drops_message() {
+        let o = MergeOptions {
+            ff: FastForward::NoFf,
+            squash: false,
+            no_commit: true,
+            message: Some("secret".into()),
+            strategy: Some("ort".into()),
+            strategy_option: Some("theirs".into()),
+            allow_unrelated: true,
+        };
+        let text = o.to_remembered();
+        assert!(!text.contains("secret"));
+        let back = MergeOptions::from_remembered(&text);
+        assert_eq!(
+            back,
+            MergeOptions {
+                message: None,
+                ..o.clone()
+            }
+        );
+        assert_eq!(MergeOptions::from_remembered("garbage\nff=bogus\n"), MergeOptions::default());
+        assert_eq!(o.summary(), "--no-ff --no-commit -s ort -X theirs --allow-unrelated-histories -m");
+        assert_eq!(MergeOptions::default().summary(), "");
+        assert_eq!(FastForward::Default.next().next().next(), FastForward::Default);
+        assert_eq!(FastForward::NoFf.prev(), FastForward::Default);
+    }
+
+    #[test]
+    fn merge_and_update_project_labels_failures_and_update_info() {
+        let squash = GitOp::Merge {
+            rev: "feat".into(),
+            options: MergeOptions {
+                squash: true,
+                ..Default::default()
+            },
+        };
+        assert_eq!(squash.label(), "Squash merge 'feat'");
+        assert!(squash.supports_smart());
+        assert_eq!(squash.refresh_scope(), RefreshScope::All);
+        let update = GitOp::UpdateProject {
+            mode: Some(UpdateMode::Rebase),
+            save_changes: true,
+            update_other_branches: true,
+        };
+        assert_eq!(update.label(), "Update Project");
+        assert!(!update.supports_smart());
+        assert!(!update.is_read_only());
+        assert_eq!(update.refresh_scope(), RefreshScope::All);
+
+        assert_eq!(UpdateMode::from_pull_rebase(None), UpdateMode::Merge);
+        assert_eq!(UpdateMode::from_pull_rebase(Some("false")), UpdateMode::Merge);
+        for v in ["true", "merges", "interactive", "TRUE"] {
+            assert_eq!(UpdateMode::from_pull_rebase(Some(v)), UpdateMode::Rebase, "{v}");
+        }
+
+        assert_eq!(
+            classify_failure(&["fatal: Not possible to fast-forward, aborting.".to_string()]),
+            GitFailure::NotFastForward
+        );
+        assert_eq!(
+            classify_failure(&[" ! [rejected] main -> main (non-fast-forward)".to_string()]),
+            GitFailure::PushRejected
+        );
+
+        let mut info = UpdateInfo::default();
+        assert!(info.is_empty());
+        assert_eq!(info.range_label(), "");
+        info.ranges.push(UpdatedRange {
+            branch: "main".into(),
+            before: oid(1),
+            after: oid(2),
+        });
+        assert_eq!(info.range_label(), format!("{}..{}", oid(1).short(), oid(2).short()));
+        info.ranges.push(UpdatedRange {
+            branch: "dev".into(),
+            before: oid(3),
+            after: oid(4),
+        });
+        assert_eq!(info.range_label(), "2 ranges");
+        let _ = SkippedBranch {
+            branch: "x".into(),
+            reason: "diverged".into(),
+        };
     }
 }

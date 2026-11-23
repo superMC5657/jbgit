@@ -6,7 +6,7 @@
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use jbgit_core::{
-    GitOp, Oid, RepoSnapshot, ResetMode, StashEntry, TodoAction, TodoEntry,
+    GitOp, MergeOptions, Oid, RepoSnapshot, ResetMode, StashEntry, TodoAction, TodoEntry,
     default_squash_messages,
 };
 
@@ -446,12 +446,182 @@ impl RebaseTodoDialog {
     }
 }
 
+/// Rows of the Merge options dialog, top to bottom.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum MergeDialogRow {
+    FastForward,
+    Squash,
+    NoCommit,
+    AllowUnrelated,
+    Strategy,
+    StrategyOption,
+    Message,
+}
+
+impl MergeDialogRow {
+    pub const ALL: [Self; 7] = [
+        Self::FastForward,
+        Self::Squash,
+        Self::NoCommit,
+        Self::AllowUnrelated,
+        Self::Strategy,
+        Self::StrategyOption,
+        Self::Message,
+    ];
+
+    pub const fn mnemonic(self) -> char {
+        match self {
+            Self::FastForward => 'f',
+            Self::Squash => 's',
+            Self::NoCommit => 'n',
+            Self::AllowUnrelated => 'u',
+            Self::Strategy => 't',
+            Self::StrategyOption => 'x',
+            Self::Message => 'm',
+        }
+    }
+}
+
+/// `-s` choices offered by the dialog (empty = Git default).
+pub const MERGE_STRATEGIES: &[&str] = &["", "ort", "recursive", "resolve", "octopus", "ours", "subtree"];
+/// `-X` choices offered by the dialog (empty = none).
+pub const MERGE_STRATEGY_OPTIONS: &[&str] = &[
+    "",
+    "ours",
+    "theirs",
+    "patience",
+    "diff-algorithm=histogram",
+    "ignore-space-change",
+    "ignore-all-space",
+    "renormalize",
+    "no-renames",
+];
+
+fn cycle_choice(choices: &[&str], current: Option<&str>, forward: bool) -> Option<String> {
+    let cur = current.unwrap_or("");
+    let len = choices.len();
+    let idx = choices.iter().position(|c| *c == cur).unwrap_or(0);
+    let next = if forward {
+        (idx + 1) % len
+    } else {
+        (idx + len - 1) % len
+    };
+    let v = choices[next];
+    (!v.is_empty()).then(|| v.to_string())
+}
+
+/// `Merge…` options dialog (`GitMergeDialog`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MergeDialog {
+    pub rev: String,
+    pub current: String,
+    /// `current..rev` commit count (None when unknown).
+    pub commit_count: Option<usize>,
+    pub options: MergeOptions,
+    pub selected: usize,
+}
+
+impl MergeDialog {
+    pub fn new(
+        rev: impl Into<String>,
+        current: impl Into<String>,
+        commit_count: Option<usize>,
+        remembered: MergeOptions,
+    ) -> Self {
+        Self {
+            rev: rev.into(),
+            current: current.into(),
+            commit_count,
+            options: MergeOptions {
+                message: None,
+                ..remembered
+            },
+            selected: 0,
+        }
+    }
+
+    pub fn row(&self) -> MergeDialogRow {
+        MergeDialogRow::ALL[self.selected.min(MergeDialogRow::ALL.len() - 1)]
+    }
+
+    pub fn editing_message(&self) -> bool {
+        self.row() == MergeDialogRow::Message
+    }
+
+    pub fn move_selection(&mut self, delta: isize) {
+        let len = MergeDialogRow::ALL.len() as isize;
+        self.selected = (self.selected as isize + delta).rem_euclid(len) as usize;
+    }
+
+    /// Toggles / cycles `row` (`forward = false` cycles backwards).
+    pub fn toggle(&mut self, row: MergeDialogRow, forward: bool) {
+        let o = &mut self.options;
+        match row {
+            MergeDialogRow::FastForward => {
+                o.ff = if forward { o.ff.next() } else { o.ff.prev() };
+            }
+            MergeDialogRow::Squash => o.squash = !o.squash,
+            MergeDialogRow::NoCommit => o.no_commit = !o.no_commit,
+            MergeDialogRow::AllowUnrelated => o.allow_unrelated = !o.allow_unrelated,
+            MergeDialogRow::Strategy => {
+                o.strategy = cycle_choice(MERGE_STRATEGIES, o.strategy.as_deref(), forward);
+            }
+            MergeDialogRow::StrategyOption => {
+                o.strategy_option =
+                    cycle_choice(MERGE_STRATEGY_OPTIONS, o.strategy_option.as_deref(), forward);
+            }
+            MergeDialogRow::Message => {}
+        }
+    }
+
+    pub fn message_text(&self) -> &str {
+        self.options.message.as_deref().unwrap_or("")
+    }
+
+    pub fn push_message(&mut self, text: &str) {
+        self.options
+            .message
+            .get_or_insert_with(String::new)
+            .push_str(text);
+    }
+
+    pub fn pop_message(&mut self) {
+        if let Some(m) = self.options.message.as_mut() {
+            m.pop();
+            if m.is_empty() {
+                self.options.message = None;
+            }
+        }
+    }
+
+    /// Localized description of the first option clash, if any.
+    pub fn error(&self, i18n: &I18n) -> Option<String> {
+        self.options.validate().err().map(|c| {
+            let (a, b) = c.flags();
+            i18n.t_fmt("dialog.merge.conflict", &[("a", a), ("b", b)])
+        })
+    }
+
+    pub fn confirm_actions(&self) -> Vec<Action> {
+        let mut options = self.options.clone();
+        options.message = options.effective_message().map(ToString::to_string);
+        vec![
+            Action::RememberMergeOptions(options.clone()),
+            Action::RunGitOp(GitOp::Merge {
+                rev: self.rev.clone(),
+                options,
+            }),
+        ]
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum Dialog {
     Input(InputDialog),
     Choice(ChoiceDialog),
     Message(MessageDialog),
     RebaseTodo(RebaseTodoDialog),
+    Merge(MergeDialog),
 }
 
 impl Dialog {
@@ -470,6 +640,7 @@ impl Dialog {
             }
             Self::Message(d) => Some(d.confirm_actions(i18n)),
             Self::RebaseTodo(d) => d.error(i18n).is_none().then(|| d.confirm_actions()),
+            Self::Merge(d) => d.options.validate().is_ok().then(|| d.confirm_actions()),
         }
     }
 }
@@ -576,6 +747,66 @@ pub fn route_dialog_key(dialog: &mut Dialog, key: &KeyEvent, i18n: &I18n) -> Dia
             }
             _ => DialogKey::None,
         },
+        Dialog::Merge(d) => {
+            let editing = d.editing_message();
+            match key.code {
+                KeyCode::Enter if editing && alt => {
+                    d.push_message("\n");
+                    DialogKey::Redraw
+                }
+                KeyCode::Enter => DialogKey::Confirm,
+                KeyCode::Up | KeyCode::BackTab => {
+                    d.move_selection(-1);
+                    DialogKey::Redraw
+                }
+                KeyCode::Down | KeyCode::Tab => {
+                    d.move_selection(1);
+                    DialogKey::Redraw
+                }
+                KeyCode::Backspace if editing => {
+                    d.pop_message();
+                    DialogKey::Redraw
+                }
+                KeyCode::Char('u') if editing && ctrl => {
+                    d.options.message = None;
+                    DialogKey::Redraw
+                }
+                KeyCode::Char(c) if editing && plain && !c.is_control() => {
+                    d.push_message(&c.to_string());
+                    DialogKey::Redraw
+                }
+                KeyCode::Left if !editing => {
+                    d.toggle(d.row(), false);
+                    DialogKey::Redraw
+                }
+                KeyCode::Right if !editing => {
+                    d.toggle(d.row(), true);
+                    DialogKey::Redraw
+                }
+                KeyCode::Char(' ') if !editing => {
+                    d.toggle(d.row(), true);
+                    DialogKey::Redraw
+                }
+                KeyCode::Char(c) if plain => {
+                    let c = c.to_ascii_lowercase();
+                    match MergeDialogRow::ALL
+                        .iter()
+                        .position(|r| r.mnemonic() == c)
+                    {
+                        Some(idx) => {
+                            d.selected = idx;
+                            let row = d.row();
+                            if row != MergeDialogRow::Message {
+                                d.toggle(row, true);
+                            }
+                            DialogKey::Redraw
+                        }
+                        None => DialogKey::None,
+                    }
+                }
+                _ => DialogKey::None,
+            }
+        }
         Dialog::RebaseTodo(d) => match key.code {
             KeyCode::Enter => DialogKey::Confirm,
             KeyCode::Up if alt || key.modifiers.contains(KeyModifiers::SHIFT) => {

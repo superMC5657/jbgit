@@ -4,6 +4,7 @@ mod annotate_and_selection_history_tests;
 mod file_history_and_changes_tests;
 mod footer_and_keymap_tests;
 mod log_tests;
+mod merge_and_update_tests;
 mod runtime_and_editor_tests;
 mod session_tests;
 mod tag_and_push_tests;

@@ -42,6 +42,14 @@ gutter_width = 28
 # 受保护分支（支持通配符 glob）；对其启用强推时将在 Push 对话框中禁用并提示原因
 protected_branches = ["main", "master"]
 
+[update]
+# Update Project（<A-u>）同步当前分支的方式："git-config"（遵循 branch.<name>.rebase / pull.rebase）| "merge" | "rebase"
+mode = "git-config"
+# 更新前自动贮藏本地改动，结束后恢复
+save_changes = true
+# 同时快进其他设置了 upstream 的本地分支（不能快进的会在摘要中列为"已跳过"）
+update_other_branches = true
+
 [layout]
 # --- Log 提交历史视图 ---
 # 横向三栏比例: [左侧分支树, 中间提交图谱, 右侧变更与详情区]

@@ -680,6 +680,33 @@ impl LogWorkbench {
                         Some(ctx.i18n.t_fmt("toast.path_filter_set", &[("path", p)]));
                 }
             }
+            Action::FilterLogByRange { label, oids } => {
+                self.filter.spec.range =
+                    Some(jbgit_core::RangeFilter::new(label.clone(), oids.iter().copied()));
+                self.on_filter_changed(
+                    ctx.snap,
+                    ctx.branch_colors,
+                    ctx.async_graph_enabled,
+                    ctx.i18n,
+                    ctx.status_notice,
+                );
+                let n_s = oids.len().to_string();
+                *ctx.status_notice = Some(
+                    ctx.i18n
+                        .t_fmt("toast.range_filter_set", &[("label", label), ("count", &n_s)]),
+                );
+            }
+            Action::ClearRangeFilter => {
+                if self.filter.spec.range.take().is_some() {
+                    self.on_filter_changed(
+                        ctx.snap,
+                        ctx.branch_colors,
+                        ctx.async_graph_enabled,
+                        ctx.i18n,
+                        ctx.status_notice,
+                    );
+                }
+            }
             Action::ClearAllFilters => {
                 self.filter.spec = Default::default();
                 self.on_filter_changed(

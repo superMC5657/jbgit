@@ -36,13 +36,15 @@ pub use details::{
 };
 pub use epoch::{EpochToken, RequestEpoch, RequestSlot, RequestSlotId, RequestSlotTable, SlotRegistry};
 pub use filter::{
-    BranchFilter, DateFilter, FilterError, LogFilterSpec, PathFilter, RepoUser, TextFilter,
+    BranchFilter, DateFilter, FilterError, LogFilterSpec, PathFilter, RangeFilter, RepoUser,
+    TextFilter,
     TextMatcher, UserFilter, UserMatcher, glob_match,
 };
 pub use git_ops::{
-    GitFailure, GitOp, GitOpOutcome, OngoingKind, OngoingStep, PatchSource, PushForce,
-    PushOutcomeSummary, PushTagMode, RefNameError, ResetMode, RewritePlan, StashEntry, TodoAction,
-    TodoEntry, classify_failure, default_squash_messages, fuzzy_indices, is_protected_branch,
+    FastForward, GitFailure, GitOp, GitOpOutcome, MergeOptionConflict, MergeOptions, OngoingKind,
+    OngoingStep, PatchSource, PushForce, PushOutcomeSummary, PushTagMode, RefNameError, ResetMode,
+    RewritePlan, SkippedBranch, StashEntry, TodoAction, TodoEntry, UpdateInfo, UpdateMode,
+    UpdatedRange, classify_failure, default_squash_messages, fuzzy_indices, is_protected_branch,
     matches_protected_branch_patterns, parse_push_porcelain, parse_recent_checkouts, render_todo,
     short_rev, validate_ref_name, validate_ref_name_typed,
 };

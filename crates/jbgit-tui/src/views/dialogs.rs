@@ -10,7 +10,10 @@ use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph, Wrap};
 use unicode_width::UnicodeWidthStr;
 
 use crate::app::RenderContext;
-use crate::dialogs::{ChoiceDialog, Dialog, InputDialog, MessageDialog, RebaseTodoDialog};
+use crate::dialogs::{
+    ChoiceDialog, Dialog, InputDialog, MergeDialog, MergeDialogRow, MessageDialog,
+    RebaseTodoDialog,
+};
 use crate::hit_test::{DialogButtonKind, HitTarget};
 use crate::views::overlays::{draw_shadow, mnemonic_spans};
 use crate::views::{truncate_to_width, wrap_text};
@@ -133,7 +136,198 @@ pub fn render_dialog(
         Dialog::Choice(d) => render_choice(frame, screen, ctx, d, z),
         Dialog::Message(d) => render_message(frame, screen, ctx, d, z),
         Dialog::RebaseTodo(d) => render_rebase(frame, screen, ctx, d, z),
+        Dialog::Merge(d) => render_merge(frame, screen, ctx, d, z),
     }
+}
+
+fn render_merge(
+    frame: &mut Frame<'_>,
+    screen: Rect,
+    ctx: &mut RenderContext<'_>,
+    d: &MergeDialog,
+    z: u8,
+) {
+    let rows = MergeDialogRow::ALL.len() as u16;
+    let rect = centered(screen, 78, rows + 9);
+    let title = ctx.t_fmt(
+        "dialog.merge.title",
+        &[("rev", &d.rev), ("cur", &d.current)],
+    );
+    let inner = frame_block(frame, screen, ctx, rect, &title, false, z);
+    let w = inner.width as usize;
+    let count_line = match d.commit_count {
+        Some(n) => {
+            let n_s = n.to_string();
+            ctx.t_fmt("dialog.merge.commit_count", &[("count", &n_s), ("rev", &d.rev), ("cur", &d.current)])
+        }
+        None => ctx.t("dialog.merge.commit_count_unknown").to_string(),
+    };
+    frame.render_widget(
+        Paragraph::new(Span::styled(
+            format!(" {}", truncate_to_width(&count_line, w.saturating_sub(2))),
+            Style::default().fg(ctx.theme.fg_primary),
+        )),
+        Rect::new(inner.x, inner.y, inner.width, 1),
+    );
+    let o = &d.options;
+    let none_lbl = ctx.t("dialog.merge.none").to_string();
+    let label_w = 30usize;
+    for (i, row) in MergeDialogRow::ALL.iter().copied().enumerate() {
+        let y = inner.y + 2 + i as u16;
+        if y >= inner.bottom().saturating_sub(2) {
+            break;
+        }
+        let sel = i == d.selected;
+        let (label, value, detail): (String, String, String) = match row {
+            MergeDialogRow::FastForward => (
+                ctx.t("dialog.merge.row_ff").to_string(),
+                format!(
+                    "‹ {} ›",
+                    match o.ff.flag() {
+                        Some(f) => f.to_string(),
+                        None => ctx.t("dialog.merge.ff_default").to_string(),
+                    }
+                ),
+                String::new(),
+            ),
+            MergeDialogRow::Squash => (
+                format!("[{}] --squash", if o.squash { "x" } else { " " }),
+                String::new(),
+                ctx.t("dialog.merge.squash_desc").to_string(),
+            ),
+            MergeDialogRow::NoCommit => (
+                format!("[{}] --no-commit", if o.no_commit { "x" } else { " " }),
+                String::new(),
+                ctx.t("dialog.merge.no_commit_desc").to_string(),
+            ),
+            MergeDialogRow::AllowUnrelated => (
+                format!(
+                    "[{}] --allow-unrelated-histories",
+                    if o.allow_unrelated { "x" } else { " " }
+                ),
+                String::new(),
+                String::new(),
+            ),
+            MergeDialogRow::Strategy => (
+                ctx.t("dialog.merge.row_strategy").to_string(),
+                format!("‹ {} ›", o.strategy.as_deref().unwrap_or(&none_lbl)),
+                String::new(),
+            ),
+            MergeDialogRow::StrategyOption => (
+                ctx.t("dialog.merge.row_strategy_option").to_string(),
+                format!("‹ {} ›", o.strategy_option.as_deref().unwrap_or(&none_lbl)),
+                String::new(),
+            ),
+            MergeDialogRow::Message => {
+                let text = d.message_text().replace('\n', "⏎");
+                let cursor = if sel { "▏" } else { "" };
+                let shown = if text.is_empty() && !sel {
+                    ctx.t("dialog.merge.message_placeholder").to_string()
+                } else {
+                    let avail = w.saturating_sub(label_w + 4);
+                    let tail: String = text.chars().rev().collect();
+                    let tail = truncate_to_width(&tail, avail);
+                    tail.chars().rev().collect::<String>()
+                };
+                (
+                    ctx.t("dialog.merge.row_message").to_string(),
+                    format!("{shown}{cursor}"),
+                    String::new(),
+                )
+            }
+        };
+        let bg = if sel {
+            ctx.theme.bg_selection_focused
+        } else {
+            ctx.theme.bg_elevated
+        };
+        let mnemonic = row.mnemonic();
+        let mut spans = vec![Span::styled(
+            format!(" {mnemonic} "),
+            Style::default()
+                .fg(ctx.theme.fg_accent_link)
+                .add_modifier(Modifier::UNDERLINED),
+        )];
+        let pad = label_w.saturating_sub(label.width());
+        spans.push(Span::styled(
+            format!("{label}{}", " ".repeat(pad)),
+            Style::default().fg(ctx.theme.fg_bright),
+        ));
+        if !value.is_empty() {
+            let value_style = if row == MergeDialogRow::Message {
+                Style::default()
+                    .fg(ctx.theme.fg_bright)
+                    .bg(ctx.theme.bg_panel)
+            } else {
+                Style::default().fg(ctx.theme.fg_accent_link)
+            };
+            spans.push(Span::styled(value, value_style));
+        }
+        if !detail.is_empty() {
+            spans.push(Span::styled(
+                format!("  {}", truncate_to_width(&detail, w.saturating_sub(label_w + 6))),
+                Style::default().fg(ctx.theme.fg_muted),
+            ));
+        }
+        let r = Rect::new(inner.x, y, inner.width, 1);
+        frame.render_widget(
+            Paragraph::new(Line::from(spans)).style(Style::default().bg(bg)),
+            r,
+        );
+        ctx.hit_registry
+            .register(r, z + 2, HitTarget::DialogOption(i));
+    }
+    let err = ctx.i18n.and_then(|i| d.error(i));
+    let (hint, color) = match &err {
+        Some(e) => (format!(" ✕ {e}"), ctx.theme.status_conflicted),
+        None => {
+            let summary = d.options.summary();
+            let cmd = if summary.is_empty() {
+                format!(" git merge {}", d.rev)
+            } else {
+                format!(" git merge {summary} {}", d.rev)
+            };
+            (cmd, ctx.theme.fg_muted)
+        }
+    };
+    frame.render_widget(
+        Paragraph::new(Span::styled(
+            truncate_to_width(&hint, w),
+            Style::default().fg(color),
+        )),
+        Rect::new(inner.x, inner.bottom().saturating_sub(3), inner.width, 1),
+    );
+    frame.render_widget(
+        Paragraph::new(Span::styled(
+            truncate_to_width(ctx.t("dialog.merge.hint"), w),
+            Style::default().fg(ctx.theme.fg_muted),
+        )),
+        Rect::new(inner.x, inner.bottom().saturating_sub(2), inner.width, 1),
+    );
+    render_buttons(
+        frame,
+        ctx,
+        inner.x + 1,
+        inner.bottom().saturating_sub(1),
+        inner.right(),
+        &[
+            DialogButtonSpec {
+                label: ctx.t("dialog.merge.merge_btn").into(),
+                selected: true,
+                enabled: err.is_none(),
+                danger: false,
+                target: HitTarget::DialogButton(DialogButtonKind::Confirm),
+            },
+            DialogButtonSpec {
+                label: ctx.cancel().into(),
+                selected: false,
+                enabled: true,
+                danger: false,
+                target: HitTarget::DialogButton(DialogButtonKind::Cancel),
+            },
+        ],
+        z,
+    );
 }
 
 fn render_input(

@@ -68,6 +68,234 @@ impl PushForce {
     }
 }
 
+/// Fast-forward policy of [`MergeOptions`] (`GitMergeOption.NO_FF` / `FF_ONLY`).
+///
+/// `--no-ff` and `--ff-only` are mutually exclusive by construction.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub enum FastForward {
+    /// Git default: fast-forward when possible, otherwise create a merge commit.
+    #[default]
+    Default,
+    /// `--no-ff`
+    NoFf,
+    /// `--ff-only`
+    FfOnly,
+}
+
+impl FastForward {
+    pub const ALL: [Self; 3] = [Self::Default, Self::NoFf, Self::FfOnly];
+
+    pub const fn flag(self) -> Option<&'static str> {
+        match self {
+            Self::Default => None,
+            Self::NoFf => Some("--no-ff"),
+            Self::FfOnly => Some("--ff-only"),
+        }
+    }
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Default => "default",
+            Self::NoFf => "no-ff",
+            Self::FfOnly => "ff-only",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|v| v.as_str() == s.trim())
+    }
+
+    pub const fn next(self) -> Self {
+        match self {
+            Self::Default => Self::NoFf,
+            Self::NoFf => Self::FfOnly,
+            Self::FfOnly => Self::Default,
+        }
+    }
+
+    pub const fn prev(self) -> Self {
+        match self {
+            Self::Default => Self::FfOnly,
+            Self::NoFf => Self::Default,
+            Self::FfOnly => Self::NoFf,
+        }
+    }
+}
+
+/// A pair of mutually exclusive merge options (`GitMergeOption.isOptionSuitable`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum MergeOptionConflict {
+    /// `--squash` with `--no-ff`
+    SquashNoFf,
+    /// `--squash` with `--ff-only`
+    SquashFfOnly,
+    /// `--squash` with `-m`
+    SquashMessage,
+    /// `--ff-only` with `-m`
+    FfOnlyMessage,
+    /// `--ff-only` with `--no-commit`
+    FfOnlyNoCommit,
+    /// `-m` with `--no-commit`
+    MessageNoCommit,
+}
+
+impl MergeOptionConflict {
+    /// The two clashing command-line flags.
+    pub const fn flags(self) -> (&'static str, &'static str) {
+        match self {
+            Self::SquashNoFf => ("--squash", "--no-ff"),
+            Self::SquashFfOnly => ("--squash", "--ff-only"),
+            Self::SquashMessage => ("--squash", "-m"),
+            Self::FfOnlyMessage => ("--ff-only", "-m"),
+            Self::FfOnlyNoCommit => ("--ff-only", "--no-commit"),
+            Self::MessageNoCommit => ("-m", "--no-commit"),
+        }
+    }
+}
+
+/// Options of the Merge dialog (`GitMergeDialog`), compiled by the engine into
+/// `git merge` flags. [`MergeOptions::default`] keeps the legacy
+/// `merge --no-edit <rev>` command line.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
+pub struct MergeOptions {
+    pub ff: FastForward,
+    /// `--squash`
+    pub squash: bool,
+    /// `--no-commit`
+    pub no_commit: bool,
+    /// Custom commit message (passed as a single `-m` argument; multi-line is safe).
+    pub message: Option<String>,
+    /// `-s <strategy>`
+    pub strategy: Option<String>,
+    /// `-X <option>`
+    pub strategy_option: Option<String>,
+    /// `--allow-unrelated-histories`
+    pub allow_unrelated: bool,
+}
+
+impl MergeOptions {
+    /// Custom message with surrounding blank text removed (`None` when empty).
+    pub fn effective_message(&self) -> Option<&str> {
+        self.message
+            .as_deref()
+            .map(str::trim)
+            .filter(|m| !m.is_empty())
+    }
+
+    /// Checks the `GitMergeOption` incompatibility table; returns the first clash.
+    pub fn validate(&self) -> Result<(), MergeOptionConflict> {
+        let has_msg = self.effective_message().is_some();
+        if self.squash && self.ff == FastForward::NoFf {
+            return Err(MergeOptionConflict::SquashNoFf);
+        }
+        if self.squash && self.ff == FastForward::FfOnly {
+            return Err(MergeOptionConflict::SquashFfOnly);
+        }
+        if self.squash && has_msg {
+            return Err(MergeOptionConflict::SquashMessage);
+        }
+        if self.ff == FastForward::FfOnly && has_msg {
+            return Err(MergeOptionConflict::FfOnlyMessage);
+        }
+        if self.ff == FastForward::FfOnly && self.no_commit {
+            return Err(MergeOptionConflict::FfOnlyNoCommit);
+        }
+        if has_msg && self.no_commit {
+            return Err(MergeOptionConflict::MessageNoCommit);
+        }
+        Ok(())
+    }
+
+    /// Whether the merge leaves its result staged for a manual commit.
+    pub const fn leaves_changes_uncommitted(&self) -> bool {
+        self.squash || self.no_commit
+    }
+
+    /// Compact flag summary (`--no-ff -s ours`), empty for defaults.
+    pub fn summary(&self) -> String {
+        let mut parts: Vec<String> = Vec::new();
+        if let Some(f) = self.ff.flag() {
+            parts.push(f.to_string());
+        }
+        if self.squash {
+            parts.push("--squash".into());
+        }
+        if self.no_commit {
+            parts.push("--no-commit".into());
+        }
+        if let Some(s) = self.strategy.as_deref().filter(|s| !s.is_empty()) {
+            parts.push(format!("-s {s}"));
+        }
+        if let Some(x) = self.strategy_option.as_deref().filter(|s| !s.is_empty()) {
+            parts.push(format!("-X {x}"));
+        }
+        if self.allow_unrelated {
+            parts.push("--allow-unrelated-histories".into());
+        }
+        if self.effective_message().is_some() {
+            parts.push("-m".into());
+        }
+        parts.join(" ")
+    }
+
+    /// Serialises the remembered choices (never the message) as `key=value` lines.
+    pub fn to_remembered(&self) -> String {
+        format!(
+            "ff={}\nsquash={}\nno_commit={}\nstrategy={}\nstrategy_option={}\nallow_unrelated={}\n",
+            self.ff.as_str(),
+            self.squash,
+            self.no_commit,
+            self.strategy.as_deref().unwrap_or(""),
+            self.strategy_option.as_deref().unwrap_or(""),
+            self.allow_unrelated,
+        )
+    }
+
+    /// Parses [`Self::to_remembered`] output; unknown keys are ignored.
+    pub fn from_remembered(text: &str) -> Self {
+        let mut out = Self::default();
+        for line in text.lines() {
+            let Some((k, v)) = line.split_once('=') else {
+                continue;
+            };
+            let v = v.trim();
+            let opt = || (!v.is_empty()).then(|| v.to_string());
+            match k.trim() {
+                "ff" => out.ff = FastForward::parse(v).unwrap_or_default(),
+                "squash" => out.squash = v == "true",
+                "no_commit" => out.no_commit = v == "true",
+                "strategy" => out.strategy = opt(),
+                "strategy_option" => out.strategy_option = opt(),
+                "allow_unrelated" => out.allow_unrelated = v == "true",
+                _ => {}
+            }
+        }
+        out
+    }
+}
+
+/// How Update Project integrates upstream changes into the current branch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum UpdateMode {
+    /// `merge --no-edit @{u}`
+    Merge,
+    /// `rebase @{u}`
+    Rebase,
+}
+
+impl UpdateMode {
+    /// Interprets a `pull.rebase` config value (`true` / `merges` / `interactive` → rebase).
+    pub fn from_pull_rebase(value: Option<&str>) -> Self {
+        let rebase = value.is_some_and(|v| {
+            matches!(
+                v.trim().to_ascii_lowercase().as_str(),
+                "true" | "yes" | "on" | "1" | "merges" | "m" | "interactive" | "i"
+            )
+        });
+        if rebase { Self::Rebase } else { Self::Merge }
+    }
+}
+
 /// Returns a 7-char prefix when `rev` is a full 40-hex SHA-1 hash, otherwise `rev` as-is.
 pub fn short_rev(rev: &str) -> &str {
     if rev.len() == 40 && rev.bytes().all(|b| b.is_ascii_hexdigit()) {
@@ -263,6 +491,7 @@ pub enum GitOp {
     },
     Merge {
         rev: String,
+        options: MergeOptions,
     },
     Rebase {
         onto: String,
@@ -292,6 +521,14 @@ pub enum GitOp {
         up_to: Option<Oid>,
     },
     Sequence(Vec<GitOp>),
+    /// Update Project: save changes → `fetch --all --prune` → merge / rebase the
+    /// current branch onto its upstream → fast-forward other tracked branches →
+    /// restore changes. `mode: None` follows `pull.rebase`.
+    UpdateProject {
+        mode: Option<UpdateMode>,
+        save_changes: bool,
+        update_other_branches: bool,
+    },
     UpdateBranch {
         branch: String,
         remote: String,
@@ -380,7 +617,13 @@ impl GitOp {
                 format!("Delete remote tag '{remote}/{name}'")
             }
             Self::PushTag { remote, name, .. } => format!("Push tag '{name}' to '{remote}'"),
-            Self::Merge { rev } => format!("Merge '{rev}'"),
+            Self::Merge { rev, options } => {
+                if options.squash {
+                    format!("Squash merge '{rev}'")
+                } else {
+                    format!("Merge '{rev}'")
+                }
+            }
             Self::Rebase { onto, branch } => match branch {
                 Some(b) => format!("Rebase '{b}' onto '{onto}'"),
                 None => format!("Rebase onto '{onto}'"),
@@ -416,6 +659,7 @@ impl GitOp {
                 .map(Self::label)
                 .collect::<Vec<_>>()
                 .join(" → "),
+            Self::UpdateProject { .. } => "Update Project".to_string(),
             Self::UpdateBranch { branch, .. } => format!("Update '{branch}'"),
             Self::RewordHead { .. } => "Reword HEAD".to_string(),
             Self::RewriteHistory { todo, .. } => format!("Rewrite {} commit(s)", todo.len()),

@@ -8,8 +8,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use jbgit_core::{
-    GitFailure, GitOp, GitOpOutcome, Oid, OngoingKind, OngoingStep, RefKind, RepoSnapshot,
-    RepositoryState, RequestSlotId, ResetMode, TodoAction, TodoEntry,
+    FastForward, GitFailure, GitOp, GitOpOutcome, MergeOptions, Oid, OngoingKind, OngoingStep,
+    RefKind, RepoSnapshot, RepositoryState, RequestSlotId, ResetMode, TodoAction, TodoEntry,
+    UpdateMode,
 };
 use jbgit_engine::{EngineBackend, EngineEvent, EngineSupervisor, RepoLocation, TaskRequest};
 use tempfile::TempDir;
@@ -318,7 +319,14 @@ async fn rebase_conflict_reports_progress_and_abort_restores_original_state() {
 
     // Merge conflict → MERGING banner → abort.
     git(d, &["checkout", "main"]);
-    let out = run(d, GitOp::Merge { rev: "feat".into() }).await;
+    let out = run(
+        d,
+        GitOp::Merge {
+            rev: "feat".into(),
+            options: Default::default(),
+        },
+    )
+    .await;
     assert_eq!(out.failure, Some(GitFailure::Conflicts));
     assert_eq!(snapshot(d).await.state, RepositoryState::Merge);
     let abort = run(
@@ -580,7 +588,14 @@ async fn root_commit_fixup_patch_compare_and_conflict_resolution() {
     commit_file(d, "root.txt", "side-edit\n", "side edit");
     git(d, &["checkout", "main"]);
     commit_file(d, "root.txt", "main-edit\n", "main edit");
-    let merge = run(d, GitOp::Merge { rev: "side".into() }).await;
+    let merge = run(
+        d,
+        GitOp::Merge {
+            rev: "side".into(),
+            options: Default::default(),
+        },
+    )
+    .await;
     assert_eq!(merge.failure, Some(GitFailure::Conflicts));
 
     let e4 = handle.request_conflict_document("root.txt".into());
@@ -626,4 +641,256 @@ async fn root_commit_fixup_patch_compare_and_conflict_resolution() {
         "old version\n"
     );
     assert_eq!(fs::read_to_string(d.join("root.txt")).unwrap(), unrelated_before);
+}
+
+fn configure_identity(dir: &Path) {
+    git(dir, &["config", "user.name", "Test User"]);
+    git(dir, &["config", "user.email", "test@example.com"]);
+    git(dir, &["config", "core.autocrlf", "false"]);
+}
+
+/// Bare remote + working clone `d` (main pushed with upstream) + second clone `other`.
+fn remote_fixture() -> (TempDir, TempDir, TempDir) {
+    let remote = TempDir::new().unwrap();
+    git(remote.path(), &["init", "--bare", "-b", "main"]);
+    let tmp = init_repo();
+    let d = tmp.path();
+    git(d, &["remote", "add", "origin", remote.path().to_str().unwrap()]);
+    commit_file(d, "a.txt", "a\n", "init");
+    commit_file(d, "shared.txt", "base\n", "shared");
+    git(d, &["push", "-u", "origin", "main"]);
+    let other = TempDir::new().unwrap();
+    git(
+        other.path(),
+        &["clone", remote.path().to_str().unwrap(), "."],
+    );
+    configure_identity(other.path());
+    (remote, tmp, other)
+}
+
+fn merge_op(rev: &str, options: MergeOptions) -> GitOp {
+    GitOp::Merge {
+        rev: rev.into(),
+        options,
+    }
+}
+
+#[tokio::test]
+async fn merge_options_squash_no_commit_message_and_ff_only() {
+    let tmp = init_repo();
+    let d = tmp.path();
+    commit_file(d, "base.txt", "base\n", "base");
+    git(d, &["checkout", "-b", "feat"]);
+    commit_file(d, "f1.txt", "1\n", "feat one");
+    commit_file(d, "f2.txt", "2\n", "feat two");
+    git(d, &["checkout", "main"]);
+    commit_file(d, "m.txt", "m\n", "main diverges");
+    let head = rev(d, "HEAD");
+
+    // --squash: changes staged, HEAD unchanged, SQUASH_MSG surfaced.
+    let squash = run(
+        d,
+        merge_op(
+            "feat",
+            MergeOptions {
+                squash: true,
+                ..Default::default()
+            },
+        ),
+    )
+    .await;
+    assert!(squash.success, "{squash:?}");
+    assert_eq!(rev(d, "HEAD"), head);
+    let staged = git(d, &["diff", "--cached", "--name-only"]);
+    assert!(staged.contains("f1.txt") && staged.contains("f2.txt"), "{staged}");
+    let msg = squash.prepared_message.expect("SQUASH_MSG prefill");
+    assert!(msg.contains("Squashed commit"), "{msg}");
+    assert!(msg.contains("feat two"), "{msg}");
+    git(d, &["reset", "--hard"]);
+
+    // --ff-only on diverged history: NotFastForward, nothing changes.
+    let ff_only = run(
+        d,
+        merge_op(
+            "feat",
+            MergeOptions {
+                ff: FastForward::FfOnly,
+                ..Default::default()
+            },
+        ),
+    )
+    .await;
+    assert_eq!(ff_only.failure, Some(GitFailure::NotFastForward), "{ff_only:?}");
+    assert_eq!(rev(d, "HEAD"), head);
+
+    // --no-ff --no-commit: MERGE_HEAD + MERGE_MSG, merge left uncommitted.
+    let no_commit = run(
+        d,
+        merge_op(
+            "feat",
+            MergeOptions {
+                ff: FastForward::NoFf,
+                no_commit: true,
+                ..Default::default()
+            },
+        ),
+    )
+    .await;
+    assert!(no_commit.success, "{no_commit:?}");
+    assert_eq!(rev(d, "HEAD"), head);
+    assert!(d.join(".git").join("MERGE_HEAD").exists());
+    let msg = no_commit.prepared_message.expect("MERGE_MSG prefill");
+    assert!(msg.starts_with("Merge branch 'feat'"), "{msg}");
+    assert_eq!(snapshot(d).await.state, RepositoryState::Merge);
+    git(d, &["merge", "--abort"]);
+
+    // Custom multi-line message via `-F -` and an explicit strategy.
+    let custom = run(
+        d,
+        merge_op(
+            "feat",
+            MergeOptions {
+                ff: FastForward::NoFf,
+                message: Some("Custom title\n\nBody line".into()),
+                strategy: Some("ort".into()),
+                ..Default::default()
+            },
+        ),
+    )
+    .await;
+    assert!(custom.success, "{custom:?}");
+    assert!(custom.prepared_message.is_none());
+    assert_eq!(git(d, &["log", "-1", "--format=%s"]).trim(), "Custom title");
+    assert_eq!(git(d, &["log", "-1", "--format=%b"]).trim(), "Body line");
+    assert_eq!(
+        git(d, &["rev-list", "--parents", "-1", "HEAD"])
+            .split_whitespace()
+            .count(),
+        3
+    );
+}
+
+#[tokio::test]
+async fn update_project_fetches_merges_and_preserves_local_changes() {
+    let (_remote, tmp, other) = remote_fixture();
+    let d = tmp.path();
+    let o = other.path();
+    commit_file(o, "r1.txt", "r1\n", "remote one");
+    commit_file(o, "r2.txt", "r2\n", "remote two");
+    git(o, &["push", "origin", "main"]);
+
+    // Uncommitted tracked edit + untracked file.
+    fs::write(d.join("a.txt"), "a local edit\n").unwrap();
+    fs::write(d.join("scratch.txt"), "untracked\n").unwrap();
+    let before = rev(d, "HEAD");
+
+    let out = run(
+        d,
+        GitOp::UpdateProject {
+            mode: Some(UpdateMode::Merge),
+            save_changes: true,
+            update_other_branches: true,
+        },
+    )
+    .await;
+    assert!(out.success, "{out:?}");
+    let info = out.update_info.expect("update info");
+    assert_eq!(info.new_commits, 2, "{info:?}");
+    assert_eq!(info.files_changed, 2, "{info:?}");
+    assert_eq!(info.commits.len(), 2);
+    assert_eq!(info.ranges.len(), 1);
+    assert_eq!(info.ranges[0].branch, "main");
+    assert_eq!(info.ranges[0].before, before);
+    assert_eq!(info.ranges[0].after, rev(d, "HEAD"));
+    assert!(info.skipped.is_empty());
+    assert_eq!(fs::read_to_string(d.join("a.txt")).unwrap(), "a local edit\n");
+    assert_eq!(fs::read_to_string(d.join("scratch.txt")).unwrap(), "untracked\n");
+    assert!(d.join("r2.txt").exists());
+    assert!(git(d, &["stash", "list"]).trim().is_empty());
+
+    // Second run: nothing new, empty info, still success.
+    let again = run(
+        d,
+        GitOp::UpdateProject {
+            mode: None,
+            save_changes: true,
+            update_other_branches: true,
+        },
+    )
+    .await;
+    assert!(again.success, "{again:?}");
+    assert!(again.update_info.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn update_project_fast_forwards_tracked_branches_and_skips_diverged() {
+    let (_remote, tmp, other) = remote_fixture();
+    let d = tmp.path();
+    let o = other.path();
+    for b in ["tracked", "diverged"] {
+        git(d, &["branch", b]);
+        git(d, &["push", "-u", "origin", b]);
+    }
+    git(o, &["fetch", "origin"]);
+    for (b, file) in [("tracked", "t.txt"), ("diverged", "dv.txt")] {
+        git(o, &["checkout", "-b", b, &format!("origin/{b}")]);
+        commit_file(o, file, "remote\n", &format!("remote {b}"));
+        git(o, &["push", "origin", b]);
+    }
+    // Local-only commit on `diverged`.
+    git(d, &["checkout", "diverged"]);
+    commit_file(d, "local.txt", "local\n", "local diverged");
+    git(d, &["checkout", "main"]);
+    let tracked_before = rev(d, "tracked");
+    let diverged_before = rev(d, "diverged");
+
+    let out = run(
+        d,
+        GitOp::UpdateProject {
+            mode: Some(UpdateMode::Rebase),
+            save_changes: true,
+            update_other_branches: true,
+        },
+    )
+    .await;
+    assert!(out.success, "{out:?}");
+    let info = out.update_info.unwrap();
+    assert_eq!(info.ranges.len(), 1, "{info:?}");
+    assert_eq!(info.ranges[0].branch, "tracked");
+    assert_eq!(info.ranges[0].before, tracked_before);
+    assert_eq!(rev(d, "tracked"), rev(d, "origin/tracked"));
+    assert_eq!(info.new_commits, 1);
+    assert_eq!(info.skipped.len(), 1);
+    assert_eq!(info.skipped[0].branch, "diverged");
+    assert_eq!(rev(d, "diverged"), diverged_before);
+}
+
+#[tokio::test]
+async fn update_project_stops_on_conflict_and_keeps_stash() {
+    let (_remote, tmp, other) = remote_fixture();
+    let d = tmp.path();
+    let o = other.path();
+    commit_file(o, "shared.txt", "remote change\n", "remote edit");
+    git(o, &["push", "origin", "main"]);
+    commit_file(d, "shared.txt", "local change\n", "local edit");
+    fs::write(d.join("a.txt"), "dirty\n").unwrap();
+
+    let out = run(
+        d,
+        GitOp::UpdateProject {
+            mode: Some(UpdateMode::Merge),
+            save_changes: true,
+            update_other_branches: false,
+        },
+    )
+    .await;
+    assert_eq!(out.failure, Some(GitFailure::Conflicts), "{out:?}");
+    assert!(out.stash_kept);
+    assert!(out.update_info.is_none());
+    assert_eq!(snapshot(d).await.state, RepositoryState::Merge);
+    let stashes = git(d, &["stash", "list"]);
+    assert!(stashes.contains("jbgit update project"), "{stashes}");
+    git(d, &["merge", "--abort"]);
+    git(d, &["stash", "pop"]);
+    assert_eq!(fs::read_to_string(d.join("a.txt")).unwrap(), "dirty\n");
 }

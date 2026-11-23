@@ -169,6 +169,8 @@ pub enum HitTarget {
     ToolTab(WorkspaceTab),
     BranchWidgetPill,
     HeaderRefreshButton,
+    /// `↓N` behind counter in the header branch pill (opens Update Project).
+    HeaderBehindBadge,
     HeaderGlyphButton,
     HeaderHelpButton,
     Splitter {
@@ -193,6 +195,8 @@ pub enum HitTarget {
     FilterCaseToggle,
     FilterChip(FilterField),
     FilterClear(FilterField),
+    /// `×` of the read-only Range chip (Update Info "View").
+    FilterRangeClear,
     FilterPresentation,
     LogChangeRow {
         idx: usize,

@@ -433,6 +433,40 @@ impl PathFilter {
     }
 }
 
+/// Read-only commit-set constraint (Update Info "View", `GitUpdateInfoAsLog`):
+/// only the listed commits match. Set programmatically, cleared from its chip.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RangeFilter {
+    /// Chip label, e.g. `abc1234..def5678`.
+    pub label: String,
+    /// Sorted, de-duplicated commit ids.
+    oids: Vec<Oid>,
+}
+
+impl RangeFilter {
+    pub fn new(label: impl Into<String>, oids: impl IntoIterator<Item = Oid>) -> Self {
+        let mut oids: Vec<Oid> = oids.into_iter().collect();
+        oids.sort_unstable();
+        oids.dedup();
+        Self {
+            label: label.into(),
+            oids,
+        }
+    }
+
+    pub fn contains(&self, oid: &Oid) -> bool {
+        self.oids.binary_search(oid).is_ok()
+    }
+
+    pub fn len(&self) -> usize {
+        self.oids.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.oids.is_empty()
+    }
+}
+
 /// Full filter collection; empty dimensions impose no constraint.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct LogFilterSpec {
@@ -441,6 +475,8 @@ pub struct LogFilterSpec {
     pub user: UserFilter,
     pub date: DateFilter,
     pub paths: PathFilter,
+    /// Active read-only commit range (an empty range matches nothing).
+    pub range: Option<RangeFilter>,
 }
 
 impl LogFilterSpec {
@@ -450,6 +486,7 @@ impl LogFilterSpec {
             && self.user.is_empty()
             && self.date.is_empty()
             && self.paths.is_empty()
+            && self.range.is_none()
     }
 
     /// Computes the matching-node bitset over `graph` (indexed by `PermNodeId`).
@@ -484,11 +521,13 @@ impl LogFilterSpec {
             Err(e) => return Some(Err(e)),
         };
         let use_paths = !self.paths.is_empty() && path_matches.is_some();
+        let range = self.range.as_ref();
         if self.branch.is_empty()
             && text.is_none()
             && self.user.is_empty()
             && self.date.is_empty()
             && !use_paths
+            && range.is_none()
         {
             return Some(Ok(None));
         }
@@ -515,7 +554,12 @@ impl LogFilterSpec {
             return None;
         }
 
-        if text.is_none() && self.user.is_empty() && self.date.is_empty() && !use_paths {
+        if text.is_none()
+            && self.user.is_empty()
+            && self.date.is_empty()
+            && !use_paths
+            && range.is_none()
+        {
             return Some(Ok(Some(matches)));
         }
 
@@ -546,7 +590,8 @@ impl LogFilterSpec {
                     .as_ref()
                     .is_none_or(|u| u.matches(&commit.author_name, &commit.author_email, me))
                 && self.date.matches(commit.timestamp)
-                && (!use_paths || path_matches.is_some_and(|set| set.contains(&commit.oid)));
+                && (!use_paths || path_matches.is_some_and(|set| set.contains(&commit.oid)))
+                && range.is_none_or(|r| r.contains(&commit.oid));
             if !ok {
                 matches.set(node, false);
             }
@@ -700,6 +745,32 @@ mod tests {
             .collect();
         out.sort_unstable();
         out
+    }
+
+    #[test]
+    fn range_filter_keeps_only_listed_commits_and_composes() {
+        let spec = LogFilterSpec {
+            range: Some(RangeFilter::new("x..y", [oid(5), oid(4), oid(5)])),
+            ..Default::default()
+        };
+        assert!(!spec.is_empty());
+        assert_eq!(spec.range.as_ref().unwrap().len(), 2);
+        assert_eq!(matched(&spec), vec![4, 5]);
+
+        let empty = LogFilterSpec {
+            range: Some(RangeFilter::new("x..x", [])),
+            ..Default::default()
+        };
+        assert!(matched(&empty).is_empty());
+
+        let both = LogFilterSpec {
+            range: Some(RangeFilter::new("r", [oid(4), oid(5), oid(6)])),
+            user: UserFilter::parse("alice"),
+            ..Default::default()
+        };
+        let got = matched(&both);
+        assert!(got.iter().all(|n| [4, 5, 6].contains(n)));
+        assert!(!got.contains(&6), "Bot commit filtered by user");
     }
 
     #[test]

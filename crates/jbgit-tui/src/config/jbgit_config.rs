@@ -341,6 +341,49 @@ impl Default for PushSection {
     }
 }
 
+/// `[update] mode` — how Update Project integrates upstream changes.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum UpdateModePref {
+    /// Follow `branch.<name>.rebase` / `pull.rebase`.
+    #[default]
+    GitConfig,
+    Merge,
+    Rebase,
+}
+
+impl UpdateModePref {
+    pub fn to_update_mode(self) -> Option<jbgit_core::UpdateMode> {
+        match self {
+            Self::GitConfig => None,
+            Self::Merge => Some(jbgit_core::UpdateMode::Merge),
+            Self::Rebase => Some(jbgit_core::UpdateMode::Rebase),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct UpdateSection {
+    #[serde(default)]
+    pub mode: UpdateModePref,
+    /// Stash local changes before updating and restore them afterwards.
+    #[serde(default = "default_true")]
+    pub save_changes: bool,
+    /// Fast-forward other local branches that track an upstream.
+    #[serde(default = "default_true")]
+    pub update_other_branches: bool,
+}
+
+impl Default for UpdateSection {
+    fn default() -> Self {
+        Self {
+            mode: UpdateModePref::GitConfig,
+            save_changes: true,
+            update_other_branches: true,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct JbgitConfig {
     #[serde(default)]
@@ -353,6 +396,8 @@ pub struct JbgitConfig {
     pub annotate: AnnotateSection,
     #[serde(default)]
     pub push: PushSection,
+    #[serde(default)]
+    pub update: UpdateSection,
     #[serde(default)]
     pub layout: LayoutSection,
     #[serde(default)]
@@ -678,6 +723,17 @@ impl JbgitConfig {
         {
             self.push.protected_branches = pb.clone();
         }
+        if let Some(up) = &overlay.update {
+            if let Some(m) = up.mode {
+                self.update.mode = m;
+            }
+            if let Some(s) = up.save_changes {
+                self.update.save_changes = s;
+            }
+            if let Some(o) = up.update_other_branches {
+                self.update.update_other_branches = o;
+            }
+        }
         if let Some(lo) = &overlay.layout {
             if let Some(r) = lo.log_ratio {
                 self.layout.log_ratio = r;
@@ -740,8 +796,16 @@ pub struct JbgitConfigOverlay {
     pub diff: Option<DiffSectionOverlay>,
     pub annotate: Option<AnnotateSectionOverlay>,
     pub push: Option<PushSectionOverlay>,
+    pub update: Option<UpdateSectionOverlay>,
     pub layout: Option<LayoutSectionOverlay>,
     pub performance: Option<PerformanceSectionOverlay>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct UpdateSectionOverlay {
+    pub mode: Option<UpdateModePref>,
+    pub save_changes: Option<bool>,
+    pub update_other_branches: Option<bool>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

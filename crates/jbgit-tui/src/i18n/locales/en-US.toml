@@ -63,6 +63,7 @@ state_rebasing = "REBASING"
 state_rebasing_i = "REBASING -i"
 
 [menu.branch]
+merge_options = "Merge '{name}' into '{cur}'…"
 checkout = "Checkout"
 checkout_and_rebase = "Checkout and Rebase onto '{cur}'"
 new_branch_from = "New Branch from '{name}'…"
@@ -364,6 +365,42 @@ verb.revert = "Revert"
 verb.reset = "Reset"
 verb.checkout = "Checkout"
 
+[dialog.merge]
+title = "Merge '{rev}' into '{cur}'"
+commit_count = "{count} commit(s) from '{rev}' are not yet in '{cur}'"
+commit_count_unknown = "Commit count unavailable (revision not loaded)"
+none = "none"
+row_ff = "Fast-forward"
+ff_default = "default (fast-forward if possible)"
+squash_desc = "Stage the combined changes without committing"
+no_commit_desc = "Stop before creating the merge commit"
+row_strategy = "Strategy  -s"
+row_strategy_option = "Strategy option  -X"
+row_message = "Commit message  -m"
+message_placeholder = "(default merge message)"
+hint = " ↑↓ move · Space/←→ change · letter jump · Alt+Enter newline · Enter merge"
+merge_btn = "Merge"
+conflict = "{a} cannot be combined with {b}"
+
+[dialog.not_ff]
+title = "Cannot Fast-forward"
+body = "'{cur}' and '{rev}' have diverged, so --ff-only cannot fast-forward."
+hint = "Create a merge commit instead, or rebase the current branch onto it."
+merge_btn = "Merge (allow merge commit)"
+rebase_btn = "Rebase onto '{rev}'"
+
+[dialog.update_project]
+title = "Update Project"
+body = "Save local changes, fetch all remotes, sync the current branch with its upstream, fast-forward other tracked branches, then restore changes."
+current_only = "Only the current branch is updated ([update] update_other_branches = false)."
+mode_config = "Follow Git config"
+mode_config_desc = "Use branch.<name>.rebase / pull.rebase (merge when unset)"
+mode_merge = "Merge"
+mode_merge_desc = "git merge --no-edit <upstream>"
+mode_rebase = "Rebase"
+mode_rebase_desc = "git rebase <upstream>"
+confirm_btn = "Update"
+
 [dialog.merge_cleanup]
 title = "Merge Succeeded"
 merged_into = "'{rev}' was merged into '{cur}'."
@@ -521,6 +558,7 @@ arrow_jump_prefix = " {arrow} Jump to {dir} "
 arrow_jump_suffix = " (Click to jump, Alt+Left to return)"
 
 [view.footer.pill]
+update_project = "Update"
 apply = "Apply"
 cancel = "Cancel"
 regex = "Regex"
@@ -807,6 +845,7 @@ exit_status = "EXIT {code} ({ms} ms)"
 no_output = " (no output)"
 
 [view.branches_popup]
+update_project_btn = "  ↓ Update Project…"
 title = "Git Branches"
 fetch_btn = " ↻ Fetch "
 search_placeholder = "type to search branches"
@@ -845,6 +884,7 @@ btn_save = " Save "
 btn_close = " Close "
 
 [filter]
+range_chip = " Range: {label} ({count}) "
 all = "All"
 branch.title = "Branch"
 user.title = "User"
@@ -877,6 +917,16 @@ yesterday = "Yesterday"
 days_ago = "{n}d ago"
 
 [toast]
+squash_staged = "Squash merge staged — review the message and commit in [1 Commit]"
+merge_staged = "Merge stopped before committing — changes are staged, commit in [1 Commit]"
+not_fast_forward = "{label}: not possible to fast-forward"
+update_done = "Updated {commits} commit(s) in {files} file(s)"
+update_up_to_date = "All files are up to date"
+update_skipped = "skipped {count} branch(es): {names}"
+update_stash_kept = "; local changes are saved in the 'jbgit update project' stash and will be restored after you continue or abort"
+update_stash_pop_conflict = "; restoring local changes conflicted — the stash is kept"
+view_btn = "View"
+range_filter_set = "Showing {count} commit(s) in {label}"
 deleted_branch = "Deleted branch '{name}' ({short})"
 restore_branch_btn = "Restore Branch"
 stash_kept = "Local changes could not be re-applied cleanly; they are saved in stash@{0}"
@@ -957,6 +1007,8 @@ external_editor_disabled = "External editor is disabled in headless/automated mo
 external_editor_failed = "External editor failed: {error}"
 
 [git_op]
+squash_merge = "Squash merge '{rev}'"
+update_project = "Update Project"
 checkout = "Checkout '{target}'"
 force_checkout = "Force Checkout '{target}'"
 checkout_new_branch = "Checkout new branch '{name}'"
@@ -1126,6 +1178,7 @@ action.focus_next = "Focus next pane"
 action.focus_prev = "Focus previous pane"
 action.toggle_branches_popup = "Open global Branches quick popup"
 action.git_fetch = "Fetch from remotes"
+action.update_project = "Update Project (fetch, sync current branch, fast-forward tracked branches)"
 action.git_pull = "Pull current branch"
 action.git_push = "Push current branch…"
 action.palette = "Open theme palette preview"

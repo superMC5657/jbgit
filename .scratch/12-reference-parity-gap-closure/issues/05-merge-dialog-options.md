@@ -1,6 +1,6 @@
 # 05: Merge 对话框与合并选项
 
-Status: ready-for-agent
+Status: resolved
 Spec: [../spec.md](../spec.md)
 Milestone: M9 — reference 缺口补齐
 Priority: P1
@@ -20,14 +20,22 @@ Priority: P1
 
 ## 2. 任务清单
 
-- [ ] `GitOp::Merge { rev, options: MergeOptions }`，`MergeOptions { ff: FastForward { Default, NoFf, FfOnly }, squash: bool, no_commit: bool, message: Option<String>, strategy: Option<String>, strategy_option: Option<String>, allow_unrelated: bool }`；`Default` 时保持现有命令行完全不变（回归保护）。
-- [ ] 互斥规则以纯函数 `MergeOptions::validate() -> Result<(), MergeOptionConflict>` 表达，对齐 `GitMergeOption` 的冲突表：`squash` ⟂ `NoFf`、`squash` ⟂ `message`、`FfOnly` ⟂ `NoFf`、`FfOnly` ⟂ `no_commit`。
-- [ ] 对话框：分支菜单 "Merge…"（带省略号的新入口）打开选项对话框；原无省略号的快速 Merge 保留默认行为。显示即将合并的提交数（`cur..rev`）。
-- [ ] `--squash` / `--no-commit` 完成后：切到 `[1 Commit]` 标签并预填 `.git/SQUASH_MSG` / `MERGE_MSG` 到提交编辑器，通知说明"变更已暂存，等待提交"。
-- [ ] `FfOnly` 失败映射为 `GitFailure::NotFastForward`，提供"改为普通 Merge / Rebase"选项。
-- [ ] 记住上次选择（每仓库，存入 `<common_dir>/jbgit-merge-options`，与 `jbgit-branches-panel` 同目录约定）。
+- [x] `GitOp::Merge { rev, options: MergeOptions }`，`MergeOptions { ff: FastForward { Default, NoFf, FfOnly }, squash: bool, no_commit: bool, message: Option<String>, strategy: Option<String>, strategy_option: Option<String>, allow_unrelated: bool }`；`Default` 时保持现有命令行完全不变（回归保护）。
+- [x] 互斥规则以纯函数 `MergeOptions::validate() -> Result<(), MergeOptionConflict>` 表达，对齐 `GitMergeOption` 的冲突表：`squash` ⟂ `NoFf`、`squash` ⟂ `message`、`FfOnly` ⟂ `NoFf`、`FfOnly` ⟂ `no_commit`。
+- [x] 对话框：分支菜单 "Merge…"（带省略号的新入口）打开选项对话框；原无省略号的快速 Merge 保留默认行为。显示即将合并的提交数（`cur..rev`）。
+- [x] `--squash` / `--no-commit` 完成后：切到 `[1 Commit]` 标签并预填 `.git/SQUASH_MSG` / `MERGE_MSG` 到提交编辑器，通知说明"变更已暂存，等待提交"。
+- [x] `FfOnly` 失败映射为 `GitFailure::NotFastForward`，提供"改为普通 Merge / Rebase"选项。
+- [x] 记住上次选择（每仓库，存入 `<common_dir>/jbgit-merge-options`，与 `jbgit-branches-panel` 同目录约定）。
 
 ## 3. 测试
 
 - `validate()` 的全部互斥组合单元测试；编译参数测试（含 `-s ours`、`-X theirs`、`-m` 多行消息走 `-F -` stdin）。
 - 集成：`--squash` 后工作区暂存且 `SQUASH_MSG` 被预填；`--ff-only` 在分叉时失败并给出恢复选项。
+
+## Comments
+
+- 2026-11-24 实现说明：
+  - 互斥表取 spec 与 `GitMergeOption.isOptionSuitable` 的并集：`squash` ⟂ `NoFf` / `FfOnly` / `message`，`FfOnly` ⟂ `message` / `no_commit`，`message` ⟂ `no_commit`。`FfOnly` ⟂ `NoFf` 由 `FastForward` 单一枚举在类型层面保证，无需运行时校验。
+  - 偏离：自定义消息改为单个 `-m <message>` 参数而非 `-F -`——实测 `git merge -F -` 不读 stdin（报 `could not read file '-'`）。参数直接传给进程、不经 shell，多行消息安全。
+  - `MergeOptions::default()` 仍编译为 `merge --no-edit <rev>`（回归测试 `merge_compiles_default_regression_and_every_option`）。
+  - `--squash` / `--no-commit` 成功后由引擎读取 `<git_dir>/SQUASH_MSG` / `MERGE_MSG`（去掉 `#` 注释行）放入 `GitOpOutcome.prepared_message`；若 `--no-commit` 实际发生快进（无 MERGE_MSG）则按普通成功处理。

@@ -196,6 +196,7 @@ fn route_mouse_left_down(
             query: String::new(),
         }],
         HitTarget::HeaderRefreshButton => vec![Action::RefreshAll],
+        HitTarget::HeaderBehindBadge => vec![Action::PromptUpdateProject],
         HitTarget::HeaderGlyphButton => vec![Action::ToggleGlyphMode],
         HitTarget::HeaderHelpButton => vec![Action::OpenPopup {
             kind: PopupKind::ShortcutsHelp,
@@ -243,6 +244,7 @@ fn route_mouse_left_down(
             }]
         }
         HitTarget::FilterClear(field) => vec![Action::ClearFilterField(field)],
+        HitTarget::FilterRangeClear => vec![Action::ClearRangeFilter],
         HitTarget::FilterPresentation => vec![Action::OpenContextMenu {
             anchor: (col, row.saturating_add(1)),
             items: presentation_menu_items(state),

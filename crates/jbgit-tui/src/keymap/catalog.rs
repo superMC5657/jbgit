@@ -353,6 +353,7 @@ pub fn is_action_applicable(run: &KeyAction, state: &AppState) -> bool {
         | KeyAction::GitFetch
         | KeyAction::GitPull
         | KeyAction::GitPush
+        | KeyAction::UpdateProject
         | KeyAction::Palette
         | KeyAction::ToggleGlyphMode
         | KeyAction::CycleGraphRenderer => true,
@@ -532,6 +533,12 @@ pub fn execute_action(run: &KeyAction, state: &AppState) -> Option<Vec<Action>> 
             }
             Some(vec![Action::RunGitOp(GitOp::Pull { rebase: false })])
         }
+        KeyAction::UpdateProject => Some(match state.update_project_blocker() {
+            Some(msg) => vec![Action::Notice(msg)],
+            None => vec![Action::RunGitOp(
+                state.update_project_op(state.configured_update_mode()),
+            )],
+        }),
         KeyAction::GitPush => {
             let Some(branch) = state
                 .repo_snapshot

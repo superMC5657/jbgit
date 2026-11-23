@@ -63,6 +63,7 @@ state_rebasing = "变基中"
 state_rebasing_i = "交互式变基中"
 
 [menu.branch]
+merge_options = "将 '{name}' 合并到 '{cur}'…"
 checkout = "检出"
 checkout_and_rebase = "检出并变基到 '{cur}'"
 new_branch_from = "从 '{name}' 新建分支…"
@@ -364,6 +365,42 @@ verb.revert = "还原"
 verb.reset = "重置"
 verb.checkout = "检出"
 
+[dialog.merge]
+title = "将 '{rev}' 合并到 '{cur}'"
+commit_count = "'{rev}' 中有 {count} 个提交尚未进入 '{cur}'"
+commit_count_unknown = "无法统计提交数（该版本尚未加载）"
+none = "无"
+row_ff = "快进策略"
+ff_default = "默认（可快进时快进）"
+squash_desc = "只暂存合并后的变更，不创建提交"
+no_commit_desc = "在创建合并提交前停下"
+row_strategy = "合并策略  -s"
+row_strategy_option = "策略选项  -X"
+row_message = "提交说明  -m"
+message_placeholder = "（使用默认合并说明）"
+hint = " ↑↓ 移动 · 空格/←→ 切换 · 字母键跳转 · Alt+Enter 换行 · Enter 合并 · Esc 取消"
+merge_btn = "合并"
+conflict = "{a} 不能与 {b} 同时使用"
+
+[dialog.not_ff]
+title = "无法快进"
+body = "'{cur}' 与 '{rev}' 已分叉，--ff-only 无法快进。"
+hint = "可改为创建合并提交，或将当前分支变基到该分支上。"
+merge_btn = "普通合并（允许合并提交）"
+rebase_btn = "变基到 '{rev}'"
+
+[dialog.update_project]
+title = "更新项目"
+body = "保存本地改动 → 获取全部远端 → 同步当前分支与其 upstream → 快进其他跟踪分支 → 恢复改动。"
+current_only = "仅更新当前分支（[update] update_other_branches = false）。"
+mode_config = "遵循 Git 配置"
+mode_config_desc = "使用 branch.<name>.rebase / pull.rebase（未设置时合并）"
+mode_merge = "合并 (Merge)"
+mode_merge_desc = "git merge --no-edit <upstream>"
+mode_rebase = "变基 (Rebase)"
+mode_rebase_desc = "git rebase <upstream>"
+confirm_btn = "更新"
+
 [dialog.merge_cleanup]
 title = "合并成功"
 merged_into = "'{rev}' 已合并至 '{cur}'。"
@@ -521,6 +558,7 @@ arrow_jump_prefix = " {arrow} 跳转至{dir} "
 arrow_jump_suffix = " (点击跳转，Alt+Left 返回)"
 
 [view.footer.pill]
+update_project = "更新"
 apply = "确认"
 cancel = "取消"
 regex = "正则"
@@ -807,6 +845,7 @@ exit_status = "退出码 {code} ({ms} ms)"
 no_output = " (无输出)"
 
 [view.branches_popup]
+update_project_btn = "  ↓ 更新项目…"
 title = "Git 分支速查"
 fetch_btn = " ↻ 获取远程 "
 search_placeholder = "输入名称快速检索…"
@@ -845,6 +884,7 @@ btn_save = " 保存 "
 btn_close = " 关闭 "
 
 [filter]
+range_chip = " 范围: {label} ({count}) "
 all = "全部"
 branch.title = "分支"
 user.title = "作者"
@@ -877,6 +917,16 @@ yesterday = "昨天"
 days_ago = "{n}天前"
 
 [toast]
+squash_staged = "压缩合并的变更已暂存 — 请在 [1 提交] 中检查说明并提交"
+merge_staged = "合并已在提交前停下 — 变更已暂存，请在 [1 提交] 中提交"
+not_fast_forward = "{label}：无法快进"
+update_done = "已更新 {commits} 个提交，涉及 {files} 个文件"
+update_up_to_date = "所有文件均已是最新"
+update_skipped = "跳过 {count} 个分支：{names}"
+update_stash_kept = "；本地改动保存在 'jbgit update project' 贮藏中，继续或中止后会自动恢复"
+update_stash_pop_conflict = "；恢复本地改动时发生冲突，贮藏已保留"
+view_btn = "查看"
+range_filter_set = "仅显示 {label} 中的 {count} 个提交"
 deleted_branch = "已删除分支 '{name}' ({short})"
 restore_branch_btn = "恢复分支"
 stash_kept = "本地修改未能自动干净还原，已保存在 stash@{0}"
@@ -957,6 +1007,8 @@ external_editor_disabled = "当前无头/自动化环境已禁用外部编辑器
 external_editor_failed = "外部编辑器调用失败：{error}"
 
 [git_op]
+squash_merge = "压缩合并 '{rev}'"
+update_project = "更新项目"
 checkout = "检出 '{target}'"
 force_checkout = "强制检出 '{target}'"
 checkout_new_branch = "检出新分支 '{name}'"
@@ -1126,6 +1178,7 @@ action.focus_next = "切换到下一个面板"
 action.focus_prev = "切换到上一个面板"
 action.toggle_branches_popup = "呼出全局分支速查浮窗"
 action.git_fetch = "获取远程更新 (Fetch)"
+action.update_project = "更新项目 (获取 → 同步当前分支 → 快进跟踪分支)"
 action.git_pull = "拉取当前分支更新 (Pull)"
 action.git_push = "推送当前分支 (Push…)"
 action.palette = "打开全局调色板预览"

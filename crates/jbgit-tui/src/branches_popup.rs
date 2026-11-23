@@ -41,6 +41,7 @@ pub enum PopupRow {
     Header(String),
     Folder(String),
     Ongoing(OngoingKind),
+    UpdateProject,
     NewBranch,
     CheckoutRevision,
     Branch(PopupBranch),
@@ -102,6 +103,9 @@ pub fn build_popup_rows(state: &AppState, query: &str) -> Vec<PopupRow> {
         rows.push(PopupRow::Ongoing(kind));
     }
     if q.is_empty() {
+        if snap.head_branch.is_some() {
+            rows.push(PopupRow::UpdateProject);
+        }
         rows.push(PopupRow::NewBranch);
         rows.push(PopupRow::CheckoutRevision);
     }
@@ -295,6 +299,7 @@ pub fn activate_row(state: &AppState, query: &str, idx: usize) -> Vec<Action> {
             items: ongoing_menu_items(state, *kind),
             depth: 0,
         }],
+        PopupRow::UpdateProject => vec![Action::PopModal, Action::PromptUpdateProject],
         PopupRow::NewBranch => vec![
             Action::PopModal,
             Action::OpenDialog(Box::new(new_branch_from_head_dialog(snap, &state.i18n))),
@@ -575,6 +580,26 @@ pub fn render_branches_popup(
                 (
                     vec![Span::styled(
                         state.i18n.t("view.branches_popup.new_branch_btn").to_string(),
+                        Style::default().fg(fg),
+                    )],
+                    right,
+                )
+            }
+            PopupRow::UpdateProject => {
+                let right = match crate::keymap::catalog::shortcut_for_action(
+                    state,
+                    &[crate::config::KeymapScope::Global],
+                    &crate::keymap::KeyAction::UpdateProject,
+                ) {
+                    Some(sc) => vec![Span::styled(
+                        format!("{sc} "),
+                        Style::default().fg(ctx.theme.fg_muted),
+                    )],
+                    None => Vec::new(),
+                };
+                (
+                    vec![Span::styled(
+                        state.i18n.t("view.branches_popup.update_project_btn").to_string(),
                         Style::default().fg(fg),
                     )],
                     right,

@@ -2,7 +2,8 @@ use std::time::Instant;
 
 use crossterm::event::KeyEvent;
 use jbgit_core::{
-    ConflictChoice, GitOp, Oid, PaneId, RefreshScope, SplitterId, StageTarget, WorkspaceTab,
+    ConflictChoice, GitOp, MergeOptions, Oid, PaneId, RefreshScope, SplitterId, StageTarget,
+    WorkspaceTab,
 };
 use jbgit_engine::CommitRequest;
 
@@ -307,6 +308,20 @@ pub enum Action {
         branch: String,
         up_to: Option<Oid>,
     },
+    /// `Merge…` options dialog for merging `rev` into the current branch.
+    PromptMerge {
+        rev: String,
+    },
+    /// Persist the Merge dialog choices (`<common_dir>/jbgit-merge-options`).
+    RememberMergeOptions(MergeOptions),
+    /// `Update Project…` mode chooser.
+    PromptUpdateProject,
+    /// Show only `oids` in the Log (read-only Range chip, `GitUpdateInfoAsLog`).
+    FilterLogByRange {
+        label: String,
+        oids: Vec<Oid>,
+    },
+    ClearRangeFilter,
     UncommitHead,
     OngoingResolve,
     NotificationActivate,

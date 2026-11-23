@@ -389,6 +389,7 @@ fn smart_operation_dialog_offers_stash_and_force_checkout() {
     ts.deliver_engine_event(EngineEvent::GitOpFinished(GitOpOutcome::failed(
         GitOp::Merge {
             rev: "feature/dag-layout".into(),
+            options: Default::default(),
         },
         jbgit_core::GitFailure::LocalChangesOverwritten { files: vec![] },
     )));

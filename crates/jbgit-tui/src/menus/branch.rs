@@ -1,4 +1,4 @@
-use jbgit_core::{GitOp, OngoingKind, OngoingStep, RefKind};
+use jbgit_core::{GitOp, MergeOptions, OngoingKind, OngoingStep, RefKind};
 
 use crate::app::{Action, AppState, ContextMenuItem};
 use crate::config::KeymapScope;
@@ -131,10 +131,18 @@ pub fn branch_menu_items(state: &AppState, name: &str, kind: RefKind) -> Vec<Con
                     ),
                     Some('m'),
                     None,
-                    op(GitOp::Merge { rev: name.clone() }),
+                    op(GitOp::Merge {
+                        rev: name.clone(),
+                        options: MergeOptions::default(),
+                    }),
                 )
                 .enabled_if(!is_current, i18n.t("menu.branch.merge_self"))
                 .require(no_ongoing.clone()),
+            );
+            items.push(
+                merge_options_item(state, &name, &cur)
+                    .enabled_if(!is_current, i18n.t("menu.branch.merge_self"))
+                    .require(no_ongoing.clone()),
             );
             items.push(ContextMenuItem::separator());
             let upstream = info.and_then(|i| i.upstream.clone());
@@ -252,10 +260,12 @@ pub fn branch_menu_items(state: &AppState, name: &str, kind: RefKind) -> Vec<Con
                     None,
                     op(GitOp::Merge {
                         rev: name.to_string(),
+                        options: MergeOptions::default(),
                     }),
                 )
                 .require(no_ongoing.clone()),
             );
+            items.push(merge_options_item(state, name, &cur).require(no_ongoing.clone()));
             items.push(
                 run(
                     i18n.t_fmt(
@@ -323,10 +333,12 @@ pub fn branch_menu_items(state: &AppState, name: &str, kind: RefKind) -> Vec<Con
                     None,
                     op(GitOp::Merge {
                         rev: name.to_string(),
+                        options: MergeOptions::default(),
                     }),
                 )
                 .require(no_ongoing.clone()),
             );
+            items.push(merge_options_item(state, name, &cur).require(no_ongoing.clone()));
             items.push(ContextMenuItem::separator());
 
             let push_tag_dialog = |remote: &str| {
@@ -428,6 +440,21 @@ pub fn branch_menu_items(state: &AppState, name: &str, kind: RefKind) -> Vec<Con
         }
     }
     items
+}
+
+/// `Merge '<name>' into '<cur>'…` — opens the Merge options dialog.
+fn merge_options_item(state: &AppState, name: &str, cur: &str) -> ContextMenuItem {
+    run(
+        state.i18n.t_fmt(
+            "menu.branch.merge_options",
+            &[("name", &ellipsize(name, 18)), ("cur", &ellipsize(cur, 18))],
+        ),
+        Some('g'),
+        None,
+        vec![Action::PromptMerge {
+            rev: name.to_string(),
+        }],
+    )
 }
 
 pub fn ongoing_menu_items(state: &AppState, kind: OngoingKind) -> Vec<ContextMenuItem> {

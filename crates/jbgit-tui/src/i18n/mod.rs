@@ -373,7 +373,15 @@ impl I18n {
                 "git_op.push_tag",
                 &[("remote", remote), ("name", name)],
             ),
-            GitOp::Merge { rev } => self.t_fmt("git_op.merge", &[("rev", rev)]),
+            GitOp::Merge { rev, options } => self.t_fmt(
+                if options.squash {
+                    "git_op.squash_merge"
+                } else {
+                    "git_op.merge"
+                },
+                &[("rev", rev)],
+            ),
+            GitOp::UpdateProject { .. } => self.t("git_op.update_project").to_string(),
             GitOp::Rebase { onto, branch } => match branch {
                 Some(b) => self.t_fmt("git_op.rebase_branch", &[("branch", b), ("onto", onto)]),
                 None => self.t_fmt("git_op.rebase_onto", &[("onto", onto)]),

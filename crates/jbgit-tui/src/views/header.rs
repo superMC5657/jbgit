@@ -39,6 +39,8 @@ pub fn render_top_header(
 
     // Branch widget pill
     let branch_start_x = area.x.saturating_add(span_width(&spans));
+    // (offset within the pill, width) of the `↓N` behind counter.
+    let mut behind_badge: Option<(u16, u16)> = None;
     let (pill_text, pill_fg, pill_bg) = if let Some(snap) = &state.repo_snapshot {
         let ab_suffix = snap
             .head_branch
@@ -81,6 +83,23 @@ pub fn render_top_header(
             } else {
                 ""
             };
+            let ahead_behind = snap
+                .refs
+                .iter()
+                .find(|r| r.is_head && &r.name == branch)
+                .and_then(|r| r.ahead_behind);
+            if let Some((ahead, behind)) = ahead_behind
+                && behind > 0
+            {
+                let glyphs = ctx.glyph_mode.symbols();
+                let prefix = format!(" {} {}{}", glyphs.head, branch, unborn);
+                let ahead_part = glyphs.format_ahead_behind(Some((ahead, 0)));
+                let behind_part = glyphs.format_ahead_behind(Some((0, behind)));
+                behind_badge = Some((
+                    (prefix.width() + ahead_part.width()) as u16,
+                    behind_part.width() as u16,
+                ));
+            }
             (
                 format!(
                     " {} {}{}{}{} ▾ ",
@@ -142,6 +161,15 @@ pub fn render_top_header(
             5,
             HitTarget::BranchWidgetPill,
         );
+        if let Some((off, bw)) = behind_badge
+            && off + bw <= w
+        {
+            ctx.hit_registry.register(
+                Rect::new(branch_start_x + off, area.y, bw, 1),
+                6,
+                HitTarget::HeaderBehindBadge,
+            );
+        }
     }
 
     // Ongoing state banner (Merge / Rebase progress / Cherry-Pick)

@@ -137,6 +137,12 @@ impl AppState {
                                 msg.text.push_str(&norm);
                             }
                         }
+                        crate::dialogs::Dialog::Merge(m) if m.editing_message() => {
+                            let norm = text.replace("\r\n", "\n").replace('\r', "\n");
+                            if !norm.is_empty() {
+                                m.push_message(&norm);
+                            }
+                        }
                         _ => {}
                     },
                     ModalLayer::BranchesPopup { .. }
@@ -220,6 +226,14 @@ impl AppState {
                         }
                         crate::dialogs::Dialog::RebaseTodo(r) => {
                             r.selected = idx.min(r.entries.len().saturating_sub(1));
+                        }
+                        crate::dialogs::Dialog::Merge(m) => {
+                            let rows = crate::dialogs::MergeDialogRow::ALL;
+                            m.selected = idx.min(rows.len() - 1);
+                            let row = m.row();
+                            if row != crate::dialogs::MergeDialogRow::Message {
+                                m.toggle(row, true);
+                            }
                         }
                         _ => {}
                     }
@@ -426,6 +440,23 @@ impl AppState {
             Action::CopyText(text) => {
                 self.status_notice = Some(self.i18n.t_fmt("toast.copied_text", &[("text", &text)]));
                 effects.push(Effect::CopyToClipboard(text));
+            }
+            action @ Action::FilterLogByRange { .. } => {
+                self.active_tab = WorkspaceTab::Log;
+                let now = self.now();
+                let mut lctx = LogDispatchCtx {
+                    snap: snap.as_ref(),
+                    branch_colors: &self.branch_colors,
+                    diff_caches: &self.diff_caches,
+                    i18n: &self.i18n,
+                    now,
+                    width,
+                    async_graph_enabled: self.async_graph_enabled,
+                    focused_pane: &mut self.focused_pane,
+                    status_notice: &mut self.status_notice,
+                    effects: &mut effects,
+                };
+                let _ = self.log.dispatch(&action, &mut lctx);
             }
             Action::FilterLogByPath(path) => {
                 self.active_tab = WorkspaceTab::Log;

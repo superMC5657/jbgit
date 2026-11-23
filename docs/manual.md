@@ -56,6 +56,7 @@ jbgit 默认采用**零冲突统一键位（`preset = "default"`）**，并通�
 | `<Tab>` / `<Shift-Tab>` | 在当前视图各面板之间循环切换焦点 |
 | `b` / `g b` / `` <Ctrl-`> `` / `<Ctrl-~>` / `<Alt-b>`*(非 Log 页)* | 呼出全局分支速查浮窗（`<Esc>` 关闭） |
 | `f` / `p` / `P` | 远程同步：**Fetch (`f`)** / **Pull (`p`)** / **Push… (`P`)** |
+| `<Alt-u>` | **Update Project**（三套预设一致）：贮藏本地改动 → `fetch --all --prune` → 当前分支按 `[update].mode` 合并或变基 upstream → 其他跟踪分支仅快进 → 恢复改动；完成通知 `<Alt-z>`「查看」打开只读 Range 筛选的 Log。头部分支胶囊中的 `↓N` 计数可点击打开模式选择 |
 | `<Ctrl-Alt-n>` | 从当前 HEAD 新建分支 |
 | `<Alt-z>` / `<Alt-x>` | 触发当前底部通知栏的快捷动作 / 关闭通知 |
 | `<F8>` / `<F12>` | 循环切换图谱渲染引擎（Auto / Vector / Cell） / 切换图标模式（Nerd Font / Unicode） |
@@ -105,6 +106,7 @@ jbgit 默认采用**零冲突统一键位（`preset = "default"`）**，并通�
 | `<Enter>` / `<Right>` | 打开选中分支的操作子菜单（检出、新建、重命名、删除、对比等） |
 | `<Ctrl-Alt-n>` | 从当前 HEAD 新建分支（跟随 `new_branch` 修饰键配置） |
 | `<Alt-f>` / `<Esc>` | 执行远程 Fetch / 关闭浮窗 |
+| 顶部 `↓ Update Project…` | 选择 `Follow Git config` / `Merge` / `Rebase` 后执行 Update Project（仅在非游离 HEAD 时显示） |
 
 ### 提交工作台 (Commit View)
 
@@ -201,6 +203,19 @@ jbgit 默认采用**零冲突统一键位（`preset = "default"`）**，并通�
 | **交互式变基待办 (Rebase Todo)** | `j`/`k`/`↑`/`↓` 选行；`J`/`K` 或 `<Alt/Shift-Up/Down>` 调整提交顺序；`<Space>` 循环动词；`p` pick / `r` 或 `w` reword / `s` squash / `f` fixup / `d` drop；`<Enter>` 执行；`<Esc>` 取消 |
 | **输入 / 消息 / 选择 / 危险确认弹窗** | 单行输入：`<Tab>`/`↑`/`↓` 切复选框、`<Ctrl-u>` 清空、`<Enter>` 确认；多行消息：`<Enter>` 换行、`<Ctrl-s>`/`<Ctrl-Enter>`/`<Alt-Enter>` 确认；单选/确认：`↑`/`↓`/`←`/`→`/`<Tab>` 切换、`<Space>` 切换可选复选框、助记键或 `y`/`n`/`q` 快速响应、`<Esc>` 取消 |
 | **筛选与跳转浮窗** | `FilterEditor` 支持 `<Tab>` 自动补全候选；`ChooseParent` 支持 `1`–`9` 数字键直选父提交 |
+
+**Merge 选项对话框**（分支 / 远端分支 / Tag 菜单中的 `Merge '<x>' into '<cur>'…`；无省略号的快速 Merge 仍保持 `merge --no-edit <rev>`）：
+
+| 快捷键 | 功能描述 |
+| :--- | :--- |
+| `↑` / `↓` / `<Tab>` | 在选项行之间移动（`Fast-forward`、`--squash`、`--no-commit`、`--allow-unrelated-histories`、`-s` 策略、`-X` 策略选项、`-m` 提交说明） |
+| `<Space>` / `←` / `→` | 切换复选框或循环下拉值（`default` / `--no-ff` / `--ff-only`；`ort` / `recursive` / `resolve` / `octopus` / `ours` / `subtree`；`ours` / `theirs` / `patience` …） |
+| `f` / `s` / `n` / `u` / `t` / `x` / `m` | 跳到对应行并切换（`m` 聚焦提交说明，聚焦后直接打字、`<Alt-Enter>` 换行、`<Ctrl-u>` 清空） |
+| `<Enter>` / `<Esc>` | 执行合并 / 取消。互斥组合（`--squash` 与 `--no-ff`/`--ff-only`/`-m`、`--ff-only` 与 `-m`/`--no-commit`、`-m` 与 `--no-commit`）会红字提示并禁用 `Merge` |
+
+- 标题下方显示 `cur..rev` 待合并提交数，底部实时预览将执行的 `git merge …` 命令；选项（不含提交说明）按仓库记忆在 `<common_dir>/jbgit-merge-options`。
+- `--squash` / `--no-commit` 完成后自动切到 `[1 Commit]` 并以 `.git/SQUASH_MSG` / `MERGE_MSG` 预填提交说明。
+- `--ff-only` 因分叉失败时弹出「普通合并 / 变基到 '<rev>' / 取消」。
 
 **完整 Push 推送浮窗**（全局按 `P`，或在分支/提交菜单选择 `Push…` / `Push up to Here` 打开；包含 `Target | Outgoing Commits | Changed Files / Diff` 三栏预览）：
 
@@ -328,6 +343,14 @@ gutter_width = 28
 [push]
 # 受保护目标分支名（支持 glob 模式），命中时禁用强推并隐藏被拒后的强推重试按钮
 protected_branches = [ "main", "master" ]
+
+[update]
+# Update Project（<Alt-u>）同步当前分支的方式: "git-config"（遵循 branch.<name>.rebase / pull.rebase）| "merge" | "rebase"
+mode = "git-config"
+# 更新前自动贮藏本地改动（含未跟踪文件），结束后恢复；当前分支冲突时贮藏会保留，继续 / 中止后自动恢复
+save_changes = true
+# 同时快进其他设置了 upstream 的本地分支；无法快进（已分叉）的分支会在完成通知中列为“已跳过”
+update_other_branches = true
 ```
 
 > 提示：若在同一配置层中同时存在 `jbgit.toml` 和 `theme.toml`，且 `theme.toml` 未显式设置 `flavor` 或 `[glyphs].mode`，则会继承该层 `jbgit.toml` 中的 `[general].flavor` 与 `[graph].glyph_mode`。
@@ -380,7 +403,7 @@ mode = "nerd_font"
 
 - **预设风格 (`preset`)**：
   - `"default"`：极简零冲突推荐预设（默认）。
-  - `"jetbrains"`：贴近 IntelliJ IDEA 习惯（自动开启 `tree_speed_search = true`，并补充 `<C-k>` 打开 Commit、`<C-S-k>` Push、`<C-t>` Pull、`<C-A-n>` 新建分支、`<A-m>` Amend 等映射）。
+  - `"jetbrains"`：贴近 IntelliJ IDEA 习惯（自动开启 `tree_speed_search = true`，并补充 `<C-k>` 打开 Commit、`<C-S-k>` Push、`<C-t>` Pull、`<C-A-n>` 新建分支、`<A-m>` Amend 等映射）。注意 `<C-t>` 保持绑定 Pull 以不改变已有习惯；Update Project 在三套预设中统一为 `<A-u>`，如需 IDEA 的 `Ctrl+T = Update Project`，可在 `[global]` 中 `prepend_keymap = [{ on = "<C-t>", run = "update_project" }]`。
   - `"vim"`：Vim / Lazygit 风格（Log 中 `<C-d>`/`<C-u>` 半页翻滚、`d` 对比提交/开关差异，Diff 中 `s`/`u` 暂存/取消暂存，`c` 切换上下文行数）。
 - **分支树直接打字搜索 (`tree_speed_search`)**：
   - `false`（默认）：在分支树面板按 `/` 或 `<Ctrl-f>` 进入搜索，单键 `j`/`k`/`c`/`q`/`r` 等保留导航与快捷操作。
@@ -410,6 +433,7 @@ footer_max_lines = 1
 prepend_keymap = [
     { on = "r", run = "noop" },                                  # 解绑默认 r
     { on = ["g", "s"], run = "git_status_probe", desc = "状态探测" },
+    { on = "<C-t>", run = "update_project" },                    # IDEA 风格 Ctrl+T 改为 Update Project
 ]
 
 [log]

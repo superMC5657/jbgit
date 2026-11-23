@@ -5,9 +5,10 @@
 use std::collections::HashSet;
 
 use jbgit_core::{
-    GitFailure, GitOp, GitOpOutcome, Oid, OngoingKind, PaneId, PushForce, RefKind, RepoSnapshot,
-    RewritePlan, StageNodeKind, StageTreeRowKind, WorkspaceTab, is_protected_branch,
-    matches_protected_branch_patterns, parse_push_porcelain,
+    FastForward, GitFailure, GitOp, GitOpOutcome, MergeOptions, Oid, OngoingKind, OngoingStep,
+    PaneId, PushForce, RefKind, RepoSnapshot, RewritePlan, StageNodeKind, StageTreeRowKind,
+    UpdateInfo, UpdateMode, WorkspaceTab, is_protected_branch, matches_protected_branch_patterns,
+    parse_push_porcelain,
 };
 
 use crate::app::{
@@ -16,9 +17,12 @@ use crate::app::{
 use crate::branches_popup::first_selectable_row;
 use crate::dialogs::{
     ChoiceDialog, ChoiceOption, DeleteTagRemoteProbe, Dialog, InputDialog, InputIntent,
-    InputValidation,
+    InputValidation, MergeDialog,
 };
 use crate::log_view::PushDialogState;
+
+/// Stash message used by the engine's Update Project save step.
+const UPDATE_PROJECT_STASH_MESSAGE: &str = "jbgit update project";
 
 impl AppState {
     pub(crate) fn snapshot(&self) -> Option<&RepoSnapshot> {
@@ -159,6 +163,10 @@ impl AppState {
                             self.status_notice = Some(err);
                         } else if let Dialog::RebaseTodo(r) = d.as_ref()
                             && let Some(err) = r.error(&self.i18n)
+                        {
+                            self.status_notice = Some(err);
+                        } else if let Dialog::Merge(m) = d.as_ref()
+                            && let Some(err) = m.error(&self.i18n)
                         {
                             self.status_notice = Some(err);
                         }
@@ -304,6 +312,13 @@ impl AppState {
             Action::PromptDeleteBranch { name } => self.prompt_delete_branch(name, effects),
             Action::PromptDeleteTag { name } => self.prompt_delete_tag(name, effects),
             Action::PromptPush { branch, up_to } => self.prompt_push(branch, *up_to, effects),
+            Action::PromptMerge { rev } => self.prompt_merge(rev),
+            Action::RememberMergeOptions(options) => {
+                if let Some(path) = self.merge_options_path() {
+                    let _ = std::fs::write(path, options.to_remembered());
+                }
+            }
+            Action::PromptUpdateProject => self.prompt_update_project(),
             Action::UncommitHead => {
                 self.set_focus(WorkspaceTab::Commit, PaneId::CommitMessageEditor);
                 self.status_notice = Some(self.i18n.t("toast.uncommitting_head").into());
@@ -631,6 +646,182 @@ impl AppState {
         effects.push(Effect::RequestOutgoing(key));
     }
 
+    fn merge_options_path(&self) -> Option<std::path::PathBuf> {
+        let snap = self.snapshot()?;
+        (!snap.common_dir.as_os_str().is_empty())
+            .then(|| snap.common_dir.join("jbgit-merge-options"))
+    }
+
+    fn load_merge_options(&self) -> MergeOptions {
+        self.merge_options_path()
+            .and_then(|p| std::fs::read_to_string(p).ok())
+            .map(|t| MergeOptions::from_remembered(&t))
+            .unwrap_or_default()
+    }
+
+    fn prompt_merge(&mut self, rev: &str) {
+        if let Err(msg) = self.require_no_ongoing() {
+            self.status_notice = Some(msg);
+            return;
+        }
+        let snap = self.snapshot();
+        let current = snap
+            .and_then(|s| s.head_branch.clone())
+            .unwrap_or_else(|| "HEAD".to_string());
+        let count = snap.and_then(|s| {
+            let target = s.resolve_revision(rev)?;
+            let head = s.head_oid?;
+            Some(s.count_exclusive(target, head))
+        });
+        let remembered = self.load_merge_options();
+        self.blur_active_pane(false);
+        self.push_dialog(Dialog::Merge(MergeDialog::new(rev, current, count, remembered)));
+    }
+
+    /// `[update] mode` from `jbgit.toml` (`None` = follow `pull.rebase`).
+    pub(crate) fn configured_update_mode(&self) -> Option<UpdateMode> {
+        self.config.jbgit.update.mode.to_update_mode()
+    }
+
+    pub(crate) fn update_project_op(&self, mode: Option<UpdateMode>) -> GitOp {
+        GitOp::UpdateProject {
+            mode,
+            save_changes: self.config.jbgit.update.save_changes,
+            update_other_branches: self.config.jbgit.update.update_other_branches,
+        }
+    }
+
+    /// Reason Update Project cannot start (ongoing operation / detached HEAD).
+    pub(crate) fn update_project_blocker(&self) -> Option<String> {
+        if let Err(msg) = self.require_no_ongoing() {
+            return Some(msg);
+        }
+        if self.snapshot().and_then(|s| s.head_branch.as_ref()).is_none() {
+            return Some(self.i18n.t("menu.log.detached_no_branch").to_string());
+        }
+        None
+    }
+
+    fn prompt_update_project(&mut self) {
+        if let Some(msg) = self.update_project_blocker() {
+            self.status_notice = Some(msg);
+            return;
+        }
+        let i18n = self.i18n.clone();
+        let modes: [(Option<UpdateMode>, &str, &str, char); 3] = [
+            (
+                None,
+                "dialog.update_project.mode_config",
+                "dialog.update_project.mode_config_desc",
+                'g',
+            ),
+            (
+                Some(UpdateMode::Merge),
+                "dialog.update_project.mode_merge",
+                "dialog.update_project.mode_merge_desc",
+                'm',
+            ),
+            (
+                Some(UpdateMode::Rebase),
+                "dialog.update_project.mode_rebase",
+                "dialog.update_project.mode_rebase_desc",
+                'r',
+            ),
+        ];
+        let configured = self.configured_update_mode();
+        let selected = modes.iter().position(|m| m.0 == configured).unwrap_or(0);
+        let options = modes
+            .iter()
+            .map(|(mode, label, desc, mn)| {
+                ChoiceOption::new(
+                    i18n.t(label),
+                    Some(*mn),
+                    vec![Action::RunGitOp(self.update_project_op(*mode))],
+                )
+                .detail(i18n.t(desc))
+            })
+            .collect();
+        let mut body = vec![i18n.t("dialog.update_project.body").to_string()];
+        if !self.config.jbgit.update.update_other_branches {
+            body.push(i18n.t("dialog.update_project.current_only").to_string());
+        }
+        self.blur_active_pane(false);
+        self.push_dialog(Dialog::Choice(ChoiceDialog::radio(
+            i18n.t("dialog.update_project.title"),
+            body,
+            options,
+            selected,
+            i18n.t("dialog.update_project.confirm_btn"),
+        )));
+    }
+
+    fn notify_update_info(&mut self, info: Option<&UpdateInfo>) {
+        let i18n = self.i18n.clone();
+        let skipped = info.map(|i| i.skipped.as_slice()).unwrap_or_default();
+        let skipped_part = (!skipped.is_empty()).then(|| {
+            let names = skipped
+                .iter()
+                .take(3)
+                .map(|s| format!("{} ({})", s.branch, s.reason))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let n_s = skipped.len().to_string();
+            i18n.t_fmt("toast.update_skipped", &[("count", &n_s), ("names", &names)])
+        });
+        let Some(info) = info.filter(|i| !i.is_empty()) else {
+            let mut text = i18n.t("toast.update_up_to_date").to_string();
+            if let Some(s) = skipped_part {
+                text = format!("{text} · {s}");
+            }
+            self.status_notice = Some(text.clone());
+            self.notification = Some(Notification {
+                text,
+                is_error: false,
+                action: None,
+            });
+            return;
+        };
+        let c_s = info.new_commits.to_string();
+        let f_s = info.files_changed.to_string();
+        let mut text = i18n.t_fmt("toast.update_done", &[("commits", &c_s), ("files", &f_s)]);
+        if let Some(s) = skipped_part {
+            text = format!("{text} · {s}");
+        }
+        self.status_notice = Some(text.clone());
+        self.notification = Some(Notification {
+            text,
+            is_error: false,
+            action: Some((
+                i18n.t("toast.view_btn").into(),
+                vec![Action::FilterLogByRange {
+                    label: info.range_label(),
+                    oids: info.commits.clone(),
+                }],
+            )),
+        });
+    }
+
+    /// Pops the stash Update Project kept while the user resolved conflicts.
+    fn restore_pending_update_stash(&mut self, effects: &mut Vec<Effect>) {
+        if !std::mem::take(&mut self.pending_update_stash) {
+            return;
+        }
+        if self.ongoing_kind().is_some() {
+            self.pending_update_stash = true;
+            return;
+        }
+        let index = self
+            .snapshot()
+            .and_then(|s| {
+                s.stashes
+                    .iter()
+                    .find(|e| e.message.contains(UPDATE_PROJECT_STASH_MESSAGE))
+                    .map(|e| e.index)
+            })
+            .unwrap_or(0);
+        self.start_git_op(GitOp::StashApply { index, pop: true }, effects);
+    }
+
     /// Reacts to a finished [`GitOp`]: notices, Smart Operation dialog,
     /// merged-branch cleanup, `[Restore Branch]`, clipboard patches.
     pub(crate) fn apply_git_outcome(&mut self, outcome: GitOpOutcome, effects: &mut Vec<Effect>) {
@@ -685,7 +876,29 @@ impl AppState {
                 } => {
                     self.notify_push_summary(branch, remote, remote_branch, &outcome.stdout);
                 }
-                GitOp::Merge { rev } => {
+                GitOp::Merge { options, .. }
+                    if options.leaves_changes_uncommitted() && outcome.prepared_message.is_some() =>
+                {
+                    let msg = outcome.prepared_message.clone().unwrap_or_default();
+                    let now = self.now();
+                    self.stage_workbench.apply_external_message(&msg, now);
+                    effects.extend(self.dispatch(Action::SwitchTab(WorkspaceTab::Commit)));
+                    let text = self
+                        .i18n
+                        .t(if options.squash {
+                            "toast.squash_staged"
+                        } else {
+                            "toast.merge_staged"
+                        })
+                        .to_string();
+                    self.status_notice = Some(text.clone());
+                    self.notification = Some(Notification {
+                        text,
+                        is_error: false,
+                        action: None,
+                    });
+                }
+                GitOp::Merge { rev, options } if !options.leaves_changes_uncommitted() => {
                     let snap = self.snapshot();
                     let current = snap.and_then(|s| s.head_branch.clone());
                     let source = snap.and_then(|s| s.local_branch(rev)).map(|r| r.target_oid);
@@ -730,6 +943,13 @@ impl AppState {
                 GitOp::RewordHead { .. } | GitOp::RewriteHistory { .. } => {
                     self.log.graph.anchor = None;
                 }
+                GitOp::UpdateProject { .. } => {
+                    self.notify_update_info(outcome.update_info.as_ref());
+                }
+                GitOp::Ongoing {
+                    step: OngoingStep::Continue | OngoingStep::Abort,
+                    ..
+                } => self.restore_pending_update_stash(effects),
                 _ => {}
             }
             if outcome.stash_kept {
@@ -807,7 +1027,17 @@ impl AppState {
                 )));
             }
             Some(GitFailure::Conflicts) => {
-                let kept = if outcome.stash_kept {
+                let is_update = matches!(op, GitOp::UpdateProject { .. });
+                if is_update && outcome.stash_kept && outcome.update_info.is_none() {
+                    self.pending_update_stash = true;
+                }
+                let kept = if is_update && outcome.stash_kept {
+                    if outcome.update_info.is_some() {
+                        i18n.t("toast.update_stash_pop_conflict")
+                    } else {
+                        i18n.t("toast.update_stash_kept")
+                    }
+                } else if outcome.stash_kept {
                     i18n.t("toast.local_changes_kept")
                 } else {
                     ""
@@ -932,6 +1162,7 @@ impl AppState {
                                 GitOp::Fetch,
                                 GitOp::Merge {
                                     rev: target_ref.clone(),
+                                    options: MergeOptions::default(),
                                 },
                                 retry_push.clone(),
                             ]))],
@@ -989,6 +1220,45 @@ impl AppState {
                     self.notify_error(i18n.t_fmt("toast.push_rejected_notice", &[("label", &label)]));
                 }
             }
+            Some(GitFailure::NotFastForward) => match &op {
+                GitOp::Merge { rev, options } if options.ff == FastForward::FfOnly => {
+                    let cur = self
+                        .snapshot()
+                        .and_then(|s| s.head_branch.clone())
+                        .unwrap_or_else(|| "HEAD".to_string());
+                    let merge_anyway = GitOp::Merge {
+                        rev: rev.clone(),
+                        options: MergeOptions {
+                            ff: FastForward::Default,
+                            ..options.clone()
+                        },
+                    };
+                    self.push_dialog(Dialog::Choice(ChoiceDialog::buttons(
+                        i18n.t("dialog.not_ff.title"),
+                        vec![
+                            i18n.t_fmt("dialog.not_ff.body", &[("rev", rev), ("cur", &cur)]),
+                            i18n.t("dialog.not_ff.hint").to_string(),
+                        ],
+                        vec![
+                            ChoiceOption::new(
+                                i18n.t("dialog.not_ff.merge_btn"),
+                                Some('m'),
+                                vec![Action::RunGitOp(merge_anyway)],
+                            ),
+                            ChoiceOption::new(
+                                i18n.t_fmt("dialog.not_ff.rebase_btn", &[("rev", rev)]),
+                                Some('r'),
+                                vec![Action::RunGitOp(GitOp::Rebase {
+                                    onto: rev.clone(),
+                                    branch: None,
+                                })],
+                            ),
+                            ChoiceOption::new(i18n.cancel(), Some('c'), Vec::new()),
+                        ],
+                    )));
+                }
+                _ => self.notify_error(i18n.t_fmt("toast.not_fast_forward", &[("label", &label)])),
+            },
             Some(
                 GitFailure::LocalChangesOverwritten { .. }
                 | GitFailure::UntrackedOverwritten { .. },

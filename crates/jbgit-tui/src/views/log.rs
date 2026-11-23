@@ -349,6 +349,27 @@ fn render_filter_bar(
         reserve,
     );
 
+    if let Some(range) = &filter.spec.range {
+        let n_s = range.len().to_string();
+        let chip = state.i18n.t_fmt(
+            "filter.range_chip",
+            &[("label", &truncate_to_width(&range.label, 18)), ("count", &n_s)],
+        );
+        let style = Style::default()
+            .fg(theme.fg_bright)
+            .bg(theme.border_focused);
+        if put(frame, &mut x, &chip, style, None, reserve) {
+            put(
+                frame,
+                &mut x,
+                "×",
+                Style::default().fg(theme.fg_bright).bg(theme.border_focused),
+                Some(HitTarget::FilterRangeClear),
+                reserve,
+            );
+        }
+    }
+
     for field in FilterField::ALL {
         let active = filter.field_active(field);
         let mut label = if !active {

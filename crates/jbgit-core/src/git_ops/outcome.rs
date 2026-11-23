@@ -17,6 +17,8 @@ pub enum GitFailure {
     TagAlreadyExists,
     /// Push rejected (non-fast-forward / stale info).
     PushRejected,
+    /// `merge --ff-only` (or a fast-forward-only update) on diverged history.
+    NotFastForward,
     /// Anything else (first meaningful stderr line).
     Other(String),
 }
@@ -79,6 +81,11 @@ pub fn classify_failure(lines: &[String]) -> GitFailure {
     {
         return GitFailure::TagAlreadyExists;
     }
+    if joined.contains("Not possible to fast-forward")
+        || joined.contains("not possible to fast-forward")
+    {
+        return GitFailure::NotFastForward;
+    }
     if joined.contains("[rejected]")
         || joined.contains("non-fast-forward")
         || joined.contains("stale info")
@@ -94,6 +101,49 @@ pub fn classify_failure(lines: &[String]) -> GitFailure {
     GitFailure::Other(first.to_string())
 }
 
+/// One branch moved by Update Project (`GitUpdatedRanges`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UpdatedRange {
+    pub branch: String,
+    pub before: Oid,
+    pub after: Oid,
+}
+
+/// A tracked branch Update Project could not fast-forward.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SkippedBranch {
+    pub branch: String,
+    pub reason: String,
+}
+
+/// Summary of what Update Project brought in (`GitUpdateInfoAsLog`).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct UpdateInfo {
+    pub ranges: Vec<UpdatedRange>,
+    pub skipped: Vec<SkippedBranch>,
+    /// Distinct commits reachable from any `after` but not from its `before`.
+    pub new_commits: usize,
+    /// Distinct paths changed across all ranges.
+    pub files_changed: usize,
+    /// The new commits themselves (newest first, capped), for the Log range filter.
+    pub commits: Vec<Oid>,
+}
+
+impl UpdateInfo {
+    pub fn is_empty(&self) -> bool {
+        self.ranges.is_empty()
+    }
+
+    /// `abc1234..def5678` for a single range, `N ranges` otherwise.
+    pub fn range_label(&self) -> String {
+        match self.ranges.as_slice() {
+            [] => String::new(),
+            [one] => format!("{}..{}", one.before.short(), one.after.short()),
+            many => format!("{} ranges", many.len()),
+        }
+    }
+}
+
 /// Result of a [`GitOp`] run by the engine.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GitOpOutcome {
@@ -103,6 +153,10 @@ pub struct GitOpOutcome {
     pub stdout: Vec<String>,
     pub stderr: Vec<String>,
     pub stash_kept: bool,
+    /// Commit message Git prepared for a pending commit (`SQUASH_MSG` / `MERGE_MSG`).
+    pub prepared_message: Option<String>,
+    /// Update Project summary.
+    pub update_info: Option<UpdateInfo>,
 }
 
 impl GitOpOutcome {
@@ -114,6 +168,8 @@ impl GitOpOutcome {
             stdout: Vec::new(),
             stderr: Vec::new(),
             stash_kept: false,
+            prepared_message: None,
+            update_info: None,
         }
     }
 
@@ -125,6 +181,8 @@ impl GitOpOutcome {
             stdout: Vec::new(),
             stderr: Vec::new(),
             stash_kept: false,
+            prepared_message: None,
+            update_info: None,
         }
     }
 }
