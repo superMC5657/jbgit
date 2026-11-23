@@ -642,6 +642,10 @@ pub enum GitOp {
         source: crate::PatchInput,
         mode: crate::ApplyMode,
     },
+    /// `git submodule update --init --recursive [-- <path>]`.
+    SubmoduleUpdate {
+        path: Option<String>,
+    },
     Smart(Box<GitOp>),
 }
 
@@ -775,6 +779,8 @@ impl GitOp {
                 }
                 crate::PatchInput::Clipboard => "Apply patch from clipboard".to_string(),
             },
+            Self::SubmoduleUpdate { path: Some(p) } => format!("Update Submodule '{p}'"),
+            Self::SubmoduleUpdate { path: None } => "Update Submodules".to_string(),
             Self::Smart(inner) => format!("Smart {}", inner.label()),
         }
     }
@@ -808,7 +814,8 @@ impl GitOp {
             | Self::DeleteRemoteTag { .. }
             | Self::DeleteRemoteBranch { .. }
             | Self::UpdateBranch { .. }
-            | Self::UpdateProject { .. } => true,
+            | Self::UpdateProject { .. }
+            | Self::SubmoduleUpdate { .. } => true,
             Self::Sequence(ops) => ops.iter().any(Self::is_network),
             Self::Smart(inner) => inner.is_network(),
             _ => false,

@@ -1,5 +1,7 @@
-use git2::{Delta, Status, StatusOptions};
-use jbgit_core::{EpochToken, FileStatusKind, StageEntry, StageStatusSnapshot};
+use git2::{Delta, Status, StatusOptions, SubmoduleIgnore, SubmoduleStatus};
+use jbgit_core::{
+    EpochToken, FileStatusKind, StageEntry, StageStatusSnapshot, SubmoduleState,
+};
 
 use crate::error::EngineError;
 use crate::probe::RepoLocation;
@@ -73,7 +75,7 @@ pub fn load_stage_status_with_config_sync(
         }
         for entry in statuses.iter() {
             let st = entry.status();
-            let path = entry.path().unwrap_or_default().to_string();
+            let path = entry.path().unwrap_or_default().replace('\\', "/");
 
             if st.contains(Status::CONFLICTED) {
                 snap.conflicted.push(StageEntry {
@@ -129,6 +131,38 @@ pub fn load_stage_status_with_config_sync(
                     old_path: None,
                     kind,
                 });
+            }
+        }
+
+        if let Ok(subs) = repo.submodules() {
+            for sub in subs {
+                let path = sub.path().to_string_lossy().replace('\\', "/");
+                if path.is_empty() {
+                    continue;
+                }
+                let status_key = sub.name().ok().unwrap_or(path.as_str());
+                let st = repo
+                    .submodule_status(status_key, SubmoduleIgnore::None)
+                    .unwrap_or(SubmoduleStatus::empty());
+                let state = SubmoduleState {
+                    new_commits: st.contains(SubmoduleStatus::WD_MODIFIED),
+                    dirty_workdir: st.intersects(
+                        SubmoduleStatus::WD_INDEX_MODIFIED
+                            | SubmoduleStatus::WD_WD_MODIFIED
+                            | SubmoduleStatus::WD_UNTRACKED,
+                    ),
+                    uninitialized: st.contains(SubmoduleStatus::WD_UNINITIALIZED),
+                };
+                snap.submodules.insert(path.clone(), state);
+                if (state.new_commits || state.dirty_workdir)
+                    && !snap.unstaged.iter().any(|e| e.path == path)
+                {
+                    snap.unstaged.push(StageEntry {
+                        path,
+                        old_path: None,
+                        kind: FileStatusKind::Modified,
+                    });
+                }
             }
         }
 

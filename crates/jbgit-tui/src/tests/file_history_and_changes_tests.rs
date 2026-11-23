@@ -487,6 +487,7 @@ fn commit_stage_tree_history_menu_and_h_shortcut() {
         }],
         conflicted: Vec::new(),
         conflict_labels: Default::default(),
+        submodules: Default::default(),
     };
     ts.deliver_engine_event(EngineEvent::StageStatusLoaded {
         status: Arc::new(status),

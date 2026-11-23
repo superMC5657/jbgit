@@ -450,6 +450,19 @@ pub(crate) fn compile_simple_steps(op: &GitOp) -> Option<Vec<CompiledStep>> {
                 )]
             }
         }
+        GitOp::SubmoduleUpdate { path } => {
+            let mut args = vec![
+                "submodule".to_string(),
+                "update".to_string(),
+                "--init".to_string(),
+                "--recursive".to_string(),
+            ];
+            if let Some(p) = path {
+                args.push("--".to_string());
+                args.push(p.clone());
+            }
+            vec![CompiledStep::new(args)]
+        }
         GitOp::RewriteHistory { .. }
         | GitOp::ApplyPatch { .. }
         | GitOp::AddToIgnore { .. }

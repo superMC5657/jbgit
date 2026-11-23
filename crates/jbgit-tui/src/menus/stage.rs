@@ -45,8 +45,37 @@ pub fn stage_tree_menu_items(state: &AppState, idx: usize) -> Vec<ContextMenuIte
             .iter()
             .any(|t| t.group_kind == StageNodeKind::Ignored);
     let file_path = entry.map(|e| e.path);
+    let submodule = row.and_then(|r| r.submodule());
+    let is_submodule = submodule.is_some();
     let has_paths = !paths.is_empty();
     let mut items = Vec::new();
+
+    if is_submodule && let Some(p) = &file_path {
+        let repo_target = state
+            .repo_snapshot
+            .as_ref()
+            .map(|s| s.workdir.join(p))
+            .unwrap_or_else(|| std::path::PathBuf::from(p));
+        let uninit = submodule.is_some_and(|s| s.uninitialized);
+        items.push(
+            run(
+                i18n.t("menu.stage.open_submodule"),
+                Some('o'),
+                None,
+                vec![Action::SwitchRepository(repo_target)],
+            )
+            .enabled_if(!uninit, i18n.t("menu.stage.submodule_uninitialized_reason")),
+        );
+        items.push(run(
+            i18n.t("menu.stage.update_submodule"),
+            Some('m'),
+            None,
+            op(GitOp::SubmoduleUpdate {
+                path: Some(p.clone()),
+            }),
+        ));
+        items.push(ContextMenuItem::separator());
+    }
 
     if group == Some(StageNodeKind::Conflicted) {
         if let Some(p) = &file_path {
@@ -87,6 +116,8 @@ pub fn stage_tree_menu_items(state: &AppState, idx: usize) -> Vec<ContextMenuIte
         items.push(ContextMenuItem::separator());
     }
     if let Some(g) = group {
+        let non_sub = !is_submodule;
+        let sub_reason = i18n.t("menu.stage.submodule_readonly_reason");
         if g.can_stage() {
             items.push(
                 run(
@@ -95,7 +126,8 @@ pub fn stage_tree_menu_items(state: &AppState, idx: usize) -> Vec<ContextMenuIte
                     stage_sc.as_deref(),
                     vec![Action::StageActionSelected],
                 )
-                .icon("+"),
+                .icon("+")
+                .enabled_if(non_sub, sub_reason),
             );
             items.push(
                 run(
@@ -104,18 +136,22 @@ pub fn stage_tree_menu_items(state: &AppState, idx: usize) -> Vec<ContextMenuIte
                     discard_sc.as_deref(),
                     vec![Action::DiscardPromptSelected],
                 )
-                .icon("↶"),
+                .icon("↶")
+                .enabled_if(non_sub, sub_reason),
             );
         }
         if untracked {
-            items.push(run(
-                i18n.t("menu.stage.intent_to_add"),
-                Some('n'),
-                None,
-                op(GitOp::IntentToAdd {
-                    paths: paths.clone(),
-                }),
-            ));
+            items.push(
+                run(
+                    i18n.t("menu.stage.intent_to_add"),
+                    Some('n'),
+                    None,
+                    op(GitOp::IntentToAdd {
+                        paths: paths.clone(),
+                    }),
+                )
+                .enabled_if(non_sub, sub_reason),
+            );
         }
         if g.can_unstage() {
             items.push(
@@ -125,7 +161,8 @@ pub fn stage_tree_menu_items(state: &AppState, idx: usize) -> Vec<ContextMenuIte
                     stage_sc.as_deref(),
                     vec![Action::UnstageActionSelected],
                 )
-                .icon("−"),
+                .icon("−")
+                .enabled_if(non_sub, sub_reason),
             );
         }
     }
@@ -142,6 +179,7 @@ pub fn stage_tree_menu_items(state: &AppState, idx: usize) -> Vec<ContextMenuIte
             }),
         )
         .enabled_if(has_paths, i18n.t("common.select_files"))
+        .enabled_if(!is_submodule, i18n.t("menu.stage.submodule_readonly_reason"))
         .enabled_if(
             group != Some(StageNodeKind::Conflicted),
             i18n.t("menu.stage.resolve_before_stash"),
@@ -261,12 +299,15 @@ pub fn stage_tree_menu_items(state: &AppState, idx: usize) -> Vec<ContextMenuIte
         .enabled_if(has_paths, i18n.t("common.select_files")),
     );
     if let Some(p) = &file_path {
-        items.push(run(
-            i18n.t("menu.stage.open_external_editor"),
-            Some('e'),
-            edit_sc.as_deref(),
-            vec![Action::OpenExternalEditorFile(Some(p.clone()))],
-        ));
+        items.push(
+            run(
+                i18n.t("menu.stage.open_external_editor"),
+                Some('e'),
+                edit_sc.as_deref(),
+                vec![Action::OpenExternalEditorFile(Some(p.clone()))],
+            )
+            .enabled_if(!is_submodule, i18n.t("menu.stage.submodule_readonly_reason")),
+        );
     }
     let count_s = paths.len().to_string();
     let mut body = vec![i18n.t_fmt("menu.stage.delete_files_prompt", &[("count", &count_s)])];
@@ -288,6 +329,7 @@ pub fn stage_tree_menu_items(state: &AppState, idx: usize) -> Vec<ContextMenuIte
         )
         .icon("✕")
         .enabled_if(has_paths, i18n.t("common.select_files"))
+        .enabled_if(!is_submodule, i18n.t("menu.stage.submodule_readonly_reason"))
         .enabled_if(
             !matches!(group, Some(StageNodeKind::AmendCommit)),
             i18n.t("menu.stage.cannot_delete_amend"),
@@ -398,7 +440,11 @@ pub fn stage_diff_menu_items(state: &AppState) -> Vec<ContextMenuItem> {
         .or_else(|| catalog::shortcut_for_action(state, &[KeymapScope::Diff], &KeyAction::ToggleStage));
     let rollback_sc = catalog::all_shortcuts_for_action(state, &[KeymapScope::Diff], &KeyAction::RollbackSelection);
     let (side, path) = diff_side_and_path(state);
-    let editable = matches!(side, Some(StageDiffSide::Staged | StageDiffSide::Unstaged));
+    let is_submodule = state
+        .stage_workbench
+        .current_diff()
+        .is_some_and(|d| d.submodule.is_some());
+    let editable = matches!(side, Some(StageDiffSide::Staged | StageDiffSide::Unstaged)) && !is_submodule;
     let staged = side == Some(StageDiffSide::Staged);
     let sel_range = state.stage_workbench.selected_line_range();
     let sel_history_actions = match (&path, sel_range) {
@@ -432,7 +478,7 @@ pub fn stage_diff_menu_items(state: &AppState) -> Vec<ContextMenuItem> {
             vec![Action::StageDiffUnstageSelection],
         )
         .enabled_if(
-            staged,
+            editable && staged,
             if editable {
                 i18n.t("menu.stage.not_staged")
             } else {
@@ -466,7 +512,11 @@ pub fn stage_diff_menu_items(state: &AppState) -> Vec<ContextMenuItem> {
 pub fn stage_hunk_menu_items(state: &AppState, hunk_idx: usize) -> Vec<ContextMenuItem> {
     let i18n = &state.i18n;
     let (side, path) = diff_side_and_path(state);
-    let editable = matches!(side, Some(StageDiffSide::Staged | StageDiffSide::Unstaged));
+    let is_submodule = state
+        .stage_workbench
+        .current_diff()
+        .is_some_and(|d| d.submodule.is_some());
+    let editable = matches!(side, Some(StageDiffSide::Staged | StageDiffSide::Unstaged)) && !is_submodule;
     let staged = side == Some(StageDiffSide::Staged);
     let mut items = vec![
         run(
@@ -496,7 +546,7 @@ pub fn stage_hunk_menu_items(state: &AppState, hunk_idx: usize) -> Vec<ContextMe
             )],
         )
         .enabled_if(
-            staged,
+            editable && staged,
             if editable {
                 i18n.t("menu.stage.hunk_not_staged")
             } else {

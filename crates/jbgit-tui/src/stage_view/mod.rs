@@ -98,6 +98,7 @@ mod tests {
             file_mode: 0o100644,
             is_binary: false,
             is_conflicted: false,
+            submodule: None,
             tracker,
             hunks: vec![],
             is_truncated: false,

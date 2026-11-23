@@ -1271,7 +1271,12 @@ impl CommitWorkbench {
         syntax_enabled: bool,
         effects: &mut Vec<Effect>,
     ) {
-        if !syntax_enabled || diff.is_binary || diff.is_too_large || diff.hunks.is_empty() {
+        if !syntax_enabled
+            || diff.is_binary
+            || diff.is_too_large
+            || diff.submodule.is_some()
+            || diff.hunks.is_empty()
+        {
             return;
         }
         if let Some((epoch, cancel)) = stage_syntax.begin_cancelable(diff.key.clone()) {
@@ -1666,27 +1671,34 @@ impl CommitWorkbench {
             }
             Action::StageActionSelected => {
                 if let Some(status) = self.status.clone() {
-                    let targets = self.collect_targets_for_action(
+                    let mut targets = self.collect_targets_for_action(
                         self.selected_idx,
                         &status,
                         StageNodeKind::can_stage,
                     );
+                    let had_targets = !targets.is_empty();
+                    targets.retain(|t| !t.is_submodule);
                     if !targets.is_empty() {
                         self.invalidate_paths(&targets);
                         let count_s = targets.len().to_string();
                         *ctx.status_notice =
                             Some(ctx.i18n.t_fmt("toast.staging_paths", &[("count", &count_s)]));
                         ctx.effects.push(Effect::StageTargets(targets));
+                    } else if had_targets {
+                        *ctx.status_notice =
+                            Some(ctx.i18n.t("toast.submodule_readonly").to_string());
                     }
                 }
             }
             Action::UnstageActionSelected => {
                 if let Some(status) = self.status.clone() {
-                    let targets = self.collect_targets_for_action(
+                    let mut targets = self.collect_targets_for_action(
                         self.selected_idx,
                         &status,
                         StageNodeKind::can_unstage,
                     );
+                    let had_targets = !targets.is_empty();
+                    targets.retain(|t| !t.is_submodule);
                     if !targets.is_empty() {
                         self.invalidate_paths(&targets);
                         let count_s = targets.len().to_string();
@@ -1695,6 +1707,9 @@ impl CommitWorkbench {
                                 .t_fmt("toast.unstaging_paths", &[("count", &count_s)]),
                         );
                         ctx.effects.push(Effect::UnstageTargets(targets));
+                    } else if had_targets {
+                        *ctx.status_notice =
+                            Some(ctx.i18n.t("toast.submodule_readonly").to_string());
                     }
                 }
             }
@@ -1706,11 +1721,13 @@ impl CommitWorkbench {
             }
             Action::DiscardPromptSelected => {
                 if let Some(status) = self.status.clone() {
-                    let targets = self.collect_targets_for_action(
+                    let mut targets = self.collect_targets_for_action(
                         self.selected_idx,
                         &status,
                         |k| matches!(k, StageNodeKind::Unstaged | StageNodeKind::Untracked),
                     );
+                    let had_targets = !targets.is_empty();
+                    targets.retain(|t| !t.is_submodule);
                     if !targets.is_empty() {
                         let count_s = targets.len().to_string();
                         let sample: String = targets
@@ -1737,6 +1754,9 @@ impl CommitWorkbench {
                                 vec![Action::DiscardTargetsConfirmed(targets)],
                             ),
                         ))));
+                    } else if had_targets {
+                        *ctx.status_notice =
+                            Some(ctx.i18n.t("toast.submodule_readonly").to_string());
                     }
                 }
             }
@@ -1893,17 +1913,38 @@ impl CommitWorkbench {
                 }
             }
             Action::StageDiffStageSelection => {
-                if let Some(sel) = self.collect_selected_line_sets() {
+                if self
+                    .current_diff
+                    .as_ref()
+                    .is_some_and(|d| d.submodule.is_some())
+                {
+                    *ctx.status_notice =
+                        Some(ctx.i18n.t("toast.submodule_line_staging_disabled").to_string());
+                } else if let Some(sel) = self.collect_selected_line_sets() {
                     self.apply_stage_diff_selection(StageDiffOp::Stage, sel, ctx);
                 }
             }
             Action::StageDiffUnstageSelection => {
-                if let Some(sel) = self.collect_selected_line_sets() {
+                if self
+                    .current_diff
+                    .as_ref()
+                    .is_some_and(|d| d.submodule.is_some())
+                {
+                    *ctx.status_notice =
+                        Some(ctx.i18n.t("toast.submodule_line_staging_disabled").to_string());
+                } else if let Some(sel) = self.collect_selected_line_sets() {
                     self.apply_stage_diff_selection(StageDiffOp::Unstage, sel, ctx);
                 }
             }
             Action::StageDiffRollbackSelection => {
-                if let Some(sel) = self.collect_selected_line_sets() {
+                if self
+                    .current_diff
+                    .as_ref()
+                    .is_some_and(|d| d.submodule.is_some())
+                {
+                    *ctx.status_notice =
+                        Some(ctx.i18n.t("toast.submodule_line_staging_disabled").to_string());
+                } else if let Some(sel) = self.collect_selected_line_sets() {
                     self.apply_stage_diff_selection(StageDiffOp::Rollback, sel, ctx);
                 }
             }
@@ -1920,6 +1961,15 @@ impl CommitWorkbench {
                 }
             }
             Action::OpenThreeWayInspector { row_idx, range_idx } => {
+                if self
+                    .current_diff
+                    .as_ref()
+                    .is_some_and(|d| d.submodule.is_some())
+                {
+                    *ctx.status_notice =
+                        Some(ctx.i18n.t("toast.submodule_line_staging_disabled").to_string());
+                    return true;
+                }
                 if let Some(r) = *row_idx {
                     self.diff_cursor_row = r;
                 }
@@ -1979,7 +2029,11 @@ impl CommitWorkbench {
         let Some(diff) = self.current_diff.as_ref().cloned() else {
             return;
         };
-        if diff.key.side == StageDiffSide::AmendCommit {
+        if diff.key.side == StageDiffSide::AmendCommit || diff.submodule.is_some() {
+            if diff.submodule.is_some() {
+                *ctx.status_notice =
+                    Some(ctx.i18n.t("toast.submodule_line_staging_disabled").to_string());
+            }
             return;
         }
         match op {

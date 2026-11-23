@@ -977,6 +977,12 @@ impl AppState {
                 GitOp::AddWorktree { .. }
                 | GitOp::RemoveWorktree { .. }
                 | GitOp::PruneWorktrees => self.on_worktree_op_succeeded(&op),
+                GitOp::SubmoduleUpdate { path } => {
+                    self.status_notice = Some(match path {
+                        Some(p) => self.i18n.t_fmt("toast.submodule_updated_one", &[("path", p)]),
+                        None => self.i18n.t("toast.submodules_updated").to_string(),
+                    });
+                }
                 GitOp::Ongoing {
                     step: OngoingStep::Continue | OngoingStep::Abort,
                     ..

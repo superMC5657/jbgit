@@ -184,6 +184,7 @@ fn annotate_entry_points_menus_and_alt_g_open_blame_modal() {
             ignored: Vec::new(),
             conflicted: Vec::new(),
             conflict_labels: Default::default(),
+            submodules: Default::default(),
         }),
         epoch: 1,
     });
@@ -644,6 +645,7 @@ fn selection_history_from_annotate_and_stage_diff_renders_range_patch_and_confir
             ignored: Vec::new(),
             conflicted: Vec::new(),
             conflict_labels: Default::default(),
+            submodules: Default::default(),
         }),
         epoch: 1,
     });
@@ -681,6 +683,7 @@ fn selection_history_from_annotate_and_stage_diff_renders_range_patch_and_confir
             file_mode: 0o100644,
             is_binary: false,
             is_conflicted: false,
+            submodule: None,
             tracker,
             hunks,
             is_truncated,

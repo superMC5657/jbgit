@@ -109,6 +109,77 @@ pub fn render_stage_diff_workbench(
         return;
     };
 
+    if let Some(sub) = &diff.submodule {
+        ctx.record_scroll_bound(ScrollPane::StageDiff, h, 0);
+        let fmt_oid = |oid: Option<jbgit_core::Oid>| {
+            oid.map_or_else(
+                || state.i18n.t("view.commit.submodule_none").to_string(),
+                |o| o.to_string(),
+            )
+        };
+        let state_key = match (
+            sub.state.uninitialized,
+            sub.state.new_commits,
+            sub.state.dirty_workdir,
+        ) {
+            (true, _, _) => "view.commit.submodule_uninitialized",
+            (false, true, true) => "view.commit.submodule_new_and_dirty",
+            (false, true, false) => "view.commit.submodule_new_commits",
+            (false, false, true) => "view.commit.submodule_dirty_workdir",
+            (false, false, false) => "view.commit.submodule_clean",
+        };
+        let head_s = fmt_oid(sub.head_oid);
+        let idx_s = fmt_oid(sub.index_oid);
+        let wd_s = fmt_oid(sub.workdir_oid);
+        let lines = vec![
+            Line::from(Span::styled(
+                format!(" {} ", state.i18n.t("view.commit.submodule_diff_title")),
+                Style::default()
+                    .fg(ctx.theme.fg_bright)
+                    .add_modifier(Modifier::BOLD),
+            )),
+            Line::from(""),
+            Line::from(vec![
+                Span::styled(
+                    format!(" {}: ", state.i18n.t("view.commit.submodule_state_label")),
+                    Style::default().fg(ctx.theme.fg_muted),
+                ),
+                Span::styled(
+                    state.i18n.t(state_key).to_string(),
+                    Style::default().fg(ctx.theme.ref_detached.pill_fg),
+                ),
+            ]),
+            Line::from(vec![
+                Span::styled(
+                    " HEAD:    ",
+                    Style::default().fg(ctx.theme.fg_muted),
+                ),
+                Span::styled(head_s, Style::default().fg(ctx.theme.fg_primary)),
+            ]),
+            Line::from(vec![
+                Span::styled(
+                    " Index:   ",
+                    Style::default().fg(ctx.theme.fg_muted),
+                ),
+                Span::styled(idx_s, Style::default().fg(ctx.theme.fg_primary)),
+            ]),
+            Line::from(vec![
+                Span::styled(
+                    " Workdir: ",
+                    Style::default().fg(ctx.theme.fg_muted),
+                ),
+                Span::styled(wd_s, Style::default().fg(ctx.theme.status_modified)),
+            ]),
+            Line::from(""),
+            Line::from(Span::styled(
+                format!(" {}", state.i18n.t("view.commit.submodule_diff_hint")),
+                Style::default().fg(ctx.theme.fg_muted),
+            )),
+        ];
+        frame.render_widget(Paragraph::new(lines), diff_area);
+        return;
+    }
+
     if diff.is_too_large {
         ctx.record_scroll_bound(ScrollPane::StageDiff, h, 0);
         frame.render_widget(

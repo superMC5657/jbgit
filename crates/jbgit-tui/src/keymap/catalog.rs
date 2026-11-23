@@ -62,10 +62,11 @@ const COMMIT_EDITOR_ACTIONS: [KeyAction; 5] = [
     KeyAction::CommitHistory,
 ];
 
-const ADVANCED_TOOL_ACTIONS: [(&KeyAction, &str); 4] = [
+const ADVANCED_TOOL_ACTIONS: [(&KeyAction, &str); 5] = [
     (&KeyAction::Palette, "—"),
     (&KeyAction::ToggleGlyphMode, "F12"),
     (&KeyAction::CycleGraphRenderer, "F8"),
+    (&KeyAction::UpdateSubmodules, "—"),
     (&KeyAction::GitStatusProbe, "Console: p"),
 ];
 
@@ -362,6 +363,10 @@ pub fn is_action_applicable(run: &KeyAction, state: &AppState) -> bool {
         | KeyAction::Palette
         | KeyAction::ToggleGlyphMode
         | KeyAction::CycleGraphRenderer => true,
+        KeyAction::UpdateSubmodules => state
+            .repo_snapshot
+            .as_ref()
+            .is_some_and(|s| !s.submodules.is_empty()),
         KeyAction::GitStatusProbe => {
             state.active_tab == WorkspaceTab::Console
                 && state.focused_pane == PaneId::ConsoleCommandList
@@ -560,6 +565,21 @@ pub fn execute_action(run: &KeyAction, state: &AppState) -> Option<Vec<Action>> 
         KeyAction::ExpandLinearBranch => Some(notice_on_err(graph_expand_selected(state))),
         KeyAction::CollapseAllLinearBranches => Some(notice_on_err(graph_collapse_all(state))),
         KeyAction::ExpandAllLinearBranches => Some(notice_on_err(graph_expand_all(state))),
+        KeyAction::UpdateSubmodules => {
+            if let Err(msg) = state.require_no_ongoing() {
+                return Some(vec![Action::Notice(msg)]);
+            }
+            if state
+                .repo_snapshot
+                .as_ref()
+                .is_none_or(|s| s.submodules.is_empty())
+            {
+                return Some(vec![Action::Notice(
+                    state.i18n.t("toast.no_submodules").to_string(),
+                )]);
+            }
+            Some(vec![Action::RunGitOp(GitOp::SubmoduleUpdate { path: None })])
+        }
         KeyAction::Worktrees => Some(if !crate::worktrees_view::worktrees_supported(state) {
             vec![crate::worktrees_view::unsupported_notice(state)]
         } else if state.repo_snapshot.is_some() {

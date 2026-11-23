@@ -17,7 +17,10 @@ pub use pool::{
     AheadBehindUpdate, LARGE_INDEX_ENTRIES, StatusScanConfig, StatusScanMode, StatusScanPolicy,
 };
 pub use probe::{RepoLocation, RepoProbeResult};
-pub use stage::{CommitOutcome, CommitPrecheckInfo, CommitRequest, StageDiffKey, StageDiffSide, ThreeDocStageDiff};
+pub use stage::{
+    CommitOutcome, CommitPrecheckInfo, CommitRequest, StageDiffKey, StageDiffSide,
+    SubmoduleDiffInfo, ThreeDocStageDiff,
+};
 pub use supervisor::{
     BlameFailureKind, EngineBackend, EngineEvent, EngineHandle, EngineSupervisor,
     RecordingEngineBackend, TaskRequest,

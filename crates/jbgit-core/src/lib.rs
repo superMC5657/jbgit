@@ -69,8 +69,9 @@ pub use repo::{
 };
 pub use stage::{
     AmendCommitPreview, FileStatusKind, StageEntry, StageNodeKind, StageStatusSnapshot,
-    StageTarget, StageTreeOptions, StageTreeRow, StageTreeRowKind, UNTRACKED_COLLAPSE_THRESHOLD,
-    build_stage_tree_rows, collect_targets_under_row, next_anchor_after_mutation,
+    StageTarget, StageTreeOptions, StageTreeRow, StageTreeRowKind, SubmoduleState,
+    UNTRACKED_COLLAPSE_THRESHOLD, build_stage_tree_rows, collect_targets_under_row,
+    next_anchor_after_mutation,
 };
 pub use stage_tracker::{
     BINARY_SNIFF_BYTES, DiffBlock, LineEnding, LineGutterMark, LineSelection, LineSlice,

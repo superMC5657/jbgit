@@ -61,6 +61,7 @@ pub struct FileGlyphs {
     pub config: &'static str,
     pub docs: &'static str,
     pub folder: &'static str,
+    pub submodule: &'static str,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -112,6 +113,7 @@ const UNICODE_FILES: FileGlyphs = FileGlyphs {
     config: "▫",
     docs: "≡",
     folder: "▸",
+    submodule: "⊞",
 };
 
 const NERD_FONT_FILES: FileGlyphs = FileGlyphs {
@@ -121,6 +123,7 @@ const NERD_FONT_FILES: FileGlyphs = FileGlyphs {
     config: "\u{e615}",
     docs: "\u{f48a}",
     folder: "\u{f07b}",
+    submodule: "\u{f1c0}",
 };
 
 pub const UNICODE_SYMBOLS: GlyphSymbols = GlyphSymbols {
@@ -222,6 +225,7 @@ impl GlyphSymbols {
             ("conf", f.config),
             ("docs", f.docs),
             ("dir", f.folder),
+            ("submodule", f.submodule),
             ("node", g.node),
             ("head_node", g.node_head),
             ("hollow", g.node_hollow),

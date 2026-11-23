@@ -1011,6 +1011,7 @@ fn handle_task_request(ctx: &SupervisorContext, task: ScheduledTask) {
                             old_path: None,
                             status_kind: FileStatusKind::Conflicted,
                             group_kind: StageNodeKind::Conflicted,
+                            is_submodule: false,
                         }],
                     )?;
                 }

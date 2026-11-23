@@ -2978,3 +2978,107 @@ async fn commit_signatures_batch_verification_reports_unsigned_and_respects_epoc
     .await;
     assert_eq!(details.details[0].signature, jbgit_core::CommitSignature::unsigned());
 }
+
+#[tokio::test]
+async fn submodule_dirty_workdir_new_commit_and_update_op() {
+    let dir = TempDir::new().unwrap();
+    let d = dir.path();
+    let sub_src = TempDir::new().unwrap();
+    git(sub_src.path(), &["init", "-b", "main"]);
+    fs::write(sub_src.path().join("s.txt"), "v1\n").unwrap();
+    git(sub_src.path(), &["add", "s.txt"]);
+    git(sub_src.path(), &["commit", "-m", "sub v1"]);
+    let sub_recorded = rev(sub_src.path(), "HEAD");
+
+    git(d, &["init", "-b", "main"]);
+    fs::write(d.join("root.txt"), "root\n").unwrap();
+    git(d, &["add", "root.txt"]);
+    git(d, &["commit", "-m", "root init"]);
+    git(
+        d,
+        &[
+            "-c",
+            "protocol.file.allow=always",
+            "submodule",
+            "add",
+            &sub_src.path().to_string_lossy(),
+            "libs/sub",
+        ],
+    );
+    git(d, &["commit", "-m", "add submodule"]);
+
+    let loc = RepoLocation::discover(d).unwrap();
+    let (handle, mut rx) = EngineSupervisor::start(loc, false).unwrap();
+
+    let clean = fetch_stage_status(&handle, &mut rx, false).await;
+    assert_eq!(
+        clean.submodules.get("libs/sub"),
+        Some(&jbgit_core::SubmoduleState {
+            new_commits: false,
+            dirty_workdir: false,
+            uninitialized: false,
+        })
+    );
+    assert!(clean.unstaged.is_empty());
+
+    // 1. Uncommitted dirty change inside submodule worktree.
+    fs::write(d.join("libs/sub/s.txt"), "dirty\n").unwrap();
+    let dirty = fetch_stage_status(&handle, &mut rx, false).await;
+    let dirty_state = dirty.submodules.get("libs/sub").unwrap();
+    assert!(dirty_state.dirty_workdir);
+    assert!(!dirty_state.new_commits);
+    assert!(dirty.unstaged.iter().any(|e| e.path == "libs/sub"));
+
+    // 2. Commit inside submodule so submodule HEAD moves ahead ("new commits").
+    git(&d.join("libs/sub"), &["commit", "-am", "sub v2"]);
+    let sub_ahead = rev(&d.join("libs/sub"), "HEAD");
+    assert_ne!(sub_ahead, sub_recorded);
+
+    let ahead_status = fetch_stage_status(&handle, &mut rx, false).await;
+    let ahead_state = ahead_status.submodules.get("libs/sub").unwrap();
+    assert!(ahead_state.new_commits);
+    assert!(!ahead_state.dirty_workdir);
+    assert!(ahead_status.unstaged.iter().any(|e| e.path == "libs/sub"));
+
+    // Stage diff for submodule returns read-only pointer metadata without text hunks.
+    let diff = fetch_stage_diff(
+        &handle,
+        &mut rx,
+        StageDiffKey {
+            path: "libs/sub".into(),
+            old_path: None,
+            side: StageDiffSide::Unstaged,
+            context: DiffContext::Three,
+        },
+    )
+    .await;
+    let sub_info = diff
+        .submodule
+        .as_ref()
+        .expect("submodule metadata must be populated");
+    assert_eq!(sub_info.head_oid, Some(sub_recorded));
+    assert_eq!(sub_info.workdir_oid, Some(sub_ahead));
+    assert!(sub_info.state.new_commits);
+    assert!(diff.hunks.is_empty());
+
+    // 3. Running GitOp::SubmoduleUpdate resets the submodule back to the recorded commit.
+    let outcome = run_git_op(
+        &handle,
+        &mut rx,
+        jbgit_core::GitOp::SubmoduleUpdate {
+            path: Some("libs/sub".into()),
+        },
+    )
+    .await;
+    assert!(outcome.success, "{outcome:?}");
+
+    let restored = fetch_stage_status(&handle, &mut rx, false).await;
+    assert_eq!(
+        restored.submodules.get("libs/sub"),
+        Some(&jbgit_core::SubmoduleState {
+            new_commits: false,
+            dirty_workdir: false,
+            uninitialized: false,
+        })
+    );
+}

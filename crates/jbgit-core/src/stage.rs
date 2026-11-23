@@ -42,6 +42,20 @@ pub struct StageEntry {
     pub kind: FileStatusKind,
 }
 
+/// Dirty/uninitialized status of a submodule gitlink relative to HEAD/index.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct SubmoduleState {
+    pub new_commits: bool,
+    pub dirty_workdir: bool,
+    pub uninitialized: bool,
+}
+
+impl SubmoduleState {
+    pub const fn is_dirty(self) -> bool {
+        self.new_commits || self.dirty_workdir || self.uninitialized
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct StageStatusSnapshot {
     pub staged: Vec<StageEntry>,
@@ -50,6 +64,7 @@ pub struct StageStatusSnapshot {
     pub conflicted: Vec<StageEntry>,
     pub ignored: Vec<StageEntry>,
     pub conflict_labels: BTreeMap<String, String>,
+    pub submodules: BTreeMap<String, SubmoduleState>,
 }
 
 impl StageStatusSnapshot {
@@ -147,6 +162,7 @@ pub enum StageTreeRowKind {
         old_path: Option<String>,
         status_kind: FileStatusKind,
         conflict_label: Option<String>,
+        submodule: Option<SubmoduleState>,
     },
     AmendFile {
         path: String,
@@ -184,6 +200,17 @@ impl StageTreeRow {
             StageTreeRowKind::Group { .. } | StageTreeRowKind::Dir { .. }
         )
     }
+
+    pub fn submodule(&self) -> Option<SubmoduleState> {
+        match &self.kind {
+            StageTreeRowKind::File { submodule, .. } => *submodule,
+            _ => None,
+        }
+    }
+
+    pub fn is_submodule(&self) -> bool {
+        self.submodule().is_some()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -192,6 +219,7 @@ pub struct StageTarget {
     pub path: String,
     pub old_path: Option<String>,
     pub status_kind: FileStatusKind,
+    pub is_submodule: bool,
 }
 
 #[derive(Default)]
@@ -225,6 +253,7 @@ pub fn build_stage_tree_rows(
             StageNodeKind::Conflicted,
             &entries,
             Some(&status.conflict_labels),
+            &status.submodules,
             opts.group_by_dir,
             collapsed,
             None,
@@ -240,6 +269,7 @@ pub fn build_stage_tree_rows(
             StageNodeKind::Staged,
             &entries,
             None,
+            &status.submodules,
             opts.group_by_dir,
             collapsed,
             None,
@@ -259,6 +289,7 @@ pub fn build_stage_tree_rows(
             StageNodeKind::Unstaged,
             &unstaged_entries,
             None,
+            &status.submodules,
             opts.group_by_dir,
             collapsed,
             None,
@@ -274,6 +305,7 @@ pub fn build_stage_tree_rows(
             StageNodeKind::Untracked,
             &entries,
             None,
+            &status.submodules,
             opts.group_by_dir,
             collapsed,
             Some(opts.untracked_many_expanded),
@@ -289,6 +321,7 @@ pub fn build_stage_tree_rows(
             StageNodeKind::Ignored,
             &entries,
             None,
+            &status.submodules,
             opts.group_by_dir,
             collapsed,
             None,
@@ -336,10 +369,12 @@ pub fn build_stage_tree_rows(
     rows
 }
 
+#[allow(clippy::too_many_arguments)]
 fn emit_group(
     group_kind: StageNodeKind,
     entries: &[StageEntry],
     conflict_labels: Option<&BTreeMap<String, String>>,
+    submodules: &BTreeMap<String, SubmoduleState>,
     group_by_dir: bool,
     collapsed: &FxHashSet<String>,
     expanded_override: Option<bool>,
@@ -364,6 +399,7 @@ fn emit_group(
     if !group_by_dir {
         for e in entries {
             let conflict_label = conflict_labels.and_then(|m| m.get(&e.path).cloned());
+            let submodule = submodules.get(&e.path).copied();
             out.push(StageTreeRow {
                 key: format!("file:{group_kind:?}:{}", e.path),
                 label: e.path.clone(),
@@ -375,6 +411,7 @@ fn emit_group(
                     old_path: e.old_path.clone(),
                     status_kind: e.kind,
                     conflict_label,
+                    submodule,
                 },
             });
         }
@@ -398,6 +435,7 @@ fn emit_group(
         1,
         entries,
         conflict_labels,
+        submodules,
         collapsed,
         out,
     );
@@ -411,6 +449,7 @@ fn emit_stage_dir(
     depth: u16,
     entries: &[StageEntry],
     conflict_labels: Option<&BTreeMap<String, String>>,
+    submodules: &BTreeMap<String, SubmoduleState>,
     collapsed: &FxHashSet<String>,
     out: &mut Vec<StageTreeRow>,
 ) {
@@ -443,6 +482,7 @@ fn emit_stage_dir(
                 depth + 1,
                 entries,
                 conflict_labels,
+                submodules,
                 collapsed,
                 out,
             );
@@ -452,6 +492,7 @@ fn emit_stage_dir(
     for &idx in &dir.files {
         let e = &entries[idx];
         let conflict_label = conflict_labels.and_then(|m| m.get(&e.path).cloned());
+        let submodule = submodules.get(&e.path).copied();
         let file_name = e.path.rsplit('/').next().unwrap_or(&e.path).to_string();
         out.push(StageTreeRow {
             key: format!("file:{group_kind:?}:{}", e.path),
@@ -464,6 +505,7 @@ fn emit_stage_dir(
                 old_path: e.old_path.clone(),
                 status_kind: e.kind,
                 conflict_label,
+                submodule,
             },
         });
     }
@@ -501,6 +543,7 @@ pub fn collect_targets_under_row(
         StageTreeRowKind::Group { kind, .. } => entries_for_group(*kind)
             .into_iter()
             .map(|e| StageTarget {
+                is_submodule: status.submodules.contains_key(&e.path),
                 group_kind: *kind,
                 path: e.path,
                 old_path: e.old_path,
@@ -517,6 +560,7 @@ pub fn collect_targets_under_row(
                 .into_iter()
                 .filter(|e| e.path.starts_with(&prefix_slash))
                 .map(|e| StageTarget {
+                    is_submodule: status.submodules.contains_key(&e.path),
                     group_kind: *group_kind,
                     path: e.path,
                     old_path: e.old_path,
@@ -529,12 +573,14 @@ pub fn collect_targets_under_row(
             path,
             old_path,
             status_kind,
+            submodule,
             ..
         } => vec![StageTarget {
             group_kind: *group_kind,
             path: path.clone(),
             old_path: old_path.clone(),
             status_kind: *status_kind,
+            is_submodule: submodule.is_some(),
         }],
         StageTreeRowKind::AmendFile { .. } => Vec::new(),
     }
@@ -714,5 +760,46 @@ mod tests {
             rows = new_rows;
         }
         assert_eq!(rows[sel].key, "file:Unstaged:f9.rs");
+    }
+
+    #[test]
+    fn submodule_state_propagates_to_tree_rows_and_targets() {
+        let sub_state = SubmoduleState {
+            new_commits: true,
+            dirty_workdir: true,
+            uninitialized: false,
+        };
+        let mut snap = StageStatusSnapshot {
+            unstaged: vec![
+                StageEntry {
+                    path: "libs/sub".into(),
+                    old_path: None,
+                    kind: FileStatusKind::Modified,
+                },
+                StageEntry {
+                    path: "src/lib.rs".into(),
+                    old_path: None,
+                    kind: FileStatusKind::Modified,
+                },
+            ],
+            ..Default::default()
+        };
+        snap.submodules.insert("libs/sub".into(), sub_state);
+
+        let rows = build_stage_tree_rows(&snap, None, StageTreeOptions::default(), &FxHashSet::default());
+        let sub_idx = rows
+            .iter()
+            .position(|r| r.key == "file:Unstaged:libs/sub")
+            .unwrap();
+        assert_eq!(rows[sub_idx].submodule(), Some(sub_state));
+        assert!(rows[sub_idx].is_submodule());
+
+        let targets = collect_targets_under_row(&rows, sub_idx, &snap, UNTRACKED_COLLAPSE_THRESHOLD);
+        assert_eq!(targets.len(), 1);
+        assert!(targets[0].is_submodule);
+
+        let group_targets = collect_targets_under_row(&rows, 0, &snap, UNTRACKED_COLLAPSE_THRESHOLD);
+        assert!(group_targets.iter().any(|t| t.path == "libs/sub" && t.is_submodule));
+        assert!(group_targets.iter().any(|t| t.path == "src/lib.rs" && !t.is_submodule));
     }
 }

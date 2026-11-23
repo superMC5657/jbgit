@@ -2,11 +2,14 @@ use std::fs;
 use std::path::Path;
 
 use git2::build::CheckoutBuilder;
-use git2::{Commit, DiffFindOptions, IndexEntry, IndexTime, ObjectType, ResetType, Signature};
+use git2::{
+    Commit, DiffFindOptions, IndexEntry, IndexTime, ObjectType, Repository, ResetType, Signature,
+    SubmoduleIgnore, SubmoduleStatus,
+};
 use jbgit_core::{
     AmendCommitPreview, DetailsKey, DiffContext, DiffHunk, DiffLine, DiffLineKind, EpochToken,
     FileChange, FileDiff, FileDiffKey, FileStatusKind, MAX_DIFF_LINES, Oid, StageDiffHunk,
-    StageLineTracker, StageNodeKind, StageTarget,
+    StageLineTracker, StageNodeKind, StageTarget, SubmoduleState,
 };
 
 use crate::blob_reader::{
@@ -31,6 +34,15 @@ pub struct StageDiffKey {
     pub context: DiffContext,
 }
 
+/// Read-only submodule pointer metadata shown instead of a text diff.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SubmoduleDiffInfo {
+    pub head_oid: Option<Oid>,
+    pub index_oid: Option<Oid>,
+    pub workdir_oid: Option<Oid>,
+    pub state: SubmoduleState,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ThreeDocStageDiff {
     pub key: StageDiffKey,
@@ -43,6 +55,7 @@ pub struct ThreeDocStageDiff {
     pub file_mode: u32,
     pub is_binary: bool,
     pub is_conflicted: bool,
+    pub submodule: Option<SubmoduleDiffInfo>,
     pub tracker: StageLineTracker,
     pub hunks: Vec<StageDiffHunk>,
     pub is_truncated: bool,
@@ -97,6 +110,56 @@ pub struct CommitOutcome {
     pub preserved_message: Option<String>,
 }
 
+fn detect_submodule_diff(repo: &Repository, path: &str) -> Option<SubmoduleDiffInfo> {
+    let norm = path.replace('\\', "/");
+    let subs = repo.submodules().ok()?;
+    for sub in subs {
+        let sub_path = sub.path().to_string_lossy().replace('\\', "/");
+        if sub_path == norm {
+            let status_key = sub.name().ok().unwrap_or(sub_path.as_str());
+            let st = repo
+                .submodule_status(status_key, SubmoduleIgnore::None)
+                .unwrap_or(SubmoduleStatus::empty());
+            let state = SubmoduleState {
+                new_commits: st.contains(SubmoduleStatus::WD_MODIFIED),
+                dirty_workdir: st.intersects(
+                    SubmoduleStatus::WD_INDEX_MODIFIED
+                        | SubmoduleStatus::WD_WD_MODIFIED
+                        | SubmoduleStatus::WD_UNTRACKED,
+                ),
+                uninitialized: st.contains(SubmoduleStatus::WD_UNINITIALIZED),
+            };
+            return Some(SubmoduleDiffInfo {
+                head_oid: sub.head_id().map(to_core_oid),
+                index_oid: sub.index_id().map(to_core_oid),
+                workdir_oid: sub.workdir_id().map(to_core_oid),
+                state,
+            });
+        }
+    }
+    None
+}
+
+fn empty_submodule_diff(key: StageDiffKey, info: SubmoduleDiffInfo) -> ThreeDocStageDiff {
+    ThreeDocStageDiff {
+        key,
+        vcs_exists: info.head_oid.is_some(),
+        staged_exists: info.index_oid.is_some(),
+        local_exists: info.workdir_oid.is_some(),
+        vcs_bytes: Vec::new(),
+        staged_bytes: Vec::new(),
+        local_bytes: Vec::new(),
+        file_mode: 0o160_000,
+        is_binary: false,
+        is_conflicted: false,
+        submodule: Some(info),
+        tracker: StageLineTracker::new(b"", b"", b""),
+        hunks: Vec::new(),
+        is_truncated: false,
+        is_too_large: false,
+    }
+}
+
 pub(crate) fn load_stage_file_diff_sync(
     location: &RepoLocation,
     key: &StageDiffKey,
@@ -109,6 +172,10 @@ pub(crate) fn load_stage_file_diff_sync(
     with_thread_repo(&location.git_dir, |repo| {
         if token.is_stale() {
             return Err(EngineError::Cancelled);
+        }
+
+        if let Some(info) = detect_submodule_diff(repo, &key.path) {
+            return Ok(empty_submodule_diff(key.clone(), info));
         }
 
         if key.side == StageDiffSide::AmendCommit {
@@ -137,6 +204,17 @@ pub(crate) fn load_stage_file_diff_sync(
             }
 
             let file_mode = head_side.mode().or(vcs_side.mode()).unwrap_or(0o100644);
+            if file_mode == 0o160_000 {
+                return Ok(empty_submodule_diff(
+                    key.clone(),
+                    SubmoduleDiffInfo {
+                        head_oid: None,
+                        index_oid: None,
+                        workdir_oid: None,
+                        state: SubmoduleState::default(),
+                    },
+                ));
+            }
             let vcs_exists = vcs_side.exists();
             let head_exists = head_side.exists();
             if vcs_side.is_too_large() || head_side.is_too_large() {
@@ -151,6 +229,7 @@ pub(crate) fn load_stage_file_diff_sync(
                     file_mode,
                     is_binary: false,
                     is_conflicted: false,
+                    submodule: None,
                     tracker: StageLineTracker::new(b"", b"", b""),
                     hunks: Vec::new(),
                     is_truncated: false,
@@ -176,6 +255,7 @@ pub(crate) fn load_stage_file_diff_sync(
                     file_mode,
                     is_binary: true,
                     is_conflicted: false,
+                    submodule: None,
                     tracker: StageLineTracker::new(b"", b"", b""),
                     hunks: Vec::new(),
                     is_truncated: false,
@@ -204,6 +284,7 @@ pub(crate) fn load_stage_file_diff_sync(
                 file_mode,
                 is_binary: false,
                 is_conflicted: false,
+                submodule: None,
                 tracker,
                 hunks,
                 is_truncated,
@@ -230,6 +311,17 @@ pub(crate) fn load_stage_file_diff_sync(
             .or(vcs_side.mode())
             .or(local_side.mode())
             .unwrap_or(0o100644);
+        if file_mode == 0o160_000 {
+            return Ok(empty_submodule_diff(
+                key.clone(),
+                SubmoduleDiffInfo {
+                    head_oid: None,
+                    index_oid: None,
+                    workdir_oid: None,
+                    state: SubmoduleState::default(),
+                },
+            ));
+        }
         let vcs_exists = vcs_side.exists();
         let staged_exists = staged_side.exists();
         let local_exists = local_side.exists();
@@ -246,6 +338,7 @@ pub(crate) fn load_stage_file_diff_sync(
                 file_mode,
                 is_binary: false,
                 is_conflicted,
+                submodule: None,
                 tracker: StageLineTracker::new(b"", b"", b""),
                 hunks: Vec::new(),
                 is_truncated: false,
@@ -274,6 +367,7 @@ pub(crate) fn load_stage_file_diff_sync(
                 file_mode,
                 is_binary: true,
                 is_conflicted,
+                submodule: None,
                 tracker: StageLineTracker::new(b"", b"", b""),
                 hunks: Vec::new(),
                 is_truncated: false,
@@ -343,6 +437,7 @@ pub(crate) fn load_stage_file_diff_sync(
             file_mode,
             is_binary: false,
             is_conflicted,
+            submodule: None,
             tracker,
             hunks,
             is_truncated,

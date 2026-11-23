@@ -539,6 +539,12 @@ impl I18n {
                     )
                 }
             }
+            GitOp::SubmoduleUpdate { path: Some(p) } => {
+                self.t_fmt("git_op.submodule_update_one", &[("path", p)])
+            }
+            GitOp::SubmoduleUpdate { path: None } => {
+                self.t("git_op.submodule_update_all").to_string()
+            }
             GitOp::Smart(inner) => {
                 let inner_lbl = self.git_op_label(inner);
                 self.t_fmt("git_op.smart", &[("label", &inner_lbl)])

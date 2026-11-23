@@ -282,15 +282,21 @@ fn render_stage_tree_pane(
                 old_path,
                 status_kind,
                 conflict_label,
+                submodule,
             } => {
                 let fg_kind = ctx.theme.status_color(*status_kind);
                 left.push(Span::styled(
                     format!("{} ", status_kind.badge_char()),
                     Style::default().fg(fg_kind).add_modifier(Modifier::BOLD),
                 ));
+                let (icon, icon_fg) = if submodule.is_some() {
+                    (glyphs.files.submodule, ctx.theme.fg_accent_link)
+                } else {
+                    (glyphs.file_icon(path), ctx.theme.fg_muted)
+                };
                 left.push(Span::styled(
-                    format!("{} ", glyphs.file_icon(path)),
-                    Style::default().fg(ctx.theme.fg_muted),
+                    format!("{icon} "),
+                    Style::default().fg(icon_fg),
                 ));
                 left.push(Span::styled(
                     row.label.clone(),
@@ -306,7 +312,23 @@ fn render_stage_tree_pane(
                         Style::default().fg(ctx.theme.fg_muted),
                     ));
                 }
-                if let Some(clabel) = conflict_label {
+                if let Some(sub_state) = submodule {
+                    let badge_key = match (
+                        sub_state.uninitialized,
+                        sub_state.new_commits,
+                        sub_state.dirty_workdir,
+                    ) {
+                        (true, _, _) => "view.commit.submodule_uninitialized",
+                        (false, true, true) => "view.commit.submodule_new_and_dirty",
+                        (false, true, false) => "view.commit.submodule_new_commits",
+                        (false, false, true) => "view.commit.submodule_dirty_workdir",
+                        (false, false, false) => "view.commit.submodule_tag",
+                    };
+                    right.push(Span::styled(
+                        format!("{} ", state.i18n.t(badge_key)),
+                        Style::default().fg(ctx.theme.fg_muted),
+                    ));
+                } else if let Some(clabel) = conflict_label {
                     right.push(Span::styled(
                         format!("{clabel} "),
                         Style::default().fg(ctx.theme.status_conflicted),
