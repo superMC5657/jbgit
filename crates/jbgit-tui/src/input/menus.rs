@@ -981,6 +981,21 @@ pub fn presentation_menu_items(state: &AppState) -> Vec<ContextMenuItem> {
             PresentationToggle::UseAuthorDate,
         ),
         ContextMenuItem::separator(),
+        // Shortcuts live in `?` help; a shortcut column would widen this
+        // cascading menu past the room left of its parent.
+        ContextMenuItem::from_command(
+            i18n.t("presentation.collapse_all"),
+            Some('o'),
+            None,
+            catalog::graph_collapse_all(state),
+        ),
+        ContextMenuItem::from_command(
+            i18n.t("presentation.expand_all"),
+            Some('e'),
+            None,
+            catalog::graph_expand_all(state),
+        ),
+        ContextMenuItem::separator(),
         ContextMenuItem::submenu(
             i18n.t_fmt(
                 "presentation.graph_renderer",

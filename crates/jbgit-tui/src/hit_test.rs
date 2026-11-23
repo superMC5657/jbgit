@@ -150,6 +150,8 @@ pub enum PushActionButtonKind {
 pub enum GraphHitKind {
     Node {
         commit_oid: Oid,
+        /// Fold marker: clicking expands the collapsed branch below.
+        collapsed_below: bool,
     },
     Arrow {
         up_row: usize,

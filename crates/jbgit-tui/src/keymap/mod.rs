@@ -109,6 +109,10 @@ pub enum KeyAction {
     StashDrop,
     StashBranch,
     StashClear,
+    CollapseLinearBranch,
+    ExpandLinearBranch,
+    CollapseAllLinearBranches,
+    ExpandAllLinearBranches,
     Unknown(String),
 }
 
@@ -136,6 +140,10 @@ impl KeyAction {
             "configure_remotes" => Self::ConfigureRemotes,
             "switch_repository" => Self::SwitchRepository,
             "worktrees" => Self::Worktrees,
+            "collapse_linear_branch" => Self::CollapseLinearBranch,
+            "expand_linear_branch" => Self::ExpandLinearBranch,
+            "collapse_all_linear_branches" => Self::CollapseAllLinearBranches,
+            "expand_all_linear_branches" => Self::ExpandAllLinearBranches,
             "palette" => Self::Palette,
             "toggle_glyph_mode" => Self::ToggleGlyphMode,
             "cycle_graph_renderer" => Self::CycleGraphRenderer,
@@ -223,6 +231,10 @@ impl KeyAction {
             Self::ConfigureRemotes => "configure_remotes",
             Self::SwitchRepository => "switch_repository",
             Self::Worktrees => "worktrees",
+            Self::CollapseLinearBranch => "collapse_linear_branch",
+            Self::ExpandLinearBranch => "expand_linear_branch",
+            Self::CollapseAllLinearBranches => "collapse_all_linear_branches",
+            Self::ExpandAllLinearBranches => "expand_all_linear_branches",
             Self::Palette => "palette",
             Self::ToggleGlyphMode => "toggle_glyph_mode",
             Self::CycleGraphRenderer => "cycle_graph_renderer",
@@ -373,6 +385,10 @@ impl KeyAction {
             Self::StashDrop => "view.footer.pill.drop",
             Self::StashBranch => "view.footer.pill.new_branch",
             Self::StashClear => "view.footer.pill.stash_clear",
+            Self::CollapseLinearBranch => "view.footer.pill.collapse",
+            Self::ExpandLinearBranch => "view.footer.pill.expand",
+            Self::CollapseAllLinearBranches => "view.footer.pill.collapse_all",
+            Self::ExpandAllLinearBranches => "view.footer.pill.expand_all",
         })
     }
 }

@@ -174,6 +174,18 @@ pub enum Action {
     JumpToCommit(Oid),
     NavLogBack,
     NavLogForward,
+    /// Folds one linear segment (cursor moves to its up end when inside it).
+    GraphCollapseSegment(jbgit_core::graph::SegmentId),
+    GraphExpandSegments(Vec<jbgit_core::graph::SegmentId>),
+    GraphCollapseAll,
+    GraphExpandAll,
+    /// Click on a fold-marker node: expands the collapsed branches below it.
+    GraphExpandBelow(usize),
+    /// Click on a graph edge: expands it when it is a collapsed segment edge.
+    GraphExpandEdge {
+        up_row: usize,
+        down_row: usize,
+    },
 
     // ── Shared Changes Tree & Diff Viewer (Log / Stash / File History / Stage) ──
     ChangesMove(ChangesHost, isize),

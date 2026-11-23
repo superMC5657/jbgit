@@ -280,7 +280,11 @@ impl PixelVectorGraphBackend {
         let visible_row = row.visible_row as usize;
 
         for (idx, item) in row.elements.iter().enumerate() {
-            if let GraphPrintElement::Node { pos, .. } = item.element
+            if let GraphPrintElement::Node {
+                pos,
+                collapsed_below,
+                ..
+            } = item.element
                 && g.is_over_node(pos, local_x, local_y)
             {
                 return Some(HitTarget::GraphPrintElement {
@@ -289,6 +293,7 @@ impl PixelVectorGraphBackend {
                     commit_oid: row.commit_oid,
                     kind: GraphHitKind::Node {
                         commit_oid: row.commit_oid,
+                        collapsed_below,
                     },
                 });
             }
@@ -550,7 +555,12 @@ impl PixelVectorGraphBackend {
                 }
             }
             for (idx, item) in row.elements.iter().enumerate() {
-                if let GraphPrintElement::Node { pos, .. } = item.element {
+                if let GraphPrintElement::Node {
+                    pos,
+                    collapsed_below,
+                    ..
+                } = item.element
+                {
                     let center = col_of(g.track_x(pos));
                     for c in center - 1..=center + 1 {
                         let cx = c as f32 * cw + (cw / 2.0).floor();
@@ -561,6 +571,7 @@ impl PixelVectorGraphBackend {
                                 idx,
                                 GraphHitKind::Node {
                                     commit_oid: row.commit_oid,
+                                    collapsed_below,
                                 },
                             );
                         }

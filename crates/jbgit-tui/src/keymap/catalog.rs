@@ -396,8 +396,16 @@ pub fn is_action_applicable(run: &KeyAction, state: &AppState) -> bool {
                     PaneId::LogBranchesTree | PaneId::LogCommitTable
                 )
         }
-        KeyAction::CopyHash | KeyAction::Uncommit | KeyAction::Reword | KeyAction::DropCommit => {
+        KeyAction::CopyHash
+        | KeyAction::Uncommit
+        | KeyAction::Reword
+        | KeyAction::DropCommit
+        | KeyAction::CollapseLinearBranch
+        | KeyAction::ExpandLinearBranch => {
             state.active_tab == WorkspaceTab::Log && state.focused_pane == PaneId::LogCommitTable
+        }
+        KeyAction::CollapseAllLinearBranches | KeyAction::ExpandAllLinearBranches => {
+            state.active_tab == WorkspaceTab::Log
         }
         KeyAction::ChooseParent => {
             state.active_tab == WorkspaceTab::Log
@@ -539,6 +547,10 @@ pub fn execute_action(run: &KeyAction, state: &AppState) -> Option<Vec<Action>> 
             Some(vec![Action::RunGitOp(GitOp::Pull { rebase: false })])
         }
         KeyAction::SwitchRepository => Some(vec![Action::OpenRepoSwitcher]),
+        KeyAction::CollapseLinearBranch => Some(notice_on_err(graph_collapse_selected(state))),
+        KeyAction::ExpandLinearBranch => Some(notice_on_err(graph_expand_selected(state))),
+        KeyAction::CollapseAllLinearBranches => Some(notice_on_err(graph_collapse_all(state))),
+        KeyAction::ExpandAllLinearBranches => Some(notice_on_err(graph_expand_all(state))),
         KeyAction::Worktrees => Some(if !crate::worktrees_view::worktrees_supported(state) {
             vec![crate::worktrees_view::unsupported_notice(state)]
         } else if state.repo_snapshot.is_some() {
@@ -1034,6 +1046,72 @@ pub fn all_shortcuts_for_action(
     } else {
         Some(all.join(" / "))
     }
+}
+
+fn notice_on_err(result: CommandResult) -> Vec<Action> {
+    result.unwrap_or_else(|msg| vec![Action::Notice(msg)])
+}
+
+/// Linear-branch collapsing is only offered on the unfiltered graph (IDEA
+/// disables `Collapse Linear Branches` while filtering or in first-parent mode).
+pub fn graph_collapse_available(state: &AppState) -> Result<(), String> {
+    let i18n = &state.i18n;
+    if state.repo_snapshot.is_none() || state.log.graph.cached.is_none() {
+        return Err(i18n.t("toast.repo_not_loaded").to_string());
+    }
+    if state.log.graph.options.first_parent_only {
+        return Err(i18n
+            .t("menu.log.collapse_disabled_first_parent")
+            .to_string());
+    }
+    if !state.log.filter.spec.is_empty() {
+        return Err(i18n.t("menu.log.collapse_disabled_filter").to_string());
+    }
+    Ok(())
+}
+
+/// `Collapse Linear Branch` (`zc`): the segment holding the selected commit,
+/// else the expanded segment hanging below it.
+pub fn graph_collapse_selected(state: &AppState) -> CommandResult {
+    graph_collapse_available(state)?;
+    let graph = &state.log.graph;
+    let cached = graph.cached.as_ref().expect("checked above");
+    cached
+        .expanded_segments_at(graph.selected_idx)
+        .first()
+        .map(|&id| vec![Action::GraphCollapseSegment(id)])
+        .ok_or_else(|| state.i18n.t("menu.log.no_linear_branch_here").to_string())
+}
+
+/// `Expand Linear Branch` (`zo`): collapsed segments below the selected commit.
+pub fn graph_expand_selected(state: &AppState) -> CommandResult {
+    graph_collapse_available(state)?;
+    let graph = &state.log.graph;
+    let cached = graph.cached.as_ref().expect("checked above");
+    let ids = cached.collapsed_segments_below(graph.selected_idx);
+    if ids.is_empty() {
+        return Err(state.i18n.t("menu.log.nothing_collapsed_here").to_string());
+    }
+    Ok(vec![Action::GraphExpandSegments(ids)])
+}
+
+/// `Collapse All Linear Branches` (`zM`).
+pub fn graph_collapse_all(state: &AppState) -> CommandResult {
+    graph_collapse_available(state)?;
+    let cached = state.log.graph.cached.as_ref().expect("checked above");
+    if cached.segments.is_empty() {
+        return Err(state.i18n.t("menu.log.no_linear_branches").to_string());
+    }
+    Ok(vec![Action::GraphCollapseAll])
+}
+
+/// `Expand All Linear Branches` (`zR`).
+pub fn graph_expand_all(state: &AppState) -> CommandResult {
+    graph_collapse_available(state)?;
+    if !state.log.graph.collapse.is_active() {
+        return Err(state.i18n.t("menu.log.nothing_collapsed").to_string());
+    }
+    Ok(vec![Action::GraphExpandAll])
 }
 
 /// Resolves `Checkout` for the selected commit row in `[2 Log]`.

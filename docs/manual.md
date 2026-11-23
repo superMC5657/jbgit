@@ -27,6 +27,7 @@
   - [6. 常用 `run` 动作标识符参考](#6-常用-run-动作标识符参考)
 - [四、远端与凭据 (Remotes & Credentials)](#四远端与凭据-remotes--credentials)
 - [五、切换仓库与 Worktree (Repositories & Working Trees)](#五切换仓库与-worktree-repositories--working-trees)
+- [六、提交图谱：折叠线性分支 (Collapse Linear Branches)](#六提交图谱折叠线性分支-collapse-linear-branches)
 
 ---
 
@@ -90,6 +91,7 @@ jbgit 默认采用**零冲突统一键位（`preset = "default"`）**，并通�
 | `g r` / `<Ctrl-g>` | 按提交哈希、分支名或 Tag 快速定位跳转 |
 | `m` | 为合并提交选择 / 切换父提交 |
 | `u` / `<F2>` / `<Del>` | 撤回最近提交 (Uncommit) / 修改说明 (Reword) / 丢弃提交 (Drop) |
+| `<Ctrl-Shift-->` / `<Ctrl-Shift-=>` | 折叠 / 展开全部线性分支（vim 预设另有 `z c` / `z o` 折叠 / 展开选中处、`z M` / `z R` 全部折叠 / 展开），详见[第六章](#六提交图谱折叠线性分支-collapse-linear-branches) |
 
 ### 分支树面板 (Log Branches Pane)
 
@@ -417,7 +419,7 @@ mode = "nerd_font"
 - **预设风格 (`preset`)**：
   - `"default"`：极简零冲突推荐预设（默认）。
   - `"jetbrains"`：贴近 IntelliJ IDEA 习惯（自动开启 `tree_speed_search = true`，并补充 `<C-k>` 打开 Commit、`<C-S-k>` Push、`<C-t>` Pull、`<C-A-n>` 新建分支、`<A-m>` Amend 等映射）。注意 `<C-t>` 保持绑定 Pull 以不改变已有习惯；Update Project 在三套预设中统一为 `<A-u>`，如需 IDEA 的 `Ctrl+T = Update Project`，可在 `[global]` 中 `prepend_keymap = [{ on = "<C-t>", run = "update_project" }]`。
-  - `"vim"`：Vim / Lazygit 风格（Log 中 `<C-d>`/`<C-u>` 半页翻滚、`d` 对比提交/开关差异，Diff 中 `s`/`u` 暂存/取消暂存，`c` 切换上下文行数）。
+  - `"vim"`：Vim / Lazygit 风格（Log 中 `<C-d>`/`<C-u>` 半页翻滚、`d` 对比提交/开关差异、`z c`/`z o`/`z M`/`z R` 折叠 / 展开线性分支，Diff 中 `s`/`u` 暂存/取消暂存，`c` 切换上下文行数）。
 - **分支树直接打字搜索 (`tree_speed_search`)**：
   - `false`（默认）：在分支树面板按 `/` 或 `<Ctrl-f>` 进入搜索，单键 `j`/`k`/`c`/`q`/`r` 等保留导航与快捷操作。
   - `true`：在分支树面板直接打字即可实时过滤分支。
@@ -467,7 +469,7 @@ prepend_keymap = [
 | 作用域 | 可用 `run` 动作标识符 |
 | :--- | :--- |
 | `global` | `quit`, `help`, `context_menu`, `refresh`, `tab_commit`, `tab_log`, `tab_branches`, `tab_stash`, `tab_console`, `focus_next`, `focus_prev`, `toggle_branches_popup`, `toggle_branches_pane`, `git_fetch`, `git_pull`, `git_push`, `update_project`, `configure_remotes`, `switch_repository`, `worktrees`, `goto_revision`, `palette`, `toggle_glyph_mode`, `cycle_graph_renderer`, `git_status_probe`, `noop` |
-| `log` | `cursor_down`, `cursor_up`, `goto_top`, `goto_bottom`, `page_down_half`, `page_up_half`, `goto_revision`, `focus_filter`, `toggle_branches_pane`, `compare_or_diff`, `zoom_diff`, `copy_hash`, `checkout`, `new_branch`, `uncommit`, `reword`, `drop_commit`, `choose_parent`, `toggle_group`, `file_history`, `annotate` |
+| `log` | `cursor_down`, `cursor_up`, `goto_top`, `goto_bottom`, `page_down_half`, `page_up_half`, `goto_revision`, `focus_filter`, `toggle_branches_pane`, `compare_or_diff`, `zoom_diff`, `copy_hash`, `checkout`, `new_branch`, `uncommit`, `reword`, `drop_commit`, `choose_parent`, `toggle_group`, `file_history`, `annotate`, `collapse_linear_branch`, `expand_linear_branch`, `collapse_all_linear_branches`, `expand_all_linear_branches` |
 | `branch` | `branch_search`, `toggle_favorite`, `checkout`, `new_branch`, `rename_branch`, `delete_branch`, `navigate_branch` |
 | `commit` | `cursor_down`, `cursor_up`, `goto_top`, `goto_bottom`, `toggle_stage`, `stage_selection`, `unstage_selection`, `focus_commit_msg`, `commit`, `commit_and_push`, `toggle_amend`, `toggle_signoff`, `commit_history`, `select_all`, `discard_changes`, `toggle_group`, `edit_file`, `file_history`, `annotate` |
 | `diff` | `cursor_down`, `cursor_up`, `goto_top`, `goto_bottom`, `prev_hunk`, `next_hunk`, `prev_file`, `next_file`, `toggle_side_by_side`, `cycle_diff_context`, `cycle_diff_dock`, `zoom_diff`, `toggle_stage`, `stage_selection`, `unstage_selection`, `toggle_visual`, `rollback_selection`, `undo_rollback`, `switch_diff_side`, `three_way_inspector` |
@@ -569,3 +571,20 @@ jbgit 同一时间只绑定**一个活动仓库**（多根同步模型不做，�
 - git 拒绝检出（`is already checked out at` / `is already used by worktree at`）时弹出「分支已在其他工作区检出」对话框，可一键打开该 Worktree。
 
 需要 git ≥ 2.17（`worktree remove` / `lock --reason`）；更低版本时菜单项与浮窗入口隐藏，`<Alt-w>` 仅提示所需版本（`?` 帮助中同样注明）。
+
+---
+
+## 六、提交图谱：折叠线性分支 (Collapse Linear Branches)
+
+对应 IDEA 的 `Collapse / Expand Linear Branches`：把**线性片段**——每个提交恰好一个子提交、一个父提交，且不带任何 ref（分支 / 远端分支 / Tag）、不是 `HEAD` 的连续提交（至少 2 个）——折叠为一条虚线边，只保留分叉点、合并点与带 ref 的提交，快速看清拓扑。折叠只影响可见投影，提交本身与筛选、跳转、导航历史都不受影响。
+
+| 操作 | 入口 |
+| :--- | :--- |
+| 全部折叠 / 全部展开 | `<Ctrl-Shift-->` / `<Ctrl-Shift-=>`（vim 预设 `z M` / `z R`）；`[⚙ Presentation]` 菜单 `Collapse Linear Branches` / `Expand Linear Branches` |
+| 折叠选中处 | vim 预设 `z c`；提交右键菜单 `Collapse Linear Branch`。选中提交位于某片段中时折叠该片段并把光标移到片段上端；否则折叠其下方的片段 |
+| 展开选中处 | vim 预设 `z o`；提交右键菜单 `Expand Linear Branch`（选中提交下方有折叠时替换折叠项） |
+| 鼠标 | 单击折叠标记（空心节点 `○`；矢量渲染为空心圆环）或折叠虚线边，展开其下方被折叠的片段 |
+
+- 折叠标记：片段上端的节点绘制为空心（`HEAD` 节点保留 HEAD 颜色）；字符网格与矢量两种渲染引擎一致。多条平行片段（菱形 / 章鱼合并的多个分支臂）共用一条虚线边，点击后一并展开。
+- 「全部折叠」会保留选中提交所在的片段；之后刷新出的新片段也会自动折叠。跳转到被折叠的提交（`g r` 跳转、点击父提交哈希、导航后退 / 前进）时自动展开其所在片段；刷新后选中提交落入新片段时同样自动展开。
+- 筛选生效或开启 `First Parent Only` 时折叠不可用（菜单置灰并说明原因），与 IDEA 一致；关闭筛选后恢复原折叠状态。

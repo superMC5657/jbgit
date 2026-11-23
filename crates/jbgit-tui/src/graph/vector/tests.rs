@@ -492,6 +492,7 @@ fn normal_and_head_nodes_are_symmetrically_centered_on_track_axis() {
             pos: 1,
             kind: NodeKind::Head,
             color_id: BranchColorId(1),
+            collapsed_below: false,
         }],
         vec![GraphPrintElement::Node {
             row: 1,
@@ -499,6 +500,7 @@ fn normal_and_head_nodes_are_symmetrically_centered_on_track_axis() {
             pos: 1,
             kind: NodeKind::Normal,
             color_id: BranchColorId(2),
+            collapsed_below: false,
         }],
     ]);
     let (backend, _, _) = rasterize(&fx, GraphicsProtocol::Kitty, CELL, 6);
@@ -524,6 +526,33 @@ fn normal_and_head_nodes_are_symmetrically_centered_on_track_axis() {
         }
         assert!(diff(pixel(&backend, xc, yc), bg) > 0.2);
     }
+}
+
+#[test]
+fn fold_marker_node_paints_a_hollow_ring() {
+    let cell = CellPixelSize {
+        width: 16,
+        height: 44,
+    };
+    let fx = Fixture::manual(vec![vec![GraphPrintElement::Node {
+        row: 0,
+        perm_id: 0,
+        pos: 1,
+        kind: NodeKind::Normal,
+        color_id: BranchColorId(1),
+        collapsed_below: true,
+    }]]);
+    let (backend, _, _) = rasterize(&fx, GraphicsProtocol::Kitty, cell, 4);
+    let g = *backend.geometry();
+    let track = Rgb::from_color(fx.color_map[&BranchColorId(1)], Rgb(0, 0, 0));
+    let bg = Rgb::from_color(fx.bg(), Rgb(0, 0, 0));
+    let (x0, y0) = (g.track_x(1) as u32, g.row_center as u32);
+    assert!(diff(pixel(&backend, x0, y0), bg) < 0.05, "hollow center");
+    assert!(diff(pixel(&backend, x0 + 9, y0), track) < 0.05, "ring");
+    assert!(
+        diff(pixel(&backend, x0 + 14, y0), bg) < 0.05,
+        "outside the node"
+    );
 }
 
 #[test]

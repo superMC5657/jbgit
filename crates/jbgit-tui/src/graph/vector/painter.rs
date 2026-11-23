@@ -380,9 +380,29 @@ impl RowPainter {
                     },
                 );
             }
-            GraphPrintElement::Node { pos, kind, .. } => {
+            GraphPrintElement::Node {
+                pos,
+                kind,
+                collapsed_below,
+                ..
+            } => {
                 let center = Pt(geom.track_x(pos), geom.row_center);
                 match kind {
+                    // Fold marker: ring punched out with the row background
+                    // (wins over the HEAD ring-and-dot).
+                    _ if collapsed_below => {
+                        let r = geom.head_outer_radius;
+                        let d = geom.head_outer_diameter;
+                        self.fill_circle(canvas.pixmap, center.0 - r, center.1 - r, d, color);
+                        let inset = geom.head_delta;
+                        self.fill_circle(
+                            canvas.pixmap,
+                            center.0 - r + inset,
+                            center.1 - r + inset,
+                            d - 2.0 * inset,
+                            row_bg,
+                        );
+                    }
                     NodeKind::Head => {
                         self.paint_head_node(canvas, center, selected, color, row_bg);
                     }

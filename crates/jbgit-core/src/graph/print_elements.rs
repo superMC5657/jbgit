@@ -88,6 +88,8 @@ pub enum GraphPrintElement {
         pos: usize,
         color_id: BranchColorId,
         kind: NodeKind,
+        /// Fold marker: a collapsed linear segment hangs below this node.
+        collapsed_below: bool,
     },
     Edge {
         row: VisibleRowIdx,
@@ -388,12 +390,20 @@ impl<'a> PrintElementGenerator<'a> {
             NodeKind::Normal
         };
 
+        let collapsed_below = self
+            .visible
+            .linear
+            .down_edges(row)
+            .iter()
+            .any(|e| e.edge_type == GraphEdgeType::Collapsed);
+
         out.push(GraphPrintElement::Node {
             row,
             perm_id,
             pos: curr_slots.node_pos,
             color_id: node_color,
             kind,
+            collapsed_below,
         });
 
         out
@@ -516,7 +526,7 @@ fn slot_of_edge(slots: &RowSlotLayout, row: VisibleRowIdx, edge: GraphEdge) -> u
 fn edge_style(t: GraphEdgeType) -> LineStyle {
     match t {
         GraphEdgeType::Normal => LineStyle::Solid,
-        GraphEdgeType::Dotted => LineStyle::Dashed,
+        GraphEdgeType::Dotted | GraphEdgeType::Collapsed => LineStyle::Dashed,
     }
 }
 

@@ -321,6 +321,18 @@ impl LogWorkbench {
             || self.dispatch_details_action(action, ctx)
     }
 
+    /// Status toast after a collapse / expand: `N commits hidden / shown`.
+    fn notify_fold(&self, before: usize, ctx: &mut LogDispatchCtx<'_>) {
+        let after = self.graph.visible_count();
+        let n = before.abs_diff(after).to_string();
+        let key = if after < before {
+            "toast.graph_collapsed"
+        } else {
+            "toast.graph_expanded"
+        };
+        *ctx.status_notice = Some(ctx.i18n.t_fmt(key, &[("n", &n)]));
+    }
+
     fn toggle_presentation(&mut self, t: PresentationToggle, ctx: &mut LogDispatchCtx<'_>) {
         let p = &mut self.presentation;
         let o = &mut self.graph.options;
@@ -724,6 +736,46 @@ impl LogWorkbench {
 
     fn dispatch_log_action(&mut self, action: &Action, ctx: &mut LogDispatchCtx<'_>) -> bool {
         match action {
+            Action::GraphCollapseSegment(id) => {
+                let before = self.graph.visible_count();
+                self.graph.collapse_segment_moving_cursor(*id);
+                self.notify_fold(before, ctx);
+            }
+            Action::GraphExpandSegments(ids) => {
+                let before = self.graph.visible_count();
+                self.graph.set_segments_collapsed(ids, false);
+                self.notify_fold(before, ctx);
+            }
+            Action::GraphExpandEdge { .. } | Action::GraphExpandBelow(_) => {
+                let ids = self
+                    .graph
+                    .cached
+                    .as_ref()
+                    .map(|c| match action {
+                        Action::GraphExpandEdge { up_row, down_row } => {
+                            c.collapsed_segments_at_edge(*up_row, *down_row)
+                        }
+                        Action::GraphExpandBelow(row) => c.collapsed_segments_below(*row),
+                        _ => Vec::new(),
+                    })
+                    .unwrap_or_default();
+                if ids.is_empty() {
+                    return true;
+                }
+                let before = self.graph.visible_count();
+                self.graph.set_segments_collapsed(&ids, false);
+                self.notify_fold(before, ctx);
+            }
+            Action::GraphCollapseAll => {
+                let before = self.graph.visible_count();
+                self.graph.collapse_all();
+                self.notify_fold(before, ctx);
+            }
+            Action::GraphExpandAll => {
+                let before = self.graph.visible_count();
+                self.graph.expand_all();
+                self.notify_fold(before, ctx);
+            }
             Action::SelectLogRow(idx) => {
                 self.graph.select_row(*idx);
             }

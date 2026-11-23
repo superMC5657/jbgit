@@ -4,6 +4,7 @@ use std::collections::BinaryHeap;
 use fixedbitset::FixedBitSet;
 
 use crate::Oid;
+use crate::graph::collapse::{CollapseInput, CollapseMode};
 use crate::graph::permanent::{LayoutIndex, PermNodeId, PermanentGraph, VisibleRowIdx};
 
 /// Row ordering strategy for [`VisibleGraph`].
@@ -23,6 +24,9 @@ pub struct GraphViewOptions {
     pub sort_type: SortType,
     pub first_parent_only: bool,
     pub show_long_edges: bool,
+    /// Linear-branch collapsing (`CollapsedGraph`); ignored while a filter or
+    /// `first_parent_only` is active.
+    pub collapse: CollapseMode,
 }
 
 impl Default for GraphViewOptions {
@@ -31,6 +35,7 @@ impl Default for GraphViewOptions {
             sort_type: SortType::IntelliSort,
             first_parent_only: false,
             show_long_edges: false,
+            collapse: CollapseMode::None,
         }
     }
 }
@@ -38,7 +43,10 @@ impl Default for GraphViewOptions {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum GraphEdgeType {
     Normal,
+    /// Filter compression edge (hidden non-matching commits in between).
     Dotted,
+    /// Collapsed linear segment (see [`crate::graph::collapse`]).
+    Collapsed,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -102,6 +110,9 @@ impl VisibleLinearGraph {
 pub struct VisibleGraph {
     pub linear: VisibleLinearGraph,
     pub options: GraphViewOptions,
+    /// Whether linear-segment collapsing was applied to this projection
+    /// (only without filter / `first_parent_only`).
+    pub collapse_applied: bool,
 }
 
 impl VisibleGraph {
@@ -112,8 +123,31 @@ impl VisibleGraph {
         options: GraphViewOptions,
         filter: Option<&FixedBitSet>,
     ) -> Self {
-        let linear = build_visible_linear(permanent, options, filter);
-        Self { linear, options }
+        Self::build_collapsed(permanent, options, filter, None)
+    }
+
+    /// [`Self::build`] plus linear-segment collapsing. Collapsing is skipped
+    /// (`collapse_applied == false`) while a filter or `first_parent_only` is
+    /// active, mirroring IDEA which only collapses the unfiltered graph.
+    pub fn build_collapsed(
+        permanent: &PermanentGraph,
+        options: GraphViewOptions,
+        filter: Option<&FixedBitSet>,
+        collapse: Option<CollapseInput<'_>>,
+    ) -> Self {
+        let collapse = collapse.filter(|c| {
+            filter.is_none()
+                && !options.first_parent_only
+                && c.state.is_active()
+                && !c.segments.is_empty()
+        });
+        let flags = collapse.map(|c| c.state.collapsed_flags(c.segments));
+        let linear = build_visible_linear(permanent, options, filter, collapse, flags.as_deref());
+        Self {
+            linear,
+            options,
+            collapse_applied: collapse.is_some(),
+        }
     }
 
     #[inline]
@@ -126,6 +160,8 @@ fn build_visible_linear(
     permanent: &PermanentGraph,
     options: GraphViewOptions,
     filter: Option<&FixedBitSet>,
+    collapse: Option<CollapseInput<'_>>,
+    collapsed_flags: Option<&[bool]>,
 ) -> VisibleLinearGraph {
     let pg = &permanent.linear;
     let total = pg.nodes_count as usize;
@@ -149,10 +185,20 @@ fn build_visible_linear(
         None
     };
 
+    // Segment index of a node hidden by a collapsed segment.
+    let collapsed_segment = |node: usize| -> Option<usize> {
+        let c = collapse?;
+        let idx = c.segments.segment_index_of(node as PermNodeId)?;
+        collapsed_flags
+            .and_then(|f| f.get(idx).copied())
+            .unwrap_or(false)
+            .then_some(idx)
+    };
+
     let is_visible = |node: usize| -> bool {
         let in_filter = filter.is_none_or(|f| f.contains(node));
         let in_fp = fp_mask.as_ref().is_none_or(|fp| fp.contains(node));
-        in_filter && in_fp
+        in_filter && in_fp && collapsed_segment(node).is_none()
     };
 
     let mut visible_perms: Vec<PermNodeId> = Vec::with_capacity(total);
@@ -182,7 +228,26 @@ fn build_visible_linear(
     let all_visible = m == total && !options.first_parent_only;
     let mut perm_edges: Vec<Vec<(PermNodeId, GraphEdgeType)>> = vec![Vec::new(); total];
 
-    if all_visible {
+    if let (false, Some(c)) = (all_visible, collapse) {
+        // Collapsed segments: a hidden parent is always the first middle node
+        // of a collapsed segment, which jumps straight to its `down` end.
+        for &u in &visible_perms {
+            let edges_u = &mut perm_edges[u as usize];
+            for p in pg.loaded_down_nodes(u) {
+                let edge = match collapsed_segment(p as usize) {
+                    Some(idx) => {
+                        let seg = c.segments.get(idx).expect("segment index in range");
+                        (seg.down, GraphEdgeType::Collapsed)
+                    }
+                    None => (p, GraphEdgeType::Normal),
+                };
+                // Parallel collapsed arms share one edge.
+                if !edges_u.contains(&edge) {
+                    edges_u.push(edge);
+                }
+            }
+        }
+    } else if all_visible {
         for (u, edges_u) in perm_edges.iter_mut().enumerate() {
             for p in pg.loaded_down_nodes(u as PermNodeId) {
                 edges_u.push((p, GraphEdgeType::Normal));

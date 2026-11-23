@@ -411,6 +411,34 @@ pub fn log_commit_menu_items(state: &AppState) -> Vec<ContextMenuItem> {
         Some("→"),
         vec![Action::GoToParent(0)],
     ));
+    // Fold / unfold at the selected commit: expanding wins when something
+    // hangs collapsed below it.
+    let expand = catalog::graph_expand_selected(state);
+    if expand.is_ok() {
+        items.push(ContextMenuItem::from_command(
+            i18n.t("menu.log.expand_linear_branch"),
+            Some('x'),
+            catalog::shortcut_for_action(
+                state,
+                &[KeymapScope::Log],
+                &KeyAction::ExpandLinearBranch,
+            )
+            .as_deref(),
+            expand,
+        ));
+    } else {
+        items.push(ContextMenuItem::from_command(
+            i18n.t("menu.log.collapse_linear_branch"),
+            Some('l'),
+            catalog::shortcut_for_action(
+                state,
+                &[KeymapScope::Log],
+                &KeyAction::CollapseLinearBranch,
+            )
+            .as_deref(),
+            catalog::graph_collapse_selected(state),
+        ));
+    }
     items.push(ContextMenuItem::submenu(
         i18n.t("menu.log.presentation"),
         Some('o'),

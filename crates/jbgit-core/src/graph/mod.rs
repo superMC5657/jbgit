@@ -1,8 +1,13 @@
+pub mod collapse;
 pub mod edges_in_row;
 pub mod permanent;
 pub mod print_elements;
 pub mod visible;
 
+pub use collapse::{
+    CollapseInput, CollapseMode, CollapseState, LinearSegment, LinearSegments, MIN_SEGMENT_LEN,
+    SegmentId,
+};
 pub use edges_in_row::{
     BLOCK_SIZE, CACHE_SIZE, EdgesInRowCache, EdgesInRowGenerator, WALK_SIZE,
 };

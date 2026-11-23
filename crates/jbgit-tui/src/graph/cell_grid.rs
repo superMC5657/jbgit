@@ -379,6 +379,7 @@ impl CellGridGraphBackend {
                 pos,
                 color_id,
                 kind,
+                collapsed_below,
                 ..
             } = item.element
             {
@@ -393,7 +394,15 @@ impl CellGridGraphBackend {
                 }
                 let track_fg = Self::resolve_color(color_map, color_id, ctx);
                 let (sym, fg, bold) = match kind {
+                    // Fold marker (a collapsed linear branch hangs below) wins
+                    // the shape; HEAD keeps its color.
+                    NodeKind::Head if collapsed_below => {
+                        (glyphs.node_hollow, ctx.theme.ref_head.icon, true)
+                    }
                     NodeKind::Head => (glyphs.node_head, ctx.theme.ref_head.icon, true),
+                    NodeKind::Merge | NodeKind::Normal if collapsed_below => {
+                        (glyphs.node_hollow, track_fg, true)
+                    }
                     NodeKind::Merge | NodeKind::Normal => (glyphs.node, track_fg, item.is_selected),
                 };
                 let mut style = Style::default().fg(fg).bg(row_slice.row_bg);
@@ -413,6 +422,7 @@ impl CellGridGraphBackend {
                         commit_oid: row_slice.commit_oid,
                         kind: GraphHitKind::Node {
                             commit_oid: row_slice.commit_oid,
+                            collapsed_below,
                         },
                     },
                 );

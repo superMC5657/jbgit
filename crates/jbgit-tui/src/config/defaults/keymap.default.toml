@@ -80,6 +80,9 @@ key_bindings = [
     { on = [ "u" ], run = "uncommit", desc = "撤回最近一次提交 (保留变更)" },
     { on = [ "<F2>" ], run = "reword", desc = "修改提交说明 (Reword)" },
     { on = [ "<Del>" ], run = "drop_commit", desc = "丢弃提交 (Drop)" },
+    { on = [ "<C-S-->" ], run = "collapse_all_linear_branches", desc = "折叠全部线性分支" },
+    { on = [ "<C-S-=>" ], run = "expand_all_linear_branches", desc = "展开全部线性分支" },
+    { on = [ "<C-S-+>" ], run = "expand_all_linear_branches", desc = "展开全部线性分支" },
 ]
 
 [branch]

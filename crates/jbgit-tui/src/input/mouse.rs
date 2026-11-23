@@ -328,6 +328,16 @@ fn route_mouse_left_down(
                 },
             ],
             GraphHitKind::Node { .. } | GraphHitKind::Edge { .. } => {
+                let expand_edge = match kind {
+                    GraphHitKind::Edge { up_row, down_row } if !shift => {
+                        Some(Action::GraphExpandEdge { up_row, down_row })
+                    }
+                    GraphHitKind::Node {
+                        collapsed_below: true,
+                        ..
+                    } if !shift => Some(Action::GraphExpandBelow(visible_row)),
+                    _ => None,
+                };
                 if shift {
                     vec![
                         Action::FocusPane(PaneId::LogCommitTable),
@@ -339,6 +349,8 @@ fn route_mouse_left_down(
                         Action::FocusPane(PaneId::LogCommitTable),
                         Action::SelectLogRow(visible_row),
                     ];
+                    // After selecting: the selection survives the re-projection.
+                    actions.extend(expand_edge);
                     if is_double {
                         actions.push(Action::RunCliProbe(vec![
                             "show".into(),

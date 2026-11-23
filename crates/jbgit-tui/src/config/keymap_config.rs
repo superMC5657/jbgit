@@ -461,6 +461,10 @@ impl KeymapConfig {
                             kb(&["<C-d>"], KeyAction::PageDownHalf, None),
                             kb(&["<C-u>"], KeyAction::PageUpHalf, None),
                             kb(&["d"], KeyAction::CompareOrDiff, None),
+                            kb(&["z", "c"], KeyAction::CollapseLinearBranch, None),
+                            kb(&["z", "o"], KeyAction::ExpandLinearBranch, None),
+                            kb(&["z", "M"], KeyAction::CollapseAllLinearBranches, None),
+                            kb(&["z", "R"], KeyAction::ExpandAllLinearBranches, None),
                         ],
                         ..Default::default()
                     }),
