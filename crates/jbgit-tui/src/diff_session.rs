@@ -472,7 +472,7 @@ impl DiffSession {
     }
 
     pub fn total_rows(&self, diff: &Arc<FileDiff>) -> usize {
-        if diff.is_too_large || diff.is_binary || diff.hunks.is_empty() {
+        if diff.is_too_large || diff.is_binary || diff.lfs.is_some() || diff.hunks.is_empty() {
             return 0;
         }
         self.rows_for(diff).len() + usize::from(diff.is_truncated)
@@ -576,6 +576,7 @@ mod tests {
             is_binary: false,
             is_truncated: false,
             is_too_large: false,
+            lfs: None,
         })
     }
 

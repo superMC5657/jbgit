@@ -195,6 +195,7 @@ pub(super) fn make_snapshot(workdir: PathBuf, commits: Vec<CommitSummary>) -> Ar
         remotes: Vec::new(),
         worktrees: Vec::new(),
         submodules: Vec::new(),
+        has_lfs: false,
     })
 }
 

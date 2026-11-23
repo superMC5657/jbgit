@@ -4,8 +4,20 @@
 use std::fs;
 use std::path::Path;
 
-use git2::{ObjectType, Repository};
+use git2::{AttrCheckFlags, ObjectType, Repository};
 use jbgit_core::{MAX_DIFF_FILE_BYTES, is_binary_bytes};
+
+/// Returns `true` when git attributes configure `filter=lfs` for `path`.
+pub(crate) fn path_has_lfs_filter(repo: &Repository, path: &str) -> bool {
+    repo.get_attr(
+        Path::new(path),
+        "filter",
+        AttrCheckFlags::FILE_THEN_INDEX | AttrCheckFlags::NO_SYSTEM,
+    )
+    .ok()
+    .flatten()
+        == Some("lfs")
+}
 
 pub(crate) enum CheckedBlob {
     Missing,

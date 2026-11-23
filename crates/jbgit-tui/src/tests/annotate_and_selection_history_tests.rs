@@ -684,6 +684,7 @@ fn selection_history_from_annotate_and_stage_diff_renders_range_patch_and_confir
             is_binary: false,
             is_conflicted: false,
             submodule: None,
+            lfs: None,
             tracker,
             hunks,
             is_truncated,

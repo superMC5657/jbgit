@@ -18,6 +18,7 @@ use crate::stage_view::CommitWorkbench;
 use crate::syntax::HighlightedDiff;
 use crate::views::log_details::{
     DiffLineRenderInput, diff_line_style, render_diff_side_cell, render_diff_unified_spans,
+    render_lfs_diff_placeholder,
 };
 use crate::views::{fit_left_right_spans, render_pane_frame, render_toolbar, truncate_to_width};
 
@@ -177,6 +178,18 @@ pub fn render_stage_diff_workbench(
             )),
         ];
         frame.render_widget(Paragraph::new(lines), diff_area);
+        return;
+    }
+
+    if let Some(lfs) = &diff.lfs {
+        ctx.record_scroll_bound(ScrollPane::StageDiff, h, 0);
+        render_lfs_diff_placeholder(
+            frame,
+            diff_area,
+            lfs,
+            Some("view.commit.lfs_line_staging_disabled"),
+            ctx,
+        );
         return;
     }
 

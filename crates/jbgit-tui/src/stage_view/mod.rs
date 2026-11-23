@@ -99,6 +99,7 @@ mod tests {
             is_binary: false,
             is_conflicted: false,
             submodule: None,
+            lfs: None,
             tracker,
             hunks: vec![],
             is_truncated: false,

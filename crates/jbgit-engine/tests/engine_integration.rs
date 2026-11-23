@@ -3082,3 +3082,87 @@ async fn submodule_dirty_workdir_new_commit_and_update_op() {
         })
     );
 }
+
+#[tokio::test]
+async fn lfs_gitattributes_and_pointer_placeholders_avoid_smudge() {
+    let dir = TempDir::new().unwrap();
+    let d = dir.path();
+    git(d, &["init", "-b", "main"]);
+    fs::write(d.join(".gitattributes"), "*.bin filter=lfs diff=lfs merge=lfs -text\n").unwrap();
+    let hash1 = "1111111111111111111111111111111111111111111111111111111111111111";
+    let ptr1_bytes = format!(
+        "version https://git-lfs.github.com/spec/v1\noid sha256:{hash1}\nsize 1048576\n"
+    );
+    fs::create_dir_all(d.join("assets")).unwrap();
+    fs::write(d.join("assets/blob.bin"), &ptr1_bytes).unwrap();
+    git(d, &["add", ".gitattributes", "assets/blob.bin"]);
+    git(d, &["commit", "-m", "add lfs asset pointer"]);
+    let c1 = rev(d, "HEAD");
+
+    let loc = RepoLocation::discover(d).unwrap();
+    let (handle, mut rx) = EngineSupervisor::start(loc, false).unwrap();
+
+    let snap = fetch_snapshot(&handle, &mut rx).await;
+    assert!(snap.has_lfs);
+
+    let diff = fetch_file_diff(
+        &handle,
+        &mut rx,
+        RequestSlotId::LogFileDiff,
+        FileDiffKey {
+            details: DetailsKey::single(c1),
+            path: "assets/blob.bin".into(),
+            old_path: None,
+            context: DiffContext::Three,
+        },
+        None,
+    )
+    .await;
+    let lfs = diff.lfs.as_ref().expect("LfsDiff metadata");
+    assert!(lfs.filter_detected);
+    assert!(lfs.old.is_none());
+    let new_ptr = lfs.new.as_ref().unwrap();
+    assert_eq!(new_ptr.oid_sha256, hash1);
+    assert_eq!(new_ptr.size, 1_048_576);
+    assert!(diff.hunks.is_empty());
+    assert!(!diff.is_binary);
+
+    let hash2 = "2222222222222222222222222222222222222222222222222222222222222222";
+    let ptr2_bytes = format!(
+        "version https://git-lfs.github.com/spec/v1\noid sha256:{hash2}\nsize 2097152\n"
+    );
+    fs::write(d.join("assets/blob.bin"), &ptr2_bytes).unwrap();
+    let stage_diff = fetch_stage_diff(
+        &handle,
+        &mut rx,
+        StageDiffKey {
+            path: "assets/blob.bin".into(),
+            old_path: None,
+            side: StageDiffSide::Unstaged,
+            context: DiffContext::Three,
+        },
+    )
+    .await;
+    let stage_lfs = stage_diff.lfs.as_ref().expect("Stage LfsDiff metadata");
+    assert!(stage_lfs.filter_detected);
+    assert_eq!(stage_lfs.old.as_ref().unwrap().oid_sha256, hash1);
+    assert_eq!(stage_lfs.new.as_ref().unwrap().oid_sha256, hash2);
+    assert!(stage_diff.hunks.is_empty());
+
+    let blob = load_tree_blob(
+        &handle,
+        &mut rx,
+        jbgit_core::TreeBlobKey {
+            oid: c1,
+            path: "assets/blob.bin".into(),
+        },
+    )
+    .await;
+    assert_eq!(
+        blob.content,
+        jbgit_core::TreeBlobContent::Lfs(jbgit_core::LfsPointer {
+            oid_sha256: hash1.to_string(),
+            size: 1_048_576,
+        })
+    );
+}

@@ -24,7 +24,7 @@ Priority: P3
 
 - [ ] **Shallow**：`RepoSnapshot.is_shallow`（检测 `<git_dir>/shallow`）；Log 末端显示"浅克隆边界"标记；`GitOp::Unshallow` → `git fetch --unshallow`（长时操作，控制台显示进度）。
 - [x] **Submodule**：Stage 树中子模块条目显示为只读特殊节点（新提交 / 脏工作区两种状态），禁止行级暂存，提供"在切换器中打开子模块"（依赖 Issue 09）与 `git submodule update --init --recursive` 动作。
-- [ ] **LFS**：检测 `.gitattributes` 中的 `filter=lfs`；Diff 遇到 LFS 指针文件时显示"LFS 对象：oid / size"占位而非指针文本；不实现 LFS 下载。
+- [x] **LFS**：检测 `.gitattributes` 中的 `filter=lfs`；Diff 遇到 LFS 指针文件时显示"LFS 对象：oid / size"占位而非指针文本；不实现 LFS 下载。
 - [x] **签名状态细分**：`SignatureStatus` 扩展为 `Good`、`GoodUnknownValidity (U)`、`Expired (X/Y)`、`Revoked (R)`、`CannotCheck (E)`、`Bad (B)`、`Unsigned (N)`，并附 `signer: Option<String>`（`%GS`）与 `key: Option<String>`（`%GK`）；详情面板与 Log 列显示对应图标与提示，对齐 `GitCommitSignatureStatusProvider`。
 
 ## 3. Triage 结论（2026-11-23 维护者拍板）

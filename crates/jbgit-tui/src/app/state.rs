@@ -589,6 +589,7 @@ impl AppState {
         if !self.config.jbgit.diff.syntax_highlight
             || diff.is_binary
             || diff.is_too_large
+            || diff.lfs.is_some()
             || diff.hunks.is_empty()
         {
             return;
@@ -634,6 +635,7 @@ impl AppState {
         if !self.config.jbgit.diff.syntax_highlight
             || diff.is_binary
             || diff.is_too_large
+            || diff.lfs.is_some()
             || diff.hunks.is_empty()
         {
             return;

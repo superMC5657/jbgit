@@ -575,6 +575,92 @@ pub const EAGER_WORD_DIFF_PAIR_BUDGET: usize = 256;
 pub const MAX_WORD_DIFF_LINE_BYTES: usize = 2048;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LfsPointer {
+    pub oid_sha256: String,
+    pub size: u64,
+}
+
+impl LfsPointer {
+    /// First 12 hexadecimal characters of the SHA-256 object id.
+    pub fn short_oid(&self) -> &str {
+        let end = self.oid_sha256.len().min(12);
+        &self.oid_sha256[..end]
+    }
+
+    pub fn format_size(&self) -> String {
+        const KIB: f64 = 1024.0;
+        const MIB: f64 = 1024.0 * 1024.0;
+        const GIB: f64 = 1024.0 * 1024.0 * 1024.0;
+        let b = self.size as f64;
+        if self.size < 1024 {
+            format!("{} B", self.size)
+        } else if self.size < 1024 * 1024 {
+            format!("{:.1} KiB ({} B)", b / KIB, self.size)
+        } else if self.size < 1024 * 1024 * 1024 {
+            format!("{:.1} MiB ({} B)", b / MIB, self.size)
+        } else {
+            format!("{:.2} GiB ({} B)", b / GIB, self.size)
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LfsDiff {
+    pub old: Option<LfsPointer>,
+    pub new: Option<LfsPointer>,
+    pub filter_detected: bool,
+}
+
+/// Parses a Git LFS v1 pointer file (`version https://git-lfs.github.com/spec/v1`).
+pub fn parse_lfs_pointer(bytes: &[u8]) -> Option<LfsPointer> {
+    if bytes.is_empty() || bytes.len() > 1024 {
+        return None;
+    }
+    let text = std::str::from_utf8(bytes).ok()?;
+    let mut has_version = false;
+    let mut oid_sha256 = None;
+    let mut size = None;
+    for raw in text.lines() {
+        let line = raw.trim_end_matches('\r');
+        if line.is_empty() {
+            continue;
+        }
+        if line == "version https://git-lfs.github.com/spec/v1" {
+            has_version = true;
+        } else if let Some(hash) = line.strip_prefix("oid sha256:") {
+            let hash = hash.trim();
+            if hash.len() != 64 || !hash.bytes().all(|b| b.is_ascii_hexdigit()) {
+                return None;
+            }
+            oid_sha256 = Some(hash.to_ascii_lowercase());
+        } else if let Some(sz) = line.strip_prefix("size ") {
+            size = Some(sz.trim().parse::<u64>().ok()?);
+        } else if line.starts_with("ext-") {
+            continue;
+        } else {
+            return None;
+        }
+    }
+    if !has_version {
+        return None;
+    }
+    Some(LfsPointer {
+        oid_sha256: oid_sha256?,
+        size: size?,
+    })
+}
+
+/// Returns `true` when `.gitattributes` contains any active `filter=lfs` rule.
+pub fn has_lfs_filter_in_gitattributes(content: &str) -> bool {
+    content.lines().any(|line| {
+        let trimmed = line.trim();
+        !trimmed.is_empty()
+            && !trimmed.starts_with('#')
+            && trimmed.split_whitespace().any(|tok| tok == "filter=lfs")
+    })
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FileDiff {
     pub key: FileDiffKey,
     pub hunks: Vec<DiffHunk>,
@@ -583,6 +669,8 @@ pub struct FileDiff {
     pub is_truncated: bool,
     /// Either side exceeded [`MAX_DIFF_FILE_BYTES`] and full diffing was skipped.
     pub is_too_large: bool,
+    /// Git LFS pointer metadata when either side is an LFS pointer.
+    pub lfs: Option<LfsDiff>,
 }
 
 impl FileDiff {
@@ -1288,5 +1376,33 @@ diff --cc src/lib.rs
                 ),
             ]
         );
+    }
+
+    #[test]
+    fn lfs_pointer_and_gitattributes_parsing() {
+        let hash = "4d7a214614ab2935c943f9e0ff69d22eadbb8f32b1258daaa5e2ca24d17e2393";
+        let ptr_text =
+            format!("version https://git-lfs.github.com/spec/v1\noid sha256:{hash}\nsize 12345\n");
+        let ptr = parse_lfs_pointer(ptr_text.as_bytes()).expect("valid LFS pointer");
+        assert_eq!(ptr.oid_sha256, hash);
+        assert_eq!(ptr.short_oid(), "4d7a214614ab");
+        assert_eq!(ptr.size, 12345);
+        assert!(ptr.format_size().contains("12.1 KiB"));
+
+        assert_eq!(parse_lfs_pointer(b"just normal text\n"), None);
+        assert_eq!(
+            parse_lfs_pointer(
+                b"version https://git-lfs.github.com/spec/v1\noid sha256:short\nsize 10\n"
+            ),
+            None
+        );
+        assert_eq!(parse_lfs_pointer(&vec![b'a'; 2048]), None);
+
+        assert!(!has_lfs_filter_in_gitattributes(
+            "# *.bin filter=lfs diff=lfs merge=lfs -text\n*.rs text\n"
+        ));
+        assert!(has_lfs_filter_in_gitattributes(
+            "*.bin filter=lfs diff=lfs merge=lfs -text\n"
+        ));
     }
 }

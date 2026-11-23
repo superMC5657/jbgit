@@ -7,9 +7,10 @@ use std::sync::Arc;
 
 use crossterm::event::MouseEventKind;
 use jbgit_core::{
-    CommitChangesBundle, CommitSignature, DetailsKey, DiffContext, FileStatusKind, GitOp, Oid,
-    SignatureStatus, StageEntry, StageLineTracker, StageStatusSnapshot, SubmoduleState,
-    WorkspaceTab,
+    CommitChangesBundle, CommitSignature, DetailsKey, DiffContext, FileChange, FileDiff,
+    FileDiffKey, FileStatusKind, GitOp, LfsDiff, LfsPointer, Oid, RequestSlotId, SignatureStatus,
+    StageEntry, StageLineTracker, StageStatusSnapshot, SubmoduleState, TreeBlob, TreeBlobContent,
+    TreeEntry, TreeEntryKind, TreeListing, WorkspaceTab,
 };
 use jbgit_engine::{
     EngineEvent, StageDiffKey, StageDiffSide, SubmoduleDiffInfo, TaskRequest, ThreeDocStageDiff,
@@ -303,6 +304,7 @@ fn submodule_stage_rows_block_mutations_and_render_diff_and_menus() {
                 uninitialized: false,
             },
         }),
+        lfs: None,
         tracker: StageLineTracker::new(b"", b"", b""),
         hunks: Vec::new(),
         is_truncated: false,
@@ -370,4 +372,206 @@ fn submodule_stage_rows_block_mutations_and_render_diff_and_menus() {
         ),
         "{update_actions:?}"
     );
+}
+
+#[test]
+fn lfs_diffs_and_tree_browser_render_pointer_placeholders() {
+    let ptr1 = LfsPointer {
+        oid_sha256: "1111111111111111111111111111111111111111111111111111111111111111".into(),
+        size: 1_048_576,
+    };
+    let ptr2 = LfsPointer {
+        oid_sha256: "2222222222222222222222222222222222222222222222222222222222222222".into(),
+        size: 2_097_152,
+    };
+
+    // 1. Log diff view renders LFS object pointer placeholder without text hunks.
+    let mut ts = seeded_log_session();
+    ts.dispatch(Action::ToggleDiffPreview);
+    let key = DetailsKey::single(oid(12));
+    ts.deliver_engine_event(EngineEvent::CommitDetailsLoaded {
+        slot: RequestSlotId::LogCommitDetails,
+        bundle: Arc::new(CommitChangesBundle {
+            key: key.clone(),
+            details: vec![super::make_details(oid(12), vec![oid(11)], "lfs commit")],
+            changes: vec![FileChange {
+                path: "assets/blob.bin".into(),
+                old_path: None,
+                kind: FileStatusKind::Modified,
+                additions: 0,
+                deletions: 0,
+                old_oid: None,
+                new_oid: None,
+                is_binary: false,
+                exists_in_workdir: true,
+            }],
+        }),
+        epoch: ts
+            .state()
+            .request_slots
+            .latest(RequestSlotId::LogCommitDetails)
+            .max(1),
+    });
+    let file_row = ts
+        .state()
+        .log
+        .details
+        .change_rows(&ts.state().diff_caches)
+        .iter()
+        .position(|r| r.label == "blob.bin")
+        .expect("blob.bin row in changes tree");
+    ts.dispatch(Action::ChangesSelect(crate::app::ChangesHost::Log, file_row));
+    let diff_key = FileDiffKey {
+        details: key,
+        path: "assets/blob.bin".into(),
+        old_path: None,
+        context: DiffContext::Three,
+    };
+    ts.deliver_engine_event(EngineEvent::FileDiffLoaded {
+        slot: RequestSlotId::LogFileDiff,
+        diff: Arc::new(FileDiff {
+            key: diff_key,
+            hunks: Vec::new(),
+            is_binary: false,
+            is_truncated: false,
+            is_too_large: false,
+            lfs: Some(LfsDiff {
+                old: Some(ptr1.clone()),
+                new: Some(ptr2.clone()),
+                filter_detected: true,
+            }),
+        }),
+        epoch: ts
+            .state()
+            .request_slots
+            .latest(RequestSlotId::LogFileDiff)
+            .max(1),
+    });
+    let log_screen = screen_text(&ts.render(160, 36));
+    assert!(log_screen.contains("Git LFS Object Pointer"), "{log_screen}");
+    assert!(log_screen.contains("sha256:111111111111"), "{log_screen}");
+    assert!(log_screen.contains("sha256:222222222222"), "{log_screen}");
+    assert!(log_screen.contains("filter=lfs active"), "{log_screen}");
+
+    // 2. Stage diff view renders LFS placeholder and blocks line-level staging actions.
+    ts.dispatch(Action::SwitchTab(WorkspaceTab::Commit));
+    ts.deliver_engine_event(EngineEvent::StageStatusLoaded {
+        status: Arc::new(StageStatusSnapshot {
+            unstaged: vec![StageEntry {
+                path: "assets/blob.bin".into(),
+                old_path: None,
+                kind: FileStatusKind::Modified,
+            }],
+            ..Default::default()
+        }),
+        epoch: 1,
+    });
+    let stage_row = ts
+        .state()
+        .stage_workbench
+        .rows()
+        .iter()
+        .position(|r| r.key == "file:Unstaged:assets/blob.bin")
+        .expect("assets/blob.bin row in stage tree");
+    ts.dispatch(Action::SelectCommitStageRow(stage_row));
+    ts.deliver_engine_event(EngineEvent::StageFileDiffLoaded {
+        diff: Arc::new(ThreeDocStageDiff {
+            key: StageDiffKey {
+                path: "assets/blob.bin".into(),
+                old_path: None,
+                side: StageDiffSide::Unstaged,
+                context: DiffContext::Three,
+            },
+            vcs_exists: true,
+            staged_exists: true,
+            local_exists: true,
+            vcs_bytes: Vec::new(),
+            staged_bytes: Vec::new(),
+            local_bytes: Vec::new(),
+            file_mode: 0o100_644,
+            is_binary: false,
+            is_conflicted: false,
+            submodule: None,
+            lfs: Some(LfsDiff {
+                old: Some(ptr1.clone()),
+                new: Some(ptr2),
+                filter_detected: true,
+            }),
+            tracker: StageLineTracker::new(b"", b"", b""),
+            hunks: Vec::new(),
+            is_truncated: false,
+            is_too_large: false,
+        }),
+        epoch: 2,
+    });
+    let stage_screen = screen_text(&ts.render(160, 36));
+    assert!(stage_screen.contains("Git LFS Object Pointer"), "{stage_screen}");
+    assert!(
+        stage_screen.contains("Line-level staging is disabled for LFS pointers"),
+        "{stage_screen}"
+    );
+    let _ = ts.take_requests();
+    ts.dispatch(Action::StageDiffStageSelection);
+    assert!(
+        ts.take_requests()
+            .into_iter()
+            .all(|(r, _)| !matches!(r, TaskRequest::ApplyStageBuffer { .. }))
+    );
+    assert!(
+        ts.state()
+            .status_notice
+            .as_deref()
+            .is_some_and(|n| n.contains("Git LFS pointer")),
+        "{:?}",
+        ts.state().status_notice
+    );
+
+    // 3. Tree browser renders TreeBlobContent::Lfs pointer preview.
+    ts.dispatch(Action::SwitchTab(WorkspaceTab::Log));
+    ts.dispatch(Action::FocusPane(jbgit_core::PaneId::LogCommitTable));
+    let _ = ts.take_requests();
+    let items = crate::menus::log_commit_menu_items(ts.state());
+    let browse = find_item(&items, "Browse Repository at Revision");
+    ts.dispatch_many(item_run_actions(browse));
+    let (tree_key, tree_epoch) = ts
+        .take_requests()
+        .into_iter()
+        .find_map(|(r, ep)| match r {
+            TaskRequest::LoadTree { key } => Some((key, ep.unwrap())),
+            _ => None,
+        })
+        .expect("LoadTree requested");
+    ts.deliver_engine_event(EngineEvent::TreeLoaded {
+        listing: Arc::new(TreeListing {
+            key: tree_key,
+            entries: vec![TreeEntry {
+                name: "blob.bin".into(),
+                path: "assets/blob.bin".into(),
+                kind: TreeEntryKind::Blob,
+                mode: 0o100_644,
+                size: Some(130),
+                oid: oid(99),
+            }],
+        }),
+        epoch: tree_epoch,
+    });
+    let (blob_key, blob_epoch) = ts
+        .take_requests()
+        .into_iter()
+        .find_map(|(r, ep)| match r {
+            TaskRequest::LoadTreeBlob { key } => Some((key, ep.unwrap())),
+            _ => None,
+        })
+        .expect("LoadTreeBlob requested");
+    ts.deliver_engine_event(EngineEvent::TreeBlobLoaded {
+        blob: Arc::new(TreeBlob {
+            key: blob_key,
+            size: 130,
+            content: TreeBlobContent::Lfs(ptr1),
+        }),
+        epoch: blob_epoch,
+    });
+    let tree_screen = screen_text(&ts.render(140, 30));
+    assert!(tree_screen.contains("Git LFS pointer: sha256:111111111111"), "{tree_screen}");
+    assert!(tree_screen.contains("1.0 MiB"), "{tree_screen}");
 }

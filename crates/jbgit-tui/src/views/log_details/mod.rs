@@ -19,7 +19,7 @@ pub(crate) use diff_view::{
 };
 pub use diff_view::{
     DiffPreviewProps, FileDiffRenderProps, render_details_or_diff, render_diff_preview,
-    render_docked_diff, render_file_diff_body, render_zoomed_diff,
+    render_docked_diff, render_file_diff_body, render_lfs_diff_placeholder, render_zoomed_diff,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

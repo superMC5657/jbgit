@@ -1275,6 +1275,7 @@ impl CommitWorkbench {
             || diff.is_binary
             || diff.is_too_large
             || diff.submodule.is_some()
+            || diff.lfs.is_some()
             || diff.hunks.is_empty()
         {
             return;
@@ -1913,37 +1914,22 @@ impl CommitWorkbench {
                 }
             }
             Action::StageDiffStageSelection => {
-                if self
-                    .current_diff
-                    .as_ref()
-                    .is_some_and(|d| d.submodule.is_some())
-                {
-                    *ctx.status_notice =
-                        Some(ctx.i18n.t("toast.submodule_line_staging_disabled").to_string());
+                if let Some(key) = self.readonly_diff_notice_key() {
+                    *ctx.status_notice = Some(ctx.i18n.t(key).to_string());
                 } else if let Some(sel) = self.collect_selected_line_sets() {
                     self.apply_stage_diff_selection(StageDiffOp::Stage, sel, ctx);
                 }
             }
             Action::StageDiffUnstageSelection => {
-                if self
-                    .current_diff
-                    .as_ref()
-                    .is_some_and(|d| d.submodule.is_some())
-                {
-                    *ctx.status_notice =
-                        Some(ctx.i18n.t("toast.submodule_line_staging_disabled").to_string());
+                if let Some(key) = self.readonly_diff_notice_key() {
+                    *ctx.status_notice = Some(ctx.i18n.t(key).to_string());
                 } else if let Some(sel) = self.collect_selected_line_sets() {
                     self.apply_stage_diff_selection(StageDiffOp::Unstage, sel, ctx);
                 }
             }
             Action::StageDiffRollbackSelection => {
-                if self
-                    .current_diff
-                    .as_ref()
-                    .is_some_and(|d| d.submodule.is_some())
-                {
-                    *ctx.status_notice =
-                        Some(ctx.i18n.t("toast.submodule_line_staging_disabled").to_string());
+                if let Some(key) = self.readonly_diff_notice_key() {
+                    *ctx.status_notice = Some(ctx.i18n.t(key).to_string());
                 } else if let Some(sel) = self.collect_selected_line_sets() {
                     self.apply_stage_diff_selection(StageDiffOp::Rollback, sel, ctx);
                 }
@@ -1961,13 +1947,8 @@ impl CommitWorkbench {
                 }
             }
             Action::OpenThreeWayInspector { row_idx, range_idx } => {
-                if self
-                    .current_diff
-                    .as_ref()
-                    .is_some_and(|d| d.submodule.is_some())
-                {
-                    *ctx.status_notice =
-                        Some(ctx.i18n.t("toast.submodule_line_staging_disabled").to_string());
+                if let Some(key) = self.readonly_diff_notice_key() {
+                    *ctx.status_notice = Some(ctx.i18n.t(key).to_string());
                     return true;
                 }
                 if let Some(r) = *row_idx {
@@ -2020,6 +2001,17 @@ impl CommitWorkbench {
         true
     }
 
+    fn readonly_diff_notice_key(&self) -> Option<&'static str> {
+        let diff = self.current_diff.as_ref()?;
+        if diff.submodule.is_some() {
+            Some("toast.submodule_line_staging_disabled")
+        } else if diff.lfs.is_some() {
+            Some("toast.lfs_line_staging_disabled")
+        } else {
+            None
+        }
+    }
+
     fn apply_stage_diff_selection(
         &mut self,
         op: StageDiffOp,
@@ -2029,11 +2021,11 @@ impl CommitWorkbench {
         let Some(diff) = self.current_diff.as_ref().cloned() else {
             return;
         };
-        if diff.key.side == StageDiffSide::AmendCommit || diff.submodule.is_some() {
-            if diff.submodule.is_some() {
-                *ctx.status_notice =
-                    Some(ctx.i18n.t("toast.submodule_line_staging_disabled").to_string());
-            }
+        if diff.key.side == StageDiffSide::AmendCommit {
+            return;
+        }
+        if let Some(key) = self.readonly_diff_notice_key() {
+            *ctx.status_notice = Some(ctx.i18n.t(key).to_string());
             return;
         }
         match op {

@@ -440,11 +440,12 @@ pub fn stage_diff_menu_items(state: &AppState) -> Vec<ContextMenuItem> {
         .or_else(|| catalog::shortcut_for_action(state, &[KeymapScope::Diff], &KeyAction::ToggleStage));
     let rollback_sc = catalog::all_shortcuts_for_action(state, &[KeymapScope::Diff], &KeyAction::RollbackSelection);
     let (side, path) = diff_side_and_path(state);
-    let is_submodule = state
+    let is_readonly_type = state
         .stage_workbench
         .current_diff()
-        .is_some_and(|d| d.submodule.is_some());
-    let editable = matches!(side, Some(StageDiffSide::Staged | StageDiffSide::Unstaged)) && !is_submodule;
+        .is_some_and(|d| d.submodule.is_some() || d.lfs.is_some());
+    let editable =
+        matches!(side, Some(StageDiffSide::Staged | StageDiffSide::Unstaged)) && !is_readonly_type;
     let staged = side == Some(StageDiffSide::Staged);
     let sel_range = state.stage_workbench.selected_line_range();
     let sel_history_actions = match (&path, sel_range) {
@@ -512,11 +513,12 @@ pub fn stage_diff_menu_items(state: &AppState) -> Vec<ContextMenuItem> {
 pub fn stage_hunk_menu_items(state: &AppState, hunk_idx: usize) -> Vec<ContextMenuItem> {
     let i18n = &state.i18n;
     let (side, path) = diff_side_and_path(state);
-    let is_submodule = state
+    let is_readonly_type = state
         .stage_workbench
         .current_diff()
-        .is_some_and(|d| d.submodule.is_some());
-    let editable = matches!(side, Some(StageDiffSide::Staged | StageDiffSide::Unstaged)) && !is_submodule;
+        .is_some_and(|d| d.submodule.is_some() || d.lfs.is_some());
+    let editable =
+        matches!(side, Some(StageDiffSide::Staged | StageDiffSide::Unstaged)) && !is_readonly_type;
     let staged = side == Some(StageDiffSide::Staged);
     let mut items = vec![
         run(

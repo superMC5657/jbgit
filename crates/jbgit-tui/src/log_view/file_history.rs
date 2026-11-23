@@ -90,6 +90,7 @@ impl FileHistoryState {
             is_binary: entry.is_binary,
             is_truncated: false,
             is_too_large: false,
+            lfs: None,
         });
         self.range_diff = Some((entry.oid, Arc::clone(&diff)));
         self.range_syntax = None;

@@ -258,6 +258,8 @@ pub struct RepoSnapshot {
     pub worktrees: Vec<crate::WorktreeInfo>,
     /// Submodule paths relative to `workdir` (`.gitmodules`).
     pub submodules: Vec<String>,
+    /// True when `.gitattributes` configures `filter=lfs`.
+    pub has_lfs: bool,
 }
 
 impl RepoSnapshot {

@@ -1118,6 +1118,7 @@ impl LogWorkbench {
                     && ctx.syntax_enabled
                     && !cached.is_binary
                     && !cached.is_too_large
+                    && cached.lfs.is_none()
                     && !cached.hunks.is_empty()
                     && let Some((epoch, cancel)) = ctx.file_syntax.begin_cancelable(cached.key.clone())
                 {

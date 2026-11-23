@@ -62,6 +62,7 @@ pub struct TreeBlobKey {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TreeBlobContent {
     Text(String),
+    Lfs(crate::LfsPointer),
     Binary,
     TooLarge { limit: usize },
     Missing,

@@ -249,6 +249,63 @@ pub struct FileDiffRenderProps<'a> {
     pub scroll_pane: ScrollPane,
 }
 
+pub fn render_lfs_diff_placeholder(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    lfs: &jbgit_core::LfsDiff,
+    extra_hint_key: Option<&str>,
+    ctx: &RenderContext<'_>,
+) {
+    let fmt_ptr = |opt: Option<&jbgit_core::LfsPointer>| match opt {
+        Some(p) => format!("sha256:{}  ({})", p.short_oid(), p.format_size()),
+        None => ctx.t("view.log_details.lfs_none").to_string(),
+    };
+    let mut lines = vec![
+        Line::from(Span::styled(
+            format!(" {} ", ctx.t("view.log_details.lfs_title")),
+            Style::default()
+                .fg(ctx.theme.fg_bright)
+                .add_modifier(Modifier::BOLD),
+        )),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled(
+                format!(" {}: ", ctx.t("view.log_details.lfs_old")),
+                Style::default().fg(ctx.theme.fg_muted),
+            ),
+            Span::styled(fmt_ptr(lfs.old.as_ref()), Style::default().fg(ctx.theme.fg_primary)),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                format!(" {}: ", ctx.t("view.log_details.lfs_new")),
+                Style::default().fg(ctx.theme.fg_muted),
+            ),
+            Span::styled(
+                fmt_ptr(lfs.new.as_ref()),
+                Style::default().fg(ctx.theme.status_modified),
+            ),
+        ]),
+    ];
+    if lfs.filter_detected {
+        lines.push(Line::from(Span::styled(
+            format!(" {}", ctx.t("view.log_details.lfs_filter_active")),
+            Style::default().fg(ctx.theme.fg_muted),
+        )));
+    }
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        format!(" {}", ctx.t("view.log_details.lfs_hint")),
+        Style::default().fg(ctx.theme.fg_muted),
+    )));
+    if let Some(key) = extra_hint_key {
+        lines.push(Line::from(Span::styled(
+            format!(" {}", ctx.t(key)),
+            Style::default().fg(ctx.theme.fg_muted),
+        )));
+    }
+    frame.render_widget(Paragraph::new(lines), area);
+}
+
 pub fn render_file_diff_body(
     frame: &mut Frame<'_>,
     body: Rect,
@@ -267,6 +324,11 @@ pub fn render_file_diff_body(
         return;
     }
     let h = body.height as usize;
+    if let Some(lfs) = &diff.lfs {
+        ctx.record_scroll_bound(scroll_pane, h, 0);
+        render_lfs_diff_placeholder(frame, body, lfs, None, ctx);
+        return;
+    }
     if diff.is_too_large {
         ctx.record_scroll_bound(scroll_pane, h, 0);
         frame.render_widget(

@@ -627,6 +627,16 @@ fn render_preview_pane(
     };
     let text = match &blob.content {
         TreeBlobContent::Text(t) => t,
+        TreeBlobContent::Lfs(ptr) => {
+            let size = ptr.format_size();
+            return placeholder(
+                frame,
+                ctx.t_fmt(
+                    "view.tree.lfs_preview",
+                    &[("oid", ptr.short_oid()), ("size", &size)],
+                ),
+            );
+        }
         TreeBlobContent::Binary => {
             let size = blob.size.to_string();
             return placeholder(frame, ctx.t_fmt("view.tree.binary", &[("size", &size)]));

@@ -651,6 +651,7 @@ mod tests {
             is_binary: false,
             is_truncated: false,
             is_too_large: false,
+            lfs: None,
         };
         let hl = HighlightedDiff::build(&diff);
         let toks = &hl.hunks[0][0];
@@ -689,6 +690,7 @@ mod tests {
             is_binary: false,
             is_truncated: false,
             is_too_large: false,
+            lfs: None,
         };
         let hl = HighlightedDiff::build(&diff);
         let (line_idx, added) = diff.hunks[0]
@@ -756,6 +758,7 @@ mod tests {
             is_binary: false,
             is_truncated: false,
             is_too_large: false,
+            lfs: None,
         };
         let hl = HighlightedDiff::build_cancellable_file(&diff, &AtomicBool::new(false)).unwrap();
         assert!(hl.hunks[0][0].is_empty(), "25KB line must skip syntect");
@@ -805,6 +808,7 @@ mod tests {
             is_binary: false,
             is_truncated: false,
             is_too_large: false,
+            lfs: None,
         };
         let hl = HighlightedDiff::build(&diff);
         // `fn` in hunk 0 line 2 is highlighted as keyword, NOT comment
@@ -844,6 +848,7 @@ mod tests {
             is_binary: false,
             is_truncated: false,
             is_too_large: false,
+            lfs: None,
         });
 
         let cache = LazyWordDiffCache::default();

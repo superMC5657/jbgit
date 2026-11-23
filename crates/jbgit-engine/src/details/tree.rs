@@ -107,7 +107,11 @@ pub(crate) fn load_tree_blob_sync(
                 is_binary: true, ..
             } => TreeBlobContent::Binary,
             CheckedBlob::Loaded { bytes, .. } => {
-                TreeBlobContent::Text(String::from_utf8_lossy(&bytes).into_owned())
+                if let Some(ptr) = jbgit_core::parse_lfs_pointer(&bytes) {
+                    TreeBlobContent::Lfs(ptr)
+                } else {
+                    TreeBlobContent::Text(String::from_utf8_lossy(&bytes).into_owned())
+                }
             }
         };
         Ok(TreeBlob {

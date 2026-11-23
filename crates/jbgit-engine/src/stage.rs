@@ -8,12 +8,13 @@ use git2::{
 };
 use jbgit_core::{
     AmendCommitPreview, DetailsKey, DiffContext, DiffHunk, DiffLine, DiffLineKind, EpochToken,
-    FileChange, FileDiff, FileDiffKey, FileStatusKind, MAX_DIFF_LINES, Oid, StageDiffHunk,
-    StageLineTracker, StageNodeKind, StageTarget, SubmoduleState,
+    FileChange, FileDiff, FileDiffKey, FileStatusKind, LfsDiff, MAX_DIFF_LINES, Oid,
+    StageDiffHunk, StageLineTracker, StageNodeKind, StageTarget, SubmoduleState, parse_lfs_pointer,
 };
 
 use crate::blob_reader::{
-    CheckedBlob, read_head_tree_path, read_index_entry, read_tree_path, read_worktree_path,
+    CheckedBlob, path_has_lfs_filter, read_head_tree_path, read_index_entry, read_tree_path,
+    read_worktree_path,
 };
 use crate::error::EngineError;
 use crate::pool::{delta_to_kind, with_thread_repo};
@@ -56,6 +57,7 @@ pub struct ThreeDocStageDiff {
     pub is_binary: bool,
     pub is_conflicted: bool,
     pub submodule: Option<SubmoduleDiffInfo>,
+    pub lfs: Option<LfsDiff>,
     pub tracker: StageLineTracker,
     pub hunks: Vec<StageDiffHunk>,
     pub is_truncated: bool,
@@ -75,6 +77,7 @@ impl ThreeDocStageDiff {
             is_binary: self.is_binary,
             is_truncated: self.is_truncated,
             is_too_large: self.is_too_large,
+            lfs: self.lfs.clone(),
         }
     }
 }
@@ -153,6 +156,7 @@ fn empty_submodule_diff(key: StageDiffKey, info: SubmoduleDiffInfo) -> ThreeDocS
         is_binary: false,
         is_conflicted: false,
         submodule: Some(info),
+        lfs: None,
         tracker: StageLineTracker::new(b"", b"", b""),
         hunks: Vec::new(),
         is_truncated: false,
@@ -177,6 +181,8 @@ pub(crate) fn load_stage_file_diff_sync(
         if let Some(info) = detect_submodule_diff(repo, &key.path) {
             return Ok(empty_submodule_diff(key.clone(), info));
         }
+
+        let lfs_filter = path_has_lfs_filter(repo, &key.path);
 
         if key.side == StageDiffSide::AmendCommit {
             let vcs_lookup = key.old_path.as_deref().unwrap_or(&key.path);
@@ -230,6 +236,7 @@ pub(crate) fn load_stage_file_diff_sync(
                     is_binary: false,
                     is_conflicted: false,
                     submodule: None,
+                    lfs: None,
                     tracker: StageLineTracker::new(b"", b"", b""),
                     hunks: Vec::new(),
                     is_truncated: false,
@@ -242,6 +249,33 @@ pub(crate) fn load_stage_file_diff_sync(
             let is_binary = vcs_bin || head_bin;
             let vcs_bytes = vcs_opt.unwrap_or_default();
             let head_bytes = head_opt.unwrap_or_default();
+
+            let old_ptr = parse_lfs_pointer(&vcs_bytes);
+            let new_ptr = parse_lfs_pointer(&head_bytes);
+            if old_ptr.is_some() || new_ptr.is_some() {
+                return Ok(ThreeDocStageDiff {
+                    key: key.clone(),
+                    vcs_exists,
+                    staged_exists: head_exists,
+                    local_exists: head_exists,
+                    vcs_bytes,
+                    staged_bytes: head_bytes.clone(),
+                    local_bytes: head_bytes,
+                    file_mode,
+                    is_binary: false,
+                    is_conflicted: false,
+                    submodule: None,
+                    lfs: Some(LfsDiff {
+                        old: old_ptr,
+                        new: new_ptr,
+                        filter_detected: lfs_filter,
+                    }),
+                    tracker: StageLineTracker::new(b"", b"", b""),
+                    hunks: Vec::new(),
+                    is_truncated: false,
+                    is_too_large: false,
+                });
+            }
 
             if is_binary {
                 return Ok(ThreeDocStageDiff {
@@ -256,6 +290,7 @@ pub(crate) fn load_stage_file_diff_sync(
                     is_binary: true,
                     is_conflicted: false,
                     submodule: None,
+                    lfs: None,
                     tracker: StageLineTracker::new(b"", b"", b""),
                     hunks: Vec::new(),
                     is_truncated: false,
@@ -285,6 +320,7 @@ pub(crate) fn load_stage_file_diff_sync(
                 is_binary: false,
                 is_conflicted: false,
                 submodule: None,
+                lfs: None,
                 tracker,
                 hunks,
                 is_truncated,
@@ -339,6 +375,7 @@ pub(crate) fn load_stage_file_diff_sync(
                 is_binary: false,
                 is_conflicted,
                 submodule: None,
+                lfs: None,
                 tracker: StageLineTracker::new(b"", b"", b""),
                 hunks: Vec::new(),
                 is_truncated: false,
@@ -355,6 +392,36 @@ pub(crate) fn load_stage_file_diff_sync(
         let staged_bytes = staged_opt.unwrap_or_default();
         let local_bytes = local_opt.unwrap_or_default();
 
+        let (old_ptr, new_ptr) = if key.side == StageDiffSide::Staged {
+            (parse_lfs_pointer(&vcs_bytes), parse_lfs_pointer(&staged_bytes))
+        } else {
+            (parse_lfs_pointer(&staged_bytes), parse_lfs_pointer(&local_bytes))
+        };
+        if old_ptr.is_some() || new_ptr.is_some() {
+            return Ok(ThreeDocStageDiff {
+                key: key.clone(),
+                vcs_exists,
+                staged_exists,
+                local_exists,
+                vcs_bytes,
+                staged_bytes,
+                local_bytes,
+                file_mode,
+                is_binary: false,
+                is_conflicted,
+                submodule: None,
+                lfs: Some(LfsDiff {
+                    old: old_ptr,
+                    new: new_ptr,
+                    filter_detected: lfs_filter,
+                }),
+                tracker: StageLineTracker::new(b"", b"", b""),
+                hunks: Vec::new(),
+                is_truncated: false,
+                is_too_large: false,
+            });
+        }
+
         if is_binary {
             return Ok(ThreeDocStageDiff {
                 key: key.clone(),
@@ -368,6 +435,7 @@ pub(crate) fn load_stage_file_diff_sync(
                 is_binary: true,
                 is_conflicted,
                 submodule: None,
+                lfs: None,
                 tracker: StageLineTracker::new(b"", b"", b""),
                 hunks: Vec::new(),
                 is_truncated: false,
@@ -438,6 +506,7 @@ pub(crate) fn load_stage_file_diff_sync(
             is_binary: false,
             is_conflicted,
             submodule: None,
+            lfs: None,
             tracker,
             hunks,
             is_truncated,

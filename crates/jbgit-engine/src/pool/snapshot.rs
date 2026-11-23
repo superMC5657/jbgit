@@ -135,6 +135,7 @@ pub fn load_repo_snapshot_with_config_sync(
         let remotes = collect_remotes(repo);
         let worktrees = collect_worktrees(location, &probe);
         let submodules = collect_submodules(repo, location);
+        let has_lfs = detect_has_lfs(repo, location);
 
         Ok((
             RepoSnapshot {
@@ -156,10 +157,35 @@ pub fn load_repo_snapshot_with_config_sync(
                 remotes,
                 worktrees,
                 submodules,
+                has_lfs,
             },
             pending_ahead_behind,
         ))
     })
+}
+
+fn detect_has_lfs(repo: &Repository, location: &RepoLocation) -> bool {
+    if !location.is_bare
+        && let Ok(text) = std::fs::read_to_string(location.workdir.join(".gitattributes"))
+    {
+        return jbgit_core::has_lfs_filter_in_gitattributes(&text);
+    }
+    let Ok(head) = repo.head() else {
+        return false;
+    };
+    let Ok(tree) = head.peel_to_tree() else {
+        return false;
+    };
+    let Some(entry) = tree.get_name(".gitattributes") else {
+        return false;
+    };
+    let Ok(blob) = repo.find_blob(entry.id()) else {
+        return false;
+    };
+    if blob.content().len() > 1024 * 1024 {
+        return false;
+    }
+    jbgit_core::has_lfs_filter_in_gitattributes(&String::from_utf8_lossy(blob.content()))
 }
 
 /// `git worktree list` — only spawned when `<common>/worktrees` has entries;

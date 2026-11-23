@@ -1,11 +1,13 @@
 use git2::Repository;
 use imara_diff::{Algorithm, Diff, InternedInput};
 use jbgit_core::{
-    DetailsKey, DetailsMode, EpochToken, FileDiff, FileDiffKey, FileStatusKind, MAX_DIFF_LINES,
-    Oid, build_diff_hunks,
+    DetailsKey, DetailsMode, EpochToken, FileDiff, FileDiffKey, FileStatusKind, LfsDiff,
+    MAX_DIFF_LINES, Oid, build_diff_hunks, parse_lfs_pointer,
 };
 
-use crate::blob_reader::{CheckedBlob, read_blob, read_tree_path, read_worktree_path};
+use crate::blob_reader::{
+    CheckedBlob, path_has_lfs_filter, read_blob, read_tree_path, read_worktree_path,
+};
 use crate::error::EngineError;
 use crate::pool::with_thread_repo;
 use crate::probe::RepoLocation;
@@ -55,6 +57,7 @@ fn populate_file_diff(
     mut out: FileDiff,
     old: CheckedBlob,
     new: CheckedBlob,
+    lfs_filter: bool,
     context_lines: u32,
     token: &EpochToken,
 ) -> Result<FileDiff, EngineError> {
@@ -65,6 +68,16 @@ fn populate_file_diff(
         out.is_too_large = true;
         return Ok(out);
     };
+    let old_ptr = parse_lfs_pointer(&old_bytes);
+    let new_ptr = parse_lfs_pointer(&new_bytes);
+    if old_ptr.is_some() || new_ptr.is_some() {
+        out.lfs = Some(LfsDiff {
+            old: old_ptr,
+            new: new_ptr,
+            filter_detected: lfs_filter,
+        });
+        return Ok(out);
+    }
     if old_bin || new_bin {
         out.is_binary = true;
         return Ok(out);
@@ -96,12 +109,14 @@ pub fn load_file_diff_with_oids_sync(
         if token.is_stale() {
             return Err(EngineError::Cancelled);
         }
+        let lfs_filter = path_has_lfs_filter(repo, &key.path);
         let mut out = FileDiff {
             key: key.clone(),
             hunks: Vec::new(),
             is_binary: false,
             is_truncated: false,
             is_too_large: false,
+            lfs: None,
         };
         let context_lines = key.context.lines();
         let lookup_old = key.old_path.as_deref().unwrap_or(&key.path);
@@ -120,6 +135,7 @@ pub fn load_file_diff_with_oids_sync(
                         out,
                         read_opt_oid(old_id)?,
                         read_opt_oid(new_id)?,
+                        lfs_filter,
                         context_lines,
                         token,
                     );
@@ -130,7 +146,7 @@ pub fn load_file_diff_with_oids_sync(
                 let target_tree = target.tree()?;
                 let old = read_tree_path(repo, &base_tree, lookup_old);
                 let new = read_tree_path(repo, &target_tree, &key.path);
-                return populate_file_diff(out, old, new, context_lines, token);
+                return populate_file_diff(out, old, new, lfs_filter, context_lines, token);
             }
             DetailsMode::CompareWithLocal if !key.details.oids.is_empty() => {
                 let old = match known_oids {
@@ -144,7 +160,7 @@ pub fn load_file_diff_with_oids_sync(
                 let new = repo
                     .workdir()
                     .map_or(CheckedBlob::Missing, |w| read_worktree_path(w, &key.path));
-                return populate_file_diff(out, old, new, context_lines, token);
+                return populate_file_diff(out, old, new, lfs_filter, context_lines, token);
             }
             DetailsMode::Commits if key.details.oids.len() == 1 => {
                 if let Some((old_id, new_id)) = known_oids {
@@ -152,6 +168,7 @@ pub fn load_file_diff_with_oids_sync(
                         out,
                         read_opt_oid(old_id)?,
                         read_opt_oid(new_id)?,
+                        lfs_filter,
                         context_lines,
                         token,
                     );
@@ -169,7 +186,7 @@ pub fn load_file_diff_with_oids_sync(
                     .map(|t| read_tree_path(repo, t, lookup_old))
                     .unwrap_or_else(CheckedBlob::empty);
                 let new = read_tree_path(repo, &new_tree, &key.path);
-                return populate_file_diff(out, old, new, context_lines, token);
+                return populate_file_diff(out, old, new, lfs_filter, context_lines, token);
             }
             DetailsMode::Commits if !key.details.oids.is_empty() => {
                 if let Some((old_id, new_id)) = known_oids {
@@ -177,6 +194,7 @@ pub fn load_file_diff_with_oids_sync(
                         out,
                         read_opt_oid(old_id)?,
                         read_opt_oid(new_id)?,
+                        lfs_filter,
                         context_lines,
                         token,
                     );
@@ -207,6 +225,6 @@ pub fn load_file_diff_with_oids_sync(
             read_blob(repo, item.old_oid, None)
         };
         let new = read_new_bytes_checked(repo, &key.details, &item);
-        populate_file_diff(out, old, new, context_lines, token)
+        populate_file_diff(out, old, new, lfs_filter, context_lines, token)
     })
 }
