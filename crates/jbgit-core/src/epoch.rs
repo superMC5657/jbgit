@@ -81,10 +81,12 @@ pub enum RequestSlotId {
     PathFilter = 10,
     AmendPreview = 11,
     ConflictDocument = 12,
+    Annotate = 13,
+    AnnotateDiff = 14,
 }
 
 impl RequestSlotId {
-    pub const COUNT: usize = 13;
+    pub const COUNT: usize = 15;
 
     #[inline]
     pub const fn index(self) -> usize {

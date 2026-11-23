@@ -80,6 +80,7 @@ jbgit 默认采用**零冲突统一键位（`preset = "default"`）**，并通�
 | `<F4>` / `<Ctrl-Enter>` | *(变更树 / Diff)* 切换全屏差异预览 |
 | `v` / `e` / `E` | *(变更树)* 切换按目录树分组 (`v`) / 全部展开 (`e`) / 全部折叠 (`E`) |
 | `H` | *(变更树)* 查看选中文件的完整提交历史（File History） |
+| `<Alt-g>` | *(变更树 / Diff)* 打开 Git Blame 逐行追溯（Annotate）浮窗 |
 | `g r` / `<Ctrl-g>` | 按提交哈希、分支名或 Tag 快速定位跳转 |
 | `m` | 为合并提交选择 / 切换父提交 |
 | `u` / `<F2>` / `<Del>` | 撤回最近提交 (Uncommit) / 修改说明 (Reword) / 丢弃提交 (Drop) |
@@ -116,7 +117,7 @@ jbgit 默认采用**零冲突统一键位（`preset = "default"`）**，并通�
 | `<Alt-s>` / `<Ctrl-m>` | 切换 Signed-off-by 签名 / 打开历史提交说明选择器 |
 | `<Ctrl-a>` | 全选变更文件 |
 | `d` / `<Del>` / `<Ctrl-Alt-z>` | 放弃选中文件或代码块的本地修改 (Discard Changes) |
-| `v` / `e` / `H` | 按目录树分组 (`v`) / 在外部编辑器打开 (`e`) / 查看文件提交历史 (`H`) |
+| `v` / `e` / `H` / `<Alt-g>` | 按目录树分组 (`v`) / 外部编辑器 (`e`) / 文件历史 (`H`) / Git Blame 逐行追溯 (`<Alt-g>`) |
 | `<Ctrl-e>` / `<Ctrl-z>` / `<Ctrl-y>` / `<Ctrl-w>` | *(提交说明编辑器内)* 外部编辑器编辑说明 / 撤销 / 重做（亦支持 `<Ctrl-Shift-z>`）/ 删词（亦支持 `<Alt-Backspace>`） |
 
 ### 统一差异对比 (Diff View — Log / Commit / Stash)
@@ -161,9 +162,23 @@ jbgit 默认采用**零冲突统一键位（`preset = "default"`）**，并通�
 | `j` / `k` / `<PageUp>` / `<PageDown>` / `g g` / `G`（或 `<Home>` / `<End>`） | 上下移动、翻页及跳转顶部 / 底部 |
 | `<Shift-Up>` / `<Shift-Down>` | 扩展多选两个提交区间进行对比 |
 | `<Enter>` | 跳转并在主 Log 视图定位到当前选中提交 |
-| `f` / `l` | 切换追踪重命名 / 对比当前提交与本地工作区 |
+| `f` / `l` / `b`（或 `<Alt-g>`） | 切换追踪重命名 (`f`) / 对比本地工作区 (`l`) / 在当前提交打开 Annotate 逐行追溯 (`b`/`Alt-g`) |
 | `S` / `w` / `z`（或 `<F4>`） | 切换并排对比 (`S`) / 循环上下文行数 (`w`) / 全屏差异预览 (`z`/`F4`) |
 | `<Esc>` | 退出全屏 Diff 或关闭文件历史浮窗 |
+
+**Git Blame 逐行追溯浮窗 (Annotate)**（在 Log / Commit 变更树或 Diff 预览按 `<Alt-g>`，或由上下文菜单 / File History 按 `b` 进入）：
+
+| 快捷键 | 功能描述 |
+| :--- | :--- |
+| `j` / `k` / `<PageUp>` / `<PageDown>` / `g g` / `G` | 上下逐行浏览源码与提交年代热力条 / 跳转首尾行 |
+| `:` / `<Ctrl-g>` | 输入目标行号快速跳转（Go to Line） |
+| `v` / `V`（或 `<Shift-Up>` / `<Shift-Down>`） | 开关可视行选择并扩展行区间（在 Commit Diff 预览同样支持 `v` 选中块/行） |
+| `H` | 对当前光标行或可视选中行区间执行 `git log -L` 查看 **所选代码行历史 (Selection History)** |
+| `p` / `P`（或 `<Backspace>`） | 追溯当前选中行的上一修订版本 (`Annotate Previous Revision`) / 返回导航栈 |
+| `w` / `m` | 切换忽略空白字符 (`-w`) / 跨文件代码移动与复制追踪 (`-M -C`) |
+| `d` / `<Tab>` | 开关底部内联 Diff 预览 / 在源码区与底部 Diff 之间切换焦点 |
+| `<Enter>` / `y` / `.` | 跳转到主 Log 对应提交 / 复制该行提交哈希 / 打开 Annotate 上下文菜单 |
+| `<Esc>` | 清除行跳转输入或退出可视选区，否则关闭 Annotate 浮窗 |
 
 **三栏冲突合并浮窗**（在冲突文件上下文菜单或横幅进入）：
 
@@ -291,6 +306,12 @@ file_history_ratio = [ 2, 3 ]
 
 # 窄屏上下两栏权重: [上方提交列表, 下方 Diff 预览]
 file_history_vertical_ratio = [ 2, 3 ]
+
+[annotate]
+# 逐行注解 (Git Blame) 默认选项与热力边栏宽度
+ignore_whitespace = false
+detect_moves = false
+gutter_width = 28
 ```
 
 > 提示：若在同一配置层中同时存在 `jbgit.toml` 和 `theme.toml`，且 `theme.toml` 未显式设置 `flavor` 或 `[glyphs].mode`，则会继承该层 `jbgit.toml` 中的 `[general].flavor` 与 `[graph].glyph_mode`。
@@ -330,6 +351,11 @@ mode = "nerd_font"
 # diff_add_word_bg = "#385E42"
 # diff_del_bg = "#483033"
 # diff_del_word_bg = "#6E3B3B"
+# annotate_age_0 = "#3D3124"
+# annotate_age_1 = "#2D3D30"
+# annotate_age_2 = "#253746"
+# annotate_age_3 = "#282E3B"
+# annotate_age_4 = "#25262A"
 ```
 
 ### 5. `keymap.toml`：快捷键预设与增量覆盖
@@ -388,9 +414,9 @@ prepend_keymap = [
 | 作用域 | 可用 `run` 动作标识符 |
 | :--- | :--- |
 | `global` | `quit`, `help`, `context_menu`, `refresh`, `tab_commit`, `tab_log`, `tab_branches`, `tab_stash`, `tab_console`, `focus_next`, `focus_prev`, `toggle_branches_popup`, `toggle_branches_pane`, `git_fetch`, `git_pull`, `git_push`, `goto_revision`, `palette`, `toggle_glyph_mode`, `cycle_graph_renderer`, `git_status_probe`, `noop` |
-| `log` | `cursor_down`, `cursor_up`, `goto_top`, `goto_bottom`, `page_down_half`, `page_up_half`, `goto_revision`, `focus_filter`, `toggle_branches_pane`, `compare_or_diff`, `zoom_diff`, `copy_hash`, `checkout`, `new_branch`, `uncommit`, `reword`, `drop_commit`, `choose_parent`, `toggle_group`, `file_history` |
+| `log` | `cursor_down`, `cursor_up`, `goto_top`, `goto_bottom`, `page_down_half`, `page_up_half`, `goto_revision`, `focus_filter`, `toggle_branches_pane`, `compare_or_diff`, `zoom_diff`, `copy_hash`, `checkout`, `new_branch`, `uncommit`, `reword`, `drop_commit`, `choose_parent`, `toggle_group`, `file_history`, `annotate` |
 | `branch` | `branch_search`, `toggle_favorite`, `checkout`, `new_branch`, `rename_branch`, `delete_branch`, `navigate_branch` |
-| `commit` | `cursor_down`, `cursor_up`, `goto_top`, `goto_bottom`, `toggle_stage`, `stage_selection`, `unstage_selection`, `focus_commit_msg`, `commit`, `commit_and_push`, `toggle_amend`, `toggle_signoff`, `commit_history`, `select_all`, `discard_changes`, `toggle_group`, `edit_file`, `file_history` |
+| `commit` | `cursor_down`, `cursor_up`, `goto_top`, `goto_bottom`, `toggle_stage`, `stage_selection`, `unstage_selection`, `focus_commit_msg`, `commit`, `commit_and_push`, `toggle_amend`, `toggle_signoff`, `commit_history`, `select_all`, `discard_changes`, `toggle_group`, `edit_file`, `file_history`, `annotate` |
 | `diff` | `cursor_down`, `cursor_up`, `goto_top`, `goto_bottom`, `prev_hunk`, `next_hunk`, `prev_file`, `next_file`, `toggle_side_by_side`, `cycle_diff_context`, `cycle_diff_dock`, `zoom_diff`, `toggle_stage`, `stage_selection`, `unstage_selection`, `toggle_visual`, `rollback_selection`, `undo_rollback`, `switch_diff_side`, `three_way_inspector` |
 | `stash` | `cursor_down`, `cursor_up`, `goto_top`, `goto_bottom`, `stash_new`, `stash_apply`, `stash_pop`, `stash_drop`, `stash_branch`, `stash_clear`, `toggle_group` |
 | `console` | `cursor_down`, `cursor_up`, `goto_top`, `goto_bottom`, `page_down_half`, `page_up_half` |

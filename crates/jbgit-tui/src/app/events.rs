@@ -1,10 +1,10 @@
 use std::sync::Arc;
 
 use jbgit_core::{RequestSlotId, WorkspaceTab};
-use jbgit_engine::EngineEvent;
+use jbgit_engine::{BlameFailureKind, EngineEvent};
 
 use crate::dialogs::{ChoiceDialog, Dialog};
-use crate::log_view::PathMatches;
+use crate::log_view::{AnnotateError, PathMatches};
 
 use super::{Action, AppState, Effect, ModalLayer, SyntaxJobKey, UiAsyncEvent};
 
@@ -53,6 +53,46 @@ impl AppState {
                     .apply_syntax_highlighted(sk, epoch, highlighted, &mut self.stage_syntax)
                 {
                     self.needs_redraw = true;
+                }
+            }
+            UiAsyncEvent::SyntaxHighlighted {
+                key: SyntaxJobKey::RangePatch { oid, path, range },
+                epoch,
+                highlighted,
+            } => {
+                if !self.range_syntax.finish_cancelable(&(oid, path, range), epoch) {
+                    return effects;
+                }
+                for layer in &mut self.modal_stack {
+                    if let ModalLayer::FileHistory(fh) = layer
+                        && fh.uses_range_patch()
+                        && fh.key.line_range == Some(range)
+                        && fh.selected_entry().is_some_and(|e| e.oid == oid)
+                    {
+                        fh.range_syntax = Some((oid, Arc::clone(&highlighted)));
+                        self.needs_redraw = true;
+                    }
+                }
+            }
+            UiAsyncEvent::SyntaxHighlighted {
+                key: SyntaxJobKey::Blame(_),
+                ..
+            } => {}
+            UiAsyncEvent::BlameSyntaxHighlighted {
+                key,
+                epoch,
+                highlighted,
+            } => {
+                if !self.blame_syntax.finish_cancelable(&key, epoch) {
+                    return effects;
+                }
+                for layer in &mut self.modal_stack {
+                    if let ModalLayer::Annotate(ann) = layer
+                        && ann.key == key
+                    {
+                        ann.syntax = Some(Arc::clone(&highlighted));
+                        self.needs_redraw = true;
+                    }
                 }
             }
         }
@@ -166,6 +206,13 @@ impl AppState {
                             fh.diff.requested = None;
                         }
                     }
+                    RequestSlotId::AnnotateDiff => {
+                        if let Some(ann) = self.modal_stack.annotate_mut()
+                            && ann.diff.requested.as_ref() == Some(&diff.key)
+                        {
+                            ann.diff.requested = None;
+                        }
+                    }
                     _ => {}
                 }
                 let log_wants = self.log.details.diff_visible()
@@ -179,7 +226,14 @@ impl AppState {
                     .and_then(|fh| fh.desired_diff_key())
                     .as_ref()
                     == Some(&diff.key);
-                let is_wanted = log_wants || stash_wants || fh_wants;
+                let head_oid = self.repo_snapshot.as_ref().and_then(|s| s.head_oid);
+                let ann_wants = self
+                    .modal_stack
+                    .annotate()
+                    .and_then(|ann| ann.desired_diff_key(head_oid))
+                    .as_ref()
+                    == Some(&diff.key);
+                let is_wanted = log_wants || stash_wants || fh_wants || ann_wants;
                 self.diff_caches.insert_diff(Arc::clone(&diff));
                 if is_wanted && self.diff_caches.peek_syntax(&diff.key).is_none() {
                     self.schedule_file_syntax(diff, &mut effects);
@@ -192,12 +246,15 @@ impl AppState {
                 {
                     return effects;
                 }
+                let mut range_syntax_job: Option<(jbgit_core::Oid, (u32, u32), Arc<jbgit_core::FileDiff>)> = None;
                 let desired_after_load = if let Some(fh) = self.modal_stack.file_history_mut()
                     && fh.key == bundle.key
                 {
                     fh.loading = false;
                     fh.error = None;
                     fh.anchor = None;
+                    fh.range_diff = None;
+                    fh.range_syntax = None;
                     fh.diff.scroll.reset();
                     fh.diff.pending = None;
                     fh.selected = fh
@@ -206,10 +263,24 @@ impl AppState {
                         .and_then(|start| bundle.entries.iter().position(|e| e.oid == start))
                         .unwrap_or(0);
                     fh.bundle = Some(bundle);
-                    fh.desired_diff_key()
+                    if fh.uses_range_patch() {
+                        if let (Some(range), Some(oid)) = (
+                            fh.key.line_range,
+                            fh.selected_entry().map(|e| e.oid),
+                        ) && let Some(diff) = fh.ensure_range_diff()
+                        {
+                            range_syntax_job = Some((oid, range, diff));
+                        }
+                        None
+                    } else {
+                        fh.desired_diff_key()
+                    }
                 } else {
                     None
                 };
+                if let Some((oid, range, diff)) = range_syntax_job {
+                    self.schedule_range_syntax(oid, range, diff, &mut effects);
+                }
                 if let Some(key) = desired_after_load {
                     if let Some(cached) = self.diff_caches.get_diff(&key) {
                         if self.diff_caches.get_syntax(&key).is_none() {
@@ -224,6 +295,60 @@ impl AppState {
                             key,
                         });
                     }
+                }
+            }
+            EngineEvent::BlameLoaded { bundle, epoch } => {
+                if !self.request_slots.accept(RequestSlotId::Annotate, epoch) {
+                    return effects;
+                }
+                let mut syntax_bundle: Option<Arc<jbgit_core::BlameBundle>> = None;
+                if let Some(ann) = self.modal_stack.annotate_mut()
+                    && ann.key == bundle.key
+                {
+                    ann.loading = false;
+                    ann.error = None;
+                    let focus_line = ann.pending_focus_line.take();
+                    let target_cursor = focus_line
+                        .and_then(|ln| {
+                            bundle
+                                .lines
+                                .iter()
+                                .position(|l| l.final_line == ln)
+                                .or_else(|| usize::try_from(ln.saturating_sub(1)).ok())
+                        })
+                        .unwrap_or(ann.cursor);
+                    ann.bundle = Some(Arc::clone(&bundle));
+                    ann.syntax = None;
+                    ann.visual_anchor = None;
+                    ann.cursor = target_cursor.min(bundle.lines.len().saturating_sub(1));
+                    ann.ensure_cursor_visible();
+                    syntax_bundle = Some(bundle);
+                }
+                if let Some(bundle) = syntax_bundle {
+                    self.schedule_blame_syntax(bundle, &mut effects);
+                }
+            }
+            EngineEvent::BlameFailed {
+                key,
+                kind,
+                message,
+                epoch,
+            } => {
+                if !self.request_slots.accept(RequestSlotId::Annotate, epoch) {
+                    return effects;
+                }
+                if let Some(ann) = self.modal_stack.annotate_mut()
+                    && ann.key == key
+                {
+                    ann.loading = false;
+                    ann.bundle = None;
+                    ann.syntax = None;
+                    ann.pending_focus_line = None;
+                    ann.error = Some(match kind {
+                        BlameFailureKind::TooLarge { limit } => AnnotateError::TooLarge { limit },
+                        BlameFailureKind::Binary => AnnotateError::Binary,
+                        BlameFailureKind::Other => AnnotateError::Message(message),
+                    });
                 }
             }
             EngineEvent::PathMatchesLoaded {
@@ -342,6 +467,13 @@ impl AppState {
                     fh.diff.requested = None;
                     if fh.bundle.is_none() {
                         fh.error = Some(msg.clone());
+                    }
+                }
+                if let Some(ann) = self.modal_stack.annotate_mut() {
+                    ann.loading = false;
+                    ann.diff.requested = None;
+                    if ann.bundle.is_none() && ann.error.is_none() {
+                        ann.error = Some(AnnotateError::Message(msg.clone()));
                     }
                 }
                 self.status_notice = Some(self.i18n.t_fmt("toast.engine_error", &[("msg", &msg)]));

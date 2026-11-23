@@ -3,8 +3,9 @@ use std::sync::atomic::AtomicBool;
 use std::time::{Duration, Instant};
 
 use jbgit_core::{
-    ConflictDocument, DetailsKey, EpochToken, FileDiff, FileDiffKey, FileHistoryKey, GitOp, Oid,
-    PaneId, RefreshScope, RepoSnapshot, RequestSlotId, SplitAxis, SplitterId,
+    BlameBundle, BlameKey, ConflictDocument, DetailsKey, EpochToken, FileDiff, FileDiffKey,
+    FileHistoryKey, GitOp, Oid, PaneId, RefreshScope, RepoSnapshot, RequestSlotId, SplitAxis,
+    SplitterId,
 };
 use jbgit_engine::{StageDiffKey, ThreeDocStageDiff};
 use ratatui::layout::Rect;
@@ -12,7 +13,7 @@ use ratatui::layout::Rect;
 use crate::graph::state::LogGraphRebuilt;
 use crate::hit_test::HitTarget;
 use crate::log_view::{DiffPreviewDock, FilterField};
-use crate::syntax::HighlightedDiff;
+use crate::syntax::{HighlightedDiff, HighlightedFile};
 use crate::theme::{BranchColorManager, GlyphMode, ThemePalette};
 
 use super::Action;
@@ -42,6 +43,8 @@ pub enum ScrollPane {
     StashDiff,
     StageDiff,
     FileHistoryDiff,
+    Annotate,
+    AnnotateDiff,
     ConflictMerge,
 }
 
@@ -394,12 +397,19 @@ pub enum EditorMoveKind {
 pub enum SyntaxJobKey {
     File(FileDiffKey),
     Stage(StageDiffKey),
+    Blame(BlameKey),
+    RangePatch {
+        oid: Oid,
+        path: String,
+        range: (u32, u32),
+    },
 }
 
 #[derive(Debug, Clone)]
 pub enum SyntaxTarget {
     File(Arc<FileDiff>),
     Stage(Arc<ThreeDocStageDiff>),
+    Blame(Arc<BlameBundle>),
 }
 
 #[derive(Debug, Clone)]
@@ -412,17 +422,40 @@ pub struct SyntaxJob {
 
 impl SyntaxJob {
     pub fn run(self) -> Option<UiAsyncEvent> {
-        let highlighted = match &self.target {
-            SyntaxTarget::File(diff) => HighlightedDiff::build_cancellable_file(diff, &self.cancel),
-            SyntaxTarget::Stage(diff) => {
-                HighlightedDiff::build_cancellable_stage(diff, &self.cancel)
+        match &self.target {
+            SyntaxTarget::File(diff) => {
+                let highlighted = HighlightedDiff::build_cancellable_file(diff, &self.cancel)?;
+                Some(UiAsyncEvent::SyntaxHighlighted {
+                    key: self.key,
+                    epoch: self.epoch,
+                    highlighted: Arc::new(highlighted),
+                })
             }
-        }?;
-        Some(UiAsyncEvent::SyntaxHighlighted {
-            key: self.key,
-            epoch: self.epoch,
-            highlighted: Arc::new(highlighted),
-        })
+            SyntaxTarget::Stage(diff) => {
+                let highlighted = HighlightedDiff::build_cancellable_stage(diff, &self.cancel)?;
+                Some(UiAsyncEvent::SyntaxHighlighted {
+                    key: self.key,
+                    epoch: self.epoch,
+                    highlighted: Arc::new(highlighted),
+                })
+            }
+            SyntaxTarget::Blame(bundle) => {
+                let highlighted = HighlightedFile::build_cancellable(
+                    &bundle.key.path,
+                    &bundle.content,
+                    bundle.lines.len(),
+                    &self.cancel,
+                )?;
+                let SyntaxJobKey::Blame(key) = self.key else {
+                    return None;
+                };
+                Some(UiAsyncEvent::BlameSyntaxHighlighted {
+                    key,
+                    epoch: self.epoch,
+                    highlighted: Arc::new(highlighted),
+                })
+            }
+        }
     }
 }
 
@@ -461,6 +494,11 @@ pub enum UiAsyncEvent {
         epoch: u64,
         highlighted: Arc<HighlightedDiff>,
     },
+    BlameSyntaxHighlighted {
+        key: BlameKey,
+        epoch: u64,
+        highlighted: Arc<HighlightedFile>,
+    },
     ContainingBranches {
         oid: Oid,
         token: EpochToken,
@@ -482,6 +520,7 @@ pub enum Effect {
         key: FileDiffKey,
     },
     RequestFileHistory(FileHistoryKey),
+    RequestBlame(BlameKey),
     RequestPathMatches(Vec<String>, Arc<RepoSnapshot>),
     RequestStageFileDiff(StageDiffKey),
     RequestSyntaxHighlight(SyntaxJob),

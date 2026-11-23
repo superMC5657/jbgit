@@ -1077,3 +1077,46 @@ fn commit_diff_preview_c_focuses_commit_message_editor() {
     ts.send_key(KeyCode::Char('c'), KeyModifiers::NONE);
     assert_eq!(ts.state().stage_workbench.editor().text(), "c");
 }
+
+#[test]
+fn annotate_alt_g_resolves_without_shadowing_across_all_presets() {
+    use crate::config::KeymapPreset;
+    use crate::keymap::{KeyAction, actions::check_scopes, catalog};
+
+    for preset in [
+        KeymapPreset::Default,
+        KeymapPreset::Jetbrains,
+        KeymapPreset::Vim,
+    ] {
+        let mut cfg = crate::config::AppConfig::load_defaults();
+        cfg.keymap = crate::config::KeymapConfig::for_preset(preset);
+        let dir = tempfile::tempdir().unwrap();
+        let mut ts = TestSession::with_config(dir.path().to_path_buf(), cfg);
+
+        for (tab, pane) in [
+            (WorkspaceTab::Log, PaneId::LogChangesTree),
+            (WorkspaceTab::Log, PaneId::LogDetailsDiff),
+            (WorkspaceTab::Commit, PaneId::CommitChangesTree),
+            (WorkspaceTab::Commit, PaneId::CommitDiffPreview),
+        ] {
+            ts.dispatch(Action::SwitchTab(tab));
+            ts.dispatch(Action::FocusPane(pane));
+            let key = KeyEvent::new(KeyCode::Char('g'), KeyModifiers::ALT);
+            let m = check_scopes(&[key], ts.state());
+            assert!(
+                matches!(m, crate::keymap::MatchResult::Exact(b) if b.run == KeyAction::Annotate),
+                "expected <A-g> to match KeyAction::Annotate on {preset:?} / {tab:?} / {pane:?}"
+            );
+            let sc = catalog::shortcut_for_action(
+                ts.state(),
+                &crate::keymap::actions::scopes_for_context(ts.state()),
+                &KeyAction::Annotate,
+            );
+            assert_eq!(
+                sc.as_deref(),
+                Some("Alt+G"),
+                "expected non-shadowed Alt+G shortcut display on {preset:?} / {tab:?} / {pane:?}"
+            );
+        }
+    }
+}

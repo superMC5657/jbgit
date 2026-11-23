@@ -940,6 +940,68 @@ impl CommitWorkbench {
         Some((lo, hi))
     }
 
+    /// Returns the 1-based inclusive line range for the active visual selection
+    /// or the line/hunk under `diff_cursor_row` (for `Show History for Selection`).
+    pub fn selected_line_range(&self) -> Option<(u32, u32)> {
+        let diff = self.current_diff.as_ref()?;
+        if !diff.vcs_exists || diff.is_binary || diff.is_too_large {
+            return None;
+        }
+        let rows = self.diff_rows();
+        if rows.is_empty() {
+            return None;
+        }
+
+        let mut min_new: Option<u32> = None;
+        let mut max_new: Option<u32> = None;
+        let mut min_old: Option<u32> = None;
+        let mut max_old: Option<u32> = None;
+        let mut record_line = |h: usize, l: usize| {
+            let Some(line) = diff.hunks.get(h).and_then(|hk| hk.hunk.lines.get(l)) else {
+                return;
+            };
+            if let Some(n) = line.new_lineno {
+                min_new = Some(min_new.map_or(n, |cur| cur.min(n)));
+                max_new = Some(max_new.map_or(n, |cur| cur.max(n)));
+            }
+            if let Some(o) = line.old_lineno {
+                min_old = Some(min_old.map_or(o, |cur| cur.min(o)));
+                max_old = Some(max_old.map_or(o, |cur| cur.max(o)));
+            }
+        };
+
+        let mut inspect_row = |row: DiffRow| match row {
+            DiffRow::Header(h) => {
+                if let Some(hk) = diff.hunks.get(h) {
+                    for l in 0..hk.hunk.lines.len() {
+                        record_line(h, l);
+                    }
+                }
+            }
+            DiffRow::Unified(h, l) => record_line(h, l),
+            DiffRow::Split(h, left, right) => {
+                if let Some(l) = left {
+                    record_line(h, l);
+                }
+                if let Some(r) = right {
+                    record_line(h, r);
+                }
+            }
+        };
+
+        if let Some((lo, hi)) = self.selected_visual_bounds() {
+            let hi = hi.min(rows.len() - 1);
+            for &r in rows.iter().take(hi + 1).skip(lo.min(hi)) {
+                inspect_row(r);
+            }
+        } else {
+            let cursor = self.diff_cursor_row.min(rows.len() - 1);
+            inspect_row(rows[cursor]);
+        }
+
+        min_new.zip(max_new).or_else(|| min_old.zip(max_old))
+    }
+
     /// Maps either active visual selection `[lo..=hi]` or the hunk under `diff_cursor_row`
     /// into a typed [`LineSelection`].
     pub fn collect_selected_line_sets(&self) -> Option<LineSelection> {

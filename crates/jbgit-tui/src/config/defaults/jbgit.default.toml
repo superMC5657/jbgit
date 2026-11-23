@@ -32,6 +32,12 @@ tab_size = 4
 # Diff 上下文保留行数
 context_lines = 3
 
+[annotate]
+# 逐行注解 (Git Blame) 默认行为
+ignore_whitespace = false
+detect_moves = false
+gutter_width = 28
+
 [layout]
 # --- Log 提交历史视图 ---
 # 横向三栏比例: [左侧分支树, 中间提交图谱, 右侧变更与详情区]

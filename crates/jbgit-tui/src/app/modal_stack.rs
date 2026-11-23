@@ -8,7 +8,7 @@ use std::time::Instant;
 use ratatui::layout::Rect;
 
 use crate::dialogs::Dialog;
-use crate::log_view::{FileHistoryState, FilterField};
+use crate::log_view::{AnnotateState, FileHistoryState, FilterField};
 use crate::views::overlays::{context_menu_rect, menu_item_row_y};
 
 use super::{
@@ -51,6 +51,8 @@ pub enum ModalLayer {
     },
     /// Layer 2: self-contained single-file commit history modal (`--follow` + diff).
     FileHistory(Box<FileHistoryState>),
+    /// Layer 2: self-contained per-line git blame / annotate viewer.
+    Annotate(Box<AnnotateState>),
     /// Layer 2: self-contained three-pane conflict resolver (`Ours | Result | Theirs`).
     ConflictResolver(Box<ConflictMergeState>),
     /// Layer 2: three-way hunk inspector (`HEAD / Staged / Worktree`).
@@ -161,6 +163,7 @@ impl ModalLayer {
             | Self::ChooseParent { .. }
             | Self::CommitHistory { .. }
             | Self::FileHistory(_)
+            | Self::Annotate(_)
             | Self::ConflictResolver(_)
             | Self::ThreeWayInspector { .. }
             | Self::HookError { .. } => 20,
@@ -246,8 +249,8 @@ impl ModalStack {
     }
 
     pub fn open_file_history(&mut self, fh: FileHistoryState) {
-        if let Some(existing) = self.file_history_mut() {
-            *existing = fh;
+        if let Some(ModalLayer::FileHistory(existing)) = self.layers.last_mut() {
+            **existing = fh;
         } else {
             self.layers.push(ModalLayer::FileHistory(Box::new(fh)));
         }
@@ -258,6 +261,38 @@ impl ModalStack {
             .layers
             .iter()
             .rposition(|l| matches!(l, ModalLayer::FileHistory(_)))
+        {
+            self.layers.remove(pos);
+        }
+    }
+
+    pub fn annotate(&self) -> Option<&AnnotateState> {
+        self.layers.iter().rev().find_map(|l| match l {
+            ModalLayer::Annotate(ann) => Some(ann.as_ref()),
+            _ => None,
+        })
+    }
+
+    pub fn annotate_mut(&mut self) -> Option<&mut AnnotateState> {
+        self.layers.iter_mut().rev().find_map(|l| match l {
+            ModalLayer::Annotate(ann) => Some(ann.as_mut()),
+            _ => None,
+        })
+    }
+
+    pub fn open_annotate(&mut self, ann: AnnotateState) {
+        if let Some(ModalLayer::Annotate(existing)) = self.layers.last_mut() {
+            **existing = ann;
+        } else {
+            self.layers.push(ModalLayer::Annotate(Box::new(ann)));
+        }
+    }
+
+    pub fn close_annotate(&mut self) {
+        if let Some(pos) = self
+            .layers
+            .iter()
+            .rposition(|l| matches!(l, ModalLayer::Annotate(_)))
         {
             self.layers.remove(pos);
         }

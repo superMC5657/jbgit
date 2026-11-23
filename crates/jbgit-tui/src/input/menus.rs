@@ -490,6 +490,21 @@ pub(crate) fn preselect_actions_for_menu_target(
             }
             out
         }
+        HitTarget::AnnotateLine { line_idx } => {
+            let preserve_visual = state
+                .modal_stack
+                .annotate()
+                .and_then(|ann| ann.selected_visual_bounds())
+                .is_some_and(|(lo, hi)| (lo..=hi).contains(line_idx));
+            if preserve_visual {
+                Vec::new()
+            } else {
+                vec![Action::AnnotateSelectLine {
+                    line_idx: *line_idx,
+                    extend: false,
+                }]
+            }
+        }
         HitTarget::Pane(PaneId::LogChangesTree) => vec![Action::FocusPane(PaneId::LogChangesTree)],
         HitTarget::BranchTreeNode { row: idx, .. } => {
             if state.log.branches.selected != *idx {
@@ -597,6 +612,9 @@ pub(crate) fn build_menu_items_for_target(
         HitTarget::LogChangeRow { .. } | HitTarget::Pane(PaneId::LogChangesTree) => {
             menus::log_change_menu_items(state)
         }
+        HitTarget::AnnotateLine { .. }
+        | HitTarget::AnnotateArea
+        | HitTarget::AnnotateDiffArea => menus::annotate_menu_items(state),
         HitTarget::BranchTreeNode { row: idx, .. } => {
             let idx = *idx;
             let node = state

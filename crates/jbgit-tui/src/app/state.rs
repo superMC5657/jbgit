@@ -3,8 +3,8 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use jbgit_core::{
-    CommitSummary, FileDiff, FileDiffKey, PaneId, RepoSnapshot, RequestSlot, RequestSlotId,
-    RequestSlotTable, SplitAxis, SplitterId, WorkspaceTab,
+    BlameBundle, BlameKey, CommitSummary, FileDiff, FileDiffKey, Oid, PaneId, RepoSnapshot,
+    RequestSlot, RequestSlotId, RequestSlotTable, SplitAxis, SplitterId, WorkspaceTab,
 };
 use jbgit_engine::StageDiffKey;
 use ratatui::layout::Rect;
@@ -13,7 +13,7 @@ use rustc_hash::FxHashMap;
 use crate::console_workbench::ConsoleWorkbench;
 use crate::diff_session::DiffCacheStore;
 use crate::hit_test::{HitTarget, HitTestRegistry};
-use crate::log_view::{FILE_HISTORY_G_WINDOW, FileHistoryState, LogWorkbench};
+use crate::log_view::{AnnotateState, FILE_HISTORY_G_WINDOW, FileHistoryState, LogWorkbench};
 use crate::stage_view::CommitWorkbench;
 use crate::stash_view::StashWorkbench;
 use crate::theme::{BranchColorManager, GlyphMode, ThemePalette};
@@ -55,6 +55,8 @@ pub struct AppState {
     pub(crate) request_slots: RequestSlotTable,
     pub(crate) file_syntax: RequestSlot<FileDiffKey>,
     pub(crate) stage_syntax: RequestSlot<StageDiffKey>,
+    pub(crate) blame_syntax: RequestSlot<BlameKey>,
+    pub(crate) range_syntax: RequestSlot<(Oid, String, (u32, u32))>,
     pub(crate) next_cli_id: u64,
     pub(crate) loading_snapshot: bool,
     pub(crate) async_graph_enabled: bool,
@@ -154,6 +156,8 @@ impl AppState {
             request_slots: RequestSlotTable::new(),
             file_syntax: RequestSlot::new(),
             stage_syntax: RequestSlot::new(),
+            blame_syntax: RequestSlot::new(),
+            range_syntax: RequestSlot::new(),
             console: ConsoleWorkbench::new(),
             next_cli_id: 1,
             loading_snapshot: false,
@@ -264,6 +268,21 @@ impl AppState {
                     fh.diff.scroll.scroll_by(delta, fallback);
                 }
             }
+            ScrollPane::Annotate => {
+                if let Some(ann) = self.modal_stack.annotate_mut() {
+                    let fallback = ann.line_count().saturating_sub(1);
+                    ann.scroll.scroll_by(delta, fallback);
+                }
+            }
+            ScrollPane::AnnotateDiff => {
+                let head_oid = self.repo_snapshot.as_ref().and_then(|s| s.head_oid);
+                let fallback = self.modal_stack.annotate().map_or(usize::MAX, |ann| {
+                    ann.fallback_diff_max_scroll(head_oid, &self.diff_caches)
+                });
+                if let Some(ann) = self.modal_stack.annotate_mut() {
+                    ann.diff.scroll.scroll_by(delta, fallback);
+                }
+            }
             ScrollPane::ConflictMerge => {
                 if let Some(cm) = self.modal_stack.conflict_merge_mut() {
                     let fallback = cm
@@ -305,6 +324,16 @@ impl AppState {
                         fh.diff.scroll.bind_bound(viewport_h, max_scroll);
                     }
                 }
+                ScrollPane::Annotate => {
+                    if let Some(ann) = self.modal_stack.annotate_mut() {
+                        ann.scroll.bind_bound(viewport_h, max_scroll);
+                    }
+                }
+                ScrollPane::AnnotateDiff => {
+                    if let Some(ann) = self.modal_stack.annotate_mut() {
+                        ann.diff.scroll.bind_bound(viewport_h, max_scroll);
+                    }
+                }
                 ScrollPane::ConflictMerge => {
                     if let Some(cm) = self.modal_stack.conflict_merge_mut() {
                         cm.scroll.bind_bound(viewport_h, max_scroll);
@@ -323,6 +352,7 @@ impl AppState {
             || self.stage_workbench.commit_in_progress()
             || self.git_ops_running > 0
             || self.modal_stack.file_history().is_some_and(|fh| fh.loading)
+            || self.modal_stack.annotate().is_some_and(|ann| ann.loading)
             || self.console.has_running()
     }
 
@@ -337,6 +367,9 @@ impl AppState {
             self.modal_stack
                 .file_history()
                 .and_then(FileHistoryState::next_deadline),
+            self.modal_stack
+                .annotate()
+                .and_then(AnnotateState::next_deadline),
             self.menu_hover.map(|h| h.due),
             chord,
         ]
@@ -430,6 +463,30 @@ impl AppState {
                 fh.diff.pending = Some((key, at));
             }
         }
+        if let Some(ann) = self.modal_stack.annotate_mut()
+            && ann
+                .pending_g
+                .is_some_and(|t| now.saturating_duration_since(t) >= FILE_HISTORY_G_WINDOW)
+        {
+            ann.pending_g = None;
+        }
+        if let Some(ann) = self.modal_stack.annotate_mut()
+            && let Some((key, at)) = ann.diff.pending.take()
+        {
+            if at <= now {
+                if !self.diff_caches.diffs.contains(&key)
+                    && ann.diff.requested.as_ref() != Some(&key)
+                {
+                    ann.diff.requested = Some(key.clone());
+                    effects.push(Effect::RequestFileDiff {
+                        slot: RequestSlotId::AnnotateDiff,
+                        key,
+                    });
+                }
+            } else {
+                ann.diff.pending = Some((key, at));
+            }
+        }
     }
 
     pub(crate) fn schedule_file_syntax(
@@ -447,6 +504,56 @@ impl AppState {
         if let Some((epoch, cancel)) = self.file_syntax.begin_cancelable(diff.key.clone()) {
             effects.push(Effect::RequestSyntaxHighlight(SyntaxJob {
                 key: SyntaxJobKey::File(diff.key.clone()),
+                epoch,
+                target: SyntaxTarget::File(diff),
+                cancel,
+            }));
+        }
+    }
+
+    pub(crate) fn schedule_blame_syntax(
+        &mut self,
+        bundle: Arc<BlameBundle>,
+        effects: &mut Vec<Effect>,
+    ) {
+        if !self.config.jbgit.diff.syntax_highlight
+            || bundle.lines.is_empty()
+            || bundle.content.len() > jbgit_core::MAX_DIFF_FILE_BYTES
+        {
+            return;
+        }
+        if let Some((epoch, cancel)) = self.blame_syntax.begin_cancelable(bundle.key.clone()) {
+            effects.push(Effect::RequestSyntaxHighlight(SyntaxJob {
+                key: SyntaxJobKey::Blame(bundle.key.clone()),
+                epoch,
+                target: SyntaxTarget::Blame(bundle),
+                cancel,
+            }));
+        }
+    }
+
+    pub(crate) fn schedule_range_syntax(
+        &mut self,
+        oid: Oid,
+        range: (u32, u32),
+        diff: Arc<FileDiff>,
+        effects: &mut Vec<Effect>,
+    ) {
+        if !self.config.jbgit.diff.syntax_highlight
+            || diff.is_binary
+            || diff.is_too_large
+            || diff.hunks.is_empty()
+        {
+            return;
+        }
+        let slot_key = (oid, diff.key.path.clone(), range);
+        if let Some((epoch, cancel)) = self.range_syntax.begin_cancelable(slot_key) {
+            effects.push(Effect::RequestSyntaxHighlight(SyntaxJob {
+                key: SyntaxJobKey::RangePatch {
+                    oid,
+                    path: diff.key.path.clone(),
+                    range,
+                },
                 epoch,
                 target: SyntaxTarget::File(diff),
                 cancel,

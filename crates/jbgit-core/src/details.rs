@@ -2,7 +2,8 @@
 //! right-hand Log panes (`CommitDetailsPanel`, `VcsLogChangesBrowser`,
 //! `FrameDiffPreview`).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
+use std::sync::Arc;
 
 use rustc_hash::FxHashSet;
 
@@ -100,6 +101,67 @@ impl CommitDetails {
     }
 }
 
+/// Maximum single-selection line span before prompting for confirmation.
+pub const MAX_SELECTION_HISTORY_LINES: u32 = 2_000;
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct BlameOptions {
+    pub ignore_whitespace: bool,
+    pub detect_moves: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct BlameKey {
+    /// Repository-relative path (POSIX `/` separated).
+    pub path: String,
+    /// Target commit (`None` annotates the working tree file).
+    pub rev: Option<Oid>,
+    pub options: BlameOptions,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BlameLine {
+    pub final_line: u32,
+    pub orig_line: u32,
+    pub oid: Oid,
+    pub orig_path: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BlameCommit {
+    pub oid: Oid,
+    pub author: PersonStamp,
+    pub summary: String,
+    pub previous: Option<(Oid, String)>,
+    pub is_boundary: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BlameBundle {
+    pub key: BlameKey,
+    pub lines: Vec<BlameLine>,
+    pub commits: HashMap<Oid, BlameCommit>,
+    pub content: Arc<str>,
+    pub uncommitted_oid_present: bool,
+}
+
+impl BlameBundle {
+    /// Returns file lines aligned 1-to-1 with [`Self::lines`] (preserving any
+    /// trailing empty line that `str::lines()` would strip).
+    pub fn content_lines(&self) -> Vec<&str> {
+        if self.lines.is_empty() {
+            Vec::new()
+        } else {
+            self.content.split('\n').collect()
+        }
+    }
+
+    pub fn commit_for(&self, line_idx: usize) -> Option<&BlameCommit> {
+        let line = self.lines.get(line_idx)?;
+        self.commits.get(&line.oid)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct FileHistoryKey {
     /// Query relative path from repository root (POSIX `/` separated).
@@ -108,6 +170,8 @@ pub struct FileHistoryKey {
     pub start_oid: Option<Oid>,
     /// Whether to track renames with `git log --follow`.
     pub follow_renames: bool,
+    /// Optional 1-based inclusive line range (`git log -L <start>,<end>:<path>`).
+    pub line_range: Option<(u32, u32)>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -124,6 +188,8 @@ pub struct FileHistoryEntry {
     pub author_name: String,
     pub author_time: i64,
     pub summary: String,
+    /// Cached range patch produced by `git log -L` for selection history.
+    pub range_patch: Option<Arc<str>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -622,6 +688,173 @@ pub fn issue_ref_ranges(line: &str) -> Vec<(usize, usize)> {
     out
 }
 
+struct ParsedHunkHeader {
+    prefix_width: usize,
+    is_combined: bool,
+    old_start: u32,
+    old_count: u32,
+    new_start: u32,
+    new_count: u32,
+}
+
+fn parse_range_spec(spec: &str) -> Option<(u32, u32)> {
+    let mut parts = spec.split(',');
+    let start = parts.next()?.parse::<u32>().ok()?;
+    let count = match parts.next() {
+        Some(c) => c.parse::<u32>().ok()?,
+        None => 1,
+    };
+    Some((start, count))
+}
+
+fn parse_patch_hunk_header(line: &str) -> Option<ParsedHunkHeader> {
+    let at_count = line.bytes().take_while(|&b| b == b'@').count();
+    if at_count < 2 {
+        return None;
+    }
+    let after_open = &line[at_count..];
+    if !after_open.starts_with(' ') {
+        return None;
+    }
+    let closing = "@".repeat(at_count);
+    let end_rel = after_open.find(&closing)?;
+    let inside = after_open[..end_rel].trim();
+    let mut tokens = inside.split_ascii_whitespace();
+    let first = tokens.next()?;
+    let (old_start, old_count) = first
+        .strip_prefix('-')
+        .and_then(parse_range_spec)
+        .unwrap_or((1, 0));
+
+    let mut new_spec: Option<(u32, u32)> = None;
+    for tok in std::iter::once(first).chain(tokens) {
+        if let Some(rest) = tok.strip_prefix('+') {
+            new_spec = parse_range_spec(rest);
+        }
+    }
+    let (new_start, new_count) = new_spec?;
+
+    Some(ParsedHunkHeader {
+        prefix_width: at_count - 1,
+        is_combined: at_count > 2,
+        old_start,
+        old_count,
+        new_start,
+        new_count,
+    })
+}
+
+/// Parses unified (`@@ ... @@`) and combined merge (`@@@ ... @@@`) diff text
+/// (such as `git log -L` range patches) into [`DiffHunk`]s with eager word diffs.
+pub fn parse_unified_patch_hunks(patch: &str) -> Vec<DiffHunk> {
+    let mut hunks = Vec::new();
+    let mut current: Option<DiffHunk> = None;
+    let mut prefix_width = 1usize;
+    let mut is_combined = false;
+    let mut old_no = 1u32;
+    let mut new_no = 1u32;
+    let mut old_rem = 0u32;
+    let mut new_rem = 0u32;
+    let mut word_budget = EAGER_WORD_DIFF_PAIR_BUDGET;
+
+    let finish_hunk = |cur: &mut Option<DiffHunk>, out: &mut Vec<DiffHunk>, budget: &mut usize| {
+        if let Some(mut h) = cur.take() {
+            apply_word_diff_with_budget(&mut h, budget);
+            out.push(h);
+        }
+    };
+
+    for raw_line in patch.split('\n') {
+        let line = raw_line.strip_suffix('\r').unwrap_or(raw_line);
+        if let Some(hdr) = parse_patch_hunk_header(line) {
+            finish_hunk(&mut current, &mut hunks, &mut word_budget);
+            prefix_width = hdr.prefix_width;
+            is_combined = hdr.is_combined;
+            old_no = hdr.old_start;
+            new_no = hdr.new_start;
+            old_rem = hdr.old_count;
+            new_rem = hdr.new_count;
+            current = Some(DiffHunk {
+                header: line.to_string(),
+                lines: Vec::new(),
+            });
+            continue;
+        }
+
+        if current.is_none() {
+            continue;
+        }
+        if line == "\\ No newline at end of file" {
+            continue;
+        }
+        if line.starts_with("diff --git ")
+            || line.starts_with("diff --cc ")
+            || line.starts_with("diff --combined ")
+        {
+            finish_hunk(&mut current, &mut hunks, &mut word_budget);
+            continue;
+        }
+        if !is_combined && old_rem == 0 && new_rem == 0 {
+            finish_hunk(&mut current, &mut hunks, &mut word_budget);
+            continue;
+        }
+        if line.len() < prefix_width || !line.is_char_boundary(prefix_width) {
+            finish_hunk(&mut current, &mut hunks, &mut word_budget);
+            continue;
+        }
+        let (prefix, text) = line.split_at(prefix_width);
+        if !prefix.bytes().all(|b| matches!(b, b' ' | b'+' | b'-')) {
+            finish_hunk(&mut current, &mut hunks, &mut word_budget);
+            continue;
+        }
+
+        let kind = if prefix.contains('+') {
+            DiffLineKind::Added
+        } else if prefix.contains('-') {
+            DiffLineKind::Deleted
+        } else {
+            DiffLineKind::Context
+        };
+
+        let (line_old, line_new) = match kind {
+            DiffLineKind::Context => {
+                let o = (!is_combined).then_some(old_no);
+                let n = new_no;
+                old_no = old_no.saturating_add(1);
+                new_no = new_no.saturating_add(1);
+                old_rem = old_rem.saturating_sub(1);
+                new_rem = new_rem.saturating_sub(1);
+                (o, Some(n))
+            }
+            DiffLineKind::Added => {
+                let n = new_no;
+                new_no = new_no.saturating_add(1);
+                new_rem = new_rem.saturating_sub(1);
+                (None, Some(n))
+            }
+            DiffLineKind::Deleted => {
+                let o = (!is_combined).then_some(old_no);
+                old_no = old_no.saturating_add(1);
+                old_rem = old_rem.saturating_sub(1);
+                (o, None)
+            }
+        };
+
+        if let Some(h) = current.as_mut() {
+            h.lines.push(DiffLine {
+                kind,
+                old_lineno: line_old,
+                new_lineno: line_new,
+                text: text.to_string(),
+                word_ranges: Vec::new(),
+            });
+        }
+    }
+
+    finish_hunk(&mut current, &mut hunks, &mut word_budget);
+    hunks
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -754,5 +987,61 @@ mod tests {
             issue_ref_ranges("fixes #123 and a#4, #5"),
             vec![(6, 10), (20, 22)]
         );
+    }
+
+    #[test]
+    fn parse_unified_patch_hunks_handles_unified_combined_and_empty() {
+        assert!(parse_unified_patch_hunks("").is_empty());
+
+        let patch = "\
+diff --git a/src/lib.rs b/src/lib.rs
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -5 +5 @@ fn single() {
+-    old_val(1);
++    new_val(1);
+@@ -10,3 +10,4 @@ fn multi() {
+ let a = 1;
+-let b = 2;
++let b = 3;
++let c = 4;
+\\ No newline at end of file
+";
+        let hunks = parse_unified_patch_hunks(patch);
+        assert_eq!(hunks.len(), 2);
+        assert_eq!(hunks[0].lines.len(), 2);
+        assert_eq!(hunks[0].lines[0].kind, DiffLineKind::Deleted);
+        assert_eq!(hunks[0].lines[0].old_lineno, Some(5));
+        assert_eq!(hunks[0].lines[0].new_lineno, None);
+        assert!(!hunks[0].lines[0].word_ranges.is_empty());
+        assert_eq!(hunks[0].lines[1].kind, DiffLineKind::Added);
+        assert_eq!(hunks[0].lines[1].new_lineno, Some(5));
+
+        assert_eq!(hunks[1].lines.len(), 4);
+        assert_eq!(hunks[1].lines[0].old_lineno, Some(10));
+        assert_eq!(hunks[1].lines[0].new_lineno, Some(10));
+        assert_eq!(hunks[1].lines[1].old_lineno, Some(11));
+        assert_eq!(hunks[1].lines[2].new_lineno, Some(11));
+        assert_eq!(hunks[1].lines[3].new_lineno, Some(12));
+
+        let combined = "\
+diff --cc src/lib.rs
+@@@ -1,3 -1,3 +1,4 @@@
+  fn keep() {
+ +    added_branch();
+ -    dropped_branch();
+  }
+";
+        let ch = parse_unified_patch_hunks(combined);
+        assert_eq!(ch.len(), 1);
+        assert_eq!(ch[0].lines.len(), 4);
+        assert_eq!(ch[0].lines[0].kind, DiffLineKind::Context);
+        assert_eq!(ch[0].lines[0].new_lineno, Some(1));
+        assert_eq!(ch[0].lines[1].kind, DiffLineKind::Added);
+        assert_eq!(ch[0].lines[1].new_lineno, Some(2));
+        assert_eq!(ch[0].lines[2].kind, DiffLineKind::Deleted);
+        assert_eq!(ch[0].lines[2].new_lineno, None);
+        assert_eq!(ch[0].lines[3].kind, DiffLineKind::Context);
+        assert_eq!(ch[0].lines[3].new_lineno, Some(3));
     }
 }

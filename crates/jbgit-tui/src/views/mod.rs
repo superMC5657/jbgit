@@ -1,3 +1,4 @@
+pub mod annotate;
 pub mod banner;
 pub mod commit;
 pub mod commit_diff;

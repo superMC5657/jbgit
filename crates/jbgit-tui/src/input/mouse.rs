@@ -4,6 +4,7 @@ use jbgit_core::{ChangeRowKind, PaneId, WorkspaceTab};
 use crate::app::{Action, AppState, ChangesHost, DiffScope, DragState, PopupKind};
 use crate::hit_test::{
     BranchesToolbarButton, ChangesToolbarButton, DiffToolbarButton, FileHistoryToolbarButton,
+    AnnotateToolbarButton,
     GraphHitKind, HitTarget,
 };
 use crate::input_stage::route_stage_left_click;
@@ -126,6 +127,12 @@ fn route_mouse_scroll(col: u16, row: u16, delta: isize, state: &AppState) -> Vec
             }
             HitTarget::FileHistoryDiffArea => {
                 return vec![Action::DiffScroll(DiffScope::FileHistory, delta)];
+            }
+            HitTarget::AnnotateLine { .. } | HitTarget::AnnotateArea => {
+                return vec![Action::AnnotateScroll(delta)];
+            }
+            HitTarget::AnnotateDiffArea => {
+                return vec![Action::DiffScroll(DiffScope::Annotate, delta)];
             }
             _ => {}
         }
@@ -395,6 +402,39 @@ fn route_mouse_left_down(
             }
             FileHistoryToolbarButton::Zoom => vec![Action::FileHistoryToggleZoom],
             FileHistoryToolbarButton::LocateInLog => vec![Action::FileHistoryJumpToLog],
+            FileHistoryToolbarButton::Annotate => vec![Action::FileHistoryAnnotate],
+        },
+        HitTarget::AnnotateLine { line_idx } => {
+            let mut actions = vec![
+                Action::AnnotateSetFocus(crate::log_view::AnnotateFocus::Code),
+                Action::AnnotateSelectLine {
+                    line_idx,
+                    extend: shift,
+                },
+            ];
+            if is_double && !shift {
+                actions.push(Action::AnnotateJumpToLog);
+            }
+            actions
+        }
+        HitTarget::AnnotateArea => {
+            vec![Action::AnnotateSetFocus(
+                crate::log_view::AnnotateFocus::Code,
+            )]
+        }
+        HitTarget::AnnotateDiffArea => {
+            vec![Action::AnnotateSetFocus(
+                crate::log_view::AnnotateFocus::Diff,
+            )]
+        }
+        HitTarget::AnnotateToolbar(btn) => match btn {
+            AnnotateToolbarButton::IgnoreWhitespace => vec![Action::AnnotateToggleWhitespace],
+            AnnotateToolbarButton::DetectMoves => vec![Action::AnnotateToggleMoves],
+            AnnotateToolbarButton::PreviousRev => vec![Action::AnnotatePreviousRev],
+            AnnotateToolbarButton::NavBack => vec![Action::AnnotateNavBack],
+            AnnotateToolbarButton::ShowDiff => vec![Action::AnnotateToggleDiff],
+            AnnotateToolbarButton::SelectionHistory => vec![Action::AnnotateShowSelectionHistory],
+            AnnotateToolbarButton::LocateInLog => vec![Action::AnnotateJumpToLog],
         },
         HitTarget::Pane(pane) => vec![Action::FocusPane(pane)],
         other => {
@@ -434,6 +474,7 @@ fn route_mouse_right_down(col: u16, row: u16, state: &AppState) -> Vec<Action> {
             | HitTarget::FileHistoryToolbar(_)
             | HitTarget::FileHistoryListArea
             | HitTarget::FileHistoryDiffArea
+            | HitTarget::AnnotateToolbar(_)
     ) {
         return Vec::new();
     }

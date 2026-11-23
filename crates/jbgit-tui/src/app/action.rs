@@ -8,7 +8,7 @@ use jbgit_engine::CommitRequest;
 
 use crate::dialogs::Dialog;
 use crate::hit_test::{DiffHunkActionKind, HitTarget};
-use crate::log_view::{FileHistoryFocus, FilterField, PresentationToggle};
+use crate::log_view::{AnnotateFocus, FileHistoryFocus, FilterField, PresentationToggle};
 
 use super::{ContextMenuItem, DragState, EditorMoveKind, MenuParent, PopupKind};
 
@@ -25,6 +25,7 @@ pub enum DiffScope {
     Log,
     Stash,
     FileHistory,
+    Annotate,
     Stage,
 }
 
@@ -319,6 +320,13 @@ pub enum Action {
         path: String,
         start_oid: Option<Oid>,
         follow_renames: bool,
+        line_range: Option<(u32, u32)>,
+    },
+    OpenSelectionHistory {
+        path: String,
+        start_oid: Option<Oid>,
+        start_line: u32,
+        end_line: u32,
     },
     FileHistoryMove {
         delta: isize,
@@ -334,5 +342,37 @@ pub enum Action {
     FileHistorySetFocus(FileHistoryFocus),
     FileHistoryToggleFocus,
     FileHistoryJumpToLog,
+    FileHistoryAnnotate,
     FileHistoryEscape,
+
+    // ── Annotate / Blame modal ──
+    OpenAnnotate {
+        path: String,
+        rev: Option<Oid>,
+    },
+    AnnotateMove(isize),
+    AnnotateMoveExtend(isize),
+    AnnotateSelectLine {
+        line_idx: usize,
+        extend: bool,
+    },
+    AnnotateScroll(isize),
+    AnnotateToggleVisual,
+    AnnotateToggleWhitespace,
+    AnnotateToggleMoves,
+    AnnotateToggleDiff,
+    AnnotateToggleFocus,
+    AnnotateSetFocus(AnnotateFocus),
+    AnnotatePreviousRev,
+    AnnotateNavBack,
+    AnnotateJumpToLog,
+    AnnotateShowSelectionHistory,
+    AnnotateCopyHash,
+    AnnotateGotoLineStart,
+    AnnotateGotoLineChar(char),
+    AnnotateGotoLineBackspace,
+    AnnotateGotoLineConfirm,
+    AnnotateGotoLineCancel,
+    AnnotateSetPendingG(Option<Instant>),
+    AnnotateEscape,
 }

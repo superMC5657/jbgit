@@ -2,6 +2,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use jbgit_core::{ChangeRowKind, PaneId, WorkspaceTab};
 
 use crate::app::{Action, AppState, ChangesHost, DiffScope, ModalLayer, PopupKind};
+use crate::hit_test::HitTarget;
 use crate::input_stage::{route_commit_changes_tree_key, route_commit_priority_key};
 use crate::log_view::{complete_last_token, filter_suggestions};
 
@@ -108,6 +109,7 @@ fn route_modal_key(key: KeyEvent, state: &AppState) -> Vec<Action> {
         ModalLayer::ContextMenu { .. } => route_context_menu_key(key, state),
         ModalLayer::Dialog(_) => vec![Action::DialogKey(key)],
         ModalLayer::FileHistory(_) => route_file_history_key(&key, state),
+        ModalLayer::Annotate(_) => route_annotate_key(&key, state),
         ModalLayer::ConflictResolver(_) => route_conflict_merge_key(&key, state),
         ModalLayer::ThreeWayInspector { .. } | ModalLayer::HookError { .. } => match key.code {
             KeyCode::Esc | KeyCode::Enter => vec![Action::PopModal],
@@ -550,6 +552,12 @@ fn route_file_history_key(key: &KeyEvent, state: &AppState) -> Vec<Action> {
     }
 
     if key.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) {
+        if key.modifiers.contains(KeyModifiers::ALT)
+            && matches!(key.code, KeyCode::Char('g' | 'G'))
+        {
+            prefix.push(Action::FileHistoryAnnotate);
+            return prefix;
+        }
         match key.code {
             KeyCode::Esc => prefix.push(Action::FileHistoryEscape),
             KeyCode::Tab | KeyCode::BackTab => prefix.push(Action::FileHistoryToggleFocus),
@@ -586,7 +594,8 @@ fn route_file_history_key(key: &KeyEvent, state: &AppState) -> Vec<Action> {
         KeyCode::Char('g') if !shift => {
             return vec![Action::FileHistorySetPendingG(Some(state.now()))];
         }
-        KeyCode::Char('f') => Some(Action::FileHistoryToggleFollow),
+        KeyCode::Char('f') if !fh.is_selection_history() => Some(Action::FileHistoryToggleFollow),
+        KeyCode::Char('b') => Some(Action::FileHistoryAnnotate),
         KeyCode::Char('l') => Some(Action::FileHistoryToggleCompareLocal),
         KeyCode::Char('S') => Some(Action::DiffToggleSideBySide(DiffScope::FileHistory)),
         KeyCode::Char('w') => Some(Action::DiffCycleContext(DiffScope::FileHistory)),
@@ -640,6 +649,175 @@ fn route_file_history_key(key: &KeyEvent, state: &AppState) -> Vec<Action> {
         KeyCode::End | KeyCode::Char('G') if !diff_zoomed => Some(Action::FileHistorySelect {
             idx: usize::MAX,
             extend: false,
+        }),
+        _ => None,
+    };
+    if let Some(a) = action {
+        prefix.push(a);
+    }
+    prefix
+}
+
+fn route_annotate_key(key: &KeyEvent, state: &AppState) -> Vec<Action> {
+    let Some(ann) = state.modal_stack.annotate() else {
+        return vec![Action::AnnotateEscape];
+    };
+    if ann.goto_line_input.is_some() {
+        return match key.code {
+            KeyCode::Esc => vec![Action::AnnotateGotoLineCancel],
+            KeyCode::Enter => vec![Action::AnnotateGotoLineConfirm],
+            KeyCode::Backspace => vec![Action::AnnotateGotoLineBackspace],
+            KeyCode::Char(c) if c.is_ascii_digit() => vec![Action::AnnotateGotoLineChar(c)],
+            _ => Vec::new(),
+        };
+    }
+
+    let had_pending_g = ann.pending_g.is_some();
+    let pending_g = ann
+        .pending_g
+        .is_some_and(|t| state.now().saturating_duration_since(t) <= crate::log_view::FILE_HISTORY_G_WINDOW);
+    let diff_focused = ann.focus == crate::log_view::AnnotateFocus::Diff && ann.show_diff;
+    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    let alt = key.modifiers.contains(KeyModifiers::ALT);
+    let shift = key.modifiers.contains(KeyModifiers::SHIFT);
+
+    let mut prefix = Vec::new();
+    if had_pending_g {
+        prefix.push(Action::AnnotateSetPendingG(None));
+    }
+
+    if ctrl || alt {
+        let a = match key.code {
+            KeyCode::Esc => Some(Action::AnnotateEscape),
+            KeyCode::Tab | KeyCode::BackTab => Some(Action::AnnotateToggleFocus),
+            KeyCode::Char('g') if ctrl => Some(Action::AnnotateGotoLineStart),
+            KeyCode::Char('d') if ctrl => Some(if diff_focused {
+                Action::DiffScroll(DiffScope::Annotate, 10)
+            } else {
+                Action::AnnotateMove(10)
+            }),
+            KeyCode::Char('u') if ctrl => Some(if diff_focused {
+                Action::DiffScroll(DiffScope::Annotate, -10)
+            } else {
+                Action::AnnotateMove(-10)
+            }),
+            _ => None,
+        };
+        if let Some(action) = a {
+            prefix.push(action);
+        }
+        return prefix;
+    }
+
+    if pending_g {
+        if key.code == KeyCode::Esc {
+            return prefix;
+        }
+        if key.code == KeyCode::Char('g') && !shift {
+            if diff_focused {
+                prefix.push(Action::DiffScroll(
+                    DiffScope::Annotate,
+                    crate::app::SCROLL_GOTO_TOP,
+                ));
+            } else {
+                prefix.push(Action::AnnotateSelectLine {
+                    line_idx: 0,
+                    extend: ann.visual_anchor.is_some(),
+                });
+            }
+            return prefix;
+        }
+    }
+
+    let action = match key.code {
+        KeyCode::Esc => Some(Action::AnnotateEscape),
+        KeyCode::Tab | KeyCode::BackTab => Some(Action::AnnotateToggleFocus),
+        KeyCode::Enter => Some(Action::AnnotateJumpToLog),
+        KeyCode::Char('g') if !shift => {
+            return vec![Action::AnnotateSetPendingG(Some(state.now()))];
+        }
+        KeyCode::Char(':') => Some(Action::AnnotateGotoLineStart),
+        KeyCode::Char('v' | 'V') => Some(Action::AnnotateToggleVisual),
+        KeyCode::Char('H') => Some(Action::AnnotateShowSelectionHistory),
+        KeyCode::Char('p') => Some(Action::AnnotatePreviousRev),
+        KeyCode::Char('P') | KeyCode::Backspace => Some(Action::AnnotateNavBack),
+        KeyCode::Char('w') => Some(Action::AnnotateToggleWhitespace),
+        KeyCode::Char('m') => Some(Action::AnnotateToggleMoves),
+        KeyCode::Char('d') => Some(Action::AnnotateToggleDiff),
+        KeyCode::Char('y') => Some(Action::AnnotateCopyHash),
+        KeyCode::Char('S') => Some(Action::DiffToggleSideBySide(DiffScope::Annotate)),
+        KeyCode::Char('c') => Some(Action::DiffCycleContext(DiffScope::Annotate)),
+        KeyCode::Char('[') => Some(Action::DiffJumpHunk(DiffScope::Annotate, -1)),
+        KeyCode::Char(']') => Some(Action::DiffJumpHunk(DiffScope::Annotate, 1)),
+        KeyCode::F(10) if shift => {
+            let line_idx = ann.cursor;
+            let anchor = state
+                .hit_registry
+                .find(|t| matches!(t, HitTarget::AnnotateLine { line_idx: idx } if *idx == line_idx))
+                .map(|r| {
+                    let x = r.rect.x + (r.rect.width / 2).min(r.rect.width.saturating_sub(1));
+                    (x, r.rect.y)
+                })
+                .unwrap_or_else(|| {
+                    (
+                        state.terminal_area.x + state.terminal_area.width / 3,
+                        state.terminal_area.y + 5,
+                    )
+                });
+            Some(Action::OpenContextMenuForTarget {
+                target: HitTarget::AnnotateLine { line_idx },
+                anchor,
+            })
+        }
+        KeyCode::Char('.') | KeyCode::Menu => {
+            let line_idx = ann.cursor;
+            let anchor = state
+                .hit_registry
+                .find(|t| matches!(t, HitTarget::AnnotateLine { line_idx: idx } if *idx == line_idx))
+                .map(|r| {
+                    let x = r.rect.x + (r.rect.width / 2).min(r.rect.width.saturating_sub(1));
+                    (x, r.rect.y)
+                })
+                .unwrap_or_else(|| {
+                    (
+                        state.terminal_area.x + state.terminal_area.width / 3,
+                        state.terminal_area.y + 5,
+                    )
+                });
+            Some(Action::OpenContextMenuForTarget {
+                target: HitTarget::AnnotateLine { line_idx },
+                anchor,
+            })
+        }
+        KeyCode::Up if shift && !diff_focused => Some(Action::AnnotateMoveExtend(-1)),
+        KeyCode::Down if shift && !diff_focused => Some(Action::AnnotateMoveExtend(1)),
+        KeyCode::Down | KeyCode::Char('j') if diff_focused => {
+            Some(Action::DiffScroll(DiffScope::Annotate, 1))
+        }
+        KeyCode::Up | KeyCode::Char('k') if diff_focused => {
+            Some(Action::DiffScroll(DiffScope::Annotate, -1))
+        }
+        KeyCode::PageDown if diff_focused => Some(Action::DiffScroll(DiffScope::Annotate, 10)),
+        KeyCode::PageUp if diff_focused => Some(Action::DiffScroll(DiffScope::Annotate, -10)),
+        KeyCode::Home if diff_focused => Some(Action::DiffScroll(
+            DiffScope::Annotate,
+            crate::app::SCROLL_GOTO_TOP,
+        )),
+        KeyCode::End | KeyCode::Char('G') if diff_focused => Some(Action::DiffScroll(
+            DiffScope::Annotate,
+            crate::app::SCROLL_GOTO_BOTTOM,
+        )),
+        KeyCode::Down | KeyCode::Char('j') => Some(Action::AnnotateMove(1)),
+        KeyCode::Up | KeyCode::Char('k') => Some(Action::AnnotateMove(-1)),
+        KeyCode::PageDown => Some(Action::AnnotateMove(10)),
+        KeyCode::PageUp => Some(Action::AnnotateMove(-10)),
+        KeyCode::Home => Some(Action::AnnotateSelectLine {
+            line_idx: 0,
+            extend: shift || ann.visual_anchor.is_some(),
+        }),
+        KeyCode::End | KeyCode::Char('G') => Some(Action::AnnotateSelectLine {
+            line_idx: usize::MAX,
+            extend: ann.visual_anchor.is_some(),
         }),
         _ => None,
     };

@@ -5,7 +5,7 @@ use std::io::Cursor;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
 
-use jbgit_core::{DiffHunk, DiffLine, DiffLineKind, FileDiff};
+use jbgit_core::{DiffHunk, DiffLine, DiffLineKind, FileDiff, MAX_DIFF_FILE_BYTES};
 use jbgit_engine::ThreeDocStageDiff;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::Span;
@@ -79,6 +79,18 @@ pub fn warmup_syntax_assets() {
     let _ = assets();
 }
 
+fn find_syntax<'a>(assets: &'a SyntaxAssets, path: &str) -> &'a syntect::parsing::SyntaxReference {
+    let ext = path.rsplit('.').next().unwrap_or("");
+    assets
+        .ss
+        .find_syntax_by_extension(ext)
+        .or_else(|| {
+            let name = path.rsplit('/').next().unwrap_or(path);
+            assets.ss.find_syntax_by_name(name)
+        })
+        .unwrap_or_else(|| assets.ss.find_syntax_plain_text())
+}
+
 /// One highlighted token within a diff line: byte range + optional fg + font style.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SyntaxToken {
@@ -127,15 +139,7 @@ impl HighlightedDiff {
             return None;
         }
         let assets = assets();
-        let ext = path.rsplit('.').next().unwrap_or("");
-        let syntax = assets
-            .ss
-            .find_syntax_by_extension(ext)
-            .or_else(|| {
-                let name = path.rsplit('/').next().unwrap_or(path);
-                assets.ss.find_syntax_by_name(name)
-            })
-            .unwrap_or_else(|| assets.ss.find_syntax_plain_text());
+        let syntax = find_syntax(assets, path);
 
         let mut hunks = Vec::with_capacity(hunk_count);
         let mut line_buf = String::with_capacity(256);
@@ -212,6 +216,74 @@ impl HighlightedDiff {
             hunks.push(line_tokens);
         }
         Some(Self { hunks })
+    }
+}
+
+/// Pre-highlighted tokens for every line of an annotated source file.
+#[derive(Debug, Clone, Default)]
+pub struct HighlightedFile {
+    pub lines: Vec<Vec<SyntaxToken>>,
+}
+
+impl HighlightedFile {
+    pub fn build_cancellable(
+        path: &str,
+        content: &str,
+        line_count: usize,
+        cancel: &AtomicBool,
+    ) -> Option<Self> {
+        if cancel.load(Ordering::Relaxed) {
+            return None;
+        }
+        if line_count == 0 {
+            return Some(Self { lines: Vec::new() });
+        }
+        if content.len() > MAX_DIFF_FILE_BYTES {
+            return Some(Self {
+                lines: vec![Vec::new(); line_count],
+            });
+        }
+        let assets = assets();
+        let syntax = find_syntax(assets, path);
+        let mut hl = HighlightLines::new(syntax, &assets.theme);
+        let mut lines = Vec::with_capacity(line_count);
+        let mut line_buf = String::with_capacity(256);
+
+        for (idx, line) in content.split('\n').enumerate() {
+            if idx % CHECK_CANCEL_EVERY_LINES == 0 && cancel.load(Ordering::Relaxed) {
+                return None;
+            }
+            if line.len() > MAX_SYNTAX_LINE_BYTES {
+                lines.push(Vec::new());
+                continue;
+            }
+            line_buf.clear();
+            line_buf.push_str(line);
+            line_buf.push('\n');
+
+            let ranges = hl.highlight_line(&line_buf, &assets.ss).unwrap_or_default();
+            let max_len = line.len();
+            let mut pos = 0usize;
+            let mut toks = Vec::with_capacity(ranges.len());
+            for (style, text) in ranges {
+                let end = (pos + text.len()).min(max_len);
+                if end > pos {
+                    toks.push(SyntaxToken {
+                        start: pos,
+                        end,
+                        fg: (style.foreground.r, style.foreground.g, style.foreground.b),
+                        bold: style.font_style.contains(FontStyle::BOLD),
+                        italic: style.font_style.contains(FontStyle::ITALIC),
+                    });
+                }
+                pos = end;
+                if pos >= max_len {
+                    break;
+                }
+            }
+            lines.push(toks);
+        }
+        Some(Self { lines })
     }
 }
 
@@ -795,5 +867,28 @@ mod tests {
         let diff2 = Arc::new((*diff1).clone());
         let _ = cache.unified_ranges(&diff2, 0, 3, &diff2.hunks[0].lines);
         assert_eq!(cache.cached_entry_count(), 2);
+    }
+
+    #[test]
+    fn highlighted_file_highlights_rust_skips_long_lines_and_cancels() {
+        let long = "let a = 1;".repeat(400); // > 2048 bytes
+        let content = format!("fn demo() {{\n{long}\n    let x = 42;\n");
+        let hl = HighlightedFile::build_cancellable(
+            "src/demo.rs",
+            &content,
+            4,
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+        assert_eq!(hl.lines.len(), 4);
+        assert_eq!(hl.lines[0][0].fg, (0xCF, 0x8E, 0x6D)); // `fn`
+        assert!(hl.lines[1].is_empty(), "long line must skip syntect");
+        assert!(!hl.lines[2].is_empty(), "normal line after long line highlights");
+        assert!(hl.lines[3].is_empty(), "trailing empty line preserved");
+
+        let cancelled = AtomicBool::new(true);
+        assert!(
+            HighlightedFile::build_cancellable("src/demo.rs", &content, 4, &cancelled).is_none()
+        );
     }
 }

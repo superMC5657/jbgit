@@ -195,6 +195,7 @@ pub fn stage_tree_menu_items(state: &AppState, idx: usize) -> Vec<ContextMenuIte
         .enabled_if(file_path.is_some(), i18n.t("menu.stage.select_file")),
     );
     let history_sc = catalog::shortcut_for_action(state, &[KeymapScope::Commit], &KeyAction::FileHistory);
+    let ann_sc = catalog::shortcut_for_action(state, &[KeymapScope::Commit], &KeyAction::Annotate);
     let history_action = file_path
         .as_ref()
         .map(|p| {
@@ -202,6 +203,16 @@ pub fn stage_tree_menu_items(state: &AppState, idx: usize) -> Vec<ContextMenuIte
                 path: p.clone(),
                 start_oid: None,
                 follow_renames: true,
+                line_range: None,
+            }]
+        })
+        .unwrap_or_default();
+    let ann_action = file_path
+        .as_ref()
+        .map(|p| {
+            vec![Action::OpenAnnotate {
+                path: p.clone(),
+                rev: None,
             }]
         })
         .unwrap_or_default();
@@ -211,6 +222,16 @@ pub fn stage_tree_menu_items(state: &AppState, idx: usize) -> Vec<ContextMenuIte
             Some('h'),
             history_sc.as_deref(),
             history_action,
+        )
+        .enabled_if(file_path.is_some(), i18n.t("menu.stage.select_file"))
+        .enabled_if(!untracked && !ignored, i18n.t("menu.stage.only_tracked_history")),
+    );
+    items.push(
+        run(
+            i18n.t("menu.stage.annotate"),
+            Some('b'),
+            ann_sc.as_deref(),
+            ann_action,
         )
         .enabled_if(file_path.is_some(), i18n.t("menu.stage.select_file"))
         .enabled_if(!untracked && !ignored, i18n.t("menu.stage.only_tracked_history")),
@@ -289,9 +310,26 @@ fn stage_diff_common_items(
     let sbs_sc = catalog::shortcut_for_action(state, &[KeymapScope::Diff], &KeyAction::ToggleSideBySide);
     let three_sc = catalog::shortcut_for_action(state, &[KeymapScope::Diff], &KeyAction::ThreeWayInspector);
     let edit_sc = catalog::shortcut_for_action(state, &[KeymapScope::Commit], &KeyAction::EditFile);
+    let ann_sc = catalog::shortcut_for_action(state, &[KeymapScope::Commit], &KeyAction::Annotate);
     let staged = side == Some(StageDiffSide::Staged);
     let paths: Vec<String> = path.iter().cloned().collect();
+    let ann_actions = path
+        .as_ref()
+        .map(|p| {
+            vec![Action::OpenAnnotate {
+                path: p.clone(),
+                rev: None,
+            }]
+        })
+        .unwrap_or_default();
     vec![
+        run(
+            i18n.t("menu.stage.annotate"),
+            Some('b'),
+            ann_sc.as_deref(),
+            ann_actions,
+        )
+        .enabled_if(path.is_some(), i18n.t("menu.stage.no_file_selected")),
         run(
             i18n.t("menu.stage.copy_patch"),
             Some('c'),
@@ -340,6 +378,16 @@ pub fn stage_diff_menu_items(state: &AppState) -> Vec<ContextMenuItem> {
     let (side, path) = diff_side_and_path(state);
     let editable = matches!(side, Some(StageDiffSide::Staged | StageDiffSide::Unstaged));
     let staged = side == Some(StageDiffSide::Staged);
+    let sel_range = state.stage_workbench.selected_line_range();
+    let sel_history_actions = match (&path, sel_range) {
+        (Some(p), Some((start_line, end_line))) => vec![Action::OpenSelectionHistory {
+            path: p.clone(),
+            start_oid: None,
+            start_line,
+            end_line,
+        }],
+        _ => Vec::new(),
+    };
     let mut items = vec![
         run(
             i18n.t("menu.stage.stage_selection"),
@@ -376,6 +424,16 @@ pub fn stage_diff_menu_items(state: &AppState) -> Vec<ContextMenuItem> {
             vec![Action::StageDiffRollbackSelection],
         )
         .enabled_if(editable && !staged, i18n.t("menu.stage.only_unstaged_rollback")),
+        run(
+            i18n.t("menu.stage.selection_history"),
+            Some('h'),
+            None,
+            sel_history_actions,
+        )
+        .enabled_if(
+            path.is_some() && sel_range.is_some(),
+            i18n.t("menu.stage.no_selection_range"),
+        ),
         ContextMenuItem::separator(),
     ];
     items.extend(stage_diff_common_items(state, side, path));

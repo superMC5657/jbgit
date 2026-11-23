@@ -468,11 +468,10 @@ pub fn log_diff_menu_items(state: &AppState) -> Vec<ContextMenuItem> {
     let sbs_sc = catalog::shortcut_for_action(state, &[KeymapScope::Diff], &KeyAction::ToggleSideBySide);
     let ctx_sc = catalog::shortcut_for_action(state, &[KeymapScope::Diff], &KeyAction::CycleDiffContext);
     let zoom_sc = catalog::shortcut_for_action(state, &[KeymapScope::Diff], &KeyAction::ZoomDiff);
-    let change = state
-        .log
-        .details
-        .selected_change(&state.diff_caches)
-        .map(|c| c.path.clone());
+    let ann_sc = catalog::shortcut_for_action(state, &[KeymapScope::Log], &KeyAction::Annotate);
+    let selected_change = state.log.details.selected_change(&state.diff_caches);
+    let change = selected_change.map(|c| c.path.clone());
+    let is_deleted = selected_change.is_some_and(|c| c.kind == FileStatusKind::Deleted);
     let oids = state
         .log
         .details
@@ -481,6 +480,10 @@ pub fn log_diff_menu_items(state: &AppState) -> Vec<ContextMenuItem> {
         .as_ref()
         .map(|k| k.oids.clone())
         .unwrap_or_default();
+    let single_oid = match oids.as_slice() {
+        [one] => Some(*one),
+        _ => None,
+    };
     let patch_source = match (oids.as_slice(), &change) {
         ([one], Some(p)) => Some(PatchSource::CommitFile {
             oid: *one,
@@ -488,7 +491,23 @@ pub fn log_diff_menu_items(state: &AppState) -> Vec<ContextMenuItem> {
         }),
         _ => None,
     };
+    let ann_actions = match (single_oid, &change) {
+        (Some(oid), Some(p)) if !is_deleted => vec![Action::OpenAnnotate {
+            path: p.clone(),
+            rev: Some(oid),
+        }],
+        _ => Vec::new(),
+    };
     vec![
+        run(
+            i18n.t("menu.log_change.annotate"),
+            Some('a'),
+            ann_sc.as_deref(),
+            ann_actions,
+        )
+        .enabled_if(change.is_some(), i18n.t("menu.log_change.need_file"))
+        .enabled_if(single_oid.is_some(), i18n.t("menu.log_change.need_single_commit"))
+        .enabled_if(!is_deleted, i18n.t("menu.log_change.cannot_annotate_deleted")),
         run(
             i18n.t("menu.log.toggle_side_by_side"),
             Some('s'),
@@ -563,6 +582,7 @@ pub fn log_change_menu_items(state: &AppState) -> Vec<ContextMenuItem> {
         &KeyAction::ZoomDiff,
     );
     let hist_sc = catalog::shortcut_for_action(state, &[KeymapScope::Log], &KeyAction::FileHistory);
+    let ann_sc = catalog::shortcut_for_action(state, &[KeymapScope::Log], &KeyAction::Annotate);
 
     let need_file = i18n.t("menu.log_change.need_file");
     let need_single = i18n.t("menu.log_change.need_single_commit");
@@ -619,8 +639,35 @@ pub fn log_change_menu_items(state: &AppState) -> Vec<ContextMenuItem> {
                 path: row_path.clone(),
                 start_oid: single_oid,
                 follow_renames: true,
+                line_range: None,
             }],
         ));
+        let ann_actions = single_oid
+            .map(|oid| {
+                let target_path = if is_deleted {
+                    file_change
+                        .and_then(|c| c.old_path.as_ref())
+                        .cloned()
+                        .unwrap_or_else(|| row_path.clone())
+                } else {
+                    row_path.clone()
+                };
+                vec![Action::OpenAnnotate {
+                    path: target_path,
+                    rev: Some(oid),
+                }]
+            })
+            .unwrap_or_default();
+        items.push(
+            run(
+                i18n.t("menu.log_change.annotate"),
+                Some('a'),
+                ann_sc.as_deref(),
+                ann_actions,
+            )
+            .enabled_if(single_oid.is_some(), need_single)
+            .enabled_if(!is_deleted, i18n.t("menu.log_change.cannot_annotate_deleted")),
+        );
     } else {
         items.push(run(
             i18n.t("menu.log_change.show_dir_history"),
@@ -714,4 +761,98 @@ pub fn log_change_menu_items(state: &AppState) -> Vec<ContextMenuItem> {
     );
 
     items
+}
+
+/// Right-click / keyboard menu inside `ModalLayer::Annotate`.
+pub fn annotate_menu_items(state: &AppState) -> Vec<ContextMenuItem> {
+    let Some(ann) = state.modal_stack.annotate() else {
+        return Vec::new();
+    };
+    let i18n = &state.i18n;
+    let is_uncommitted = ann.selected_line().is_none_or(|l| l.oid.is_zero());
+    let uncommitted_reason = i18n.t("toast.annotate_uncommitted");
+    let has_prev = ann.selected_line().is_some_and(|l| {
+        if l.oid.is_zero() {
+            ann.key.rev.is_none()
+                && state
+                    .repo_snapshot
+                    .as_ref()
+                    .and_then(|s| s.head_oid)
+                    .is_some()
+        } else {
+            ann.selected_commit()
+                .and_then(|c| c.previous.as_ref())
+                .is_some()
+        }
+    });
+    let no_prev_reason = i18n.t("toast.annotate_no_previous");
+
+    vec![
+        run(
+            i18n.t("menu.annotate.selection_history"),
+            Some('h'),
+            Some("H"),
+            vec![Action::AnnotateShowSelectionHistory],
+        )
+        .enabled_if(
+            ann.selected_line_range().is_some(),
+            i18n.t("menu.stage.no_selection_range"),
+        ),
+        run(
+            i18n.t("menu.annotate.prev_rev"),
+            Some('p'),
+            Some("p"),
+            vec![Action::AnnotatePreviousRev],
+        )
+        .enabled_if(has_prev, no_prev_reason),
+        run(
+            i18n.t("menu.annotate.toggle_diff"),
+            Some('d'),
+            Some("d"),
+            vec![Action::AnnotateToggleDiff],
+        ),
+        run(
+            format!(
+                "{} {}",
+                if ann.key.options.ignore_whitespace {
+                    "✓"
+                } else {
+                    " "
+                },
+                i18n.t("menu.annotate.ignore_whitespace")
+            ),
+            Some('w'),
+            Some("w"),
+            vec![Action::AnnotateToggleWhitespace],
+        ),
+        run(
+            format!(
+                "{} {}",
+                if ann.key.options.detect_moves {
+                    "✓"
+                } else {
+                    " "
+                },
+                i18n.t("menu.annotate.detect_moves")
+            ),
+            Some('m'),
+            Some("m"),
+            vec![Action::AnnotateToggleMoves],
+        ),
+        ContextMenuItem::separator(),
+        run(
+            i18n.t("menu.annotate.locate_log"),
+            Some('j'),
+            Some("Enter"),
+            vec![Action::AnnotateJumpToLog],
+        )
+        .enabled_if(!is_uncommitted, uncommitted_reason),
+        run(
+            i18n.t("menu.annotate.copy_hash"),
+            Some('y'),
+            Some("y"),
+            vec![Action::AnnotateCopyHash],
+        )
+        .enabled_if(!is_uncommitted, uncommitted_reason),
+    ]
 }

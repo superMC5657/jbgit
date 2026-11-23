@@ -626,6 +626,7 @@ fn file_history_modal_end_to_end_renames_compare_navigation_and_scroll() {
         path: "new_name.rs".into(),
         start_oid: Some(c2),
         follow_renames: true,
+        line_range: None,
     });
     assert!(matches!(
         ts.state().modal_stack.last(),
@@ -642,6 +643,7 @@ fn file_history_modal_end_to_end_renames_compare_navigation_and_scroll() {
         path: "new_name.rs".into(),
         start_oid: Some(c2),
         follow_renames: true,
+        line_range: None,
     };
     let make_hist_entries = || {
         vec![
@@ -656,6 +658,7 @@ fn file_history_modal_end_to_end_renames_compare_navigation_and_scroll() {
                 additions: 0,
                 deletions: 0,
                 is_binary: false,
+                range_patch: None,
             },
             FileHistoryEntry {
                 oid: c2,
@@ -668,6 +671,7 @@ fn file_history_modal_end_to_end_renames_compare_navigation_and_scroll() {
                 additions: 1,
                 deletions: 1,
                 is_binary: false,
+                range_patch: None,
             },
             FileHistoryEntry {
                 oid: c1,
@@ -680,6 +684,7 @@ fn file_history_modal_end_to_end_renames_compare_navigation_and_scroll() {
                 additions: 40,
                 deletions: 0,
                 is_binary: false,
+                range_patch: None,
             },
         ]
     };
@@ -922,6 +927,7 @@ fn file_history_modal_end_to_end_renames_compare_navigation_and_scroll() {
         path: "new_name.rs".into(),
         start_oid: Some(c1),
         follow_renames: true,
+        line_range: None,
     });
     let epoch = ts
         .state()
@@ -933,6 +939,7 @@ fn file_history_modal_end_to_end_renames_compare_navigation_and_scroll() {
                 path: "new_name.rs".into(),
                 start_oid: Some(c1),
                 follow_renames: true,
+                line_range: None,
             },
             entries: vec![FileHistoryEntry {
                 oid: c1,
@@ -945,6 +952,7 @@ fn file_history_modal_end_to_end_renames_compare_navigation_and_scroll() {
                 additions: 1,
                 deletions: 0,
                 is_binary: false,
+                range_patch: None,
             }],
             truncated: false,
         }),
@@ -963,6 +971,7 @@ fn file_history_modal_end_to_end_renames_compare_navigation_and_scroll() {
         path: "new_name.rs".into(),
         start_oid: Some(c1),
         follow_renames: true,
+        line_range: None,
     });
     let epoch = ts
         .state()
@@ -974,6 +983,7 @@ fn file_history_modal_end_to_end_renames_compare_navigation_and_scroll() {
                 path: "new_name.rs".into(),
                 start_oid: Some(c1),
                 follow_renames: true,
+                line_range: None,
             },
             entries: vec![FileHistoryEntry {
                 oid: c1,
@@ -986,6 +996,7 @@ fn file_history_modal_end_to_end_renames_compare_navigation_and_scroll() {
                 additions: 1,
                 deletions: 0,
                 is_binary: false,
+                range_patch: None,
             }],
             truncated: false,
         }),
@@ -1029,6 +1040,7 @@ file_history_vertical_ratio = [1, 2]
         path: "src/lib.rs".into(),
         start_oid: None,
         follow_renames: true,
+        line_range: None,
     });
 
     let _ = ts.render(140, 40);

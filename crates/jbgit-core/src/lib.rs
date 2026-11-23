@@ -25,12 +25,14 @@ pub use console::{
     ConsoleLine, ConsoleLineSeverity, ConsoleStream, GitConsoleEntry, classify_console_line,
 };
 pub use details::{
-    ChangeRowKind, ChangeTreeRow, CommitChangesBundle, CommitDetails, DetailsKey, DetailsMode,
-    DiffContext, DiffHunk, DiffLine, DiffLineKind, EAGER_WORD_DIFF_PAIR_BUDGET, FileChange,
-    FileDiff, FileDiffKey, FileHistoryBundle, FileHistoryEntry, FileHistoryKey,
-    MAX_DIFF_FILE_BYTES, MAX_WORD_DIFF_LINE_BYTES, MessageLineKind, PersonStamp, SideBySideRow,
-    SignatureStatus, apply_word_diff, apply_word_diff_with_budget, build_change_rows,
-    classify_message_line, issue_ref_ranges, side_by_side_rows, word_diff,
+    BlameBundle, BlameCommit, BlameKey, BlameLine, BlameOptions, ChangeRowKind, ChangeTreeRow,
+    CommitChangesBundle, CommitDetails, DetailsKey, DetailsMode, DiffContext, DiffHunk, DiffLine,
+    DiffLineKind, EAGER_WORD_DIFF_PAIR_BUDGET, FileChange, FileDiff, FileDiffKey,
+    FileHistoryBundle, FileHistoryEntry, FileHistoryKey, MAX_DIFF_FILE_BYTES,
+    MAX_SELECTION_HISTORY_LINES, MAX_WORD_DIFF_LINE_BYTES, MessageLineKind, PersonStamp,
+    SideBySideRow, SignatureStatus, apply_word_diff, apply_word_diff_with_budget,
+    build_change_rows, classify_message_line, issue_ref_ranges, parse_unified_patch_hunks,
+    side_by_side_rows, word_diff,
 };
 pub use epoch::{EpochToken, RequestEpoch, RequestSlot, RequestSlotId, RequestSlotTable, SlotRegistry};
 pub use filter::{

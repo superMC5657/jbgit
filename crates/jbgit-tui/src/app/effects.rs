@@ -75,6 +75,12 @@ pub fn execute_effects_with_host(
                             .request_slots
                             .note_dispatched(RequestSlotId::FileHistoryList, epoch);
                     }
+                    Effect::RequestBlame(key) => {
+                        let epoch = handle.request_blame(key);
+                        state
+                            .request_slots
+                            .note_dispatched(RequestSlotId::Annotate, epoch);
+                    }
                     Effect::RequestPathMatches(paths, snapshot) => {
                         let epoch = handle.request_path_matches(paths, snapshot);
                         state

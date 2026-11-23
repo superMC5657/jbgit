@@ -411,6 +411,18 @@ pub fn is_action_applicable(run: &KeyAction, state: &AppState) -> bool {
                 || (state.active_tab == WorkspaceTab::Commit
                     && state.focused_pane == PaneId::CommitChangesTree)
         }
+        KeyAction::Annotate => {
+            (state.active_tab == WorkspaceTab::Log
+                && matches!(
+                    state.focused_pane,
+                    PaneId::LogChangesTree | PaneId::LogDetailsDiff
+                ))
+                || (state.active_tab == WorkspaceTab::Commit
+                    && matches!(
+                        state.focused_pane,
+                        PaneId::CommitChangesTree | PaneId::CommitDiffPreview
+                    ))
+        }
         KeyAction::PageDownHalf | KeyAction::PageUpHalf => {
             state.active_tab == WorkspaceTab::Log
                 || state.focused_pane == PaneId::ConsoleOutputDetail
@@ -777,6 +789,7 @@ pub fn execute_action(run: &KeyAction, state: &AppState) -> Option<Vec<Action>> 
                             path: change.path.clone(),
                             start_oid,
                             follow_renames: true,
+                            line_range: None,
                         }])
                     }
                     ChangeRowKind::Dir { .. } => {
@@ -808,12 +821,14 @@ pub fn execute_action(run: &KeyAction, state: &AppState) -> Option<Vec<Action>> 
                         path: entry.path,
                         start_oid: None,
                         follow_renames: true,
+                        line_range: None,
                     }])
                 }
             } else {
                 Some(Vec::new())
             }
         }
+        KeyAction::Annotate => annotate_selected_file(state),
         KeyAction::Uncommit => commit_uncommit(state).ok(),
         KeyAction::Reword => commit_reword(state).ok(),
         KeyAction::DropCommit => {
@@ -1250,4 +1265,89 @@ pub fn selected_branch_command(state: &AppState, action: &KeyAction) -> Option<V
         _ => return None,
     };
     res.ok()
+}
+
+/// Resolves `Annotate with Git Blame` for the currently selected file in Log
+/// (`LogChangesTree` / `LogDetailsDiff`) or Commit (`CommitChangesTree` / `CommitDiffPreview`).
+pub fn annotate_selected_file(state: &AppState) -> Option<Vec<Action>> {
+    let res = if state.active_tab == WorkspaceTab::Log
+        && matches!(
+            state.focused_pane,
+            PaneId::LogChangesTree | PaneId::LogDetailsDiff
+        ) {
+        annotate_log_change(state)
+    } else if state.active_tab == WorkspaceTab::Commit
+        && matches!(
+            state.focused_pane,
+            PaneId::CommitChangesTree | PaneId::CommitDiffPreview
+        ) {
+        annotate_stage_entry(state)
+    } else {
+        return Some(Vec::new());
+    };
+    match res {
+        Ok(actions) => Some(actions),
+        Err(reason) if reason.is_empty() => Some(Vec::new()),
+        Err(reason) => Some(vec![Action::Notice(reason)]),
+    }
+}
+
+pub fn annotate_log_change(state: &AppState) -> CommandResult {
+    let i18n = &state.i18n;
+    let Some(bundle) = state.log.details.current_bundle(&state.diff_caches) else {
+        return Err(i18n.t("menu.log_change.need_file").into());
+    };
+    let rows = state.log.details.change_rows(&state.diff_caches);
+    let Some(row) = rows.get(state.log.details.changes.selected) else {
+        return Err(i18n.t("menu.log_change.need_file").into());
+    };
+    let ChangeRowKind::File { change_idx } = row.kind else {
+        return Err(i18n.t("menu.log_change.need_file").into());
+    };
+    let Some(change) = bundle.changes.get(change_idx) else {
+        return Err(i18n.t("menu.log_change.need_file").into());
+    };
+    if bundle.key.mode != DetailsMode::Commits || bundle.key.oids.len() != 1 {
+        return Err(i18n.t("menu.log_change.need_single_commit").into());
+    }
+    if change.kind == FileStatusKind::Deleted {
+        return Err(i18n.t("menu.log_change.cannot_annotate_deleted").into());
+    }
+    Ok(vec![Action::OpenAnnotate {
+        path: change.path.clone(),
+        rev: Some(bundle.key.oids[0]),
+    }])
+}
+
+pub fn annotate_stage_entry(state: &AppState) -> CommandResult {
+    let i18n = &state.i18n;
+    if state.focused_pane == PaneId::CommitDiffPreview {
+        let Some(diff_key) = state.stage_workbench.current_diff_key() else {
+            return Err(i18n.t("menu.stage.no_file_selected").into());
+        };
+        return Ok(vec![Action::OpenAnnotate {
+            path: diff_key.path.clone(),
+            rev: None,
+        }]);
+    }
+    let idx = state.stage_workbench.selected_idx();
+    let group = state
+        .stage_workbench
+        .rows()
+        .get(idx)
+        .map(|r| r.group_kind());
+    let Some(entry) = state.stage_entry_at(idx) else {
+        return Err(i18n.t("menu.stage.select_file").into());
+    };
+    let untracked = group == Some(jbgit_core::StageNodeKind::Untracked)
+        || entry.kind == FileStatusKind::Untracked;
+    let ignored = group == Some(jbgit_core::StageNodeKind::Ignored)
+        || entry.kind == FileStatusKind::Ignored;
+    if untracked || ignored {
+        return Err(i18n.t("menu.stage.only_tracked_history").into());
+    }
+    Ok(vec![Action::OpenAnnotate {
+        path: entry.path,
+        rev: None,
+    }])
 }

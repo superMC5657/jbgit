@@ -22,6 +22,12 @@ pub enum EngineError {
     #[error("request superseded and cancelled")]
     Cancelled,
 
+    #[error("file exceeds size limit ({limit} bytes)")]
+    TooLarge { limit: usize },
+
+    #[error("binary file cannot be annotated")]
+    Binary,
+
     #[error("filesystem watcher error: {0}")]
     Watcher(String),
 

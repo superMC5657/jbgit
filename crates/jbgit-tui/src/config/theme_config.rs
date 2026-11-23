@@ -43,6 +43,11 @@ pub struct PaletteSection {
     pub diff_add_word_bg: Option<String>,
     pub diff_del_bg: Option<String>,
     pub diff_del_word_bg: Option<String>,
+    pub annotate_age_0: Option<String>,
+    pub annotate_age_1: Option<String>,
+    pub annotate_age_2: Option<String>,
+    pub annotate_age_3: Option<String>,
+    pub annotate_age_4: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -101,6 +106,11 @@ impl ThemeConfig {
                 diff_add_word_bg,
                 diff_del_bg,
                 diff_del_word_bg,
+                annotate_age_0,
+                annotate_age_1,
+                annotate_age_2,
+                annotate_age_3,
+                annotate_age_4,
             );
         }
     }

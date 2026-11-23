@@ -4,17 +4,18 @@ use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Mutex};
 
 use jbgit_core::{
-    AmendCommitPreview, CommitChangesBundle, ConflictDocument, ConsoleStream, DetailsKey,
-    EpochToken, FileDiff, FileDiffKey, FileHistoryBundle, FileHistoryKey, FileStatusKind,
-    GitConsoleEntry, GitOp, GitOpOutcome, LruCache, Oid, RefreshScope, RepoSnapshot, RequestSlotId,
-    SignatureStatus, SlotRegistry, StageNodeKind, StageStatusSnapshot, StageTarget,
+    AmendCommitPreview, BlameBundle, BlameKey, CommitChangesBundle, ConflictDocument, ConsoleStream,
+    DetailsKey, EpochToken, FileDiff, FileDiffKey, FileHistoryBundle, FileHistoryKey,
+    FileStatusKind, GitConsoleEntry, GitOp, GitOpOutcome, LruCache, Oid, RefreshScope,
+    RepoSnapshot, RequestSlotId, SignatureStatus, SlotRegistry, StageNodeKind,
+    StageStatusSnapshot, StageTarget,
 };
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 
 use crate::cli::{CliCommand, CliStreamEvent, GitCliExecutor, GitExecutableInfo};
 use crate::details::{
-    load_commit_details_sync, load_file_diff_with_oids_sync, load_file_history_sync,
-    load_path_matches_sync, verify_commit_signature_sync,
+    load_blame_sync, load_commit_details_sync, load_file_diff_with_oids_sync,
+    load_file_history_sync, load_path_matches_sync, verify_commit_signature_sync,
 };
 use crate::error::EngineError;
 use crate::pool::{
@@ -34,6 +35,13 @@ use crate::watcher::{MutationGuard, RepoWatcher};
 
 const DEFAULT_MAX_COMMITS: usize = 50_000;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BlameFailureKind {
+    TooLarge { limit: usize },
+    Binary,
+    Other,
+}
+
 #[derive(Debug, Clone)]
 pub enum TaskRequest {
     LoadRepoSnapshot,
@@ -48,9 +56,13 @@ pub enum TaskRequest {
         key: FileDiffKey,
         known_oids: Option<(Option<Oid>, Option<Oid>)>,
     },
-    /// Commit history of a single file (`--follow` rename tracking).
+    /// Commit history of a single file (`--follow` rename tracking or `-L` line range).
     LoadFileHistory {
         key: FileHistoryKey,
+    },
+    /// Per-line blame annotation (`git blame --porcelain`).
+    LoadBlame {
+        key: BlameKey,
     },
     /// Commits of `snapshot` touching any of `paths` (log `Paths` filter).
     LoadPathMatches {
@@ -119,6 +131,7 @@ impl TaskRequest {
             Self::LoadCommitDetails { slot, .. } => Some(*slot),
             Self::LoadFileDiff { slot, .. } => Some(*slot),
             Self::LoadFileHistory { .. } => Some(RequestSlotId::FileHistoryList),
+            Self::LoadBlame { .. } => Some(RequestSlotId::Annotate),
             Self::LoadPathMatches { .. } => Some(RequestSlotId::PathFilter),
             Self::LoadStageStatus { .. } => Some(RequestSlotId::StageStatus),
             Self::LoadStageFileDiff { .. } => Some(RequestSlotId::StageFileDiff),
@@ -168,6 +181,16 @@ pub enum EngineEvent {
     },
     FileHistoryLoaded {
         bundle: Arc<FileHistoryBundle>,
+        epoch: u64,
+    },
+    BlameLoaded {
+        bundle: Arc<BlameBundle>,
+        epoch: u64,
+    },
+    BlameFailed {
+        key: BlameKey,
+        kind: BlameFailureKind,
+        message: String,
         epoch: u64,
     },
     PathMatchesLoaded {
@@ -268,6 +291,11 @@ pub trait EngineBackend: Send + Sync {
     fn request_file_history(&self, key: FileHistoryKey) -> u64 {
         self.dispatch(TaskRequest::LoadFileHistory { key })
             .expect("LoadFileHistory always has a slot")
+    }
+
+    fn request_blame(&self, key: BlameKey) -> u64 {
+        self.dispatch(TaskRequest::LoadBlame { key })
+            .expect("LoadBlame always has a slot")
     }
 
     fn request_path_matches(&self, paths: Vec<String>, snapshot: Arc<RepoSnapshot>) -> u64 {
@@ -515,6 +543,51 @@ fn handle_task_request(ctx: &SupervisorContext, task: ScheduledTask) {
                 },
                 move |bundle| EngineEvent::FileHistoryLoaded { bundle, epoch },
             );
+        }
+        TaskRequest::LoadBlame { key } => {
+            let pool = Arc::clone(&ctx.pool);
+            let loc = ctx.location.clone();
+            let token = token.expect("Blame token");
+            let epoch = token.epoch();
+            let tx = ctx.event_tx.clone();
+            tokio::spawn(async move {
+                let fail_key = key.clone();
+                let res = pool
+                    .run_epoch(TaskPriority::Interactive, token, move |tok| {
+                        load_blame_sync(&loc, &key, tok).map(Arc::new)
+                    })
+                    .await;
+                match res {
+                    Ok(bundle) => {
+                        let _ = tx.send(EngineEvent::BlameLoaded { bundle, epoch });
+                    }
+                    Err(EngineError::Cancelled) => {}
+                    Err(EngineError::TooLarge { limit }) => {
+                        let _ = tx.send(EngineEvent::BlameFailed {
+                            key: fail_key,
+                            kind: BlameFailureKind::TooLarge { limit },
+                            message: format!("file exceeds size limit ({limit} bytes)"),
+                            epoch,
+                        });
+                    }
+                    Err(EngineError::Binary) => {
+                        let _ = tx.send(EngineEvent::BlameFailed {
+                            key: fail_key,
+                            kind: BlameFailureKind::Binary,
+                            message: "binary file cannot be annotated".to_string(),
+                            epoch,
+                        });
+                    }
+                    Err(e) => {
+                        let _ = tx.send(EngineEvent::BlameFailed {
+                            key: fail_key,
+                            kind: BlameFailureKind::Other,
+                            message: e.to_string(),
+                            epoch,
+                        });
+                    }
+                }
+            });
         }
         TaskRequest::LoadPathMatches { paths, snapshot } => {
             let pool = Arc::clone(&ctx.pool);

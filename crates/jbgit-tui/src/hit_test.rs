@@ -119,6 +119,18 @@ pub enum FileHistoryToolbarButton {
     Context,
     Zoom,
     LocateInLog,
+    Annotate,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AnnotateToolbarButton {
+    IgnoreWhitespace,
+    DetectMoves,
+    PreviousRev,
+    NavBack,
+    ShowDiff,
+    SelectionHistory,
+    LocateInLog,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -263,6 +275,12 @@ pub enum HitTarget {
     FileHistoryToolbar(FileHistoryToolbarButton),
     FileHistoryListArea,
     FileHistoryDiffArea,
+    AnnotateLine {
+        line_idx: usize,
+    },
+    AnnotateToolbar(AnnotateToolbarButton),
+    AnnotateArea,
+    AnnotateDiffArea,
     ModalBackdrop {
         layer_z: u8,
     },
@@ -284,6 +302,8 @@ impl HitTarget {
                 | HitTarget::StageDiffGutter { .. }
                 | HitTarget::FileHistoryListArea
                 | HitTarget::FileHistoryDiffArea
+                | HitTarget::AnnotateArea
+                | HitTarget::AnnotateDiffArea
                 | HitTarget::DialogBody
                 | HitTarget::MenuBody { .. }
                 | HitTarget::ModalBackdrop { .. }

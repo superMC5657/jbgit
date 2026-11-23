@@ -113,6 +113,11 @@ pub struct ThemePalette {
     pub diff_del_bg: Color,
     pub diff_del_word_bg: Color,
     pub diff_mod_bg: Color,
+    pub annotate_age_0: Color,
+    pub annotate_age_1: Color,
+    pub annotate_age_2: Color,
+    pub annotate_age_3: Color,
+    pub annotate_age_4: Color,
     pub ref_head: RefStyle,
     pub ref_detached: RefStyle,
     pub ref_local: RefStyle,
@@ -161,6 +166,11 @@ impl ThemePalette {
             diff_del_bg: c(72, 42, 45),                  // #482A2D
             diff_del_word_bg: c(110, 56, 62),            // #6E383E
             diff_mod_bg: c(37, 54, 77),                  // #25364D
+            annotate_age_0: c(0x3D, 0x31, 0x24),         // #3D3124 (newest)
+            annotate_age_1: c(0x2D, 0x3D, 0x30),         // #2D3D30
+            annotate_age_2: c(0x25, 0x37, 0x46),         // #253746
+            annotate_age_3: c(0x28, 0x2E, 0x3B),         // #282E3B
+            annotate_age_4: c(0x25, 0x26, 0x2A),         // #25262A (oldest)
             //                 icon                  pill bg               pill fg
             ref_head: style((0xE1, 0xC7, 0x31), (0x3A, 0x37, 0x28), (0xF2, 0xE4, 0x9B)),
             ref_detached: style((0xE5, 0xA9, 0x3B), (0x45, 0x34, 0x22), (0xFF, 0xCC, 0x66)),
@@ -210,6 +220,11 @@ impl ThemePalette {
             diff_del_bg: c(0x3E, 0x23, 0x2B),
             diff_del_word_bg: c(0x59, 0x2C, 0x37),
             diff_mod_bg: c(0x24, 0x2E, 0x3D),
+            annotate_age_0: c(0x3E, 0x32, 0x29),
+            annotate_age_1: c(0x28, 0x3A, 0x32),
+            annotate_age_2: c(0x24, 0x33, 0x47),
+            annotate_age_3: c(0x2B, 0x2A, 0x40),
+            annotate_age_4: c(0x23, 0x23, 0x34),
             ref_head: style((0xF9, 0xE2, 0xAF), (0x3E, 0x38, 0x2A), (0xF9, 0xE2, 0xAF)),
             ref_detached: style((0xFA, 0xB3, 0x87), (0x42, 0x32, 0x26), (0xFA, 0xB3, 0x87)),
             ref_local: style((0xA6, 0xE3, 0xA1), (0x24, 0x38, 0x2A), (0xA6, 0xE3, 0xA1)),
@@ -257,6 +272,11 @@ impl ThemePalette {
             diff_del_bg: c(0x3C, 0x24, 0x24),
             diff_del_word_bg: c(0x59, 0x2D, 0x2D),
             diff_mod_bg: c(0x26, 0x36, 0x3C),
+            annotate_age_0: c(0x47, 0x35, 0x24),
+            annotate_age_1: c(0x33, 0x3D, 0x29),
+            annotate_age_2: c(0x28, 0x39, 0x3D),
+            annotate_age_3: c(0x36, 0x2D, 0x38),
+            annotate_age_4: c(0x30, 0x2D, 0x2B),
             ref_head: style((0xFA, 0xBD, 0x2F), (0x3C, 0x34, 0x24), (0xFA, 0xBD, 0x2F)),
             ref_detached: style((0xFE, 0x80, 0x19), (0x3E, 0x2B, 0x20), (0xFE, 0x80, 0x19)),
             ref_local: style((0xB8, 0xBB, 0x26), (0x2B, 0x38, 0x28), (0xB8, 0xBB, 0x26)),
@@ -318,8 +338,23 @@ impl ThemePalette {
         apply_override!(diff_add_word_bg);
         apply_override!(diff_del_bg);
         apply_override!(diff_del_word_bg);
+        apply_override!(annotate_age_0);
+        apply_override!(annotate_age_1);
+        apply_override!(annotate_age_2);
+        apply_override!(annotate_age_3);
+        apply_override!(annotate_age_4);
 
         palette
+    }
+
+    pub const fn annotate_age_color(&self, bucket: usize) -> Color {
+        match bucket {
+            0 => self.annotate_age_0,
+            1 => self.annotate_age_1,
+            2 => self.annotate_age_2,
+            3 => self.annotate_age_3,
+            _ => self.annotate_age_4,
+        }
     }
 
     pub fn branch_color_manager(&self) -> BranchColorManager {
@@ -389,6 +424,11 @@ mod tests {
             t.fg_primary,
             t.ref_head.icon,
             t.track_palette[13].fg,
+            t.annotate_age_0,
+            t.annotate_age_1,
+            t.annotate_age_2,
+            t.annotate_age_3,
+            t.annotate_age_4,
         ];
         assert!(all.iter().all(|c| matches!(c, Color::Indexed(_))));
         let t = ThemePalette::darcula(true);

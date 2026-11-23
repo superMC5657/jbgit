@@ -2,6 +2,7 @@
 //! metadata + changed files (`CommitDetailsLoader`), single-file diffs
 //! (`FrameDiffPreview`) and path-filter matches (`VcsLogFileFilter`).
 
+mod blame;
 mod commit_changes;
 mod file_diff;
 mod file_history;
@@ -11,11 +12,14 @@ use jbgit_core::{Oid, PersonStamp};
 
 use crate::error::EngineError;
 
+pub(crate) use blame::load_blame_sync;
+#[cfg(test)]
+pub(crate) use blame::parse_blame_porcelain;
 pub(crate) use commit_changes::{load_commit_details_sync, verify_commit_signature_sync};
 pub(crate) use file_diff::load_file_diff_with_oids_sync;
 pub(crate) use file_history::load_file_history_sync;
 #[cfg(test)]
-pub(crate) use file_history::parse_file_history_z;
+pub(crate) use file_history::{parse_file_history_z, parse_line_history};
 pub(crate) use path_matches::load_path_matches_sync;
 
 pub(super) fn to_git2_oid(oid: &Oid) -> Result<git2::Oid, EngineError> {
@@ -144,5 +148,137 @@ mod tests {
         assert_eq!(entries[2].old_path.as_deref(), Some("old name.txt"));
         assert_eq!(entries[2].path_at_commit, "sub/new name.bin");
         assert_eq!((entries[2].additions, entries[2].deletions), (1, 2));
+    }
+
+    #[test]
+    fn parse_blame_porcelain_covers_multihunk_boundary_previous_uncommitted_nonutf8_and_cjk() {
+        let (h1, o1) = hex_oid(0x11);
+        let (h2, o2) = hex_oid(0x22);
+        let (h0, o0) = (Oid::ZERO.to_string(), Oid::ZERO);
+        let mut raw = Vec::new();
+        raw.extend_from_slice(
+            format!(
+                "{h1} 1 1 1\nauthor Alice\nauthor-mail <alice@example.com>\nauthor-time 1700000100\nauthor-tz +0800\nsummary initial commit\nboundary\nfilename dir with space/中文 文件.rs\n\tfn main() {{\n"
+            )
+            .as_bytes(),
+        );
+        raw.extend_from_slice(
+            format!(
+                "{h2} 2 2 1\nauthor Bob\nauthor-mail <bob@example.com>\nauthor-time 1700000200\nauthor-tz -0530\nsummary rename and edit\nprevious {h1} old dir/旧 文件.rs\nfilename dir with space/中文 文件.rs\n\t// bad utf8: "
+            )
+            .as_bytes(),
+        );
+        raw.extend_from_slice(b"\xff\xfe\n");
+        raw.extend_from_slice(
+            format!("{h1} 3 3 1\n\tprintln!(\"still h1\");\n").as_bytes(),
+        );
+        raw.extend_from_slice(
+            format!(
+                "{h0} 4 4 1\nauthor Not Committed Yet\nauthor-mail <not.committed.yet>\nauthor-time 1700000300\nauthor-tz +0000\nsummary Version of file from working tree\nfilename dir with space/中文 文件.rs\n\t\n"
+            )
+            .as_bytes(),
+        );
+
+        let parsed = parse_blame_porcelain(&raw).unwrap();
+        assert!(parsed.uncommitted_oid_present);
+        assert_eq!(parsed.lines.len(), 4);
+        let bundle = jbgit_core::BlameBundle {
+            key: jbgit_core::BlameKey {
+                path: "dir with space/中文 文件.rs".into(),
+                rev: None,
+                options: jbgit_core::BlameOptions::default(),
+            },
+            lines: parsed.lines.clone(),
+            commits: parsed.commits.clone(),
+            content: parsed.content.clone(),
+            uncommitted_oid_present: parsed.uncommitted_oid_present,
+        };
+        assert_eq!(bundle.content_lines().len(), 4);
+        assert_eq!(bundle.content_lines()[3], "");
+
+        assert_eq!(parsed.lines[0].oid, o1);
+        assert_eq!(parsed.lines[0].orig_path, "dir with space/中文 文件.rs");
+        assert!(parsed.commits[&o1].is_boundary);
+        assert_eq!(parsed.commits[&o1].author.email, "alice@example.com");
+        assert_eq!(parsed.commits[&o1].author.offset_minutes, 480);
+
+        assert_eq!(parsed.lines[1].oid, o2);
+        assert_eq!(parsed.commits[&o2].author.offset_minutes, -330);
+        assert_eq!(
+            parsed.commits[&o2].previous.as_ref(),
+            Some(&(o1, "old dir/旧 文件.rs".to_string()))
+        );
+        assert!(bundle.content_lines()[1].starts_with("// bad utf8:"));
+
+        // Second hunk of h1 without repeated headers inherits filename and metadata.
+        assert_eq!(parsed.lines[2].oid, o1);
+        assert_eq!(parsed.lines[2].orig_path, "dir with space/中文 文件.rs");
+
+        assert_eq!(parsed.lines[3].oid, o0);
+        assert_eq!(parsed.commits[&o0].author.name, "Not Committed Yet");
+    }
+
+    #[test]
+    fn parse_line_history_handles_merge_empty_rename_and_truncation() {
+        let (h1, o1) = hex_oid(0xaa);
+        let (h2, o2) = hex_oid(0xbb);
+        let (h3, o3) = hex_oid(0xcc);
+        let (h4, _o4) = hex_oid(0xdd);
+
+        // Empty input yields empty results.
+        let (empty, trunc) = parse_line_history(b"", "src/a.rs", 50);
+        assert!(empty.is_empty() && !trunc);
+
+        let raw = [
+            format!("\x1e{h1}\x1fAlice\x1f300\x1fmerge branches\x1f"),
+            "diff --cc dir with space/中文 文件.rs".to_string(),
+            "index 111,222..333".to_string(),
+            "--- a/dir with space/中文 文件.rs".to_string(),
+            "+++ b/dir with space/中文 文件.rs".to_string(),
+            "@@@ -1,2 -1,2 +1,3 @@@".to_string(),
+            "  fn keep() {".to_string(),
+            " +    from_branch();".to_string(),
+            " -    removed();".to_string(),
+            "  }".to_string(),
+            format!("\x1e{h2}\x1fBob\x1f200\x1fmerge no diff\x1f"),
+            format!("\x1e{h3}\x1fCarol\x1f100\x1frename file\x1f"),
+            "diff --git a/old name.rs b/dir with space/中文 文件.rs".to_string(),
+            "similarity index 90%".to_string(),
+            "rename from old name.rs".to_string(),
+            "rename to dir with space/中文 文件.rs".to_string(),
+            "--- a/old name.rs".to_string(),
+            "+++ b/dir with space/中文 文件.rs".to_string(),
+            "@@ -1,2 +1,2 @@".to_string(),
+            "-fn old() {}".to_string(),
+            "+fn new() {}".to_string(),
+            format!("\x1e{h4}\x1fDave\x1f50\x1finit\x1f"),
+            "diff --git a/old name.rs b/old name.rs".to_string(),
+            "new file mode 100644".to_string(),
+            "--- /dev/null".to_string(),
+            "+++ b/old name.rs".to_string(),
+            "@@ -0,0 +1,2 @@".to_string(),
+            "+fn old() {}".to_string(),
+            "".to_string(),
+        ]
+        .join("\n");
+
+        let (entries, truncated) = parse_line_history(raw.as_bytes(), "dir with space/中文 文件.rs", 3);
+        assert!(truncated);
+        assert_eq!(entries.len(), 3);
+
+        assert_eq!(entries[0].oid, o1);
+        assert_eq!((entries[0].additions, entries[0].deletions), (1, 1));
+        assert!(entries[0].range_patch.as_deref().unwrap().contains("@@@"));
+
+        // Merge commit without patch backfills path and has range_patch = None.
+        assert_eq!(entries[1].oid, o2);
+        assert_eq!(entries[1].path_at_commit, "dir with space/中文 文件.rs");
+        assert!(entries[1].range_patch.is_none());
+
+        assert_eq!(entries[2].oid, o3);
+        assert_eq!(entries[2].kind, FileStatusKind::Renamed);
+        assert_eq!(entries[2].old_path.as_deref(), Some("old name.rs"));
+        assert_eq!(entries[2].path_at_commit, "dir with space/中文 文件.rs");
+        assert_eq!((entries[2].additions, entries[2].deletions), (1, 1));
     }
 }

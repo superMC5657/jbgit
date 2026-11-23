@@ -2,6 +2,7 @@
 //! projection: Branches Dashboard, filter bar, presentation settings and the
 //! right-hand changes / details / diff panes.
 
+mod annotate;
 mod branches_pane;
 mod details_pane;
 mod file_history;
@@ -9,6 +10,7 @@ mod filter_bar;
 mod presentation;
 mod workbench;
 
+pub use annotate::{AnnotateError, AnnotateFocus, AnnotateNavFrame, AnnotateState};
 pub use branches_pane::BranchesPaneState;
 #[cfg(test)]
 pub use details_pane::{ChangesExpandState, DETAILS_CACHE_CAPACITY};

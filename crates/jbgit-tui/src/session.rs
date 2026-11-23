@@ -38,8 +38,11 @@ pub fn coalesce_effects(effects: Vec<Effect>) -> Vec<Effect> {
     let mut last_details = [None; RequestSlotId::COUNT];
     let mut last_file_diff = [None; RequestSlotId::COUNT];
     let mut last_stage_diff = None;
+    let mut last_blame = None;
     let mut last_file_syntax = None;
     let mut last_stage_syntax = None;
+    let mut last_blame_syntax = None;
+    let mut last_range_syntax = None;
     let mut last_containing = None;
     let mut last_rebuild_graph = None;
 
@@ -48,9 +51,12 @@ pub fn coalesce_effects(effects: Vec<Effect>) -> Vec<Effect> {
             Effect::RequestCommitDetails { slot, .. } => last_details[slot.index()] = Some(i),
             Effect::RequestFileDiff { slot, .. } => last_file_diff[slot.index()] = Some(i),
             Effect::RequestStageFileDiff(_) => last_stage_diff = Some(i),
+            Effect::RequestBlame(_) => last_blame = Some(i),
             Effect::RequestSyntaxHighlight(job) => match job.key {
                 SyntaxJobKey::File(_) => last_file_syntax = Some(i),
                 SyntaxJobKey::Stage(_) => last_stage_syntax = Some(i),
+                SyntaxJobKey::Blame(_) => last_blame_syntax = Some(i),
+                SyntaxJobKey::RangePatch { .. } => last_range_syntax = Some(i),
             },
             Effect::ComputeContainingBranches(_) => last_containing = Some(i),
             Effect::RebuildLogGraph(_) => last_rebuild_graph = Some(i),
@@ -64,9 +70,12 @@ pub fn coalesce_effects(effects: Vec<Effect>) -> Vec<Effect> {
             Effect::RequestCommitDetails { slot, .. } => last_details[slot.index()] == Some(i),
             Effect::RequestFileDiff { slot, .. } => last_file_diff[slot.index()] == Some(i),
             Effect::RequestStageFileDiff(_) => last_stage_diff == Some(i),
+            Effect::RequestBlame(_) => last_blame == Some(i),
             Effect::RequestSyntaxHighlight(job) => match job.key {
                 SyntaxJobKey::File(_) => last_file_syntax == Some(i),
                 SyntaxJobKey::Stage(_) => last_stage_syntax == Some(i),
+                SyntaxJobKey::Blame(_) => last_blame_syntax == Some(i),
+                SyntaxJobKey::RangePatch { .. } => last_range_syntax == Some(i),
             },
             Effect::ComputeContainingBranches(_) => last_containing == Some(i),
             Effect::RebuildLogGraph(_) => last_rebuild_graph == Some(i),

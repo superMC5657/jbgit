@@ -1,5 +1,6 @@
 mod branches_and_dialogs_tests;
 mod context_menu_tests;
+mod annotate_and_selection_history_tests;
 mod file_history_and_changes_tests;
 mod footer_and_keymap_tests;
 mod log_tests;

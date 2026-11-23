@@ -3,10 +3,11 @@ use std::time::{Duration, Instant};
 
 use jbgit_core::{
     DetailsKey, DiffContext, FileDiff, FileDiffKey, FileHistoryBundle, FileHistoryEntry,
-    FileHistoryKey,
+    FileHistoryKey, Oid, parse_unified_patch_hunks,
 };
 
 use crate::diff_session::{DiffCacheStore, DiffRow, DiffSession};
+use crate::syntax::HighlightedDiff;
 
 /// Chord window in `ModalLayer::FileHistory` to disambiguate `gg` (jump to top) from `g` (locate in log).
 pub const FILE_HISTORY_G_WINDOW: Duration = Duration::from_millis(350);
@@ -31,6 +32,8 @@ pub struct FileHistoryState {
     pub focus: FileHistoryFocus,
     pub diff: DiffSession,
     pub pending_g: Option<Instant>,
+    pub range_diff: Option<(Oid, Arc<FileDiff>)>,
+    pub range_syntax: Option<(Oid, Arc<HighlightedDiff>)>,
 }
 
 impl FileHistoryState {
@@ -46,7 +49,73 @@ impl FileHistoryState {
             focus: FileHistoryFocus::Commits,
             diff: DiffSession::new(diff_context),
             pending_g: None,
+            range_diff: None,
+            range_syntax: None,
         }
+    }
+
+    pub fn is_selection_history(&self) -> bool {
+        self.key.line_range.is_some()
+    }
+
+    pub fn uses_range_patch(&self) -> bool {
+        self.key.line_range.is_some()
+            && !self.compare_with_local
+            && self.comparison_pair().is_none()
+    }
+
+    pub fn ensure_range_diff(&mut self) -> Option<Arc<FileDiff>> {
+        if !self.uses_range_patch() {
+            return None;
+        }
+        let entry = self.selected_entry()?.clone();
+        if let Some((oid, diff)) = &self.range_diff
+            && *oid == entry.oid
+        {
+            return Some(Arc::clone(diff));
+        }
+        let hunks = entry
+            .range_patch
+            .as_deref()
+            .map(parse_unified_patch_hunks)
+            .unwrap_or_default();
+        let diff = Arc::new(FileDiff {
+            key: FileDiffKey {
+                details: DetailsKey::single(entry.oid),
+                path: entry.path_at_commit.clone(),
+                old_path: entry.old_path.clone(),
+                context: self.diff.context,
+            },
+            hunks,
+            is_binary: entry.is_binary,
+            is_truncated: false,
+            is_too_large: false,
+        });
+        self.range_diff = Some((entry.oid, Arc::clone(&diff)));
+        self.range_syntax = None;
+        Some(diff)
+    }
+
+    pub fn current_range_diff(&self) -> Option<&Arc<FileDiff>> {
+        if !self.uses_range_patch() {
+            return None;
+        }
+        let cur = self.selected_entry()?;
+        self.range_diff
+            .as_ref()
+            .filter(|(oid, _)| *oid == cur.oid)
+            .map(|(_, d)| d)
+    }
+
+    pub fn current_range_syntax(&self) -> Option<&Arc<HighlightedDiff>> {
+        if !self.uses_range_patch() {
+            return None;
+        }
+        let cur = self.selected_entry()?;
+        self.range_syntax
+            .as_ref()
+            .filter(|(oid, _)| *oid == cur.oid)
+            .map(|(_, s)| s)
     }
 
     pub fn diff_rows_for(&self, diff: &Arc<FileDiff>) -> Arc<[DiffRow]> {
@@ -140,7 +209,10 @@ impl FileHistoryState {
         self.apply_selection(idx.min(len - 1), extend);
     }
 
-    pub fn toggle_follow(&mut self) -> FileHistoryKey {
+    pub fn toggle_follow(&mut self) -> Option<FileHistoryKey> {
+        if self.is_selection_history() {
+            return None;
+        }
         self.key.follow_renames = !self.key.follow_renames;
         self.loading = true;
         self.error = None;
@@ -148,7 +220,7 @@ impl FileHistoryState {
         self.diff.scroll.reset();
         self.diff.pending = None;
         self.diff.requested = None;
-        self.key.clone()
+        Some(self.key.clone())
     }
 
     pub fn toggle_compare_local(&mut self) {
@@ -170,8 +242,11 @@ impl FileHistoryState {
     }
 
     pub fn jump_diff_hunk(&mut self, delta: isize, store: &DiffCacheStore) {
-        let diff = self.desired_diff_key().and_then(|k| store.peek_diff(&k));
-        self.diff.jump_hunk(delta, diff);
+        let diff = self
+            .current_range_diff()
+            .cloned()
+            .or_else(|| self.desired_diff_key().and_then(|k| store.peek_diff(&k).cloned()));
+        self.diff.jump_hunk(delta, diff.as_ref());
     }
 
     pub fn set_focus(&mut self, focus: FileHistoryFocus) {
@@ -186,7 +261,9 @@ impl FileHistoryState {
     }
 
     pub fn fallback_diff_max_scroll(&self, store: &DiffCacheStore) -> usize {
-        let diff = self.desired_diff_key().and_then(|k| store.peek_diff(&k));
+        let diff = self
+            .current_range_diff()
+            .or_else(|| self.desired_diff_key().and_then(|k| store.peek_diff(&k)));
         self.diff.fallback_max_scroll(diff)
     }
 }

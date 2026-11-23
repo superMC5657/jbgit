@@ -20,57 +20,79 @@ pub fn render_modals(
     state: &AppState,
     ctx: &mut RenderContext<'_>,
 ) {
-    for layer in &state.modal_stack {
+    let top_layer2_idx = state.modal_stack.iter().rposition(|l| l.z_level() == 20);
+    for (idx, layer) in state.modal_stack.iter().enumerate() {
         let z = layer.z_level();
-        // Register full-screen backdrop so lower-layer widgets cannot receive clicks
-        // (cascading submenus share their root menu's backdrop so the parent
-        // menu stays hoverable while a child is open).
-        if !matches!(layer, ModalLayer::ContextMenu { depth, .. } if *depth > 0) {
-            ctx.hit_registry
-                .register(screen, z, HitTarget::ModalBackdrop { layer_z: z });
+        if z == 20 && top_layer2_idx.is_some_and(|top| idx < top) {
+            let mut scratch_hits = crate::hit_test::HitTestRegistry::default();
+            let mut sub_ctx = ctx.rebind_hits(&mut scratch_hits);
+            render_modal_layer(frame, screen, state, layer, &mut sub_ctx, z, false);
+        } else {
+            render_modal_layer(frame, screen, state, layer, ctx, z, true);
         }
+    }
+}
 
-        match layer {
-            ModalLayer::BranchesPopup { query, selected } => {
-                crate::branches_popup::render_branches_popup(
-                    frame, screen, state, ctx, query, *selected, z,
-                );
-            }
-            ModalLayer::ShortcutsHelp { .. }
-            | ModalLayer::PalettePreview
-            | ModalLayer::FilterEditor { .. }
-            | ModalLayer::GoToRevision { .. }
-            | ModalLayer::ChooseParent { .. }
-            | ModalLayer::CommitHistory { .. } => {
-                let kind = layer.popup_kind().expect("popup kind");
-                let (query, selected) = layer.popup_query_and_selected().unwrap_or(("", 0));
-                popups::render_floating_popup(frame, screen, state, ctx, kind, query, selected, z);
-            }
-            ModalLayer::FileHistory(_) => {
-                crate::views::file_history::render_file_history_modal(frame, screen, state, ctx, z);
-            }
-            ModalLayer::ConflictResolver(_) => {
-                crate::views::conflict_merge::render_conflict_merge_modal(
-                    frame, screen, state, ctx, z,
-                );
-            }
-            ModalLayer::ThreeWayInspector { range_idx } => {
-                popups::render_three_way_inspector_modal(frame, screen, state, ctx, *range_idx, z);
-            }
-            ModalLayer::HookError { output } => {
-                popups::render_hook_error_modal(frame, screen, ctx, output, z);
-            }
-            ModalLayer::ContextMenu {
-                anchor,
-                items,
-                selected,
-                depth,
-                parent,
-            } => context_menu::render_context_menu(
-                frame, screen, ctx, *anchor, *parent, items, *selected, *depth, z,
-            ),
-            ModalLayer::Dialog(d) => crate::views::dialogs::render_dialog(frame, screen, ctx, d, z),
+fn render_modal_layer(
+    frame: &mut Frame<'_>,
+    screen: Rect,
+    state: &AppState,
+    layer: &ModalLayer,
+    ctx: &mut RenderContext<'_>,
+    z: u8,
+    register_backdrop: bool,
+) {
+    // Register full-screen backdrop so lower-layer widgets cannot receive clicks
+    // (cascading submenus share their root menu's backdrop so the parent
+    // menu stays hoverable while a child is open).
+    if register_backdrop && !matches!(layer, ModalLayer::ContextMenu { depth, .. } if *depth > 0) {
+        ctx.hit_registry
+            .register(screen, z, HitTarget::ModalBackdrop { layer_z: z });
+    }
+
+    match layer {
+        ModalLayer::BranchesPopup { query, selected } => {
+            crate::branches_popup::render_branches_popup(
+                frame, screen, state, ctx, query, *selected, z,
+            );
         }
+        ModalLayer::ShortcutsHelp { .. }
+        | ModalLayer::PalettePreview
+        | ModalLayer::FilterEditor { .. }
+        | ModalLayer::GoToRevision { .. }
+        | ModalLayer::ChooseParent { .. }
+        | ModalLayer::CommitHistory { .. } => {
+            let kind = layer.popup_kind().expect("popup kind");
+            let (query, selected) = layer.popup_query_and_selected().unwrap_or(("", 0));
+            popups::render_floating_popup(frame, screen, state, ctx, kind, query, selected, z);
+        }
+        ModalLayer::FileHistory(fh) => {
+            crate::views::file_history::render_file_history_modal(frame, screen, state, fh, ctx, z);
+        }
+        ModalLayer::Annotate(ann) => {
+            crate::views::annotate::render_annotate_modal(frame, screen, state, ann, ctx, z);
+        }
+        ModalLayer::ConflictResolver(_) => {
+            crate::views::conflict_merge::render_conflict_merge_modal(
+                frame, screen, state, ctx, z,
+            );
+        }
+        ModalLayer::ThreeWayInspector { range_idx } => {
+            popups::render_three_way_inspector_modal(frame, screen, state, ctx, *range_idx, z);
+        }
+        ModalLayer::HookError { output } => {
+            popups::render_hook_error_modal(frame, screen, ctx, output, z);
+        }
+        ModalLayer::ContextMenu {
+            anchor,
+            items,
+            selected,
+            depth,
+            parent,
+        } => context_menu::render_context_menu(
+            frame, screen, ctx, *anchor, *parent, items, *selected, *depth, z,
+        ),
+        ModalLayer::Dialog(d) => crate::views::dialogs::render_dialog(frame, screen, ctx, d, z),
     }
 }
 

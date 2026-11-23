@@ -11,8 +11,8 @@ use serde::de::DeserializeOwned;
 
 pub use discovery::{JBGIT_CONFIG_DIR_ENV, find_config_file, global_config_dir};
 pub use jbgit_config::{
-    DefaultTab, GlyphModePref, GraphBackendPref, JbgitConfig, JbgitConfigOverlay, LanguagePref,
-    LayoutSection, PairRatio, ThemeFlavor, TripleRatio,
+    AnnotateSection, DefaultTab, GlyphModePref, GraphBackendPref, JbgitConfig, JbgitConfigOverlay,
+    LanguagePref, LayoutSection, PairRatio, ThemeFlavor, TripleRatio,
 };
 pub use keymap_config::{KeyBindingConfig, KeymapConfig, KeymapConfigOverlay, KeymapPreset, KeymapScope};
 pub use theme_config::{ThemeConfig, ThemeConfigOverlay};
@@ -1035,5 +1035,38 @@ prepend_keymap = [
         assert!(vim.diff.key_bindings.iter().any(|b| {
             b.run == KeyAction::UnstageSelection && b.on == ["u"] && b.show_hint == Some(true)
         }));
+    }
+
+    #[test]
+    fn test_annotate_config_defaults_and_overlay() {
+        let mut cfg = AppConfig::load_defaults();
+        assert!(!cfg.jbgit.annotate.ignore_whitespace);
+        assert!(!cfg.jbgit.annotate.detect_moves);
+        assert_eq!(cfg.jbgit.annotate.gutter_width, 28);
+
+        let ov: JbgitConfigOverlay = toml::from_str(
+            r#"
+[annotate]
+ignore_whitespace = true
+detect_moves = true
+gutter_width = 40
+"#,
+        )
+        .unwrap();
+        cfg.jbgit.merge_overlay(&ov);
+        assert!(cfg.jbgit.annotate.ignore_whitespace);
+        assert!(cfg.jbgit.annotate.detect_moves);
+        assert_eq!(cfg.jbgit.annotate.gutter_width, 40);
+
+        let clamp_ov: JbgitConfigOverlay = toml::from_str(
+            r#"
+[annotate]
+gutter_width = 4
+"#,
+        )
+        .unwrap();
+        cfg.jbgit.merge_overlay(&clamp_ov);
+        assert!(cfg.jbgit.annotate.ignore_whitespace);
+        assert_eq!(cfg.jbgit.annotate.gutter_width, 16);
     }
 }

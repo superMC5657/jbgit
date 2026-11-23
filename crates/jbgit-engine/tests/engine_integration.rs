@@ -5,15 +5,15 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use jbgit_core::{
-    AmendCommitPreview, CommitChangesBundle, DetailsKey, DiffContext, DiffLineKind, FileDiff,
-    FileDiffKey, FileHistoryBundle, FileHistoryKey, FileStatusKind, LineSelection,
-    MAX_DIFF_FILE_BYTES, Oid, RefKind, RefreshScope, RepoSnapshot, RepositoryState, RequestSlotId,
-    StageStatusSnapshot,
+    AmendCommitPreview, BlameBundle, BlameKey, BlameOptions, CommitChangesBundle, DetailsKey,
+    DiffContext, DiffLineKind, FileDiff, FileDiffKey, FileHistoryBundle, FileHistoryKey,
+    FileStatusKind, LineSelection, MAX_DIFF_FILE_BYTES, Oid, RefKind, RefreshScope, RepoSnapshot,
+    RepositoryState, RequestSlotId, StageStatusSnapshot,
 };
 use jbgit_engine::{
-    CommitOutcome, CommitRequest, EngineBackend, EngineEvent, EngineHandle, EngineSupervisor,
-    RecordingEngineBackend, RepoLocation, StageDiffKey, StageDiffSide, TaskRequest,
-    ThreeDocStageDiff,
+    BlameFailureKind, CommitOutcome, CommitRequest, EngineBackend, EngineEvent, EngineHandle,
+    EngineSupervisor, RecordingEngineBackend, RepoLocation, StageDiffKey, StageDiffSide,
+    TaskRequest, ThreeDocStageDiff,
 };
 use tempfile::TempDir;
 use tokio::sync::mpsc::UnboundedReceiver;
@@ -136,6 +136,28 @@ async fn fetch_file_history(
     let epoch = handle.request_file_history(key);
     recv_matching(rx, |ev| match ev {
         EngineEvent::FileHistoryLoaded { bundle, epoch: e } if e == epoch => Some(bundle),
+        _ => None,
+    })
+    .await
+}
+
+async fn fetch_blame(
+    handle: &EngineHandle,
+    rx: &mut UnboundedReceiver<EngineEvent>,
+    key: BlameKey,
+) -> Result<Arc<BlameBundle>, (BlameFailureKind, String)> {
+    let epoch = handle.request_blame(key);
+    recv_matching(rx, |ev| match ev {
+        EngineEvent::ConsoleStarted(_) => {
+            panic!("read-only blame must not emit ConsoleStarted");
+        }
+        EngineEvent::BlameLoaded { bundle, epoch: e } if e == epoch => Some(Ok(bundle)),
+        EngineEvent::BlameFailed {
+            kind,
+            message,
+            epoch: e,
+            ..
+        } if e == epoch => Some(Err((kind, message))),
         _ => None,
     })
     .await
@@ -1038,6 +1060,7 @@ async fn file_history_follow_renames_cjk_diffs_and_supervisor_epoch_cancellation
             path: "missing.txt".into(),
             start_oid: None,
             follow_renames: true,
+            line_range: None,
         },
     )
     .await;
@@ -1082,6 +1105,7 @@ async fn file_history_follow_renames_cjk_diffs_and_supervisor_epoch_cancellation
             path: "sub/b 中文.txt".into(),
             start_oid: None,
             follow_renames: true,
+            line_range: None,
         },
     )
     .await;
@@ -1152,6 +1176,7 @@ async fn file_history_follow_renames_cjk_diffs_and_supervisor_epoch_cancellation
             path: "sub/b 中文.txt".into(),
             start_oid: None,
             follow_renames: false,
+            line_range: None,
         },
     )
     .await;
@@ -1164,6 +1189,7 @@ async fn file_history_follow_renames_cjk_diffs_and_supervisor_epoch_cancellation
             path: "does/not/exist.txt".into(),
             start_oid: Some(Oid::from_bytes(follow.entries[0].oid.as_bytes().to_owned())),
             follow_renames: true,
+            line_range: None,
         },
     )
     .await;
@@ -1173,11 +1199,13 @@ async fn file_history_follow_renames_cjk_diffs_and_supervisor_epoch_cancellation
         path: "sub/b 中文.txt".into(),
         start_oid: None,
         follow_renames: true,
+        line_range: None,
     });
     let e2 = handle.request_file_history(FileHistoryKey {
         path: "sub/b 中文.txt".into(),
         start_oid: None,
         follow_renames: false,
+        line_range: None,
     });
     assert!(e2 > e1);
 
@@ -1591,4 +1619,226 @@ async fn real_tab_indented_files_preserve_raw_tabs_in_diffs_and_partial_staging(
         .output()
         .unwrap();
     assert_eq!(staged_blob.stdout, new_staged);
+}
+
+#[tokio::test]
+async fn blame_tracks_commits_moves_uncommitted_lines_and_guards() {
+    let tmp = TempDir::new().unwrap();
+    let dir = tmp.path();
+    git(dir, &["init", "-b", "main"]);
+    git(dir, &["config", "user.name", "Tester"]);
+    git(dir, &["config", "user.email", "tester@example.com"]);
+    git(dir, &["config", "core.autocrlf", "false"]);
+
+    // c1: 3 lines
+    fs::write(dir.join("code.rs"), "line1_v1\nline2_v1\nline3_v1\n").unwrap();
+    git(dir, &["add", "code.rs"]);
+    git(dir, &["commit", "-m", "c1: initial"]);
+    let c1 = rev(dir, "HEAD");
+
+    // c2: modify line 2
+    fs::write(dir.join("code.rs"), "line1_v1\nline2_v2\nline3_v1\n").unwrap();
+    git(dir, &["add", "code.rs"]);
+    git(dir, &["commit", "-m", "c2: edit line 2"]);
+    let c2 = rev(dir, "HEAD");
+
+    // c3: modify line 3
+    fs::write(dir.join("code.rs"), "line1_v1\nline2_v2\nline3_v3\n").unwrap();
+    git(dir, &["add", "code.rs"]);
+    git(dir, &["commit", "-m", "c3: edit line 3"]);
+    let c3 = rev(dir, "HEAD");
+
+    let loc = RepoLocation::discover(dir).unwrap();
+    let (handle, mut rx) = EngineSupervisor::start(loc, false).unwrap();
+
+    // Check commit c3 blame
+    let b3 = fetch_blame(
+        &handle,
+        &mut rx,
+        BlameKey {
+            path: "code.rs".into(),
+            rev: Some(c3),
+            options: BlameOptions::default(),
+        },
+    )
+    .await
+    .expect("blame c3");
+    assert!(!b3.uncommitted_oid_present);
+    assert_eq!(b3.lines.len(), 3);
+    assert_eq!(b3.lines[0].oid, c1);
+    assert_eq!(b3.lines[1].oid, c2);
+    assert_eq!(b3.lines[2].oid, c3);
+    assert_eq!(b3.content_lines(), vec!["line1_v1", "line2_v2", "line3_v3"]);
+    assert!(b3.commits[&c1].is_boundary);
+    assert_eq!(b3.commits[&c3].previous, Some((c2, "code.rs".into())));
+
+    // c4: git mv + move lines around to verify -M -C still traces back to c1/c2/c3
+    git(dir, &["mv", "code.rs", "moved.rs"]);
+    git(dir, &["commit", "-m", "c4: rename code.rs"]);
+    let c4 = rev(dir, "HEAD");
+    fs::write(dir.join("moved.rs"), "line1_v1\nline2_v2\nline3_v3\nuncommitted\n").unwrap();
+
+    let moved_blame = fetch_blame(
+        &handle,
+        &mut rx,
+        BlameKey {
+            path: "moved.rs".into(),
+            rev: None,
+            options: BlameOptions {
+                ignore_whitespace: false,
+                detect_moves: true,
+            },
+        },
+    )
+    .await
+    .expect("blame moved worktree");
+    assert!(moved_blame.uncommitted_oid_present);
+    assert_eq!(moved_blame.lines.len(), 4);
+    assert_eq!(moved_blame.lines[0].oid, c1);
+    assert_eq!(moved_blame.lines[0].orig_path, "code.rs");
+    assert_eq!(moved_blame.lines[1].oid, c2);
+    assert_eq!(moved_blame.lines[2].oid, c3);
+    assert_eq!(moved_blame.lines[3].oid, Oid::ZERO);
+    assert_eq!(
+        moved_blame.commits[&Oid::ZERO].author.name,
+        "Not Committed Yet"
+    );
+
+    // Also confirm `c4` exists and blaming at `c4` works
+    let c4_blame = fetch_blame(
+        &handle,
+        &mut rx,
+        BlameKey {
+            path: "moved.rs".into(),
+            rev: Some(c4),
+            options: BlameOptions::default(),
+        },
+    )
+    .await
+    .expect("blame c4");
+    assert_eq!(c4_blame.lines.len(), 3);
+
+    // Binary and > 4 MiB files must return structured BlameFailureKind.
+    fs::write(dir.join("bin.dat"), b"\x00\x01\x02hello").unwrap();
+    git(dir, &["add", "bin.dat"]);
+    git(dir, &["commit", "-m", "add binary"]);
+    let (kind, _) = fetch_blame(
+        &handle,
+        &mut rx,
+        BlameKey {
+            path: "bin.dat".into(),
+            rev: None,
+            options: BlameOptions::default(),
+        },
+    )
+    .await
+    .expect_err("binary must fail");
+    assert_eq!(kind, BlameFailureKind::Binary);
+
+    let huge = vec![b'x'; MAX_DIFF_FILE_BYTES + 1024];
+    fs::write(dir.join("huge.txt"), &huge).unwrap();
+    let (kind, _) = fetch_blame(
+        &handle,
+        &mut rx,
+        BlameKey {
+            path: "huge.txt".into(),
+            rev: None,
+            options: BlameOptions::default(),
+        },
+    )
+    .await
+    .expect_err("huge worktree file must fail");
+    assert_eq!(
+        kind,
+        BlameFailureKind::TooLarge {
+            limit: MAX_DIFF_FILE_BYTES
+        }
+    );
+}
+
+#[tokio::test]
+async fn selection_history_traces_line_range_and_crosses_renames() {
+    let tmp = TempDir::new().unwrap();
+    let dir = tmp.path();
+    git(dir, &["init", "-b", "main"]);
+    git(dir, &["config", "user.name", "Tester"]);
+    git(dir, &["config", "user.email", "tester@example.com"]);
+    git(dir, &["config", "core.autocrlf", "false"]);
+
+    // Commit 1: file with top_fn (lines 1..=3) and bottom_fn (lines 5..=7)
+    fs::write(
+        dir.join("funcs.rs"),
+        "fn top_fn() {\n    let x = 1;\n}\n\nfn bottom_fn() {\n    let y = 1;\n}\n",
+    )
+    .unwrap();
+    git(dir, &["add", "funcs.rs"]);
+    git(dir, &["commit", "-m", "c1: add top_fn and bottom_fn"]);
+
+    // Commit 2: edit bottom_fn only
+    fs::write(
+        dir.join("funcs.rs"),
+        "fn top_fn() {\n    let x = 1;\n}\n\nfn bottom_fn() {\n    let y = 2;\n}\n",
+    )
+    .unwrap();
+    git(dir, &["add", "funcs.rs"]);
+    git(dir, &["commit", "-m", "c2: edit bottom_fn only"]);
+
+    // Commit 3: edit top_fn
+    fs::write(
+        dir.join("funcs.rs"),
+        "fn top_fn() {\n    let x = 2;\n}\n\nfn bottom_fn() {\n    let y = 2;\n}\n",
+    )
+    .unwrap();
+    git(dir, &["add", "funcs.rs"]);
+    git(dir, &["commit", "-m", "c3: edit top_fn"]);
+
+    // Commit 4: edit bottom_fn only again
+    fs::write(
+        dir.join("funcs.rs"),
+        "fn top_fn() {\n    let x = 2;\n}\n\nfn bottom_fn() {\n    let y = 3;\n}\n",
+    )
+    .unwrap();
+    git(dir, &["add", "funcs.rs"]);
+    git(dir, &["commit", "-m", "c4: edit bottom_fn again"]);
+
+    // Commit 5: git mv + edit top_fn
+    git(dir, &["mv", "funcs.rs", "renamed_funcs.rs"]);
+    fs::write(
+        dir.join("renamed_funcs.rs"),
+        "fn top_fn() {\n    let x = 3;\n}\n\nfn bottom_fn() {\n    let y = 3;\n}\n",
+    )
+    .unwrap();
+    git(dir, &["add", "renamed_funcs.rs"]);
+    git(dir, &["commit", "-m", "c5: rename and edit top_fn"]);
+
+    let loc = RepoLocation::discover(dir).unwrap();
+    let (handle, mut rx) = EngineSupervisor::start(loc, false).unwrap();
+
+    let sel = fetch_file_history(
+        &handle,
+        &mut rx,
+        FileHistoryKey {
+            path: "renamed_funcs.rs".into(),
+            start_oid: None,
+            follow_renames: false,
+            line_range: Some((1, 3)),
+        },
+    )
+    .await;
+
+    assert!(!sel.truncated);
+    // Only c5, c3, c1 touched top_fn (lines 1..=3); c4 and c2 touched bottom_fn only!
+    let summaries: Vec<&str> = sel.entries.iter().map(|e| e.summary.as_str()).collect();
+    assert_eq!(
+        summaries,
+        vec![
+            "c5: rename and edit top_fn",
+            "c3: edit top_fn",
+            "c1: add top_fn and bottom_fn"
+        ]
+    );
+    assert!(sel.entries.iter().all(|e| e.range_patch.is_some()));
+    assert_eq!(sel.entries[0].old_path.as_deref(), Some("funcs.rs"));
+    assert_eq!(sel.entries[0].path_at_commit, "renamed_funcs.rs");
+    assert_eq!(sel.entries[2].path_at_commit, "funcs.rs");
 }

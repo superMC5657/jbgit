@@ -23,15 +23,13 @@ pub fn render_file_history_modal(
     frame: &mut Frame<'_>,
     screen: Rect,
     state: &AppState,
+    fh: &FileHistoryState,
     ctx: &mut RenderContext<'_>,
     z: u8,
 ) {
     if screen.width < 20 || screen.height < 10 {
         return;
     }
-    let Some(fh) = state.modal_stack.file_history() else {
-        return;
-    };
 
     let width = if screen.width >= 36 {
         ((u32::from(screen.width) * 92) / 100).max(32) as u16
@@ -61,19 +59,27 @@ pub fn render_file_history_modal(
         Some(b) => b.entries.len().to_string(),
         None => "…".to_string(),
     };
-    let follow_tag = if fh.key.follow_renames {
-        ctx.t("view.file_history.follow_badge")
+    let title = if let Some((start, end)) = fh.key.line_range {
+        let range_path = format!("{}:{start}-{end}", fh.key.path);
+        ctx.t_fmt(
+            "view.file_history.selection_title",
+            &[("path", &range_path), ("count", &count_s)],
+        )
     } else {
-        ""
+        let follow_tag = if fh.key.follow_renames {
+            ctx.t("view.file_history.follow_badge")
+        } else {
+            ""
+        };
+        ctx.t_fmt(
+            "view.file_history.title",
+            &[
+                ("path", &fh.key.path),
+                ("follow", follow_tag),
+                ("count", &count_s),
+            ],
+        )
     };
-    let title = ctx.t_fmt(
-        "view.file_history.title",
-        &[
-            ("path", &fh.key.path),
-            ("follow", follow_tag),
-            ("count", &count_s),
-        ],
-    );
 
     let block = Block::default()
         .title(Span::styled(
@@ -105,12 +111,15 @@ pub fn render_file_history_modal(
         inner.height.saturating_sub(2),
     );
 
-    let buttons = vec![
-        (
+    let mut buttons = Vec::new();
+    if !fh.is_selection_history() {
+        buttons.push((
             ctx.t("view.file_history.btn_follow").to_string(),
             fh.key.follow_renames,
             FileHistoryToolbarButton::FollowRenames,
-        ),
+        ));
+    }
+    buttons.extend([
         (
             ctx.t("view.file_history.btn_compare_local").to_string(),
             fh.compare_with_local,
@@ -145,11 +154,16 @@ pub fn render_file_history_modal(
             FileHistoryToolbarButton::Zoom,
         ),
         (
+            ctx.t("view.file_history.btn_annotate").to_string(),
+            false,
+            FileHistoryToolbarButton::Annotate,
+        ),
+        (
             ctx.t("view.file_history.btn_locate_log").to_string(),
             false,
             FileHistoryToolbarButton::LocateInLog,
         ),
-    ];
+    ]);
     render_toolbar(
         frame,
         toolbar_rect,
@@ -458,6 +472,19 @@ fn render_diff_pane(
                     ],
                 )
             }
+        } else if fh.uses_range_patch()
+            && let Some((start, end)) = fh.key.line_range
+        {
+            ctx.t_fmt(
+                "view.file_history.diff_range_patch",
+                &[
+                    ("badge", ctx.t("view.file_history.range_patch_badge")),
+                    ("oid", &cur.oid.short()),
+                    ("path", &cur.path_at_commit),
+                    ("start", &start.to_string()),
+                    ("end", &end.to_string()),
+                ],
+            )
         } else if let Some(old) = &cur.old_path {
             ctx.t_fmt(
                 "view.file_history.diff_renamed",
@@ -503,6 +530,42 @@ fn render_diff_pane(
     );
 
     let h = body.height as usize;
+    if fh.uses_range_patch() {
+        let Some(diff) = fh.current_range_diff() else {
+            ctx.record_scroll_bound(ScrollPane::FileHistoryDiff, h, 0);
+            let msg = if fh.loading {
+                ctx.t("view.file_history.loading")
+            } else if fh.entries().is_empty() {
+                ctx.t("view.file_history.empty")
+            } else {
+                ctx.t("view.file_history.no_range_patch")
+            };
+            frame.render_widget(
+                Paragraph::new(Span::styled(
+                    truncate_to_width(msg, body.width as usize),
+                    Style::default().fg(ctx.theme.fg_muted),
+                )),
+                Rect::new(body.x, body.y, body.width, 1),
+            );
+            return;
+        };
+        let cached_syntax = fh.current_range_syntax().map(std::sync::Arc::as_ref);
+        render_file_diff_body(
+            frame,
+            body,
+            FileDiffRenderProps {
+                diff,
+                rows_cache: &fh.diff.rows_cache,
+                cached_syntax,
+                side_by_side: fh.diff.side_by_side,
+                diff_scroll: fh.diff.scroll.offset(),
+                scroll_pane: ScrollPane::FileHistoryDiff,
+            },
+            ctx,
+        );
+        return;
+    }
+
     let Some(key) = fh.desired_diff_key() else {
         ctx.record_scroll_bound(ScrollPane::FileHistoryDiff, h, 0);
         let msg = if fh.loading {

@@ -299,6 +299,30 @@ impl PerformanceSection {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AnnotateSection {
+    #[serde(default)]
+    pub ignore_whitespace: bool,
+    #[serde(default)]
+    pub detect_moves: bool,
+    #[serde(default = "default_annotate_gutter_width")]
+    pub gutter_width: usize,
+}
+
+fn default_annotate_gutter_width() -> usize {
+    28
+}
+
+impl Default for AnnotateSection {
+    fn default() -> Self {
+        Self {
+            ignore_whitespace: false,
+            detect_moves: false,
+            gutter_width: default_annotate_gutter_width(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct JbgitConfig {
     #[serde(default)]
@@ -307,6 +331,8 @@ pub struct JbgitConfig {
     pub graph: GraphSection,
     #[serde(default)]
     pub diff: DiffSection,
+    #[serde(default)]
+    pub annotate: AnnotateSection,
     #[serde(default)]
     pub layout: LayoutSection,
     #[serde(default)]
@@ -616,6 +642,17 @@ impl JbgitConfig {
                 self.diff.context_lines = cl;
             }
         }
+        if let Some(ann) = &overlay.annotate {
+            if let Some(iw) = ann.ignore_whitespace {
+                self.annotate.ignore_whitespace = iw;
+            }
+            if let Some(dm) = ann.detect_moves {
+                self.annotate.detect_moves = dm;
+            }
+            if let Some(gw) = ann.gutter_width {
+                self.annotate.gutter_width = gw.clamp(16, 60);
+            }
+        }
         if let Some(lo) = &overlay.layout {
             if let Some(r) = lo.log_ratio {
                 self.layout.log_ratio = r;
@@ -676,8 +713,16 @@ pub struct JbgitConfigOverlay {
     pub general: Option<GeneralSectionOverlay>,
     pub graph: Option<GraphSectionOverlay>,
     pub diff: Option<DiffSectionOverlay>,
+    pub annotate: Option<AnnotateSectionOverlay>,
     pub layout: Option<LayoutSectionOverlay>,
     pub performance: Option<PerformanceSectionOverlay>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct AnnotateSectionOverlay {
+    pub ignore_whitespace: Option<bool>,
+    pub detect_moves: Option<bool>,
+    pub gutter_width: Option<usize>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
