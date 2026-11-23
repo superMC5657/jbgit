@@ -3166,3 +3166,50 @@ async fn lfs_gitattributes_and_pointer_placeholders_avoid_smudge() {
         })
     );
 }
+
+#[tokio::test]
+async fn shallow_clone_detected_and_unshallowed_via_git_op() {
+    let upstream_dir = TempDir::new().unwrap();
+    let up = upstream_dir.path();
+    git(up, &["init", "-b", "main"]);
+    for idx in 1..=3 {
+        fs::write(up.join("f.txt"), format!("step {idx}\n")).unwrap();
+        git(up, &["add", "f.txt"]);
+        git(up, &["commit", "-m", &format!("commit {idx}")]);
+    }
+
+    let parent = TempDir::new().unwrap();
+    let clone_path = parent.path().join("shallow");
+    git(
+        parent.path(),
+        &[
+            "clone",
+            "--no-local",
+            "--depth",
+            "1",
+            &up.to_string_lossy(),
+            &clone_path.to_string_lossy(),
+        ],
+    );
+
+    let loc = RepoLocation::discover(&clone_path).unwrap();
+    let (handle, mut rx) = EngineSupervisor::start(loc, false).unwrap();
+
+    let shallow_snap = fetch_snapshot(&handle, &mut rx).await;
+    assert!(shallow_snap.is_shallow);
+    assert_eq!(shallow_snap.commits.len(), 1);
+
+    let outcome = run_git_op(
+        &handle,
+        &mut rx,
+        jbgit_core::GitOp::Unshallow {
+            remote: "origin".into(),
+        },
+    )
+    .await;
+    assert!(outcome.success, "{outcome:?}");
+
+    let full_snap = fetch_snapshot(&handle, &mut rx).await;
+    assert!(!full_snap.is_shallow);
+    assert_eq!(full_snap.commits.len(), 3);
+}

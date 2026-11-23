@@ -328,6 +328,8 @@ pub enum Action {
     RememberMergeOptions(MergeOptions),
     /// `Update Project…` mode chooser.
     PromptUpdateProject,
+    /// `Unshallow Repository…` confirmation dialog.
+    PromptUnshallow,
     /// `Configure Remotes…` modal (`GitConfigureRemotesDialog`).
     OpenRemotes,
     /// Move the Remotes modal selection by a delta.

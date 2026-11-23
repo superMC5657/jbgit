@@ -471,7 +471,7 @@ prepend_keymap = [
 
 | 作用域 | 可用 `run` 动作标识符 |
 | :--- | :--- |
-| `global` | `quit`, `help`, `context_menu`, `refresh`, `tab_commit`, `tab_log`, `tab_branches`, `tab_stash`, `tab_console`, `focus_next`, `focus_prev`, `toggle_branches_popup`, `toggle_branches_pane`, `git_fetch`, `git_pull`, `git_push`, `update_project`, `configure_remotes`, `switch_repository`, `worktrees`, `goto_revision`, `palette`, `toggle_glyph_mode`, `cycle_graph_renderer`, `git_status_probe`, `noop` |
+| `global` | `quit`, `help`, `context_menu`, `refresh`, `tab_commit`, `tab_log`, `tab_branches`, `tab_stash`, `tab_console`, `focus_next`, `focus_prev`, `toggle_branches_popup`, `toggle_branches_pane`, `git_fetch`, `git_pull`, `git_push`, `update_project`, `configure_remotes`, `switch_repository`, `worktrees`, `update_submodules`, `unshallow`, `goto_revision`, `palette`, `toggle_glyph_mode`, `cycle_graph_renderer`, `git_status_probe`, `noop` |
 | `log` | `cursor_down`, `cursor_up`, `goto_top`, `goto_bottom`, `page_down_half`, `page_up_half`, `goto_revision`, `focus_filter`, `toggle_branches_pane`, `compare_or_diff`, `zoom_diff`, `copy_hash`, `checkout`, `new_branch`, `uncommit`, `reword`, `drop_commit`, `choose_parent`, `toggle_group`, `file_history`, `annotate`, `collapse_linear_branch`, `expand_linear_branch`, `collapse_all_linear_branches`, `expand_all_linear_branches`, `browse_revision` |
 | `branch` | `branch_search`, `toggle_favorite`, `checkout`, `new_branch`, `rename_branch`, `delete_branch`, `navigate_branch` |
 | `commit` | `cursor_down`, `cursor_up`, `goto_top`, `goto_bottom`, `toggle_stage`, `stage_selection`, `unstage_selection`, `focus_commit_msg`, `commit`, `commit_and_push`, `toggle_amend`, `toggle_signoff`, `commit_history`, `select_all`, `discard_changes`, `toggle_group`, `edit_file`, `file_history`, `annotate`, `apply_patch`, `apply_patch_clipboard` |
@@ -630,3 +630,22 @@ jbgit 同一时间只绑定**一个活动仓库**（多根同步模型不做，�
 | `h` | 从该版本开始查看文件 / 目录历史 |
 | `y` | 复制路径 |
 | `<Esc>` / `q` | 关闭 |
+
+---
+
+## 八、仓库扩展能力（签名验证、子模块、Git LFS 与浅克隆）
+
+1. **提交签名验证详情与 Log 签名列**
+   - `Commit Details` 面板通过 `git log -1 --format=%G?%x1f%GS%x1f%GK` 细分显示 8 种状态（`Good`、`GoodUnknownValidity (U)`、`Expired (X/Y)`、`Revoked (R)`、`CannotCheck (E)`、`Bad (B)`、`Unsigned (N)`、`Pending`），并展示签名者（`%GS`）与密钥 ID（`%GK`）。
+   - `[⚙ Presentation]` → `Show Signature Column` 可选开启 Log 提交列表的签名图标列（默认关闭，仅对可视区提交批量验证），鼠标悬停图标弹出签名者与密钥详情提示。
+
+2. **Submodule 只读支持 (`Update Submodules`)**
+   - `[1 Commit]` 变更树将子模块标注为只读节点（展示 `[new commits]` / `[dirty workdir]` / `[uninitialized]` 徽标），禁用行级暂存、`[+]`/`[-]` 悬浮暂存及破坏性丢弃，右侧差异预览显示 `HEAD` / `Index` / `Working tree` 指向提交的 SHA。
+   - 右键菜单提供「在仓库切换器中打开子模块」及「更新子模块（`git submodule update --init --recursive`）」；工具集动作 `update_submodules` 可在命令面板中更新全部子模块。
+
+3. **Git LFS 指针占位预览**
+   - 检测 `.gitattributes` 中的 `filter=lfs` 规则（`RepoSnapshot.has_lfs` 与每文件 attribute 检查）；在 Log Diff、Stage Diff 及「按版本浏览仓库」遇到 LFS 指针文件时显示 `sha256` 前缀、字节大小与未下载提示，不触发 `git lfs smudge` 下载实体对象。
+
+4. **浅克隆检测与完整拉取 (`Unshallow`)**
+   - 当仓库为浅克隆（`Repository::is_shallow`）时，Log 副标题显示 `· shallow`，提交列表底部出现浅克隆边界标记与可点击的 `[Unshallow…]` 按钮；分支速查浮窗、Log 右键菜单与 `unshallow` 动作（命令面板）同样可发起确认。
+   - 确认后执行 `git fetch --unshallow --progress <remote>`，控制台原地刷新 `\r` 进度输出。

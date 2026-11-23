@@ -545,6 +545,7 @@ impl I18n {
             GitOp::SubmoduleUpdate { path: None } => {
                 self.t("git_op.submodule_update_all").to_string()
             }
+            GitOp::Unshallow { remote } => self.t_fmt("git_op.unshallow", &[("remote", remote)]),
             GitOp::Smart(inner) => {
                 let inner_lbl = self.git_op_label(inner);
                 self.t_fmt("git_op.smart", &[("label", &inner_lbl)])

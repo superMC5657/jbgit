@@ -6,7 +6,7 @@ use std::time::Instant;
 
 use chrono::Local;
 use jbgit_core::{ConsoleStream, GitConsoleEntry};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWriteExt, BufReader};
 use tokio::process::Command;
 
 use crate::error::EngineError;
@@ -219,12 +219,13 @@ impl GitCliExecutor {
         let stderr = child.stderr.take();
 
         let mut stdout_lines_reader = stdout.map(|s| BufReader::new(s).lines());
-        let mut stderr_lines_reader = stderr.map(|s| BufReader::new(s).lines());
+        let mut stderr_reader = stderr.map(BufReader::new);
 
         let mut stdout_lines = Vec::new();
-        let mut stderr_lines = Vec::new();
+        let mut stderr_lines: Vec<String> = Vec::new();
         let mut stdout_done = stdout_lines_reader.is_none();
-        let mut stderr_done = stderr_lines_reader.is_none();
+        let mut stderr_done = stderr_reader.is_none();
+        let mut prev_stderr_cr = false;
 
         while !stdout_done || !stderr_done {
             tokio::select! {
@@ -241,15 +242,29 @@ impl GitCliExecutor {
                         None => stdout_done = true,
                     }
                 }
-                res = next_line(&mut stderr_lines_reader), if !stderr_done => {
+                res = next_cr_or_lf_segment(&mut stderr_reader), if !stderr_done => {
                     match res {
-                        Some(line) => {
+                        Some((line, ended_with_cr)) => {
+                            let redacted = jbgit_core::redact_urls_in(&line);
+                            let out_line = if prev_stderr_cr {
+                                if !line.is_empty() {
+                                    if let Some(last) = stderr_lines.last_mut() {
+                                        *last = line;
+                                    } else {
+                                        stderr_lines.push(line);
+                                    }
+                                }
+                                format!("\r{redacted}")
+                            } else {
+                                stderr_lines.push(line);
+                                redacted
+                            };
                             on_event(CliStreamEvent::Output {
                                 id,
                                 stream: ConsoleStream::Stderr,
-                                line: jbgit_core::redact_urls_in(&line),
+                                line: out_line,
                             });
-                            stderr_lines.push(line);
+                            prev_stderr_cr = ended_with_cr;
                         }
                         None => stderr_done = true,
                     }
@@ -300,6 +315,47 @@ async fn next_line<R: tokio::io::AsyncBufRead + Unpin>(
     match reader {
         Some(r) => r.next_line().await.ok().flatten(),
         None => None,
+    }
+}
+
+async fn next_cr_or_lf_segment<R: AsyncRead + Unpin>(
+    reader: &mut Option<BufReader<R>>,
+) -> Option<(String, bool)> {
+    let r = reader.as_mut()?;
+    let mut line_bytes = Vec::new();
+    while let Ok(avail) = r.fill_buf().await {
+        if avail.is_empty() {
+            break;
+        }
+        if let Some(pos) = avail.iter().position(|&b| b == b'\n' || b == b'\r') {
+            line_bytes.extend_from_slice(&avail[..pos]);
+            let delim = avail[pos];
+            r.consume(pos + 1);
+            let ended_with_cr = if delim == b'\r' {
+                if let Ok(next) = r.fill_buf().await
+                    && next.first() == Some(&b'\n')
+                {
+                    r.consume(1);
+                    false
+                } else {
+                    true
+                }
+            } else {
+                false
+            };
+            return Some((
+                String::from_utf8_lossy(&line_bytes).into_owned(),
+                ended_with_cr,
+            ));
+        }
+        line_bytes.extend_from_slice(avail);
+        let len = avail.len();
+        r.consume(len);
+    }
+    if line_bytes.is_empty() {
+        None
+    } else {
+        Some((String::from_utf8_lossy(&line_bytes).into_owned(), false))
     }
 }
 

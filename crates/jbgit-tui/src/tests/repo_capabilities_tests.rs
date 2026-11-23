@@ -575,3 +575,44 @@ fn lfs_diffs_and_tree_browser_render_pointer_placeholders() {
     assert!(tree_screen.contains("Git LFS pointer: sha256:111111111111"), "{tree_screen}");
     assert!(tree_screen.contains("1.0 MiB"), "{tree_screen}");
 }
+
+#[test]
+fn shallow_clone_renders_boundary_unshallow_button_popup_and_dialog() {
+    use crate::branches_popup::{PopupRow, build_popup_rows};
+    use super::remote_infos;
+
+    let mut full_snap = snapshot();
+    full_snap.remotes = remote_infos(&["origin"]);
+    let full_ts = TestSession::with_snapshot(full_snap.clone());
+    assert!(!is_action_applicable(&KeyAction::Unshallow, full_ts.state()));
+    assert!(!build_popup_rows(full_ts.state(), "").contains(&PopupRow::Unshallow));
+
+    let mut shallow_snap = full_snap;
+    shallow_snap.is_shallow = true;
+    let mut ts = TestSession::with_snapshot(shallow_snap);
+    assert!(is_action_applicable(&KeyAction::Unshallow, ts.state()));
+    assert!(build_popup_rows(ts.state(), "").contains(&PopupRow::Unshallow));
+
+    let buf = ts.render(120, 30);
+    let screen = screen_text(&buf);
+    assert!(screen.contains("· shallow"), "{screen}");
+    assert!(screen.contains("Shallow clone boundary"), "{screen}");
+    assert!(screen.contains("Unshallow…"), "{screen}");
+
+    // Clicking the [Unshallow…] boundary button opens confirmation -> dispatching GitOp::Unshallow.
+    let (bx, by) = ts
+        .hit_center_of(|t| matches!(t, HitTarget::LogShallowUnshallow))
+        .expect("LogShallowUnshallow pill hit region");
+    ts.send_mouse_event(super::left_click(bx, by, crossterm::event::KeyModifiers::NONE));
+    assert!(matches!(
+        ts.state().modal_stack.last(),
+        Some(ModalLayer::Dialog(_))
+    ));
+    ts.send_key(crossterm::event::KeyCode::Enter, crossterm::event::KeyModifiers::NONE);
+    assert!(
+        ts.take_git_ops()
+            .into_iter()
+            .any(|op| op == GitOp::Unshallow { remote: "origin".into() }),
+        "confirming unshallow must emit GitOp::Unshallow"
+    );
+}

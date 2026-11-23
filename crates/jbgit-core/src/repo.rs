@@ -260,6 +260,8 @@ pub struct RepoSnapshot {
     pub submodules: Vec<String>,
     /// True when `.gitattributes` configures `filter=lfs`.
     pub has_lfs: bool,
+    /// True when the repository is a shallow clone (`Repository::is_shallow`).
+    pub is_shallow: bool,
 }
 
 impl RepoSnapshot {

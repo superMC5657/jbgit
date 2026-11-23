@@ -164,6 +164,9 @@ pub fn render_log_tab(
                     let sel_s = sel_n.to_string();
                     out.push_str(&state.i18n.t_fmt("view.log.selected_count", &[("count", &sel_s)]));
                 }
+                if s.is_shallow {
+                    out.push_str(state.i18n.t("view.log.shallow_badge"));
+                }
                 out
             }
         })
@@ -464,15 +467,20 @@ fn render_commits_table(
     let visible_h = area.height as usize;
     let total = cached.visible_count();
     let selected = state.log.graph.selected_idx.min(total.saturating_sub(1));
-    let max_off = total.saturating_sub(visible_h);
+    let commit_h = if snap.is_shallow && visible_h >= 2 && selected + 1 == total {
+        visible_h - 1
+    } else {
+        visible_h
+    };
+    let max_off = total.saturating_sub(commit_h);
     let mut offset = state.log.graph.scroll_offset.min(max_off);
     if selected < offset {
         offset = selected;
-    } else if visible_h > 0 && selected >= offset + visible_h {
-        offset = selected + 1 - visible_h;
+    } else if commit_h > 0 && selected >= offset + commit_h {
+        offset = selected + 1 - commit_h;
     }
 
-    let end = (offset + visible_h).min(total);
+    let end = (offset + commit_h).min(total);
     let rows_len = end - offset;
 
     let focused = ctx.focused_pane == PaneId::LogCommitTable;
@@ -771,6 +779,48 @@ fn render_commits_table(
                     visible_row: row_idx,
                     commit_oid: commit.oid,
                 },
+            );
+        }
+    }
+
+    if snap.is_shallow && end == total && rows_len < visible_h {
+        let boundary_y = area.y.saturating_add(rows_len as u16);
+        let label = state.i18n.t("view.log.shallow_boundary");
+        let btn = format!(" {} ", state.i18n.t("view.log.unshallow_btn"));
+        let btn_w = btn.width() as u16;
+        let line_w = area.width;
+        let max_label_w = line_w.saturating_sub(btn_w.saturating_add(7)) as usize;
+        let prefix = if max_label_w > 0 {
+            format!("─── {} · ", super::truncate_to_width(label, max_label_w))
+        } else {
+            String::new()
+        };
+        let prefix_w = prefix.width() as u16;
+        let muted = Style::default().fg(ctx.theme.fg_muted);
+        let pill_style = Style::default()
+            .fg(ctx.theme.ref_detached.pill_fg)
+            .bg(ctx.theme.ref_detached.pill_bg)
+            .add_modifier(Modifier::BOLD);
+        let trailing_cols = line_w.saturating_sub(prefix_w.saturating_add(btn_w));
+        let trailing = " ───"
+            .chars()
+            .take(trailing_cols as usize)
+            .collect::<String>();
+        frame.render_widget(
+            Paragraph::new(Line::from(vec![
+                Span::styled(prefix, muted),
+                Span::styled(btn, pill_style),
+                Span::styled(trailing, muted),
+            ])),
+            Rect::new(area.x, boundary_y, line_w, 1),
+        );
+        let pill_x = area.x.saturating_add(prefix_w);
+        if pill_x < area.right() && btn_w > 0 {
+            let reg_w = btn_w.min(area.right() - pill_x);
+            ctx.hit_registry.register(
+                Rect::new(pill_x, boundary_y, reg_w, 1),
+                2,
+                HitTarget::LogShallowUnshallow,
             );
         }
     }

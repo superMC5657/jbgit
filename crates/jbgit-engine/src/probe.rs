@@ -78,6 +78,7 @@ pub struct RepoProbeResult {
     pub is_unborn_head: bool,
     pub head_branch: Option<String>,
     pub head_oid: Option<Oid>,
+    pub is_shallow: bool,
 }
 
 pub fn to_core_oid(oid: git2::Oid) -> Oid {
@@ -112,12 +113,14 @@ pub fn probe_repo_state(repo: &Repository) -> RepoProbeResult {
     };
 
     let state = detect_repository_state(repo, git_dir, is_detached);
+    let is_shallow = repo.is_shallow();
 
     RepoProbeResult {
         state,
         is_unborn_head,
         head_branch,
         head_oid,
+        is_shallow,
     }
 }
 

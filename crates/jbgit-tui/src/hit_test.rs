@@ -237,6 +237,7 @@ pub enum HitTarget {
         visible_row: usize,
         commit_oid: Oid,
     },
+    LogShallowUnshallow,
     ChangesTreeNode {
         tree_id: TreeId,
         node_id: ChangeNodeId,

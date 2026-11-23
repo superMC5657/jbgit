@@ -322,6 +322,7 @@ impl AppState {
                 }
             }
             Action::PromptUpdateProject => self.prompt_update_project(),
+            Action::PromptUnshallow => self.prompt_unshallow(),
             Action::OpenRemotes => {
                 self.modal_stack
                     .retain(|l| !matches!(l, ModalLayer::ContextMenu { .. } | ModalLayer::Remotes(_)));
@@ -769,6 +770,38 @@ impl AppState {
         )));
     }
 
+    pub(crate) fn prompt_unshallow(&mut self) {
+        if let Err(msg) = self.require_no_ongoing() {
+            self.status_notice = Some(msg);
+            return;
+        }
+        let Some(snap) = self.repo_snapshot.as_ref() else {
+            self.status_notice = Some(self.i18n.t("toast.repo_not_loaded").to_string());
+            return;
+        };
+        if !snap.is_shallow {
+            self.status_notice = Some(self.i18n.t("toast.not_shallow").to_string());
+            return;
+        }
+        let Some(remote_name) = snap.default_remote() else {
+            self.status_notice = Some(self.i18n.t("toast.no_remote_for_unshallow").to_string());
+            return;
+        };
+        let i18n = self.i18n.clone();
+        self.blur_active_pane(false);
+        self.push_dialog(Dialog::Choice(ChoiceDialog::confirm_with_default(
+            i18n.t("dialog.unshallow.title"),
+            vec![i18n.t_fmt("dialog.unshallow.body", &[("remote", &remote_name)])],
+            i18n.t("dialog.unshallow.confirm_btn"),
+            i18n.cancel(),
+            false,
+            true,
+            vec![Action::RunGitOp(GitOp::Unshallow {
+                remote: remote_name,
+            })],
+        )));
+    }
+
     fn notify_update_info(&mut self, info: Option<&UpdateInfo>) {
         let i18n = self.i18n.clone();
         let skipped = info.map(|i| i.skipped.as_slice()).unwrap_or_default();
@@ -982,6 +1015,12 @@ impl AppState {
                         Some(p) => self.i18n.t_fmt("toast.submodule_updated_one", &[("path", p)]),
                         None => self.i18n.t("toast.submodules_updated").to_string(),
                     });
+                }
+                GitOp::Unshallow { remote } => {
+                    self.status_notice = Some(
+                        self.i18n
+                            .t_fmt("toast.unshallow_done", &[("remote", remote)]),
+                    );
                 }
                 GitOp::Ongoing {
                     step: OngoingStep::Continue | OngoingStep::Abort,

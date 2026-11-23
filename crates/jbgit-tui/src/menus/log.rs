@@ -451,6 +451,20 @@ pub fn log_commit_menu_items(state: &AppState) -> Vec<ContextMenuItem> {
         Some('o'),
         crate::input::presentation_menu_items(state),
     ));
+    if snap.is_shallow {
+        items.push(
+            run(
+                i18n.t("menu.log.unshallow"),
+                Some('u'),
+                None,
+                vec![Action::PromptUnshallow],
+            )
+            .enabled_if(
+                snap.default_remote().is_some(),
+                i18n.t("toast.no_remote_for_unshallow"),
+            ),
+        );
+    }
     items
 }
 

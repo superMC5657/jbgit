@@ -158,6 +158,7 @@ pub fn load_repo_snapshot_with_config_sync(
                 worktrees,
                 submodules,
                 has_lfs,
+                is_shallow: probe.is_shallow,
             },
             pending_ahead_behind,
         ))

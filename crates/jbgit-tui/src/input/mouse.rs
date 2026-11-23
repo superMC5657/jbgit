@@ -84,6 +84,7 @@ fn route_mouse_scroll(col: u16, row: u16, delta: isize, state: &AppState) -> Vec
             }
             HitTarget::CommitTableRow { .. }
             | HitTarget::CommitSignatureCell { .. }
+            | HitTarget::LogShallowUnshallow
             | HitTarget::GraphPrintElement { .. }
             | HitTarget::CommitRefPill { .. }
             | HitTarget::CommitRefOverflow { .. }
@@ -209,6 +210,7 @@ fn route_mouse_left_down(
         }],
         HitTarget::HeaderRefreshButton => vec![Action::RefreshAll],
         HitTarget::HeaderBehindBadge => vec![Action::PromptUpdateProject],
+        HitTarget::LogShallowUnshallow => vec![Action::PromptUnshallow],
         HitTarget::HeaderGlyphButton => vec![Action::ToggleGlyphMode],
         HitTarget::HeaderRepoName => vec![Action::OpenRepoSwitcher],
         HitTarget::HeaderHelpButton => vec![Action::OpenPopup {

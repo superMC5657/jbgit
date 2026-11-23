@@ -37,6 +37,22 @@ pub struct GitConsoleEntry {
 
 impl GitConsoleEntry {
     pub fn push_line(&mut self, stream: ConsoleStream, text: String) {
+        if let Some(stripped) = text.strip_prefix('\r') {
+            if stripped.is_empty() {
+                return;
+            }
+            if let Some(last) = self.output_lines.last_mut()
+                && last.stream == stream
+            {
+                last.text = stripped.to_string();
+                return;
+            }
+            self.output_lines.push(ConsoleLine {
+                stream,
+                text: stripped.to_string(),
+            });
+            return;
+        }
         self.output_lines.push(ConsoleLine { stream, text });
     }
 
@@ -268,6 +284,35 @@ mod tests {
                 line(ConsoleStream::Stdout, "Updating 40a91421..d5e4beb6"),
                 line(ConsoleStream::Stdout, " create mode 100644 src/new_file.rs"),
                 line(ConsoleStream::Stderr, "warning: minor notice"),
+            ]
+        );
+    }
+
+    #[test]
+    fn push_line_coalesces_carriage_return_progress_updates() {
+        let mut entry = GitConsoleEntry {
+            id: 2,
+            started_at: Local::now(),
+            duration_ms: None,
+            command_line: "git fetch --unshallow --progress origin".into(),
+            output_lines: Vec::new(),
+            exit_code: None,
+        };
+
+        entry.push_line(ConsoleStream::Stderr, "remote: Enumerating objects: 10, done.".into());
+        entry.push_line(ConsoleStream::Stderr, "Receiving objects:  10% (1/10)".into());
+        entry.push_line(ConsoleStream::Stderr, "\rReceiving objects:  50% (5/10)".into());
+        entry.push_line(ConsoleStream::Stderr, "\rReceiving objects: 100% (10/10), done.".into());
+        entry.push_line(ConsoleStream::Stderr, "\r".into());
+
+        assert_eq!(
+            entry.output_lines,
+            vec![
+                line(ConsoleStream::Stderr, "remote: Enumerating objects: 10, done."),
+                line(
+                    ConsoleStream::Stderr,
+                    "Receiving objects: 100% (10/10), done."
+                ),
             ]
         );
     }

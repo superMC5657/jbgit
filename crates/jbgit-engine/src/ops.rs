@@ -463,6 +463,12 @@ pub(crate) fn compile_simple_steps(op: &GitOp) -> Option<Vec<CompiledStep>> {
             }
             vec![CompiledStep::new(args)]
         }
+        GitOp::Unshallow { remote } => vec![CompiledStep::new([
+            "fetch",
+            "--unshallow",
+            "--progress",
+            remote.as_str(),
+        ])],
         GitOp::RewriteHistory { .. }
         | GitOp::ApplyPatch { .. }
         | GitOp::AddToIgnore { .. }
