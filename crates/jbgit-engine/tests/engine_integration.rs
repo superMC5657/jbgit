@@ -2616,3 +2616,320 @@ async fn snapshot_lists_submodule_paths() {
     let snap = fetch_snapshot(&handle, &mut rx).await;
     assert_eq!(snap.submodules, vec!["libs/sub".to_string()]);
 }
+
+async fn check_patch(
+    handle: &jbgit_engine::EngineHandle,
+    rx: &mut UnboundedReceiver<EngineEvent>,
+    key: jbgit_core::PatchCheckKey,
+) -> Arc<jbgit_core::PatchCheck> {
+    let epoch = handle
+        .dispatch(jbgit_engine::TaskRequest::CheckPatch { key: key.clone() })
+        .expect("CheckPatch epoch");
+    recv_matching(rx, |ev| match ev {
+        EngineEvent::ConsoleStarted(_) => panic!("read-only CheckPatch must not emit ConsoleStarted"),
+        EngineEvent::PatchChecked { check, epoch: e } if e == epoch && check.key == key => {
+            Some(check)
+        }
+        _ => None,
+    })
+    .await
+}
+
+fn worktree_text(dir: &Path, rel: &str) -> String {
+    fs::read_to_string(dir.join(rel)).unwrap().replace("\r\n", "\n")
+}
+
+#[tokio::test]
+async fn apply_patch_check_round_trip_index_mode_and_three_way_conflicts() {
+    use jbgit_core::{ApplyMode, GitFailure, GitOp, PatchCheckKey, PatchInput};
+
+    let dir_guard = TempDir::new().unwrap();
+    let dir = dir_guard.path();
+    git(dir, &["init", "-b", "main"]);
+    git(dir, &["config", "core.autocrlf", "false"]);
+    fs::write(dir.join("f.txt"), "a\nb\nc\n").unwrap();
+    fs::create_dir_all(dir.join("sub")).unwrap();
+    fs::write(dir.join("sub/g.txt"), "x\n").unwrap();
+    git(dir, &["add", "."]);
+    git(dir, &["commit", "-m", "init"]);
+
+    // Export a patch, then revert the working tree.
+    fs::write(dir.join("f.txt"), "a\nB\nc\n").unwrap();
+    fs::write(dir.join("sub/g.txt"), "x\ny\n").unwrap();
+    let patch_dir = TempDir::new().unwrap();
+    let patch_path = patch_dir.path().join("fix.patch");
+    let diff = git_output(dir, &["diff"]);
+    fs::write(&patch_path, &diff.stdout).unwrap();
+    git(dir, &["checkout", "--", "."]);
+
+    let loc = RepoLocation::discover(dir).unwrap();
+    let (handle, mut rx) = EngineSupervisor::start(loc, false).unwrap();
+    let source = PatchInput::File(patch_path.clone());
+
+    // Preflight lists the files with counts and changes nothing.
+    let key = PatchCheckKey {
+        source: source.clone(),
+        mode: ApplyMode::WorkingTree,
+    };
+    let check = check_patch(&handle, &mut rx, key).await;
+    assert!(check.applies(), "{check:?}");
+    let rows: Vec<_> = check
+        .files
+        .iter()
+        .map(|f| (f.path.as_str(), f.added, f.deleted))
+        .collect();
+    assert_eq!(
+        rows,
+        vec![("f.txt", Some(1), Some(1)), ("sub/g.txt", Some(1), Some(0))]
+    );
+    assert_eq!(worktree_text(dir, "f.txt"), "a\nb\nc\n");
+
+    // Apply to working tree + index.
+    let outcome = run_git_op(
+        &handle,
+        &mut rx,
+        GitOp::ApplyPatch {
+            source: source.clone(),
+            mode: ApplyMode::Index,
+        },
+    )
+    .await;
+    assert!(outcome.success, "{outcome:?}");
+    assert_eq!(worktree_text(dir, "f.txt"), "a\nB\nc\n");
+    let staged = git_output(dir, &["diff", "--cached", "--name-only"]);
+    assert_eq!(
+        String::from_utf8_lossy(&staged.stdout).trim(),
+        "f.txt\nsub/g.txt"
+    );
+
+    // Commit a conflicting change on top of the original content.
+    git(dir, &["reset", "--hard", "HEAD"]);
+    fs::write(dir.join("f.txt"), "a\nZ\nc\n").unwrap();
+    git(dir, &["commit", "-am", "conflicting"]);
+
+    // A failing check reports the first error and does not modify anything.
+    let failed = check_patch(
+        &handle,
+        &mut rx,
+        PatchCheckKey {
+            source: source.clone(),
+            mode: ApplyMode::WorkingTree,
+        },
+    )
+    .await;
+    assert_eq!(
+        failed.error.as_deref(),
+        Some("error: f.txt: patch does not apply")
+    );
+    assert_eq!(worktree_text(dir, "f.txt"), "a\nZ\nc\n");
+    assert_eq!(worktree_text(dir, "sub/g.txt"), "x\n");
+
+    // A three-way check flags the conflicting file; the apply leaves it unmerged.
+    let three_way = check_patch(
+        &handle,
+        &mut rx,
+        PatchCheckKey {
+            source: source.clone(),
+            mode: ApplyMode::ThreeWay,
+        },
+    )
+    .await;
+    assert!(three_way.applies(), "{three_way:?}");
+    assert_eq!(three_way.conflict_count(), 1);
+    assert!(
+        three_way
+            .files
+            .iter()
+            .any(|f| f.path == "f.txt" && f.conflicts)
+    );
+
+    let outcome = run_git_op(
+        &handle,
+        &mut rx,
+        GitOp::ApplyPatch {
+            source,
+            mode: ApplyMode::ThreeWay,
+        },
+    )
+    .await;
+    assert!(!outcome.success);
+    assert_eq!(
+        outcome.failure,
+        Some(GitFailure::PatchConflicts {
+            paths: vec!["f.txt".into()]
+        })
+    );
+    let status = fetch_stage_status(&handle, &mut rx, false).await;
+    assert_eq!(
+        status
+            .conflicted
+            .iter()
+            .map(|e| e.path.as_str())
+            .collect::<Vec<_>>(),
+        vec!["f.txt"]
+    );
+    assert!(worktree_text(dir, "f.txt").contains("<<<<<<<"));
+
+    // A missing patch file fails the op cleanly.
+    let outcome = run_git_op(
+        &handle,
+        &mut rx,
+        GitOp::ApplyPatch {
+            source: PatchInput::File(patch_dir.path().join("missing.patch")),
+            mode: ApplyMode::WorkingTree,
+        },
+    )
+    .await;
+    assert!(matches!(
+        outcome.failure,
+        Some(GitFailure::PatchDoesNotApply { .. })
+    ));
+}
+
+async fn load_tree(
+    handle: &EngineHandle,
+    rx: &mut UnboundedReceiver<EngineEvent>,
+    key: jbgit_core::TreeKey,
+) -> Arc<jbgit_core::TreeListing> {
+    let epoch = handle.request_tree(key.clone());
+    recv_matching(rx, |ev| match ev {
+        EngineEvent::TreeLoaded { listing, epoch: e } if e == epoch && listing.key == key => {
+            Some(listing)
+        }
+        _ => None,
+    })
+    .await
+}
+
+async fn load_tree_blob(
+    handle: &EngineHandle,
+    rx: &mut UnboundedReceiver<EngineEvent>,
+    key: jbgit_core::TreeBlobKey,
+) -> Arc<jbgit_core::TreeBlob> {
+    let epoch = handle.request_tree_blob(key.clone());
+    recv_matching(rx, |ev| match ev {
+        EngineEvent::TreeBlobLoaded { blob, epoch: e } if e == epoch && blob.key == key => {
+            Some(blob)
+        }
+        _ => None,
+    })
+    .await
+}
+
+#[tokio::test]
+async fn tree_browser_lists_directories_lazily_with_submodules_and_binary_previews() {
+    use jbgit_core::{TreeBlobContent, TreeBlobKey, TreeEntryKind, TreeKey};
+
+    let sub_guard = TempDir::new().unwrap();
+    let sub = sub_guard.path();
+    git(sub, &["init", "-b", "main"]);
+    fs::write(sub.join("s.txt"), "s\n").unwrap();
+    git(sub, &["add", "."]);
+    git(sub, &["commit", "-m", "sub"]);
+
+    let dir_guard = TempDir::new().unwrap();
+    let dir = dir_guard.path();
+    git(dir, &["init", "-b", "main"]);
+    git(dir, &["config", "core.autocrlf", "false"]);
+    fs::create_dir_all(dir.join("src/nested")).unwrap();
+    fs::write(dir.join("README.md"), "# demo\n").unwrap();
+    fs::write(dir.join("src/main.rs"), "fn main() {}\n").unwrap();
+    fs::write(dir.join("src/nested/deep.txt"), "deep\n").unwrap();
+    fs::write(dir.join("logo.bin"), [0u8, 159, 146, 150, 0, 1, 2]).unwrap();
+    git(dir, &["add", "."]);
+    git(dir, &["commit", "-m", "init"]);
+    git(
+        dir,
+        &[
+            "-c",
+            "protocol.file.allow=always",
+            "submodule",
+            "add",
+            sub.to_str().unwrap(),
+            "libs/sub",
+        ],
+    );
+    git(dir, &["commit", "-m", "add submodule"]);
+    let head = rev(dir, "HEAD");
+    // Later edit: the browser shows the revision, not the working tree.
+    fs::write(dir.join("README.md"), "# changed\n").unwrap();
+
+    let loc = RepoLocation::discover(dir).unwrap();
+    let (handle, mut rx) = EngineSupervisor::start(loc, false).unwrap();
+    let key = |dir_path: &str| TreeKey {
+        oid: head,
+        dir: dir_path.to_string(),
+    };
+
+    let root = load_tree(&handle, &mut rx, key("")).await;
+    let names: Vec<_> = root
+        .entries
+        .iter()
+        .map(|e| (e.name.as_str(), e.kind))
+        .collect();
+    assert_eq!(
+        names,
+        vec![
+            ("libs", TreeEntryKind::Tree),
+            ("src", TreeEntryKind::Tree),
+            (".gitmodules", TreeEntryKind::Blob),
+            ("logo.bin", TreeEntryKind::Blob),
+            ("README.md", TreeEntryKind::Blob),
+        ]
+    );
+    let readme = root.entries.iter().find(|e| e.name == "README.md").unwrap();
+    assert_eq!(readme.size, Some(7));
+
+    // Subdirectories load lazily, one level at a time.
+    let src = load_tree(&handle, &mut rx, key("src")).await;
+    let src_paths: Vec<_> = src.entries.iter().map(|e| e.path.as_str()).collect();
+    assert_eq!(src_paths, vec!["src/nested", "src/main.rs"]);
+    let libs = load_tree(&handle, &mut rx, key("libs")).await;
+    assert_eq!(libs.entries.len(), 1);
+    assert_eq!(libs.entries[0].kind, TreeEntryKind::Submodule);
+    assert_eq!(libs.entries[0].mode, 0o160_000);
+    assert_eq!(libs.entries[0].oid, rev(sub, "HEAD"));
+
+    let text = load_tree_blob(
+        &handle,
+        &mut rx,
+        TreeBlobKey {
+            oid: head,
+            path: "README.md".into(),
+        },
+    )
+    .await;
+    assert_eq!(text.content, TreeBlobContent::Text("# demo\n".into()));
+    let bin = load_tree_blob(
+        &handle,
+        &mut rx,
+        TreeBlobKey {
+            oid: head,
+            path: "logo.bin".into(),
+        },
+    )
+    .await;
+    assert_eq!(bin.content, TreeBlobContent::Binary);
+    assert_eq!(bin.size, 7);
+    let missing = load_tree_blob(
+        &handle,
+        &mut rx,
+        TreeBlobKey {
+            oid: head,
+            path: "nope.txt".into(),
+        },
+    )
+    .await;
+    assert_eq!(missing.content, TreeBlobContent::Missing);
+
+    // Unknown directories fail without wedging the request slot.
+    let epoch = handle.request_tree(key("does/not/exist"));
+    let failed = recv_matching(&mut rx, |ev| match ev {
+        EngineEvent::TreeLoadFailed {
+            epoch: e, message, ..
+        } if e == epoch => Some(message),
+        _ => None,
+    })
+    .await;
+    assert!(!failed.is_empty());
+}

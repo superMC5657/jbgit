@@ -293,7 +293,29 @@ pub fn stage_tree_menu_items(state: &AppState, idx: usize) -> Vec<ContextMenuIte
             i18n.t("menu.stage.cannot_delete_amend"),
         ),
     );
+    items.push(ContextMenuItem::separator());
+    items.extend(apply_patch_items(state));
     items
+}
+
+/// `Apply Patch…` / `Apply Patch from Clipboard` (Stage tree menu).
+pub fn apply_patch_items(state: &AppState) -> Vec<ContextMenuItem> {
+    let i18n = &state.i18n;
+    let sc = |a: &KeyAction| catalog::shortcut_for_action(state, &[KeymapScope::Commit], a);
+    vec![
+        ContextMenuItem::from_command(
+            i18n.t("menu.stage.apply_patch"),
+            Some('o'),
+            sc(&KeyAction::ApplyPatch).as_deref(),
+            catalog::apply_patch_command(state, false),
+        ),
+        ContextMenuItem::from_command(
+            i18n.t("menu.stage.apply_patch_clipboard"),
+            Some('v'),
+            sc(&KeyAction::ApplyPatchClipboard).as_deref(),
+            catalog::apply_patch_command(state, true),
+        ),
+    ]
 }
 
 fn diff_side_and_path(state: &AppState) -> (Option<StageDiffSide>, Option<String>) {

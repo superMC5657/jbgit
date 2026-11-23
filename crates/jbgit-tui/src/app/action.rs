@@ -406,6 +406,20 @@ pub enum Action {
     FileHistoryAnnotate,
     FileHistoryEscape,
 
+    // ── Apply Patch / Browse Repository at Revision ──
+    /// Opens the Apply Patch dialog and runs its preflight.
+    OpenApplyPatch(jbgit_core::PatchInput),
+    /// `None` cycles to the next mode.
+    ApplyPatchSetMode(Option<jbgit_core::ApplyMode>),
+    ApplyPatchScroll(isize),
+    ApplyPatchConfirm,
+    OpenTreeBrowser {
+        oid: Oid,
+    },
+    /// Resolves a revision expression (Go to Revision popup) and browses it.
+    BrowseRevisionExpr(String),
+    TreeBrowser(crate::tree_browser::TreeBrowserAction),
+
     // ── Annotate / Blame modal ──
     OpenAnnotate {
         path: String,

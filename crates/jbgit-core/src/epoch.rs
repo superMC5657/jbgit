@@ -87,10 +87,13 @@ pub enum RequestSlotId {
     PushOutgoing = 16,
     PushCommitDetails = 17,
     PushFileDiff = 18,
+    PatchCheck = 19,
+    TreeBrowser = 20,
+    TreeBlob = 21,
 }
 
 impl RequestSlotId {
-    pub const COUNT: usize = 19;
+    pub const COUNT: usize = 22;
 
     pub const ALL: [Self; Self::COUNT] = [
         Self::RepoSnapshot,
@@ -112,6 +115,9 @@ impl RequestSlotId {
         Self::PushOutgoing,
         Self::PushCommitDetails,
         Self::PushFileDiff,
+        Self::PatchCheck,
+        Self::TreeBrowser,
+        Self::TreeBlob,
     ];
 
     #[inline]

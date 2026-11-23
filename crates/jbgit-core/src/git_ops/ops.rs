@@ -637,6 +637,11 @@ pub enum GitOp {
         rev: String,
         paths: Vec<String>,
     },
+    /// `git apply [--index | --3way] --whitespace=nowarn` (clipboard on stdin).
+    ApplyPatch {
+        source: crate::PatchInput,
+        mode: crate::ApplyMode,
+    },
     Smart(Box<GitOp>),
 }
 
@@ -761,6 +766,15 @@ impl GitOp {
                     format!("Restore {} file(s) from {short_rev}", paths.len())
                 }
             }
+            Self::ApplyPatch { source, .. } => match source {
+                crate::PatchInput::File(path) => {
+                    let name = path
+                        .file_name()
+                        .map_or_else(|| path.display().to_string(), |n| n.to_string_lossy().into());
+                    format!("Apply patch '{name}'")
+                }
+                crate::PatchInput::Clipboard => "Apply patch from clipboard".to_string(),
+            },
             Self::Smart(inner) => format!("Smart {}", inner.label()),
         }
     }

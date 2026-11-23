@@ -30,6 +30,10 @@ pub enum GitFailure {
     WorktreeDirty,
     /// `git worktree remove` on a locked working tree.
     WorktreeLocked,
+    /// `git apply` rejected the patch (first `error:` line).
+    PatchDoesNotApply { detail: String },
+    /// `git apply --3way` applied with conflicts in `paths`.
+    PatchConflicts { paths: Vec<String> },
     /// Anything else (first meaningful stderr line).
     Other(String),
 }
@@ -51,6 +55,22 @@ pub fn classify_failure(lines: &[String]) -> GitFailure {
     }
     if joined.contains("cannot remove a locked working tree") {
         return GitFailure::WorktreeLocked;
+    }
+    if joined.contains("' with conflicts.") && joined.contains("Applied patch to '") {
+        return GitFailure::PatchConflicts {
+            paths: crate::parse_apply_conflicts(lines),
+        };
+    }
+    if joined.contains("patch does not apply")
+        || joined.contains("corrupt patch at line")
+        || joined.contains("No valid patches in input")
+        || joined.contains("does not exist in index")
+        || joined.contains("already exists in working directory")
+        || joined.contains("does not match index")
+    {
+        return GitFailure::PatchDoesNotApply {
+            detail: crate::first_apply_error(lines),
+        };
     }
     let collect_files = |marker: &str| -> Vec<String> {
         let mut files = Vec::new();

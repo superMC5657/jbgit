@@ -6,6 +6,7 @@ mod footer_and_keymap_tests;
 mod graph_collapse_tests;
 mod log_tests;
 mod merge_and_update_tests;
+mod patch_and_tree_browser_tests;
 mod remotes_and_credentials_tests;
 mod repo_session_and_worktrees_tests;
 mod runtime_and_editor_tests;

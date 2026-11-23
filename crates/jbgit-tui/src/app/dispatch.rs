@@ -512,7 +512,8 @@ impl AppState {
                     || self.dispatch_annotate_action(&other, &mut effects)
                     || self.dispatch_push_action(&other, &mut effects)
                     || self.dispatch_git_action(&other, &mut effects)
-                    || self.dispatch_repo_action(&other, &mut effects);
+                    || self.dispatch_repo_action(&other, &mut effects)
+                    || self.dispatch_browse_action(&other, &mut effects);
                 if !handled {
                     let default_remote = self.default_remote();
                     let mut modals = Vec::new();

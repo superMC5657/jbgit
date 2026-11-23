@@ -43,6 +43,7 @@ pub fn coalesce_effects(effects: Vec<Effect>) -> Vec<Effect> {
     let mut last_stage_syntax = None;
     let mut last_blame_syntax = None;
     let mut last_range_syntax = None;
+    let mut last_tree_syntax = None;
     let mut last_containing = None;
     let mut last_rebuild_graph = None;
 
@@ -57,6 +58,7 @@ pub fn coalesce_effects(effects: Vec<Effect>) -> Vec<Effect> {
                 SyntaxJobKey::Stage(_) => last_stage_syntax = Some(i),
                 SyntaxJobKey::Blame(_) => last_blame_syntax = Some(i),
                 SyntaxJobKey::RangePatch { .. } => last_range_syntax = Some(i),
+                SyntaxJobKey::TreeBlob(_) => last_tree_syntax = Some(i),
             },
             Effect::ComputeContainingBranches(_) => last_containing = Some(i),
             Effect::RebuildLogGraph(_) => last_rebuild_graph = Some(i),
@@ -76,6 +78,7 @@ pub fn coalesce_effects(effects: Vec<Effect>) -> Vec<Effect> {
                 SyntaxJobKey::Stage(_) => last_stage_syntax == Some(i),
                 SyntaxJobKey::Blame(_) => last_blame_syntax == Some(i),
                 SyntaxJobKey::RangePatch { .. } => last_range_syntax == Some(i),
+                SyntaxJobKey::TreeBlob(_) => last_tree_syntax == Some(i),
             },
             Effect::ComputeContainingBranches(_) => last_containing == Some(i),
             Effect::RebuildLogGraph(_) => last_rebuild_graph == Some(i),

@@ -33,6 +33,8 @@ pub enum InputValidation {
     /// New working-tree location: non-empty and not an existing file or
     /// non-empty directory (relative paths resolve against `base`).
     NewPath { base: std::path::PathBuf },
+    /// Existing file (relative paths resolve against `base`); `Tab` completes.
+    ExistingFile { base: std::path::PathBuf },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -91,6 +93,10 @@ pub enum InputIntent {
     },
     /// Repository switcher `Ctrl+O`: any directory inside a repository.
     OpenRepositoryPath,
+    /// `Apply Patch…`: patch file path (relative to `base` = working tree root).
+    ApplyPatchFile {
+        base: std::path::PathBuf,
+    },
 }
 
 /// Where new working trees go by default (`<parent>/<repo>-<label>`).
@@ -141,6 +147,19 @@ impl WorktreeDialogCtx {
 }
 
 /// Resolves `value` against `base` when it is relative.
+/// `Apply Patch…` path prompt (relative to the working tree root, `Tab` completes).
+pub fn apply_patch_file_dialog(state: &crate::app::AppState) -> Dialog {
+    let base = state.current_workdir();
+    let i18n = &state.i18n;
+    Dialog::Input(InputDialog::new(
+        i18n.t("dialog.apply_patch.path_title"),
+        i18n.t("dialog.apply_patch.path_prompt"),
+        "",
+        InputValidation::ExistingFile { base: base.clone() },
+        InputIntent::ApplyPatchFile { base },
+    ))
+}
+
 pub fn resolve_path(base: &std::path::Path, value: &str) -> std::path::PathBuf {
     let p = std::path::PathBuf::from(value.trim());
     if p.is_absolute() || base.as_os_str().is_empty() {
@@ -213,6 +232,14 @@ impl InputDialog {
                 let v = self.value.trim();
                 (!candidates.iter().any(|c| c == v))
                     .then(|| i18n.t_fmt(error_key, &[("name", v)]))
+            }
+            InputValidation::ExistingFile { base } => {
+                let v = self.value.trim();
+                if v.is_empty() {
+                    return Some(i18n.t("common.cannot_be_empty").to_string());
+                }
+                (!resolve_path(base, v).is_file())
+                    .then(|| i18n.t("dialog.apply_patch.file_not_found").to_string())
             }
             InputValidation::NewPath { base } => {
                 let v = self.value.trim();
@@ -344,6 +371,9 @@ impl InputDialog {
             InputIntent::OpenRepositoryPath => {
                 vec![Action::SwitchRepository(std::path::PathBuf::from(value))]
             }
+            InputIntent::ApplyPatchFile { base } => vec![Action::OpenApplyPatch(
+                jbgit_core::PatchInput::File(resolve_path(base, &value)),
+            )],
         }
     }
 }
@@ -1012,6 +1042,14 @@ pub fn route_dialog_key(dialog: &mut Dialog, key: &KeyEvent, i18n: &I18n) -> Dia
             }
             KeyCode::Char('u') if ctrl => {
                 d.value.clear();
+                DialogKey::Redraw
+            }
+            KeyCode::Tab if matches!(d.validation, InputValidation::ExistingFile { .. }) => {
+                if let InputValidation::ExistingFile { base } = &d.validation
+                    && let Some(next) = crate::patch_view::complete_path(base, &d.value)
+                {
+                    d.value = next;
+                }
                 DialogKey::Redraw
             }
             KeyCode::Tab | KeyCode::BackTab | KeyCode::Down | KeyCode::Up => {

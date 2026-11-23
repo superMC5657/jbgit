@@ -1,4 +1,5 @@
 mod action;
+mod browse;
 mod credentials;
 mod dispatch;
 mod effects;

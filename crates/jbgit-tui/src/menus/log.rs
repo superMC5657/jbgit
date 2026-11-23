@@ -395,6 +395,13 @@ pub fn log_commit_menu_items(state: &AppState) -> Vec<ContextMenuItem> {
             ),
         ],
     ));
+    items.push(ContextMenuItem::from_command(
+        i18n.t("menu.log.browse_revision"),
+        Some('b'),
+        catalog::shortcut_for_action(state, &[KeymapScope::Log], &KeyAction::BrowseRevision)
+            .as_deref(),
+        catalog::browse_revision_command(state),
+    ));
     items.push(run(
         i18n.t("menu.log.goto_revision"),
         Some('g'),

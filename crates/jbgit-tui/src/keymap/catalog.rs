@@ -407,6 +407,12 @@ pub fn is_action_applicable(run: &KeyAction, state: &AppState) -> bool {
         KeyAction::CollapseAllLinearBranches | KeyAction::ExpandAllLinearBranches => {
             state.active_tab == WorkspaceTab::Log
         }
+        KeyAction::ApplyPatch | KeyAction::ApplyPatchClipboard => {
+            state.active_tab == WorkspaceTab::Commit
+        }
+        KeyAction::BrowseRevision => {
+            state.active_tab == WorkspaceTab::Log && state.focused_pane == PaneId::LogCommitTable
+        }
         KeyAction::ChooseParent => {
             state.active_tab == WorkspaceTab::Log
                 && matches!(
@@ -547,6 +553,9 @@ pub fn execute_action(run: &KeyAction, state: &AppState) -> Option<Vec<Action>> 
             Some(vec![Action::RunGitOp(GitOp::Pull { rebase: false })])
         }
         KeyAction::SwitchRepository => Some(vec![Action::OpenRepoSwitcher]),
+        KeyAction::ApplyPatch => Some(notice_on_err(apply_patch_command(state, false))),
+        KeyAction::ApplyPatchClipboard => Some(notice_on_err(apply_patch_command(state, true))),
+        KeyAction::BrowseRevision => Some(notice_on_err(browse_revision_command(state))),
         KeyAction::CollapseLinearBranch => Some(notice_on_err(graph_collapse_selected(state))),
         KeyAction::ExpandLinearBranch => Some(notice_on_err(graph_expand_selected(state))),
         KeyAction::CollapseAllLinearBranches => Some(notice_on_err(graph_collapse_all(state))),
@@ -1050,6 +1059,36 @@ pub fn all_shortcuts_for_action(
 
 fn notice_on_err(result: CommandResult) -> Vec<Action> {
     result.unwrap_or_else(|msg| vec![Action::Notice(msg)])
+}
+
+/// `Apply Patch…` (path prompt) / `Apply Patch from Clipboard`.
+pub fn apply_patch_command(state: &AppState, clipboard: bool) -> CommandResult {
+    if state.repo_snapshot.is_none() {
+        return Err(state.i18n.t("toast.repo_not_loaded").to_string());
+    }
+    state.require_no_ongoing()?;
+    Ok(if clipboard {
+        vec![Action::OpenApplyPatch(jbgit_core::PatchInput::Clipboard)]
+    } else {
+        vec![Action::OpenDialog(Box::new(
+            crate::dialogs::apply_patch_file_dialog(state),
+        ))]
+    })
+}
+
+/// `Browse Repository at Revision` for the selected (single) Log commit.
+pub fn browse_revision_command(state: &AppState) -> CommandResult {
+    let i18n = &state.i18n;
+    let Some(commit) = state.log_commit_at(state.log.graph.selected_idx) else {
+        return Err(i18n.t("menu.log.drop_no_selection").to_string());
+    };
+    if state.selected_commits_oldest_first().len() > 1 {
+        return Err(i18n.t_fmt(
+            "menu.log.need_single",
+            &[("what", i18n.t("menu.log.browse_revision"))],
+        ));
+    }
+    Ok(vec![Action::OpenTreeBrowser { oid: commit.oid }])
 }
 
 /// Linear-branch collapsing is only offered on the unfiltered graph (IDEA

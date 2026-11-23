@@ -173,6 +173,39 @@ mod tests {
     }
 
     #[test]
+    fn apply_patch_failures_and_labels() {
+        let lines = |s: &str| s.lines().map(str::to_string).collect::<Vec<_>>();
+        assert_eq!(
+            classify_failure(&lines(
+                "error: patch failed: f.txt:1\nerror: f.txt: patch does not apply"
+            )),
+            GitFailure::PatchDoesNotApply {
+                detail: "error: f.txt: patch does not apply".into()
+            }
+        );
+        assert_eq!(
+            classify_failure(&lines(
+                "Applied patch to 'f.txt' with conflicts.\nApplied patch to 'g.txt' cleanly.\nU f.txt"
+            )),
+            GitFailure::PatchConflicts {
+                paths: vec!["f.txt".into()]
+            }
+        );
+        let file = GitOp::ApplyPatch {
+            source: crate::PatchInput::File("/tmp/fix.patch".into()),
+            mode: crate::ApplyMode::ThreeWay,
+        };
+        assert_eq!(file.label(), "Apply patch 'fix.patch'");
+        assert_eq!(file.refresh_scope(), RefreshScope::All);
+        assert!(!file.is_network() && !file.is_read_only());
+        let clip = GitOp::ApplyPatch {
+            source: crate::PatchInput::Clipboard,
+            mode: crate::ApplyMode::WorkingTree,
+        };
+        assert_eq!(clip.label(), "Apply patch from clipboard");
+    }
+
+    #[test]
     fn remote_ops_are_classified_for_network_and_refresh() {
         let fetch_one = GitOp::FetchRemote { name: "fork".into() };
         assert!(fetch_one.is_network());

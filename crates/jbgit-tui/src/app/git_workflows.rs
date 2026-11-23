@@ -1337,6 +1337,26 @@ impl AppState {
             Some(GitFailure::Other(msg)) => {
                 self.notify_error(i18n.t_fmt("toast.op_failed_msg", &[("label", &label), ("error", &msg)]));
             }
+            Some(GitFailure::PatchDoesNotApply { detail }) => {
+                self.notify_error(i18n.t_fmt("toast.op_failed_msg", &[("label", &label), ("error", &detail)]));
+            }
+            Some(GitFailure::PatchConflicts { paths }) => {
+                // `git apply --3way` left unmerged entries: resolve them in the
+                // Commit tab's Conflicts group (three-pane merge).
+                let count = paths.len().max(1).to_string();
+                let text = i18n.t_fmt("toast.patch_conflicts", &[("count", &count)]);
+                self.status_notice = Some(text.clone());
+                let mut resolve = vec![Action::SwitchTab(WorkspaceTab::Commit)];
+                if let [one] = paths.as_slice() {
+                    resolve.push(Action::OpenConflictResolver(one.clone()));
+                }
+                self.notification = Some(Notification {
+                    text,
+                    is_error: true,
+                    action: Some((i18n.t("toast.resolve_conflicts_btn").into(), resolve)),
+                });
+                effects.push(Effect::RefreshRepoAndStage);
+            }
             Some(
                 GitFailure::BranchCheckedOutInWorktree { .. }
                 | GitFailure::WorktreeDirty

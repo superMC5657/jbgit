@@ -282,6 +282,15 @@ pub enum HitTarget {
     RepoSwitcherRow(usize),
     /// Row of the `Working Trees` modal.
     WorktreesRow(usize),
+    /// Apply Patch mode radio.
+    ApplyPatchMode(jbgit_core::ApplyMode),
+    /// Apply Patch `[Apply]` (`true`) / `[Cancel]`.
+    ApplyPatchButton {
+        apply: bool,
+    },
+    /// Tree Browser row (index into the flattened rows).
+    TreeBrowserRow(usize),
+    TreeBrowserPreview,
     /// Repository name in the top header (opens the switcher).
     HeaderRepoName,
     BranchPopupFetch,

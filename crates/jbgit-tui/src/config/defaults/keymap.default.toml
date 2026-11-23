@@ -83,6 +83,7 @@ key_bindings = [
     { on = [ "<C-S-->" ], run = "collapse_all_linear_branches", desc = "折叠全部线性分支" },
     { on = [ "<C-S-=>" ], run = "expand_all_linear_branches", desc = "展开全部线性分支" },
     { on = [ "<C-S-+>" ], run = "expand_all_linear_branches", desc = "展开全部线性分支" },
+    { on = [ "<A-t>" ], run = "browse_revision", desc = "按版本浏览仓库文件树 (Browse Repository at Revision)" },
 ]
 
 [branch]
@@ -127,6 +128,8 @@ key_bindings = [
     { on = [ "<A-a>" ], run = "toggle_amend", desc = "切换追加至上一提交 (Amend)" },
     { on = [ "<A-m>" ], run = "toggle_amend", desc = "切换追加至上一提交 (Amend)" },
     { on = [ "<C-a>" ], run = "select_all", desc = "全选变更文件" },
+    { on = [ "<A-p>" ], run = "apply_patch", desc = "应用 Patch 文件 (Apply Patch…)" },
+    { on = [ "<A-S-p>" ], run = "apply_patch_clipboard", desc = "从剪贴板应用 Patch" },
 ]
 
 [diff]

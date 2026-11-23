@@ -9,10 +9,12 @@ pub mod graph;
 pub mod key_token;
 pub mod lru;
 pub mod oid;
+pub mod patch;
 pub mod refs;
 pub mod repo;
 pub mod stage;
 pub mod stage_tracker;
+pub mod tree;
 pub mod ui;
 pub mod worktree;
 
@@ -52,6 +54,10 @@ pub use git_ops::{
 pub use key_token::{KeyToken, KeyTokenError, KeyTokenKind, parse_key_token};
 pub use lru::LruCache;
 pub use oid::Oid;
+pub use patch::{
+    ApplyMode, PatchCheck, PatchCheckKey, PatchFileStat, PatchInput, first_apply_error,
+    parse_apply_check, parse_apply_conflicts,
+};
 pub use refs::{
     BranchColorId, GroupOptions, LabelDisplay, RefGroup, RefGroupKind, branch_color_id,
     group_refs_for_table, shorten_group_label, shorten_ref_name,
@@ -70,6 +76,10 @@ pub use stage_tracker::{
     MAX_DIFF_LINES, SlicedDocument, StageDiffHunk, StageDiffLineMeta, StageLineTracker,
     StagedRange, assemble_hunks, build_diff_hunks, compute_diff_blocks, is_binary_bytes,
     merge_stage_blocks,
+};
+pub use tree::{
+    TreeBlob, TreeBlobContent, TreeBlobKey, TreeEntry, TreeEntryKind, TreeKey, TreeListing,
+    sort_tree_entries,
 };
 pub use ui::{
     BranchTreeNodeId, ChangeNodeId, ModalButton, PaneId, SplitAxis, SplitterId, TreeId,

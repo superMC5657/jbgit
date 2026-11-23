@@ -4,8 +4,8 @@ use std::time::{Duration, Instant};
 
 use jbgit_core::{
     BlameBundle, BlameKey, ConflictDocument, DetailsKey, EpochToken, FileDiff, FileDiffKey,
-    FileHistoryKey, GitOp, Oid, OutgoingKey, PaneId, RefreshScope, RepoSnapshot, RequestSlotId,
-    SplitAxis, SplitterId,
+    FileHistoryKey, GitOp, Oid, OutgoingKey, PaneId, PatchCheckKey, RefreshScope, RepoSnapshot,
+    RequestSlotId, SplitAxis, SplitterId, TreeBlob, TreeBlobKey, TreeKey,
 };
 use jbgit_engine::{StageDiffKey, ThreeDocStageDiff};
 use ratatui::layout::Rect;
@@ -404,6 +404,8 @@ pub enum SyntaxJobKey {
         path: String,
         range: (u32, u32),
     },
+    /// Tree Browser file preview.
+    TreeBlob(TreeBlobKey),
 }
 
 #[derive(Debug, Clone)]
@@ -411,6 +413,7 @@ pub enum SyntaxTarget {
     File(Arc<FileDiff>),
     Stage(Arc<ThreeDocStageDiff>),
     Blame(Arc<BlameBundle>),
+    TreeBlob(Arc<TreeBlob>),
 }
 
 #[derive(Debug, Clone)]
@@ -452,6 +455,22 @@ impl SyntaxJob {
                 };
                 Some(UiAsyncEvent::BlameSyntaxHighlighted {
                     key,
+                    epoch: self.epoch,
+                    highlighted: Arc::new(highlighted),
+                })
+            }
+            SyntaxTarget::TreeBlob(blob) => {
+                let jbgit_core::TreeBlobContent::Text(text) = &blob.content else {
+                    return None;
+                };
+                let highlighted = HighlightedFile::build_cancellable(
+                    &blob.key.path,
+                    text,
+                    text.lines().count(),
+                    &self.cancel,
+                )?;
+                Some(UiAsyncEvent::TreeBlobSyntaxHighlighted {
+                    key: blob.key.clone(),
                     epoch: self.epoch,
                     highlighted: Arc::new(highlighted),
                 })
@@ -500,6 +519,11 @@ pub enum UiAsyncEvent {
         epoch: u64,
         highlighted: Arc<HighlightedFile>,
     },
+    TreeBlobSyntaxHighlighted {
+        key: TreeBlobKey,
+        epoch: u64,
+        highlighted: Arc<HighlightedFile>,
+    },
     ContainingBranches {
         oid: Oid,
         token: EpochToken,
@@ -529,6 +553,9 @@ pub enum Effect {
         tag: String,
     },
     RequestOutgoing(OutgoingKey),
+    RequestPatchCheck(PatchCheckKey),
+    RequestTree(TreeKey),
+    RequestTreeBlob(TreeBlobKey),
     RequestPathMatches(Vec<String>, Arc<RepoSnapshot>),
     RequestStageFileDiff(StageDiffKey),
     RequestSyntaxHighlight(SyntaxJob),

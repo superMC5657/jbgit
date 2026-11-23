@@ -61,6 +61,10 @@ pub enum ModalLayer {
     RepoSwitcher(Box<crate::repo_switcher::RepoSwitcherState>),
     /// Layer 2: `git worktree` list (open / new / lock / remove / prune).
     Worktrees(crate::worktrees_view::WorktreesState),
+    /// Layer 2: Apply Patch preflight (files, mode) and confirmation.
+    ApplyPatch(Box<crate::patch_view::ApplyPatchState>),
+    /// Layer 2: Browse Repository at Revision (lazy tree + file preview).
+    TreeBrowser(Box<crate::tree_browser::TreeBrowserState>),
     /// Layer 2: self-contained three-pane conflict resolver (`Ours | Result | Theirs`).
     ConflictResolver(Box<ConflictMergeState>),
     /// Layer 2: three-way hunk inspector (`HEAD / Staged / Worktree`).
@@ -176,6 +180,8 @@ impl ModalLayer {
             | Self::Remotes(_)
             | Self::RepoSwitcher(_)
             | Self::Worktrees(_)
+            | Self::ApplyPatch(_)
+            | Self::TreeBrowser(_)
             | Self::ConflictResolver(_)
             | Self::ThreeWayInspector { .. }
             | Self::HookError { .. } => 20,
@@ -313,6 +319,20 @@ impl ModalStack {
     pub fn push_dialog(&self) -> Option<&PushDialogState> {
         self.layers.iter().rev().find_map(|l| match l {
             ModalLayer::PushDialog(pd) => Some(pd.as_ref()),
+            _ => None,
+        })
+    }
+
+    pub fn apply_patch_mut(&mut self) -> Option<&mut crate::patch_view::ApplyPatchState> {
+        self.layers.iter_mut().rev().find_map(|l| match l {
+            ModalLayer::ApplyPatch(s) => Some(s.as_mut()),
+            _ => None,
+        })
+    }
+
+    pub fn tree_browser_mut(&mut self) -> Option<&mut crate::tree_browser::TreeBrowserState> {
+        self.layers.iter_mut().rev().find_map(|l| match l {
+            ModalLayer::TreeBrowser(s) => Some(s.as_mut()),
             _ => None,
         })
     }

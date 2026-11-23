@@ -66,6 +66,16 @@ fn route_mouse_scroll(col: u16, row: u16, delta: isize, state: &AppState) -> Vec
     // Route wheel to panel under cursor, NOT necessarily keyboard-focused pane!
     if let Some(region) = state.hit_registry.hit_test(col, row) {
         match &region.target {
+            HitTarget::TreeBrowserRow(_) => {
+                return vec![Action::TreeBrowser(
+                    crate::tree_browser::TreeBrowserAction::Move(delta / 3),
+                )];
+            }
+            HitTarget::TreeBrowserPreview => {
+                return vec![Action::TreeBrowser(
+                    crate::tree_browser::TreeBrowserAction::ScrollPreview(delta),
+                )];
+            }
             HitTarget::BranchTreeNode { .. }
             | HitTarget::BranchTreeToggle { .. }
             | HitTarget::Pane(PaneId::LogBranchesTree) => {
@@ -530,6 +540,10 @@ fn route_mouse_right_down(col: u16, row: u16, state: &AppState) -> Vec<Action> {
             | HitTarget::RemotesRow(_)
             | HitTarget::RepoSwitcherRow(_)
             | HitTarget::WorktreesRow(_)
+            | HitTarget::ApplyPatchMode(_)
+            | HitTarget::ApplyPatchButton { .. }
+            | HitTarget::TreeBrowserRow(_)
+            | HitTarget::TreeBrowserPreview
             | HitTarget::HeaderRepoName
             | HitTarget::BranchPopupFetch
             | HitTarget::BranchPopupSettings

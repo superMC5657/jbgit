@@ -7,8 +7,10 @@ mod commit_changes;
 mod file_diff;
 mod file_history;
 mod outgoing;
+mod patch;
 mod path_matches;
 mod remote_tag;
+mod tree;
 
 use jbgit_core::{Oid, PersonStamp};
 
@@ -23,8 +25,10 @@ pub(crate) use file_history::load_file_history_sync;
 #[cfg(test)]
 pub(crate) use file_history::{parse_file_history_z, parse_line_history};
 pub(crate) use outgoing::load_outgoing_sync;
+pub(crate) use patch::{apply_args, check_patch_sync, resolve_patch_input};
 pub(crate) use path_matches::load_path_matches_sync;
 pub(crate) use remote_tag::check_remote_tag_async;
+pub(crate) use tree::{load_tree_blob_sync, load_tree_sync};
 #[cfg(test)]
 pub(crate) use remote_tag::parse_ls_remote_tag_exists;
 

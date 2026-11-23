@@ -28,6 +28,7 @@
 - [四、远端与凭据 (Remotes & Credentials)](#四远端与凭据-remotes--credentials)
 - [五、切换仓库与 Worktree (Repositories & Working Trees)](#五切换仓库与-worktree-repositories--working-trees)
 - [六、提交图谱：折叠线性分支 (Collapse Linear Branches)](#六提交图谱折叠线性分支-collapse-linear-branches)
+- [七、应用 Patch 与按版本浏览 (Apply Patch & Browse at Revision)](#七应用-patch-与按版本浏览-apply-patch--browse-at-revision)
 
 ---
 
@@ -91,6 +92,7 @@ jbgit 默认采用**零冲突统一键位（`preset = "default"`）**，并通�
 | `g r` / `<Ctrl-g>` | 按提交哈希、分支名或 Tag 快速定位跳转 |
 | `m` | 为合并提交选择 / 切换父提交 |
 | `u` / `<F2>` / `<Del>` | 撤回最近提交 (Uncommit) / 修改说明 (Reword) / 丢弃提交 (Drop) |
+| `<Alt-t>` | *(提交表)* 按版本浏览仓库文件树（Browse Repository at Revision，见[第七章](#七应用-patch-与按版本浏览-apply-patch--browse-at-revision)）；`g r` 跳转弹窗中 `<Alt-Enter>` 同样打开 |
 | `<Ctrl-Shift-->` / `<Ctrl-Shift-=>` | 折叠 / 展开全部线性分支（vim 预设另有 `z c` / `z o` 折叠 / 展开选中处、`z M` / `z R` 全部折叠 / 展开），详见[第六章](#六提交图谱折叠线性分支-collapse-linear-branches) |
 
 ### 分支树面板 (Log Branches Pane)
@@ -123,6 +125,7 @@ jbgit 默认采用**零冲突统一键位（`preset = "default"`）**，并通�
 
 | 快捷键 | 功能描述 |
 | :--- | :--- |
+| `<Alt-p>` / `<Alt-Shift-p>` | 应用 Patch 文件（路径相对仓库根，`Tab` 补全） / 从剪贴板应用 Patch，见[第七章](#七应用-patch-与按版本浏览-apply-patch--browse-at-revision) |
 | `<Space>`（或 `s`/`+`、`u`/`-`） | **暂存 / 取消暂存** 当前选中的文件或代码块 |
 | `<Enter>` / `<Left>` / `<Right>` | 折叠/展开目录容器，或在文件上聚焦右侧 Diff 预览 |
 | `c` | 聚焦提交说明编辑器（变更树与 Commit Diff 预览窗格均可直接按 `c`；编辑区内按 `<Esc>` 返回变更树） |
@@ -469,9 +472,9 @@ prepend_keymap = [
 | 作用域 | 可用 `run` 动作标识符 |
 | :--- | :--- |
 | `global` | `quit`, `help`, `context_menu`, `refresh`, `tab_commit`, `tab_log`, `tab_branches`, `tab_stash`, `tab_console`, `focus_next`, `focus_prev`, `toggle_branches_popup`, `toggle_branches_pane`, `git_fetch`, `git_pull`, `git_push`, `update_project`, `configure_remotes`, `switch_repository`, `worktrees`, `goto_revision`, `palette`, `toggle_glyph_mode`, `cycle_graph_renderer`, `git_status_probe`, `noop` |
-| `log` | `cursor_down`, `cursor_up`, `goto_top`, `goto_bottom`, `page_down_half`, `page_up_half`, `goto_revision`, `focus_filter`, `toggle_branches_pane`, `compare_or_diff`, `zoom_diff`, `copy_hash`, `checkout`, `new_branch`, `uncommit`, `reword`, `drop_commit`, `choose_parent`, `toggle_group`, `file_history`, `annotate`, `collapse_linear_branch`, `expand_linear_branch`, `collapse_all_linear_branches`, `expand_all_linear_branches` |
+| `log` | `cursor_down`, `cursor_up`, `goto_top`, `goto_bottom`, `page_down_half`, `page_up_half`, `goto_revision`, `focus_filter`, `toggle_branches_pane`, `compare_or_diff`, `zoom_diff`, `copy_hash`, `checkout`, `new_branch`, `uncommit`, `reword`, `drop_commit`, `choose_parent`, `toggle_group`, `file_history`, `annotate`, `collapse_linear_branch`, `expand_linear_branch`, `collapse_all_linear_branches`, `expand_all_linear_branches`, `browse_revision` |
 | `branch` | `branch_search`, `toggle_favorite`, `checkout`, `new_branch`, `rename_branch`, `delete_branch`, `navigate_branch` |
-| `commit` | `cursor_down`, `cursor_up`, `goto_top`, `goto_bottom`, `toggle_stage`, `stage_selection`, `unstage_selection`, `focus_commit_msg`, `commit`, `commit_and_push`, `toggle_amend`, `toggle_signoff`, `commit_history`, `select_all`, `discard_changes`, `toggle_group`, `edit_file`, `file_history`, `annotate` |
+| `commit` | `cursor_down`, `cursor_up`, `goto_top`, `goto_bottom`, `toggle_stage`, `stage_selection`, `unstage_selection`, `focus_commit_msg`, `commit`, `commit_and_push`, `toggle_amend`, `toggle_signoff`, `commit_history`, `select_all`, `discard_changes`, `toggle_group`, `edit_file`, `file_history`, `annotate`, `apply_patch`, `apply_patch_clipboard` |
 | `diff` | `cursor_down`, `cursor_up`, `goto_top`, `goto_bottom`, `prev_hunk`, `next_hunk`, `prev_file`, `next_file`, `toggle_side_by_side`, `cycle_diff_context`, `cycle_diff_dock`, `zoom_diff`, `toggle_stage`, `stage_selection`, `unstage_selection`, `toggle_visual`, `rollback_selection`, `undo_rollback`, `switch_diff_side`, `three_way_inspector` |
 | `stash` | `cursor_down`, `cursor_up`, `goto_top`, `goto_bottom`, `stash_new`, `stash_apply`, `stash_pop`, `stash_drop`, `stash_branch`, `stash_clear`, `toggle_group` |
 | `console` | `cursor_down`, `cursor_up`, `goto_top`, `goto_bottom`, `page_down_half`, `page_up_half` |
@@ -588,3 +591,42 @@ jbgit 同一时间只绑定**一个活动仓库**（多根同步模型不做，�
 - 折叠标记：片段上端的节点绘制为空心（`HEAD` 节点保留 HEAD 颜色）；字符网格与矢量两种渲染引擎一致。多条平行片段（菱形 / 章鱼合并的多个分支臂）共用一条虚线边，点击后一并展开。
 - 「全部折叠」会保留选中提交所在的片段；之后刷新出的新片段也会自动折叠。跳转到被折叠的提交（`g r` 跳转、点击父提交哈希、导航后退 / 前进）时自动展开其所在片段；刷新后选中提交落入新片段时同样自动展开。
 - 筛选生效或开启 `First Parent Only` 时折叠不可用（菜单置灰并说明原因），与 IDEA 一致；关闭筛选后恢复原折叠状态。
+
+---
+
+## 七、应用 Patch 与按版本浏览 (Apply Patch & Browse at Revision)
+
+### 1. 应用 Patch (`Apply Patch…`)
+
+入口：Stage 变更树右键菜单 `Apply Patch…` / `Apply Patch from Clipboard`，或 `[1 Commit]` 中 `<Alt-p>` / `<Alt-Shift-p>`。`Apply Patch…` 先询问 Patch 文件路径（相对仓库根目录或绝对路径，`Tab` 补全目录与文件名，文件不存在时红字提示）。
+
+对话框打开时先以只读方式运行 `git apply --check --numstat [模式] --whitespace=nowarn` 预检（不修改工作区与暂存区），列出将受影响的文件与增删行数；预检失败时显示 git 的首条错误，并提示切换到三方合并。
+
+| 快捷键 | 功能描述 |
+| :--- | :--- |
+| `1` / `2` / `3`（或 `Tab` / `←` / `→` / `m`） | 应用模式：仅工作区（`git apply`） / 工作区 + 暂存区（`--index`） / 三方合并（`--3way`）；切换后重新预检 |
+| `j` / `k` | 滚动文件列表 |
+| `<Enter>` / `a` | 应用（预检未通过时禁用） |
+| `<Esc>` / `q` | 取消 |
+
+- 三方合并预检会标出将产生冲突的文件；应用后冲突文件出现在 `[1 Commit]` 的冲突分组中，通知栏 `<Alt-z>`「解决冲突」直接打开三栏合并窗口（单个冲突文件时）。
+- 剪贴板读取：终端 OSC 52 只能写入剪贴板，因此 jbgit 调用系统工具读取（Windows `Get-Clipboard`、macOS `pbpaste`、Linux `wl-paste` / `xclip` / `xsel`），内容经 stdin 交给 `git apply -`；控制台只记录命令行，不记录 Patch 内容。整段统一为 CRLF 换行时会转换为 LF。环境变量 `JBGIT_CLIPBOARD_FILE` 可把"剪贴板"指向一个文件（测试 / 无图形环境）。
+
+### 2. 按版本浏览仓库 (`Browse Repository at Revision`)
+
+入口：Log 提交右键菜单 `Browse Repository at Revision`、提交表 `<Alt-t>`、`g r` / `<Ctrl-g>` 跳转弹窗中输入修订后按 `<Alt-Enter>`。
+
+浮窗左侧为该提交的目录树（目录按层懒加载，目录在前），右侧为文件内容预览（语法高亮；二进制、超过 4 MiB 的文件显示占位；子模块条目显示其指向的提交且只读）。
+
+| 快捷键 | 功能描述 |
+| :--- | :--- |
+| `j` / `k` / `<PageUp>` / `<PageDown>` / `<Home>` / `G` | 移动（焦点在预览时滚动预览；`<Ctrl-d>` / `<Ctrl-u>` 半页滚动预览） |
+| `→` / `l` / `<Enter>` / 双击 | 展开目录 / 聚焦文件预览 |
+| `←` | 折叠目录或跳到父目录（预览中返回目录树） |
+| `<Tab>` | 在目录树与预览之间切换焦点 |
+| `c` | 与本地对比（文件：该文件该版本 vs 工作区；目录：整个提交 vs 工作区），在 Log 变更树中打开 |
+| `g` | 获取此版本（确认后 `git checkout <rev> -- <path>`，同时覆盖暂存区） |
+| `a` | 以该版本逐行追溯（Annotate），`<Esc>` 返回浏览器 |
+| `h` | 从该版本开始查看文件 / 目录历史 |
+| `y` | 复制路径 |
+| `<Esc>` / `q` | 关闭 |

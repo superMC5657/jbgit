@@ -250,6 +250,18 @@ pub fn route_overlay_and_stash_click(
             }
             out
         }
+        HitTarget::ApplyPatchMode(mode) => vec![Action::ApplyPatchSetMode(Some(*mode))],
+        HitTarget::ApplyPatchButton { apply: true } => vec![Action::ApplyPatchConfirm],
+        HitTarget::ApplyPatchButton { apply: false } => vec![Action::PopModal],
+        HitTarget::TreeBrowserRow(idx) => {
+            use crate::tree_browser::TreeBrowserAction;
+            if is_double {
+                vec![Action::TreeBrowser(TreeBrowserAction::Toggle(*idx))]
+            } else {
+                vec![Action::TreeBrowser(TreeBrowserAction::Select(*idx))]
+            }
+        }
+        HitTarget::TreeBrowserPreview => Vec::new(),
         HitTarget::WorktreesRow(idx) => {
             let mut out = vec![Action::WorktreesSelect(*idx)];
             if is_double {

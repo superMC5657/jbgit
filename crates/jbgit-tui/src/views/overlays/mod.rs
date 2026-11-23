@@ -84,6 +84,12 @@ fn render_modal_layer(
         ModalLayer::Worktrees(ws) => {
             crate::worktrees_view::render_worktrees_modal(frame, screen, state, ws, ctx, z);
         }
+        ModalLayer::ApplyPatch(s) => {
+            crate::patch_view::render_apply_patch_modal(frame, screen, s, ctx, z);
+        }
+        ModalLayer::TreeBrowser(s) => {
+            crate::tree_browser::render_tree_browser(frame, screen, s, ctx, z);
+        }
         ModalLayer::ConflictResolver(_) => {
             crate::views::conflict_merge::render_conflict_merge_modal(
                 frame, screen, state, ctx, z,

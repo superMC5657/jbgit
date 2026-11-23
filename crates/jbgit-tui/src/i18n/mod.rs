@@ -414,6 +414,16 @@ impl I18n {
                 self.t_fmt("git_op.unlock_worktree", &[("path", &path.display().to_string())])
             }
             GitOp::PruneWorktrees => self.t("git_op.prune_worktrees").to_string(),
+            GitOp::ApplyPatch { source, .. } => match source {
+                jbgit_core::PatchInput::File(path) => {
+                    let name = path.file_name().map_or_else(
+                        || path.display().to_string(),
+                        |n| n.to_string_lossy().into_owned(),
+                    );
+                    self.t_fmt("git_op.apply_patch_file", &[("name", &name)])
+                }
+                jbgit_core::PatchInput::Clipboard => self.t("git_op.apply_patch_clipboard").to_string(),
+            },
             GitOp::Rebase { onto, branch } => match branch {
                 Some(b) => self.t_fmt("git_op.rebase_branch", &[("branch", b), ("onto", onto)]),
                 None => self.t_fmt("git_op.rebase_onto", &[("onto", onto)]),

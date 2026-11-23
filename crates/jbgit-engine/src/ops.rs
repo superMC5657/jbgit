@@ -451,6 +451,7 @@ pub(crate) fn compile_simple_steps(op: &GitOp) -> Option<Vec<CompiledStep>> {
             }
         }
         GitOp::RewriteHistory { .. }
+        | GitOp::ApplyPatch { .. }
         | GitOp::AddToIgnore { .. }
         | GitOp::DeleteFiles { .. }
         | GitOp::Sequence(_)
@@ -771,6 +772,33 @@ impl<R: GitCliRunner> Runner<'_, R> {
             return res;
         }
         match op.clone() {
+            GitOp::ApplyPatch { source, mode } => {
+                let (file, stdin) = match crate::details::resolve_patch_input(self.loc, &source) {
+                    Ok(x) => x,
+                    Err(e) => {
+                        return GitOpRunResult {
+                            outcome: GitOpOutcome::failed(op, GitFailure::PatchDoesNotApply {
+                                detail: e,
+                            }),
+                            index_lock: None,
+                        };
+                    }
+                };
+                let mut step = CompiledStep::new(crate::details::apply_args(
+                    mode,
+                    false,
+                    file.as_deref(),
+                ));
+                step.stdin = stdin;
+                let mut res = self.run_steps(op, vec![step]).await;
+                // `--3way` prints `U <path>` on stdout and the notes on stderr.
+                if let Some(GitFailure::PatchConflicts { paths }) = &mut res.outcome.failure
+                    && paths.is_empty()
+                {
+                    *paths = jbgit_core::parse_apply_conflicts(&res.outcome.stdout);
+                }
+                res
+            }
             GitOp::RewriteHistory { base, todo } => {
                 let dir = self.loc.git_dir.join("jbgit-rebase");
                 let _ = std::fs::remove_dir_all(&dir);

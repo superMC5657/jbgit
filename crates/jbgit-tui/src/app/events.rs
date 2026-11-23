@@ -79,6 +79,25 @@ impl AppState {
                 key: SyntaxJobKey::Blame(_),
                 ..
             } => {}
+            UiAsyncEvent::SyntaxHighlighted {
+                key: SyntaxJobKey::TreeBlob(_),
+                ..
+            } => {}
+            UiAsyncEvent::TreeBlobSyntaxHighlighted {
+                key,
+                epoch,
+                highlighted,
+            } => {
+                if !self.tree_syntax.finish_cancelable(&key, epoch) {
+                    return effects;
+                }
+                if let Some(s) = self.modal_stack.tree_browser_mut()
+                    && s.preview_requested.as_ref() == Some(&key)
+                {
+                    s.preview_syntax = Some(highlighted);
+                    self.needs_redraw = true;
+                }
+            }
             UiAsyncEvent::BlameSyntaxHighlighted {
                 key,
                 epoch,
@@ -412,6 +431,18 @@ impl AppState {
                         ]))],
                     });
                 }
+            }
+            EngineEvent::PatchChecked { check, epoch } => self.on_patch_checked(check, epoch),
+            EngineEvent::TreeLoaded { listing, epoch } => {
+                self.on_tree_loaded(listing, epoch, &mut effects);
+            }
+            EngineEvent::TreeLoadFailed {
+                key,
+                message,
+                epoch,
+            } => self.on_tree_load_failed(&key, message, epoch, &mut effects),
+            EngineEvent::TreeBlobLoaded { blob, epoch } => {
+                self.on_tree_blob_loaded(blob, epoch, &mut effects);
             }
             EngineEvent::OutgoingLoaded { bundle, epoch } => {
                 if !self

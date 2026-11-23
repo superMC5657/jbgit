@@ -1,6 +1,7 @@
 pub mod askpass;
 pub(crate) mod blob_reader;
 pub(crate) mod cli;
+pub mod clipboard;
 pub(crate) mod details;
 pub mod error;
 pub(crate) mod ops;

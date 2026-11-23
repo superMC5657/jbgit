@@ -114,6 +114,8 @@ fn route_modal_key(key: KeyEvent, state: &AppState) -> Vec<Action> {
         ModalLayer::Remotes(_) => crate::remotes_view::route_remotes_key(&key, state),
         ModalLayer::RepoSwitcher(_) => crate::repo_switcher::route_repo_switcher_key(&key, state),
         ModalLayer::Worktrees(_) => crate::worktrees_view::route_worktrees_key(&key, state),
+        ModalLayer::ApplyPatch(_) => crate::patch_view::route_apply_patch_key(&key, state),
+        ModalLayer::TreeBrowser(_) => crate::tree_browser::route_tree_browser_key(&key, state),
         ModalLayer::ConflictResolver(_) => route_conflict_merge_key(&key, state),
         ModalLayer::ThreeWayInspector { .. } | ModalLayer::HookError { .. } => match key.code {
             KeyCode::Esc | KeyCode::Enter => vec![Action::PopModal],
@@ -145,6 +147,9 @@ fn route_modal_key(key: KeyEvent, state: &AppState) -> Vec<Action> {
                             expr: query,
                         },
                     ],
+                    PopupKind::GoToRevision if key.modifiers.contains(KeyModifiers::ALT) => {
+                        vec![Action::PopModal, Action::BrowseRevisionExpr(query)]
+                    }
                     PopupKind::GoToRevision => {
                         vec![Action::PopModal, Action::GoToRevision(query)]
                     }

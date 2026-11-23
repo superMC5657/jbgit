@@ -7,17 +7,18 @@ use jbgit_core::{
     AmendCommitPreview, BlameBundle, BlameKey, CommitChangesBundle, ConflictDocument, ConsoleStream,
     DetailsKey, EpochToken, FileDiff, FileDiffKey, FileHistoryBundle, FileHistoryKey,
     FileStatusKind, GitConsoleEntry, GitOp, GitOpOutcome, LruCache, Oid, OutgoingBundle,
-    OutgoingKey, RefreshScope, RepoSnapshot, RequestSlotId, SignatureStatus, SlotRegistry,
-    StageNodeKind, StageStatusSnapshot, StageTarget,
+    OutgoingKey, PatchCheck, PatchCheckKey, RefreshScope, RepoSnapshot, RequestSlotId,
+    SignatureStatus, SlotRegistry, StageNodeKind, StageStatusSnapshot, StageTarget, TreeBlob,
+    TreeBlobKey, TreeKey, TreeListing,
 };
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 
 use crate::askpass::AskpassEnv;
 use crate::cli::{CliCommand, CliStreamEvent, GitCliExecutor, GitExecutableInfo};
 use crate::details::{
-    check_remote_tag_async, load_blame_sync, load_commit_details_sync,
+    check_patch_sync, check_remote_tag_async, load_blame_sync, load_commit_details_sync,
     load_file_diff_with_oids_sync, load_file_history_sync, load_outgoing_sync,
-    load_path_matches_sync, verify_commit_signature_sync,
+    load_path_matches_sync, load_tree_blob_sync, load_tree_sync, verify_commit_signature_sync,
 };
 use crate::error::EngineError;
 use crate::pool::{
@@ -74,6 +75,18 @@ pub enum TaskRequest {
     /// Pending commits and net file count for the Push dialog.
     LoadOutgoing {
         key: OutgoingKey,
+    },
+    /// Read-only `git apply --check --numstat` preflight of the Apply Patch dialog.
+    CheckPatch {
+        key: PatchCheckKey,
+    },
+    /// One directory of a commit's tree (Browse Repository at Revision).
+    LoadTree {
+        key: TreeKey,
+    },
+    /// File content at a revision for the tree browser preview.
+    LoadTreeBlob {
+        key: TreeBlobKey,
     },
     /// Commits of `snapshot` touching any of `paths` (log `Paths` filter).
     LoadPathMatches {
@@ -145,6 +158,9 @@ impl TaskRequest {
             Self::LoadBlame { .. } => Some(RequestSlotId::Annotate),
             Self::CheckRemoteTag { .. } => Some(RequestSlotId::RemoteTagCheck),
             Self::LoadOutgoing { .. } => Some(RequestSlotId::PushOutgoing),
+            Self::CheckPatch { .. } => Some(RequestSlotId::PatchCheck),
+            Self::LoadTree { .. } => Some(RequestSlotId::TreeBrowser),
+            Self::LoadTreeBlob { .. } => Some(RequestSlotId::TreeBlob),
             Self::LoadPathMatches { .. } => Some(RequestSlotId::PathFilter),
             Self::LoadStageStatus { .. } => Some(RequestSlotId::StageStatus),
             Self::LoadStageFileDiff { .. } => Some(RequestSlotId::StageFileDiff),
@@ -214,6 +230,23 @@ pub enum EngineEvent {
     },
     OutgoingLoaded {
         bundle: Arc<OutgoingBundle>,
+        epoch: u64,
+    },
+    PatchChecked {
+        check: Arc<PatchCheck>,
+        epoch: u64,
+    },
+    TreeLoaded {
+        listing: Arc<TreeListing>,
+        epoch: u64,
+    },
+    TreeLoadFailed {
+        key: TreeKey,
+        message: String,
+        epoch: u64,
+    },
+    TreeBlobLoaded {
+        blob: Arc<TreeBlob>,
         epoch: u64,
     },
     PathMatchesLoaded {
@@ -329,6 +362,21 @@ pub trait EngineBackend: Send + Sync {
     fn request_outgoing(&self, key: OutgoingKey) -> u64 {
         self.dispatch(TaskRequest::LoadOutgoing { key })
             .expect("LoadOutgoing always has a slot")
+    }
+
+    fn request_patch_check(&self, key: PatchCheckKey) -> u64 {
+        self.dispatch(TaskRequest::CheckPatch { key })
+            .expect("CheckPatch always has a slot")
+    }
+
+    fn request_tree(&self, key: TreeKey) -> u64 {
+        self.dispatch(TaskRequest::LoadTree { key })
+            .expect("LoadTree always has a slot")
+    }
+
+    fn request_tree_blob(&self, key: TreeBlobKey) -> u64 {
+        self.dispatch(TaskRequest::LoadTreeBlob { key })
+            .expect("LoadTreeBlob always has a slot")
     }
 
     fn request_path_matches(&self, paths: Vec<String>, snapshot: Arc<RepoSnapshot>) -> u64 {
@@ -704,6 +752,66 @@ fn handle_task_request(ctx: &SupervisorContext, task: ScheduledTask) {
                     .await
                 },
                 move |bundle| EngineEvent::OutgoingLoaded { bundle, epoch },
+            );
+        }
+        TaskRequest::CheckPatch { key } => {
+            let pool = Arc::clone(&ctx.pool);
+            let loc = ctx.location.clone();
+            let token = token.expect("CheckPatch token");
+            let epoch = token.epoch();
+            spawn_epoch_task(
+                &ctx.event_tx,
+                async move {
+                    pool.run_epoch(TaskPriority::Interactive, token, move |tok| {
+                        check_patch_sync(&loc, &key, tok).map(Arc::new)
+                    })
+                    .await
+                },
+                move |check| EngineEvent::PatchChecked { check, epoch },
+            );
+        }
+        TaskRequest::LoadTree { key } => {
+            let pool = Arc::clone(&ctx.pool);
+            let loc = ctx.location.clone();
+            let token = token.expect("LoadTree token");
+            let epoch = token.epoch();
+            let tx = ctx.event_tx.clone();
+            tokio::spawn(async move {
+                let fail_key = key.clone();
+                let res = pool
+                    .run_epoch(TaskPriority::Interactive, token, move |tok| {
+                        load_tree_sync(&loc, &key, tok).map(Arc::new)
+                    })
+                    .await;
+                match res {
+                    Ok(listing) => {
+                        let _ = tx.send(EngineEvent::TreeLoaded { listing, epoch });
+                    }
+                    Err(EngineError::Cancelled) => {}
+                    Err(e) => {
+                        let _ = tx.send(EngineEvent::TreeLoadFailed {
+                            key: fail_key,
+                            message: e.to_string(),
+                            epoch,
+                        });
+                    }
+                }
+            });
+        }
+        TaskRequest::LoadTreeBlob { key } => {
+            let pool = Arc::clone(&ctx.pool);
+            let loc = ctx.location.clone();
+            let token = token.expect("LoadTreeBlob token");
+            let epoch = token.epoch();
+            spawn_epoch_task(
+                &ctx.event_tx,
+                async move {
+                    pool.run_epoch(TaskPriority::Interactive, token, move |tok| {
+                        load_tree_blob_sync(&loc, &key, tok).map(Arc::new)
+                    })
+                    .await
+                },
+                move |blob| EngineEvent::TreeBlobLoaded { blob, epoch },
             );
         }
         TaskRequest::LoadPathMatches { paths, snapshot } => {

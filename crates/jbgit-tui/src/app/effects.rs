@@ -87,6 +87,24 @@ pub fn execute_effects_with_host(
                             .request_slots
                             .note_dispatched(RequestSlotId::RemoteTagCheck, epoch);
                     }
+                    Effect::RequestPatchCheck(key) => {
+                        let epoch = handle.request_patch_check(key);
+                        state
+                            .request_slots
+                            .note_dispatched(RequestSlotId::PatchCheck, epoch);
+                    }
+                    Effect::RequestTree(key) => {
+                        let epoch = handle.request_tree(key);
+                        state
+                            .request_slots
+                            .note_dispatched(RequestSlotId::TreeBrowser, epoch);
+                    }
+                    Effect::RequestTreeBlob(key) => {
+                        let epoch = handle.request_tree_blob(key);
+                        state
+                            .request_slots
+                            .note_dispatched(RequestSlotId::TreeBlob, epoch);
+                    }
                     Effect::RequestOutgoing(key) => {
                         let epoch = handle.request_outgoing(key);
                         state
