@@ -9,6 +9,7 @@ use unicode_width::UnicodeWidthStr;
 use crate::app::{AppState, RenderContext};
 use crate::hit_test::HitTarget;
 use crate::theme::RefBadgeKind;
+use crate::views::log_details::signature_badge_and_desc_keys;
 
 /// Renders a hover tooltip when the pointer rests over a Detached HEAD pill or
 /// a `+N` overflow pill and no modal layer is open.
@@ -110,6 +111,41 @@ pub fn render_hover_tooltip(
                 ctx.theme.border_focused,
                 ref_lines,
             )
+        }
+        HitTarget::CommitSignatureCell { commit_oid, .. } => {
+            let Some(sig) = state.diff_caches.signatures.peek(commit_oid) else {
+                return;
+            };
+            if !sig.status.is_signed() {
+                return;
+            }
+            let (_, desc_key) = signature_badge_and_desc_keys(sig.status);
+            let (icon_fg, _, _) = ctx.theme.signature_colors(sig.status);
+            let mut sig_lines = vec![Line::from(vec![
+                Span::styled(
+                    format!(" {} ", sig.status.icon()),
+                    Style::default().fg(icon_fg),
+                ),
+                Span::styled(
+                    ctx.t(desc_key).to_string(),
+                    Style::default().fg(ctx.theme.fg_bright),
+                ),
+            ])];
+            if let Some(signer) = &sig.signer {
+                sig_lines.push(Line::from(Span::styled(
+                    state
+                        .i18n
+                        .t_fmt("tooltip.sig_signer", &[("signer", signer)]),
+                    Style::default().fg(ctx.theme.fg_primary),
+                )));
+            }
+            if let Some(key) = &sig.key {
+                sig_lines.push(Line::from(Span::styled(
+                    state.i18n.t_fmt("tooltip.sig_key", &[("key", key)]),
+                    Style::default().fg(ctx.theme.fg_muted),
+                )));
+            }
+            (ctx.t("tooltip.signature_title"), icon_fg, sig_lines)
         }
         _ => return,
     };

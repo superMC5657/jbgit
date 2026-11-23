@@ -4,12 +4,12 @@ use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Mutex};
 
 use jbgit_core::{
-    AmendCommitPreview, BlameBundle, BlameKey, CommitChangesBundle, ConflictDocument, ConsoleStream,
-    DetailsKey, EpochToken, FileDiff, FileDiffKey, FileHistoryBundle, FileHistoryKey,
-    FileStatusKind, GitConsoleEntry, GitOp, GitOpOutcome, LruCache, Oid, OutgoingBundle,
-    OutgoingKey, PatchCheck, PatchCheckKey, RefreshScope, RepoSnapshot, RequestSlotId,
-    SignatureStatus, SlotRegistry, StageNodeKind, StageStatusSnapshot, StageTarget, TreeBlob,
-    TreeBlobKey, TreeKey, TreeListing,
+    AmendCommitPreview, BlameBundle, BlameKey, CommitChangesBundle, CommitSignature,
+    ConflictDocument, ConsoleStream, DetailsKey, EpochToken, FileDiff, FileDiffKey,
+    FileHistoryBundle, FileHistoryKey, FileStatusKind, GitConsoleEntry, GitOp, GitOpOutcome,
+    LruCache, Oid, OutgoingBundle, OutgoingKey, PatchCheck, PatchCheckKey, RefreshScope,
+    RepoSnapshot, RequestSlotId, SignatureStatus, SlotRegistry, StageNodeKind,
+    StageStatusSnapshot, StageTarget, TreeBlob, TreeBlobKey, TreeKey, TreeListing,
 };
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 
@@ -19,6 +19,7 @@ use crate::details::{
     check_patch_sync, check_remote_tag_async, load_blame_sync, load_commit_details_sync,
     load_file_diff_with_oids_sync, load_file_history_sync, load_outgoing_sync,
     load_path_matches_sync, load_tree_blob_sync, load_tree_sync, verify_commit_signature_sync,
+    verify_commit_signatures_batch_sync,
 };
 use crate::error::EngineError;
 use crate::pool::{
@@ -93,6 +94,10 @@ pub enum TaskRequest {
         paths: Vec<String>,
         snapshot: Arc<RepoSnapshot>,
     },
+    /// Batch signature verification (`git log --no-walk --stdin`) for Log table rows.
+    VerifyCommitSignatures {
+        oids: Vec<Oid>,
+    },
     LoadStageStatus {
         include_ignored: bool,
     },
@@ -161,6 +166,7 @@ impl TaskRequest {
             Self::CheckPatch { .. } => Some(RequestSlotId::PatchCheck),
             Self::LoadTree { .. } => Some(RequestSlotId::TreeBrowser),
             Self::LoadTreeBlob { .. } => Some(RequestSlotId::TreeBlob),
+            Self::VerifyCommitSignatures { .. } => Some(RequestSlotId::LogSignatures),
             Self::LoadPathMatches { .. } => Some(RequestSlotId::PathFilter),
             Self::LoadStageStatus { .. } => Some(RequestSlotId::StageStatus),
             Self::LoadStageFileDiff { .. } => Some(RequestSlotId::StageFileDiff),
@@ -201,7 +207,11 @@ pub enum EngineEvent {
     },
     CommitSignatureVerified {
         oid: Oid,
-        status: SignatureStatus,
+        signature: CommitSignature,
+    },
+    CommitSignaturesLoaded {
+        signatures: Vec<(Oid, CommitSignature)>,
+        epoch: u64,
     },
     FileDiffLoaded {
         slot: RequestSlotId,
@@ -379,6 +389,11 @@ pub trait EngineBackend: Send + Sync {
             .expect("LoadTreeBlob always has a slot")
     }
 
+    fn request_commit_signatures(&self, oids: Vec<Oid>) -> u64 {
+        self.dispatch(TaskRequest::VerifyCommitSignatures { oids })
+            .expect("VerifyCommitSignatures always has a slot")
+    }
+
     fn request_path_matches(&self, paths: Vec<String>, snapshot: Arc<RepoSnapshot>) -> u64 {
         self.dispatch(TaskRequest::LoadPathMatches { paths, snapshot })
             .expect("LoadPathMatches always has a slot")
@@ -527,7 +542,7 @@ struct SupervisorContext {
     mutation_guard: Arc<MutationGuard>,
     event_tx: UnboundedSender<EngineEvent>,
     op_ids: Arc<AtomicU64>,
-    sig_cache: Arc<Mutex<LruCache<Oid, SignatureStatus>>>,
+    sig_cache: Arc<Mutex<LruCache<Oid, CommitSignature>>>,
     /// Credential bridge for network [`GitOp`]s (`None` = prompts fail fast).
     askpass: Option<Arc<AskpassEnv>>,
 }
@@ -599,7 +614,7 @@ impl EngineSupervisor {
             mutation_guard: Arc::clone(&mutation_guard),
             event_tx,
             op_ids: Arc::new(AtomicU64::new(1)),
-            sig_cache: Arc::new(Mutex::new(LruCache::new(256))),
+            sig_cache: Arc::new(Mutex::new(LruCache::new(1024))),
             askpass: askpass.map(Arc::new),
         };
 
@@ -813,6 +828,9 @@ fn handle_task_request(ctx: &SupervisorContext, task: ScheduledTask) {
                 },
                 move |blob| EngineEvent::TreeBlobLoaded { blob, epoch },
             );
+        }
+        TaskRequest::VerifyCommitSignatures { oids } => {
+            spawn_verify_commit_signatures(ctx, oids, token.expect("LogSignatures token"));
         }
         TaskRequest::LoadPathMatches { paths, snapshot } => {
             let pool = Arc::clone(&ctx.pool);
@@ -1080,8 +1098,8 @@ fn spawn_load_commit_details(
                     let mut cache = sig_cache.lock().unwrap_or_else(|e| e.into_inner());
                     let b_mut = Arc::make_mut(&mut bundle);
                     for d in &mut b_mut.details {
-                        if d.signature == SignatureStatus::SignedUnverified {
-                            if let Some(&cached) = cache.get(&d.oid) {
+                        if d.signature.status == SignatureStatus::Pending {
+                            if let Some(cached) = cache.get(&d.oid).cloned() {
                                 d.signature = cached;
                             } else {
                                 unverified_oids.push(d.oid);
@@ -1102,13 +1120,13 @@ fn spawn_load_commit_details(
                             if sig_token.is_stale() {
                                 break;
                             }
-                            let status = verify_commit_signature_sync(&git_dir, oid);
+                            let signature = verify_commit_signature_sync(&git_dir, oid);
                             {
                                 let mut cache =
                                     sig_cache.lock().unwrap_or_else(|e| e.into_inner());
-                                cache.insert(oid, status);
+                                cache.insert(oid, signature.clone());
                             }
-                            let _ = tx.send(EngineEvent::CommitSignatureVerified { oid, status });
+                            let _ = tx.send(EngineEvent::CommitSignatureVerified { oid, signature });
                         }
                     });
                 }
@@ -1117,6 +1135,59 @@ fn spawn_load_commit_details(
             Err(e) => {
                 let _ = tx.send(EngineEvent::Error(e.to_string()));
             }
+        }
+    });
+}
+
+fn spawn_verify_commit_signatures(
+    ctx: &SupervisorContext,
+    oids: Vec<Oid>,
+    token: EpochToken,
+) {
+    let git_dir = ctx.location.git_dir.clone();
+    let tx = ctx.event_tx.clone();
+    let sig_cache = Arc::clone(&ctx.sig_cache);
+    let epoch = token.epoch();
+    tokio::spawn(async move {
+        if token.is_stale() {
+            return;
+        }
+        let mut results = Vec::with_capacity(oids.len());
+        let mut uncached = Vec::new();
+        {
+            let mut cache = sig_cache.lock().unwrap_or_else(|e| e.into_inner());
+            for oid in oids {
+                if let Some(cached) = cache.get(&oid).cloned() {
+                    results.push((oid, cached));
+                } else {
+                    uncached.push(oid);
+                }
+            }
+        }
+        if !uncached.is_empty() {
+            let sig_token = token.clone();
+            let cache_ref = Arc::clone(&sig_cache);
+            let verified = tokio::task::spawn_blocking(move || {
+                verify_commit_signatures_batch_sync(&git_dir, &uncached, &sig_token)
+            })
+            .await
+            .unwrap_or_default();
+            if token.is_stale() {
+                return;
+            }
+            {
+                let mut cache = cache_ref.lock().unwrap_or_else(|e| e.into_inner());
+                for (oid, sig) in &verified {
+                    cache.insert(*oid, sig.clone());
+                }
+            }
+            results.extend(verified);
+        }
+        if !token.is_stale() {
+            let _ = tx.send(EngineEvent::CommitSignaturesLoaded {
+                signatures: results,
+                epoch,
+            });
         }
     });
 }

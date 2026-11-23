@@ -11,7 +11,7 @@ use std::time::Instant;
 
 use jbgit_core::{
     ChangeRowKind, ChangeTreeRow, CommitChangesBundle, DetailsKey, DiffContext, DiffHunk,
-    FileChange, FileDiff, FileDiffKey, LruCache, Oid, SignatureStatus, StageDiffHunk,
+    CommitSignature, FileChange, FileDiff, FileDiffKey, LruCache, Oid, StageDiffHunk,
     build_change_rows, side_by_side_rows,
 };
 use rustc_hash::FxHashSet;
@@ -21,6 +21,7 @@ use crate::syntax::{HighlightedDiff, LazyWordDiffCache};
 
 pub const DETAILS_CACHE_CAPACITY: usize = 256;
 pub const DIFF_CACHE_CAPACITY: usize = 64;
+pub const SIGNATURES_CACHE_CAPACITY: usize = 1024;
 
 /// Single global LRU store shared by Log, Stash, and File History so any
 /// commit details, file diff, or syntax highlight loaded in one view is
@@ -30,7 +31,7 @@ pub struct DiffCacheStore {
     pub details: LruCache<DetailsKey, Arc<CommitChangesBundle>>,
     pub diffs: LruCache<FileDiffKey, Arc<FileDiff>>,
     pub syntax: LruCache<FileDiffKey, Arc<HighlightedDiff>>,
-    pub signatures: LruCache<Oid, SignatureStatus>,
+    pub signatures: LruCache<Oid, CommitSignature>,
 }
 
 impl Default for DiffCacheStore {
@@ -45,7 +46,7 @@ impl DiffCacheStore {
             details: LruCache::new(DETAILS_CACHE_CAPACITY),
             diffs: LruCache::new(DIFF_CACHE_CAPACITY),
             syntax: LruCache::new(DIFF_CACHE_CAPACITY),
-            signatures: LruCache::new(DETAILS_CACHE_CAPACITY),
+            signatures: LruCache::new(SIGNATURES_CACHE_CAPACITY),
         }
     }
 

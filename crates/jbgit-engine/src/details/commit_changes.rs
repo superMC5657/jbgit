@@ -1,10 +1,12 @@
 use std::collections::HashMap;
+use std::io::Write;
 use std::path::Path;
+use std::process::Stdio;
 
 use git2::{Delta, DiffFindOptions, DiffOptions, Repository};
 use jbgit_core::{
-    CommitChangesBundle, CommitDetails, DetailsKey, DetailsMode, EpochToken, FileChange,
-    FileStatusKind, Oid, SignatureStatus,
+    CommitChangesBundle, CommitDetails, CommitSignature, DetailsKey, DetailsMode, EpochToken,
+    FileChange, FileStatusKind, Oid,
 };
 
 use crate::blob_reader::read_blob;
@@ -18,22 +20,85 @@ use super::{delta_path, person, to_git2_oid};
 /// Per-file line statistics are skipped beyond this many files (huge merges).
 const MAX_STAT_FILES: usize = 2_000;
 
-pub fn verify_commit_signature_sync(git_dir: &Path, oid: Oid) -> SignatureStatus {
+pub fn verify_commit_signature_sync(git_dir: &Path, oid: Oid) -> CommitSignature {
     let git = crate::cli::cached_git_executable().unwrap_or_else(|| Path::new("git"));
     let mut cmd = crate::cli::non_interactive_std_command(git, None);
     cmd.arg("--git-dir")
         .arg(git_dir)
-        .args(["log", "-1", "--format=%G?", &oid.to_string()]);
+        .args(["log", "-1", "--format=%G?%x1f%GS%x1f%GK", &oid.to_string()]);
     match cmd.output() {
         Ok(o) if o.status.success() => {
-            if String::from_utf8_lossy(&o.stdout).trim() == "G" {
-                SignatureStatus::Verified
-            } else {
-                SignatureStatus::SignedUnverified
-            }
+            let text = String::from_utf8_lossy(&o.stdout);
+            let line = text.lines().next().unwrap_or("");
+            CommitSignature::parse_single_format_line(line)
         }
-        _ => SignatureStatus::SignedUnverified,
+        _ => CommitSignature::cannot_check(),
     }
+}
+
+pub fn verify_commit_signatures_batch_sync(
+    git_dir: &Path,
+    oids: &[Oid],
+    token: &EpochToken,
+) -> Vec<(Oid, CommitSignature)> {
+    if oids.is_empty() || token.is_stale() {
+        return Vec::new();
+    }
+    let batch: &[Oid] = &oids[..oids.len().min(100)];
+    let fallback = || -> Vec<(Oid, CommitSignature)> {
+        if token.is_stale() {
+            Vec::new()
+        } else {
+            batch
+                .iter()
+                .map(|&oid| (oid, CommitSignature::cannot_check()))
+                .collect()
+        }
+    };
+    let git = crate::cli::cached_git_executable().unwrap_or_else(|| Path::new("git"));
+    let mut cmd = crate::cli::non_interactive_std_command(git, None);
+    cmd.arg("--git-dir")
+        .arg(git_dir)
+        .args([
+            "log",
+            "--no-walk",
+            "--stdin",
+            "--format=%H%x1f%G?%x1f%GS%x1f%GK",
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    let Ok(mut child) = cmd.spawn() else {
+        return fallback();
+    };
+    if let Some(mut stdin) = child.stdin.take() {
+        for oid in batch {
+            let _ = writeln!(stdin, "{oid}");
+        }
+        drop(stdin);
+    }
+    if token.is_stale() {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Vec::new();
+    }
+    let Ok(output) = child.wait_with_output() else {
+        return fallback();
+    };
+    if !output.status.success() {
+        return fallback();
+    }
+    if token.is_stale() {
+        return Vec::new();
+    }
+    let mut parsed =
+        CommitSignature::parse_batch_format_output(&String::from_utf8_lossy(&output.stdout));
+    for &oid in batch {
+        if !parsed.iter().any(|(seen, _)| *seen == oid) {
+            parsed.push((oid, CommitSignature::cannot_check()));
+        }
+    }
+    parsed
 }
 
 #[derive(Clone)]
@@ -280,9 +345,9 @@ pub fn load_commit_details_sync(
             .iter()
             .map(|c| {
                 let signature = if repo.extract_signature(&c.id(), None).is_ok() {
-                    SignatureStatus::SignedUnverified
+                    CommitSignature::pending()
                 } else {
-                    SignatureStatus::Unsigned
+                    CommitSignature::unsigned()
                 };
                 CommitDetails {
                     oid: to_core_oid(c.id()),

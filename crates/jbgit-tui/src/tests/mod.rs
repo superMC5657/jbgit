@@ -8,6 +8,7 @@ mod log_tests;
 mod merge_and_update_tests;
 mod patch_and_tree_browser_tests;
 mod remotes_and_credentials_tests;
+mod repo_capabilities_tests;
 mod repo_session_and_worktrees_tests;
 mod runtime_and_editor_tests;
 mod session_tests;
@@ -21,8 +22,8 @@ use crossterm::event::{
     Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
 use jbgit_core::{
-    CommitDetails, CommitSummary, GitOp, Oid, PersonStamp, RefInfo, RefKind, RepoSnapshot,
-    RepositoryState, SignatureStatus,
+    CommitDetails, CommitSignature, CommitSummary, GitOp, Oid, PersonStamp, RefInfo, RefKind,
+    RepoSnapshot, RepositoryState,
 };
 use jbgit_engine::{EngineEvent, RecordingEngineBackend, TaskRequest};
 use ratatui::Terminal;
@@ -157,7 +158,7 @@ pub(super) fn make_details(oid: Oid, parents: Vec<Oid>, subject: &str) -> Commit
             offset_minutes: 0,
         },
         message: subject.into(),
-        signature: SignatureStatus::default(),
+        signature: CommitSignature::default(),
     }
 }
 

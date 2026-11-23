@@ -374,6 +374,32 @@ impl ThemePalette {
         }
     }
 
+    /// Icon foreground and pill colors `(icon_fg, pill_fg, pill_bg)` for a commit signature status.
+    pub fn signature_colors(
+        &self,
+        status: jbgit_core::SignatureStatus,
+    ) -> (Color, Color, Color) {
+        match status {
+            jbgit_core::SignatureStatus::Good => {
+                (self.status_added, self.ref_local.pill_fg, self.ref_local.pill_bg)
+            }
+            jbgit_core::SignatureStatus::GoodUnknownValidity
+            | jbgit_core::SignatureStatus::Expired { .. } => (
+                self.ref_detached.icon,
+                self.ref_detached.pill_fg,
+                self.ref_detached.pill_bg,
+            ),
+            jbgit_core::SignatureStatus::Revoked | jbgit_core::SignatureStatus::Bad => {
+                (self.status_conflicted, self.status_conflicted, self.diff_del_bg)
+            }
+            jbgit_core::SignatureStatus::CannotCheck
+            | jbgit_core::SignatureStatus::Pending
+            | jbgit_core::SignatureStatus::Unsigned => {
+                (self.fg_muted, self.fg_muted, self.bg_elevated)
+            }
+        }
+    }
+
     /// Pill style for a ref badge category.
     pub fn ref_style(&self, badge: RefBadgeKind) -> RefStyle {
         match badge {

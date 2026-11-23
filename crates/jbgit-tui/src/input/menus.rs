@@ -487,6 +487,7 @@ pub(crate) fn preselect_actions_for_menu_target(
 ) -> Vec<Action> {
     match target {
         HitTarget::CommitTableRow { visible_row, .. }
+        | HitTarget::CommitSignatureCell { visible_row, .. }
         | HitTarget::GraphPrintElement { visible_row, .. } => {
             if !state.log.graph.is_row_selected(*visible_row) {
                 vec![
@@ -597,7 +598,9 @@ pub(crate) fn build_menu_items_for_target(
     state: &AppState,
 ) -> Option<Vec<ContextMenuItem>> {
     let items = match target {
-        HitTarget::CommitTableRow { .. } | HitTarget::GraphPrintElement { .. } => {
+        HitTarget::CommitTableRow { .. }
+        | HitTarget::CommitSignatureCell { .. }
+        | HitTarget::GraphPrintElement { .. } => {
             menus::log_commit_menu_items(state)
         }
         HitTarget::CommitRefPill {
@@ -977,6 +980,13 @@ pub fn presentation_menu_items(state: &AppState) -> Vec<ContextMenuItem> {
             'h',
             None,
             PresentationToggle::ShowHashColumn,
+        ),
+        item(
+            p.show_signature_column,
+            "presentation.show_signature_column",
+            's',
+            None,
+            PresentationToggle::ShowSignatureColumn,
         ),
         item(
             p.relative_dates,

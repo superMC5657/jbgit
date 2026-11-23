@@ -13,6 +13,7 @@ use unicode_width::UnicodeWidthStr;
 use crate::app::{RenderContext, ScrollPane};
 
 pub use changes_browser::{ChangesBrowserProps, render_changes_browser, render_changes_pane};
+pub(crate) use commit_details::signature_badge_and_desc_keys;
 pub(crate) use diff_view::{
     DiffLineRenderInput, diff_line_style, render_diff_side_cell, render_diff_unified_spans,
 };

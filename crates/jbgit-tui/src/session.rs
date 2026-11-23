@@ -46,10 +46,12 @@ pub fn coalesce_effects(effects: Vec<Effect>) -> Vec<Effect> {
     let mut last_tree_syntax = None;
     let mut last_containing = None;
     let mut last_rebuild_graph = None;
+    let mut last_commit_signatures = None;
 
     for (i, eff) in effects.iter().enumerate() {
         match eff {
             Effect::RequestCommitDetails { slot, .. } => last_details[slot.index()] = Some(i),
+            Effect::RequestCommitSignatures(_) => last_commit_signatures = Some(i),
             Effect::RequestFileDiff { slot, .. } => last_file_diff[slot.index()] = Some(i),
             Effect::RequestStageFileDiff(_) => last_stage_diff = Some(i),
             Effect::RequestBlame(_) => last_blame = Some(i),
@@ -70,6 +72,7 @@ pub fn coalesce_effects(effects: Vec<Effect>) -> Vec<Effect> {
     for (i, eff) in effects.into_iter().enumerate() {
         let keep = match &eff {
             Effect::RequestCommitDetails { slot, .. } => last_details[slot.index()] == Some(i),
+            Effect::RequestCommitSignatures(_) => last_commit_signatures == Some(i),
             Effect::RequestFileDiff { slot, .. } => last_file_diff[slot.index()] == Some(i),
             Effect::RequestStageFileDiff(_) => last_stage_diff == Some(i),
             Effect::RequestBlame(_) => last_blame == Some(i),

@@ -177,6 +177,7 @@ impl AppState {
                 self.stage_workbench
                     .on_repo_snapshot_loaded(&snapshot, head_changed, &mut effects);
                 self.log.graph.on_snapshot_loaded();
+                self.log.sig_requested.clear();
                 self.log.details.reset_containing();
                 self.repo_snapshot = Some(snapshot);
                 self.apply_pending_remote_selection();
@@ -213,8 +214,21 @@ impl AppState {
                 }
                 self.diff_caches.insert_details(bundle);
             }
-            EngineEvent::CommitSignatureVerified { oid, status } => {
-                self.diff_caches.signatures.insert(oid, status);
+            EngineEvent::CommitSignatureVerified { oid, signature } => {
+                self.diff_caches.signatures.insert(oid, signature);
+                self.needs_redraw = true;
+            }
+            EngineEvent::CommitSignaturesLoaded { signatures, epoch } => {
+                if !self
+                    .request_slots
+                    .accept(RequestSlotId::LogSignatures, epoch)
+                {
+                    return effects;
+                }
+                self.log.sig_requested.clear();
+                for (oid, signature) in signatures {
+                    self.diff_caches.signatures.insert(oid, signature);
+                }
                 self.needs_redraw = true;
             }
             EngineEvent::FileDiffLoaded { slot, diff, epoch } => {

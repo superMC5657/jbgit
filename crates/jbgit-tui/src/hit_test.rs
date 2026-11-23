@@ -233,6 +233,10 @@ pub enum HitTarget {
         visible_row: usize,
         commit_oid: Oid,
     },
+    CommitSignatureCell {
+        visible_row: usize,
+        commit_oid: Oid,
+    },
     ChangesTreeNode {
         tree_id: TreeId,
         node_id: ChangeNodeId,

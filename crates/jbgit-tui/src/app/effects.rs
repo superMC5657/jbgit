@@ -64,6 +64,12 @@ pub fn execute_effects_with_host(
                         let epoch = handle.request_commit_details(slot, key);
                         state.request_slots.note_dispatched(slot, epoch);
                     }
+                    Effect::RequestCommitSignatures(oids) => {
+                        let epoch = handle.request_commit_signatures(oids);
+                        state
+                            .request_slots
+                            .note_dispatched(RequestSlotId::LogSignatures, epoch);
+                    }
                     Effect::RequestFileDiff { slot, key } => {
                         let known_oids = state.diff_caches.known_oids_for(&key);
                         let epoch = handle.request_file_diff_with_oids(slot, key, known_oids);

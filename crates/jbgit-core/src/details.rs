@@ -72,13 +72,142 @@ pub struct PersonStamp {
     pub offset_minutes: i32,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub enum SignatureStatus {
+    /// `N` — no signature.
     #[default]
     Unsigned,
-    /// Carries a `gpgsig` header that has not been verified against a keyring.
-    SignedUnverified,
-    Verified,
+    /// Commit carries a signature header; async `git log` verification is pending.
+    Pending,
+    /// `G` — good (valid) signature.
+    Good,
+    /// `U` — good signature with unknown validity.
+    GoodUnknownValidity,
+    /// `X` — expired signature (`key_expired: false`), `Y` — expired key (`key_expired: true`).
+    Expired { key_expired: bool },
+    /// `R` — good signature made by a revoked key.
+    Revoked,
+    /// `E` — signature cannot be checked (missing key / verifier unavailable).
+    CannotCheck,
+    /// `B` — bad signature.
+    Bad,
+}
+
+impl SignatureStatus {
+    /// Maps a `git log --format=%G?` status code to [`SignatureStatus`].
+    pub fn from_git_code(code: &str) -> Option<Self> {
+        match code.trim() {
+            "G" => Some(Self::Good),
+            "U" => Some(Self::GoodUnknownValidity),
+            "X" => Some(Self::Expired { key_expired: false }),
+            "Y" => Some(Self::Expired { key_expired: true }),
+            "R" => Some(Self::Revoked),
+            "E" => Some(Self::CannotCheck),
+            "B" => Some(Self::Bad),
+            "N" => Some(Self::Unsigned),
+            _ => None,
+        }
+    }
+
+    pub const fn is_signed(self) -> bool {
+        !matches!(self, Self::Unsigned)
+    }
+
+    /// 1-column terminal icon for Log column and Details badge.
+    pub const fn icon(self) -> &'static str {
+        match self {
+            Self::Good => "✓",
+            Self::GoodUnknownValidity | Self::Expired { .. } => "⚠",
+            Self::Revoked | Self::Bad => "✕",
+            Self::CannotCheck => "?",
+            Self::Pending => "…",
+            Self::Unsigned => " ",
+        }
+    }
+}
+
+/// Verified commit signature metadata parsed from `%G?`, `%GS`, and `%GK`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CommitSignature {
+    pub status: SignatureStatus,
+    pub signer: Option<String>,
+    pub key: Option<String>,
+}
+
+impl CommitSignature {
+    pub const fn unsigned() -> Self {
+        Self {
+            status: SignatureStatus::Unsigned,
+            signer: None,
+            key: None,
+        }
+    }
+
+    pub const fn pending() -> Self {
+        Self {
+            status: SignatureStatus::Pending,
+            signer: None,
+            key: None,
+        }
+    }
+
+    pub const fn cannot_check() -> Self {
+        Self {
+            status: SignatureStatus::CannotCheck,
+            signer: None,
+            key: None,
+        }
+    }
+
+    /// Parses `%G?`, `%GS`, `%GK` field values into a [`CommitSignature`].
+    pub fn parse_format_fields(code: &str, signer: &str, key: &str) -> Self {
+        let code = code.trim();
+        if code.is_empty() || code == "N" {
+            return Self::unsigned();
+        }
+        let non_empty = |s: &str| {
+            let trimmed = s.trim();
+            (!trimmed.is_empty()).then(|| trimmed.to_string())
+        };
+        Self {
+            status: SignatureStatus::from_git_code(code).unwrap_or(SignatureStatus::CannotCheck),
+            signer: non_empty(signer),
+            key: non_empty(key),
+        }
+    }
+
+    /// Parses a single `%G?%x1f%GS%x1f%GK` line.
+    pub fn parse_single_format_line(line: &str) -> Self {
+        let trimmed = line.trim_end_matches(['\r', '\n']);
+        if trimmed.is_empty() {
+            return Self::cannot_check();
+        }
+        let mut parts = trimmed.splitn(3, '\x1f');
+        let code = parts.next().unwrap_or("");
+        let signer = parts.next().unwrap_or("");
+        let key = parts.next().unwrap_or("");
+        Self::parse_format_fields(code, signer, key)
+    }
+
+    /// Parses `%H%x1f%G?%x1f%GS%x1f%GK` lines from `git log --no-walk --stdin`.
+    pub fn parse_batch_format_output(stdout: &str) -> Vec<(Oid, Self)> {
+        let mut out = Vec::new();
+        for raw in stdout.lines() {
+            let line = raw.trim_end_matches('\r');
+            if line.is_empty() {
+                continue;
+            }
+            let mut parts = line.splitn(4, '\x1f');
+            let Some(oid) = parts.next().and_then(|h| h.trim().parse::<Oid>().ok()) else {
+                continue;
+            };
+            let code = parts.next().unwrap_or("");
+            let signer = parts.next().unwrap_or("");
+            let key = parts.next().unwrap_or("");
+            out.push((oid, Self::parse_format_fields(code, signer, key)));
+        }
+        out
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -89,7 +218,7 @@ pub struct CommitDetails {
     pub committer: PersonStamp,
     /// Full raw message (subject + body).
     pub message: String,
-    pub signature: SignatureStatus,
+    pub signature: CommitSignature,
 }
 
 impl CommitDetails {
@@ -1065,5 +1194,99 @@ diff --cc src/lib.rs
         assert_eq!(ch[0].lines[2].new_lineno, None);
         assert_eq!(ch[0].lines[3].kind, DiffLineKind::Context);
         assert_eq!(ch[0].lines[3].new_lineno, Some(3));
+    }
+
+    #[test]
+    fn signature_status_maps_all_git_codes_and_batch_lines() {
+        let cases = [
+            ("G", Some(SignatureStatus::Good), true, "✓"),
+            ("U", Some(SignatureStatus::GoodUnknownValidity), true, "⚠"),
+            ("X", Some(SignatureStatus::Expired { key_expired: false }), true, "⚠"),
+            ("Y", Some(SignatureStatus::Expired { key_expired: true }), true, "⚠"),
+            ("R", Some(SignatureStatus::Revoked), true, "✕"),
+            ("E", Some(SignatureStatus::CannotCheck), true, "?"),
+            ("B", Some(SignatureStatus::Bad), true, "✕"),
+            ("N", Some(SignatureStatus::Unsigned), false, " "),
+            ("?", None, false, " "),
+        ];
+        for (code, expected, signed, icon) in cases {
+            assert_eq!(SignatureStatus::from_git_code(code), expected, "code={code}");
+            if let Some(st) = expected {
+                assert_eq!(st.is_signed(), signed);
+                assert_eq!(st.icon(), icon);
+            }
+        }
+        assert!(SignatureStatus::Pending.is_signed());
+        assert_eq!(SignatureStatus::Pending.icon(), "…");
+
+        let single = CommitSignature::parse_single_format_line("G\x1fAlice <a@x.io>\x1fKEY123\r\n");
+        assert_eq!(
+            single,
+            CommitSignature {
+                status: SignatureStatus::Good,
+                signer: Some("Alice <a@x.io>".into()),
+                key: Some("KEY123".into()),
+            }
+        );
+
+        let no_signer = CommitSignature::parse_single_format_line("E\x1f\x1fDEADBEEF");
+        assert_eq!(
+            no_signer,
+            CommitSignature {
+                status: SignatureStatus::CannotCheck,
+                signer: None,
+                key: Some("DEADBEEF".into()),
+            }
+        );
+
+        assert_eq!(
+            CommitSignature::parse_single_format_line("N\x1f\x1f"),
+            CommitSignature::unsigned()
+        );
+        assert_eq!(
+            CommitSignature::parse_single_format_line(""),
+            CommitSignature::cannot_check()
+        );
+        assert_eq!(
+            CommitSignature::parse_format_fields("Z", "Alice", "K1"),
+            CommitSignature {
+                status: SignatureStatus::CannotCheck,
+                signer: Some("Alice".into()),
+                key: Some("K1".into()),
+            }
+        );
+
+        let o1 = Oid::from_bytes([0x11; 20]);
+        let o2 = Oid::from_bytes([0x22; 20]);
+        let o3 = Oid::from_bytes([0x33; 20]);
+        let batch = format!(
+            "{o1}\x1fG\x1fAlice <a@x.io>\x1fAABBCC\r\n\
+             {o2}\x1fN\x1f\x1f\n\
+             bad_oid\x1fG\x1fX\x1fY\n\
+             {o3}\x1fY\x1fBob\x1f112233\n"
+        );
+        let parsed = CommitSignature::parse_batch_format_output(&batch);
+        assert_eq!(
+            parsed,
+            vec![
+                (
+                    o1,
+                    CommitSignature {
+                        status: SignatureStatus::Good,
+                        signer: Some("Alice <a@x.io>".into()),
+                        key: Some("AABBCC".into()),
+                    }
+                ),
+                (o2, CommitSignature::unsigned()),
+                (
+                    o3,
+                    CommitSignature {
+                        status: SignatureStatus::Expired { key_expired: true },
+                        signer: Some("Bob".into()),
+                        key: Some("112233".into()),
+                    }
+                ),
+            ]
+        );
     }
 }

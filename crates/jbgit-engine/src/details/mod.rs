@@ -19,7 +19,9 @@ use crate::error::EngineError;
 pub(crate) use blame::load_blame_sync;
 #[cfg(test)]
 pub(crate) use blame::parse_blame_porcelain;
-pub(crate) use commit_changes::{load_commit_details_sync, verify_commit_signature_sync};
+pub(crate) use commit_changes::{
+    load_commit_details_sync, verify_commit_signature_sync, verify_commit_signatures_batch_sync,
+};
 pub(crate) use file_diff::load_file_diff_with_oids_sync;
 pub(crate) use file_history::load_file_history_sync;
 #[cfg(test)]

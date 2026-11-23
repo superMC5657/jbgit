@@ -158,6 +158,46 @@ pub(super) fn render_commit_details(
     }
 }
 
+pub(crate) fn signature_badge_and_desc_keys(
+    status: SignatureStatus,
+) -> (&'static str, &'static str) {
+    match status {
+        SignatureStatus::Unsigned => ("", ""),
+        SignatureStatus::Pending => (
+            "view.log_details.sig_badge.pending",
+            "view.log_details.sig_desc.pending",
+        ),
+        SignatureStatus::Good => (
+            "view.log_details.sig_badge.good",
+            "view.log_details.sig_desc.good",
+        ),
+        SignatureStatus::GoodUnknownValidity => (
+            "view.log_details.sig_badge.unknown_validity",
+            "view.log_details.sig_desc.unknown_validity",
+        ),
+        SignatureStatus::Expired { key_expired: false } => (
+            "view.log_details.sig_badge.expired_sig",
+            "view.log_details.sig_desc.expired_sig",
+        ),
+        SignatureStatus::Expired { key_expired: true } => (
+            "view.log_details.sig_badge.expired_key",
+            "view.log_details.sig_desc.expired_key",
+        ),
+        SignatureStatus::Revoked => (
+            "view.log_details.sig_badge.revoked",
+            "view.log_details.sig_desc.revoked",
+        ),
+        SignatureStatus::CannotCheck => (
+            "view.log_details.sig_badge.cannot_check",
+            "view.log_details.sig_desc.cannot_check",
+        ),
+        SignatureStatus::Bad => (
+            "view.log_details.sig_badge.bad",
+            "view.log_details.sig_desc.bad",
+        ),
+    }
+}
+
 fn build_single_details(
     d: &CommitDetails,
     state: &AppState,
@@ -183,22 +223,15 @@ fn build_single_details(
         .diff_caches
         .signatures
         .peek(&d.oid)
-        .copied()
-        .unwrap_or(d.signature);
-    match effective_sig {
-        SignatureStatus::Verified => sha_spans.push(Span::styled(
-            ctx.t("view.log_details.verified").to_string(),
-            Style::default()
-                .fg(theme.ref_local.pill_fg)
-                .bg(theme.ref_local.pill_bg),
-        )),
-        SignatureStatus::SignedUnverified => sha_spans.push(Span::styled(
-            ctx.t("view.log_details.unverified").to_string(),
-            Style::default()
-                .fg(theme.ref_detached.pill_fg)
-                .bg(theme.ref_detached.pill_bg),
-        )),
-        SignatureStatus::Unsigned => {}
+        .unwrap_or(&d.signature);
+    if effective_sig.status.is_signed() {
+        let (badge_key, _) = signature_badge_and_desc_keys(effective_sig.status);
+        let (_, pill_fg, pill_bg) = theme.signature_colors(effective_sig.status);
+        sha_spans.push(Span::raw(" "));
+        sha_spans.push(Span::styled(
+            ctx.t(badge_key).to_string(),
+            Style::default().fg(pill_fg).bg(pill_bg),
+        ));
     }
     hits.push(LineHit {
         line_idx: lines.len(),
@@ -245,6 +278,37 @@ fn build_single_details(
         parent_spans.push(Span::raw("  "));
     }
     lines.push(Line::from(parent_spans));
+
+    if effective_sig.status.is_signed() {
+        let (_, desc_key) = signature_badge_and_desc_keys(effective_sig.status);
+        let (icon_fg, _, _) = theme.signature_colors(effective_sig.status);
+        let full_desc = format!("{} {}", effective_sig.status.icon(), ctx.t(desc_key));
+        for (i, chunk) in wrap_text(&full_desc, width.saturating_sub(12).max(12))
+            .into_iter()
+            .enumerate()
+        {
+            lines.push(Line::from(vec![
+                if i == 0 {
+                    label(ctx.t("view.log_details.signature_label"))
+                } else {
+                    Span::raw(" ".repeat(11))
+                },
+                Span::styled(chunk, Style::default().fg(icon_fg)),
+            ]));
+        }
+        if let Some(signer) = &effective_sig.signer {
+            lines.push(Line::from(vec![
+                label(ctx.t("view.log_details.sig_signer_label")),
+                Span::styled(signer.clone(), Style::default().fg(theme.fg_bright)),
+            ]));
+        }
+        if let Some(key) = &effective_sig.key {
+            lines.push(Line::from(vec![
+                label(ctx.t("view.log_details.sig_key_label")),
+                Span::styled(key.clone(), Style::default().fg(theme.fg_primary)),
+            ]));
+        }
+    }
 
     if let (Some((oid, names)), Some(snap)) = (&state.log.details.containing, &state.repo_snapshot)
         && *oid == d.oid

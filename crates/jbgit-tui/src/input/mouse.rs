@@ -47,6 +47,7 @@ fn route_mouse_drag(col: u16, row: u16, state: &AppState) -> Vec<Action> {
             if let Some(region) = state.hit_registry.hit_test(col, row) {
                 let target_row = match &region.target {
                     HitTarget::CommitTableRow { visible_row, .. }
+                    | HitTarget::CommitSignatureCell { visible_row, .. }
                     | HitTarget::GraphPrintElement { visible_row, .. }
                     | HitTarget::CommitRefPill { visible_row, .. }
                     | HitTarget::CommitRefOverflow { visible_row, .. } => Some(*visible_row),
@@ -82,6 +83,7 @@ fn route_mouse_scroll(col: u16, row: u16, delta: isize, state: &AppState) -> Vec
                 return vec![Action::ScrollBranches(delta / 3)];
             }
             HitTarget::CommitTableRow { .. }
+            | HitTarget::CommitSignatureCell { .. }
             | HitTarget::GraphPrintElement { .. }
             | HitTarget::CommitRefPill { .. }
             | HitTarget::CommitRefOverflow { .. }
@@ -373,6 +375,10 @@ fn route_mouse_left_down(
             }
         },
         HitTarget::CommitTableRow {
+            visible_row,
+            commit_oid,
+        }
+        | HitTarget::CommitSignatureCell {
             visible_row,
             commit_oid,
         } => {

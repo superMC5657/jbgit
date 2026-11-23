@@ -8,6 +8,7 @@ pub enum PresentationToggle {
     HighlightCurrentBranch,
     HighlightMerges,
     ShowHashColumn,
+    ShowSignatureColumn,
     RelativeDates,
     UseAuthorDate,
 }
@@ -21,6 +22,7 @@ pub struct LogPresentation {
     pub highlight_current_branch: bool,
     pub highlight_merges: bool,
     pub show_hash_column: bool,
+    pub show_signature_column: bool,
     pub relative_dates: bool,
     /// Show author date instead of commit date.
     pub use_author_date: bool,
@@ -34,6 +36,7 @@ impl Default for LogPresentation {
             highlight_current_branch: true,
             highlight_merges: true,
             show_hash_column: false,
+            show_signature_column: false,
             relative_dates: true,
             use_author_date: false,
         }

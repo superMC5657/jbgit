@@ -58,6 +58,7 @@ pub struct LogWorkbench {
     pub(crate) presentation: LogPresentation,
     pub(crate) graph_renderer: GraphRenderer,
     pub(crate) details: DetailsPaneState,
+    pub(crate) sig_requested: Vec<Oid>,
 }
 
 impl LogWorkbench {
@@ -82,6 +83,7 @@ impl LogWorkbench {
                 crate::graph::GraphicsCapabilities::default(),
             ),
             details,
+            sig_requested: Vec::new(),
         }
     }
 
@@ -377,6 +379,13 @@ impl LogWorkbench {
             PresentationToggle::ShowHashColumn => {
                 p.show_hash_column = !p.show_hash_column;
                 ("presentation.show_hash_column", p.show_hash_column)
+            }
+            PresentationToggle::ShowSignatureColumn => {
+                p.show_signature_column = !p.show_signature_column;
+                if p.show_signature_column {
+                    self.sig_requested.clear();
+                }
+                ("presentation.show_signature_column", p.show_signature_column)
             }
             PresentationToggle::RelativeDates => {
                 p.relative_dates = !p.relative_dates;
@@ -1041,6 +1050,46 @@ impl LogWorkbench {
                 ctx.i18n
                     .t_fmt("toast.compare_local_no_diff", &[("path", &path)]),
             );
+        }
+
+        if self.presentation.show_signature_column
+            && let (Some(snap), Some(cached)) = (ctx.snap, &self.graph.cached)
+        {
+            let count = cached.visible_count();
+            if count > 0 {
+                let vis_start = self.graph.scroll_offset.min(count);
+                let vis_end = vis_start.saturating_add(48).min(count);
+                let pad_start = vis_start.saturating_sub(8);
+                let pad_end = vis_end.saturating_add(8).min(count);
+                let mut candidates = Vec::with_capacity(64);
+                let mut push_row = |row: usize| {
+                    if candidates.len() >= 64 {
+                        return;
+                    }
+                    if let Some(c) = cached.commit_at_visible_row(snap, row)
+                        && ctx.diff_caches.signatures.peek(&c.oid).is_none()
+                        && !candidates.contains(&c.oid)
+                    {
+                        candidates.push(c.oid);
+                    }
+                };
+                for row in vis_start..vis_end {
+                    push_row(row);
+                }
+                push_row(self.graph.selected_idx);
+                for row in pad_start..vis_start {
+                    push_row(row);
+                }
+                for row in vis_end..pad_end {
+                    push_row(row);
+                }
+                if !candidates.is_empty()
+                    && candidates.iter().any(|oid| !self.sig_requested.contains(oid))
+                {
+                    self.sig_requested = candidates.clone();
+                    ctx.effects.push(Effect::RequestCommitSignatures(candidates));
+                }
+            }
         }
 
         if let Some(key) = &self.details.changes.current_key

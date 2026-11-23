@@ -542,6 +542,7 @@ pub enum Effect {
         slot: RequestSlotId,
         key: DetailsKey,
     },
+    RequestCommitSignatures(Vec<Oid>),
     RequestFileDiff {
         slot: RequestSlotId,
         key: FileDiffKey,

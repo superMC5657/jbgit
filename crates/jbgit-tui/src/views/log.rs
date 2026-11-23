@@ -508,6 +508,7 @@ fn render_commits_table(
         let is_hovered = matches!(
             ctx.hover_target,
             Some(HitTarget::CommitTableRow { visible_row, .. })
+            | Some(HitTarget::CommitSignatureCell { visible_row, .. })
             | Some(HitTarget::GraphPrintElement { visible_row, .. })
             | Some(HitTarget::CommitRefPill { visible_row, .. })
             | Some(HitTarget::CommitRefOverflow { visible_row, .. })
@@ -552,7 +553,7 @@ fn render_commits_table(
     let graph_cols = ((graph_tracks * 2).min(max_graph_cols) as u16).min(area.width);
     let graph_area = Rect::new(area.x, area.y, graph_cols, rows_len as u16);
 
-    // Fixed-width right columns: [Author 14-18] [Date 12-16] [Hash 8].
+    // Fixed-width right columns: [Author 14-18] [Date 12-16] [Hash 8] [Sig 3].
     let text_total = area.width.saturating_sub(graph_cols);
     let author_w: u16 = if text_total >= 60 {
         if text_total >= 100 { 18 } else { 14 }
@@ -569,7 +570,12 @@ fn render_commits_table(
     } else {
         0
     };
-    let right_cols = author_w + date_w + hash_w;
+    let sig_w: u16 = if presentation.show_signature_column && text_total >= 45 {
+        3
+    } else {
+        0
+    };
+    let right_cols = author_w + date_w + hash_w + sig_w;
     let now = chrono::Local::now().timestamp();
 
     // Register row-level hit regions first (z=1) before graph elements & pills (z=2)
@@ -740,6 +746,31 @@ fn render_commits_table(
             frame.render_widget(
                 Paragraph::new(Span::styled(format!(" {}", commit.oid.short()), muted)),
                 Rect::new(col_x, row_y, hash_w, 1),
+            );
+            col_x += hash_w;
+        }
+        if sig_w > 0 {
+            let sig_status = state
+                .diff_caches
+                .signatures
+                .peek(&commit.oid)
+                .map_or(jbgit_core::SignatureStatus::Pending, |s| s.status);
+            let (icon_fg, _, _) = ctx.theme.signature_colors(sig_status);
+            let sig_rect = Rect::new(col_x, row_y, sig_w, 1);
+            frame.render_widget(
+                Paragraph::new(Span::styled(
+                    format!(" {} ", sig_status.icon()),
+                    Style::default().fg(icon_fg).bg(bg),
+                )),
+                sig_rect,
+            );
+            ctx.hit_registry.register(
+                sig_rect,
+                2,
+                HitTarget::CommitSignatureCell {
+                    visible_row: row_idx,
+                    commit_oid: commit.oid,
+                },
             );
         }
     }

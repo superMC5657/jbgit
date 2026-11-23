@@ -29,7 +29,8 @@ pub use console::{
 };
 pub use details::{
     BlameBundle, BlameCommit, BlameKey, BlameLine, BlameOptions, ChangeRowKind, ChangeTreeRow,
-    CommitChangesBundle, CommitDetails, DetailsKey, DetailsMode, DiffContext, DiffHunk, DiffLine,
+    CommitChangesBundle, CommitDetails, CommitSignature, DetailsKey, DetailsMode, DiffContext,
+    DiffHunk, DiffLine,
     DiffLineKind, EAGER_WORD_DIFF_PAIR_BUDGET, FileChange, FileDiff, FileDiffKey,
     FileHistoryBundle, FileHistoryEntry, FileHistoryKey, MAX_DIFF_FILE_BYTES, MAX_OUTGOING_COMMITS,
     MAX_SELECTION_HISTORY_LINES, MAX_WORD_DIFF_LINE_BYTES, MessageLineKind, OutgoingBundle,

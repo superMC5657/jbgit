@@ -2933,3 +2933,48 @@ async fn tree_browser_lists_directories_lazily_with_submodules_and_binary_previe
     .await;
     assert!(!failed.is_empty());
 }
+
+#[tokio::test]
+async fn commit_signatures_batch_verification_reports_unsigned_and_respects_epoch() {
+    let dir = TempDir::new().unwrap();
+    let d = dir.path();
+    git(d, &["init", "-b", "main"]);
+    fs::write(d.join("a.txt"), "one\n").unwrap();
+    git(d, &["add", "a.txt"]);
+    git(d, &["commit", "-m", "first unsigned commit"]);
+    let c1 = rev(d, "HEAD");
+
+    fs::write(d.join("a.txt"), "two\n").unwrap();
+    git(d, &["commit", "-am", "second unsigned commit"]);
+    let c2 = rev(d, "HEAD");
+
+    let loc = RepoLocation::discover(d).unwrap();
+    let (handle, mut rx) = EngineSupervisor::start(loc, false).unwrap();
+
+    let epoch = handle.request_commit_signatures(vec![c2, c1]);
+    let loaded = recv_matching(&mut rx, |ev| match ev {
+        EngineEvent::CommitSignaturesLoaded {
+            signatures,
+            epoch: e,
+        } if e == epoch => Some(signatures),
+        _ => None,
+    })
+    .await;
+    assert_eq!(loaded.len(), 2);
+    for expected in [c2, c1] {
+        let (_, sig) = loaded
+            .iter()
+            .find(|(oid, _)| *oid == expected)
+            .expect("missing requested oid in signature batch");
+        assert_eq!(sig, &jbgit_core::CommitSignature::unsigned());
+    }
+
+    let details = fetch_commit_details(
+        &handle,
+        &mut rx,
+        RequestSlotId::LogCommitDetails,
+        DetailsKey::single(c2),
+    )
+    .await;
+    assert_eq!(details.details[0].signature, jbgit_core::CommitSignature::unsigned());
+}
