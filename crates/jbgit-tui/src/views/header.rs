@@ -29,13 +29,21 @@ pub fn render_top_header(
         .or_else(|| state.repo_path_display.file_name().and_then(|s| s.to_str()))
         .unwrap_or("jbgit");
 
+    let repo_label = format!(" {repo_name} ");
+    let repo_label_w = repo_label.width() as u16;
     spans.push(Span::styled(
-        format!(" {repo_name} "),
+        repo_label,
         Style::default()
             .fg(ctx.theme.fg_bright)
             .bg(bg)
             .add_modifier(Modifier::BOLD),
     ));
+    // Clicking the repository name opens the repository switcher.
+    ctx.hit_registry.register(
+        Rect::new(area.x, area.y, repo_label_w.min(area.width), 1),
+        5,
+        HitTarget::HeaderRepoName,
+    );
 
     // Branch widget pill
     let branch_start_x = area.x.saturating_add(span_width(&spans));

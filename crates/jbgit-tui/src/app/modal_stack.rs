@@ -57,6 +57,10 @@ pub enum ModalLayer {
     PushDialog(Box<PushDialogState>),
     /// Layer 2: `Configure Remotes…` list (add / rename / edit URL / remove / fetch).
     Remotes(crate::remotes_view::RemotesState),
+    /// Layer 2: repository switcher (recent repositories, worktrees, submodules).
+    RepoSwitcher(Box<crate::repo_switcher::RepoSwitcherState>),
+    /// Layer 2: `git worktree` list (open / new / lock / remove / prune).
+    Worktrees(crate::worktrees_view::WorktreesState),
     /// Layer 2: self-contained three-pane conflict resolver (`Ours | Result | Theirs`).
     ConflictResolver(Box<ConflictMergeState>),
     /// Layer 2: three-way hunk inspector (`HEAD / Staged / Worktree`).
@@ -170,6 +174,8 @@ impl ModalLayer {
             | Self::Annotate(_)
             | Self::PushDialog(_)
             | Self::Remotes(_)
+            | Self::RepoSwitcher(_)
+            | Self::Worktrees(_)
             | Self::ConflictResolver(_)
             | Self::ThreeWayInspector { .. }
             | Self::HookError { .. } => 20,

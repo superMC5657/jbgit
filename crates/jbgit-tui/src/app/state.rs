@@ -81,6 +81,16 @@ pub struct AppState {
     pub(crate) credentials: crate::app::CredentialQueue,
     /// Remote to select in the Remotes modal once the snapshot lists it.
     pub(crate) pending_remote_selection: Option<String>,
+    /// Repository session generation (Spec 12 Issue 09): bumped on every
+    /// rebind; engine / async results stamped with an older generation are
+    /// dropped by [`crate::session::TuiSession`].
+    pub(crate) session_generation: u64,
+    /// Confirmed repository switch the host must perform (unbind → bind).
+    pub(crate) pending_repo_switch: Option<PathBuf>,
+    /// User-level most-recently-opened repositories.
+    pub(crate) recent_repos: crate::repo_switcher::RecentRepos,
+    /// Detected `git --version` (`None` = unknown; worktree gate assumes support).
+    pub(crate) git_version: Option<jbgit_core::GitVersion>,
     pub(crate) pending_keys: Vec<crossterm::event::KeyEvent>,
     pub(crate) pending_key_at: Option<std::time::Instant>,
     /// Virtual monotonic clock injected by [`crate::session::TuiSession`]
@@ -184,6 +194,10 @@ impl AppState {
             pending_update_stash: false,
             credentials: crate::app::CredentialQueue::default(),
             pending_remote_selection: None,
+            session_generation: 0,
+            pending_repo_switch: None,
+            recent_repos: crate::repo_switcher::RecentRepos::in_memory(),
+            git_version: None,
             stash,
             config,
             i18n,

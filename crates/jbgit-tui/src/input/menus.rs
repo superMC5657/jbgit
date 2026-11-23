@@ -237,6 +237,27 @@ pub fn route_overlay_and_stash_click(
         HitTarget::DialogButton(DialogButtonKind::Confirm) => vec![Action::DialogConfirm],
         HitTarget::DialogButton(DialogButtonKind::Cancel) => vec![Action::PopModal],
         HitTarget::DialogCheckbox => vec![Action::DialogToggleCheckbox],
+        HitTarget::RepoSwitcherRow(row) => {
+            let mut out = vec![Action::RepoSwitcherSetState {
+                query: match state.modal_stack.last() {
+                    Some(ModalLayer::RepoSwitcher(rs)) => rs.query.clone(),
+                    _ => String::new(),
+                },
+                selected: *row,
+            }];
+            if is_double && let Some(ModalLayer::RepoSwitcher(rs)) = state.modal_stack.last() {
+                out = crate::repo_switcher::activate_row(rs, *row);
+            }
+            out
+        }
+        HitTarget::WorktreesRow(idx) => {
+            let mut out = vec![Action::WorktreesSelect(*idx)];
+            if is_double {
+                // Re-evaluated after the selection lands on the clicked row.
+                out.push(Action::WorktreesOpenSelected);
+            }
+            out
+        }
         HitTarget::RemotesRow(idx) => {
             let mut out = vec![Action::RemotesSelect(*idx)];
             if is_double {

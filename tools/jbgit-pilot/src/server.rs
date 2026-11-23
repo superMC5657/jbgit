@@ -11,7 +11,10 @@ use portable_pty::{CommandBuilder, PtySize, native_pty_system};
 
 use crate::keys::{encode_key, encode_sgr_click, encode_sgr_hover, encode_sgr_scroll};
 use crate::protocol::{CommandEnvelope, PilotAction, ResponseEnvelope};
-use crate::sandbox::{init_sandbox_repo, write_custom_test_config};
+use crate::sandbox::{
+    init_sandbox_repo, multi_repo_siblings, write_custom_test_config,
+    write_recent_repos,
+};
 use crate::screen::{
     Osc52ClipboardScanner, build_screen_resp, find_text_matches, inspect_row_spans,
     make_error_resp, screen_has_content, summarize_palette,
@@ -85,6 +88,14 @@ pub fn run_serve(opts: ServeOptions) -> Result<()> {
     } else {
         None
     };
+
+    if opts.sandbox
+        && opts.scenario == SandboxScenario::MultiRepo
+        && let Some(cfg) = &resolved_config_dir
+    {
+        let (_, b_dir) = multi_repo_siblings(&repo_path);
+        write_recent_repos(cfg, &[b_dir])?;
+    }
 
     let bin_path = std::path::absolute(&opts.bin_path)?;
     if !bin_path.is_file() {

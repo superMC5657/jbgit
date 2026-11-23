@@ -3,10 +3,13 @@ use std::path::Path;
 use git2::{BranchType, Repository, Sort};
 use jbgit_core::{
     CommitSummary, ConflictDocument, EpochToken, Oid, RefInfo, RefKind, RemoteInfo, RepoSnapshot,
+    WorktreeInfo,
 };
 
 use crate::error::EngineError;
-use crate::probe::{RepoLocation, probe_repo_state, to_core_oid};
+use crate::probe::{
+    RepoLocation, RepoProbeResult, canonical_or_self, probe_repo_state, to_core_oid,
+};
 
 use super::scan_config::{
     AHEAD_BEHIND_BRANCH_LIMIT, AHEAD_BEHIND_TIME_BUDGET, AheadBehindUpdate, PendingAheadBehind,
@@ -130,6 +133,8 @@ pub fn load_repo_snapshot_with_config_sync(
             });
 
         let remotes = collect_remotes(repo);
+        let worktrees = collect_worktrees(location, &probe);
+        let submodules = collect_submodules(repo, location);
 
         Ok((
             RepoSnapshot {
@@ -149,10 +154,59 @@ pub fn load_repo_snapshot_with_config_sync(
                 stashes,
                 ongoing_onto,
                 remotes,
+                worktrees,
+                submodules,
             },
             pending_ahead_behind,
         ))
     })
+}
+
+/// `git worktree list` — only spawned when `<common>/worktrees` has entries;
+/// otherwise the single main working tree is synthesized from the probe.
+/// Existing paths are canonicalized so they compare equal to
+/// [`RepoLocation::workdir`].
+fn collect_worktrees(location: &RepoLocation, probe: &RepoProbeResult) -> Vec<WorktreeInfo> {
+    let has_linked = std::fs::read_dir(location.common_dir.join("worktrees"))
+        .is_ok_and(|mut d| d.next().is_some());
+    if has_linked
+        && let Some(mut list) = crate::cli::worktree_list_sync(&location.workdir)
+        && !list.is_empty()
+    {
+        for wt in &mut list {
+            if wt.prunable.is_none() && wt.path.exists() {
+                wt.path = canonical_or_self(&wt.path);
+            }
+        }
+        return list;
+    }
+    vec![WorktreeInfo {
+        path: location.workdir.clone(),
+        head: probe.head_oid,
+        branch: probe.head_branch.clone(),
+        is_main: true,
+        is_bare: location.is_bare,
+        detached: !location.is_bare && probe.head_branch.is_none(),
+        locked: None,
+        prunable: None,
+    }]
+}
+
+/// Submodule paths from `.gitmodules` (skipped when the file is absent).
+fn collect_submodules(repo: &Repository, location: &RepoLocation) -> Vec<String> {
+    if location.is_bare || !location.workdir.join(".gitmodules").is_file() {
+        return Vec::new();
+    }
+    let mut out: Vec<String> = repo
+        .submodules()
+        .map(|subs| {
+            subs.iter()
+                .map(|s| s.path().to_string_lossy().replace('\\', "/"))
+                .collect()
+        })
+        .unwrap_or_default();
+    out.sort_by(|a, b| jbgit_core::natural_cmp(a, b));
+    out
 }
 
 /// Reads `remote.*` from the repository config (cheap, no network), sorted

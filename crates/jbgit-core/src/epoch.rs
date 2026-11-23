@@ -92,6 +92,28 @@ pub enum RequestSlotId {
 impl RequestSlotId {
     pub const COUNT: usize = 19;
 
+    pub const ALL: [Self; Self::COUNT] = [
+        Self::RepoSnapshot,
+        Self::StageStatus,
+        Self::LogCommitDetails,
+        Self::StashCommitDetails,
+        Self::CommitSignature,
+        Self::LogFileDiff,
+        Self::StashFileDiff,
+        Self::FileHistoryDiff,
+        Self::StageFileDiff,
+        Self::FileHistoryList,
+        Self::PathFilter,
+        Self::AmendPreview,
+        Self::ConflictDocument,
+        Self::Annotate,
+        Self::AnnotateDiff,
+        Self::RemoteTagCheck,
+        Self::PushOutgoing,
+        Self::PushCommitDetails,
+        Self::PushFileDiff,
+    ];
+
     #[inline]
     pub const fn index(self) -> usize {
         self as usize

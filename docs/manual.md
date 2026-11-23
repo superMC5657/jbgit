@@ -26,6 +26,7 @@
   - [5. `keymap.toml`：快捷键预设与增量覆盖](#5-keymaptoml快捷键预设与增量覆盖)
   - [6. 常用 `run` 动作标识符参考](#6-常用-run-动作标识符参考)
 - [四、远端与凭据 (Remotes & Credentials)](#四远端与凭据-remotes--credentials)
+- [五、切换仓库与 Worktree (Repositories & Working Trees)](#五切换仓库与-worktree-repositories--working-trees)
 
 ---
 
@@ -59,6 +60,8 @@ jbgit 默认采用**零冲突统一键位（`preset = "default"`）**，并通�
 | `f` / `p` / `P` | 远程同步：**Fetch (`f`)** / **Pull (`p`)** / **Push… (`P`)** |
 | `<Alt-u>` | **Update Project**（三套预设一致）：贮藏本地改动 → `fetch --all --prune` → 当前分支按 `[update].mode` 合并或变基 upstream → 其他跟踪分支仅快进 → 恢复改动；完成通知 `<Alt-z>`「查看」打开只读 Range 筛选的 Log。头部分支胶囊中的 `↓N` 计数可点击打开模式选择 |
 | `<Alt-r>` | **Configure Remotes…**：远端列表（添加 / 重命名 / 编辑 URL / 删除 / 获取），详见[四、远端与凭据](#四远端与凭据-remotes--credentials) |
+| `<Alt-o>` / 点击头部仓库名 | **切换仓库**：最近仓库 / 当前仓库的 linked worktree / 已初始化子模块，模糊过滤，`<Ctrl-o>` 输入任意路径；详见[五、切换仓库与 Worktree](#五切换仓库与-worktree-repositories--working-trees) |
+| `<Alt-w>` | **Working Trees…**：Worktree 列表（打开 / 新建 / 锁定 / 删除 / 清理；需 git ≥ 2.17） |
 | `<Ctrl-Alt-n>` | 从当前 HEAD 新建分支 |
 | `<Alt-z>` / `<Alt-x>` | 触发当前底部通知栏的快捷动作 / 关闭通知 |
 | `<F8>` / `<F12>` | 循环切换图谱渲染引擎（Auto / Vector / Cell） / 切换图标模式（Nerd Font / Unicode） |
@@ -111,6 +114,8 @@ jbgit 默认采用**零冲突统一键位（`preset = "default"`）**，并通�
 | `<Alt-f>` / `<Esc>` | 执行远程 Fetch / 关闭浮窗 |
 | 顶部 `↓ Update Project…` | 选择 `Follow Git config` / `Merge` / `Rebase` 后执行 Update Project（仅在非游离 HEAD 时显示） |
 | 顶部 `⚙ Configure Remotes…` | 打开远端管理窗口（同 `<Alt-r>`） |
+| 顶部 `⎇ Working Trees…` | 打开 Worktree 管理窗口（同 `<Alt-w>`；git < 2.17 时不显示） |
+| 分支行右侧 `⎇ <worktree>` | 该分支已在其他 Worktree 检出：子菜单中 Checkout 置灰并说明原因，改为提供 `Open in Worktree '<name>'` |
 
 ### 提交工作台 (Commit View)
 
@@ -355,6 +360,10 @@ mode = "git-config"
 save_changes = true
 # 同时快进其他设置了 upstream 的本地分支；无法快进（已分叉）的分支会在完成通知中列为“已跳过”
 update_other_branches = true
+
+[worktree]
+# 新建 Worktree 的默认父目录（默认路径 <目录>/<仓库名>-<分支名>，分支名中的 / 换成 -）；留空 = 主工作区的父目录，支持 ~/
+default_parent = ""
 ```
 
 > 提示：若在同一配置层中同时存在 `jbgit.toml` 和 `theme.toml`，且 `theme.toml` 未显式设置 `flavor` 或 `[glyphs].mode`，则会继承该层 `jbgit.toml` 中的 `[general].flavor` 与 `[graph].glyph_mode`。
@@ -457,7 +466,7 @@ prepend_keymap = [
 
 | 作用域 | 可用 `run` 动作标识符 |
 | :--- | :--- |
-| `global` | `quit`, `help`, `context_menu`, `refresh`, `tab_commit`, `tab_log`, `tab_branches`, `tab_stash`, `tab_console`, `focus_next`, `focus_prev`, `toggle_branches_popup`, `toggle_branches_pane`, `git_fetch`, `git_pull`, `git_push`, `update_project`, `configure_remotes`, `goto_revision`, `palette`, `toggle_glyph_mode`, `cycle_graph_renderer`, `git_status_probe`, `noop` |
+| `global` | `quit`, `help`, `context_menu`, `refresh`, `tab_commit`, `tab_log`, `tab_branches`, `tab_stash`, `tab_console`, `focus_next`, `focus_prev`, `toggle_branches_popup`, `toggle_branches_pane`, `git_fetch`, `git_pull`, `git_push`, `update_project`, `configure_remotes`, `switch_repository`, `worktrees`, `goto_revision`, `palette`, `toggle_glyph_mode`, `cycle_graph_renderer`, `git_status_probe`, `noop` |
 | `log` | `cursor_down`, `cursor_up`, `goto_top`, `goto_bottom`, `page_down_half`, `page_up_half`, `goto_revision`, `focus_filter`, `toggle_branches_pane`, `compare_or_diff`, `zoom_diff`, `copy_hash`, `checkout`, `new_branch`, `uncommit`, `reword`, `drop_commit`, `choose_parent`, `toggle_group`, `file_history`, `annotate` |
 | `branch` | `branch_search`, `toggle_favorite`, `checkout`, `new_branch`, `rename_branch`, `delete_branch`, `navigate_branch` |
 | `commit` | `cursor_down`, `cursor_up`, `goto_top`, `goto_bottom`, `toggle_stage`, `stage_selection`, `unstage_selection`, `focus_commit_msg`, `commit`, `commit_and_push`, `toggle_amend`, `toggle_signoff`, `commit_history`, `select_all`, `discard_changes`, `toggle_group`, `edit_file`, `file_history`, `annotate` |
@@ -501,3 +510,62 @@ jbgit 运行的所有 git 子进程都设置 `GIT_TERMINAL_PROMPT=0`，不会在
 > 后台的「远端是否存在同名 Tag」探测（`ls-remote`，5 秒超时）不会弹出凭据对话框，需要认证时视为「未知」。
 >
 > 脚本化 / 沙箱测试可设置 `JBGIT_ASKPASS_RESPONDER=cancel`（总是取消）或 `JBGIT_ASKPASS_RESPONDER=value:<文本>`（总是回答该文本）替代对话框。
+
+---
+
+## 五、切换仓库与 Worktree (Repositories & Working Trees)
+
+jbgit 同一时间只绑定**一个活动仓库**（多根同步模型不做，见 Spec 12 Issue 11），但可以在运行中快速切换，不必退出重开。
+
+### 1. 切换仓库 (`<Alt-o>` / 点击头部仓库名)
+
+切换器列出三类目标（当前仓库本身不列出），输入即模糊过滤（同时匹配名称与路径）：
+
+| 标签 | 来源 |
+| :--- | :--- |
+| `最近` / `recent` | 用户级 `recent-repos.toml`（位于 `$JBGIT_CONFIG_DIR` 或全局配置目录；记录路径、显示名、最后打开时间，按时间倒序，最多 20 个）。已不存在的路径在加载时自动剔除，并在下次打开切换器时提示 |
+| `worktree` | 当前仓库的其他 linked worktree（`git worktree list`；已失效的不列出） |
+| `子模块` / `submodule` | 当前仓库中已初始化的子模块（`.gitmodules`） |
+
+| 快捷键 | 功能描述 |
+| :--- | :--- |
+| `直接打字` / `<Backspace>` / `<Ctrl-u>` | 过滤 / 删除 / 清空 |
+| `↑` / `↓` / `<Ctrl-p>` / `<Ctrl-n>` | 选择 |
+| `<Enter>` / 双击 | 切换到选中仓库 |
+| `<Ctrl-o>` | 输入任意路径（仓库内任意目录均可；相对路径相对于当前仓库所在目录） |
+| `<Del>` | 从最近仓库列表中移除选中项 |
+| `<Esc>` | 关闭 |
+
+切换流程：先校验目标（路径不存在 / 不是仓库时保持当前仓库并报错，同时将其移出最近列表）→ 取消全部在途只读请求、同步写出当前提交草稿 → 停止文件监听与引擎（等待在途写操作最多 5 秒，超时则提示其在后台继续）→ 绑定新仓库：重新加载按仓库叠加的 `.jbgit/` 配置层、分支面板设置与该仓库（该 worktree）的提交草稿。Log / Stage / Stash / Console 全部指向新仓库；旧仓库晚到的结果按会话代号丢弃，不会污染新仓库。
+
+以下情况会先确认或拒绝：
+
+- 有 Git 操作或提交仍在运行、或有未完成的变基 / 合并 / 推送 / 消息编辑对话框 → 确认对话框（默认「取消」）。
+- 内置冲突合并窗口中有未保存的选择 → 拒绝，需先保存或放弃。
+
+> 提交草稿按工作区保存（`<git-dir>/jbgit-commit-draft`）：主工作区与每个 linked worktree 各自保留自己的草稿。
+
+### 2. Working Trees (`<Alt-w>`)
+
+入口：全局 `<Alt-w>`、分支浮窗顶部 `⎇ Working Trees…`。列表每项显示目录名、分支（或 `(detached)`）、HEAD 短哈希与路径，`●` 标记当前工作区，并附 `[主]` / `[已锁定：原因]` / `[可清理]` 标签。
+
+| 快捷键 | 功能描述 |
+| :--- | :--- |
+| `↑` / `↓` / `j` / `k` / `g` / `G` | 选择 |
+| `<Enter>` / `o` / 双击 | 在该 Worktree 中打开（即切换仓库，见上节） |
+| `n` / `a` / `<Insert>` | 新建 Worktree（见下） |
+| `l` | 锁定（可填原因，`git worktree lock --reason`） / 解锁；主工作区不可锁定 |
+| `d` / `<Del>` | 删除（`git worktree remove`，确认框说明分支会保留）；主工作区、当前工作区、已锁定的不可删除。工作区有改动被 git 拒绝时，再次确认后以 `--force` 删除 |
+| `p` | 清理（`git worktree prune --verbose`，确认框列出可清理项） |
+| `y` | 复制路径 |
+| `<Esc>` / `q` | 关闭 |
+
+**新建 Worktree**：先选择检出方式——**从 HEAD 新建分支**（`-b <名称>`）、**已有分支**（只接受尚未在任何工作区检出的本地分支）、**游离 HEAD**（`--detach`）；再确认位置，默认 `<主工作区父目录>/<仓库名>-<分支名>`（由 `[worktree] default_parent` 改变父目录；已存在且非空的路径会被拒绝）。创建成功后通知栏 `<Alt-z>`「打开 '<名称>'」可立即切换过去。
+
+其他入口：
+
+- 分支菜单（分支树 / 分支浮窗）：未被检出的本地分支提供 `New Worktree…`；已在其他 Worktree 检出的分支 Checkout 置灰并提供 `Open in Worktree '<name>'`。
+- Log 提交右键菜单：`New Worktree from Here…`（从该提交新建分支或游离 HEAD）。
+- git 拒绝检出（`is already checked out at` / `is already used by worktree at`）时弹出「分支已在其他工作区检出」对话框，可一键打开该 Worktree。
+
+需要 git ≥ 2.17（`worktree remove` / `lock --reason`）；更低版本时菜单项与浮窗入口隐藏，`<Alt-w>` 仅提示所需版本（`?` 帮助中同样注明）。

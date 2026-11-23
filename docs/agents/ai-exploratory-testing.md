@@ -41,6 +41,19 @@ Creates `.pilot/sandbox-repo` in an active **`git merge` conflict** state (`conf
 .\target\debug\jbgit-pilot.exe serve --scenario conflict --cols 140 --rows 40
 ```
 
+### Scenario D: Multi-Repository & Worktrees (`--scenario multi-repo`)
+Creates three sibling directories under `.pilot/` for repository-switching QA (Spec 12 #09/#10):
+- `sandbox-repo` (basic scenario: `main`, `feature/ui-test`, `bugfix/scroll`, tag `v0.1.0`, one modified + one untracked file)
+- `sandbox-repo-feature`: linked worktree of `sandbox-repo` with `feature/ui-test` checked out (plus an untracked `WORKTREE_NOTE.md`)
+- `sandbox-repo-b`: unrelated repository on `develop` with one modified file
+- The isolated config dir gets a `recent-repos.toml` listing `sandbox-repo-b`, so `Alt+O` (repository switcher) shows it next to the worktree; `Alt+W` opens the Working Trees modal
+
+Verify after every switch that the header, Log, Commit (stage), Stash and Console all point to the new repository, that the switch is announced in the footer, and that each worktree keeps its own commit draft.
+
+```powershell
+.\target\debug\jbgit-pilot.exe serve --sandbox --scenario multi-repo --cols 140 --rows 40
+```
+
 ### Scenario C: Custom Theme & Keymap Config (`--custom-config`)
 Can be combined with `--sandbox` (or `--repo <dir>`) to auto-generate `.pilot/custom-config/` (`jbgit.toml`, `theme.toml`, `keymap.toml`) and launch with `JBGIT_CONFIG_DIR`:
 - `jbgit.toml`: `language = "en-US"`, `default_tab = "log"`, plus `[layout]` custom split ratios (`log_ratio`, `commit_ratio`, `file_history_ratio`, `file_history_vertical_ratio`)

@@ -62,6 +62,21 @@ pub fn branch_menu_items(state: &AppState, name: &str, kind: RefKind) -> Vec<Con
                 )
                 .icon("⎇"),
             );
+            if let Some(wt) = snap.worktree_of_branch(&name) {
+                items.push(run(
+                    i18n.t_fmt("menu.branch.open_in_worktree", &[("worktree", &ellipsize(&wt.name(), 24))]),
+                    Some('t'),
+                    None,
+                    vec![Action::SwitchRepository(wt.path.clone())],
+                ));
+            } else if !is_current && crate::worktrees_view::worktrees_supported(state) {
+                items.push(run(
+                    i18n.t("menu.branch.new_worktree"),
+                    Some('t'),
+                    None,
+                    dialog(crate::worktrees_view::new_worktree_for_branch_dialog(state, &name)),
+                ));
+            }
             items.push(
                 run(
                     i18n.t_fmt("menu.branch.new_branch_from", &[("name", &ellipsize(&name, 24))]),

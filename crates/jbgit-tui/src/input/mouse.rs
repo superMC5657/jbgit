@@ -198,6 +198,7 @@ fn route_mouse_left_down(
         HitTarget::HeaderRefreshButton => vec![Action::RefreshAll],
         HitTarget::HeaderBehindBadge => vec![Action::PromptUpdateProject],
         HitTarget::HeaderGlyphButton => vec![Action::ToggleGlyphMode],
+        HitTarget::HeaderRepoName => vec![Action::OpenRepoSwitcher],
         HitTarget::HeaderHelpButton => vec![Action::OpenPopup {
             kind: PopupKind::ShortcutsHelp,
             initial_query: String::new(),
@@ -515,6 +516,9 @@ fn route_mouse_right_down(col: u16, row: u16, state: &AppState) -> Vec<Action> {
             | HitTarget::ModalButton(_)
             | HitTarget::BranchPopupStar(_)
             | HitTarget::RemotesRow(_)
+            | HitTarget::RepoSwitcherRow(_)
+            | HitTarget::WorktreesRow(_)
+            | HitTarget::HeaderRepoName
             | HitTarget::BranchPopupFetch
             | HitTarget::BranchPopupSettings
             | HitTarget::FileHistoryRow { .. }

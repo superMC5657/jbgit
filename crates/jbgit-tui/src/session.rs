@@ -7,7 +7,7 @@
 //! through the injected [`EngineBackend`] and [`SessionHost`] adapters →
 //! virtual/monotonic deadline scheduling and rendering.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use crossterm::event::Event;
@@ -111,8 +111,14 @@ where
 #[derive(Debug)]
 pub enum SessionInput {
     Terminal(Event),
+    /// Engine event of the currently bound repository.
     Engine(EngineEvent),
+    /// Engine event stamped with the repository session generation it was
+    /// produced for; dropped when the session has been rebound since.
+    EngineFrom(u64, EngineEvent),
     UiAsync(UiAsyncEvent),
+    /// Background UI job result stamped with its session generation.
+    UiAsyncFrom(u64, UiAsyncEvent),
     Action(Action),
     FlushPendingDetails,
     TickSpinner,
@@ -143,12 +149,14 @@ pub trait SessionHost {
 /// system/OSC-52 clipboard, `$EDITOR` subprocesses, and Tokio blocking workers.
 pub struct ProdHost {
     pub term_guard: Option<TerminalGuard>,
-    pub ui_async_tx: UnboundedSender<UiAsyncEvent>,
+    /// Background job results, stamped with the session generation that
+    /// spawned them ([`SessionInput::UiAsyncFrom`]).
+    pub ui_async_tx: UnboundedSender<SessionInput>,
     pub cell_px_probe_deadline: Option<tokio::time::Instant>,
 }
 
 impl ProdHost {
-    pub fn new(term_guard: Option<TerminalGuard>, ui_async_tx: UnboundedSender<UiAsyncEvent>) -> Self {
+    pub fn new(term_guard: Option<TerminalGuard>, ui_async_tx: UnboundedSender<SessionInput>) -> Self {
         Self {
             term_guard,
             ui_async_tx,
@@ -178,33 +186,38 @@ impl SessionHost for ProdHost {
         handle_external_editor_effects(effects, state, &mut self.term_guard)
     }
 
-    fn spawn_containing_branches(&mut self, job: ContainingBranchesJob, _state: &mut AppState) {
+    fn spawn_containing_branches(&mut self, job: ContainingBranchesJob, state: &mut AppState) {
         let tx = self.ui_async_tx.clone();
+        let generation = state.session_generation;
         tokio::task::spawn_blocking(move || {
             if let Some(names) = job.run() {
-                let _ = tx.send(UiAsyncEvent::ContainingBranches {
+                let ev = UiAsyncEvent::ContainingBranches {
                     oid: job.oid,
                     token: job.token,
                     names,
-                });
+                };
+                let _ = tx.send(SessionInput::UiAsyncFrom(generation, ev));
             }
         });
     }
 
-    fn spawn_rebuild_log_graph(&mut self, job: Box<LogGraphJob>, _state: &mut AppState) {
+    fn spawn_rebuild_log_graph(&mut self, job: Box<LogGraphJob>, state: &mut AppState) {
         let tx = self.ui_async_tx.clone();
+        let generation = state.session_generation;
         tokio::task::spawn_blocking(move || {
             if let Some(rebuilt) = job.run() {
-                let _ = tx.send(UiAsyncEvent::LogGraphRebuilt(Box::new(rebuilt)));
+                let ev = UiAsyncEvent::LogGraphRebuilt(Box::new(rebuilt));
+                let _ = tx.send(SessionInput::UiAsyncFrom(generation, ev));
             }
         });
     }
 
-    fn spawn_syntax_highlight(&mut self, job: SyntaxJob, _state: &mut AppState) {
+    fn spawn_syntax_highlight(&mut self, job: SyntaxJob, state: &mut AppState) {
         let tx = self.ui_async_tx.clone();
+        let generation = state.session_generation;
         tokio::task::spawn_blocking(move || {
             if let Some(ev) = job.run() {
-                let _ = tx.send(ev);
+                let _ = tx.send(SessionInput::UiAsyncFrom(generation, ev));
             }
         });
     }
@@ -482,7 +495,21 @@ impl TuiSession {
                 let effs = state.apply_engine_event(ev);
                 push_effects(effs, state)
             }
+            SessionInput::EngineFrom(generation, ev) => {
+                if generation != state.session_generation {
+                    return false;
+                }
+                let effs = state.apply_engine_event(ev);
+                push_effects(effs, state)
+            }
             SessionInput::UiAsync(ui_ev) => {
+                let effs = state.apply_ui_async_event(ui_ev);
+                push_effects(effs, state)
+            }
+            SessionInput::UiAsyncFrom(generation, ui_ev) => {
+                if generation != state.session_generation {
+                    return false;
+                }
                 let effs = state.apply_ui_async_event(ui_ev);
                 push_effects(effs, state)
             }
@@ -529,47 +556,174 @@ impl TuiSession {
         self.state.stage_workbench.flush_draft_sync();
         self.state.log.graph_renderer.shutdown_sequence()
     }
+
+    /// Repository session generation of the bound repository.
+    pub fn generation(&self) -> u64 {
+        self.state.session_generation
+    }
+
+    /// Path of a confirmed repository switch the host must now perform
+    /// (`RepoSwitcher`, worktree Open, …).
+    pub fn take_repo_switch_request(&mut self) -> Option<PathBuf> {
+        self.state.pending_repo_switch.take()
+    }
+
+    /// Workdir of the bound repository.
+    pub fn current_workdir(&self) -> PathBuf {
+        self.state.current_workdir()
+    }
+
+    /// Reports a switch the host could not perform (the current repository
+    /// stays bound).
+    pub fn report_repo_switch_failure(&mut self, target: &Path, error: &str) {
+        self.state.report_repo_switch_failure(target, error);
+    }
+
+    /// The switch target resolved to the bound repository (e.g. a subdirectory).
+    pub fn report_repo_already_open(&mut self, target: &Path) {
+        let shown = target.display().to_string();
+        self.state.status_notice = Some(
+            self.state
+                .i18n
+                .t_fmt("toast.repo_already_open", &[("path", &shown)]),
+        );
+        self.state.needs_redraw = true;
+    }
+
+    /// First half of a repository rebind: cancels local single-flight jobs,
+    /// flushes the commit draft and returns the graphics shutdown sequence.
+    /// The host then stops the engine ([`RepoSession::unbind`]).
+    pub fn prepare_unbind(&mut self) -> Vec<u8> {
+        self.state.file_syntax.invalidate();
+        self.state.stage_syntax.invalidate();
+        self.state.blame_syntax.invalidate();
+        self.state.range_syntax.invalidate();
+        self.shutdown()
+    }
+
+    /// Second half of a repository rebind: replaces the per-repository state
+    /// with `next` (built for the new repository; its `.jbgit/` config layer
+    /// is already loaded, branches panel settings and commit draft load with
+    /// its first snapshot), carrying over terminal-level state, and bumps the
+    /// session generation so late events of the previous repository are
+    /// dropped. `writes_finished = false` reports that the previous
+    /// repository's write operations outlived the unbind timeout.
+    pub fn rebind(&mut self, mut next: AppState, writes_finished: bool) {
+        let prev = &mut self.state;
+        next.session_generation = prev.session_generation.wrapping_add(1);
+        next.terminal_area = prev.terminal_area;
+        next.log
+            .graph_renderer
+            .set_capabilities(prev.log.graph_renderer.capabilities());
+        next.async_graph_enabled = prev.async_graph_enabled;
+        next.credentials = std::mem::take(&mut prev.credentials);
+        next.recent_repos = std::mem::take(&mut prev.recent_repos);
+        if next.git_version.is_none() {
+            next.git_version = prev.git_version;
+        }
+        next.clock = Some(self.clock);
+        next.needs_redraw = true;
+        next.on_repository_bound(Some(writes_finished));
+        self.state = next;
+    }
+}
+
+/// Engine binding of the active repository (Spec 12 Issue 09): the engine
+/// handle, its event stream and the session generation its events belong to.
+/// Rebinding = [`TuiSession::prepare_unbind`] → [`RepoSession::unbind`] →
+/// [`RepoSession::bind_location`] → [`TuiSession::rebind`].
+pub struct RepoSession {
+    pub handle: Option<EngineHandle>,
+    pub events: Option<UnboundedReceiver<EngineEvent>>,
+    pub generation: u64,
+}
+
+/// How long an unbind waits for in-flight write operations.
+pub const UNBIND_WRITE_TIMEOUT: Duration = Duration::from_secs(5);
+
+impl RepoSession {
+    /// No engine (repository discovery or engine start failed).
+    pub fn detached() -> Self {
+        Self {
+            handle: None,
+            events: None,
+            generation: 0,
+        }
+    }
+
+    pub fn backend(&self) -> Option<&dyn EngineBackend> {
+        self.handle.as_ref().map(|h| h as &dyn EngineBackend)
+    }
+
+    /// Discovers the repository containing `target`.
+    pub fn discover(target: &Path) -> Result<RepoLocation, String> {
+        RepoLocation::discover(target).map_err(|e| e.to_string())
+    }
+
+    /// Starts the engine for `loc` and builds the matching [`AppState`]
+    /// (per-repository config layer, detected git version).
+    pub fn bind_location(
+        loc: RepoLocation,
+        askpass: Option<jbgit_engine::askpass::AskpassEnv>,
+    ) -> (Self, AppState) {
+        let workdir = loc.workdir.clone();
+        let config = crate::config::AppConfig::load(Some(&workdir));
+        let scan_config = config.jbgit.performance.to_engine_config();
+        match EngineSupervisor::start_with_askpass(loc, true, scan_config, askpass) {
+            Ok((handle, rx)) => {
+                let mut state = AppState::new_with_config(workdir, None, config);
+                state.git_version = handle
+                    .git_info()
+                    .and_then(|i| jbgit_core::GitVersion::parse(&i.version_string));
+                let repo = Self {
+                    handle: Some(handle),
+                    events: Some(rx),
+                    generation: 0,
+                };
+                (repo, state)
+            }
+            Err(e) => {
+                let cli_i18n = crate::i18n::I18n::load_for_cli();
+                let err = cli_i18n.t_fmt("cli.engine_err", &[("err", &e.to_string())]);
+                (
+                    Self::detached(),
+                    AppState::new_with_config(workdir, Some(err), config),
+                )
+            }
+        }
+    }
+
+    /// Stops the engine: advances its request slots, stops the watcher and
+    /// the supervisor, and waits up to [`UNBIND_WRITE_TIMEOUT`] for in-flight
+    /// write operations. Returns `false` when writes were still running.
+    pub async fn unbind(self) -> bool {
+        drop(self.events);
+        match self.handle {
+            Some(handle) => handle.shutdown(UNBIND_WRITE_TIMEOUT).await,
+            None => true,
+        }
+    }
 }
 
 /// Discovers the repository at `target_path`, starts the background
-/// [`EngineSupervisor`], and builds a production [`TuiSession`].
+/// [`EngineSupervisor`], and builds a production [`TuiSession`] whose recent
+/// repositories list is the user-level `recent-repos.toml`.
 ///
 /// `askpass` is the credential-bridge environment of this session's
 /// [`jbgit_engine::askpass::AskpassServer`] (network operations only).
 pub fn init_engine_and_session(
     target_path: PathBuf,
     askpass: Option<jbgit_engine::askpass::AskpassEnv>,
-) -> (
-    Option<EngineHandle>,
-    Option<UnboundedReceiver<EngineEvent>>,
-    TuiSession,
-) {
-    let cli_i18n = crate::i18n::I18n::load_for_cli();
-    let (engine_handle, engine_rx, mut state) = match RepoLocation::discover(&target_path) {
-        Ok(loc) => {
-            let workdir = loc.workdir.clone();
-            let config = crate::config::AppConfig::load(Some(&workdir));
-            let scan_config = config.jbgit.performance.to_engine_config();
-            match EngineSupervisor::start_with_askpass(loc, true, scan_config, askpass) {
-                Ok((handle, rx)) => {
-                    let s = AppState::new_with_config(workdir, None, config);
-                    (Some(handle), Some(rx), s)
-                }
-                Err(e) => (
-                    None,
-                    None,
-                    AppState::new_with_config(
-                        target_path,
-                        Some(cli_i18n.t_fmt("cli.engine_err", &[("err", &e.to_string())])),
-                        config,
-                    ),
-                ),
-            }
-        }
-        Err(e) => (None, None, AppState::new(target_path, Some(e.to_string()))),
+) -> (RepoSession, TuiSession) {
+    let (repo, mut state) = match RepoSession::discover(&target_path) {
+        Ok(loc) => RepoSession::bind_location(loc, askpass),
+        Err(e) => (RepoSession::detached(), AppState::new(target_path, Some(e))),
     };
     state.async_graph_enabled = true;
-    (engine_handle, engine_rx, TuiSession::new(state))
+    state.recent_repos =
+        crate::repo_switcher::RecentRepos::load(crate::repo_switcher::RecentRepos::default_file());
+    state.on_repository_bound(None);
+    (repo, TuiSession::new(state))
 }
 
 pub fn spawn_wezterm_cell_probe(tx: UnboundedSender<Option<CellPixelSize>>) {

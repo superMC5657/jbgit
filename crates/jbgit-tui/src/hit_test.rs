@@ -276,6 +276,12 @@ pub enum HitTarget {
     BranchPopupStar(usize),
     /// Row of the `Configure Remotes…` modal.
     RemotesRow(usize),
+    /// Visible row of the repository switcher.
+    RepoSwitcherRow(usize),
+    /// Row of the `Working Trees` modal.
+    WorktreesRow(usize),
+    /// Repository name in the top header (opens the switcher).
+    HeaderRepoName,
     BranchPopupFetch,
     BranchPopupSettings,
     OngoingBanner(OngoingButton),

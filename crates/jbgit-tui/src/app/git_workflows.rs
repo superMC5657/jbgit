@@ -974,6 +974,9 @@ impl AppState {
                     self.select_remote_in_modal(name);
                 }
                 GitOp::RenameRemote { new, .. } => self.select_remote_in_modal(new),
+                GitOp::AddWorktree { .. }
+                | GitOp::RemoveWorktree { .. }
+                | GitOp::PruneWorktrees => self.on_worktree_op_succeeded(&op),
                 GitOp::Ongoing {
                     step: OngoingStep::Continue | OngoingStep::Abort,
                     ..
@@ -997,6 +1000,11 @@ impl AppState {
         }
 
         let label = op_label;
+        if let Some(f) = &outcome.failure
+            && self.on_worktree_failure(&op, f)
+        {
+            return;
+        }
         let i18n = self.i18n.clone();
         match outcome.failure.clone() {
             Some(
@@ -1329,6 +1337,11 @@ impl AppState {
             Some(GitFailure::Other(msg)) => {
                 self.notify_error(i18n.t_fmt("toast.op_failed_msg", &[("label", &label), ("error", &msg)]));
             }
+            Some(
+                GitFailure::BranchCheckedOutInWorktree { .. }
+                | GitFailure::WorktreeDirty
+                | GitFailure::WorktreeLocked,
+            ) => self.notify_error(i18n.t_fmt("toast.op_failed", &[("label", &label)])),
             None => self.notify_error(i18n.t_fmt("toast.op_failed", &[("label", &label)])),
         }
     }

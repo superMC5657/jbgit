@@ -123,6 +123,56 @@ mod tests {
     }
 
     #[test]
+    fn classify_worktree_failures() {
+        let line = |s: &str| vec![s.to_string()];
+        let expect = |branch: &str, path: &str| GitFailure::BranchCheckedOutInWorktree {
+            branch: branch.into(),
+            path: path.into(),
+        };
+        assert_eq!(
+            classify_failure(&line("fatal: 'feature/x' is already checked out at '/w/wt-x'")),
+            expect("feature/x", "/w/wt-x")
+        );
+        assert_eq!(
+            classify_failure(&line("fatal: 'dev' is already used by worktree at 'C:/w/dev'")),
+            expect("dev", "C:/w/dev")
+        );
+        assert_eq!(
+            classify_failure(&[
+                "Preparing worktree (checking out 'dev')".into(),
+                "error: Cannot delete branch 'dev' checked out at '/w/dev'".into(),
+            ]),
+            expect("dev", "/w/dev")
+        );
+        assert_eq!(
+            classify_failure(&line(
+                "error: cannot delete branch 'dev' used by worktree at '/w/dev'"
+            )),
+            expect("dev", "/w/dev")
+        );
+        assert_eq!(
+            classify_failure(&line(
+                "fatal: '/w/dev' contains modified or untracked files, use --force to delete it"
+            )),
+            GitFailure::WorktreeDirty
+        );
+        assert_eq!(
+            classify_failure(&[
+                "fatal: cannot remove a locked working tree, lock reason: usb".into(),
+                "use 'remove -f -f' to override or unlock first".into(),
+            ]),
+            GitFailure::WorktreeLocked
+        );
+        let add = GitOp::AddWorktree {
+            path: "/w/x".into(),
+            branch: crate::WorktreeBranch::Existing("x".into()),
+        };
+        assert!(!add.is_network());
+        assert_eq!(add.refresh_scope(), RefreshScope::RefsAndGraph);
+        assert_eq!(GitOp::PruneWorktrees.label(), "Prune worktrees");
+    }
+
+    #[test]
     fn remote_ops_are_classified_for_network_and_refresh() {
         let fetch_one = GitOp::FetchRemote { name: "fork".into() };
         assert!(fetch_one.is_network());

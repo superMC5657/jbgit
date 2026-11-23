@@ -112,6 +112,8 @@ fn route_modal_key(key: KeyEvent, state: &AppState) -> Vec<Action> {
         ModalLayer::Annotate(_) => route_annotate_key(&key, state),
         ModalLayer::PushDialog(_) => route_push_dialog_key(&key, state),
         ModalLayer::Remotes(_) => crate::remotes_view::route_remotes_key(&key, state),
+        ModalLayer::RepoSwitcher(_) => crate::repo_switcher::route_repo_switcher_key(&key, state),
+        ModalLayer::Worktrees(_) => crate::worktrees_view::route_worktrees_key(&key, state),
         ModalLayer::ConflictResolver(_) => route_conflict_merge_key(&key, state),
         ModalLayer::ThreeWayInspector { .. } | ModalLayer::HookError { .. } => match key.code {
             KeyCode::Esc | KeyCode::Enter => vec![Action::PopModal],

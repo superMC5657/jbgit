@@ -307,6 +307,21 @@ pub fn log_commit_menu_items(state: &AppState) -> Vec<ContextMenuItem> {
         .icon("+")
         .enabled_if(single, need_single(new_branch_lbl)),
     );
+    if crate::worktrees_view::worktrees_supported(state) {
+        let new_wt_lbl = i18n.t("menu.log.new_worktree_here");
+        items.push(
+            run(
+                new_wt_lbl,
+                Some('w'),
+                None,
+                vec![Action::PromptNewWorktree {
+                    at: Some(primary.oid),
+                }],
+            )
+            .icon("⎇")
+            .enabled_if(single, need_single(new_wt_lbl)),
+        );
+    }
     let tags: Vec<String> = snap.tag_names().iter().map(|t| t.to_string()).collect();
     let new_tag_lbl = i18n.t("menu.log.new_tag_here");
     items.push(

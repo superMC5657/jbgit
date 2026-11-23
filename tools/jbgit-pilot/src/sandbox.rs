@@ -9,6 +9,9 @@ pub enum SandboxScenario {
     Basic,
     Full,
     Conflict,
+    /// Two repositories + a linked worktree + a recent-repositories list
+    /// (Spec 12 #09/#10 repository switching).
+    MultiRepo,
 }
 
 impl SandboxScenario {
@@ -17,7 +20,10 @@ impl SandboxScenario {
             "basic" => Ok(Self::Basic),
             "full" => Ok(Self::Full),
             "conflict" => Ok(Self::Conflict),
-            other => bail!("unknown scenario '{other}' (expected: full, conflict, basic)"),
+            "multi-repo" | "multirepo" => Ok(Self::MultiRepo),
+            other => bail!(
+                "unknown scenario '{other}' (expected: full, conflict, basic, multi-repo)"
+            ),
         }
     }
 }
@@ -94,7 +100,26 @@ prepend_keymap = [
     Ok(())
 }
 
+/// Sibling directories of the multi-repo scenario: `(worktree, second repo)`.
+pub fn multi_repo_siblings(dir: &Path) -> (PathBuf, PathBuf) {
+    let name = dir
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("sandbox-repo");
+    let parent = dir.parent().unwrap_or(Path::new("."));
+    (
+        parent.join(format!("{name}-feature")),
+        parent.join(format!("{name}-b")),
+    )
+}
+
 pub fn init_sandbox_repo(dir: &Path, remote_dir: &Path, scenario: SandboxScenario) -> Result<()> {
+    let (wt_dir, b_dir) = multi_repo_siblings(dir);
+    for sibling in [&wt_dir, &b_dir] {
+        if sibling.exists() {
+            fs::remove_dir_all(sibling)?;
+        }
+    }
     if dir.exists() {
         fs::remove_dir_all(dir)?;
     }
@@ -111,7 +136,49 @@ pub fn init_sandbox_repo(dir: &Path, remote_dir: &Path, scenario: SandboxScenari
         SandboxScenario::Basic => init_basic_scenario(dir)?,
         SandboxScenario::Conflict => init_conflict_scenario(dir)?,
         SandboxScenario::Full => init_full_scenario(dir, remote_dir)?,
+        SandboxScenario::MultiRepo => init_multi_repo_scenario(dir, &wt_dir, &b_dir)?,
     }
+    Ok(())
+}
+
+/// `sandbox-repo` (basic scenario) with `feature/ui-test` checked out in the
+/// linked worktree `sandbox-repo-feature`, plus an unrelated repository
+/// `sandbox-repo-b` on `develop` with its own uncommitted change.
+fn init_multi_repo_scenario(dir: &Path, wt_dir: &Path, b_dir: &Path) -> Result<()> {
+    init_basic_scenario(dir)?;
+    let wt = wt_dir.to_string_lossy().into_owned();
+    run_git(dir, &["worktree", "add", &wt, "feature/ui-test"])?;
+    fs::write(wt_dir.join("WORKTREE_NOTE.md"), "edited only in the worktree\n")?;
+
+    fs::create_dir_all(b_dir)?;
+    run_git(b_dir, &["init", "-b", "develop"])?;
+    run_git(b_dir, &["config", "user.name", "QA Tester"])?;
+    run_git(b_dir, &["config", "user.email", "qa@example.com"])?;
+    fs::write(b_dir.join("b.txt"), "repository B\n")?;
+    run_git(b_dir, &["add", "b.txt"])?;
+    run_git(b_dir, &["commit", "-m", "B: initial commit"])?;
+    fs::write(b_dir.join("b.txt"), "repository B (modified)\n")?;
+    Ok(())
+}
+
+/// Seeds `recent-repos.toml` in the isolated config dir with `repos`
+/// (newest first) so the repository switcher (`Alt+O`) lists them.
+pub fn write_recent_repos(cfg_dir: &Path, repos: &[PathBuf]) -> Result<()> {
+    fs::create_dir_all(cfg_dir)?;
+    let mut body = String::new();
+    for (i, repo) in repos.iter().enumerate() {
+        let name = repo
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("repo");
+        // TOML literal string: no escaping of Windows backslashes needed.
+        let path = repo.to_string_lossy();
+        body.push_str(&format!(
+            "[[repos]]\npath = '{path}'\nname = '{name}'\nlast_opened = {}\n\n",
+            1_900_000_000 - i as i64
+        ));
+    }
+    fs::write(cfg_dir.join("recent-repos.toml"), body)?;
     Ok(())
 }
 

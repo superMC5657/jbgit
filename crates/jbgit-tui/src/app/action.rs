@@ -322,6 +322,30 @@ pub enum Action {
     RemotesMove(isize),
     /// Select a row of the Remotes modal (`usize::MAX` = last).
     RemotesSelect(usize),
+    /// Repository switcher (`<A-o>`, header repository name).
+    OpenRepoSwitcher,
+    /// Query / selection of the repository switcher.
+    RepoSwitcherSetState {
+        query: String,
+        selected: usize,
+    },
+    /// Switch the session to the repository containing this path (guarded:
+    /// running operations / open flows ask first).
+    SwitchRepository(std::path::PathBuf),
+    /// [`Action::SwitchRepository`] after the user confirmed the guard.
+    SwitchRepositoryConfirmed(std::path::PathBuf),
+    /// Remove a path from the recent repositories list.
+    ForgetRecentRepo(std::path::PathBuf),
+    /// `Working Trees` modal.
+    OpenWorktrees,
+    /// Move the Worktrees modal selection by a delta.
+    WorktreesMove(isize),
+    /// Select a row of the Worktrees modal (`usize::MAX` = last).
+    WorktreesSelect(usize),
+    /// Open the selected working tree (double-click).
+    WorktreesOpenSelected,
+    /// "New Worktree…" chooser (`None` = from HEAD, `Some` = Log commit).
+    PromptNewWorktree { at: Option<jbgit_core::Oid> },
     /// Show only `oids` in the Log (read-only Range chip, `GitUpdateInfoAsLog`).
     FilterLogByRange {
         label: String,

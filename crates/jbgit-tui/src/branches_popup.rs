@@ -34,6 +34,8 @@ pub struct PopupBranch {
     pub indent: u16,
     pub full_ref: String,
     pub short: String,
+    /// Another working tree has this local branch checked out (its name).
+    pub worktree: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -45,6 +47,7 @@ pub enum PopupRow {
     NewBranch,
     CheckoutRevision,
     ConfigureRemotes,
+    Worktrees,
     Branch(PopupBranch),
 }
 
@@ -89,6 +92,11 @@ fn branch_row(
             indent,
             full_ref: r.full_name.clone(),
             short,
+            worktree: (r.kind == RefKind::LocalBranch)
+                .then_some(state.repo_snapshot.as_deref())
+                .flatten()
+                .and_then(|s| s.worktree_of_branch(&r.name))
+                .map(jbgit_core::WorktreeInfo::name),
         },
     ))
 }
@@ -110,6 +118,9 @@ pub fn build_popup_rows(state: &AppState, query: &str) -> Vec<PopupRow> {
         rows.push(PopupRow::NewBranch);
         rows.push(PopupRow::CheckoutRevision);
         rows.push(PopupRow::ConfigureRemotes);
+        if crate::worktrees_view::worktrees_supported(state) {
+            rows.push(PopupRow::Worktrees);
+        }
     }
 
     let sort_scored = |v: &mut Vec<(u32, PopupBranch)>| {
@@ -303,6 +314,7 @@ pub fn activate_row(state: &AppState, query: &str, idx: usize) -> Vec<Action> {
         }],
         PopupRow::UpdateProject => vec![Action::PopModal, Action::PromptUpdateProject],
         PopupRow::ConfigureRemotes => vec![Action::PopModal, Action::OpenRemotes],
+        PopupRow::Worktrees => vec![Action::PopModal, Action::OpenWorktrees],
         PopupRow::NewBranch => vec![
             Action::PopModal,
             Action::OpenDialog(Box::new(new_branch_from_head_dialog(snap, &state.i18n))),
@@ -635,6 +647,26 @@ pub fn render_branches_popup(
                     right,
                 )
             }
+            PopupRow::Worktrees => {
+                let right = match crate::keymap::catalog::shortcut_for_action(
+                    state,
+                    &[KeymapScope::Global],
+                    &KeyAction::Worktrees,
+                ) {
+                    Some(sc) => vec![Span::styled(
+                        format!("{sc} "),
+                        Style::default().fg(ctx.theme.fg_muted),
+                    )],
+                    None => Vec::new(),
+                };
+                (
+                    vec![Span::styled(
+                        state.i18n.t("view.branches_popup.worktrees_btn").to_string(),
+                        Style::default().fg(fg),
+                    )],
+                    right,
+                )
+            }
             PopupRow::Branch(b) => branch_spans(ctx, b, is_sel),
         };
         let line = crate::views::fit_left_right_spans(left, right, inner_w, 0);
@@ -733,6 +765,12 @@ fn branch_spans(
         left.push(Span::styled(cur, if cur_hl { hl } else { base }));
     }
     let mut right = Vec::new();
+    if let Some(wt) = &b.worktree {
+        right.push(Span::styled(
+            format!("⎇ {} ", truncate_to_width(wt, 18)),
+            Style::default().fg(ctx.theme.status_modified),
+        ));
+    }
     if let Some(up) = &b.upstream {
         right.push(Span::styled(
             truncate_to_width(up, 22),

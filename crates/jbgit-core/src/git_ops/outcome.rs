@@ -23,6 +23,13 @@ pub enum GitFailure {
     AuthenticationFailed,
     /// `git remote add` / `rename` onto an existing remote name.
     RemoteAlreadyExists,
+    /// The branch is checked out in another working tree (`worktree add`,
+    /// `checkout`, `branch -d` refuse it).
+    BranchCheckedOutInWorktree { branch: String, path: String },
+    /// `git worktree remove` on a working tree with local changes.
+    WorktreeDirty,
+    /// `git worktree remove` on a locked working tree.
+    WorktreeLocked,
     /// Anything else (first meaningful stderr line).
     Other(String),
 }
@@ -35,6 +42,15 @@ pub fn classify_failure(lines: &[String]) -> GitFailure {
     }
     if joined.contains("error: remote ") && joined.contains(" already exists") {
         return GitFailure::RemoteAlreadyExists;
+    }
+    if let Some(f) = parse_checked_out_elsewhere(lines) {
+        return f;
+    }
+    if joined.contains("contains modified or untracked files") {
+        return GitFailure::WorktreeDirty;
+    }
+    if joined.contains("cannot remove a locked working tree") {
+        return GitFailure::WorktreeLocked;
     }
     let collect_files = |marker: &str| -> Vec<String> {
         let mut files = Vec::new();
@@ -109,6 +125,30 @@ pub fn classify_failure(lines: &[String]) -> GitFailure {
         .or_else(|| lines.iter().map(|l| l.trim()).find(|l| !l.is_empty()))
         .unwrap_or("git command failed");
     GitFailure::Other(crate::redact_urls_in(first))
+}
+
+/// `fatal: 'x' is already checked out at '/p'` (older git),
+/// `fatal: 'x' is already used by worktree at '/p'` (git ≥ 2.42) and the
+/// `branch -d` forms `Cannot delete branch 'x' checked out at '/p'` /
+/// `cannot delete branch 'x' used by worktree at '/p'`.
+fn parse_checked_out_elsewhere(lines: &[String]) -> Option<GitFailure> {
+    const MARKERS: [&str; 4] = [
+        "' is already checked out at '",
+        "' is already used by worktree at '",
+        "' used by worktree at '",
+        "' checked out at '",
+    ];
+    lines.iter().find_map(|line| {
+        let lower = line.to_lowercase();
+        if !(lower.contains("already") || lower.contains("cannot delete branch")) {
+            return None;
+        }
+        let marker = MARKERS.iter().find(|m| line.contains(*m))?;
+        let (head, tail) = line.split_once(marker)?;
+        let branch = head.rsplit('\'').next().unwrap_or_default().to_string();
+        let path = tail.trim_end().trim_end_matches('\'').to_string();
+        Some(GitFailure::BranchCheckedOutInWorktree { branch, path })
+    })
 }
 
 /// Credential / key rejection messages from git, git-remote-http(s) and ssh.

@@ -14,6 +14,7 @@ pub mod repo;
 pub mod stage;
 pub mod stage_tracker;
 pub mod ui;
+pub mod worktree;
 
 pub use branch_tree::{
     BranchCategory, BranchNodeKind, BranchTreeExpansion, BranchTreeNode, BranchTreeOptions,
@@ -73,6 +74,10 @@ pub use stage_tracker::{
 pub use ui::{
     BranchTreeNodeId, ChangeNodeId, ModalButton, PaneId, SplitAxis, SplitterId, TreeId,
     WorkspaceTab,
+};
+pub use worktree::{
+    GitVersion, WorktreeBranch, WorktreeInfo, default_worktree_path, parse_worktree_list_porcelain,
+    same_path,
 };
 
 /// Compacts single-child directory chains (`a` -> `b` -> `c` becomes `a/b/c`).

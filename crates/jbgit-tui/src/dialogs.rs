@@ -7,7 +7,7 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use jbgit_core::{
     GitOp, MergeOptions, Oid, RepoSnapshot, ResetMode, StashEntry, TodoAction, TodoEntry,
-    default_squash_messages,
+    WorktreeBranch, default_squash_messages,
 };
 use jbgit_engine::askpass::Secret;
 
@@ -25,6 +25,14 @@ pub enum InputValidation {
     NonEmpty,
     /// Remote URL / path: non-empty and no whitespace (no network check).
     RemoteUrl,
+    /// Must be one of `candidates` (e.g. a local branch free for a worktree).
+    OneOf {
+        candidates: Vec<String>,
+        error_key: &'static str,
+    },
+    /// New working-tree location: non-empty and not an existing file or
+    /// non-empty directory (relative paths resolve against `base`).
+    NewPath { base: std::path::PathBuf },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -63,6 +71,83 @@ pub enum InputIntent {
         name: String,
         push: bool,
     },
+    /// New worktree, step 1 (new branch): the branch name; step 2 asks for the path.
+    NewWorktreeBranch {
+        start: String,
+        ctx: WorktreeDialogCtx,
+    },
+    /// New worktree, step 1 (existing branch): the branch name.
+    ExistingWorktreeBranch {
+        ctx: WorktreeDialogCtx,
+    },
+    /// New worktree, last step: the location.
+    WorktreePath {
+        branch: WorktreeBranch,
+        base: std::path::PathBuf,
+    },
+    /// Optional lock reason of `git worktree lock`.
+    LockWorktree {
+        path: std::path::PathBuf,
+    },
+    /// Repository switcher `Ctrl+O`: any directory inside a repository.
+    OpenRepositoryPath,
+}
+
+/// Where new working trees go by default (`<parent>/<repo>-<label>`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorktreeDialogCtx {
+    /// Main working tree (names the default directory).
+    pub main: std::path::PathBuf,
+    /// `[worktree] default_parent` (else the main working tree's parent).
+    pub parent: Option<std::path::PathBuf>,
+}
+
+impl WorktreeDialogCtx {
+    pub fn default_path(&self, label: &str) -> std::path::PathBuf {
+        jbgit_core::default_worktree_path(&self.main, self.parent.as_deref(), label)
+    }
+
+    /// Directory relative input paths resolve against.
+    pub fn base(&self) -> std::path::PathBuf {
+        self.parent
+            .clone()
+            .or_else(|| self.main.parent().map(std::path::Path::to_path_buf))
+            .unwrap_or_default()
+    }
+
+    /// Last step of New Worktree: the location for `branch`.
+    pub fn path_dialog(&self, branch: WorktreeBranch, i18n: &I18n) -> Dialog {
+        let label = match &branch {
+            WorktreeBranch::Existing(n) | WorktreeBranch::New { name: n, .. } => n.clone(),
+            WorktreeBranch::Detached(oid) => oid.short(),
+        };
+        let title = match &branch {
+            WorktreeBranch::Detached(oid) => {
+                i18n.t_fmt("dialog.worktree.path_title_detached", &[("rev", &oid.short())])
+            }
+            _ => i18n.t_fmt("dialog.worktree.path_title", &[("branch", &label)]),
+        };
+        Dialog::Input(InputDialog::new(
+            title,
+            i18n.t("dialog.worktree.path_prompt"),
+            self.default_path(&label).display().to_string(),
+            InputValidation::NewPath { base: self.base() },
+            InputIntent::WorktreePath {
+                branch,
+                base: self.base(),
+            },
+        ))
+    }
+}
+
+/// Resolves `value` against `base` when it is relative.
+pub fn resolve_path(base: &std::path::Path, value: &str) -> std::path::PathBuf {
+    let p = std::path::PathBuf::from(value.trim());
+    if p.is_absolute() || base.as_os_str().is_empty() {
+        p
+    } else {
+        base.join(p)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -120,6 +205,24 @@ impl InputDialog {
             InputValidation::RefName { what, existing } => {
                 let refs: Vec<&str> = existing.iter().map(String::as_str).collect();
                 i18n.validate_ref_name(&self.value, &refs, what).err()
+            }
+            InputValidation::OneOf {
+                candidates,
+                error_key,
+            } => {
+                let v = self.value.trim();
+                (!candidates.iter().any(|c| c == v))
+                    .then(|| i18n.t_fmt(error_key, &[("name", v)]))
+            }
+            InputValidation::NewPath { base } => {
+                let v = self.value.trim();
+                if v.is_empty() {
+                    return Some(i18n.t("common.cannot_be_empty").to_string());
+                }
+                let p = resolve_path(base, v);
+                let occupied = p.is_file()
+                    || std::fs::read_dir(&p).is_ok_and(|mut d| d.next().is_some());
+                occupied.then(|| i18n.t("dialog.worktree.path_exists").to_string())
             }
         }
     }
@@ -215,6 +318,31 @@ impl InputDialog {
                     url: value,
                     push: *push,
                 })]
+            }
+            InputIntent::NewWorktreeBranch { start, ctx } => vec![Action::OpenDialog(Box::new(
+                ctx.path_dialog(
+                    WorktreeBranch::New {
+                        name: value,
+                        start: start.clone(),
+                    },
+                    i18n,
+                ),
+            ))],
+            InputIntent::ExistingWorktreeBranch { ctx } => vec![Action::OpenDialog(Box::new(
+                ctx.path_dialog(WorktreeBranch::Existing(value), i18n),
+            ))],
+            InputIntent::WorktreePath { branch, base } => {
+                vec![Action::RunGitOp(GitOp::AddWorktree {
+                    path: resolve_path(base, &value),
+                    branch: branch.clone(),
+                })]
+            }
+            InputIntent::LockWorktree { path } => vec![Action::RunGitOp(GitOp::LockWorktree {
+                path: path.clone(),
+                reason: (!value.is_empty()).then_some(value),
+            })],
+            InputIntent::OpenRepositoryPath => {
+                vec![Action::SwitchRepository(std::path::PathBuf::from(value))]
             }
         }
     }

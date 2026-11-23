@@ -78,6 +78,12 @@ fn render_modal_layer(
         ModalLayer::Remotes(rs) => {
             crate::remotes_view::render_remotes_modal(frame, screen, state, rs, ctx, z);
         }
+        ModalLayer::RepoSwitcher(rs) => {
+            crate::repo_switcher::render_repo_switcher_modal(frame, screen, state, rs, ctx, z);
+        }
+        ModalLayer::Worktrees(ws) => {
+            crate::worktrees_view::render_worktrees_modal(frame, screen, state, ws, ctx, z);
+        }
         ModalLayer::ConflictResolver(_) => {
             crate::views::conflict_merge::render_conflict_merge_modal(
                 frame, screen, state, ctx, z,

@@ -2407,3 +2407,212 @@ async fn outgoing_commits_and_push_rejected_sequence_retry() {
     assert!(follow_summary.commit_range.is_some());
     assert_eq!(rev(bare_dir.path(), "refs/tags/v2.0^{}"), rev(dir_a, "HEAD"));
 }
+
+#[tokio::test]
+async fn worktree_lifecycle_add_list_lock_remove_and_prune() {
+    use jbgit_core::{GitFailure, GitOp, WorktreeBranch};
+
+    let root_guard = TempDir::new().unwrap();
+    let root = root_guard.path();
+    let dir = root.join("main");
+    fs::create_dir_all(&dir).unwrap();
+    git(&dir, &["init", "-b", "main"]);
+    fs::write(dir.join("a.txt"), "a\n").unwrap();
+    git(&dir, &["add", "."]);
+    git(&dir, &["commit", "-m", "init"]);
+    git(&dir, &["branch", "feature"]);
+
+    let loc = RepoLocation::discover(&dir).unwrap();
+    let (handle, mut rx) = EngineSupervisor::start(loc, false).unwrap();
+
+    // No linked worktrees: only the synthesized main entry.
+    let snap = fetch_snapshot(&handle, &mut rx).await;
+    assert_eq!(snap.worktrees.len(), 1);
+    let main_wt = &snap.worktrees[0];
+    assert!(main_wt.is_main && !main_wt.is_bare && !main_wt.detached);
+    assert_eq!(main_wt.branch.as_deref(), Some("main"));
+    assert_eq!(snap.current_worktree().map(|w| w.is_main), Some(true));
+    assert!(snap.worktree_of_branch("feature").is_none());
+
+    let wt_feature = root.join("main-feature");
+    let added = run_git_op(
+        &handle,
+        &mut rx,
+        GitOp::AddWorktree {
+            path: wt_feature.clone(),
+            branch: WorktreeBranch::Existing("feature".into()),
+        },
+    )
+    .await;
+    assert!(added.success, "{added:?}");
+    let wt_new = root.join("main-topic");
+    let added = run_git_op(
+        &handle,
+        &mut rx,
+        GitOp::AddWorktree {
+            path: wt_new.clone(),
+            branch: WorktreeBranch::New {
+                name: "topic".into(),
+                start: "main".into(),
+            },
+        },
+    )
+    .await;
+    assert!(added.success, "{added:?}");
+    let head = rev(&dir, "HEAD");
+    let wt_detached = root.join("main-detached");
+    let added = run_git_op(
+        &handle,
+        &mut rx,
+        GitOp::AddWorktree {
+            path: wt_detached.clone(),
+            branch: WorktreeBranch::Detached(head),
+        },
+    )
+    .await;
+    assert!(added.success, "{added:?}");
+
+    // The same branch cannot be checked out twice.
+    let dup = run_git_op(
+        &handle,
+        &mut rx,
+        GitOp::AddWorktree {
+            path: root.join("main-feature-2"),
+            branch: WorktreeBranch::Existing("feature".into()),
+        },
+    )
+    .await;
+    assert!(!dup.success);
+    assert!(
+        matches!(&dup.failure, Some(GitFailure::BranchCheckedOutInWorktree { branch, .. }) if branch == "feature"),
+        "{dup:?}"
+    );
+
+    let snap = fetch_snapshot(&handle, &mut rx).await;
+    assert_eq!(snap.worktrees.len(), 4, "{:?}", snap.worktrees);
+    assert!(snap.worktrees[0].is_main);
+    assert!(snap.current_worktree().is_some_and(|w| w.is_main));
+    let feature = snap.worktree_of_branch("feature").expect("feature worktree");
+    assert!(feature.is_at(&wt_feature.canonicalize().unwrap()));
+    assert_eq!(snap.worktree_of_branch("topic").map(|w| w.name()), Some("main-topic".into()));
+    let detached = snap.worktrees.iter().find(|w| w.name() == "main-detached").unwrap();
+    assert!(detached.detached && detached.head == Some(head));
+    assert!(snap.worktree_of_branch("main").is_none(), "current worktree is not 'other'");
+
+    // A snapshot loaded from the linked worktree sees itself as current.
+    let wt_loc = RepoLocation::discover(&wt_feature).unwrap();
+    let (wt_handle, mut wt_rx) = EngineSupervisor::start(wt_loc, false).unwrap();
+    let wt_snap = fetch_snapshot(&wt_handle, &mut wt_rx).await;
+    assert_eq!(wt_snap.head_branch.as_deref(), Some("feature"));
+    assert_eq!(wt_snap.current_worktree().and_then(|w| w.branch.clone()), Some("feature".into()));
+    assert!(wt_snap.worktree_of_branch("main").is_some_and(|w| w.is_main));
+    assert!(wt_handle.shutdown(Duration::from_secs(5)).await);
+
+    // Lock → remove refused → unlock → remove.
+    let locked = run_git_op(
+        &handle,
+        &mut rx,
+        GitOp::LockWorktree {
+            path: wt_feature.clone(),
+            reason: Some("on usb disk".into()),
+        },
+    )
+    .await;
+    assert!(locked.success, "{locked:?}");
+    let snap = fetch_snapshot(&handle, &mut rx).await;
+    assert_eq!(
+        snap.worktree_of_branch("feature").and_then(|w| w.locked.clone()).as_deref(),
+        Some("on usb disk")
+    );
+    let refused = run_git_op(
+        &handle,
+        &mut rx,
+        GitOp::RemoveWorktree {
+            path: wt_feature.clone(),
+            force: false,
+        },
+    )
+    .await;
+    assert!(!refused.success);
+    assert_eq!(refused.failure, Some(GitFailure::WorktreeLocked), "{refused:?}");
+    let unlocked = run_git_op(
+        &handle,
+        &mut rx,
+        GitOp::UnlockWorktree {
+            path: wt_feature.clone(),
+        },
+    )
+    .await;
+    assert!(unlocked.success, "{unlocked:?}");
+
+    // Dirty → remove refused until forced.
+    fs::write(wt_feature.join("dirty.txt"), "x\n").unwrap();
+    let dirty = run_git_op(
+        &handle,
+        &mut rx,
+        GitOp::RemoveWorktree {
+            path: wt_feature.clone(),
+            force: false,
+        },
+    )
+    .await;
+    assert_eq!(dirty.failure, Some(GitFailure::WorktreeDirty), "{dirty:?}");
+    let forced = run_git_op(
+        &handle,
+        &mut rx,
+        GitOp::RemoveWorktree {
+            path: wt_feature.clone(),
+            force: true,
+        },
+    )
+    .await;
+    assert!(forced.success, "{forced:?}");
+    assert!(!wt_feature.exists());
+
+    // A deleted directory becomes prunable, then prune drops it.
+    fs::remove_dir_all(&wt_new).unwrap();
+    let snap = fetch_snapshot(&handle, &mut rx).await;
+    let topic = snap.worktrees.iter().find(|w| w.branch.as_deref() == Some("topic")).unwrap();
+    assert!(topic.is_prunable(), "{topic:?}");
+    let pruned = run_git_op(&handle, &mut rx, GitOp::PruneWorktrees).await;
+    assert!(pruned.success, "{pruned:?}");
+    let snap = fetch_snapshot(&handle, &mut rx).await;
+    assert_eq!(snap.worktrees.len(), 2, "{:?}", snap.worktrees);
+    assert!(snap.worktree_of_branch("topic").is_none());
+
+    assert!(!handle.is_mutating());
+    assert!(handle.shutdown(Duration::from_secs(5)).await);
+}
+
+#[tokio::test]
+async fn snapshot_lists_submodule_paths() {
+    let sub_guard = TempDir::new().unwrap();
+    let sub = sub_guard.path();
+    git(sub, &["init", "-b", "main"]);
+    fs::write(sub.join("s.txt"), "s\n").unwrap();
+    git(sub, &["add", "."]);
+    git(sub, &["commit", "-m", "sub"]);
+
+    let dir_guard = TempDir::new().unwrap();
+    let dir = dir_guard.path();
+    git(dir, &["init", "-b", "main"]);
+    fs::write(dir.join("a.txt"), "a\n").unwrap();
+    git(dir, &["add", "."]);
+    git(dir, &["commit", "-m", "init"]);
+    git(
+        dir,
+        &[
+            "-c",
+            "protocol.file.allow=always",
+            "submodule",
+            "add",
+            sub.to_str().unwrap(),
+            "libs/sub",
+        ],
+    );
+
+    let loc = RepoLocation::discover(dir).unwrap();
+    let (handle, mut rx) = EngineSupervisor::start(loc, false).unwrap();
+    let snap = fetch_snapshot(&handle, &mut rx).await;
+    assert_eq!(snap.submodules, vec!["libs/sub".to_string()]);
+}

@@ -397,6 +397,23 @@ impl I18n {
                 &[("name", name)],
             ),
             GitOp::FetchRemote { name } => self.t_fmt("git_op.fetch_remote", &[("name", name)]),
+            GitOp::AddWorktree { path, branch } => {
+                let p = path.display().to_string();
+                match branch.branch_name() {
+                    Some(b) => self.t_fmt("git_op.add_worktree", &[("path", &p), ("branch", b)]),
+                    None => self.t_fmt("git_op.add_worktree_detached", &[("path", &p)]),
+                }
+            }
+            GitOp::RemoveWorktree { path, .. } => {
+                self.t_fmt("git_op.remove_worktree", &[("path", &path.display().to_string())])
+            }
+            GitOp::LockWorktree { path, .. } => {
+                self.t_fmt("git_op.lock_worktree", &[("path", &path.display().to_string())])
+            }
+            GitOp::UnlockWorktree { path } => {
+                self.t_fmt("git_op.unlock_worktree", &[("path", &path.display().to_string())])
+            }
+            GitOp::PruneWorktrees => self.t("git_op.prune_worktrees").to_string(),
             GitOp::Rebase { onto, branch } => match branch {
                 Some(b) => self.t_fmt("git_op.rebase_branch", &[("branch", b), ("onto", onto)]),
                 None => self.t_fmt("git_op.rebase_onto", &[("onto", onto)]),

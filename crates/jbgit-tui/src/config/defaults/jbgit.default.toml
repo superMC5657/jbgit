@@ -42,6 +42,10 @@ gutter_width = 28
 # 受保护分支（支持通配符 glob）；对其启用强推时将在 Push 对话框中禁用并提示原因
 protected_branches = ["main", "master"]
 
+[worktree]
+# 新建 Worktree 的默认父目录（路径为 <目录>/<仓库名>-<分支名>）；留空 = 主工作区的父目录，支持 ~/
+default_parent = ""
+
 [update]
 # Update Project（<A-u>）同步当前分支的方式："git-config"（遵循 branch.<name>.rebase / pull.rebase）| "merge" | "rebase"
 mode = "git-config"

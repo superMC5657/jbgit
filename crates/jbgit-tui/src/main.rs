@@ -13,8 +13,9 @@ use jbgit_engine::askpass::{
 use jbgit_tui::graph::GraphicsCapabilities;
 use jbgit_tui::terminal::TerminalGuard;
 use jbgit_tui::{
-    Action, MAX_COALESCE_EVENTS, ProdHost, SessionInput, TurnReport, UiAsyncEvent,
-    init_engine_and_session, poll_stream_ready, recv_engine, spawn_wezterm_cell_probe,
+    Action, MAX_COALESCE_EVENTS, ProdHost, RepoSession, SessionInput, TuiSession, TurnReport,
+    UiAsyncEvent, init_engine_and_session, poll_stream_ready, recv_engine,
+    spawn_wezterm_cell_probe,
 };
 
 fn parse_cli_args() -> Option<PathBuf> {
@@ -67,7 +68,7 @@ fn askpass_client_mode() -> Option<i32> {
 /// or `=value:<text>` swaps the dialog for a deterministic responder
 /// (`jbgit-pilot` sandboxes / scripted QA).
 fn start_askpass(
-    ui_tx: tokio::sync::mpsc::UnboundedSender<UiAsyncEvent>,
+    ui_tx: tokio::sync::mpsc::UnboundedSender<SessionInput>,
 ) -> Option<AskpassServer> {
     let responder: Arc<dyn AskpassResponder> =
         match std::env::var("JBGIT_ASKPASS_RESPONDER").ok().as_deref() {
@@ -79,8 +80,10 @@ fn start_askpass(
                 let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<AskpassRequest>();
                 tokio::spawn(async move {
                     while let Some(req) = rx.recv().await {
-                        if let Err(e) = ui_tx.send(UiAsyncEvent::Askpass(req))
-                            && let UiAsyncEvent::Askpass(req) = e.0
+                        // Not generation-stamped: a prompt belongs to a live
+                        // git process and is answered whatever repository is bound.
+                        if let Err(e) = ui_tx.send(SessionInput::UiAsync(UiAsyncEvent::Askpass(req)))
+                            && let SessionInput::UiAsync(UiAsyncEvent::Askpass(req)) = e.0
                         {
                             req.respond(None);
                         }
@@ -92,6 +95,43 @@ fn start_askpass(
     AskpassServer::start(responder).ok()
 }
 
+/// In-process repository switch (Spec 12 Issue 09): validate the target,
+/// unbind the current repository (cancel slots, flush the draft, stop the
+/// engine waiting ≤ 5 s for writes, release graphics), bind the new one and
+/// load it. A target that is not a repository leaves the session untouched.
+async fn switch_repository(
+    session: &mut TuiSession,
+    repo: &mut RepoSession,
+    host: &mut ProdHost,
+    target: &std::path::Path,
+    askpass: Option<jbgit_engine::askpass::AskpassEnv>,
+) {
+    let loc = match RepoSession::discover(target) {
+        Ok(loc) => loc,
+        Err(e) => {
+            session.report_repo_switch_failure(target, &e);
+            return;
+        }
+    };
+    if jbgit_core::same_path(&loc.workdir, &session.current_workdir()) {
+        session.report_repo_already_open(target);
+        return;
+    }
+    let release = session.prepare_unbind();
+    if !release.is_empty() {
+        let _ = std::io::stdout().write_all(&release);
+    }
+    let old = std::mem::replace(repo, RepoSession::detached());
+    let writes_finished = old.unbind().await;
+    let (next_repo, next_state) = RepoSession::bind_location(loc, askpass);
+    *repo = next_repo;
+    session.rebind(next_state, writes_finished);
+    repo.generation = session.generation();
+    if repo.handle.is_some() {
+        session.step_turn([SessionInput::Action(Action::RefreshAll)], Instant::now(), repo.backend(), host);
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     if let Some(code) = askpass_client_mode() {
@@ -101,19 +141,18 @@ async fn main() -> Result<()> {
         return Ok(());
     };
 
-    let (ui_async_tx, mut ui_async_rx) = tokio::sync::mpsc::unbounded_channel::<UiAsyncEvent>();
+    let (ui_async_tx, mut ui_async_rx) = tokio::sync::mpsc::unbounded_channel::<SessionInput>();
     let askpass_server = start_askpass(ui_async_tx.clone());
     let askpass_env = askpass_server
         .as_ref()
         .and_then(|s| s.env_for_current_exe().ok());
-    let (engine_handle, mut engine_rx, mut session) =
-        init_engine_and_session(target_path, askpass_env);
+    let (mut repo, mut session) = init_engine_and_session(target_path, askpass_env.clone());
+    repo.generation = session.generation();
     tokio::task::spawn_blocking(jbgit_tui::syntax::warmup_syntax_assets);
 
     let mut host = ProdHost::new(Some(TerminalGuard::enter()?), ui_async_tx);
-    let engine_ref = engine_handle.as_ref().map(|h| h as &dyn EngineBackend);
-    if engine_ref.is_some() {
-        session.step_turn([SessionInput::Action(Action::RefreshAll)], Instant::now(), engine_ref, &mut host);
+    if repo.handle.is_some() {
+        session.step_turn([SessionInput::Action(Action::RefreshAll)], Instant::now(), repo.backend(), &mut host);
     }
 
     let mut event_stream = EventStream::new();
@@ -127,6 +166,8 @@ async fn main() -> Result<()> {
     }
 
     while !session.should_quit() {
+        let engine_ref = repo.handle.as_ref().map(|h| h as &dyn EngineBackend);
+        let generation = repo.generation;
         if session.needs_redraw()
             && let Some(guard) = host.term_guard.as_mut()
         {
@@ -163,12 +204,12 @@ async fn main() -> Result<()> {
                 Some(Ok(ev)) => allow_coalesce = !session.ingest_into_batch(SessionInput::Terminal(ev), Instant::now(), &mut batch_effects, &mut host, &mut report),
                 Some(Err(_)) | None => session.set_should_quit(true),
             },
-            maybe_engine = recv_engine(&mut engine_rx) => match maybe_engine {
-                Some(ev) => allow_coalesce = !session.ingest_into_batch(SessionInput::Engine(ev), Instant::now(), &mut batch_effects, &mut host, &mut report),
-                None => engine_rx = None,
+            maybe_engine = recv_engine(&mut repo.events) => match maybe_engine {
+                Some(ev) => allow_coalesce = !session.ingest_into_batch(SessionInput::EngineFrom(generation, ev), Instant::now(), &mut batch_effects, &mut host, &mut report),
+                None => repo.events = None,
             },
-            Some(ui_ev) = ui_async_rx.recv() => {
-                allow_coalesce = !session.ingest_into_batch(SessionInput::UiAsync(ui_ev), Instant::now(), &mut batch_effects, &mut host, &mut report);
+            Some(ui_input) = ui_async_rx.recv() => {
+                allow_coalesce = !session.ingest_into_batch(ui_input, Instant::now(), &mut batch_effects, &mut host, &mut report);
             }
             _ = debounce_sleep => {
                 session.ingest_into_batch(SessionInput::FlushPendingDetails, Instant::now(), &mut batch_effects, &mut host, &mut report);
@@ -199,21 +240,25 @@ async fn main() -> Result<()> {
                         Some(Err(_)) | None => { session.set_should_quit(true); break; }
                     }
                 }
-                if let Some(rx) = engine_rx.as_mut() {
+                if let Some(rx) = repo.events.as_mut() {
                     match rx.try_recv() {
-                        Ok(ev) => if session.ingest_into_batch(SessionInput::Engine(ev), now, &mut batch_effects, &mut host, &mut report) { break; } else { continue; },
-                        Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => engine_rx = None,
+                        Ok(ev) => if session.ingest_into_batch(SessionInput::EngineFrom(generation, ev), now, &mut batch_effects, &mut host, &mut report) { break; } else { continue; },
+                        Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => repo.events = None,
                         Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {}
                     }
                 }
                 match ui_async_rx.try_recv() {
-                    Ok(ui_ev) => if session.ingest_into_batch(SessionInput::UiAsync(ui_ev), now, &mut batch_effects, &mut host, &mut report) { break; },
+                    Ok(ui_input) => if session.ingest_into_batch(ui_input, now, &mut batch_effects, &mut host, &mut report) { break; },
                     Err(_) => break,
                 }
             }
         }
 
         session.finish_batch(batch_effects, engine_ref, &mut host, &mut report);
+
+        if let Some(target) = session.take_repo_switch_request() {
+            switch_repository(&mut session, &mut repo, &mut host, &target, askpass_env.clone()).await;
+        }
     }
 
     let release = session.shutdown();

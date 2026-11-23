@@ -253,9 +253,32 @@ pub struct RepoSnapshot {
     pub ongoing_onto: Option<String>,
     /// Configured remotes (`git remote -v`), sorted with `origin` first.
     pub remotes: Vec<RemoteInfo>,
+    /// `git worktree list` (main working tree first; just the main entry when
+    /// the repository has no linked working trees).
+    pub worktrees: Vec<crate::WorktreeInfo>,
+    /// Submodule paths relative to `workdir` (`.gitmodules`).
+    pub submodules: Vec<String>,
 }
 
 impl RepoSnapshot {
+    /// The working tree this snapshot was loaded from.
+    pub fn current_worktree(&self) -> Option<&crate::WorktreeInfo> {
+        self.worktrees.iter().find(|w| w.is_at(&self.workdir))
+    }
+
+    /// The main working tree (first `git worktree list` entry).
+    pub fn main_worktree(&self) -> Option<&crate::WorktreeInfo> {
+        self.worktrees.iter().find(|w| w.is_main)
+    }
+
+    /// Another working tree that has local branch `name` checked out (Checkout
+    /// of `name` is refused by git while it is).
+    pub fn worktree_of_branch(&self, name: &str) -> Option<&crate::WorktreeInfo> {
+        self.worktrees
+            .iter()
+            .find(|w| w.branch.as_deref() == Some(name) && !w.is_at(&self.workdir))
+    }
+
     /// Configured remote names in snapshot order (`origin` first).
     pub fn remote_names(&self) -> impl Iterator<Item = &str> {
         self.remotes.iter().map(|r| r.name.as_str())

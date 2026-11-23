@@ -34,6 +34,8 @@ key_bindings = [
     { on = [ "f" ], run = "git_fetch", desc = "获取远程更新 (Fetch)" },
     { on = [ "<A-u>" ], run = "update_project", desc = "更新项目 (Update Project)" },
     { on = [ "<A-r>" ], run = "configure_remotes", desc = "管理远端 (Configure Remotes…)" },
+    { on = [ "<A-o>" ], run = "switch_repository", desc = "切换仓库 (最近仓库 / Worktree / 子模块)" },
+    { on = [ "<A-w>" ], run = "worktrees", desc = "管理 Worktree (Working Trees…)" },
     { on = [ "r" ], run = "refresh", desc = "刷新 Git 仓库状态", show_hint = true },
     { on = [ "<F5>" ], run = "refresh", desc = "刷新 Git 仓库状态" },
     { on = [ "?" ], run = "help", desc = "打开可搜索快捷键帮助 / 命令面板", show_hint = true },

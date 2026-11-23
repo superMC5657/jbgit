@@ -6,6 +6,7 @@ mod footer_and_keymap_tests;
 mod log_tests;
 mod merge_and_update_tests;
 mod remotes_and_credentials_tests;
+mod repo_session_and_worktrees_tests;
 mod runtime_and_editor_tests;
 mod session_tests;
 mod tag_and_push_tests;
@@ -189,6 +190,8 @@ pub(super) fn make_snapshot(workdir: PathBuf, commits: Vec<CommitSummary>) -> Ar
         stashes: Vec::new(),
         ongoing_onto: None,
         remotes: Vec::new(),
+        worktrees: Vec::new(),
+        submodules: Vec::new(),
     })
 }
 

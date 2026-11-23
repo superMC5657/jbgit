@@ -341,6 +341,15 @@ impl Default for PushSection {
     }
 }
 
+/// `[worktree]` — defaults of New Worktree (Spec 12 Issue 10).
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WorktreeSection {
+    /// Directory new working trees are created in (`<dir>/<repo>-<branch>`);
+    /// unset / empty = the main working tree's parent directory. `~/` expands.
+    #[serde(default)]
+    pub default_parent: Option<String>,
+}
+
 /// `[update] mode` — how Update Project integrates upstream changes.
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
@@ -398,6 +407,8 @@ pub struct JbgitConfig {
     pub push: PushSection,
     #[serde(default)]
     pub update: UpdateSection,
+    #[serde(default)]
+    pub worktree: WorktreeSection,
     #[serde(default)]
     pub layout: LayoutSection,
     #[serde(default)]
@@ -723,6 +734,11 @@ impl JbgitConfig {
         {
             self.push.protected_branches = pb.clone();
         }
+        if let Some(wt) = &overlay.worktree
+            && let Some(dp) = &wt.default_parent
+        {
+            self.worktree.default_parent = Some(dp.clone()).filter(|p| !p.trim().is_empty());
+        }
         if let Some(up) = &overlay.update {
             if let Some(m) = up.mode {
                 self.update.mode = m;
@@ -797,6 +813,7 @@ pub struct JbgitConfigOverlay {
     pub annotate: Option<AnnotateSectionOverlay>,
     pub push: Option<PushSectionOverlay>,
     pub update: Option<UpdateSectionOverlay>,
+    pub worktree: Option<WorktreeSectionOverlay>,
     pub layout: Option<LayoutSectionOverlay>,
     pub performance: Option<PerformanceSectionOverlay>,
 }
@@ -806,6 +823,11 @@ pub struct UpdateSectionOverlay {
     pub mode: Option<UpdateModePref>,
     pub save_changes: Option<bool>,
     pub update_other_branches: Option<bool>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct WorktreeSectionOverlay {
+    pub default_parent: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

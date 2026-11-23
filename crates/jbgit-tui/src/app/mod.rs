@@ -5,6 +5,7 @@ mod effects;
 mod events;
 mod git_workflows;
 mod modal_stack;
+mod repo_session;
 mod scroll;
 mod state;
 mod types;

@@ -1216,7 +1216,14 @@ impl CommitWorkbench {
     ) {
         if self.history_path.is_none() && !snapshot.common_dir.as_os_str().is_empty() {
             self.load_history(snapshot.common_dir.join("jbgit-commit-history"));
-            self.load_draft(snapshot.common_dir.join("jbgit-commit-draft"));
+            // Per working tree (`git_dir` == `common_dir` for the main one):
+            // linked worktrees each keep their own draft.
+            let draft_dir = if snapshot.git_dir.as_os_str().is_empty() {
+                &snapshot.common_dir
+            } else {
+                &snapshot.git_dir
+            };
+            self.load_draft(draft_dir.join("jbgit-commit-draft"));
         }
         if head_changed && !self.amend {
             self.amend_preview = None;

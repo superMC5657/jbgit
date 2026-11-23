@@ -355,6 +355,10 @@ pub fn is_action_applicable(run: &KeyAction, state: &AppState) -> bool {
         | KeyAction::GitPush
         | KeyAction::UpdateProject
         | KeyAction::ConfigureRemotes
+        | KeyAction::SwitchRepository
+        // Stays visible on git < 2.17 so `?` documents the requirement;
+        // running it explains instead of opening the modal.
+        | KeyAction::Worktrees
         | KeyAction::Palette
         | KeyAction::ToggleGlyphMode
         | KeyAction::CycleGraphRenderer => true,
@@ -534,6 +538,14 @@ pub fn execute_action(run: &KeyAction, state: &AppState) -> Option<Vec<Action>> 
             }
             Some(vec![Action::RunGitOp(GitOp::Pull { rebase: false })])
         }
+        KeyAction::SwitchRepository => Some(vec![Action::OpenRepoSwitcher]),
+        KeyAction::Worktrees => Some(if !crate::worktrees_view::worktrees_supported(state) {
+            vec![crate::worktrees_view::unsupported_notice(state)]
+        } else if state.repo_snapshot.is_some() {
+            vec![Action::OpenWorktrees]
+        } else {
+            vec![Action::Notice(state.i18n.t("toast.repo_not_loaded").into())]
+        }),
         KeyAction::ConfigureRemotes => Some(if state.repo_snapshot.is_some() {
             vec![Action::OpenRemotes]
         } else {
@@ -1175,6 +1187,12 @@ pub fn branch_checkout(state: &AppState, name: &str, kind: RefKind) -> CommandRe
             };
             if current == Some(target.as_str()) {
                 return Err(i18n.t_fmt("menu.branch.already_checked_out", &[("name", &target)]));
+            }
+            if let Some(wt) = snap.worktree_of_branch(&target) {
+                return Err(i18n.t_fmt(
+                    "menu.branch.checked_out_in_worktree",
+                    &[("name", &target), ("worktree", &wt.name())],
+                ));
             }
             Ok(op(GitOp::Checkout {
                 target,

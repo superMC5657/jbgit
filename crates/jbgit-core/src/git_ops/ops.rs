@@ -513,6 +513,27 @@ pub enum GitOp {
     FetchRemote {
         name: String,
     },
+    /// `git worktree add [-b <name>|--detach] -- <path> [<commit-ish>]`.
+    AddWorktree {
+        path: std::path::PathBuf,
+        branch: crate::WorktreeBranch,
+    },
+    /// `git worktree remove [--force] -- <path>`.
+    RemoveWorktree {
+        path: std::path::PathBuf,
+        force: bool,
+    },
+    /// `git worktree lock [--reason <reason>] -- <path>`.
+    LockWorktree {
+        path: std::path::PathBuf,
+        reason: Option<String>,
+    },
+    /// `git worktree unlock -- <path>`.
+    UnlockWorktree {
+        path: std::path::PathBuf,
+    },
+    /// `git worktree prune --verbose`.
+    PruneWorktrees,
     Merge {
         rev: String,
         options: MergeOptions,
@@ -652,6 +673,17 @@ impl GitOp {
                 }
             }
             Self::FetchRemote { name } => format!("Fetch '{name}'"),
+            Self::AddWorktree { path, branch } => match branch.branch_name() {
+                Some(b) => format!("New worktree '{}' on '{b}'", path.display()),
+                None => format!("New worktree '{}' (detached)", path.display()),
+            },
+            Self::RemoveWorktree { path, force } => {
+                let f = if *force { " (force)" } else { "" };
+                format!("Remove worktree '{}'{f}", path.display())
+            }
+            Self::LockWorktree { path, .. } => format!("Lock worktree '{}'", path.display()),
+            Self::UnlockWorktree { path } => format!("Unlock worktree '{}'", path.display()),
+            Self::PruneWorktrees => "Prune worktrees".to_string(),
             Self::Merge { rev, options } => {
                 if options.squash {
                     format!("Squash merge '{rev}'")
@@ -796,6 +828,11 @@ impl GitOp {
             | Self::RemoveRemote { .. }
             | Self::SetRemoteUrl { .. }
             | Self::FetchRemote { .. }
+            | Self::AddWorktree { .. }
+            | Self::RemoveWorktree { .. }
+            | Self::LockWorktree { .. }
+            | Self::UnlockWorktree { .. }
+            | Self::PruneWorktrees
             | Self::Fetch
             | Self::Push { .. }
             | Self::UpdateBranch { .. } => RefreshScope::RefsAndGraph,

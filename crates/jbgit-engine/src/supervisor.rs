@@ -402,6 +402,7 @@ pub struct EngineHandle {
     slots: SlotRegistry,
     git_info: Option<GitExecutableInfo>,
     task_tx: UnboundedSender<ScheduledTask>,
+    mutation_guard: Arc<MutationGuard>,
 }
 
 impl EngineHandle {
@@ -411,6 +412,33 @@ impl EngineHandle {
 
     pub fn git_info(&self) -> Option<&GitExecutableInfo> {
         self.git_info.as_ref()
+    }
+
+    /// Whether a write operation (Git op, commit, stage mutation) is running.
+    pub fn is_mutating(&self) -> bool {
+        self.mutation_guard.is_mutating()
+    }
+
+    /// Stops this engine (repository session unbind, Spec 12 Issue 09):
+    /// every request slot is advanced so in-flight reads observe a stale
+    /// token and drop their results, the task queue closes (the supervisor
+    /// loop and the filesystem watcher stop), then in-flight write operations
+    /// get up to `timeout` to finish. Returns `false` if writes were still
+    /// running when the timeout expired (they keep running detached).
+    pub async fn shutdown(self, timeout: std::time::Duration) -> bool {
+        for slot in RequestSlotId::ALL {
+            let _ = self.slots.issue(slot);
+        }
+        let guard = Arc::clone(&self.mutation_guard);
+        drop(self);
+        let deadline = tokio::time::Instant::now() + timeout;
+        while guard.is_mutating() {
+            if tokio::time::Instant::now() >= deadline {
+                return false;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        true
     }
 }
 
@@ -520,7 +548,7 @@ impl EngineSupervisor {
             slots: slots.clone(),
             pool,
             cli: cli.map(Arc::new),
-            mutation_guard,
+            mutation_guard: Arc::clone(&mutation_guard),
             event_tx,
             op_ids: Arc::new(AtomicU64::new(1)),
             sig_cache: Arc::new(Mutex::new(LruCache::new(256))),
@@ -540,6 +568,7 @@ impl EngineSupervisor {
                 slots,
                 git_info,
                 task_tx,
+                mutation_guard,
             },
             event_rx,
         ))

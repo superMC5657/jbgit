@@ -17,9 +17,11 @@ pub mod keymap;
 mod log_view;
 mod menus;
 mod remotes_view;
+mod repo_switcher;
 pub mod session;
 mod stage_view;
 mod stash_view;
+mod worktrees_view;
 pub mod syntax;
 pub mod terminal;
 #[cfg(test)]
@@ -30,7 +32,7 @@ mod widgets;
 
 pub use app::{Action, AppState, Effect, UiAsyncEvent};
 pub use session::{
-    MAX_COALESCE_EVENTS, ProdHost, SessionHost, SessionInput, TestHost, TuiSession, TurnReport,
-    coalesce_effects, init_engine_and_session, poll_stream_ready, recv_engine,
-    spawn_wezterm_cell_probe,
+    MAX_COALESCE_EVENTS, ProdHost, RepoSession, SessionHost, SessionInput, TestHost, TuiSession,
+    TurnReport, UNBIND_WRITE_TIMEOUT, coalesce_effects, init_engine_and_session,
+    poll_stream_ready, recv_engine, spawn_wezterm_cell_probe,
 };

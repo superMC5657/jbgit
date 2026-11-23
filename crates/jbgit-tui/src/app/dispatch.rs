@@ -176,6 +176,14 @@ impl AppState {
                             }
                         }
                     }
+                    ModalLayer::RepoSwitcher(rs) => {
+                        let clean: String =
+                            text.chars().filter(|c| !c.is_control()).collect();
+                        if !clean.is_empty() {
+                            rs.query.push_str(&clean);
+                            rs.selected = 0;
+                        }
+                    }
                     ModalLayer::Annotate(ann) => {
                         if let Some(buf) = ann.goto_line_input.as_mut() {
                             for ch in text.chars().filter(|c| c.is_ascii_digit()) {
@@ -503,7 +511,8 @@ impl AppState {
                     || self.dispatch_file_history_action(&other, &mut effects)
                     || self.dispatch_annotate_action(&other, &mut effects)
                     || self.dispatch_push_action(&other, &mut effects)
-                    || self.dispatch_git_action(&other, &mut effects);
+                    || self.dispatch_git_action(&other, &mut effects)
+                    || self.dispatch_repo_action(&other, &mut effects);
                 if !handled {
                     let default_remote = self.default_remote();
                     let mut modals = Vec::new();

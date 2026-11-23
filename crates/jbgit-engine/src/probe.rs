@@ -53,7 +53,7 @@ impl RepoLocation {
     }
 }
 
-fn canonical_or_self(p: &Path) -> PathBuf {
+pub(crate) fn canonical_or_self(p: &Path) -> PathBuf {
     strip_verbatim_prefix(fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf()))
 }
 

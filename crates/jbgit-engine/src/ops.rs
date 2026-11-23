@@ -11,7 +11,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use jbgit_core::{
     GitFailure, GitOp, GitOpOutcome, MergeOptions, Oid, PatchSource, SkippedBranch, UpdateInfo,
-    UpdateMode, UpdatedRange, classify_failure, render_todo,
+    UpdateMode, UpdatedRange, WorktreeBranch, classify_failure, render_todo,
 };
 
 use crate::askpass::AskpassEnv;
@@ -221,6 +221,47 @@ pub(crate) fn compile_simple_steps(op: &GitOp) -> Option<Vec<CompiledStep>> {
         GitOp::FetchRemote { name } => {
             vec![CompiledStep::new(["fetch", "--prune", name.as_str()])]
         }
+        GitOp::AddWorktree { path, branch } => {
+            let path = path.to_string_lossy().into_owned();
+            let mut args = vec!["worktree".to_string(), "add".to_string()];
+            let tail = match branch {
+                WorktreeBranch::Existing(name) => vec![path, name.clone()],
+                WorktreeBranch::New { name, start } => {
+                    args.extend(["-b".to_string(), name.clone()]);
+                    vec![path, start.clone()]
+                }
+                WorktreeBranch::Detached(oid) => {
+                    args.push("--detach".to_string());
+                    vec![path, oid.to_string()]
+                }
+            };
+            args.push("--".to_string());
+            args.extend(tail);
+            vec![CompiledStep::new(args)]
+        }
+        GitOp::RemoveWorktree { path, force } => {
+            let mut args = vec!["worktree".to_string(), "remove".to_string()];
+            if *force {
+                args.push("--force".to_string());
+            }
+            args.extend(["--".to_string(), path.to_string_lossy().into_owned()]);
+            vec![CompiledStep::new(args)]
+        }
+        GitOp::LockWorktree { path, reason } => {
+            let mut args = vec!["worktree".to_string(), "lock".to_string()];
+            if let Some(r) = reason.as_ref().filter(|r| !r.trim().is_empty()) {
+                args.extend(["--reason".to_string(), r.trim().to_string()]);
+            }
+            args.extend(["--".to_string(), path.to_string_lossy().into_owned()]);
+            vec![CompiledStep::new(args)]
+        }
+        GitOp::UnlockWorktree { path } => vec![CompiledStep::new(vec![
+            "worktree".to_string(),
+            "unlock".to_string(),
+            "--".to_string(),
+            path.to_string_lossy().into_owned(),
+        ])],
+        GitOp::PruneWorktrees => vec![CompiledStep::new(["worktree", "prune", "--verbose"])],
         GitOp::Merge { rev, options } => vec![compile_merge(rev, options)],
         GitOp::Rebase { onto, branch } => {
             let mut args = vec!["rebase".to_string(), onto.clone()];
@@ -1492,6 +1533,67 @@ mod tests {
             v(&["fetch", "--prune", "fork"])
         );
         assert_eq!(compiled_args(&GitOp::Fetch), v(&["fetch", "--all", "--prune"]));
+    }
+
+    #[test]
+    fn worktree_ops_compile_to_git_worktree() {
+        let v = |xs: &[&str]| vec![xs.iter().map(ToString::to_string).collect::<Vec<_>>()];
+        let oid = Oid::from_bytes([0xab; 20]);
+        assert_eq!(
+            compiled_args(&GitOp::AddWorktree {
+                path: PathBuf::from("/w/x"),
+                branch: WorktreeBranch::Existing("feature/x".into()),
+            }),
+            v(&["worktree", "add", "--", "/w/x", "feature/x"])
+        );
+        assert_eq!(
+            compiled_args(&GitOp::AddWorktree {
+                path: PathBuf::from("/w/y"),
+                branch: WorktreeBranch::New {
+                    name: "y".into(),
+                    start: "main".into(),
+                },
+            }),
+            v(&["worktree", "add", "-b", "y", "--", "/w/y", "main"])
+        );
+        assert_eq!(
+            compiled_args(&GitOp::AddWorktree {
+                path: PathBuf::from("/w/z"),
+                branch: WorktreeBranch::Detached(oid),
+            }),
+            v(&["worktree", "add", "--detach", "--", "/w/z", &oid.to_string()])
+        );
+        assert_eq!(
+            compiled_args(&GitOp::RemoveWorktree {
+                path: PathBuf::from("/w/x"),
+                force: true,
+            }),
+            v(&["worktree", "remove", "--force", "--", "/w/x"])
+        );
+        assert_eq!(
+            compiled_args(&GitOp::LockWorktree {
+                path: PathBuf::from("/w/x"),
+                reason: Some(" usb ".into()),
+            }),
+            v(&["worktree", "lock", "--reason", "usb", "--", "/w/x"])
+        );
+        assert_eq!(
+            compiled_args(&GitOp::LockWorktree {
+                path: PathBuf::from("/w/x"),
+                reason: Some("  ".into()),
+            }),
+            v(&["worktree", "lock", "--", "/w/x"])
+        );
+        assert_eq!(
+            compiled_args(&GitOp::UnlockWorktree {
+                path: PathBuf::from("/w/x"),
+            }),
+            v(&["worktree", "unlock", "--", "/w/x"])
+        );
+        assert_eq!(
+            compiled_args(&GitOp::PruneWorktrees),
+            v(&["worktree", "prune", "--verbose"])
+        );
     }
 
     #[tokio::test]

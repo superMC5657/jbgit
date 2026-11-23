@@ -343,6 +343,37 @@ pub(crate) fn cached_git_executable() -> Option<&'static Path> {
 /// callers use their libgit2 fallback (`git log` has no `--pathspec-from-file`).
 pub(crate) const MAX_INLINE_PATHSPECS: usize = PATHSPEC_FROM_FILE_THRESHOLD;
 
+/// Process-wide git binary and its version (detected once).
+fn git_binary_info() -> Option<&'static (PathBuf, Option<jbgit_core::GitVersion>)> {
+    static GIT: std::sync::OnceLock<Option<(PathBuf, Option<jbgit_core::GitVersion>)>> =
+        std::sync::OnceLock::new();
+    GIT.get_or_init(|| {
+        let bin = find_git_executable()?;
+        let version = non_interactive_std_command(&bin, None)
+            .arg("--version")
+            .output()
+            .ok()
+            .and_then(|o| jbgit_core::GitVersion::parse(&String::from_utf8_lossy(&o.stdout)));
+        Some((bin, version))
+    })
+    .as_ref()
+}
+
+/// Synchronous `git worktree list --porcelain [-z]` (snapshot worker thread;
+/// `-z` only on git >= 2.36). `None` when git is unavailable or fails.
+pub(crate) fn worktree_list_sync(cwd: &Path) -> Option<Vec<jbgit_core::WorktreeInfo>> {
+    let (bin, version) = git_binary_info()?;
+    let mut cmd = non_interactive_std_command(bin, Some(cwd));
+    cmd.args(["worktree", "list", "--porcelain"]);
+    if version.is_some_and(|v| v >= jbgit_core::GitVersion::WORKTREE_LIST_Z) {
+        cmd.arg("-z");
+    }
+    let out = cmd.output().ok()?;
+    out.status
+        .success()
+        .then(|| jbgit_core::parse_worktree_list_porcelain(&out.stdout))
+}
+
 fn find_git_executable() -> Option<PathBuf> {
     let exe_name = if cfg!(windows) { "git.exe" } else { "git" };
     if let Some(path_var) = std::env::var_os("PATH") {
