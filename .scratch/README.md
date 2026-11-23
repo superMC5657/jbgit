@@ -1,6 +1,6 @@
 # jbgit Feature Specs & Issue Tracker 目录索引
 
-> 本目录为 `jbgit` 项目的本地需求工单与技术规格索引（遵循 [`docs/agents/issue-tracker.md`](../docs/agents/issue-tracker.md) 与 [`AGENTS.md`](../AGENTS.md)），按执行时序汇总 **12 个特性与治理专题（共 38 个原子工单）** 及其架构演进取舍。
+> 本目录为 `jbgit` 项目的本地需求工单与技术规格索引（遵循 [`docs/agents/issue-tracker.md`](../docs/agents/issue-tracker.md) 与 [`AGENTS.md`](../AGENTS.md)），按执行时序汇总 **13 个特性与治理专题（共 52 个原子工单）** 及其架构演进取舍。
 
 ---
 
@@ -30,6 +30,7 @@
 | **#09** | Phase 4: 控制台治理与视口体验加固 | [`09-log-changes-context-menu-and-file-history`](./09-log-changes-context-menu-and-file-history/spec.md) | 变更文件上下文菜单、单文件历史（`--follow` 重命名追踪）与联动 Diff 检视 | 2026-11-20 | — | M6+ (`core` / `engine` / `tui`) | 3 / 3 Resolved |
 | **#10** | Phase 5: 性能架构治理与交互零卡顿优化 | [`10-diff-switching-and-render-performance`](./10-diff-switching-and-render-performance/spec.md) | Diff 切换延迟治理、异步语法高亮、每帧渲染缓存与大仓库性能优化 | 2026-11-21 | `8c0ae20`, `01f2791` | M7 (`core` / `engine` / `tui`) | 5 / 5 Resolved |
 | **#11** | Phase 6: 深模块架构治理与测试面收敛 | [`11-deep-module-architecture-hardening`](./11-deep-module-architecture-hardening/spec.md) | 统一命令目录与纯路由、消费者级单飞槽、共享 Diff 会话、深工作台封装与确定性 `TuiSession` | 2026-11-22 | — | M8 (`core` / `engine` / `tui` / `pilot`) | 6 / 6 Resolved |
+| **#12** | Phase 7: 对齐 reference 基线的功能缺口补齐 | [`12-reference-parity-gap-closure`](./12-reference-parity-gap-closure/spec.md) | Annotate、选区历史、Tag 管理、完整 Push / Merge 对话框、Update Project、远端与凭据、仓库切换、Worktree、多仓库决策、图谱折叠、应用 Patch / 按版本浏览、仓库能力感知 | 规划中（2026-11-23） | — | M9 (`core` / `engine` / `tui` / `pilot`) | 0 / 13 Open（1 wontfix） |
 
 ---
 
@@ -156,6 +157,31 @@
   - [`04-deep-workbench-modules-and-appstate-encapsulation.md`](./11-deep-module-architecture-hardening/issues/04-deep-workbench-modules-and-appstate-encapsulation.md) — P1（Blocked by `01, 03`）：将 8 文件 `impl AppState` 碎片与 95+ 公开字段收敛为 `CommitWorkbench`、`LogWorkbench`、`StashWorkbench`、`ConsoleWorkbench` 四大深模块，内聚 `rows` 自动同步与提交导航重置不变量。
   - [`05-unified-git-op-compiler-subprocess-and-hunk-builder.md`](./11-deep-module-architecture-hardening/issues/05-unified-git-op-compiler-subprocess-and-hunk-builder.md) — P1（Blocked by `02`）：纯声明式 `GitOp`、统一 `jbgit-engine` CLI 编译/`prepare_pathspec_args`/`index.lock` 子进程双适配器接缝，以及合并双文档/三文档 Hunk 构建并保留原始 `'\t'` 修复 `[diff] tab_size` 失效。
   - [`06-deterministic-tui-session-driver-and-pilot-codec.md`](./11-deep-module-architecture-hardening/issues/06-deterministic-tui-session-driver-and-pilot-codec.md) — P2（Blocked by `04, 05`）：提取库级 `TuiSession` 确定性回合驱动、按 Replace-Don't-Layer 替换 6 套手写残缺测试循环，并将 `tools/jbgit-pilot` 纳入 Workspace 共享键位编解码。
+
+---
+
+### Phase 7: 对齐 reference 基线的功能缺口补齐（规划中，2026-11-23）
+
+以 `reference/`（`git4idea` / `vcs-log` / `vcs-impl`）为基线做功能面差距评估：日常单仓库工作流覆盖 ≈ 85%–90%，终端可适用功能面 ≈ 55%–60%。本阶段按用户价值排序补齐剩余缺口，目标将后者提升至 ≈ 80%+。
+
+#### #12 · `12-reference-parity-gap-closure`
+- **定位**：reference 功能缺口补齐路线图（0 / 13 Open，Issue 11 wontfix）。
+- **原子工单**：
+  - [`01-blame-annotate-engine-and-view.md`](./12-reference-parity-gap-closure/issues/01-blame-annotate-engine-and-view.md) — P0：`git blame --porcelain` 可取消加载管线与全文件注解视图（年龄着色、Annotate Previous Revision、跳转 Log）。
+  - [`02-show-history-for-selection.md`](./12-reference-parity-gap-closure/issues/02-show-history-for-selection.md) — P1（Blocked by `01`）：`git log -L` 行区间历史，复用 File History 视图。
+  - [`03-tag-management.md`](./12-reference-parity-gap-closure/issues/03-tag-management.md) — P0：删除 / 恢复本地 Tag、删除远端 Tag、推送单个 Tag 与 Tag 菜单。
+  - [`04-push-dialog-commit-preview-and-targets.md`](./12-reference-parity-gap-closure/issues/04-push-dialog-commit-preview-and-targets.md) — P0：待推提交预览、目标编辑、Tag 推送模式、受保护分支与被拒后更新重试。
+  - [`05-merge-dialog-options.md`](./12-reference-parity-gap-closure/issues/05-merge-dialog-options.md) — P1：`--no-ff` / `--ff-only` / `--squash` / `--no-commit` / 消息 / 策略及互斥校验。
+  - [`06-update-project-flow-and-update-info.md`](./12-reference-parity-gap-closure/issues/06-update-project-flow-and-update-info.md) — P1：保存改动 → fetch → 同步当前分支 → 快进其他分支 → 恢复，及按范围筛选的更新摘要。
+  - [`07-remote-management.md`](./12-reference-parity-gap-closure/issues/07-remote-management.md) — P1：`RepoSnapshot.remotes` 与远端增删改。
+  - [`08-askpass-credential-bridge.md`](./12-reference-parity-gap-closure/issues/08-askpass-credential-bridge.md) — P1（Blocked by `07`）：`GIT_ASKPASS` / `SSH_ASKPASS` 凭据回调桥（仅当前用户可访问的命名管道 / Unix socket + 会话令牌，不存储凭据）。
+  - [`09-repository-session-rebind-and-switcher.md`](./12-reference-parity-gap-closure/issues/09-repository-session-rebind-and-switcher.md) — P1：进程内仓库会话重绑定与最近仓库切换器。
+  - [`10-working-trees.md`](./12-reference-parity-gap-closure/issues/10-working-trees.md) — P1（Blocked by `09`）：Worktree 列表 / 创建 / 打开 / 锁定 / 删除 / 清理。
+  - [`11-multi-root-model-decision.md`](./12-reference-parity-gap-closure/issues/11-multi-root-model-decision.md) — wontfix：多仓库模型已决策为"单活动仓库 + 快速切换"，由 `09` 的切换器承载。
+  - [`12-graph-collapse-linear-branches.md`](./12-reference-parity-gap-closure/issues/12-graph-collapse-linear-branches.md) — P2：`CollapsedGraph` 线性分支折叠 / 展开投影层。
+  - [`13-apply-patch-and-browse-at-revision.md`](./12-reference-parity-gap-closure/issues/13-apply-patch-and-browse-at-revision.md) — P2：应用 Patch（预检 / 3-way）与按版本浏览仓库树。
+  - [`14-repo-capabilities-shallow-submodule-lfs-signature.md`](./12-reference-parity-gap-closure/issues/14-repo-capabilities-shallow-submodule-lfs-signature.md) — P3：签名状态细分、Submodule 只读标注、LFS 指针占位与 Unshallow（四项全做）。
+- **明确不做**：Shelf / Changelists、In-memory Rebase、Clone / Init、多仓库同步模型、IDE 专属能力（理由见 Spec §2.1）。
 
 ---
 
