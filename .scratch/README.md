@@ -1,6 +1,6 @@
 # jbgit Feature Specs & Issue Tracker 目录索引
 
-> 本目录为 `jbgit` 项目的本地需求工单与技术规格索引（遵循 [`docs/agents/issue-tracker.md`](../docs/agents/issue-tracker.md) 与 [`AGENTS.md`](../AGENTS.md)），按执行时序汇总 **13 个特性与治理专题（共 52 个原子工单）** 及其架构演进取舍。
+> 本目录为 `jbgit` 项目的本地需求工单与技术规格索引（遵循 [`docs/agents/issue-tracker.md`](../docs/agents/issue-tracker.md) 与 [`AGENTS.md`](../AGENTS.md)），按执行时序汇总 **14 个特性与治理专题（共 66 个原子工单）** 及其架构演进取舍。
 
 ---
 
@@ -30,7 +30,8 @@
 | **#09** | Phase 4: 控制台治理与视口体验加固 | [`09-log-changes-context-menu-and-file-history`](./09-log-changes-context-menu-and-file-history/spec.md) | 变更文件上下文菜单、单文件历史（`--follow` 重命名追踪）与联动 Diff 检视 | 2026-11-20 | — | M6+ (`core` / `engine` / `tui`) | 3 / 3 Resolved |
 | **#10** | Phase 5: 性能架构治理与交互零卡顿优化 | [`10-diff-switching-and-render-performance`](./10-diff-switching-and-render-performance/spec.md) | Diff 切换延迟治理、异步语法高亮、每帧渲染缓存与大仓库性能优化 | 2026-11-21 | `8c0ae20`, `01f2791` | M7 (`core` / `engine` / `tui`) | 5 / 5 Resolved |
 | **#11** | Phase 6: 深模块架构治理与测试面收敛 | [`11-deep-module-architecture-hardening`](./11-deep-module-architecture-hardening/spec.md) | 统一命令目录与纯路由、消费者级单飞槽、共享 Diff 会话、深工作台封装与确定性 `TuiSession` | 2026-11-22 | — | M8 (`core` / `engine` / `tui` / `pilot`) | 6 / 6 Resolved |
-| **#12** | Phase 7: 对齐 reference 基线的功能缺口补齐 | [`12-reference-parity-gap-closure`](./12-reference-parity-gap-closure/spec.md) | Annotate、选区历史、Tag 管理、完整 Push / Merge 对话框、Update Project、远端与凭据、仓库切换、Worktree、多仓库决策、图谱折叠、应用 Patch / 按版本浏览、仓库能力感知 | 规划中（2026-11-23） | — | M9 (`core` / `engine` / `tui` / `pilot`) | 0 / 13 Open（1 wontfix） |
+| **#12** | Phase 7: 对齐 reference 基线的功能缺口补齐 | [`12-reference-parity-gap-closure`](./12-reference-parity-gap-closure/spec.md) | Annotate、选区历史、Tag 管理、完整 Push / Merge 对话框、Update Project、远端与凭据、仓库切换、Worktree、多仓库决策、图谱折叠、应用 Patch / 按版本浏览、仓库能力感知 | 2026-11-24 | `77a4a68`..`2b834cd` | M9 (`core` / `engine` / `tui` / `pilot`) | 13 / 14 Resolved（1 wontfix） |
+| **#13** | Phase 8: 对齐 reference 基线的深度补齐与正确性加固 | [`13-reference-parity-depth-and-correctness`](./13-reference-parity-depth-and-correctness/spec.md) | Commit/Stage/冲突/选区 P0 正确性修复、Diff 空白/横滚/搜索、Pull/Rebase 选项弹窗、Upstream/分支清理/选项补齐、Commit 模板与 Push 加固、FileHistory/Annotate 深化、真正 3-Way 合并队列、Patch/Tree 增强、高亮器/LinearBek/Reflog、增量刷新分页、Clone/Init/CRLF、GPG/Bisect/细节三件套 | 规划中（2026-11-24） | — | M10 (`core` / `engine` / `tui` / `pilot`) | 0 / 14 Open（全部 `ready-for-agent`） |
 
 ---
 
@@ -160,12 +161,12 @@
 
 ---
 
-### Phase 7: 对齐 reference 基线的功能缺口补齐（规划中，2026-11-23）
+### Phase 7: 对齐 reference 基线的功能缺口补齐（2026-11-23 ~ 2026-11-24）
 
-以 `reference/`（`git4idea` / `vcs-log` / `vcs-impl`）为基线做功能面差距评估：日常单仓库工作流覆盖 ≈ 85%–90%，终端可适用功能面 ≈ 55%–60%。本阶段按用户价值排序补齐剩余缺口，目标将后者提升至 ≈ 80%+。
+以 `reference/`（`git4idea` / `vcs-log` / `vcs-impl`）为基线做功能面差距评估并补齐缺口，将「终端可适用功能面」覆盖度由 ≈ 55%–60% 提升至 ≈ 75%–82%。
 
 #### #12 · `12-reference-parity-gap-closure`
-- **定位**：reference 功能缺口补齐路线图（0 / 13 Open，Issue 11 wontfix）。
+- **定位**：reference 功能缺口补齐路线图（13 / 14 Resolved，Issue 11 wontfix，Commits `77a4a68`..`2b834cd`、`8491a11`）。
 - **原子工单**：
   - [`01-blame-annotate-engine-and-view.md`](./12-reference-parity-gap-closure/issues/01-blame-annotate-engine-and-view.md) — P0：`git blame --porcelain` 可取消加载管线与全文件注解视图（年龄着色、Annotate Previous Revision、跳转 Log）。
   - [`02-show-history-for-selection.md`](./12-reference-parity-gap-closure/issues/02-show-history-for-selection.md) — P1（Blocked by `01`）：`git log -L` 行区间历史，复用 File History 视图。
@@ -182,6 +183,31 @@
   - [`13-apply-patch-and-browse-at-revision.md`](./12-reference-parity-gap-closure/issues/13-apply-patch-and-browse-at-revision.md) — P2：应用 Patch（预检 / 3-way）与按版本浏览仓库树。
   - [`14-repo-capabilities-shallow-submodule-lfs-signature.md`](./12-reference-parity-gap-closure/issues/14-repo-capabilities-shallow-submodule-lfs-signature.md) — P3：签名状态细分、Submodule 只读标注、LFS 指针占位与 Unshallow（四项全做）。
 - **明确不做**：Shelf / Changelists、In-memory Rebase、Clone / Init、多仓库同步模型、IDE 专属能力（理由见 Spec §2.1）。
+
+---
+
+### Phase 8: 对齐 reference 基线的深度补齐与正确性加固（规划中，2026-11-24）
+
+在 Spec 12 落地后对照 `reference/` 做二次全量源码审计（日常单仓库工作流 ≈ 90%–95%，终端可适用功能面 ≈ 75%–82%）。本阶段先消除 4 类 P0 正确性边界缺陷，再按高频程度补齐选项深度、真正 3-way 合并、图谱保真度与 Reflog，目标将终端可适用覆盖度推至 ≈ 92%+。
+
+#### #13 · `13-reference-parity-depth-and-correctness`
+- **定位**：reference 深度对齐与正确性加固路线图（0 / 14 Open，全部 `ready-for-agent`；SQLite 持久化索引与 In-Memory Rebase 已拍板 `wontfix`）。
+- **原子工单**：
+  - [`01-commit-sequencer-and-stage-correctness.md`](./13-reference-parity-depth-and-correctness/issues/01-commit-sequencer-and-stage-correctness.md) — P0：修复 Merge/Sequencer 状态走 `git2` 丢父提交、linked worktree hooks 路径、Symlink/权限/未追踪目录与 Copy 处理。
+  - [`02-conflict-semantics-crlf-and-delete-modify.md`](./13-reference-parity-depth-and-correctness/issues/02-conflict-semantics-crlf-and-delete-modify.md) — P0：修复 Rebase 冲突 Ours/Theirs 反转、Delete/Modify `AcceptSide` 走 `git rm`、CRLF 保留、二进制冲突护栏与选块滚屏。
+  - [`03-log-non-contiguous-selection-and-compare.md`](./13-reference-parity-depth-and-correctness/issues/03-log-non-contiguous-selection-and-compare.md) — P0：Log 非连续多选解锁任意两提交对比、`ManyChanges` 护栏与「仅显示受影响变更」。
+  - [`04-diff-whitespace-horizontal-scroll-and-search.md`](./13-reference-parity-depth-and-correctness/issues/04-diff-whitespace-horizontal-scroll-and-search.md) — P1：Diff 忽略空白（`-b`/`-w`）、水平滚动/软换行、Tab-Stop 对齐、`/` 搜索、二进制元数据与 Log 复制增强。
+  - [`05-pull-and-rebase-options-dialogs.md`](./13-reference-parity-depth-and-correctness/issues/05-pull-and-rebase-options-dialogs.md) — P1：Pull 选项对话框、标准 Rebase 对话框（`--onto`/`--rebase-merges`/`--update-refs`）、交互式 Rebase `edit`、独立 `fixup!`/`squash!` 与非连续 Squash。
+  - [`06-branch-upstream-cleanup-and-cherry-stash-options.md`](./13-reference-parity-depth-and-correctness/issues/06-branch-upstream-cleanup-and-cherry-stash-options.md) — P1：Set/Unset Upstream、已合并分支批量清理、任意双分支对称对比、Cherry-Pick/Revert `-n`/`-m` 与 Stash `--keep-index`/`--index`。
+  - [`07-commit-workflow-templates-merge-msg-and-push-polish.md`](./13-reference-parity-depth-and-correctness/issues/07-commit-workflow-templates-merge-msg-and-push-polish.md) — P1（Blocked by `01`）：`commit.template`、自动加载 `MERGE_MSG`/`SQUASH_MSG`、72 列折行、Commit & Push 直通 Push 对话框与 Push Rejected Smart 重试。
+  - [`08-file-history-modal-actions-and-annotate-depth.md`](./13-reference-parity-depth-and-correctness/issues/08-file-history-modal-actions-and-annotate-depth.md) — P1：FileHistory 模态内右键菜单/分支筛选/分页/搜索与 Annotate 拆分 `-M`/`-C`、列定制及 LRU 缓存。
+  - [`09-true-three-way-merge-and-conflict-queue.md`](./13-reference-parity-depth-and-correctness/issues/09-true-three-way-merge-and-conflict-queue.md) — P2（Blocked by `02`）：基于 `:1/:2/:3` 的真正 3-way 自动合并、Result 内联编辑与多文件冲突队列视图。
+  - [`10-patch-options-and-tree-browser-ergonomics.md`](./13-reference-parity-depth-and-correctness/issues/10-patch-options-and-tree-browser-ergonomics.md) — P2：Apply Patch `-R`/`-p<n>`/部分勾选/Diff 预览、Create Patch 路径选择与 Tree Browser `/` 模糊搜索。
+  - [`11-vcs-log-highlighters-graph-fidelity-and-reflog.md`](./13-reference-parity-depth-and-correctness/issues/11-vcs-log-highlighters-graph-fidelity-and-reflog.md) — P2（Blocked by `03`）：`My Commits` / `Already Cherry-Picked` 高亮器、`LinearBek`、`No-Merges`、表内速查与 Reflog 视图。
+  - [`12-incremental-log-refresh-and-pagination.md`](./13-reference-parity-depth-and-correctness/issues/12-incremental-log-refresh-and-pagination.md) — P2：轻量增量头部刷新（`VcsLogJoiner` 风格）与突破 50k 渐进分页（不引入 SQLite）。
+  - [`13-clone-init-git-executable-and-crlf.md`](./13-reference-parity-depth-and-correctness/issues/13-clone-init-git-executable-and-crlf.md) — P2：Clone / Init 仓库生命周期、`[git] executable` 配置与 Windows CRLF 提交前检测。
+  - [`14-gpg-bisect-and-repo-ergonomics.md`](./13-reference-parity-depth-and-correctness/issues/14-gpg-bisect-and-repo-ergonomics.md) — P2：GPG 签名与 SSH Host-Key 指纹确认、Bisect 控制、Submodule gitlink 暂存、`.worktreeinclude` 与灵活 `.gitignore`。
+- **明确不做（2026-11-24 拍板 `wontfix`）**：SQLite 持久化索引、In-Memory Rebase，及沿用 Spec 12 的 Shelf/Changelists、多仓库同步模型与 IDE 专属能力。
 
 ---
 
@@ -217,7 +243,7 @@ jbgit/
 ├── docs/
 │   ├── manual.md               # 用户操作与 TOML 配置手册
 │   └── agents/                 # Agent 协作指引（issue-tracker / triage-labels / domain / ai-exploratory-testing）
-└── .scratch/                   # 按执行时序组织的 Feature Specs (#00 ~ #11) 与原子 Issues
+└── .scratch/                   # 按执行时序组织的 Feature Specs (#00 ~ #13) 与原子 Issues
 ```
 
 ---
