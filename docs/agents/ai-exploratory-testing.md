@@ -21,11 +21,13 @@ Launch the PTY server **with `IsDaemon: true`** so it persists across tool calls
 
 ### Scenario A: Full Sandbox (`--sandbox` / `--scenario full`, default)
 Creates `.pilot/sandbox-repo` + bare remote `.pilot/sandbox-remote.git` with:
-- Multi-branch DAG with merge commit (`main` ahead of `origin/main` by 3 commits, `feature/login`, `feature/ui-cards`, `bugfix/scroll-edge`, remote-only `origin/feature/remote-only`, tag `v0.1.0`)
+- Multi-branch DAG with merge commit (`main` ahead of `origin/main` by 3 commits, `feature/login`, `feature/ui-cards`, `bugfix/scroll-edge`, remote-only `origin/feature/remote-only`, pushed tag `v0.1.0` + unpushed annotated tag `v0.2.0-rc1`)
+- **Linear collapsible chain**: `feature/linear-chain` adds 5 consecutive single-parent commits (`chore(linear): step 1..5`) for testing linear branch collapse/expand (Spec 12 #12)
 - **Renamed & multi-commit file history**: `src/legacy_auth.rs` → `src/auth.rs` (4 commits on `main` across `git mv`, plus nested `src/components/header.rs` for directory history / path filtering)
 - **Remote sync branches**:
   - `feature/pull-me` (remote `origin/feature/pull-me` has 2 un-fetched peer commits → test `f` Fetch showing `↓2`, then checkout & `p` Pull)
-  - `feature/diverged` (diverged from `origin/feature/diverged` → test `P` Push Rejected / Force Push / Rebase handling)
+  - `feature/diverged` (diverged from `origin/feature/diverged` → test `P` Push dialog / Push Rejected / Force-with-lease / Rebase retry)
+- **Patch fixtures**: `.pilot/sample.patch` (cleanly applies to `src/cards.rs`) and `.pilot/conflict.patch` (targets `src/components/header.rs` with a real ancestor index blob so plain `git apply --check` fails and `ThreeWay` (`git apply --3way`) enters the conflict-resolution flow) for Spec 12 #13 (paths are also exported in `.pilot/ready.json`)
 - 2 real stashes (`wip: refactor stash test`, `wip: older stash`)
 - 1 partially staged file (`staged_partial.txt`), 1 multi-hunk modified file (`src/main.rs`), 1 untracked file (`scratch_note.txt`), 1 ignored file (`debug_trace.log` via `.gitignore`)
 - Isolated empty config dir (does not touch user global config)
@@ -62,6 +64,27 @@ Can be combined with `--sandbox` (or `--repo <dir>`) to auto-generate `.pilot/cu
 
 ```powershell
 .\target\debug\jbgit-pilot.exe serve --sandbox --custom-config --cols 140 --rows 40
+```
+
+### Scenario E: Repository Capabilities (`--scenario capabilities`)
+Creates a `--depth 1` shallow clone in `.pilot/sandbox-repo` backed by `.pilot/sandbox-remote.git` and `.pilot/sandbox-sub.git` for Spec 12 #14:
+- **Shallow clone**: `.git/shallow` exists with 3 unloaded upstream commits behind `origin/main`, displaying the Log shallow boundary marker and enabling **Unshallow** (`?` Command Palette / Log context action)
+- **Dirty / ahead submodule**: `libs/submod` has both a local commit ahead of its recorded gitlink and uncommitted changes in `sub.txt` (`[new commits, dirty]`), rendered read-only in the Commit / Stage workbench
+- **Git LFS pointer diff**: `.gitattributes` configures `*.bin filter=lfs`, and `assets/model.bin` has a modified LFS v1 pointer (`2 MiB`) showing the LFS pointer diff placeholder and disabling line-level staging
+- **Signed commit status**: `HEAD` (`chore: signed commit fixture`) carries a synthetic PGP `gpgsig` header so Log / Details display a signed (cannot-check/bad) status alongside unsigned `HEAD~1` without requiring local GPG keys
+
+```powershell
+.\target\debug\jbgit-pilot.exe serve --sandbox --scenario capabilities --cols 140 --rows 40
+```
+
+### Scenario F: Askpass Credential Bridge (`--scenario askpass`)
+Starts an ephemeral loopback HTTP Basic Auth server (`git-http-backend`, accepting `alice` / `s3cr3t`; `.pilot/ready.json` exports only `askpass.url` and `auth_required` with no plaintext credentials written under `.pilot/`) with `credential.helper = ""` so `GIT_ASKPASS` is forced on every remote op (Spec 12 #08):
+- `origin/main` has 1 un-fetched remote commit (`f` Fetch triggers the masked `jbgit` credential prompt)
+- Local `feature/auth-push` has 1 unpushed commit (`P` Push triggers the credential prompt and pushes over HTTP Basic Auth)
+- Pressing `Esc` in the credential dialog cancels askpass and classifies `AuthenticationFailed` without leaking credentials into `[4 Console]`
+
+```powershell
+.\target\debug\jbgit-pilot.exe serve --sandbox --scenario askpass --cols 140 --rows 40
 ```
 
 ## 3. Interactive AI Testing Commands
@@ -127,6 +150,13 @@ When asked to find bugs or unimplemented features interactively, explore systema
    - Verify old keys (`r`, `b`, `n`, `Ctrl+s`) stop working, rebound keys (`F8`, `F6`, `F7`, `F9`, chord `g x`) execute real git operations, and **shortcut hints update dynamically** in: footer bar, `?` Help dialog, `.` Context Menu, Branches Popup (`NewBranch` hint), and Which-Key chord popup.
 8. **Hover & Layout Resize Stress**:
    - Use `hover <col> <row>` on toolbar buttons/header pills to verify hover highlighting; `resize` to `80x24`, `50x16`, `35x8` (too-small guard), and back to `140x40`; check for panics, clipped modals, or misaligned CJK text.
+9. **Spec 12 Parity Features (across `full`, `multi-repo`, `capabilities`, `askpass`)**:
+   - **Annotate (`Alt+G`) & Selection History (`H`)**: Open Annotate on `src/auth.rs` from Log/Commit/File History, toggle diff (`d`), whitespace (`w`), moves (`m`), step to previous revision (`p`), jump to commit (`Enter`), and select a line range + `H` for `git log -L` selection history.
+   - **Tag Management & Push Dialog (`P`)**: Delete local (`v0.2.0-rc1`) & remote (`v0.1.0`) tags, push a single tag, open the Push dialog on `main` / `feature/diverged` to inspect outgoing commits, edit target branch, toggle tag mode / `--force-with-lease`, and verify Push Rejected retry options.
+   - **Merge Options, Update Project (`Alt+U`) & Remotes (`Alt+R`)**: Open the Merge options dialog (`--no-ff` / `--ff-only` / `--squash` mutual exclusion), run `Alt+U` Update Project (`Merge`/`Rebase` + stash/restore + Update Info summary), and add/rename/edit/remove a remote via `Alt+R`.
+   - **Repo Switcher (`Alt+O`) & Worktrees (`Alt+W`)** (`--scenario multi-repo`): Switch between `sandbox-repo`, `sandbox-repo-feature`, and `sandbox-repo-b`, create/lock/unlock/remove a worktree, and verify drafts stay isolated per repo/worktree.
+   - **Linear Collapse, Apply Patch (`Alt+P`) & Browse at Revision (`Alt+T`)** (`--scenario full`): Collapse/expand `feature/linear-chain` (`Ctrl+Shift+-` / `Ctrl+Shift+=` or `z c`/`z o`/`z M`/`z R` in Vim preset), apply `.pilot/sample.patch` cleanly and verify `.pilot/conflict.patch` surfaces a check failure, and browse the tree at a historical commit via `Alt+T`.
+   - **Capabilities (`--scenario capabilities`) & Askpass (`--scenario askpass`)**: Verify the shallow boundary marker + Unshallow, `libs/submod` read-only submodule badge, `assets/model.bin` LFS pointer diff placeholder, and end-to-end HTTP Basic Auth Fetch/Push (`alice` / `s3cr3t`) + `Esc` cancel with zero plaintext credential output in `[4 Console]`.
 
 ## 5. Recording Findings
 

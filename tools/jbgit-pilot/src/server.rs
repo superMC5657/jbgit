@@ -12,8 +12,7 @@ use portable_pty::{CommandBuilder, PtySize, native_pty_system};
 use crate::keys::{encode_key, encode_sgr_click, encode_sgr_hover, encode_sgr_scroll};
 use crate::protocol::{CommandEnvelope, PilotAction, ResponseEnvelope};
 use crate::sandbox::{
-    init_sandbox_repo, multi_repo_siblings, write_custom_test_config,
-    write_recent_repos,
+    PreparedSandbox, prepare_sandbox, write_custom_test_config, write_recent_repos,
 };
 use crate::screen::{
     Osc52ClipboardScanner, build_screen_resp, find_text_matches, inspect_row_spans,
@@ -61,11 +60,13 @@ pub fn run_serve(opts: ServeOptions) -> Result<()> {
         serde_json::to_string(&serde_json::json!({ "pid": std::process::id() }))?,
     )?;
 
+    let mut prepared_sandbox: Option<PreparedSandbox> = None;
+
     let repo_path = if opts.sandbox {
-        let sandbox_dir = std::path::absolute(opts.session_dir.join("sandbox-repo"))?;
-        let remote_dir = std::path::absolute(opts.session_dir.join("sandbox-remote.git"))?;
-        init_sandbox_repo(&sandbox_dir, &remote_dir, opts.scenario)?;
-        sandbox_dir
+        let prepared = prepare_sandbox(&opts.session_dir, opts.scenario)?;
+        let repo_dir = prepared.repo_dir.clone();
+        prepared_sandbox = Some(prepared);
+        repo_dir
     } else if let Some(p) = opts.repo_path.clone() {
         std::path::absolute(p)?
     } else {
@@ -89,12 +90,11 @@ pub fn run_serve(opts: ServeOptions) -> Result<()> {
         None
     };
 
-    if opts.sandbox
-        && opts.scenario == SandboxScenario::MultiRepo
+    if let Some(prepared) = &prepared_sandbox
+        && !prepared.recent_repos.is_empty()
         && let Some(cfg) = &resolved_config_dir
     {
-        let (_, b_dir) = multi_repo_siblings(&repo_path);
-        write_recent_repos(cfg, &[b_dir])?;
+        write_recent_repos(cfg, &prepared.recent_repos)?;
     }
 
     let bin_path = std::path::absolute(&opts.bin_path)?;
@@ -118,6 +118,7 @@ pub fn run_serve(opts: ServeOptions) -> Result<()> {
     let mut cmd = CommandBuilder::new(&bin_path);
     cmd.arg(&repo_path);
     cmd.cwd(&repo_path);
+    cmd.env("GCM_INTERACTIVE", "never");
     if std::env::var_os("JBGIT_NO_EXTERNAL_EDITOR").is_none() {
         cmd.env("JBGIT_NO_EXTERNAL_EDITOR", "1");
     }
@@ -184,7 +185,7 @@ pub fn run_serve(opts: ServeOptions) -> Result<()> {
 
     wait_for_initial_paint(&shared, 300, 8000);
 
-    let ready_info = serde_json::json!({
+    let mut ready_info = serde_json::json!({
         "pid": std::process::id(),
         "repo": repo_path,
         "bin": bin_path,
@@ -193,6 +194,18 @@ pub fn run_serve(opts: ServeOptions) -> Result<()> {
         "cols": opts.cols,
         "rows": opts.rows,
     });
+    if let Some(prepared) = &prepared_sandbox {
+        if let Some(url) = &prepared.askpass_url {
+            ready_info["askpass"] = serde_json::json!({
+                "url": url,
+                "auth_required": true,
+            });
+        }
+        if let Some((sample, conflict)) = &prepared.patches {
+            ready_info["sample_patch"] = serde_json::json!(sample);
+            ready_info["conflict_patch"] = serde_json::json!(conflict);
+        }
+    }
     fs::write(&ready_path, serde_json::to_string_pretty(&ready_info)?)?;
     let _ = fs::remove_file(&starting_path);
     eprintln!(
@@ -256,6 +269,7 @@ pub fn run_serve(opts: ServeOptions) -> Result<()> {
 
     let _ = fs::remove_file(&ready_path);
     let _ = fs::remove_file(&starting_path);
+    drop(prepared_sandbox);
     Ok(())
 }
 

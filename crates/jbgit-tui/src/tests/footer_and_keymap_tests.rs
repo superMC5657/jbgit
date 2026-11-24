@@ -1122,28 +1122,36 @@ fn annotate_alt_g_resolves_without_shadowing_across_all_presets() {
 }
 
 #[test]
-fn terminal_too_small_guard_matches_40x10_threshold_and_i18n_text() {
-    let mut ts = TestSession::with_snapshot(snapshot());
+fn terminal_too_small_guard_matches_min_threshold_and_i18n_text() {
+    use crate::views::{MIN_TERMINAL_HEIGHT, MIN_TERMINAL_WIDTH};
 
-    // Below 40x10 renders the too-small guard with matching min 40x10 text in en-US and zh-CN.
-    for (w, h) in [(35, 8), (39, 10), (40, 9)] {
+    let mut ts = TestSession::with_snapshot(snapshot());
+    let expected_en = format!("(min {MIN_TERMINAL_WIDTH}x{MIN_TERMINAL_HEIGHT})");
+    let expected_zh = format!("(最小要求{MIN_TERMINAL_WIDTH}x{MIN_TERMINAL_HEIGHT})");
+
+    // Below MIN_TERMINAL_WIDTH x MIN_TERMINAL_HEIGHT renders the too-small guard in en-US and zh-CN.
+    for (w, h) in [
+        (35, 8),
+        (MIN_TERMINAL_WIDTH - 1, MIN_TERMINAL_HEIGHT),
+        (MIN_TERMINAL_WIDTH, MIN_TERMINAL_HEIGHT - 1),
+    ] {
         ts.state_mut().i18n = Arc::new(crate::i18n::I18n::load("en-US", None));
         let en_buf = ts.render(w, h);
         let en_txt = screen_text(&en_buf);
         assert!(en_txt.contains("Terminal too small"), "{w}x{h}: {en_txt}");
-        assert!(en_txt.contains("(min 40x10)"), "{w}x{h}: {en_txt}");
+        assert!(en_txt.contains(&expected_en), "{w}x{h}: {en_txt}");
 
         ts.state_mut().i18n = Arc::new(crate::i18n::I18n::load("zh-CN", None));
         let zh_buf = ts.render(w, h);
         let zh_txt = screen_text(&zh_buf);
         let zh_compact = zh_txt.replace(' ', "");
         assert!(zh_compact.contains("终端窗口过小"), "{w}x{h}: {zh_txt}");
-        assert!(zh_compact.contains("(最小要求40x10)"), "{w}x{h}: {zh_txt}");
+        assert!(zh_compact.contains(&expected_zh), "{w}x{h}: {zh_txt}");
     }
 
-    // At or above 40x10 renders the normal UI without the guard.
+    // At or above MIN_TERMINAL_WIDTH x MIN_TERMINAL_HEIGHT renders the normal UI without the guard.
     ts.state_mut().i18n = Arc::new(crate::i18n::I18n::load("en-US", None));
-    for (w, h) in [(40, 10), (50, 16)] {
+    for (w, h) in [(MIN_TERMINAL_WIDTH, MIN_TERMINAL_HEIGHT), (50, 16)] {
         let buf = ts.render(w, h);
         let txt = screen_text(&buf);
         assert!(!txt.contains("Terminal too small"), "{w}x{h}: {txt}");

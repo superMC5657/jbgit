@@ -1,8 +1,34 @@
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 use anyhow::{Context, Result, bail};
+
+use crate::askpass_http::AskpassHttpServer;
+
+const QA_USER_NAME: &str = "QA Tester";
+const QA_USER_EMAIL: &str = "qa@example.com";
+const PEER_USER_NAME: &str = "Remote Peer";
+const PEER_USER_EMAIL: &str = "peer@example.com";
+const LFS_DISABLE_ARGS: &[&str] = &[
+    "-c",
+    "filter.lfs.required=false",
+    "-c",
+    "filter.lfs.process=",
+    "-c",
+    "filter.lfs.clean=",
+    "-c",
+    "filter.lfs.smudge=",
+];
+
+pub struct PreparedSandbox {
+    pub repo_dir: PathBuf,
+    pub askpass_url: Option<String>,
+    pub patches: Option<(PathBuf, PathBuf)>,
+    pub recent_repos: Vec<PathBuf>,
+    _askpass_server: Option<AskpassHttpServer>,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SandboxScenario {
@@ -12,6 +38,11 @@ pub enum SandboxScenario {
     /// Two repositories + a linked worktree + a recent-repositories list
     /// (Spec 12 #09/#10 repository switching).
     MultiRepo,
+    /// Shallow clone + dirty/ahead submodule + Git LFS v1 pointer diff
+    /// (Spec 12 #14 repository capabilities).
+    Capabilities,
+    /// Ephemeral HTTP Basic Auth remote requiring `GIT_ASKPASS` (Spec 12 #08).
+    Askpass,
 }
 
 impl SandboxScenario {
@@ -21,8 +52,10 @@ impl SandboxScenario {
             "full" => Ok(Self::Full),
             "conflict" => Ok(Self::Conflict),
             "multi-repo" | "multirepo" => Ok(Self::MultiRepo),
+            "capabilities" | "caps" => Ok(Self::Capabilities),
+            "askpass" | "auth" => Ok(Self::Askpass),
             other => bail!(
-                "unknown scenario '{other}' (expected: full, conflict, basic, multi-repo)"
+                "unknown scenario '{other}' (expected: full, conflict, basic, multi-repo, capabilities, askpass)"
             ),
         }
     }
@@ -101,7 +134,7 @@ prepend_keymap = [
 }
 
 /// Sibling directories of the multi-repo scenario: `(worktree, second repo)`.
-pub fn multi_repo_siblings(dir: &Path) -> (PathBuf, PathBuf) {
+fn multi_repo_siblings(dir: &Path) -> (PathBuf, PathBuf) {
     let name = dir
         .file_name()
         .and_then(|s| s.to_str())
@@ -113,32 +146,138 @@ pub fn multi_repo_siblings(dir: &Path) -> (PathBuf, PathBuf) {
     )
 }
 
-pub fn init_sandbox_repo(dir: &Path, remote_dir: &Path, scenario: SandboxScenario) -> Result<()> {
-    let (wt_dir, b_dir) = multi_repo_siblings(dir);
-    for sibling in [&wt_dir, &b_dir] {
-        if sibling.exists() {
-            fs::remove_dir_all(sibling)?;
+fn capabilities_sub_repo(dir: &Path) -> PathBuf {
+    dir.parent().unwrap_or(Path::new(".")).join("sandbox-sub.git")
+}
+
+fn askpass_http_root(dir: &Path) -> PathBuf {
+    dir.parent()
+        .unwrap_or(Path::new("."))
+        .join("sandbox-http-root")
+}
+
+fn full_patch_paths(dir: &Path) -> (PathBuf, PathBuf) {
+    let parent = dir.parent().unwrap_or(Path::new("."));
+    (parent.join("sample.patch"), parent.join("conflict.patch"))
+}
+
+fn make_writable(path: &Path) {
+    let Ok(meta) = fs::metadata(path) else {
+        return;
+    };
+    let mut perms = meta.permissions();
+    if perms.readonly() {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            perms.set_mode(perms.mode() | 0o200);
         }
+        #[cfg(not(unix))]
+        #[allow(clippy::permissions_set_readonly_false)]
+        perms.set_readonly(false);
+        let _ = fs::set_permissions(path, perms);
     }
-    if dir.exists() {
-        fs::remove_dir_all(dir)?;
-    }
-    if remote_dir.exists() {
-        fs::remove_dir_all(remote_dir)?;
-    }
-    fs::create_dir_all(dir)?;
+}
 
-    run_git(dir, &["init", "-b", "main"])?;
-    run_git(dir, &["config", "user.name", "QA Tester"])?;
-    run_git(dir, &["config", "user.email", "qa@example.com"])?;
-
-    match scenario {
-        SandboxScenario::Basic => init_basic_scenario(dir)?,
-        SandboxScenario::Conflict => init_conflict_scenario(dir)?,
-        SandboxScenario::Full => init_full_scenario(dir, remote_dir)?,
-        SandboxScenario::MultiRepo => init_multi_repo_scenario(dir, &wt_dir, &b_dir)?,
+fn remove_path_if_exists(path: &Path) -> Result<()> {
+    if !path.exists() {
+        return Ok(());
+    }
+    if path.is_dir() {
+        if fs::remove_dir_all(path).is_err() {
+            clear_readonly_recursive(path);
+            fs::remove_dir_all(path).with_context(|| format!("remove {}", path.display()))?;
+        }
+    } else if fs::remove_file(path).is_err() {
+        make_writable(path);
+        fs::remove_file(path).with_context(|| format!("remove {}", path.display()))?;
     }
     Ok(())
+}
+
+fn clear_readonly_recursive(root: &Path) {
+    let Ok(entries) = fs::read_dir(root) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let p = entry.path();
+        make_writable(&p);
+        if p.is_dir() {
+            clear_readonly_recursive(&p);
+        }
+    }
+}
+
+fn cleanup_sandbox_artifacts(dir: &Path, remote_dir: &Path) -> Result<()> {
+    let parent = dir.parent().unwrap_or(Path::new("."));
+    let (wt_dir, b_dir) = multi_repo_siblings(dir);
+    let (sample_patch, conflict_patch) = full_patch_paths(dir);
+    for path in [
+        wt_dir,
+        b_dir,
+        capabilities_sub_repo(dir),
+        askpass_http_root(dir),
+        parent.join("sandbox-peer"),
+        parent.join("sandbox-seed"),
+        parent.join("sandbox-sub-seed"),
+        sample_patch,
+        conflict_patch,
+        dir.to_path_buf(),
+        remote_dir.to_path_buf(),
+    ] {
+        remove_path_if_exists(&path)?;
+    }
+    Ok(())
+}
+
+pub fn prepare_sandbox(session_dir: &Path, scenario: SandboxScenario) -> Result<PreparedSandbox> {
+    let session_dir = std::path::absolute(session_dir)?;
+    let dir = session_dir.join("sandbox-repo");
+    let remote_dir = session_dir.join("sandbox-remote.git");
+    cleanup_sandbox_artifacts(&dir, &remote_dir)?;
+
+    let mut prepared = PreparedSandbox {
+        repo_dir: dir.clone(),
+        askpass_url: None,
+        patches: None,
+        recent_repos: Vec::new(),
+        _askpass_server: None,
+    };
+
+    match scenario {
+        SandboxScenario::Basic => {
+            init_git_repo(&dir, "main")?;
+            init_basic_scenario(&dir)?;
+        }
+        SandboxScenario::Conflict => {
+            init_git_repo(&dir, "main")?;
+            init_conflict_scenario(&dir)?;
+        }
+        SandboxScenario::Full => {
+            init_git_repo(&dir, "main")?;
+            prepared.patches = Some(init_full_scenario(&dir, &remote_dir)?);
+        }
+        SandboxScenario::MultiRepo => {
+            init_git_repo(&dir, "main")?;
+            let (wt_dir, b_dir) = multi_repo_siblings(&dir);
+            init_multi_repo_scenario(&dir, &wt_dir, &b_dir)?;
+            prepared.recent_repos.push(b_dir);
+        }
+        SandboxScenario::Capabilities => {
+            init_capabilities_scenario(&dir, &remote_dir)?;
+        }
+        SandboxScenario::Askpass => {
+            let http_root = askpass_http_root(&dir);
+            fs::create_dir_all(&http_root)?;
+            let server = AskpassHttpServer::start(http_root.clone())?;
+            let url = server.repo_url();
+            init_askpass_scenario(&dir, &http_root, &url)?;
+            prepared.askpass_url = Some(url);
+            prepared._askpass_server = Some(server);
+        }
+    }
+
+    Ok(prepared)
 }
 
 /// `sandbox-repo` (basic scenario) with `feature/ui-test` checked out in the
@@ -150,10 +289,7 @@ fn init_multi_repo_scenario(dir: &Path, wt_dir: &Path, b_dir: &Path) -> Result<(
     run_git(dir, &["worktree", "add", &wt, "feature/ui-test"])?;
     fs::write(wt_dir.join("WORKTREE_NOTE.md"), "edited only in the worktree\n")?;
 
-    fs::create_dir_all(b_dir)?;
-    run_git(b_dir, &["init", "-b", "develop"])?;
-    run_git(b_dir, &["config", "user.name", "QA Tester"])?;
-    run_git(b_dir, &["config", "user.email", "qa@example.com"])?;
+    init_git_repo(b_dir, "develop")?;
     fs::write(b_dir.join("b.txt"), "repository B\n")?;
     run_git(b_dir, &["add", "b.txt"])?;
     run_git(b_dir, &["commit", "-m", "B: initial commit"])?;
@@ -244,7 +380,7 @@ fn init_conflict_scenario(dir: &Path) -> Result<()> {
     Ok(())
 }
 
-fn init_full_scenario(dir: &Path, remote_dir: &Path) -> Result<()> {
+fn init_full_scenario(dir: &Path, remote_dir: &Path) -> Result<(PathBuf, PathBuf)> {
     fs::create_dir_all(remote_dir)?;
     run_git(remote_dir, &["init", "--bare", "-b", "main"])?;
 
@@ -285,6 +421,7 @@ fn init_full_scenario(dir: &Path, remote_dir: &Path) -> Result<()> {
         &["remote", "add", "origin", &remote_dir.to_string_lossy()],
     )?;
     run_git(dir, &["push", "-u", "origin", "main"])?;
+    run_git(dir, &["push", "origin", "v0.1.0"])?;
 
     run_git(dir, &["checkout", "-b", "feature/remote-only"])?;
     fs::write(dir.join("remote_note.md"), "remote-only commit\n")?;
@@ -314,6 +451,17 @@ fn init_full_scenario(dir: &Path, remote_dir: &Path) -> Result<()> {
         ],
     )?;
 
+    run_git(dir, &["checkout", "-b", "feature/linear-chain"])?;
+    for step in 1..=5 {
+        fs::write(dir.join("linear_chain.txt"), format!("linear step {step}\n"))?;
+        run_git(dir, &["add", "linear_chain.txt"])?;
+        run_git(
+            dir,
+            &["commit", "-m", &format!("chore(linear): step {step}")],
+        )?;
+    }
+
+    run_git(dir, &["checkout", "main"])?;
     run_git(dir, &["checkout", "-b", "feature/login"])?;
     fs::write(
         dir.join("src/auth.rs"),
@@ -354,8 +502,7 @@ fn init_full_scenario(dir: &Path, remote_dir: &Path) -> Result<()> {
             &peer_dir.to_string_lossy(),
         ],
     )?;
-    run_git(&peer_dir, &["config", "user.name", "Remote Peer"])?;
-    run_git(&peer_dir, &["config", "user.email", "peer@example.com"])?;
+    configure_git_user(&peer_dir, PEER_USER_NAME, PEER_USER_EMAIL)?;
     run_git(&peer_dir, &["checkout", "feature/pull-me"])?;
     fs::write(peer_dir.join("pull_me.txt"), "base\nremote 1\n")?;
     run_git(&peer_dir, &["commit", "-am", "remote: pull commit 1"])?;
@@ -370,6 +517,27 @@ fn init_full_scenario(dir: &Path, remote_dir: &Path) -> Result<()> {
     let _ = fs::remove_dir_all(&peer_dir);
 
     run_git(dir, &["checkout", "main"])?;
+
+    let (sample_patch, conflict_patch) = full_patch_paths(dir);
+    // Capture conflict.patch against the committed base blob before main diverges
+    // on `src/components/header.rs` so `git apply --check` fails and `--3way` enters
+    // the 3-way conflict-resolution flow.
+    fs::write(
+        dir.join("src/components/header.rs"),
+        "pub fn title() -> &'static str { \"jbgit patch\" }\n",
+    )?;
+    let conflict_diff = run_git_stdout(
+        dir,
+        &[
+            "-c",
+            "core.autocrlf=false",
+            "diff",
+            "--",
+            "src/components/header.rs",
+        ],
+    )?;
+    fs::write(&conflict_patch, &conflict_diff)?;
+    run_git(dir, &["checkout", "--", "src/components/header.rs"])?;
 
     fs::write(
         dir.join("README.md"),
@@ -386,6 +554,15 @@ fn init_full_scenario(dir: &Path, remote_dir: &Path) -> Result<()> {
     run_git(
         dir,
         &["commit", "-am", "feat: refine auth, header, and README on main"],
+    )?;
+    run_git(
+        dir,
+        &["tag", "-a", "v0.2.0-rc1", "-m", "Release candidate 1"],
+    )?;
+
+    fs::write(
+        &sample_patch,
+        "diff --git a/src/cards.rs b/src/cards.rs\n--- a/src/cards.rs\n+++ b/src/cards.rs\n@@ -1 +1,2 @@\n pub fn card() -> &'static str { \"card\" }\n+pub fn card_badge() -> &'static str { \"badge\" }\n",
     )?;
 
     fs::write(
@@ -415,24 +592,465 @@ fn init_full_scenario(dir: &Path, remote_dir: &Path) -> Result<()> {
 
     fs::write(dir.join("scratch_note.txt"), "untracked qa file\n")?;
     fs::write(dir.join("debug_trace.log"), "ignored debug log\n")?;
+    Ok((sample_patch, conflict_patch))
+}
+
+/// Shallow clone (`--depth 1`) + dirty/ahead submodule + Git LFS v1 pointer diff
+/// + synthetic `gpgsig` signed commit for testing Spec 12 #14 repository capabilities.
+fn init_capabilities_scenario(dir: &Path, remote_dir: &Path) -> Result<()> {
+    let parent = dir.parent().unwrap_or(Path::new("."));
+    let seed_dir = parent.join("sandbox-seed");
+    let sub_seed_dir = parent.join("sandbox-sub-seed");
+    let sub_repo = capabilities_sub_repo(dir);
+
+    // 1. Bare upstream repository with 4 commits so shallow clone leaves 3 unloaded ancestors.
+    fs::create_dir_all(remote_dir)?;
+    run_git(remote_dir, &["init", "--bare", "-b", "main"])?;
+    init_git_repo(&seed_dir, "main")?;
+
+    fs::write(seed_dir.join("README.md"), "# Capabilities QA Sandbox\n")?;
+    run_git(&seed_dir, &["add", "README.md"])?;
+    run_git(&seed_dir, &["commit", "-m", "init: capabilities sandbox"])?;
+
+    fs::write(
+        seed_dir.join(".gitattributes"),
+        "*.bin filter=lfs diff=lfs merge=lfs -text\n",
+    )?;
+    fs::create_dir_all(seed_dir.join("assets"))?;
+    let lfs_v1 = format!(
+        "version https://git-lfs.github.com/spec/v1\noid sha256:{}\nsize 1048576\n",
+        "1".repeat(64)
+    );
+    fs::write(seed_dir.join("assets/model.bin"), lfs_v1)?;
+    run_git_no_lfs(&seed_dir, &["add", ".gitattributes", "assets/model.bin"])?;
+    run_git(&seed_dir, &["commit", "-m", "feat: track model.bin with LFS"])?;
+
+    fs::create_dir_all(seed_dir.join("src"))?;
+    fs::write(
+        seed_dir.join("src/lib.rs"),
+        "pub fn ok() -> bool {\n    true\n}\n",
+    )?;
+    run_git(&seed_dir, &["add", "src/lib.rs"])?;
+    run_git(&seed_dir, &["commit", "-m", "feat: add src/lib.rs"])?;
+
+    fs::write(
+        seed_dir.join("README.md"),
+        "# Capabilities QA Sandbox\nupdated upstream\n",
+    )?;
+    run_git(&seed_dir, &["commit", "-am", "docs: update README"])?;
+    run_git(
+        &seed_dir,
+        &["remote", "add", "origin", &remote_dir.to_string_lossy()],
+    )?;
+    run_git(&seed_dir, &["push", "--no-verify", "-u", "origin", "main"])?;
+    remove_path_if_exists(&seed_dir)?;
+
+    // 2. Bare submodule repository with 2 commits.
+    fs::create_dir_all(&sub_repo)?;
+    run_git(&sub_repo, &["init", "--bare", "-b", "main"])?;
+    init_git_repo(&sub_seed_dir, "main")?;
+    fs::write(sub_seed_dir.join("sub.txt"), "sub base\n")?;
+    run_git(&sub_seed_dir, &["add", "sub.txt"])?;
+    run_git(&sub_seed_dir, &["commit", "-m", "sub: base"])?;
+    fs::write(sub_seed_dir.join("sub.txt"), "sub v2\n")?;
+    run_git(&sub_seed_dir, &["commit", "-am", "sub: v2"])?;
+    run_git(
+        &sub_seed_dir,
+        &["remote", "add", "origin", &sub_repo.to_string_lossy()],
+    )?;
+    run_git(&sub_seed_dir, &["push", "-u", "origin", "main"])?;
+    remove_path_if_exists(&sub_seed_dir)?;
+
+    // 3. Shallow clone into `dir` (`--no-local --depth 1` preserves `.git/shallow`).
+    run_git_no_lfs(
+        parent,
+        &[
+            "-c",
+            "protocol.file.allow=always",
+            "clone",
+            "--no-local",
+            "--depth",
+            "1",
+            &remote_dir.to_string_lossy(),
+            &dir.to_string_lossy(),
+        ],
+    )?;
+    configure_git_user(dir, QA_USER_NAME, QA_USER_EMAIL)?;
+
+    // 4. Add submodule and make it both ahead (`new commits`) and dirty.
+    run_git(
+        dir,
+        &[
+            "-c",
+            "protocol.file.allow=always",
+            "submodule",
+            "add",
+            &sub_repo.to_string_lossy(),
+            "libs/submod",
+        ],
+    )?;
+    run_git(dir, &["commit", "-m", "chore: add libs/submod submodule"])?;
+
+    let sub_work = dir.join("libs/submod");
+    configure_git_user(&sub_work, QA_USER_NAME, QA_USER_EMAIL)?;
+    fs::write(sub_work.join("sub.txt"), "sub v2\nlocal submodule commit\n")?;
+    run_git(&sub_work, &["commit", "-am", "sub: local advance"])?;
+    fs::write(
+        sub_work.join("sub.txt"),
+        "sub v2\nlocal submodule commit\nuncommitted dirty line\n",
+    )?;
+
+    // 5. Add a local commit carrying a synthetic PGP `gpgsig` header so `%G?`
+    // classifies HEAD as signed (CannotCheck/Bad) while HEAD~1 stays Unsigned.
+    fs::write(
+        dir.join("src/lib.rs"),
+        "pub fn ok() -> bool {\n    true\n}\n\npub fn signed_fixture() -> bool {\n    true\n}\n",
+    )?;
+    run_git(dir, &["add", "src/lib.rs"])?;
+    run_git(dir, &["commit", "-m", "chore: signed commit fixture"])?;
+    attach_synthetic_gpgsig_to_head(dir)?;
+
+    // 6. Modify LFS pointer file in worktree (no git-lfs filter binary needed).
+    let lfs_v2 = format!(
+        "version https://git-lfs.github.com/spec/v1\noid sha256:{}\nsize 2097152\n",
+        "2".repeat(64)
+    );
+    fs::write(dir.join("assets/model.bin"), lfs_v2)?;
     Ok(())
 }
 
-fn run_git(dir: &Path, args: &[&str]) -> Result<()> {
+fn attach_synthetic_gpgsig_to_head(dir: &Path) -> Result<()> {
+    // Structurally valid RFC 4880 V4 OpenPGP signature packet (issuer key ID
+    // DEADBEEFCAFEBABE) with valid CRC-24 armor checksum, so `git log --format=%G?`
+    // reports `E` (CannotCheck / unknown public key) and `%GK = DEADBEEFCAFEBABE`
+    // without requiring GPG keys on the machine.
+    const SYNTHETIC_GPGSIG: &str = concat!(
+        "gpgsig -----BEGIN PGP SIGNATURE-----\n",
+        " \n",
+        " iQCcBAABCAAGBQJlAAAAAAoJEN6tvu/K/rq+AAAEAIAAAAAAAAAAAAAAAAAAAAAA\n",
+        " AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\n",
+        " AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\n",
+        " AAAAAAAAAAAAAAAAAAAA\n",
+        " =+xN9\n",
+        " -----END PGP SIGNATURE-----",
+    );
+
+    let raw_bytes = run_git_stdout(dir, &["cat-file", "commit", "HEAD"])?;
+    let raw = String::from_utf8(raw_bytes).context("commit object is not UTF-8")?;
+    let (headers, rest) = raw
+        .split_once("\n\n")
+        .context("unexpected commit object format without header/body separator")?;
+    let signed_obj = format!("{headers}\n{SYNTHETIC_GPGSIG}\n\n{rest}");
+    let oid_bytes = run_git_with_stdin(
+        dir,
+        &["hash-object", "-t", "commit", "-w", "--stdin"],
+        signed_obj.as_bytes(),
+    )?;
+    let new_oid = String::from_utf8(oid_bytes)
+        .context("hash-object output is not UTF-8")?
+        .trim()
+        .to_string();
+    run_git(dir, &["update-ref", "HEAD", &new_oid])?;
+    Ok(())
+}
+
+/// Initializes a local repo backed by `http_root/repo.git` served over HTTP Basic Auth
+/// so Fetch / Push exercise the live `GIT_ASKPASS` credential dialog (Spec 12 #08).
+fn init_askpass_scenario(dir: &Path, http_root: &Path, http_url: &str) -> Result<()> {
+    let bare = http_root.join("repo.git");
+    fs::create_dir_all(&bare)?;
+    run_git(&bare, &["init", "--bare", "-b", "main"])?;
+    run_git(&bare, &["config", "http.receivepack", "true"])?;
+
+    init_git_repo(dir, "main")?;
+    fs::write(dir.join("README.md"), "# Askpass QA Sandbox\n")?;
+    run_git(dir, &["add", "README.md"])?;
+    run_git(dir, &["commit", "-m", "initial commit"])?;
+    run_git(
+        dir,
+        &["push", &bare.to_string_lossy(), "main:refs/heads/main"],
+    )?;
+
+    run_git(dir, &["remote", "add", "origin", http_url])?;
+    run_git(dir, &["config", "--local", "branch.main.remote", "origin"])?;
+    run_git(
+        dir,
+        &["config", "--local", "branch.main.merge", "refs/heads/main"],
+    )?;
+    run_git(dir, &["config", "--local", "credential.helper", ""])?;
+    run_git(dir, &["config", "--local", "http.emptyAuth", "false"])?;
+    run_git(dir, &["update-ref", "refs/remotes/origin/main", "HEAD"])?;
+
+    // Push 1 un-fetched commit directly to the bare repo so Fetch triggers askpass.
+    let parent = dir.parent().unwrap_or(Path::new("."));
+    let peer_dir = parent.join("sandbox-peer");
+    remove_path_if_exists(&peer_dir)?;
+    run_git(
+        parent,
+        &[
+            "clone",
+            &bare.to_string_lossy(),
+            &peer_dir.to_string_lossy(),
+        ],
+    )?;
+    configure_git_user(&peer_dir, PEER_USER_NAME, PEER_USER_EMAIL)?;
+    fs::write(
+        peer_dir.join("README.md"),
+        "# Askpass QA Sandbox\nremote auth commit\n",
+    )?;
+    run_git(&peer_dir, &["commit", "-am", "remote: auth-gated commit"])?;
+    run_git(&peer_dir, &["push", "origin", "main"])?;
+    remove_path_if_exists(&peer_dir)?;
+
+    // Also create a local branch ready to push over HTTP Basic Auth.
+    run_git(dir, &["checkout", "-b", "feature/auth-push"])?;
+    fs::write(dir.join("auth_push.txt"), "push over http basic auth\n")?;
+    run_git(dir, &["add", "auth_push.txt"])?;
+    run_git(dir, &["commit", "-m", "feat: push over basic auth"])?;
+    run_git(dir, &["checkout", "main"])?;
+    Ok(())
+}
+
+fn configure_git_user(dir: &Path, name: &str, email: &str) -> Result<()> {
+    run_git(dir, &["config", "user.name", name])?;
+    run_git(dir, &["config", "user.email", email])?;
+    Ok(())
+}
+
+fn init_git_repo(dir: &Path, branch: &str) -> Result<()> {
+    fs::create_dir_all(dir)?;
+    run_git(dir, &["init", "-b", branch])?;
+    configure_git_user(dir, QA_USER_NAME, QA_USER_EMAIL)
+}
+
+fn run_git_no_lfs(dir: &Path, args: &[&str]) -> Result<()> {
+    let mut full: Vec<&str> = Vec::with_capacity(LFS_DISABLE_ARGS.len() + args.len());
+    full.extend_from_slice(LFS_DISABLE_ARGS);
+    full.extend_from_slice(args);
+    run_git(dir, &full)
+}
+
+fn run_git_stdout(dir: &Path, args: &[&str]) -> Result<Vec<u8>> {
     let out = Command::new("git")
         .args(args)
         .current_dir(dir)
-        .env("GIT_AUTHOR_NAME", "QA Tester")
-        .env("GIT_AUTHOR_EMAIL", "qa@example.com")
-        .env("GIT_COMMITTER_NAME", "QA Tester")
-        .env("GIT_COMMITTER_EMAIL", "qa@example.com")
+        .env("GIT_AUTHOR_NAME", QA_USER_NAME)
+        .env("GIT_AUTHOR_EMAIL", QA_USER_EMAIL)
+        .env("GIT_COMMITTER_NAME", QA_USER_NAME)
+        .env("GIT_COMMITTER_EMAIL", QA_USER_EMAIL)
         .output()
         .with_context(|| format!("run git {args:?}"))?;
     if !out.status.success() {
         bail!(
+            "git {args:?} failed: {}{}",
+            String::from_utf8_lossy(&out.stderr),
+            String::from_utf8_lossy(&out.stdout)
+        );
+    }
+    Ok(out.stdout)
+}
+
+fn run_git_with_stdin(dir: &Path, args: &[&str], stdin_bytes: &[u8]) -> Result<Vec<u8>> {
+    let mut child = Command::new("git")
+        .args(args)
+        .current_dir(dir)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .with_context(|| format!("spawn git {args:?}"))?;
+    if let Some(mut stdin) = child.stdin.take() {
+        stdin.write_all(stdin_bytes)?;
+    }
+    let out = child.wait_with_output()?;
+    if !out.status.success() {
+        bail!(
+            "git {args:?} failed: {}{}",
+            String::from_utf8_lossy(&out.stderr),
+            String::from_utf8_lossy(&out.stdout)
+        );
+    }
+    Ok(out.stdout)
+}
+
+fn run_git(dir: &Path, args: &[&str]) -> Result<()> {
+    let _ = run_git_stdout(dir, args)?;
+    Ok(())
+}
+
+#[cfg(test)]
+pub(crate) struct TestDir(pub(crate) PathBuf);
+
+#[cfg(test)]
+impl TestDir {
+    pub(crate) fn new(tag: &str) -> Self {
+        let p = std::env::temp_dir().join(format!(
+            "jbgit-pilot-{tag}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        let _ = remove_path_if_exists(&p);
+        fs::create_dir_all(&p).unwrap();
+        Self(p)
+    }
+}
+
+#[cfg(test)]
+impl Drop for TestDir {
+    fn drop(&mut self) {
+        let _ = remove_path_if_exists(&self.0);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn git_out(dir: &Path, args: &[&str]) -> String {
+        let out = Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
             "git {args:?} failed: {}",
             String::from_utf8_lossy(&out.stderr)
         );
+        String::from_utf8_lossy(&out.stdout).into_owned()
     }
-    Ok(())
+
+    #[test]
+    fn full_scenario_creates_linear_chain_tags_and_patches() {
+        let tmp = TestDir::new("full");
+        let prepared = prepare_sandbox(&tmp.0, SandboxScenario::Full).unwrap();
+        let dir = &prepared.repo_dir;
+        let remote = tmp.0.join("sandbox-remote.git");
+
+        let local_tags = git_out(dir, &["tag", "-l"]);
+        assert!(local_tags.contains("v0.1.0"), "{local_tags}");
+        assert!(local_tags.contains("v0.2.0-rc1"), "{local_tags}");
+        let remote_tags = git_out(&remote, &["tag", "-l"]);
+        assert!(remote_tags.contains("v0.1.0"), "{remote_tags}");
+
+        let linear_log = git_out(dir, &["log", "--oneline", "main..feature/linear-chain"]);
+        assert_eq!(linear_log.lines().count(), 5, "{linear_log}");
+
+        let (sample_patch, conflict_patch) = prepared.patches.expect("full scenario patches");
+        let ok = Command::new("git")
+            .args(["apply", "--check", &sample_patch.to_string_lossy()])
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        assert!(ok.status.success(), "{}", String::from_utf8_lossy(&ok.stderr));
+
+        let fail = Command::new("git")
+            .args(["apply", "--check", &conflict_patch.to_string_lossy()])
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        assert!(!fail.status.success(), "expected conflict.patch to fail check");
+
+        let three_way_check = Command::new("git")
+            .args([
+                "apply",
+                "--check",
+                "--numstat",
+                "--3way",
+                &conflict_patch.to_string_lossy(),
+            ])
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        assert!(
+            three_way_check.status.success(),
+            "expected conflict.patch --3way check to succeed: {}",
+            String::from_utf8_lossy(&three_way_check.stderr)
+        );
+        let check_out = String::from_utf8_lossy(&three_way_check.stdout);
+        assert!(
+            check_out.contains("src/components/header.rs"),
+            "{check_out}"
+        );
+
+        let three_way_apply = Command::new("git")
+            .args(["apply", "--3way", &conflict_patch.to_string_lossy()])
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        assert!(
+            !three_way_apply.status.success(),
+            "expected conflict.patch --3way apply to stop with conflict"
+        );
+        let conflicted = fs::read_to_string(dir.join("src/components/header.rs")).unwrap();
+        assert!(conflicted.contains("<<<<<<<"), "{conflicted}");
+        let status = git_out(dir, &["status", "--short"]);
+        assert!(status.contains("UU src/components/header.rs"), "{status}");
+    }
+
+    #[test]
+    fn capabilities_scenario_creates_shallow_dirty_submodule_lfs_and_signature() {
+        let tmp = TestDir::new("caps");
+        let prepared = prepare_sandbox(&tmp.0, SandboxScenario::Capabilities).unwrap();
+        let dir = &prepared.repo_dir;
+
+        assert!(dir.join(".git/shallow").is_file(), "expected shallow clone");
+        assert!(dir.join("libs/submod/.git").exists(), "expected submodule");
+
+        let status = git_out(dir, &["status", "--short"]);
+        assert!(status.contains("libs/submod"), "{status}");
+        assert!(status.contains("assets/model.bin"), "{status}");
+
+        let lfs_bytes = fs::read(dir.join("assets/model.bin")).unwrap();
+        let ptr = jbgit_core::parse_lfs_pointer(&lfs_bytes).expect("valid LFS pointer");
+        assert_eq!(ptr.size, 2_097_152);
+
+        let head_sig_line = git_out(dir, &["log", "-1", "--format=%G?%x1f%GS%x1f%GK"]);
+        let head_sig = jbgit_core::CommitSignature::parse_single_format_line(&head_sig_line);
+        assert!(
+            head_sig.status.is_signed(),
+            "expected HEAD to be signed, got {:?} (raw: {head_sig_line:?})",
+            head_sig.status
+        );
+        assert_eq!(
+            head_sig.status,
+            jbgit_core::SignatureStatus::CannotCheck,
+            "raw: {head_sig_line:?}"
+        );
+        assert_eq!(
+            head_sig.key.as_deref(),
+            Some("DEADBEEFCAFEBABE"),
+            "raw: {head_sig_line:?}"
+        );
+
+        let parent_sig_line =
+            git_out(dir, &["log", "-1", "HEAD~1", "--format=%G?%x1f%GS%x1f%GK"]);
+        let parent_sig = jbgit_core::CommitSignature::parse_single_format_line(&parent_sig_line);
+        assert_eq!(
+            parent_sig.status,
+            jbgit_core::SignatureStatus::Unsigned,
+            "expected HEAD~1 to be unsigned, got {:?} (raw: {parent_sig_line:?})",
+            parent_sig.status
+        );
+    }
+
+    #[test]
+    fn askpass_scenario_configures_empty_credential_helper_and_http_origin() {
+        let tmp = TestDir::new("askpass");
+        let prepared = prepare_sandbox(&tmp.0, SandboxScenario::Askpass).unwrap();
+        let dir = &prepared.repo_dir;
+        let url = prepared.askpass_url.as_deref().expect("askpass url");
+        assert!(url.starts_with("http://127.0.0.1:"), "{url}");
+
+        let helper = git_out(dir, &["config", "--local", "--get", "credential.helper"]);
+        assert_eq!(helper.trim(), "");
+        let origin = git_out(dir, &["remote", "get-url", "origin"]);
+        assert_eq!(origin.trim(), url);
+        let http_root = askpass_http_root(dir);
+        let receive = git_out(&http_root.join("repo.git"), &["config", "--get", "http.receivepack"]);
+        assert_eq!(receive.trim(), "true");
+    }
 }

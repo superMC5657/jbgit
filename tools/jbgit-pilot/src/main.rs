@@ -1,3 +1,4 @@
+mod askpass_http;
 mod client;
 mod keys;
 mod protocol;
@@ -60,7 +61,7 @@ USAGE:
   jbgit-pilot [--session-dir <dir>] <COMMAND> [ARGS...]
 
 SERVER (run with IsDaemon=true):
-  serve [--repo <dir> | --sandbox] [--scenario full|conflict|basic|multi-repo]
+  serve [--repo <dir> | --sandbox] [--scenario full|conflict|basic|multi-repo|capabilities|askpass]
         [--custom-config | --config-dir <dir> | --use-user-config]
         [--cols 140] [--rows 40] [--bin <path>] [--no-truecolor]
 
