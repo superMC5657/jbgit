@@ -2,8 +2,8 @@ use std::time::Instant;
 
 use crossterm::event::KeyEvent;
 use jbgit_core::{
-    ConflictChoice, GitOp, MergeOptions, Oid, PaneId, RefreshScope, SplitterId, StageTarget,
-    WorkspaceTab,
+    ConflictChoice, GitOp, MergeOptions, Oid, PaneId, PullOptions, RebaseOptions, RefreshScope,
+    SplitterId, StageTarget, WorkspaceTab,
 };
 use jbgit_engine::CommitRequest;
 
@@ -372,6 +372,18 @@ pub enum Action {
     },
     /// Persist the Merge dialog choices (`<common_dir>/jbgit-merge-options`).
     RememberMergeOptions(MergeOptions),
+    /// `Pull…` options dialog (`GitPullDialog`).
+    PromptPull,
+    /// Persist the Pull dialog choices (`<common_dir>/jbgit-pull-options`).
+    RememberPullOptions(PullOptions),
+    /// Trigger fetch from inside the open `Pull…` dialog to refresh remote branches.
+    PullDialogFetch,
+    /// `Rebase…` standard options dialog (`GitRebaseDialog`).
+    PromptRebase {
+        onto: Option<String>,
+    },
+    /// Persist the Rebase dialog choices (`<common_dir>/jbgit-rebase-options`).
+    RememberRebaseOptions(RebaseOptions),
     /// `Update Project…` mode chooser.
     PromptUpdateProject,
     /// `Unshallow Repository…` confirmation dialog.

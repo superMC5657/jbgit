@@ -1,4 +1,4 @@
-use crate::{Oid, RefreshScope, RepositoryState};
+use crate::{GitVersion, Oid, RefreshScope, RepositoryState};
 
 use super::TodoEntry;
 
@@ -274,6 +274,347 @@ impl MergeOptions {
     }
 }
 
+/// A pair of mutually exclusive pull options (`GitPullOption.isOptionSuitable`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum PullOptionConflict {
+    /// `--rebase` with `--squash`
+    RebaseSquash,
+    /// `--rebase` with `--no-ff`
+    RebaseNoFf,
+    /// `--rebase` with `--ff-only`
+    RebaseFfOnly,
+    /// `--rebase` with `--no-commit`
+    RebaseNoCommit,
+    /// `--squash` with `--no-ff`
+    SquashNoFf,
+    /// `--squash` with `--ff-only`
+    SquashFfOnly,
+}
+
+impl PullOptionConflict {
+    /// The two clashing command-line flags.
+    pub const fn flags(self) -> (&'static str, &'static str) {
+        match self {
+            Self::RebaseSquash => ("--rebase", "--squash"),
+            Self::RebaseNoFf => ("--rebase", "--no-ff"),
+            Self::RebaseFfOnly => ("--rebase", "--ff-only"),
+            Self::RebaseNoCommit => ("--rebase", "--no-commit"),
+            Self::SquashNoFf => ("--squash", "--no-ff"),
+            Self::SquashFfOnly => ("--squash", "--ff-only"),
+        }
+    }
+}
+
+/// Options of the Pull dialog (`GitPullDialog`), compiled by the engine into
+/// `git pull` flags. [`PullOptions::default`] keeps the legacy `pull --no-edit`
+/// command line.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
+pub struct PullOptions {
+    /// Explicit remote name (`None` = Git upstream default).
+    pub remote: Option<String>,
+    /// Explicit remote branch name (`None` = Git upstream default).
+    pub branch: Option<String>,
+    /// `--rebase`
+    pub rebase: bool,
+    /// `--no-ff` / `--ff-only`
+    pub ff: FastForward,
+    /// `--squash`
+    pub squash: bool,
+    /// `--no-commit`
+    pub no_commit: bool,
+    /// `--no-verify`
+    pub no_verify: bool,
+}
+
+impl PullOptions {
+    pub fn effective_remote(&self) -> Option<&str> {
+        self.remote
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+    }
+
+    pub fn effective_branch(&self) -> Option<&str> {
+        self.branch
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+    }
+
+    /// Checks the `GitPullOption` incompatibility matrix; returns the first clash.
+    pub fn validate(&self) -> Result<(), PullOptionConflict> {
+        if self.rebase {
+            if self.squash {
+                return Err(PullOptionConflict::RebaseSquash);
+            }
+            match self.ff {
+                FastForward::NoFf => return Err(PullOptionConflict::RebaseNoFf),
+                FastForward::FfOnly => return Err(PullOptionConflict::RebaseFfOnly),
+                FastForward::Default => {}
+            }
+            if self.no_commit {
+                return Err(PullOptionConflict::RebaseNoCommit);
+            }
+        }
+        if self.squash {
+            match self.ff {
+                FastForward::NoFf => return Err(PullOptionConflict::SquashNoFf),
+                FastForward::FfOnly => return Err(PullOptionConflict::SquashFfOnly),
+                FastForward::Default => {}
+            }
+        }
+        Ok(())
+    }
+
+    /// Whether the pull leaves its result staged for a manual commit.
+    pub const fn leaves_changes_uncommitted(&self) -> bool {
+        !self.rebase && (self.squash || self.no_commit)
+    }
+
+    /// Compact command-line preview of flags + target (`--rebase origin main`).
+    pub fn summary(&self) -> String {
+        let mut parts: Vec<String> = Vec::new();
+        if self.rebase {
+            parts.push("--rebase".into());
+        } else {
+            if let Some(f) = self.ff.flag() {
+                parts.push(f.to_string());
+            }
+            if self.squash {
+                parts.push("--squash".into());
+            }
+            if self.no_commit {
+                parts.push("--no-commit".into());
+            }
+        }
+        if self.no_verify {
+            parts.push("--no-verify".into());
+        }
+        if let Some(remote) = self.effective_remote() {
+            parts.push(remote.to_string());
+            if let Some(branch) = self.effective_branch() {
+                parts.push(branch.to_string());
+            }
+        }
+        parts.join(" ")
+    }
+
+    /// Serialises remembered flag choices (never remote/branch) as `key=value` lines.
+    pub fn to_remembered(&self) -> String {
+        format!(
+            "rebase={}\nff={}\nsquash={}\nno_commit={}\nno_verify={}\n",
+            self.rebase,
+            self.ff.as_str(),
+            self.squash,
+            self.no_commit,
+            self.no_verify,
+        )
+    }
+
+    /// Parses [`Self::to_remembered`] output; unknown keys are ignored.
+    pub fn from_remembered(text: &str) -> Self {
+        let mut out = Self::default();
+        for line in text.lines() {
+            let Some((k, v)) = line.split_once('=') else {
+                continue;
+            };
+            let v = v.trim();
+            match k.trim() {
+                "rebase" => out.rebase = v == "true",
+                "ff" => out.ff = FastForward::parse(v).unwrap_or_default(),
+                "squash" => out.squash = v == "true",
+                "no_commit" => out.no_commit = v == "true",
+                "no_verify" => out.no_verify = v == "true",
+                _ => {}
+            }
+        }
+        out
+    }
+}
+
+/// Validation failure of [`RebaseOptions`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum RebaseOptionError {
+    /// Target (`onto`) is required unless `--root` is set.
+    MissingOnto,
+    /// `--root` cannot be combined with an explicit `<upstream>` old base.
+    RootWithUpstream,
+    /// `--update-refs` requires Git >= 2.38.
+    UpdateRefsUnsupported(GitVersion),
+    /// Combining `--rebase-merges` with `-i` requires Git >= 2.18.
+    RebaseMergesUnsupported(GitVersion),
+}
+
+/// Options of the standard Rebase dialog (`GitRebaseDialog`), compiled by the
+/// engine into `git rebase` flags.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
+pub struct RebaseOptions {
+    /// Target new base (`git rebase <onto>` or `git rebase --onto <onto> <upstream>`).
+    /// May be empty only when `root == true`.
+    pub onto: String,
+    /// Optional old base when using `--onto <onto> <upstream>`.
+    pub upstream: Option<String>,
+    /// Optional branch to switch to and rebase (`git rebase ... <branch>`).
+    pub branch: Option<String>,
+    /// `-i` / `--interactive`
+    pub interactive: bool,
+    /// `--rebase-merges`
+    pub rebase_merges: bool,
+    /// `--update-refs` (Git >= 2.38)
+    pub update_refs: bool,
+    /// `--keep-empty`
+    pub keep_empty: bool,
+    /// `--autosquash`
+    pub autosquash: bool,
+    /// `--root`
+    pub root: bool,
+}
+
+impl RebaseOptions {
+    /// Convenience constructor for simple `git rebase <onto> [<branch>]`.
+    pub fn onto(onto: impl Into<String>, branch: Option<String>) -> Self {
+        Self {
+            onto: onto.into(),
+            branch,
+            ..Self::default()
+        }
+    }
+
+    pub fn effective_onto(&self) -> Option<&str> {
+        let s = self.onto.trim();
+        (!s.is_empty()).then_some(s)
+    }
+
+    pub fn effective_upstream(&self) -> Option<&str> {
+        self.upstream
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+    }
+
+    pub fn effective_branch(&self) -> Option<&str> {
+        self.branch
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+    }
+
+    /// Validates option combinations and Git version requirements.
+    pub fn validate(&self, git_version: Option<GitVersion>) -> Result<(), RebaseOptionError> {
+        if self.root && self.effective_upstream().is_some() {
+            return Err(RebaseOptionError::RootWithUpstream);
+        }
+        if !self.root && self.effective_onto().is_none() {
+            return Err(RebaseOptionError::MissingOnto);
+        }
+        if self.update_refs
+            && let Some(v) = git_version
+            && !v.supports_rebase_update_refs()
+        {
+            return Err(RebaseOptionError::UpdateRefsUnsupported(v));
+        }
+        if self.rebase_merges
+            && let Some(v) = git_version
+            && !v.supports_rebase_merges()
+        {
+            return Err(RebaseOptionError::RebaseMergesUnsupported(v));
+        }
+        Ok(())
+    }
+
+    /// Compact command-line preview of arguments after `git rebase`.
+    pub fn summary(&self) -> String {
+        let mut parts: Vec<String> = Vec::new();
+        if self.interactive {
+            parts.push("-i".into());
+        }
+        if self.rebase_merges {
+            parts.push("--rebase-merges".into());
+        }
+        if self.update_refs {
+            parts.push("--update-refs".into());
+        }
+        if self.keep_empty {
+            parts.push("--keep-empty".into());
+        }
+        if self.autosquash {
+            parts.push("--autosquash".into());
+        }
+        if self.root {
+            if let Some(onto) = self.effective_onto() {
+                parts.push("--onto".into());
+                parts.push(onto.to_string());
+            }
+            parts.push("--root".into());
+        } else if let Some(upstream) = self.effective_upstream() {
+            if let Some(onto) = self.effective_onto() {
+                parts.push("--onto".into());
+                parts.push(onto.to_string());
+            }
+            parts.push(upstream.to_string());
+        } else if let Some(onto) = self.effective_onto() {
+            parts.push(onto.to_string());
+        }
+        if let Some(branch) = self.effective_branch() {
+            parts.push(branch.to_string());
+        }
+        parts.join(" ")
+    }
+
+    /// Serialises remembered flag choices (never branch/onto/upstream) as `key=value` lines.
+    pub fn to_remembered(&self) -> String {
+        format!(
+            "interactive={}\nrebase_merges={}\nupdate_refs={}\nkeep_empty={}\nautosquash={}\nroot={}\n",
+            self.interactive,
+            self.rebase_merges,
+            self.update_refs,
+            self.keep_empty,
+            self.autosquash,
+            self.root,
+        )
+    }
+
+    /// Parses [`Self::to_remembered`] output; unknown keys are ignored.
+    pub fn from_remembered(text: &str) -> Self {
+        let mut out = Self::default();
+        for line in text.lines() {
+            let Some((k, v)) = line.split_once('=') else {
+                continue;
+            };
+            let v = v.trim();
+            match k.trim() {
+                "interactive" => out.interactive = v == "true",
+                "rebase_merges" => out.rebase_merges = v == "true",
+                "update_refs" => out.update_refs = v == "true",
+                "keep_empty" => out.keep_empty = v == "true",
+                "autosquash" => out.autosquash = v == "true",
+                "root" => out.root = v == "true",
+                _ => {}
+            }
+        }
+        out
+    }
+}
+
+/// Kind of autosquash commit created by [`GitOp::FixupCommit`].
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub enum FixupKind {
+    /// `git commit --fixup=<target>` (`fixup! <subject>`)
+    #[default]
+    Fixup,
+    /// `git commit --squash=<target>` (`squash! <subject>`)
+    Squash,
+}
+
+impl FixupKind {
+    pub const fn flag_prefix(self) -> &'static str {
+        match self {
+            Self::Fixup => "--fixup=",
+            Self::Squash => "--squash=",
+        }
+    }
+}
+
 /// How Update Project integrates upstream changes into the current branch.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum UpdateMode {
@@ -539,8 +880,7 @@ pub enum GitOp {
         options: MergeOptions,
     },
     Rebase {
-        onto: String,
-        branch: Option<String>,
+        options: RebaseOptions,
     },
     CherryPick {
         oids: Vec<Oid>,
@@ -554,7 +894,7 @@ pub enum GitOp {
     },
     Fetch,
     Pull {
-        rebase: bool,
+        options: PullOptions,
     },
     Push {
         branch: String,
@@ -595,13 +935,16 @@ pub enum GitOp {
     },
     RewordHead {
         message: String,
+        no_verify: bool,
     },
     RewriteHistory {
         base: Option<Oid>,
         todo: Vec<TodoEntry>,
+        no_verify: bool,
     },
     FixupCommit {
         target: Oid,
+        kind: FixupKind,
         base: Option<Oid>,
         autosquash: bool,
     },
@@ -723,18 +1066,23 @@ impl GitOp {
                     format!("Merge '{rev}'")
                 }
             }
-            Self::Rebase { onto, branch } => match branch {
-                Some(b) => format!("Rebase '{b}' onto '{onto}'"),
-                None => format!("Rebase onto '{onto}'"),
-            },
+            Self::Rebase { options } => {
+                let target = options
+                    .effective_onto()
+                    .unwrap_or(if options.root { "--root" } else { "HEAD" });
+                match options.effective_branch() {
+                    Some(b) => format!("Rebase '{b}' onto '{target}'"),
+                    None => format!("Rebase onto '{target}'"),
+                }
+            }
             Self::CherryPick { oids } => format!("Cherry-pick {} commit(s)", oids.len()),
             Self::Revert { oids } => format!("Revert {} commit(s)", oids.len()),
             Self::Reset { mode, target } => {
                 format!("Reset ({}) to {}", mode.label(), target.short())
             }
             Self::Fetch => "Fetch".to_string(),
-            Self::Pull { rebase } => {
-                if *rebase {
+            Self::Pull { options } => {
+                if options.rebase {
                     "Pull (rebase)".to_string()
                 } else {
                     "Pull".to_string()
@@ -766,7 +1114,10 @@ impl GitOp {
             Self::UpdateBranch { branch, .. } => format!("Update '{branch}'"),
             Self::RewordHead { .. } => "Reword HEAD".to_string(),
             Self::RewriteHistory { todo, .. } => format!("Rewrite {} commit(s)", todo.len()),
-            Self::FixupCommit { target, .. } => format!("Fixup {}", target.short()),
+            Self::FixupCommit { target, kind, .. } => match kind {
+                FixupKind::Fixup => format!("Fixup {}", target.short()),
+                FixupKind::Squash => format!("Squash! {}", target.short()),
+            },
             Self::Ongoing { kind, step } => {
                 format!("{} {}", kind.title(), step.flag().trim_start_matches('-'))
             }

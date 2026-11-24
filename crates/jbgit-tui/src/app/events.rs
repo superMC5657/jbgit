@@ -178,6 +178,13 @@ impl AppState {
                 self.log.graph.on_snapshot_loaded();
                 self.log.sig_requested.clear();
                 self.log.details.reset_containing();
+                for layer in self.modal_stack.iter_mut() {
+                    if let ModalLayer::Dialog(d) = layer
+                        && let crate::dialogs::Dialog::Pull(p) = d.as_mut()
+                    {
+                        p.refresh_from_snapshot(&snapshot);
+                    }
+                }
                 self.repo_snapshot = Some(snapshot);
                 self.apply_pending_remote_selection();
                 self.sync_open_push_dialog_remotes(&mut effects);
@@ -213,7 +220,22 @@ impl AppState {
                         pd.selected_file = pd.selected_file.min(bundle.changes.len().saturating_sub(1));
                     }
                 }
+                let rebase_sync = slot == RequestSlotId::RebaseCommitDetails;
+                if rebase_sync
+                    && let Some(ModalLayer::Dialog(d)) = self.modal_stack.last_mut()
+                    && let crate::dialogs::Dialog::RebaseTodo(r) = d.as_mut()
+                {
+                    if r.details_requested.as_ref() == Some(&bundle.key) {
+                        r.details_requested = None;
+                    }
+                    if r.desired_details_key().as_ref() == Some(&bundle.key) {
+                        r.selected_file = r.selected_file.min(bundle.changes.len().saturating_sub(1));
+                    }
+                }
                 self.diff_caches.insert_details(bundle);
+                if rebase_sync {
+                    self.sync_rebase_todo_preview(&mut effects);
+                }
             }
             EngineEvent::CommitSignatureVerified { oid, signature } => {
                 self.diff_caches.signatures.insert(oid, signature);
@@ -264,6 +286,14 @@ impl AppState {
                             && pd.diff.requested.as_ref() == Some(&diff.key)
                         {
                             pd.diff.requested = None;
+                        }
+                    }
+                    RequestSlotId::RebaseFileDiff => {
+                        if let Some(ModalLayer::Dialog(d)) = self.modal_stack.last_mut()
+                            && let crate::dialogs::Dialog::RebaseTodo(r) = d.as_mut()
+                            && r.diff_requested.as_ref() == Some(&diff.key)
+                        {
+                            r.diff_requested = None;
                         }
                     }
                     _ => {}

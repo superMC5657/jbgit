@@ -162,6 +162,24 @@ impl AppState {
                                 }
                             }
                         }
+                        crate::dialogs::Dialog::Pull(p) if p.editing_branch() => {
+                            let clean: String = text
+                                .chars()
+                                .filter(|c| *c != '\n' && *c != '\r' && !c.is_control())
+                                .collect();
+                            if !clean.is_empty() {
+                                p.push_branch(&clean);
+                            }
+                        }
+                        crate::dialogs::Dialog::Rebase(r) if r.editing_text() => {
+                            let clean: String = text
+                                .chars()
+                                .filter(|c| *c != '\n' && *c != '\r' && !c.is_control())
+                                .collect();
+                            if !clean.is_empty() {
+                                r.push_text(&clean);
+                            }
+                        }
                         _ => {}
                     },
                     ModalLayer::BranchesPopup { .. }
@@ -231,7 +249,9 @@ impl AppState {
                     _ => crate::dialogs::DialogKey::None,
                 };
                 match outcome {
-                    crate::dialogs::DialogKey::None | crate::dialogs::DialogKey::Redraw => {}
+                    crate::dialogs::DialogKey::None | crate::dialogs::DialogKey::Redraw => {
+                        self.sync_rebase_todo_preview(&mut effects);
+                    }
                     crate::dialogs::DialogKey::Cancel => {
                         effects.extend(self.dispatch(Action::PopModal));
                     }
@@ -242,6 +262,7 @@ impl AppState {
                         for a in acts {
                             effects.extend(self.dispatch(a));
                         }
+                        self.sync_rebase_todo_preview(&mut effects);
                     }
                 }
             }
@@ -252,7 +273,7 @@ impl AppState {
                             c.selected = idx.min(c.options.len().saturating_sub(1));
                         }
                         crate::dialogs::Dialog::RebaseTodo(r) => {
-                            r.selected = idx.min(r.entries.len().saturating_sub(1));
+                            r.select_entry(idx);
                         }
                         crate::dialogs::Dialog::Merge(m) => {
                             let rows = crate::dialogs::MergeDialogRow::ALL;
@@ -268,9 +289,26 @@ impl AppState {
                                 _ => crate::dialogs::IdentityField::Email,
                             };
                         }
+                        crate::dialogs::Dialog::Pull(p) => {
+                            let rows = crate::dialogs::PullDialogRow::ALL;
+                            p.selected = idx.min(rows.len() - 1);
+                            let row = p.row();
+                            if row != crate::dialogs::PullDialogRow::Branch {
+                                p.toggle(row, true);
+                            }
+                        }
+                        crate::dialogs::Dialog::Rebase(r) => {
+                            let rows = crate::dialogs::RebaseDialogRow::ALL;
+                            r.selected = idx.min(rows.len() - 1);
+                            let row = r.row();
+                            if !row.is_text() {
+                                r.toggle(row, true);
+                            }
+                        }
                         _ => {}
                     }
                 }
+                self.sync_rebase_todo_preview(&mut effects);
                 if confirm {
                     effects.extend(self.dispatch(Action::DialogConfirm));
                 }

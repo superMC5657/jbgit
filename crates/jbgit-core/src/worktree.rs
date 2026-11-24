@@ -149,7 +149,7 @@ pub fn parse_worktree_list_porcelain(output: &[u8]) -> Vec<WorktreeInfo> {
 }
 
 /// `git --version` triple.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct GitVersion {
     pub major: u32,
     pub minor: u32,
@@ -159,8 +159,12 @@ pub struct GitVersion {
 impl GitVersion {
     /// `git worktree remove` / `lock --reason` (the feature's minimum).
     pub const WORKTREES: Self = Self::new(2, 17, 0);
+    /// `git rebase --rebase-merges` (replaced `--preserve-merges`).
+    pub const REBASE_MERGES: Self = Self::new(2, 18, 0);
     /// `git worktree list --porcelain -z`.
     pub const WORKTREE_LIST_Z: Self = Self::new(2, 36, 0);
+    /// `git rebase --update-refs`.
+    pub const REBASE_UPDATE_REFS: Self = Self::new(2, 38, 0);
 
     pub const fn new(major: u32, minor: u32, patch: u32) -> Self {
         Self {
@@ -185,6 +189,14 @@ impl GitVersion {
 
     pub fn supports_worktrees(self) -> bool {
         self >= Self::WORKTREES
+    }
+
+    pub fn supports_rebase_merges(self) -> bool {
+        self >= Self::REBASE_MERGES
+    }
+
+    pub fn supports_rebase_update_refs(self) -> bool {
+        self >= Self::REBASE_UPDATE_REFS
     }
 }
 

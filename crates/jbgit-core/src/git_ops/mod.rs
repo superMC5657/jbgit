@@ -9,14 +9,18 @@ mod rebase;
 mod refs;
 
 pub use ops::{
-    FastForward, GitOp, MergeOptionConflict, MergeOptions, OngoingKind, OngoingStep, PatchSource,
-    PushForce, PushTagMode, ResetMode, UpdateMode, short_rev,
+    FastForward, FixupKind, GitOp, MergeOptionConflict, MergeOptions, OngoingKind, OngoingStep,
+    PatchSource, PullOptionConflict, PullOptions, PushForce, PushTagMode, RebaseOptionError,
+    RebaseOptions, ResetMode, UpdateMode, short_rev,
 };
 pub use outcome::{
     GitFailure, GitOpOutcome, PushOutcomeSummary, SkippedBranch, StashEntry, UpdateInfo,
     UpdatedRange, classify_failure, parse_push_porcelain,
 };
-pub use rebase::{RewritePlan, TodoAction, TodoEntry, default_squash_messages, render_todo};
+pub use rebase::{
+    RewritePlan, SquashTodoPlan, TodoAction, TodoEntry, default_squash_messages, plan_squash_todo,
+    render_todo,
+};
 pub use refs::{
     RefNameError, fuzzy_indices, is_protected_branch, matches_protected_branch_patterns,
     parse_recent_checkouts, validate_ref_name, validate_ref_name_typed,
@@ -209,7 +213,12 @@ mod tests {
     fn remote_ops_are_classified_for_network_and_refresh() {
         let fetch_one = GitOp::FetchRemote { name: "fork".into() };
         assert!(fetch_one.is_network());
-        assert!(GitOp::Smart(Box::new(GitOp::Pull { rebase: false })).is_network());
+        assert!(
+            GitOp::Smart(Box::new(GitOp::Pull {
+                options: PullOptions::default(),
+            }))
+            .is_network()
+        );
         assert!(GitOp::Sequence(vec![GitOp::Fetch, GitOp::Checkout {
             target: "x".into(),
             detach: false
@@ -257,19 +266,26 @@ mod tests {
             todo[4].message.as_deref(),
             Some(format!("msg {}\n\nmsg {}", oid(4).short(), oid(5).short()).as_str())
         );
-        let text = render_todo(&todo, |i| format!("'/tmp/m{i}'"));
+        let text = render_todo(&todo, false, |i| format!("'/tmp/m{i}'"));
         let lines: Vec<&str> = text.lines().collect();
         assert_eq!(lines.len(), 7);
         assert!(lines[0].starts_with("pick 0101"));
         assert!(lines[1].starts_with("pick 0202"));
         assert_eq!(
             lines[2],
-            "exec git commit --amend --only --allow-empty --no-verify -F '/tmp/m1'"
+            "exec git commit --amend --only --allow-empty -F '/tmp/m1'"
         );
         assert!(lines[3].starts_with("drop 0303"));
         assert!(lines[5].starts_with("fixup 0505"));
         assert!(lines[6].ends_with("'/tmp/m4'"));
         assert!(!text.contains("reword") && !text.contains("squash"));
+        assert!(!text.contains("--no-verify"));
+
+        // Explicit no_verify = true emits `--no-verify`.
+        let no_verify_text = render_todo(&todo, true, |i| format!("'/tmp/m{i}'"));
+        assert!(no_verify_text.contains(
+            "exec git commit --amend --only --allow-empty --no-verify -F '/tmp/m1'"
+        ));
     }
 
     #[test]
@@ -356,8 +372,7 @@ mod tests {
         let seq = GitOp::Sequence(vec![
             GitOp::Fetch,
             GitOp::Rebase {
-                onto: "origin/main".into(),
-                branch: None,
+                options: RebaseOptions::onto("origin/main", None),
             },
             push.clone(),
         ]);
@@ -604,5 +619,264 @@ mod tests {
             branch: "x".into(),
             reason: "diverged".into(),
         };
+    }
+
+    #[test]
+    fn pull_options_validate_matrix_and_remember_roundtrip() {
+        let ok = |o: PullOptions| assert_eq!(o.validate(), Ok(()), "{o:?}");
+        let clash = |o: PullOptions, c: PullOptionConflict| {
+            assert_eq!(o.validate(), Err(c), "{o:?}");
+        };
+
+        ok(PullOptions::default());
+        ok(PullOptions {
+            rebase: true,
+            no_verify: true,
+            remote: Some("origin".into()),
+            branch: Some("main".into()),
+            ..Default::default()
+        });
+        ok(PullOptions {
+            ff: FastForward::FfOnly,
+            no_commit: true,
+            no_verify: true,
+            ..Default::default()
+        });
+        ok(PullOptions {
+            ff: FastForward::NoFf,
+            no_commit: true,
+            ..Default::default()
+        });
+        ok(PullOptions {
+            squash: true,
+            no_commit: true,
+            no_verify: true,
+            ..Default::default()
+        });
+
+        clash(
+            PullOptions {
+                rebase: true,
+                squash: true,
+                ..Default::default()
+            },
+            PullOptionConflict::RebaseSquash,
+        );
+        clash(
+            PullOptions {
+                rebase: true,
+                ff: FastForward::NoFf,
+                ..Default::default()
+            },
+            PullOptionConflict::RebaseNoFf,
+        );
+        clash(
+            PullOptions {
+                rebase: true,
+                ff: FastForward::FfOnly,
+                ..Default::default()
+            },
+            PullOptionConflict::RebaseFfOnly,
+        );
+        clash(
+            PullOptions {
+                rebase: true,
+                no_commit: true,
+                ..Default::default()
+            },
+            PullOptionConflict::RebaseNoCommit,
+        );
+        clash(
+            PullOptions {
+                squash: true,
+                ff: FastForward::NoFf,
+                ..Default::default()
+            },
+            PullOptionConflict::SquashNoFf,
+        );
+        clash(
+            PullOptions {
+                squash: true,
+                ff: FastForward::FfOnly,
+                ..Default::default()
+            },
+            PullOptionConflict::SquashFfOnly,
+        );
+
+        assert_eq!(PullOptionConflict::RebaseSquash.flags(), ("--rebase", "--squash"));
+        assert_eq!(PullOptionConflict::RebaseNoFf.flags(), ("--rebase", "--no-ff"));
+        assert_eq!(PullOptionConflict::RebaseFfOnly.flags(), ("--rebase", "--ff-only"));
+        assert_eq!(PullOptionConflict::RebaseNoCommit.flags(), ("--rebase", "--no-commit"));
+        assert_eq!(PullOptionConflict::SquashNoFf.flags(), ("--squash", "--no-ff"));
+        assert_eq!(PullOptionConflict::SquashFfOnly.flags(), ("--squash", "--ff-only"));
+
+        let saved_src = PullOptions {
+            remote: Some("upstream".into()),
+            branch: Some("dev".into()),
+            rebase: false,
+            ff: FastForward::NoFf,
+            squash: false,
+            no_commit: true,
+            no_verify: true,
+        };
+        let text = saved_src.to_remembered();
+        assert!(!text.contains("upstream") && !text.contains("dev"));
+        assert_eq!(
+            PullOptions::from_remembered(&text),
+            PullOptions {
+                remote: None,
+                branch: None,
+                ..saved_src.clone()
+            }
+        );
+        assert_eq!(
+            saved_src.summary(),
+            "--no-ff --no-commit --no-verify upstream dev"
+        );
+        assert_eq!(PullOptions::default().summary(), "");
+    }
+
+    #[test]
+    fn rebase_options_validate_version_and_summary() {
+        use crate::GitVersion;
+
+        let v237 = Some(GitVersion::new(2, 37, 0));
+        let v238 = Some(GitVersion::new(2, 38, 0));
+        let v217 = Some(GitVersion::new(2, 17, 0));
+
+        assert_eq!(
+            RebaseOptions::default().validate(v238),
+            Err(RebaseOptionError::MissingOnto)
+        );
+        assert_eq!(
+            RebaseOptions {
+                root: true,
+                ..Default::default()
+            }
+            .validate(v238),
+            Ok(())
+        );
+        assert_eq!(
+            RebaseOptions {
+                root: true,
+                upstream: Some("main".into()),
+                ..Default::default()
+            }
+            .validate(v238),
+            Err(RebaseOptionError::RootWithUpstream)
+        );
+        assert_eq!(
+            RebaseOptions {
+                onto: "main".into(),
+                update_refs: true,
+                ..Default::default()
+            }
+            .validate(v237),
+            Err(RebaseOptionError::UpdateRefsUnsupported(GitVersion::new(2, 37, 0)))
+        );
+        assert_eq!(
+            RebaseOptions {
+                onto: "main".into(),
+                update_refs: true,
+                ..Default::default()
+            }
+            .validate(v238),
+            Ok(())
+        );
+        assert_eq!(
+            RebaseOptions {
+                onto: "main".into(),
+                rebase_merges: true,
+                ..Default::default()
+            }
+            .validate(v217),
+            Err(RebaseOptionError::RebaseMergesUnsupported(GitVersion::new(2, 17, 0)))
+        );
+
+        let full = RebaseOptions {
+            onto: "main".into(),
+            upstream: Some("old-base".into()),
+            branch: Some("feat".into()),
+            interactive: true,
+            rebase_merges: true,
+            update_refs: true,
+            keep_empty: true,
+            autosquash: true,
+            root: false,
+        };
+        assert_eq!(
+            full.summary(),
+            "-i --rebase-merges --update-refs --keep-empty --autosquash --onto main old-base feat"
+        );
+        let remembered = RebaseOptions::from_remembered(&full.to_remembered());
+        assert_eq!(
+            remembered,
+            RebaseOptions {
+                onto: String::new(),
+                upstream: None,
+                branch: None,
+                ..full
+            }
+        );
+    }
+
+    #[test]
+    fn todo_edit_update_ref_and_non_contiguous_squash_plan() {
+        let entries = vec![
+            TodoEntry {
+                action: TodoAction::Edit,
+                oid: oid(1),
+                subject: "first".into(),
+                message: None,
+            },
+            TodoEntry::update_ref("refs/heads/stacked"),
+            TodoEntry::pick(oid(2), "second"),
+        ];
+        let rendered = render_todo(&entries, false, |_| unreachable!());
+        let lines: Vec<&str> = rendered.lines().collect();
+        assert_eq!(lines.len(), 3);
+        assert!(lines[0].starts_with("edit 0101"));
+        assert_eq!(lines[1], "update-ref refs/heads/stacked");
+        assert!(lines[2].starts_with("pick 0202"));
+
+        assert_eq!(TodoAction::from_key('e'), Some(TodoAction::Edit));
+        assert_eq!(TodoAction::from_key('x'), Some(TodoAction::Drop));
+        assert_eq!(TodoAction::UpdateRef.next(), TodoAction::UpdateRef);
+        assert!(!TodoAction::UpdateRef.is_editable());
+
+        // Non-contiguous squash: [c1, c2, c3, c4, c5] selecting [c2, c4] ->
+        // [pick c1, pick c2, squash c4, pick c3, pick c5] with combined msg "m2\n\nm4" at index 2.
+        let plan = RewritePlan {
+            base: Some(oid(10)),
+            entries: vec![
+                TodoEntry::pick(oid(1), "c1"),
+                TodoEntry::pick(oid(2), "c2"),
+                TodoEntry::pick(oid(3), "c3"),
+                TodoEntry::pick(oid(4), "c4"),
+                TodoEntry::pick(oid(5), "c5"),
+            ],
+            messages: vec!["m1".into(), "m2".into(), "m3".into(), "m4".into(), "m5".into()],
+        };
+        let sq = plan_squash_todo(&plan, &[oid(2), oid(4)]).expect("non-contiguous squash");
+        assert!(sq.reordered);
+        assert_eq!(sq.base, Some(oid(10)));
+        assert_eq!(sq.combined_message, "m2\n\nm4");
+        assert_eq!(sq.message_entry_idx, 2);
+        let actual: Vec<(Oid, TodoAction)> = sq.todo.iter().map(|e| (e.oid, e.action)).collect();
+        assert_eq!(
+            actual,
+            vec![
+                (oid(1), TodoAction::Pick),
+                (oid(2), TodoAction::Pick),
+                (oid(4), TodoAction::Squash),
+                (oid(3), TodoAction::Pick),
+                (oid(5), TodoAction::Pick),
+            ]
+        );
+
+        // Selecting a commit outside the plan returns None.
+        assert!(plan_squash_todo(&plan, &[oid(2), oid(99)]).is_none());
+        // Single commit returns None.
+        assert!(plan_squash_todo(&plan, &[oid(2)]).is_none());
     }
 }

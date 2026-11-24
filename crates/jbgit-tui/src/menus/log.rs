@@ -1,5 +1,6 @@
 use jbgit_core::{
-    ChangeRowKind, DetailsMode, FileStatusKind, GitOp, Oid, PatchSource, RefKind, TodoAction,
+    ChangeRowKind, DetailsMode, FileStatusKind, FixupKind, GitOp, Oid, PatchSource, RebaseOptions,
+    RefKind, plan_squash_todo,
 };
 
 use crate::app::{Action, AppState, ContextMenuItem, DiffScope, PopupKind};
@@ -192,6 +193,50 @@ pub fn log_commit_menu_items(state: &AppState) -> Vec<ContextMenuItem> {
         .icon("✎"),
     );
     items.push(squash_item(state, &oids));
+    let staged = state.has_staged_changes();
+    let in_head_primary = state.is_ancestor_of_head(primary.oid);
+    let fixup_only_lbl = i18n.t("menu.log.fixup_commit");
+    let fixup_only = if single {
+        run(
+            fixup_only_lbl,
+            None,
+            None,
+            op(GitOp::FixupCommit {
+                target: primary.oid,
+                kind: FixupKind::Fixup,
+                base: primary.parents.first().copied(),
+                autosquash: false,
+            }),
+        )
+        .enabled_if(staged, i18n.t("menu.log.fixup_need_staged"))
+        .enabled_if(in_head_primary, i18n.t("menu.log.push_not_in_head"))
+        .require(no_ongoing.clone())
+    } else {
+        run(fixup_only_lbl, None, None, Vec::new())
+            .enabled_if(false, need_single(fixup_only_lbl))
+    };
+    items.push(fixup_only);
+    let squash_only_lbl = i18n.t("menu.log.squash_commit");
+    let squash_only = if single {
+        run(
+            squash_only_lbl,
+            None,
+            None,
+            op(GitOp::FixupCommit {
+                target: primary.oid,
+                kind: FixupKind::Squash,
+                base: primary.parents.first().copied(),
+                autosquash: false,
+            }),
+        )
+        .enabled_if(staged, i18n.t("menu.log.fixup_need_staged"))
+        .enabled_if(in_head_primary, i18n.t("menu.log.push_not_in_head"))
+        .require(no_ongoing.clone())
+    } else {
+        run(squash_only_lbl, None, None, Vec::new())
+            .enabled_if(false, need_single(squash_only_lbl))
+    };
+    items.push(squash_only);
     let fixup_lbl = i18n.t("menu.log.fixup");
     let fixup = if single {
         run(
@@ -200,14 +245,12 @@ pub fn log_commit_menu_items(state: &AppState) -> Vec<ContextMenuItem> {
             None,
             op(GitOp::FixupCommit {
                 target: primary.oid,
+                kind: FixupKind::Fixup,
                 base: primary.parents.first().copied(),
                 autosquash: true,
             }),
         )
-        .enabled_if(
-            state.has_staged_changes(),
-            i18n.t("menu.log.fixup_need_staged"),
-        )
+        .enabled_if(staged, i18n.t("menu.log.fixup_need_staged"))
         .require(state.rewrite_plan(primary.oid, "fixup").map(|_| ()))
     } else {
         run(fixup_lbl, Some('f'), None, Vec::new()).enabled_if(false, need_single(fixup_lbl))
@@ -220,18 +263,41 @@ pub fn log_commit_menu_items(state: &AppState) -> Vec<ContextMenuItem> {
             rebase_lbl,
             Some('i'),
             None,
-            dialog(Dialog::RebaseTodo(RebaseTodoDialog {
-                base: plan.base,
-                entries: plan.entries,
-                selected: 0,
-                messages: plan.messages,
-            })),
+            dialog(Dialog::RebaseTodo(RebaseTodoDialog::new(
+                plan.base,
+                plan.entries,
+                plan.messages,
+            ))),
         ),
         Ok(_) => run(rebase_lbl, Some('i'), None, Vec::new())
             .enabled_if(false, need_single(rebase_lbl)),
         Err(e) => run(rebase_lbl, Some('i'), None, Vec::new()).enabled_if(false, e),
     };
     items.push(interactive);
+    let rebase_onto_lbl = i18n.t_fmt(
+        "menu.log.rebase_onto_commit",
+        &[("cur", &ellipsize(&cur, 20))],
+    );
+    let rebase_onto = if single {
+        run(
+            rebase_onto_lbl.clone(),
+            None,
+            None,
+            op(GitOp::Rebase {
+                options: RebaseOptions::onto(primary.oid.to_string(), None),
+            }),
+        )
+        .enabled_if(branch.is_some(), i18n.t("menu.log.detached_no_branch"))
+        .enabled_if(
+            !in_head_primary,
+            i18n.t("menu.log.rebase_commit_in_head"),
+        )
+        .require(no_ongoing.clone())
+    } else {
+        run(rebase_onto_lbl.clone(), None, None, Vec::new())
+            .enabled_if(false, need_single(&rebase_onto_lbl))
+    };
+    items.push(rebase_onto);
     let push_up_lbl = i18n.t("menu.log.push_up_to");
     let push_up_to = match &branch {
         Some(b) => run(
@@ -511,37 +577,20 @@ fn squash_item(state: &AppState, oids: &[Oid]) -> ContextMenuItem {
         Ok(p) => p,
         Err(e) => return base.enabled_if(false, e),
     };
-    let positions: Vec<usize> = plan
-        .entries
-        .iter()
-        .enumerate()
-        .filter(|(_, e)| oids.contains(&e.oid))
-        .map(|(i, _)| i)
-        .collect();
-    if positions.len() != oids.len() {
+    let Some(sq) = plan_squash_todo(&plan, oids) else {
         return base.enabled_if(false, i18n.t("menu.log.squash_not_reachable"));
-    }
-    let first = positions[0];
-    let last = *positions.last().unwrap();
-    if last - first + 1 != positions.len() {
-        return base.enabled_if(false, i18n.t("menu.log.squash_non_contiguous"));
-    }
-    let combined = plan.messages[first..=last].join("\n\n");
-    let mut todo = plan.entries;
-    for e in &mut todo[(first + 1)..=last] {
-        e.action = TodoAction::Squash;
-    }
+    };
     ContextMenuItem::run(
         label,
         Some('s'),
         None,
         dialog(Dialog::Message(MessageDialog::new(
             i18n.t_fmt("menu.log.squash_title", &[("count", &count_s)]),
-            combined,
+            sq.combined_message,
             MessageIntent::Rewrite {
-                base: plan.base,
-                todo,
-                entry: last,
+                base: sq.base,
+                todo: sq.todo,
+                entry: sq.message_entry_idx,
             },
         ))),
     )

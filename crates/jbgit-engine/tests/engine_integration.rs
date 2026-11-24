@@ -2438,8 +2438,7 @@ async fn outgoing_commits_and_push_rejected_sequence_retry() {
         GitOp::Sequence(vec![
             GitOp::Fetch,
             GitOp::Rebase {
-                onto: "origin/main".into(),
-                branch: None,
+                options: jbgit_core::RebaseOptions::onto("origin/main", None),
             },
             push_main,
         ]),
@@ -4526,8 +4525,7 @@ async fn dirty_worktree_push_rejected_smart_rebase_retry_preserves_changes() {
             GitOp::Smart(Box::new(GitOp::Sequence(vec![
                 GitOp::Fetch,
                 GitOp::Rebase {
-                    onto: "origin/main".into(),
-                    branch: None,
+                    options: jbgit_core::RebaseOptions::onto("origin/main", None),
                 },
             ]))),
             push_main,

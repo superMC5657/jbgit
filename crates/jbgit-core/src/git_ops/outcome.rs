@@ -243,6 +243,8 @@ pub struct GitOpOutcome {
     pub prepared_message: Option<String>,
     /// Update Project summary.
     pub update_info: Option<UpdateInfo>,
+    /// Interactive rebase paused on an `edit` entry (exits 0 with rebase state active).
+    pub paused_for_edit: bool,
 }
 
 impl GitOpOutcome {
@@ -256,6 +258,7 @@ impl GitOpOutcome {
             stash_kept: false,
             prepared_message: None,
             update_info: None,
+            paused_for_edit: false,
         }
     }
 
@@ -269,6 +272,7 @@ impl GitOpOutcome {
             stash_kept: false,
             prepared_message: None,
             update_info: None,
+            paused_for_edit: false,
         }
     }
 }

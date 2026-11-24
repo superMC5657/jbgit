@@ -1,6 +1,6 @@
 # 05: Pull 选项对话框、标准 Rebase 对话框与交互式 Rebase 增强
 
-Status: ready-for-agent
+Status: resolved
 Spec: [../spec.md](../spec.md)
 Milestone: M10 — reference 深度对齐与正确性加固
 Priority: P1

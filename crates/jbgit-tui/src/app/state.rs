@@ -374,6 +374,14 @@ impl AppState {
                     ap.scroll.scroll_by(delta, fallback);
                 }
             }
+            ScrollPane::RebaseDiff => {
+                if let Some(ModalLayer::Dialog(d)) = self.modal_stack.last_mut()
+                    && let crate::dialogs::Dialog::RebaseTodo(r) = d.as_mut()
+                    && r.show_diff
+                {
+                    r.diff_scroll.scroll_by(delta, usize::MAX);
+                }
+            }
             ScrollPane::TreeBrowserList
             | ScrollPane::PushCommits
             | ScrollPane::PushFiles
@@ -493,6 +501,13 @@ impl AppState {
                         .map_or(0, |s| s.remotes.len());
                     if let Some(rs) = self.modal_stack.remotes_mut() {
                         rs.scroll.ensure_visible(rs.selected, total, viewport_h);
+                    }
+                }
+                ScrollPane::RebaseDiff => {
+                    if let Some(ModalLayer::Dialog(d)) = self.modal_stack.last_mut()
+                        && let crate::dialogs::Dialog::RebaseTodo(r) = d.as_mut()
+                    {
+                        r.diff_scroll.bind_bound(viewport_h, max_scroll);
                     }
                 }
             }

@@ -478,13 +478,13 @@ fn interactive_rebase_dialog_reorders_and_sets_actions() {
     // Entries: c10, c11, c12. Move c10 down, drop c11 (now first), fixup c12.
     ts.send_key(KeyCode::Down, KeyModifiers::ALT);
     ts.send_key(KeyCode::Up, KeyModifiers::NONE);
-    ts.send_key(KeyCode::Char('d'), KeyModifiers::NONE);
+    ts.send_key(KeyCode::Char('x'), KeyModifiers::NONE);
     ts.send_key(KeyCode::Down, KeyModifiers::NONE);
     ts.send_key(KeyCode::Down, KeyModifiers::NONE);
     ts.send_key(KeyCode::Char('f'), KeyModifiers::NONE);
     ts.send_key(KeyCode::Enter, KeyModifiers::NONE);
     let ops = ts.take_git_ops();
-    let [GitOp::RewriteHistory { base, todo }] = ops.as_slice() else {
+    let [GitOp::RewriteHistory { base, todo, .. }] = ops.as_slice() else {
         panic!("{ops:?}")
     };
     assert_eq!(*base, Some(oid(9)));

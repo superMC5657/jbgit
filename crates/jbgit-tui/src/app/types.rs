@@ -57,6 +57,7 @@ pub enum ScrollPane {
     Worktrees,
     RepoSwitcher,
     Remotes,
+    RebaseDiff,
 }
 
 pub struct RenderContext<'a> {

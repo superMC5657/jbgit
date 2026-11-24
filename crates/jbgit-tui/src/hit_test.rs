@@ -87,6 +87,7 @@ pub enum CommitOptionKind {
 pub enum DialogButtonKind {
     Confirm,
     Cancel,
+    Fetch,
 }
 
 /// Buttons of the ongoing-operation banner (`Git.Ongoing.Rebase.Actions`).

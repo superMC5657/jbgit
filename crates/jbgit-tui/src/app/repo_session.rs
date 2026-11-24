@@ -139,7 +139,11 @@ impl AppState {
         let open_flow = self.modal_stack.iter().any(|l| match l {
             ModalLayer::Dialog(d) => matches!(
                 d.as_ref(),
-                Dialog::RebaseTodo(_) | Dialog::Merge(_) | Dialog::Message(_)
+                Dialog::RebaseTodo(_)
+                    | Dialog::Merge(_)
+                    | Dialog::Pull(_)
+                    | Dialog::Rebase(_)
+                    | Dialog::Message(_)
             ),
             ModalLayer::PushDialog(_) => true,
             _ => false,

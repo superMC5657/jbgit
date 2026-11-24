@@ -59,7 +59,8 @@ jbgit 默认采用**零冲突统一键位（`preset = "default"`）**，并通�
 | `1` / `2` / `3` / `4`（或 `<Alt-1>` – `<Alt-4>`） | 按标签栏顺序切换视图：**Commit (`1`)** / **Log (`2`)** / **Stash (`3`)** / **Console (`4`)** |
 | `<Tab>` / `<Shift-Tab>` | 在当前视图各面板之间循环切换焦点 |
 | `b` / `g b` / `` <Ctrl-`> `` / `<Ctrl-~>` / `<Alt-b>`*(非 Log 页)* | 呼出全局分支速查浮窗（`<Esc>` 关闭） |
-| `f` / `p` / `P` | 远程同步：**Fetch (`f`)** / **Pull (`p`)** / **Push… (`P`)** |
+| `f` / `p` / `P` | 远程同步：**Fetch (`f`)** / **快捷 Pull (`p`)** / **Push… (`P`)** |
+| `<Alt-l>` / `<Alt-e>` | 打开 **Pull… 选项对话框 (`<Alt-l>`)** / **标准 Rebase… 选项对话框 (`<Alt-e>`)** |
 | `<Alt-u>` | **Update Project**（三套预设一致）：贮藏本地改动 → `fetch --all --prune` → 当前分支按 `[update].mode` 合并或变基 upstream → 其他跟踪分支仅快进 → 可选同步更新已初始化子模块 → 恢复改动；若当前分支无上游或上游已删除 (`[gone]`) 会自动弹出跟踪分支选择器；完成通知 `<Alt-z>`「查看」打开只读 Range 筛选的 Log。头部分支胶囊中的 `↓N` 计数可点击打开模式选择（含子模块时提供 `Update Submodules` 复选框） |
 | `<Alt-r>` | **Configure Remotes…**：远端列表（添加 / 重命名 / 编辑 URL / 删除 / 获取），详见[四、远端与凭据](#四远端与凭据-remotes--credentials) |
 | `<Alt-o>` / 点击头部仓库名 | **切换仓库**：最近仓库 / 当前仓库的 linked worktree / 已初始化子模块，模糊过滤，`<Ctrl-o>` 输入任意路径；详见[五、切换仓库与 Worktree](#五切换仓库与-worktree-repositories--working-trees) |
@@ -252,7 +253,7 @@ jbgit 默认采用**零冲突统一键位（`preset = "default"`）**，并通�
 | :--- | :--- |
 | **上下文级联菜单** | `j`/`k`/`↑`/`↓`/`Home`/`End` 选择；`→` 展开子菜单；`←`/`Esc` 关闭当前层；`<Enter>`/`<Space>` 确认；`<Del>` 触发删除项；按高亮助记字母直达 |
 | **快捷键命令面板 (`?`)** | 直接打字模糊搜索；`↑`/`↓`/`PgUp`/`PgDn` 选行；`<Enter>` 执行高亮命令；`<Ctrl-u>` 清空；`<Esc>`（或空查询按 `?`）关闭 |
-| **交互式变基待办 (Rebase Todo)** | `j`/`k`/`↑`/`↓` 选行；`J`/`K` 或 `<Alt/Shift-Up/Down>` 调整提交顺序；`<Space>` 循环动词；`p` pick / `r` 或 `w` reword / `s` squash / `f` fixup / `d` drop；`<Enter>` 执行；`<Esc>` 取消 |
+| **交互式变基待办 (Rebase Todo)** | `j`/`k`/`↑`/`↓` 选行；`J`/`K` 或 `<Alt/Shift-Up/Down>` 调整提交顺序；`<Space>` 循环动词；`p` pick / `r` 或 `w` reword / `e` edit（暂停并切至 Commit 面板 amend 后 Continue）/ `s` squash / `f` fixup / `x` 或 `<Del>` drop（`update-ref` 行只读保留）；底部实时展示当前提交的变更文件摘要，`[`/`]` 切换文件，`d` / `<Ctrl-d>` 展开完整 Diff 预览；`<Enter>` 执行；`<Esc>` 关闭 Diff 或取消。支持在 Log 多选**非连续提交**自动重排后 Squash，以及独立创建 `Fixup! Commit` / `Squash! Commit` 或直接 `Rebase '<cur>' onto Selected Commit` |
 | **输入 / 消息 / 选择 / 危险确认弹窗** | 单行输入：`<Tab>`/`↑`/`↓` 切复选框、`<Ctrl-u>` 清空、`<Enter>` 确认；多行消息：`<Enter>` 换行、`<Ctrl-s>`/`<Ctrl-Enter>`/`<Alt-Enter>` 确认；单选/确认：`↑`/`↓`/`←`/`→`/`<Tab>` 切换、`<Space>` 切换可选复选框、助记键或 `y`/`n`/`q` 快速响应、`<Esc>` 取消 |
 | **筛选与跳转浮窗** | `FilterEditor` 支持 `<Tab>` 自动补全候选；`ChooseParent` 支持 `1`–`9` 数字键直选父提交 |
 
@@ -268,6 +269,15 @@ jbgit 默认采用**零冲突统一键位（`preset = "default"`）**，并通�
 - 标题下方显示 `cur..rev` 待合并提交数，底部实时预览将执行的 `git merge …` 命令；选项（不含提交说明）按仓库记忆在 `<common_dir>/jbgit-merge-options`。
 - `--squash` / `--no-commit` 完成后自动切到 `[1 Commit]` 并以 `.git/SQUASH_MSG` / `MERGE_MSG` 预填提交说明。
 - `--ff-only` 因分叉失败时弹出「普通合并 / 变基到 '<rev>' / 取消」。
+
+**Pull… 选项对话框**（全局 `<Alt-l>`、分支速查浮窗或当前分支菜单中的 `Pull…`；快捷 `p` 仍保持默认 `git pull --no-edit`）：
+
+- 支持切换远端 (`Remote`)、编辑与 `←`/`→` 补全远端分支 (`Remote branch`)，按 `<Ctrl-r>` / `<F5>` 或点击 `[Fetch]` 在弹窗内即时拉取并刷新远端分支列表；
+- 支持 `--rebase`、`Fast-forward`（`default` / `--no-ff` / `--ff-only`）、`--squash`、`--no-commit`、`--no-verify`，自动校验互斥组合（`--rebase` ⟂ `--squash`/`--no-ff`/`--ff-only`/`--no-commit`，`--squash` ⟂ `--no-ff`/`--ff-only`）并实时预览命令；选项按仓库记忆至 `<common_dir>/jbgit-pull-options`。
+
+**标准 Rebase… 选项对话框**（全局 `<Alt-e>`、分支速查浮窗或分支 / 远端分支 / Tag 菜单中的 `Rebase…`）：
+
+- 支持配置 `Target / --onto`、可选 `Old base (upstream)`（填写后自动转为 `--onto <new> <old>`）、可选切换分支 (`Branch`)，以及 `--interactive`、`--rebase-merges`、`--update-refs`（自动校验 Git ≥ 2.38）、`--keep-empty`、`--autosquash`、`--root`（启用 `--root` 时禁用显式 `upstream`）；选项按仓库记忆至 `<common_dir>/jbgit-rebase-options`。
 
 **完整 Push 推送浮窗**（全局按 `P`（含游离 HEAD 推送），或在分支/提交菜单选择 `Push…` / `Push up to Here` / Commit 面板 `Commit & Push…` 打开；包含 `Target | Outgoing Commits | Changed Files / Diff` 三栏预览）：
 

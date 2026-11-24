@@ -115,7 +115,9 @@ fn render_modal_layer(
         } => context_menu::render_context_menu(
             frame, screen, ctx, *anchor, *parent, items, *selected, *depth, z,
         ),
-        ModalLayer::Dialog(d) => crate::views::dialogs::render_dialog(frame, screen, ctx, d, z),
+        ModalLayer::Dialog(d) => {
+            crate::views::dialogs::render_dialog(frame, screen, state, ctx, d, z);
+        }
     }
 }
 

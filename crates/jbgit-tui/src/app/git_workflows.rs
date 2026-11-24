@@ -6,11 +6,12 @@ use std::collections::{BTreeSet, HashSet};
 
 use crossterm::event::{KeyCode, KeyModifiers};
 use jbgit_core::{
-    ConflictChoice, FastForward, GitFailure, GitOp, GitOpOutcome, MergeOptions, Oid, OngoingKind,
-    OngoingStep, PaneId, PushForce, RefKind, RepoSnapshot, RepositoryState, RewritePlan,
-    SpecialConflictInfo, SpecialConflictKind, StageNodeKind, StageTreeRowKind, UpdateInfo,
-    UpdateMode, WorkspaceTab, conflict_side_statuses, is_protected_branch,
-    is_reverse_conflict_state, matches_protected_branch_patterns, parse_push_porcelain,
+    ConflictChoice, DiffContext, FastForward, FileDiffKey, GitFailure, GitOp, GitOpOutcome,
+    MergeOptions, Oid, OngoingKind, OngoingStep, PaneId, PullOptions, PushForce, RebaseOptions,
+    RefKind, RepoSnapshot, RepositoryState, RequestSlotId, RewritePlan, SpecialConflictInfo,
+    SpecialConflictKind, StageNodeKind, StageTreeRowKind, UpdateInfo, UpdateMode, WorkspaceTab,
+    conflict_side_statuses, is_protected_branch, is_reverse_conflict_state,
+    matches_protected_branch_patterns, parse_push_porcelain,
 };
 
 use crate::app::{
@@ -20,7 +21,7 @@ use crate::app::{
 use crate::branches_popup::first_selectable_row;
 use crate::dialogs::{
     ChoiceDialog, ChoiceOption, DeleteTagRemoteProbe, Dialog, InputDialog, InputIntent,
-    InputValidation, MergeDialog,
+    InputValidation, MergeDialog, PullDialog, RebaseDialog,
 };
 use crate::log_view::PushDialogState;
 
@@ -161,7 +162,10 @@ impl AppState {
             }
             Action::Notice(text) => self.status_notice = Some(text.clone()),
             Action::RunGitOp(op) => self.start_git_op(op.clone(), effects),
-            Action::OpenDialog(d) => self.push_dialog((**d).clone()),
+            Action::OpenDialog(d) => {
+                self.push_dialog((**d).clone());
+                self.sync_rebase_todo_preview(effects);
+            }
             Action::DialogConfirm => {
                 if self.answer_credential(true) {
                     return true;
@@ -185,6 +189,14 @@ impl AppState {
                             self.status_notice = Some(err);
                         } else if let Dialog::Merge(m) = d.as_ref()
                             && let Some(err) = m.error(&self.i18n)
+                        {
+                            self.status_notice = Some(err);
+                        } else if let Dialog::Pull(p) = d.as_ref()
+                            && let Some(err) = p.error(&self.i18n)
+                        {
+                            self.status_notice = Some(err);
+                        } else if let Dialog::Rebase(r) = d.as_ref()
+                            && let Some(err) = r.error(&self.i18n)
                         {
                             self.status_notice = Some(err);
                         }
@@ -576,6 +588,33 @@ impl AppState {
             Action::PromptMerge { rev } => self.prompt_merge(rev),
             Action::RememberMergeOptions(options) => {
                 if let Some(path) = self.merge_options_path() {
+                    let _ = std::fs::write(path, options.to_remembered());
+                }
+            }
+            Action::PromptPull => self.prompt_pull(),
+            Action::RememberPullOptions(options) => {
+                if let Some(path) = self.pull_options_path() {
+                    let _ = std::fs::write(path, options.to_remembered());
+                }
+            }
+            Action::PullDialogFetch => {
+                let remote = if let Some(ModalLayer::Dialog(d)) = self.modal_stack.last_mut()
+                    && let Dialog::Pull(p) = d.as_mut()
+                {
+                    p.fetching = true;
+                    p.options.effective_remote().map(ToString::to_string)
+                } else {
+                    None
+                };
+                let op = match remote {
+                    Some(name) => GitOp::FetchRemote { name },
+                    None => GitOp::Fetch,
+                };
+                self.start_git_op(op, effects);
+            }
+            Action::PromptRebase { onto } => self.prompt_rebase(onto.clone()),
+            Action::RememberRebaseOptions(options) => {
+                if let Some(path) = self.rebase_options_path() {
                     let _ = std::fs::write(path, options.to_remembered());
                 }
             }
@@ -1329,6 +1368,123 @@ impl AppState {
         self.push_dialog(Dialog::Merge(MergeDialog::new(rev, current, count, remembered)));
     }
 
+    fn pull_options_path(&self) -> Option<std::path::PathBuf> {
+        let snap = self.snapshot()?;
+        (!snap.common_dir.as_os_str().is_empty())
+            .then(|| snap.common_dir.join("jbgit-pull-options"))
+    }
+
+    fn load_pull_options(&self) -> PullOptions {
+        self.pull_options_path()
+            .and_then(|p| std::fs::read_to_string(p).ok())
+            .map(|t| PullOptions::from_remembered(&t))
+            .unwrap_or_default()
+    }
+
+    fn prompt_pull(&mut self) {
+        if let Err(msg) = self.require_no_ongoing() {
+            self.status_notice = Some(msg);
+            return;
+        }
+        let Some(snap) = self.snapshot().cloned() else {
+            self.status_notice = Some(self.i18n.t("toast.repo_not_loaded").to_string());
+            return;
+        };
+        if snap.head_branch.is_none() {
+            self.status_notice = Some(self.i18n.t("menu.log.detached_no_branch").to_string());
+            return;
+        }
+        let remembered = self.load_pull_options();
+        self.blur_active_pane(false);
+        self.push_dialog(Dialog::Pull(PullDialog::from_snapshot(&snap, remembered)));
+    }
+
+    fn rebase_options_path(&self) -> Option<std::path::PathBuf> {
+        let snap = self.snapshot()?;
+        (!snap.common_dir.as_os_str().is_empty())
+            .then(|| snap.common_dir.join("jbgit-rebase-options"))
+    }
+
+    fn load_rebase_options(&self) -> RebaseOptions {
+        self.rebase_options_path()
+            .and_then(|p| std::fs::read_to_string(p).ok())
+            .map(|t| RebaseOptions::from_remembered(&t))
+            .unwrap_or_default()
+    }
+
+    fn prompt_rebase(&mut self, onto: Option<String>) {
+        if let Err(msg) = self.require_no_ongoing() {
+            self.status_notice = Some(msg);
+            return;
+        }
+        let Some(snap) = self.snapshot().cloned() else {
+            self.status_notice = Some(self.i18n.t("toast.repo_not_loaded").to_string());
+            return;
+        };
+        let remembered = self.load_rebase_options();
+        let git_version = self.git_version;
+        self.blur_active_pane(false);
+        self.push_dialog(Dialog::Rebase(RebaseDialog::from_snapshot(
+            &snap,
+            onto,
+            git_version,
+            remembered,
+        )));
+    }
+
+    /// Requests single-flight commit details and (when open) file diff for the
+    /// active `RebaseTodoDialog` selection.
+    pub(crate) fn sync_rebase_todo_preview(&mut self, effects: &mut Vec<Effect>) {
+        let context = DiffContext::from_lines(self.config.jbgit.diff.context_lines);
+        let Some(ModalLayer::Dialog(d)) = self.modal_stack.last_mut() else {
+            return;
+        };
+        let Dialog::RebaseTodo(r) = d.as_mut() else {
+            return;
+        };
+        let Some(details_key) = r.desired_details_key() else {
+            return;
+        };
+        if !self.diff_caches.details.contains(&details_key) {
+            if r.details_requested.as_ref() != Some(&details_key) {
+                r.details_requested = Some(details_key.clone());
+                effects.push(Effect::RequestCommitDetails {
+                    slot: RequestSlotId::RebaseCommitDetails,
+                    key: details_key,
+                });
+            }
+            return;
+        }
+        let Some(bundle) = self.diff_caches.details.peek(&details_key) else {
+            return;
+        };
+        if !bundle.changes.is_empty() {
+            r.selected_file = r.selected_file.min(bundle.changes.len() - 1);
+        } else {
+            r.selected_file = 0;
+        }
+        if r.show_diff
+            && let Some(change) = bundle.changes.get(r.selected_file)
+        {
+            let diff_key = FileDiffKey {
+                details: details_key,
+                path: change.path.clone(),
+                old_path: change.old_path.clone(),
+                context,
+                whitespace: self.config.jbgit.diff.whitespace.to_core(),
+            };
+            if self.diff_caches.peek_diff(&diff_key).is_none()
+                && r.diff_requested.as_ref() != Some(&diff_key)
+            {
+                r.diff_requested = Some(diff_key.clone());
+                effects.push(Effect::RequestFileDiff {
+                    slot: RequestSlotId::RebaseFileDiff,
+                    key: diff_key,
+                });
+            }
+        }
+    }
+
     /// `[update] mode` from `jbgit.toml` (`None` = follow `pull.rebase`).
     pub(crate) fn configured_update_mode(&self) -> Option<UpdateMode> {
         self.config.jbgit.update.mode.to_update_mode()
@@ -1617,6 +1773,15 @@ impl AppState {
             GitOp::Smart(inner) => inner.as_ref().clone(),
             other => other.clone(),
         };
+        if matches!(op, GitOp::Fetch | GitOp::FetchRemote { .. }) {
+            for layer in &mut self.modal_stack {
+                if let ModalLayer::Dialog(d) = layer
+                    && let Dialog::Pull(p) = d.as_mut()
+                {
+                    p.fetching = false;
+                }
+            }
+        }
         let is_smart = matches!(outcome.op, GitOp::Smart(_));
         let op_label = self.i18n.git_op_label(&outcome.op);
         if outcome.success {
@@ -1663,6 +1828,28 @@ impl AppState {
                     ..
                 } => {
                     self.notify_push_summary(branch, remote, remote_branch, &outcome.stdout);
+                }
+                GitOp::Pull { options }
+                    if options.leaves_changes_uncommitted() && outcome.prepared_message.is_some() =>
+                {
+                    let msg = outcome.prepared_message.clone().unwrap_or_default();
+                    let now = self.now();
+                    self.stage_workbench.apply_external_message(&msg, now);
+                    effects.extend(self.dispatch(Action::SwitchTab(WorkspaceTab::Commit)));
+                    let text = self
+                        .i18n
+                        .t(if options.squash {
+                            "toast.squash_staged"
+                        } else {
+                            "toast.merge_staged"
+                        })
+                        .to_string();
+                    self.status_notice = Some(text.clone());
+                    self.notification = Some(Notification {
+                        text,
+                        is_error: false,
+                        action: None,
+                    });
                 }
                 GitOp::Merge { options, .. }
                     if options.leaves_changes_uncommitted() && outcome.prepared_message.is_some() =>
@@ -1762,6 +1949,23 @@ impl AppState {
                 }
                 GitOp::RewordHead { .. } | GitOp::RewriteHistory { .. } => {
                     self.log.graph.clear_multi_selection();
+                    if outcome.paused_for_edit {
+                        self.stage_workbench.set_amend_flag(true);
+                        effects.extend(self.dispatch(Action::SwitchTab(WorkspaceTab::Commit)));
+                        let text = self.i18n.t("toast.rebase_edit_paused").to_string();
+                        self.status_notice = Some(text.clone());
+                        self.notification = Some(Notification {
+                            text,
+                            is_error: false,
+                            action: Some((
+                                self.i18n.t("menu.branch.continue_rebase").into(),
+                                vec![Action::RunGitOp(GitOp::Ongoing {
+                                    kind: OngoingKind::Rebase,
+                                    step: OngoingStep::Continue,
+                                })],
+                            )),
+                        });
+                    }
                 }
                 GitOp::UpdateProject { .. } => {
                     self.notify_update_info(outcome.update_info.as_ref());
@@ -1807,7 +2011,27 @@ impl AppState {
                 GitOp::Ongoing {
                     step: OngoingStep::Continue | OngoingStep::Abort,
                     ..
-                } => self.restore_pending_update_stash(effects),
+                } => {
+                    if outcome.paused_for_edit {
+                        self.stage_workbench.set_amend_flag(true);
+                        effects.extend(self.dispatch(Action::SwitchTab(WorkspaceTab::Commit)));
+                        let text = self.i18n.t("toast.rebase_edit_paused").to_string();
+                        self.status_notice = Some(text.clone());
+                        self.notification = Some(Notification {
+                            text,
+                            is_error: false,
+                            action: Some((
+                                self.i18n.t("menu.branch.continue_rebase").into(),
+                                vec![Action::RunGitOp(GitOp::Ongoing {
+                                    kind: OngoingKind::Rebase,
+                                    step: OngoingStep::Continue,
+                                })],
+                            )),
+                        });
+                    } else {
+                        self.restore_pending_update_stash(effects);
+                    }
+                }
                 _ => {}
             }
             if outcome.stash_kept {
@@ -1843,9 +2067,8 @@ impl AppState {
             ) if op.supports_smart() && !is_smart => {
                 let verb_key = match &op {
                     GitOp::Merge { .. } => "dialog.smart.verb.merge",
-                    GitOp::Rebase { .. } | GitOp::Pull { rebase: true } => {
-                        "dialog.smart.verb.rebase"
-                    }
+                    GitOp::Rebase { .. } => "dialog.smart.verb.rebase",
+                    GitOp::Pull { options } if options.rebase => "dialog.smart.verb.rebase",
                     GitOp::Pull { .. } => "dialog.smart.verb.pull",
                     GitOp::CherryPick { .. } => "dialog.smart.verb.cherry_pick",
                     GitOp::Revert { .. } => "dialog.smart.verb.revert",
@@ -2036,8 +2259,10 @@ impl AppState {
                     let smart_rebase = GitOp::Smart(Box::new(GitOp::Sequence(vec![
                         GitOp::Fetch,
                         GitOp::Rebase {
-                            onto: target_ref.clone(),
-                            branch: (!is_current).then(|| branch.clone()),
+                            options: RebaseOptions::onto(
+                                target_ref.clone(),
+                                (!is_current).then(|| branch.clone()),
+                            ),
                         },
                     ])));
                     let mut options = Vec::new();
@@ -2172,8 +2397,7 @@ impl AppState {
                                 i18n.t_fmt("dialog.not_ff.rebase_btn", &[("rev", rev)]),
                                 Some('r'),
                                 vec![Action::RunGitOp(GitOp::Rebase {
-                                    onto: rev.clone(),
-                                    branch: None,
+                                    options: RebaseOptions::onto(rev.clone(), None),
                                 })],
                             ),
                             ChoiceOption::new(i18n.cancel(), Some('c'), Vec::new()),

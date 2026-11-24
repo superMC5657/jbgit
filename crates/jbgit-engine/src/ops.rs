@@ -10,9 +10,9 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use jbgit_core::{
-    GitFailure, GitOp, GitOpOutcome, MergeOptions, Oid, PatchSource, SkippedBranch, UpdateInfo,
-    UpdateMode, UpdatedRange, WorktreeBranch, classify_failure, is_reverse_conflict_state,
-    render_todo,
+    FixupKind, GitFailure, GitOp, GitOpOutcome, MergeOptions, Oid, OngoingKind, OngoingStep,
+    PatchSource, PullOptions, RebaseOptions, SkippedBranch, UpdateInfo, UpdateMode, UpdatedRange,
+    WorktreeBranch, classify_failure, is_reverse_conflict_state, render_todo,
 };
 
 use crate::askpass::AskpassEnv;
@@ -264,13 +264,7 @@ pub(crate) fn compile_simple_steps(op: &GitOp) -> Option<Vec<CompiledStep>> {
         ])],
         GitOp::PruneWorktrees => vec![CompiledStep::new(["worktree", "prune", "--verbose"])],
         GitOp::Merge { rev, options } => vec![compile_merge(rev, options)],
-        GitOp::Rebase { onto, branch } => {
-            let mut args = vec!["rebase".to_string(), onto.clone()];
-            if let Some(b) = branch {
-                args.push(b.clone());
-            }
-            vec![no_edit(CompiledStep::new(args))]
-        }
+        GitOp::Rebase { options } => vec![compile_rebase(options)],
         GitOp::CherryPick { oids } => {
             let mut args = vec!["cherry-pick".to_string()];
             args.extend(oids.iter().map(ToString::to_string));
@@ -287,11 +281,7 @@ pub(crate) fn compile_simple_steps(op: &GitOp) -> Option<Vec<CompiledStep>> {
             target.to_string(),
         ])],
         GitOp::Fetch => vec![CompiledStep::new(["fetch", "--all", "--prune"])],
-        GitOp::Pull { rebase } => vec![no_edit(CompiledStep::new(if *rebase {
-            vec!["pull", "--rebase"]
-        } else {
-            vec!["pull", "--no-edit"]
-        }))],
+        GitOp::Pull { options } => vec![compile_pull(options)],
         GitOp::Push {
             branch,
             remote,
@@ -376,28 +366,31 @@ pub(crate) fn compile_simple_steps(op: &GitOp) -> Option<Vec<CompiledStep>> {
             remote.clone(),
             format!("refs/heads/{remote_branch}:refs/heads/{branch}"),
         ])],
-        GitOp::RewordHead { message } => vec![
-            CompiledStep::new([
-                "commit",
-                "--amend",
-                "--only",
-                "--allow-empty",
-                "--no-verify",
-                "-F",
-                "-",
-            ])
-            .with_stdin(message.as_bytes().to_vec()),
-        ],
+        GitOp::RewordHead { message, no_verify } => {
+            let mut args = vec![
+                "commit".to_string(),
+                "--amend".to_string(),
+                "--only".to_string(),
+                "--allow-empty".to_string(),
+            ];
+            if *no_verify {
+                args.push("--no-verify".to_string());
+            }
+            args.extend(["-F".to_string(), "-".to_string()]);
+            vec![CompiledStep::new(args).with_stdin(message.as_bytes().to_vec())]
+        }
         GitOp::FixupCommit {
             target,
+            kind,
             base,
             autosquash,
         } => {
-            let mut steps = vec![CompiledStep::new(vec![
-                "commit".to_string(),
-                "--no-verify".to_string(),
-                format!("--fixup={target}"),
-            ])];
+            let mut commit_args = vec!["commit".to_string()];
+            if *kind == FixupKind::Squash {
+                commit_args.push("--no-edit".to_string());
+            }
+            commit_args.push(format!("{}{target}", kind.flag_prefix()));
+            let mut steps = vec![no_edit(CompiledStep::new(commit_args))];
             if *autosquash {
                 let onto = base.map_or_else(|| "--root".to_string(), |b| b.to_string());
                 steps.push(
@@ -627,6 +620,83 @@ fn compile_merge(rev: &str, options: &MergeOptions) -> CompiledStep {
     }
     args.push(rev.to_string());
     CompiledStep::new(args).with_env("GIT_EDITOR", ":")
+}
+
+fn compile_pull(options: &PullOptions) -> CompiledStep {
+    if *options == PullOptions::default() {
+        return CompiledStep::new(["pull", "--no-edit"]).with_env("GIT_EDITOR", ":");
+    }
+    let mut args = vec!["pull".to_string()];
+    if options.rebase {
+        args.push("--rebase".to_string());
+    } else {
+        if let Some(flag) = options.ff.flag() {
+            args.push(flag.to_string());
+        }
+        if options.squash {
+            args.push("--squash".to_string());
+        }
+        if options.no_commit {
+            args.push("--no-commit".to_string());
+        }
+        if !options.squash && !options.no_commit {
+            args.push("--no-edit".to_string());
+        }
+    }
+    if options.no_verify {
+        args.push("--no-verify".to_string());
+    }
+    if let Some(remote) = options.effective_remote() {
+        args.push(remote.to_string());
+        if let Some(branch) = options.effective_branch() {
+            args.push(branch.to_string());
+        }
+    }
+    CompiledStep::new(args).with_env("GIT_EDITOR", ":")
+}
+
+fn compile_rebase(options: &RebaseOptions) -> CompiledStep {
+    let mut args = vec!["rebase".to_string()];
+    let use_interactive = options.interactive || options.autosquash;
+    if use_interactive {
+        args.push("-i".to_string());
+    }
+    if options.rebase_merges {
+        args.push("--rebase-merges".to_string());
+    }
+    if options.update_refs {
+        args.push("--update-refs".to_string());
+    }
+    if options.keep_empty {
+        args.push("--keep-empty".to_string());
+    }
+    if options.autosquash {
+        args.push("--autosquash".to_string());
+    }
+    if options.root {
+        if let Some(onto) = options.effective_onto() {
+            args.push("--onto".to_string());
+            args.push(onto.to_string());
+        }
+        args.push("--root".to_string());
+    } else if let Some(upstream) = options.effective_upstream() {
+        if let Some(onto) = options.effective_onto() {
+            args.push("--onto".to_string());
+            args.push(onto.to_string());
+        }
+        args.push(upstream.to_string());
+    } else if let Some(onto) = options.effective_onto() {
+        args.push(onto.to_string());
+    }
+    if let Some(branch) = options.effective_branch() {
+        args.push(branch.to_string());
+    }
+    let step = CompiledStep::new(args).with_env("GIT_EDITOR", ":");
+    if use_interactive {
+        step.with_env("GIT_SEQUENCE_EDITOR", ":")
+    } else {
+        step
+    }
 }
 
 fn push_format_patch_target(
@@ -900,14 +970,29 @@ impl<R: GitCliRunner> Runner<'_, R> {
         }
     }
 
+    fn is_rebase_active(&self) -> bool {
+        self.loc.git_dir.join("rebase-merge").is_dir()
+            || self.loc.git_dir.join("rebase-apply").is_dir()
+    }
+
     async fn run_plain(&self, op: GitOp) -> GitOpRunResult {
         if let Some(steps) = compile_simple_steps(&op) {
             let prepared = match &op {
                 GitOp::Merge { options, .. } if options.leaves_changes_uncommitted() => {
                     Some(if options.squash { "SQUASH_MSG" } else { "MERGE_MSG" })
                 }
+                GitOp::Pull { options } if options.leaves_changes_uncommitted() => {
+                    Some(if options.squash { "SQUASH_MSG" } else { "MERGE_MSG" })
+                }
                 _ => None,
             };
+            let is_ongoing_rebase = matches!(
+                &op,
+                GitOp::Ongoing {
+                    kind: OngoingKind::Rebase,
+                    step: OngoingStep::Continue | OngoingStep::Abort | OngoingStep::Skip,
+                }
+            );
             let mut res = self.run_steps(op, steps).await;
             if res.outcome.success
                 && let Some(file) = prepared
@@ -915,6 +1000,15 @@ impl<R: GitCliRunner> Runner<'_, R> {
                 res.outcome.prepared_message = std::fs::read_to_string(self.loc.git_dir.join(file))
                     .ok()
                     .and_then(|raw| clean_prepared_message(&raw));
+            }
+            if is_ongoing_rebase {
+                let active = self.is_rebase_active();
+                if res.outcome.success && active {
+                    res.outcome.paused_for_edit = true;
+                }
+                if !active {
+                    let _ = std::fs::remove_dir_all(self.loc.git_dir.join("jbgit-rebase"));
+                }
             }
             return res;
         }
@@ -947,7 +1041,11 @@ impl<R: GitCliRunner> Runner<'_, R> {
                 }
                 res
             }
-            GitOp::RewriteHistory { base, todo } => {
+            GitOp::RewriteHistory {
+                base,
+                todo,
+                no_verify,
+            } => {
                 let dir = self.loc.git_dir.join("jbgit-rebase");
                 let _ = std::fs::remove_dir_all(&dir);
                 if let Err(e) = std::fs::create_dir_all(&dir) {
@@ -957,7 +1055,7 @@ impl<R: GitCliRunner> Runner<'_, R> {
                     };
                 }
                 let mut write_err = None;
-                let text = render_todo(&todo, |i| {
+                let text = render_todo(&todo, no_verify, |i| {
                     let path = dir.join(format!("msg-{i}.txt"));
                     let msg = todo[i].message.clone().unwrap_or_default();
                     if let Err(e) = std::fs::write(&path, msg) {
@@ -989,8 +1087,12 @@ impl<R: GitCliRunner> Runner<'_, R> {
                     .with_env("GIT_SEQUENCE_EDITOR", &sequence_editor_script(&todo_path))
                     .with_env("GIT_EDITOR", ":");
                 let res = self.step(&step, false).await;
-                let finished = finish(op, res);
-                if !matches!(finished.outcome.failure, Some(GitFailure::Conflicts)) {
+                let mut finished = finish(op, res);
+                let rebase_active = self.is_rebase_active();
+                if finished.outcome.success && rebase_active {
+                    finished.outcome.paused_for_edit = true;
+                }
+                if !rebase_active {
                     let _ = std::fs::remove_dir_all(&dir);
                 }
                 finished
@@ -1821,7 +1923,9 @@ mod tests {
                 url: "u".into(),
             },
             GitOp::FetchRemote { name: "fork".into() },
-            GitOp::Pull { rebase: false },
+            GitOp::Pull {
+                options: PullOptions::default(),
+            },
             GitOp::Checkout {
                 target: "main".into(),
                 detach: false,
@@ -2256,8 +2360,7 @@ mod tests {
         let seq = GitOp::Sequence(vec![
             GitOp::Fetch,
             GitOp::Rebase {
-                onto: "origin/main".into(),
-                branch: None,
+                options: RebaseOptions::onto("origin/main", None),
             },
             GitOp::Push {
                 branch: "main".into(),
@@ -2476,6 +2579,173 @@ mod tests {
             local_calls[0].env.is_empty(),
             "local ops must not receive askpass env: {:?}",
             local_calls[0].env
+        );
+    }
+
+    #[test]
+    fn pull_rebase_reword_and_fixup_compile_all_options() {
+        // Default Pull keeps legacy `pull --no-edit`.
+        let default_pull = compile_simple_steps(&GitOp::Pull {
+            options: PullOptions::default(),
+        })
+        .unwrap();
+        assert_eq!(default_pull[0].args, vec!["pull", "--no-edit"]);
+        assert_eq!(default_pull[0].env, vec![("GIT_EDITOR".into(), ":".into())]);
+
+        // Pull with rebase + no-verify + remote + branch.
+        let rebase_pull = compile_simple_steps(&GitOp::Pull {
+            options: PullOptions {
+                remote: Some("origin".into()),
+                branch: Some("main".into()),
+                rebase: true,
+                no_verify: true,
+                ..Default::default()
+            },
+        })
+        .unwrap();
+        assert_eq!(
+            rebase_pull[0].args,
+            vec!["pull", "--rebase", "--no-verify", "origin", "main"]
+        );
+
+        // Pull with --ff-only / --squash / --no-commit.
+        let ff_pull = compile_simple_steps(&GitOp::Pull {
+            options: PullOptions {
+                ff: jbgit_core::FastForward::FfOnly,
+                ..Default::default()
+            },
+        })
+        .unwrap();
+        assert_eq!(ff_pull[0].args, vec!["pull", "--ff-only", "--no-edit"]);
+
+        let squash_pull = compile_simple_steps(&GitOp::Pull {
+            options: PullOptions {
+                squash: true,
+                no_commit: true,
+                remote: Some("upstream".into()),
+                branch: Some("dev".into()),
+                ..Default::default()
+            },
+        })
+        .unwrap();
+        assert_eq!(
+            squash_pull[0].args,
+            vec!["pull", "--squash", "--no-commit", "upstream", "dev"]
+        );
+
+        // Rebase simple, --onto, --root, and all flags.
+        let plain_rebase = compile_simple_steps(&GitOp::Rebase {
+            options: RebaseOptions::onto("main", Some("feat".into())),
+        })
+        .unwrap();
+        assert_eq!(plain_rebase[0].args, vec!["rebase", "main", "feat"]);
+        assert_eq!(plain_rebase[0].env, vec![("GIT_EDITOR".into(), ":".into())]);
+
+        let onto_rebase = compile_simple_steps(&GitOp::Rebase {
+            options: RebaseOptions {
+                onto: "main".into(),
+                upstream: Some("old-base".into()),
+                branch: Some("topic".into()),
+                interactive: false,
+                rebase_merges: true,
+                update_refs: true,
+                keep_empty: true,
+                autosquash: true,
+                root: false,
+            },
+        })
+        .unwrap();
+        assert_eq!(
+            onto_rebase[0].args,
+            vec![
+                "rebase",
+                "-i",
+                "--rebase-merges",
+                "--update-refs",
+                "--keep-empty",
+                "--autosquash",
+                "--onto",
+                "main",
+                "old-base",
+                "topic",
+            ]
+        );
+        assert!(onto_rebase[0].env.iter().any(|(k, v)| k == "GIT_SEQUENCE_EDITOR" && v == ":"));
+
+        let root_rebase = compile_simple_steps(&GitOp::Rebase {
+            options: RebaseOptions {
+                onto: String::new(),
+                root: true,
+                keep_empty: true,
+                ..Default::default()
+            },
+        })
+        .unwrap();
+        assert_eq!(root_rebase[0].args, vec!["rebase", "--keep-empty", "--root"]);
+
+        // RewordHead respects hooks by default, passes --no-verify only when requested.
+        let reword_hooks = compile_simple_steps(&GitOp::RewordHead {
+            message: "new msg".into(),
+            no_verify: false,
+        })
+        .unwrap();
+        assert_eq!(
+            reword_hooks[0].args,
+            vec!["commit", "--amend", "--only", "--allow-empty", "-F", "-"]
+        );
+        let reword_no_verify = compile_simple_steps(&GitOp::RewordHead {
+            message: "new msg".into(),
+            no_verify: true,
+        })
+        .unwrap();
+        assert_eq!(
+            reword_no_verify[0].args,
+            vec![
+                "commit",
+                "--amend",
+                "--only",
+                "--allow-empty",
+                "--no-verify",
+                "-F",
+                "-"
+            ]
+        );
+
+        // FixupCommit split: Fixup!, Squash!, and Fixup & Autosquash.
+        let fixup_only = compile_simple_steps(&GitOp::FixupCommit {
+            target: oid(1),
+            kind: FixupKind::Fixup,
+            base: Some(oid(2)),
+            autosquash: false,
+        })
+        .unwrap();
+        assert_eq!(fixup_only.len(), 1);
+        assert_eq!(fixup_only[0].args, vec!["commit", &format!("--fixup={}", oid(1))]);
+
+        let squash_only = compile_simple_steps(&GitOp::FixupCommit {
+            target: oid(1),
+            kind: FixupKind::Squash,
+            base: Some(oid(2)),
+            autosquash: false,
+        })
+        .unwrap();
+        assert_eq!(squash_only.len(), 1);
+        assert_eq!(
+            squash_only[0].args,
+            vec!["commit", "--no-edit", &format!("--squash={}", oid(1))]
+        );
+
+        let fixup_auto = compile_simple_steps(&GitOp::FixupCommit {
+            target: oid(1),
+            kind: FixupKind::Fixup,
+            base: Some(oid(2)),
+            autosquash: true,
+        })
+        .unwrap();
+        assert_eq!(fixup_auto.len(), 2);
+        assert_eq!(
+            fixup_auto[1].args,
+            vec!["rebase", "-i", "--autosquash", "--autostash", &oid(2).to_string()]
         );
     }
 }

@@ -174,7 +174,8 @@ fn squash_result_prefills_commit_editor_and_ff_only_failure_offers_recovery() {
     assert_eq!(c.options.len(), 3);
     assert!(matches!(
         c.options[1].actions.as_slice(),
-        [Action::RunGitOp(GitOp::Rebase { onto, branch: None })] if onto == "topic"
+        [Action::RunGitOp(GitOp::Rebase { options })]
+            if options.onto == "topic" && options.branch.is_none()
     ));
     key(&mut ts, 'm');
     assert_eq!(

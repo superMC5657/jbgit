@@ -6,12 +6,13 @@
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use jbgit_core::{
-    GitOp, MergeOptions, Oid, RepoSnapshot, ResetMode, StashEntry, TodoAction, TodoEntry,
-    WorktreeBranch, default_squash_messages,
+    DetailsKey, DetailsMode, FileDiffKey, GitOp, GitVersion, MergeOptions, Oid, PullOptions,
+    RebaseOptionError, RebaseOptions, RefKind, RepoSnapshot, ResetMode, StashEntry, TodoAction,
+    TodoEntry, WorktreeBranch, default_squash_messages,
 };
 use jbgit_engine::askpass::Secret;
 
-use crate::app::Action;
+use crate::app::{Action, ScrollViewport};
 use crate::i18n::I18n;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -709,7 +710,10 @@ impl MessageDialog {
         }
         match &self.intent {
             MessageIntent::RewordHead => {
-                vec![Action::RunGitOp(GitOp::RewordHead { message: msg })]
+                vec![Action::RunGitOp(GitOp::RewordHead {
+                    message: msg,
+                    no_verify: false,
+                })]
             }
             MessageIntent::Rewrite { base, todo, entry } => {
                 let mut todo = todo.clone();
@@ -719,6 +723,7 @@ impl MessageDialog {
                 vec![Action::RunGitOp(GitOp::RewriteHistory {
                     base: *base,
                     todo,
+                    no_verify: false,
                 })]
             }
             MessageIntent::AnnotatedTag { name, target } => {
@@ -744,22 +749,87 @@ pub struct RebaseTodoDialog {
     pub selected: usize,
     /// Full commit messages, used for squash defaults and reword prefill.
     pub messages: Vec<String>,
+    /// Selected changed-file index in the commit summary preview.
+    pub selected_file: usize,
+    /// Full unified diff overlay for the selected commit/file (`d`).
+    pub show_diff: bool,
+    /// Bounded scroll state for the changed-file summary preview.
+    pub files_scroll: ScrollViewport,
+    /// Bounded scroll state for the full diff preview.
+    pub diff_scroll: ScrollViewport,
+    /// In-flight commit details key (for single-flight dedup).
+    pub details_requested: Option<DetailsKey>,
+    /// In-flight file diff key (for single-flight dedup).
+    pub diff_requested: Option<FileDiffKey>,
+    /// Whether reword/squash `exec git commit --amend` skips repository hooks.
+    pub no_verify: bool,
 }
 
 impl RebaseTodoDialog {
+    pub fn new(base: Option<Oid>, entries: Vec<TodoEntry>, messages: Vec<String>) -> Self {
+        Self {
+            base,
+            entries,
+            selected: 0,
+            messages,
+            selected_file: 0,
+            show_diff: false,
+            files_scroll: ScrollViewport::new(),
+            diff_scroll: ScrollViewport::new(),
+            details_requested: None,
+            diff_requested: None,
+            no_verify: false,
+        }
+    }
+
+    /// Selected commit OID, or `None` when on a non-commit line (e.g. `update-ref`).
+    pub fn selected_commit_oid(&self) -> Option<Oid> {
+        self.entries
+            .get(self.selected)
+            .filter(|e| e.action.is_commit())
+            .map(|e| e.oid)
+    }
+
+    pub fn desired_details_key(&self) -> Option<DetailsKey> {
+        self.selected_commit_oid().map(|oid| DetailsKey {
+            mode: DetailsMode::Commits,
+            oids: vec![oid],
+            parent_index: 0,
+        })
+    }
+
+    pub fn select_entry(&mut self, idx: usize) {
+        let clamped = idx.min(self.entries.len().saturating_sub(1));
+        if clamped != self.selected {
+            self.selected = clamped;
+            self.selected_file = 0;
+            self.files_scroll.reset();
+            self.diff_scroll.reset();
+            self.diff_requested = None;
+            if self.selected_commit_oid().is_none() {
+                self.show_diff = false;
+            }
+        }
+    }
+
     pub fn error(&self, i18n: &I18n) -> Option<String> {
-        let first_kept = self.entries.iter().find(|e| e.action != TodoAction::Drop);
+        let commits: Vec<&TodoEntry> = self
+            .entries
+            .iter()
+            .filter(|e| e.action.is_commit())
+            .collect();
+        let first_kept = commits.iter().copied().find(|e| e.action != TodoAction::Drop);
         if let Some(e) = first_kept
             && matches!(e.action, TodoAction::Squash | TodoAction::Fixup)
         {
             return Some(i18n.t_fmt("dialog.rebase.err_squash_first", &[("subject", &e.subject)]));
         }
-        if self.entries.iter().all(|e| e.action == TodoAction::Drop) {
+        if !commits.is_empty() && commits.iter().all(|e| e.action == TodoAction::Drop) {
             return Some(i18n.t("dialog.rebase.err_drop_all").into());
         }
-        if let Some(e) = self
-            .entries
+        if let Some(e) = commits
             .iter()
+            .copied()
             .find(|e| e.action == TodoAction::Reword && e.message.is_none())
         {
             return Some(i18n.t_fmt("dialog.rebase.err_reword_missing", &[("subject", &e.subject)]));
@@ -785,6 +855,7 @@ impl RebaseTodoDialog {
         vec![Action::RunGitOp(GitOp::RewriteHistory {
             base: self.base,
             todo,
+            no_verify: self.no_verify,
         })]
     }
 
@@ -796,7 +867,9 @@ impl RebaseTodoDialog {
         let to = (self.selected as isize + delta).clamp(0, len as isize - 1) as usize;
         if to != self.selected {
             self.entries.swap(self.selected, to);
-            self.messages.swap(self.selected, to);
+            if self.selected < self.messages.len() && to < self.messages.len() {
+                self.messages.swap(self.selected, to);
+            }
             self.selected = to;
         }
     }
@@ -1052,6 +1125,521 @@ impl IdentityDialog {
     }
 }
 
+/// Cycles through `candidates` matching `prefix` (case-insensitive substring/prefix).
+fn cycle_completion(candidates: &[String], current: &str, forward: bool) -> Option<String> {
+    if candidates.is_empty() {
+        return None;
+    }
+    let trimmed = current.trim();
+    if let Some(exact_idx) = candidates.iter().position(|c| c == trimmed) {
+        let len = candidates.len();
+        let next = if forward {
+            (exact_idx + 1) % len
+        } else {
+            (exact_idx + len - 1) % len
+        };
+        return Some(candidates[next].clone());
+    }
+    let lower = trimmed.to_ascii_lowercase();
+    let matching: Vec<&String> = if lower.is_empty() {
+        candidates.iter().collect()
+    } else {
+        let pref: Vec<&String> = candidates
+            .iter()
+            .filter(|c| c.to_ascii_lowercase().starts_with(&lower))
+            .collect();
+        if !pref.is_empty() {
+            pref
+        } else {
+            candidates
+                .iter()
+                .filter(|c| c.to_ascii_lowercase().contains(&lower))
+                .collect()
+        }
+    };
+    if matching.is_empty() {
+        return None;
+    }
+    Some(if forward {
+        matching[0].clone()
+    } else {
+        (*matching.last().unwrap()).clone()
+    })
+}
+
+/// Rows of the `Pull…` options dialog, top to bottom.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum PullDialogRow {
+    Remote,
+    Branch,
+    Rebase,
+    FastForward,
+    Squash,
+    NoCommit,
+    NoVerify,
+}
+
+impl PullDialogRow {
+    pub const ALL: [Self; 7] = [
+        Self::Remote,
+        Self::Branch,
+        Self::Rebase,
+        Self::FastForward,
+        Self::Squash,
+        Self::NoCommit,
+        Self::NoVerify,
+    ];
+
+    pub const fn mnemonic(self) -> char {
+        match self {
+            Self::Remote => 'r',
+            Self::Branch => 'b',
+            Self::Rebase => 'e',
+            Self::FastForward => 'f',
+            Self::Squash => 's',
+            Self::NoCommit => 'n',
+            Self::NoVerify => 'v',
+        }
+    }
+}
+
+/// `Pull…` options dialog (`GitPullDialog`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PullDialog {
+    pub current: String,
+    pub remotes: Vec<String>,
+    /// `(remote, branch_name_without_remote_prefix)` pairs.
+    pub remote_branches: Vec<(String, String)>,
+    pub options: PullOptions,
+    pub selected: usize,
+    pub fetching: bool,
+}
+
+impl PullDialog {
+    pub fn from_snapshot(snap: &RepoSnapshot, remembered: PullOptions) -> Self {
+        let current = snap
+            .head_branch
+            .clone()
+            .unwrap_or_else(|| "HEAD".to_string());
+        let remotes = snap.available_remotes();
+        let remote_branches = Self::collect_remote_branches(snap);
+        let upstream = snap
+            .head_branch
+            .as_deref()
+            .and_then(|b| snap.local_branch(b))
+            .and_then(|l| l.upstream.as_deref())
+            .and_then(|u| snap.split_tracking(u));
+        let default_remote = upstream
+            .map(|(r, _)| r.to_string())
+            .or_else(|| snap.default_remote())
+            .or_else(|| remotes.first().cloned());
+        let default_branch = upstream
+            .map(|(_, b)| b.to_string())
+            .or_else(|| {
+                let rem = default_remote.as_deref()?;
+                remote_branches
+                    .iter()
+                    .find(|(r, b)| r == rem && b == &current)
+                    .map(|(_, b)| b.clone())
+            });
+        Self {
+            current,
+            remotes,
+            remote_branches,
+            options: PullOptions {
+                remote: default_remote,
+                branch: default_branch,
+                ..remembered
+            },
+            selected: 0,
+            fetching: false,
+        }
+    }
+
+    fn collect_remote_branches(snap: &RepoSnapshot) -> Vec<(String, String)> {
+        let mut out: Vec<(String, String)> = snap
+            .refs
+            .iter()
+            .filter(|r| r.kind == RefKind::RemoteBranch)
+            .filter_map(|r| {
+                snap.split_tracking(&r.name)
+                    .map(|(rem, br)| (rem.to_string(), br.to_string()))
+            })
+            .collect();
+        out.sort();
+        out.dedup();
+        out
+    }
+
+    pub fn refresh_from_snapshot(&mut self, snap: &RepoSnapshot) {
+        self.fetching = false;
+        self.remotes = snap.available_remotes();
+        self.remote_branches = Self::collect_remote_branches(snap);
+        if self.options.remote.is_none() {
+            self.options.remote = snap.default_remote().or_else(|| self.remotes.first().cloned());
+        }
+    }
+
+    pub fn row(&self) -> PullDialogRow {
+        PullDialogRow::ALL[self.selected.min(PullDialogRow::ALL.len() - 1)]
+    }
+
+    pub fn editing_branch(&self) -> bool {
+        self.row() == PullDialogRow::Branch
+    }
+
+    pub fn move_selection(&mut self, delta: isize) {
+        let len = PullDialogRow::ALL.len() as isize;
+        self.selected = (self.selected as isize + delta).rem_euclid(len) as usize;
+    }
+
+    pub fn branches_for_selected_remote(&self) -> Vec<String> {
+        let Some(rem) = self.options.effective_remote() else {
+            return Vec::new();
+        };
+        self.remote_branches
+            .iter()
+            .filter(|(r, _)| r == rem)
+            .map(|(_, b)| b.clone())
+            .collect()
+    }
+
+    pub fn branch_text(&self) -> &str {
+        self.options.branch.as_deref().unwrap_or("")
+    }
+
+    pub fn push_branch(&mut self, text: &str) {
+        self.options
+            .branch
+            .get_or_insert_with(String::new)
+            .push_str(text);
+    }
+
+    pub fn pop_branch(&mut self) {
+        if let Some(b) = self.options.branch.as_mut() {
+            b.pop();
+            if b.is_empty() {
+                self.options.branch = None;
+            }
+        }
+    }
+
+    pub fn complete_branch(&mut self, forward: bool) {
+        let candidates = self.branches_for_selected_remote();
+        if let Some(next) = cycle_completion(&candidates, self.branch_text(), forward) {
+            self.options.branch = Some(next);
+        }
+    }
+
+    pub fn toggle(&mut self, row: PullDialogRow, forward: bool) {
+        match row {
+            PullDialogRow::Remote => {
+                if self.remotes.is_empty() {
+                    self.options.remote = None;
+                    return;
+                }
+                let len = self.remotes.len();
+                let cur = self
+                    .options
+                    .remote
+                    .as_deref()
+                    .and_then(|r| self.remotes.iter().position(|x| x == r));
+                let next_idx = match cur {
+                    Some(i) if forward => (i + 1) % len,
+                    Some(i) => (i + len - 1) % len,
+                    None => 0,
+                };
+                self.options.remote = Some(self.remotes[next_idx].clone());
+                let valid = self.branches_for_selected_remote();
+                if let Some(br) = self.options.branch.as_deref()
+                    && !valid.iter().any(|v| v == br)
+                {
+                    self.options.branch = valid
+                        .iter()
+                        .find(|v| v.as_str() == self.current)
+                        .cloned()
+                        .or_else(|| valid.first().cloned());
+                }
+            }
+            PullDialogRow::Branch => self.complete_branch(forward),
+            PullDialogRow::Rebase => self.options.rebase = !self.options.rebase,
+            PullDialogRow::FastForward => {
+                self.options.ff = if forward {
+                    self.options.ff.next()
+                } else {
+                    self.options.ff.prev()
+                };
+            }
+            PullDialogRow::Squash => self.options.squash = !self.options.squash,
+            PullDialogRow::NoCommit => self.options.no_commit = !self.options.no_commit,
+            PullDialogRow::NoVerify => self.options.no_verify = !self.options.no_verify,
+        }
+    }
+
+    pub fn error(&self, i18n: &I18n) -> Option<String> {
+        self.options.validate().err().map(|c| {
+            let (a, b) = c.flags();
+            i18n.t_fmt("dialog.pull.conflict", &[("a", a), ("b", b)])
+        })
+    }
+
+    pub fn confirm_actions(&self) -> Vec<Action> {
+        let options = PullOptions {
+            remote: self.options.effective_remote().map(ToString::to_string),
+            branch: self.options.effective_branch().map(ToString::to_string),
+            ..self.options.clone()
+        };
+        vec![
+            Action::RememberPullOptions(options.clone()),
+            Action::RunGitOp(GitOp::Pull { options }),
+        ]
+    }
+}
+
+/// Rows of the standard `Rebase…` dialog, top to bottom.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum RebaseDialogRow {
+    Onto,
+    Upstream,
+    Branch,
+    Interactive,
+    RebaseMerges,
+    UpdateRefs,
+    KeepEmpty,
+    Autosquash,
+    Root,
+}
+
+impl RebaseDialogRow {
+    pub const ALL: [Self; 9] = [
+        Self::Onto,
+        Self::Upstream,
+        Self::Branch,
+        Self::Interactive,
+        Self::RebaseMerges,
+        Self::UpdateRefs,
+        Self::KeepEmpty,
+        Self::Autosquash,
+        Self::Root,
+    ];
+
+    pub const fn mnemonic(self) -> char {
+        match self {
+            Self::Onto => 'o',
+            Self::Upstream => 'u',
+            Self::Branch => 'b',
+            Self::Interactive => 'i',
+            Self::RebaseMerges => 'm',
+            Self::UpdateRefs => 'r',
+            Self::KeepEmpty => 'k',
+            Self::Autosquash => 'a',
+            Self::Root => 't',
+        }
+    }
+
+    pub const fn is_text(self) -> bool {
+        matches!(self, Self::Onto | Self::Upstream | Self::Branch)
+    }
+}
+
+/// Standard `Rebase…` options dialog (`GitRebaseDialog`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RebaseDialog {
+    pub current: String,
+    pub ref_candidates: Vec<String>,
+    pub local_branches: Vec<String>,
+    pub git_version: Option<GitVersion>,
+    pub options: RebaseOptions,
+    pub selected: usize,
+}
+
+impl RebaseDialog {
+    pub fn from_snapshot(
+        snap: &RepoSnapshot,
+        onto: Option<String>,
+        git_version: Option<GitVersion>,
+        remembered: RebaseOptions,
+    ) -> Self {
+        let current = snap
+            .head_branch
+            .clone()
+            .unwrap_or_else(|| "HEAD".to_string());
+        let mut local_branches: Vec<String> = snap
+            .local_branch_names()
+            .into_iter()
+            .map(ToString::to_string)
+            .collect();
+        local_branches.sort();
+        let mut ref_candidates = local_branches.clone();
+        let mut remotes: Vec<String> = snap
+            .refs
+            .iter()
+            .filter(|r| r.kind == RefKind::RemoteBranch)
+            .map(|r| r.name.clone())
+            .collect();
+        remotes.sort();
+        ref_candidates.extend(remotes);
+        let mut tags: Vec<String> = snap
+            .tag_names()
+            .into_iter()
+            .map(ToString::to_string)
+            .collect();
+        tags.sort();
+        ref_candidates.extend(tags);
+        ref_candidates.dedup();
+
+        let mut options = remembered;
+        options.onto = onto.unwrap_or_default();
+        options.upstream = None;
+        options.branch = None;
+        Self {
+            current,
+            ref_candidates,
+            local_branches,
+            git_version,
+            options,
+            selected: 0,
+        }
+    }
+
+    pub fn row(&self) -> RebaseDialogRow {
+        RebaseDialogRow::ALL[self.selected.min(RebaseDialogRow::ALL.len() - 1)]
+    }
+
+    pub fn editing_text(&self) -> bool {
+        self.row().is_text() && !(self.row() == RebaseDialogRow::Upstream && self.options.root)
+    }
+
+    pub fn move_selection(&mut self, delta: isize) {
+        let len = RebaseDialogRow::ALL.len() as isize;
+        self.selected = (self.selected as isize + delta).rem_euclid(len) as usize;
+    }
+
+    pub fn push_text(&mut self, text: &str) {
+        match self.row() {
+            RebaseDialogRow::Onto => self.options.onto.push_str(text),
+            RebaseDialogRow::Upstream if !self.options.root => {
+                self.options
+                    .upstream
+                    .get_or_insert_with(String::new)
+                    .push_str(text);
+            }
+            RebaseDialogRow::Branch => {
+                self.options
+                    .branch
+                    .get_or_insert_with(String::new)
+                    .push_str(text);
+            }
+            _ => {}
+        }
+    }
+
+    pub fn pop_text(&mut self) {
+        match self.row() {
+            RebaseDialogRow::Onto => {
+                self.options.onto.pop();
+            }
+            RebaseDialogRow::Upstream if !self.options.root => {
+                if let Some(u) = self.options.upstream.as_mut() {
+                    u.pop();
+                    if u.is_empty() {
+                        self.options.upstream = None;
+                    }
+                }
+            }
+            RebaseDialogRow::Branch => {
+                if let Some(b) = self.options.branch.as_mut() {
+                    b.pop();
+                    if b.is_empty() {
+                        self.options.branch = None;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    pub fn clear_text(&mut self) {
+        match self.row() {
+            RebaseDialogRow::Onto => self.options.onto.clear(),
+            RebaseDialogRow::Upstream => self.options.upstream = None,
+            RebaseDialogRow::Branch => self.options.branch = None,
+            _ => {}
+        }
+    }
+
+    pub fn complete_text(&mut self, forward: bool) {
+        match self.row() {
+            RebaseDialogRow::Onto => {
+                if let Some(next) =
+                    cycle_completion(&self.ref_candidates, &self.options.onto, forward)
+                {
+                    self.options.onto = next;
+                }
+            }
+            RebaseDialogRow::Upstream if !self.options.root => {
+                let cur = self.options.upstream.as_deref().unwrap_or("");
+                if let Some(next) = cycle_completion(&self.ref_candidates, cur, forward) {
+                    self.options.upstream = Some(next);
+                }
+            }
+            RebaseDialogRow::Branch => {
+                let cur = self.options.branch.as_deref().unwrap_or("");
+                if let Some(next) = cycle_completion(&self.local_branches, cur, forward) {
+                    self.options.branch = Some(next);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    pub fn toggle(&mut self, row: RebaseDialogRow, forward: bool) {
+        match row {
+            RebaseDialogRow::Onto | RebaseDialogRow::Upstream | RebaseDialogRow::Branch => {
+                self.complete_text(forward);
+            }
+            RebaseDialogRow::Interactive => self.options.interactive = !self.options.interactive,
+            RebaseDialogRow::RebaseMerges => {
+                self.options.rebase_merges = !self.options.rebase_merges;
+            }
+            RebaseDialogRow::UpdateRefs => self.options.update_refs = !self.options.update_refs,
+            RebaseDialogRow::KeepEmpty => self.options.keep_empty = !self.options.keep_empty,
+            RebaseDialogRow::Autosquash => self.options.autosquash = !self.options.autosquash,
+            RebaseDialogRow::Root => self.options.root = !self.options.root,
+        }
+    }
+
+    pub fn error(&self, i18n: &I18n) -> Option<String> {
+        self.options.validate(self.git_version).err().map(|e| match e {
+            RebaseOptionError::MissingOnto => i18n.t("dialog.rebase_opts.err_missing_onto").into(),
+            RebaseOptionError::RootWithUpstream => {
+                i18n.t("dialog.rebase_opts.err_root_upstream").into()
+            }
+            RebaseOptionError::UpdateRefsUnsupported(v) => i18n.t_fmt(
+                "dialog.rebase_opts.err_update_refs_version",
+                &[("version", &v.to_string())],
+            ),
+            RebaseOptionError::RebaseMergesUnsupported(v) => i18n.t_fmt(
+                "dialog.rebase_opts.err_rebase_merges_version",
+                &[("version", &v.to_string())],
+            ),
+        })
+    }
+
+    pub fn confirm_actions(&self) -> Vec<Action> {
+        let options = RebaseOptions {
+            onto: self.options.onto.trim().to_string(),
+            upstream: self.options.effective_upstream().map(ToString::to_string),
+            branch: self.options.effective_branch().map(ToString::to_string),
+            ..self.options.clone()
+        };
+        vec![
+            Action::RememberRebaseOptions(options.clone()),
+            Action::RunGitOp(GitOp::Rebase { options }),
+        ]
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum Dialog {
     Input(InputDialog),
@@ -1059,6 +1647,8 @@ pub enum Dialog {
     Message(MessageDialog),
     RebaseTodo(RebaseTodoDialog),
     Merge(MergeDialog),
+    Pull(PullDialog),
+    Rebase(RebaseDialog),
     Credential(CredentialDialog),
     Identity(IdentityDialog),
 }
@@ -1085,6 +1675,12 @@ impl Dialog {
             Self::Message(d) => Some(d.confirm_actions(i18n)),
             Self::RebaseTodo(d) => d.error(i18n).is_none().then(|| d.confirm_actions()),
             Self::Merge(d) => d.options.validate().is_ok().then(|| d.confirm_actions()),
+            Self::Pull(d) => d.options.validate().is_ok().then(|| d.confirm_actions()),
+            Self::Rebase(d) => d
+                .options
+                .validate(d.git_version)
+                .is_ok()
+                .then(|| d.confirm_actions()),
             // Answered by `AppState::answer_credential` (the secret never
             // travels inside an `Action`).
             Self::Credential(_) => Some(Vec::new()),
@@ -1107,6 +1703,12 @@ pub fn route_dialog_key(dialog: &mut Dialog, key: &KeyEvent, i18n: &I18n) -> Dia
     let alt = key.modifiers.contains(KeyModifiers::ALT);
     let plain = !ctrl && !alt;
     if key.code == KeyCode::Esc {
+        if let Dialog::RebaseTodo(d) = dialog
+            && d.show_diff
+        {
+            d.show_diff = false;
+            return DialogKey::Redraw;
+        }
         return DialogKey::Cancel;
     }
     match dialog {
@@ -1334,6 +1936,159 @@ pub fn route_dialog_key(dialog: &mut Dialog, key: &KeyEvent, i18n: &I18n) -> Dia
                 _ => DialogKey::None,
             }
         }
+        Dialog::Pull(d) => {
+            let editing = d.editing_branch();
+            match key.code {
+                KeyCode::Enter => DialogKey::Confirm,
+                KeyCode::F(5) => DialogKey::Actions(vec![Action::PullDialogFetch]),
+                KeyCode::Char('r') if ctrl => DialogKey::Actions(vec![Action::PullDialogFetch]),
+                KeyCode::Up | KeyCode::BackTab => {
+                    d.move_selection(-1);
+                    DialogKey::Redraw
+                }
+                KeyCode::Down | KeyCode::Tab => {
+                    d.move_selection(1);
+                    DialogKey::Redraw
+                }
+                KeyCode::Left => {
+                    d.toggle(d.row(), false);
+                    DialogKey::Redraw
+                }
+                KeyCode::Right => {
+                    d.toggle(d.row(), true);
+                    DialogKey::Redraw
+                }
+                KeyCode::Backspace if editing => {
+                    d.pop_branch();
+                    DialogKey::Redraw
+                }
+                KeyCode::Char('u') if editing && ctrl => {
+                    d.options.branch = None;
+                    DialogKey::Redraw
+                }
+                KeyCode::Char(c) if editing && plain && !c.is_control() => {
+                    d.push_branch(&c.to_string());
+                    DialogKey::Redraw
+                }
+                KeyCode::Char(' ') if !editing => {
+                    d.toggle(d.row(), true);
+                    DialogKey::Redraw
+                }
+                KeyCode::Char(c) if plain => {
+                    let c = c.to_ascii_lowercase();
+                    match PullDialogRow::ALL
+                        .iter()
+                        .position(|r| r.mnemonic() == c)
+                    {
+                        Some(idx) => {
+                            d.selected = idx;
+                            let row = d.row();
+                            if row != PullDialogRow::Branch {
+                                d.toggle(row, true);
+                            }
+                            DialogKey::Redraw
+                        }
+                        None => DialogKey::None,
+                    }
+                }
+                _ => DialogKey::None,
+            }
+        }
+        Dialog::Rebase(d) => {
+            let editing = d.editing_text();
+            match key.code {
+                KeyCode::Enter => DialogKey::Confirm,
+                KeyCode::Up | KeyCode::BackTab => {
+                    d.move_selection(-1);
+                    DialogKey::Redraw
+                }
+                KeyCode::Down | KeyCode::Tab => {
+                    d.move_selection(1);
+                    DialogKey::Redraw
+                }
+                KeyCode::Left => {
+                    d.toggle(d.row(), false);
+                    DialogKey::Redraw
+                }
+                KeyCode::Right => {
+                    d.toggle(d.row(), true);
+                    DialogKey::Redraw
+                }
+                KeyCode::Backspace if editing => {
+                    d.pop_text();
+                    DialogKey::Redraw
+                }
+                KeyCode::Char('u') if editing && ctrl => {
+                    d.clear_text();
+                    DialogKey::Redraw
+                }
+                KeyCode::Char(c) if editing && plain && !c.is_control() => {
+                    d.push_text(&c.to_string());
+                    DialogKey::Redraw
+                }
+                KeyCode::Char(' ') if !editing => {
+                    if !d.row().is_text() {
+                        d.toggle(d.row(), true);
+                    }
+                    DialogKey::Redraw
+                }
+                KeyCode::Char(c) if plain && !editing => {
+                    let c = c.to_ascii_lowercase();
+                    match RebaseDialogRow::ALL
+                        .iter()
+                        .position(|r| r.mnemonic() == c)
+                    {
+                        Some(idx) => {
+                            d.selected = idx;
+                            let row = d.row();
+                            if !row.is_text() {
+                                d.toggle(row, true);
+                            }
+                            DialogKey::Redraw
+                        }
+                        None => DialogKey::None,
+                    }
+                }
+                _ => DialogKey::None,
+            }
+        }
+        Dialog::RebaseTodo(d) if d.show_diff => match key.code {
+            KeyCode::Char('d') if plain || ctrl => {
+                d.show_diff = false;
+                DialogKey::Redraw
+            }
+            KeyCode::Up | KeyCode::Char('k') if plain => {
+                d.diff_scroll.scroll_by(-1, usize::MAX);
+                DialogKey::Redraw
+            }
+            KeyCode::Down | KeyCode::Char('j') if plain => {
+                d.diff_scroll.scroll_by(1, usize::MAX);
+                DialogKey::Redraw
+            }
+            KeyCode::PageUp => {
+                let step = d.diff_scroll.page_step(10);
+                d.diff_scroll.scroll_by(-step, usize::MAX);
+                DialogKey::Redraw
+            }
+            KeyCode::PageDown => {
+                let step = d.diff_scroll.page_step(10);
+                d.diff_scroll.scroll_by(step, usize::MAX);
+                DialogKey::Redraw
+            }
+            KeyCode::Left | KeyCode::Char('[') if plain => {
+                d.selected_file = d.selected_file.saturating_sub(1);
+                d.diff_scroll.reset();
+                d.diff_requested = None;
+                DialogKey::Redraw
+            }
+            KeyCode::Right | KeyCode::Char(']') if plain => {
+                d.selected_file = d.selected_file.saturating_add(1);
+                d.diff_scroll.reset();
+                d.diff_requested = None;
+                DialogKey::Redraw
+            }
+            _ => DialogKey::None,
+        },
         Dialog::RebaseTodo(d) => match key.code {
             KeyCode::Enter => DialogKey::Confirm,
             KeyCode::Up if alt || key.modifiers.contains(KeyModifiers::SHIFT) => {
@@ -1353,15 +2108,43 @@ pub fn route_dialog_key(dialog: &mut Dialog, key: &KeyEvent, i18n: &I18n) -> Dia
                 DialogKey::Redraw
             }
             KeyCode::Up | KeyCode::Char('k') => {
-                d.selected = d.selected.saturating_sub(1);
+                d.select_entry(d.selected.saturating_sub(1));
                 DialogKey::Redraw
             }
             KeyCode::Down | KeyCode::Char('j') => {
-                d.selected = (d.selected + 1).min(d.entries.len().saturating_sub(1));
+                d.select_entry(d.selected.saturating_add(1));
+                DialogKey::Redraw
+            }
+            KeyCode::Char('[') if plain => {
+                d.selected_file = d.selected_file.saturating_sub(1);
+                DialogKey::Redraw
+            }
+            KeyCode::Char(']') if plain => {
+                d.selected_file = d.selected_file.saturating_add(1);
+                DialogKey::Redraw
+            }
+            KeyCode::Char('d') if plain || ctrl => {
+                if d.selected_commit_oid().is_some() {
+                    d.show_diff = true;
+                    d.diff_scroll.reset();
+                    d.diff_requested = None;
+                    DialogKey::Redraw
+                } else {
+                    DialogKey::None
+                }
+            }
+            KeyCode::Delete | KeyCode::Backspace => {
+                if let Some(e) = d.entries.get_mut(d.selected)
+                    && e.action.is_editable()
+                {
+                    e.action = TodoAction::Drop;
+                }
                 DialogKey::Redraw
             }
             KeyCode::Char(' ') => {
-                if let Some(e) = d.entries.get_mut(d.selected) {
+                if let Some(e) = d.entries.get_mut(d.selected)
+                    && e.action.is_editable()
+                {
                     e.action = e.action.next();
                 }
                 DialogKey::Redraw
@@ -1369,7 +2152,9 @@ pub fn route_dialog_key(dialog: &mut Dialog, key: &KeyEvent, i18n: &I18n) -> Dia
             KeyCode::Char(c) if plain => match TodoAction::from_key(c) {
                 Some(TodoAction::Reword) => {
                     let idx = d.selected;
-                    if let Some(e) = d.entries.get_mut(idx) {
+                    if let Some(e) = d.entries.get_mut(idx)
+                        && e.action.is_editable()
+                    {
                         e.action = TodoAction::Reword;
                         let text = e
                             .message
@@ -1378,7 +2163,10 @@ pub fn route_dialog_key(dialog: &mut Dialog, key: &KeyEvent, i18n: &I18n) -> Dia
                             .unwrap_or_default();
                         return DialogKey::Actions(vec![Action::OpenDialog(Box::new(
                             Dialog::Message(MessageDialog::new(
-                                i18n.t_fmt("dialog.rebase.reword_entry_title", &[("subject", &e.subject)]),
+                                i18n.t_fmt(
+                                    "dialog.rebase.reword_entry_title",
+                                    &[("subject", &e.subject)],
+                                ),
                                 text,
                                 MessageIntent::TodoEntry { idx },
                             )),
@@ -1387,7 +2175,9 @@ pub fn route_dialog_key(dialog: &mut Dialog, key: &KeyEvent, i18n: &I18n) -> Dia
                     DialogKey::None
                 }
                 Some(action) => {
-                    if let Some(e) = d.entries.get_mut(d.selected) {
+                    if let Some(e) = d.entries.get_mut(d.selected)
+                        && e.action.is_editable()
+                    {
                         e.action = action;
                     }
                     DialogKey::Redraw

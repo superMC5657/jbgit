@@ -147,7 +147,7 @@ fn right_click_preselects_row_and_keeps_multi_selection_for_squash() {
     assert_eq!(m.text, "c6\n\nc7\n\nc8\n\nc9");
     ts.send_key(KeyCode::Enter, KeyModifiers::ALT);
     let ops = ts.take_git_ops();
-    let [GitOp::RewriteHistory { base, todo }] = ops.as_slice() else {
+    let [GitOp::RewriteHistory { base, todo, .. }] = ops.as_slice() else {
         panic!("{ops:?}")
     };
     assert_eq!(*base, Some(oid(5)));

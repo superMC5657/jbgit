@@ -563,8 +563,7 @@ fn push_dialog_preview_target_completion_up_to_protected_branches_and_retry() {
             GitOp::Smart(Box::new(GitOp::Sequence(vec![
                 GitOp::Fetch,
                 GitOp::Rebase {
-                    onto: "origin/main".into(),
-                    branch: None,
+                    options: jbgit_core::RebaseOptions::onto("origin/main", None),
                 },
             ]))),
             push_main.clone(),
@@ -720,8 +719,7 @@ fn prompt_push_empty_remotes_slash_remote_and_push_rejected_up_to() {
         vec![GitOp::Smart(Box::new(GitOp::Sequence(vec![
             GitOp::Fetch,
             GitOp::Rebase {
-                onto: "origin/main".into(),
-                branch: None,
+                options: jbgit_core::RebaseOptions::onto("origin/main", None),
             },
         ])))]
     );
@@ -748,8 +746,7 @@ fn prompt_push_empty_remotes_slash_remote_and_push_rejected_up_to() {
             GitOp::Smart(Box::new(GitOp::Sequence(vec![
                 GitOp::Fetch,
                 GitOp::Rebase {
-                    onto: "origin/main".into(),
-                    branch: None,
+                    options: jbgit_core::RebaseOptions::onto("origin/main", None),
                 },
             ]))),
             GitOp::Push {

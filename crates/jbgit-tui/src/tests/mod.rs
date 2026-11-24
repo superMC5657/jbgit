@@ -9,6 +9,7 @@ mod log_selection_and_compare_tests;
 mod log_tests;
 mod merge_and_update_tests;
 mod patch_and_tree_browser_tests;
+mod pull_and_rebase_dialogs_tests;
 mod remotes_and_credentials_tests;
 mod repo_capabilities_tests;
 mod repo_session_and_worktrees_tests;

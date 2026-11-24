@@ -44,6 +44,8 @@ pub enum PopupRow {
     Folder(String),
     Ongoing(OngoingKind),
     UpdateProject,
+    PullDialog,
+    RebaseDialog,
     NewBranch,
     CheckoutRevision,
     ConfigureRemotes,
@@ -115,7 +117,9 @@ pub fn build_popup_rows(state: &AppState, query: &str) -> Vec<PopupRow> {
     if q.is_empty() {
         if snap.head_branch.is_some() {
             rows.push(PopupRow::UpdateProject);
+            rows.push(PopupRow::PullDialog);
         }
+        rows.push(PopupRow::RebaseDialog);
         rows.push(PopupRow::NewBranch);
         rows.push(PopupRow::CheckoutRevision);
         rows.push(PopupRow::ConfigureRemotes);
@@ -317,6 +321,8 @@ pub fn activate_row(state: &AppState, query: &str, idx: usize) -> Vec<Action> {
             depth: 0,
         }],
         PopupRow::UpdateProject => vec![Action::PopModal, Action::PromptUpdateProject],
+        PopupRow::PullDialog => vec![Action::PopModal, Action::PromptPull],
+        PopupRow::RebaseDialog => vec![Action::PopModal, Action::PromptRebase { onto: None }],
         PopupRow::ConfigureRemotes => vec![Action::PopModal, Action::OpenRemotes],
         PopupRow::Worktrees => vec![Action::PopModal, Action::OpenWorktrees],
         PopupRow::Unshallow => vec![Action::PopModal, Action::PromptUnshallow],
@@ -620,6 +626,46 @@ pub fn render_branches_popup(
                 (
                     vec![Span::styled(
                         state.i18n.t("view.branches_popup.update_project_btn").to_string(),
+                        Style::default().fg(fg),
+                    )],
+                    right,
+                )
+            }
+            PopupRow::PullDialog => {
+                let right = match crate::keymap::catalog::shortcut_for_action(
+                    state,
+                    &[KeymapScope::Global],
+                    &KeyAction::GitPullDialog,
+                ) {
+                    Some(sc) => vec![Span::styled(
+                        format!("{sc} "),
+                        Style::default().fg(ctx.theme.fg_muted),
+                    )],
+                    None => Vec::new(),
+                };
+                (
+                    vec![Span::styled(
+                        state.i18n.t("view.branches_popup.pull_dialog_btn").to_string(),
+                        Style::default().fg(fg),
+                    )],
+                    right,
+                )
+            }
+            PopupRow::RebaseDialog => {
+                let right = match crate::keymap::catalog::shortcut_for_action(
+                    state,
+                    &[KeymapScope::Global],
+                    &KeyAction::GitRebaseDialog,
+                ) {
+                    Some(sc) => vec![Span::styled(
+                        format!("{sc} "),
+                        Style::default().fg(ctx.theme.fg_muted),
+                    )],
+                    None => Vec::new(),
+                };
+                (
+                    vec![Span::styled(
+                        state.i18n.t("view.branches_popup.rebase_dialog_btn").to_string(),
                         Style::default().fg(fg),
                     )],
                     right,

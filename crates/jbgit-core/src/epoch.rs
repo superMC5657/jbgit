@@ -91,10 +91,12 @@ pub enum RequestSlotId {
     TreeBrowser = 20,
     TreeBlob = 21,
     LogSignatures = 22,
+    RebaseCommitDetails = 23,
+    RebaseFileDiff = 24,
 }
 
 impl RequestSlotId {
-    pub const COUNT: usize = 23;
+    pub const COUNT: usize = 25;
 
     pub const ALL: [Self; Self::COUNT] = [
         Self::RepoSnapshot,
@@ -120,6 +122,8 @@ impl RequestSlotId {
         Self::TreeBrowser,
         Self::TreeBlob,
         Self::LogSignatures,
+        Self::RebaseCommitDetails,
+        Self::RebaseFileDiff,
     ];
 
     #[inline]

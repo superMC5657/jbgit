@@ -8,9 +8,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use jbgit_core::{
-    FastForward, GitFailure, GitOp, GitOpOutcome, MergeOptions, Oid, OngoingKind, OngoingStep,
-    RefKind, RepoSnapshot, RepositoryState, RequestSlotId, ResetMode, TodoAction, TodoEntry,
-    UpdateMode,
+    FastForward, FixupKind, GitFailure, GitOp, GitOpOutcome, MergeOptions, Oid, OngoingKind,
+    OngoingStep, PullOptions, RebaseOptions, RefKind, RepoSnapshot, RepositoryState, RequestSlotId,
+    ResetMode, TodoAction, TodoEntry, UpdateMode, plan_squash_todo,
 };
 use jbgit_engine::{EngineBackend, EngineEvent, EngineSupervisor, RepoLocation, TaskRequest};
 use tempfile::TempDir;
@@ -136,6 +136,7 @@ async fn reword_and_drop_three_commits_back_preserve_later_history() {
         GitOp::RewriteHistory {
             base: Some(rev(d, "HEAD~4")),
             todo,
+            no_verify: false,
         },
     )
     .await;
@@ -165,6 +166,7 @@ async fn reword_and_drop_three_commits_back_preserve_later_history() {
         GitOp::RewriteHistory {
             base: Some(base),
             todo,
+            no_verify: false,
         },
     )
     .await;
@@ -191,6 +193,7 @@ async fn reword_and_drop_three_commits_back_preserve_later_history() {
         GitOp::RewriteHistory {
             base: Some(base),
             todo,
+            no_verify: false,
         },
     )
     .await;
@@ -200,6 +203,7 @@ async fn reword_and_drop_three_commits_back_preserve_later_history() {
         d,
         GitOp::RewordHead {
             message: "c5 final".into(),
+            no_verify: false,
         },
     )
     .await;
@@ -284,8 +288,7 @@ async fn rebase_conflict_reports_progress_and_abort_restores_original_state() {
     let out = run(
         d,
         GitOp::Rebase {
-            onto: "main".into(),
-            branch: None,
+            options: RebaseOptions::onto("main", None),
         },
     )
     .await;
@@ -518,6 +521,7 @@ async fn root_commit_fixup_patch_compare_and_conflict_resolution() {
         d,
         GitOp::FixupCommit {
             target: root,
+            kind: FixupKind::Fixup,
             base: None,
             autosquash: true,
         },
@@ -917,8 +921,7 @@ async fn rebase_conflict_reverses_accept_side_and_document_orientation() {
     let rb = run(
         d,
         GitOp::Rebase {
-            onto: "main".into(),
-            branch: None,
+            options: RebaseOptions::onto("main", None),
         },
     )
     .await;
@@ -962,8 +965,7 @@ async fn rebase_conflict_reverses_accept_side_and_document_orientation() {
     let rb2 = run(
         d,
         GitOp::Rebase {
-            onto: "main".into(),
-            branch: None,
+            options: RebaseOptions::onto("main", None),
         },
     )
     .await;
@@ -1398,4 +1400,254 @@ async fn three_way_load_classifies_non_conflicting_hunks_and_unresolve_recreates
     );
     let disk_after = fs::read_to_string(d.join("app.txt")).unwrap();
     assert!(disk_after.contains("<<<<<<<"), "{disk_after}");
+}
+
+#[tokio::test]
+async fn pull_options_ff_only_fails_and_rebase_replays_on_diverged_remote() {
+    let bare = TempDir::new().unwrap();
+    git(bare.path(), &["init", "--bare", "-b", "main"]);
+    let tmp = init_repo();
+    let d = tmp.path();
+    git(d, &["remote", "add", "origin", bare.path().to_str().unwrap()]);
+    commit_file(d, "base.txt", "base\n", "base");
+    git(d, &["push", "-u", "origin", "main"]);
+
+    // Second clone pushes a diverged commit on origin/main.
+    let peer = TempDir::new().unwrap();
+    git(
+        peer.path(),
+        &["clone", bare.path().to_str().unwrap(), "."],
+    );
+    git(peer.path(), &["config", "user.name", "Peer"]);
+    git(peer.path(), &["config", "user.email", "peer@example.com"]);
+    commit_file(peer.path(), "remote.txt", "remote\n", "remote change");
+    git(peer.path(), &["push", "origin", "main"]);
+
+    // Local repo creates a diverged commit.
+    commit_file(d, "local.txt", "local\n", "local change");
+
+    // Pull with --ff-only fails with NotFastForward.
+    let ff_only = run(
+        d,
+        GitOp::Pull {
+            options: PullOptions {
+                remote: Some("origin".into()),
+                branch: Some("main".into()),
+                ff: FastForward::FfOnly,
+                ..Default::default()
+            },
+        },
+    )
+    .await;
+    assert!(!ff_only.success);
+    assert_eq!(ff_only.failure, Some(GitFailure::NotFastForward), "{ff_only:?}");
+
+    // Pull with --rebase replays local commit linearly on top of remote change.
+    let rebased = run(
+        d,
+        GitOp::Pull {
+            options: PullOptions {
+                remote: Some("origin".into()),
+                branch: Some("main".into()),
+                rebase: true,
+                ..Default::default()
+            },
+        },
+    )
+    .await;
+    assert!(rebased.success, "pull --rebase failed: {rebased:?}");
+    assert_eq!(subjects(d), vec!["local change", "remote change", "base"]);
+    assert!(d.join("remote.txt").exists() && d.join("local.txt").exists());
+}
+
+#[tokio::test]
+async fn rebase_onto_upstream_with_update_refs_moves_stacked_branches() {
+    let tmp = init_repo();
+    let d = tmp.path();
+    commit_file(d, "base.txt", "v1\n", "base");
+    let old_base = rev(d, "HEAD");
+
+    // Stacked branches: base -> stack-a (commit a) -> stack-b (commit b).
+    git(d, &["checkout", "-b", "stack-a"]);
+    commit_file(d, "a.txt", "a\n", "commit a");
+    let old_stack_a = rev(d, "stack-a");
+    git(d, &["checkout", "-b", "stack-b"]);
+    commit_file(d, "b.txt", "b\n", "commit b");
+
+    // Advance main independently.
+    git(d, &["checkout", "main"]);
+    commit_file(d, "main.txt", "m\n", "main advance");
+    let new_main = rev(d, "main");
+    git(d, &["checkout", "stack-b"]);
+
+    // Rebase stack-b with --onto main <old_base> --update-refs.
+    let res = run(
+        d,
+        GitOp::Rebase {
+            options: RebaseOptions {
+                onto: "main".into(),
+                upstream: Some(old_base.to_string()),
+                update_refs: true,
+                ..Default::default()
+            },
+        },
+    )
+    .await;
+    assert!(res.success, "rebase --onto --update-refs failed: {res:?}");
+    assert_eq!(subjects(d), vec!["commit b", "commit a", "main advance", "base"]);
+    // Stacked intermediate branch `stack-a` was automatically moved to the rewritten `commit a`!
+    let new_stack_a = rev(d, "stack-a");
+    assert_ne!(new_stack_a, old_stack_a);
+    assert_eq!(rev(d, "stack-a~1"), new_main);
+    assert_eq!(rev(d, "HEAD~1"), new_stack_a);
+}
+
+#[tokio::test]
+async fn interactive_rebase_edit_pauses_amends_and_continues_preserving_subsequent_reword() {
+    let tmp = init_repo();
+    let d = tmp.path();
+    commit_file(d, "f1.txt", "1\n", "c1");
+    let base = rev(d, "HEAD");
+    commit_file(d, "f2.txt", "2\n", "c2");
+    let c2 = rev(d, "HEAD");
+    commit_file(d, "f3.txt", "3\n", "c3");
+    let c3 = rev(d, "HEAD");
+
+    let todo = vec![
+        TodoEntry {
+            action: TodoAction::Edit,
+            oid: c2,
+            subject: "c2".into(),
+            message: None,
+        },
+        TodoEntry {
+            action: TodoAction::Reword,
+            oid: c3,
+            subject: "c3".into(),
+            message: Some("c3 reworded after edit".into()),
+        },
+    ];
+    let paused = run(
+        d,
+        GitOp::RewriteHistory {
+            base: Some(base),
+            todo,
+            no_verify: false,
+        },
+    )
+    .await;
+    assert!(paused.success, "edit pause should exit 0: {paused:?}");
+    assert!(paused.paused_for_edit, "should signal paused_for_edit");
+
+    let snap = snapshot(d).await;
+    assert!(
+        matches!(snap.state, RepositoryState::RebaseInteractive { .. }),
+        "expected RebaseInteractive, got {:?}",
+        snap.state
+    );
+    assert_eq!(OngoingKind::from_state(&snap.state), Some(OngoingKind::Rebase));
+    // Message files for the following Reword step must still exist while paused.
+    assert!(d.join(".git").join("jbgit-rebase").exists());
+
+    // Amend c2 with extra content.
+    fs::write(d.join("f2.txt"), "2-amended\n").unwrap();
+    git(d, &["add", "f2.txt"]);
+    git(d, &["commit", "--amend", "--no-edit"]);
+
+    let cont = run(
+        d,
+        GitOp::Ongoing {
+            kind: OngoingKind::Rebase,
+            step: OngoingStep::Continue,
+        },
+    )
+    .await;
+    assert!(cont.success, "rebase continue failed: {cont:?}");
+    assert!(!cont.paused_for_edit);
+    assert_eq!(snapshot(d).await.state, RepositoryState::Clean);
+    assert!(!d.join(".git").join("jbgit-rebase").exists());
+    assert_eq!(subjects(d), vec!["c3 reworded after edit", "c2", "c1"]);
+    assert_eq!(fs::read_to_string(d.join("f2.txt")).unwrap(), "2-amended\n");
+}
+
+#[tokio::test]
+async fn fixup_and_squash_commits_fold_via_autosquash_rebase_and_non_contiguous_squash() {
+    let tmp = init_repo();
+    let d = tmp.path();
+    commit_file(d, "a.txt", "a1\n", "c1");
+    let c1 = rev(d, "HEAD");
+    commit_file(d, "b.txt", "b1\n", "c2");
+    let c2 = rev(d, "HEAD");
+    commit_file(d, "c.txt", "c1\n", "c3");
+
+    // 1. Standalone Fixup! commit (no immediate rebase).
+    fs::write(d.join("b.txt"), "b2\n").unwrap();
+    git(d, &["add", "b.txt"]);
+    let fix = run(
+        d,
+        GitOp::FixupCommit {
+            target: c2,
+            kind: FixupKind::Fixup,
+            base: Some(c1),
+            autosquash: false,
+        },
+    )
+    .await;
+    assert!(fix.success, "{fix:?}");
+    assert_eq!(subjects(d)[0], "fixup! c2");
+
+    // 2. Standalone Squash! commit (no immediate rebase).
+    fs::write(d.join("c.txt"), "c2\n").unwrap();
+    git(d, &["add", "c.txt"]);
+    let sq = run(
+        d,
+        GitOp::FixupCommit {
+            target: rev(d, "HEAD~1"),
+            kind: FixupKind::Squash,
+            base: Some(c1),
+            autosquash: false,
+        },
+    )
+    .await;
+    assert!(sq.success, "{sq:?}");
+    assert_eq!(subjects(d)[0], "squash! c3");
+
+    // 3. RebaseOptions { autosquash: true } folds both fixup! and squash! automatically.
+    let auto = run(
+        d,
+        GitOp::Rebase {
+            options: RebaseOptions {
+                onto: c1.to_string(),
+                autosquash: true,
+                ..Default::default()
+            },
+        },
+    )
+    .await;
+    assert!(auto.success, "autosquash rebase failed: {auto:?}");
+    assert_eq!(subjects(d), vec!["c3", "c2", "c1"]);
+    assert_eq!(fs::read_to_string(d.join("b.txt")).unwrap(), "b2\n");
+    assert_eq!(fs::read_to_string(d.join("c.txt")).unwrap(), "c2\n");
+
+    // 4. Non-contiguous squash: add c4, then squash c2 + c4 (skipping c3).
+    commit_file(d, "d.txt", "d1\n", "c4");
+    let snap = snapshot(d).await;
+    let oid_c2 = rev(d, "HEAD~2");
+    let oid_c4 = rev(d, "HEAD");
+    let plan = snap.plan_rewrite_typed(oid_c2).unwrap();
+    let mut sq_plan = plan_squash_todo(&plan, &[oid_c2, oid_c4]).unwrap();
+    assert!(sq_plan.reordered);
+    sq_plan.todo[sq_plan.message_entry_idx].message = Some("c2+c4 squashed".into());
+    let rewrite = run(
+        d,
+        GitOp::RewriteHistory {
+            base: sq_plan.base,
+            todo: sq_plan.todo,
+            no_verify: false,
+        },
+    )
+    .await;
+    assert!(rewrite.success, "non-contiguous squash failed: {rewrite:?}");
+    assert_eq!(subjects(d), vec!["c3", "c2+c4 squashed", "c1"]);
+    assert!(d.join("b.txt").exists() && d.join("c.txt").exists() && d.join("d.txt").exists());
 }

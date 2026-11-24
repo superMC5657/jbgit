@@ -1,7 +1,7 @@
 //! Rendering of [`Dialog`] layers: validated input, radio / button choice,
 //! multi-line message editor and the interactive-rebase todo table.
 
-use jbgit_core::TodoAction;
+use jbgit_core::{DiffContext, DiffLineKind, FileDiffKey, FileStatusKind, TodoAction};
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
@@ -9,10 +9,11 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph, Wrap};
 use unicode_width::UnicodeWidthStr;
 
-use crate::app::RenderContext;
+use crate::app::{AppState, RenderContext, ScrollPane};
 use crate::dialogs::{
     ChoiceDialog, CredentialDialog, Dialog, IdentityDialog, IdentityField, InputDialog,
-    MergeDialog, MergeDialogRow, MessageDialog, RebaseTodoDialog,
+    MergeDialog, MergeDialogRow, MessageDialog, PullDialog, PullDialogRow, RebaseDialog,
+    RebaseDialogRow, RebaseTodoDialog,
 };
 use crate::hit_test::{DialogButtonKind, HitTarget};
 use crate::views::overlays::{draw_shadow, mnemonic_spans};
@@ -128,6 +129,7 @@ fn render_buttons(
 pub fn render_dialog(
     frame: &mut Frame<'_>,
     screen: Rect,
+    state: &AppState,
     ctx: &mut RenderContext<'_>,
     dialog: &Dialog,
     z: u8,
@@ -139,8 +141,10 @@ pub fn render_dialog(
         Dialog::Input(d) => render_input(frame, screen, ctx, d, z),
         Dialog::Choice(d) => render_choice(frame, screen, ctx, d, z),
         Dialog::Message(d) => render_message(frame, screen, ctx, d, z),
-        Dialog::RebaseTodo(d) => render_rebase(frame, screen, ctx, d, z),
+        Dialog::RebaseTodo(d) => render_rebase(frame, screen, state, ctx, d, z),
         Dialog::Merge(d) => render_merge(frame, screen, ctx, d, z),
+        Dialog::Pull(d) => render_pull(frame, screen, ctx, d, z),
+        Dialog::Rebase(d) => render_rebase_options(frame, screen, ctx, d, z),
         Dialog::Credential(d) => render_credential(frame, screen, ctx, d, z),
         Dialog::Identity(d) => render_identity(frame, screen, ctx, d, z),
     }
@@ -532,6 +536,432 @@ fn render_merge(
     );
 }
 
+fn render_pull(
+    frame: &mut Frame<'_>,
+    screen: Rect,
+    ctx: &mut RenderContext<'_>,
+    d: &PullDialog,
+    z: u8,
+) {
+    let rows = PullDialogRow::ALL.len() as u16;
+    let rect = centered(screen, 80, rows + 9);
+    let title = ctx.t_fmt("dialog.pull.title", &[("cur", &d.current)]);
+    let inner = frame_block(frame, screen, ctx, rect, &title, false, z);
+    let w = inner.width as usize;
+
+    let remote_branches = d.branches_for_selected_remote();
+    let status_line = if d.fetching {
+        ctx.t("dialog.pull.fetching").to_string()
+    } else {
+        let count_s = remote_branches.len().to_string();
+        let rem = d
+            .options
+            .effective_remote()
+            .unwrap_or_else(|| ctx.t("dialog.pull.remote_default"));
+        ctx.t_fmt(
+            "dialog.pull.subtitle",
+            &[("cur", &d.current), ("remote", rem), ("count", &count_s)],
+        )
+    };
+    frame.render_widget(
+        Paragraph::new(Span::styled(
+            format!(" {}", truncate_to_width(&status_line, w.saturating_sub(2))),
+            Style::default().fg(ctx.theme.fg_primary),
+        )),
+        Rect::new(inner.x, inner.y, inner.width, 1),
+    );
+
+    let o = &d.options;
+    let label_w = 24usize;
+    for (i, row) in PullDialogRow::ALL.iter().copied().enumerate() {
+        let y = inner.y + 2 + i as u16;
+        if y >= inner.bottom().saturating_sub(3) {
+            break;
+        }
+        let sel = i == d.selected;
+        let (label, value, detail): (String, String, String) = match row {
+            PullDialogRow::Remote => (
+                ctx.t("dialog.pull.row_remote").to_string(),
+                format!(
+                    "‹ {} ›",
+                    o.effective_remote()
+                        .unwrap_or_else(|| ctx.t("dialog.pull.remote_default"))
+                ),
+                String::new(),
+            ),
+            PullDialogRow::Branch => {
+                let text = d.branch_text();
+                let cursor = if sel { "▏" } else { "" };
+                let shown = if text.is_empty() && !sel {
+                    ctx.t("dialog.pull.branch_placeholder").to_string()
+                } else {
+                    truncate_to_width(text, w.saturating_sub(label_w + 8))
+                };
+                let hint = if remote_branches.is_empty() {
+                    String::new()
+                } else {
+                    format!("‹{}›", remote_branches.len())
+                };
+                (
+                    ctx.t("dialog.pull.row_branch").to_string(),
+                    format!("{shown}{cursor}"),
+                    hint,
+                )
+            }
+            PullDialogRow::Rebase => (
+                format!("[{}] --rebase", if o.rebase { "x" } else { " " }),
+                String::new(),
+                ctx.t("dialog.pull.rebase_desc").to_string(),
+            ),
+            PullDialogRow::FastForward => (
+                ctx.t("dialog.merge.row_ff").to_string(),
+                format!(
+                    "‹ {} ›",
+                    match o.ff.flag() {
+                        Some(f) => f.to_string(),
+                        None => ctx.t("dialog.merge.ff_default").to_string(),
+                    }
+                ),
+                String::new(),
+            ),
+            PullDialogRow::Squash => (
+                format!("[{}] --squash", if o.squash { "x" } else { " " }),
+                String::new(),
+                ctx.t("dialog.merge.squash_desc").to_string(),
+            ),
+            PullDialogRow::NoCommit => (
+                format!("[{}] --no-commit", if o.no_commit { "x" } else { " " }),
+                String::new(),
+                ctx.t("dialog.merge.no_commit_desc").to_string(),
+            ),
+            PullDialogRow::NoVerify => (
+                format!("[{}] --no-verify", if o.no_verify { "x" } else { " " }),
+                String::new(),
+                ctx.t("dialog.pull.no_verify_desc").to_string(),
+            ),
+        };
+        let bg = if sel {
+            ctx.theme.bg_selection_focused
+        } else {
+            ctx.theme.bg_elevated
+        };
+        let mnemonic = row.mnemonic();
+        let mut spans = vec![Span::styled(
+            format!(" {mnemonic} "),
+            Style::default()
+                .fg(ctx.theme.fg_accent_link)
+                .add_modifier(Modifier::UNDERLINED),
+        )];
+        let pad = label_w.saturating_sub(label.width());
+        spans.push(Span::styled(
+            format!("{label}{}", " ".repeat(pad)),
+            Style::default().fg(ctx.theme.fg_bright),
+        ));
+        if !value.is_empty() {
+            let value_style = if row == PullDialogRow::Branch {
+                Style::default()
+                    .fg(ctx.theme.fg_bright)
+                    .bg(ctx.theme.bg_panel)
+            } else {
+                Style::default().fg(ctx.theme.fg_accent_link)
+            };
+            spans.push(Span::styled(value, value_style));
+        }
+        if !detail.is_empty() {
+            spans.push(Span::styled(
+                format!(
+                    "  {}",
+                    truncate_to_width(&detail, w.saturating_sub(label_w + 6))
+                ),
+                Style::default().fg(ctx.theme.fg_muted),
+            ));
+        }
+        let r = Rect::new(inner.x, y, inner.width, 1);
+        frame.render_widget(
+            Paragraph::new(Line::from(spans)).style(Style::default().bg(bg)),
+            r,
+        );
+        ctx.hit_registry
+            .register(r, z + 2, HitTarget::DialogOption(i));
+    }
+
+    let err = ctx.i18n.and_then(|i| d.error(i));
+    let (hint, color) = match &err {
+        Some(e) => (format!(" ✕ {e}"), ctx.theme.status_conflicted),
+        None => {
+            let summary = d.options.summary();
+            let cmd = if summary.is_empty() {
+                " git pull --no-edit".to_string()
+            } else {
+                format!(" git pull {summary}")
+            };
+            (cmd, ctx.theme.fg_muted)
+        }
+    };
+    frame.render_widget(
+        Paragraph::new(Span::styled(
+            truncate_to_width(&hint, w),
+            Style::default().fg(color),
+        )),
+        Rect::new(inner.x, inner.bottom().saturating_sub(3), inner.width, 1),
+    );
+    frame.render_widget(
+        Paragraph::new(Span::styled(
+            truncate_to_width(ctx.t("dialog.pull.hint"), w),
+            Style::default().fg(ctx.theme.fg_muted),
+        )),
+        Rect::new(inner.x, inner.bottom().saturating_sub(2), inner.width, 1),
+    );
+    render_buttons(
+        frame,
+        ctx,
+        inner.x + 1,
+        inner.bottom().saturating_sub(1),
+        inner.right(),
+        &[
+            DialogButtonSpec {
+                label: ctx.t("dialog.pull.pull_btn").into(),
+                selected: true,
+                enabled: err.is_none(),
+                danger: false,
+                target: HitTarget::DialogButton(DialogButtonKind::Confirm),
+            },
+            DialogButtonSpec {
+                label: ctx.t("dialog.pull.fetch_btn").into(),
+                selected: false,
+                enabled: !d.fetching,
+                danger: false,
+                target: HitTarget::DialogButton(DialogButtonKind::Fetch),
+            },
+            DialogButtonSpec {
+                label: ctx.cancel().into(),
+                selected: false,
+                enabled: true,
+                danger: false,
+                target: HitTarget::DialogButton(DialogButtonKind::Cancel),
+            },
+        ],
+        z,
+    );
+}
+
+fn render_rebase_options(
+    frame: &mut Frame<'_>,
+    screen: Rect,
+    ctx: &mut RenderContext<'_>,
+    d: &RebaseDialog,
+    z: u8,
+) {
+    let rows = RebaseDialogRow::ALL.len() as u16;
+    let rect = centered(screen, 82, rows + 9);
+    let title = ctx.t_fmt("dialog.rebase_opts.title", &[("cur", &d.current)]);
+    let inner = frame_block(frame, screen, ctx, rect, &title, false, z);
+    let w = inner.width as usize;
+
+    let subtitle = ctx.t_fmt("dialog.rebase_opts.subtitle", &[("cur", &d.current)]);
+    frame.render_widget(
+        Paragraph::new(Span::styled(
+            format!(" {}", truncate_to_width(&subtitle, w.saturating_sub(2))),
+            Style::default().fg(ctx.theme.fg_primary),
+        )),
+        Rect::new(inner.x, inner.y, inner.width, 1),
+    );
+
+    let o = &d.options;
+    let label_w = 24usize;
+    let has_upstream = o.effective_upstream().is_some();
+    for (i, row) in RebaseDialogRow::ALL.iter().copied().enumerate() {
+        let y = inner.y + 2 + i as u16;
+        if y >= inner.bottom().saturating_sub(3) {
+            break;
+        }
+        let sel = i == d.selected;
+        let disabled = row == RebaseDialogRow::Upstream && o.root;
+        let (label, value, detail): (String, String, String) = match row {
+            RebaseDialogRow::Onto => {
+                let lbl = if has_upstream || o.root {
+                    ctx.t("dialog.rebase_opts.row_onto_new")
+                } else {
+                    ctx.t("dialog.rebase_opts.row_onto")
+                };
+                let text = o.onto.as_str();
+                let cursor = if sel { "▏" } else { "" };
+                let shown = if text.is_empty() && !sel {
+                    ctx.t("dialog.rebase_opts.onto_placeholder").to_string()
+                } else {
+                    truncate_to_width(text, w.saturating_sub(label_w + 8))
+                };
+                (lbl.to_string(), format!("{shown}{cursor}"), String::new())
+            }
+            RebaseDialogRow::Upstream => {
+                let text = o.upstream.as_deref().unwrap_or("");
+                let cursor = if sel && !disabled { "▏" } else { "" };
+                let shown = if disabled {
+                    ctx.t("dialog.rebase_opts.disabled_by_root").to_string()
+                } else if text.is_empty() && !sel {
+                    ctx.t("dialog.rebase_opts.upstream_placeholder").to_string()
+                } else {
+                    truncate_to_width(text, w.saturating_sub(label_w + 8))
+                };
+                (
+                    ctx.t("dialog.rebase_opts.row_upstream").to_string(),
+                    format!("{shown}{cursor}"),
+                    String::new(),
+                )
+            }
+            RebaseDialogRow::Branch => {
+                let text = o.branch.as_deref().unwrap_or("");
+                let cursor = if sel { "▏" } else { "" };
+                let shown = if text.is_empty() && !sel {
+                    ctx.t_fmt("dialog.rebase_opts.branch_placeholder", &[("cur", &d.current)])
+                } else {
+                    truncate_to_width(text, w.saturating_sub(label_w + 8))
+                };
+                (
+                    ctx.t("dialog.rebase_opts.row_branch").to_string(),
+                    format!("{shown}{cursor}"),
+                    String::new(),
+                )
+            }
+            RebaseDialogRow::Interactive => (
+                format!("[{}] --interactive", if o.interactive { "x" } else { " " }),
+                String::new(),
+                ctx.t("dialog.rebase_opts.interactive_desc").to_string(),
+            ),
+            RebaseDialogRow::RebaseMerges => (
+                format!("[{}] --rebase-merges", if o.rebase_merges { "x" } else { " " }),
+                String::new(),
+                ctx.t("dialog.rebase_opts.rebase_merges_desc").to_string(),
+            ),
+            RebaseDialogRow::UpdateRefs => (
+                format!("[{}] --update-refs", if o.update_refs { "x" } else { " " }),
+                String::new(),
+                ctx.t("dialog.rebase_opts.update_refs_desc").to_string(),
+            ),
+            RebaseDialogRow::KeepEmpty => (
+                format!("[{}] --keep-empty", if o.keep_empty { "x" } else { " " }),
+                String::new(),
+                ctx.t("dialog.rebase_opts.keep_empty_desc").to_string(),
+            ),
+            RebaseDialogRow::Autosquash => (
+                format!("[{}] --autosquash", if o.autosquash { "x" } else { " " }),
+                String::new(),
+                ctx.t("dialog.rebase_opts.autosquash_desc").to_string(),
+            ),
+            RebaseDialogRow::Root => (
+                format!("[{}] --root", if o.root { "x" } else { " " }),
+                String::new(),
+                ctx.t("dialog.rebase_opts.root_desc").to_string(),
+            ),
+        };
+        let bg = if sel {
+            ctx.theme.bg_selection_focused
+        } else {
+            ctx.theme.bg_elevated
+        };
+        let mnemonic = row.mnemonic();
+        let mut spans = vec![Span::styled(
+            format!(" {mnemonic} "),
+            Style::default()
+                .fg(if disabled {
+                    ctx.theme.fg_muted
+                } else {
+                    ctx.theme.fg_accent_link
+                })
+                .add_modifier(Modifier::UNDERLINED),
+        )];
+        let pad = label_w.saturating_sub(label.width());
+        spans.push(Span::styled(
+            format!("{label}{}", " ".repeat(pad)),
+            Style::default().fg(if disabled {
+                ctx.theme.fg_muted
+            } else {
+                ctx.theme.fg_bright
+            }),
+        ));
+        if !value.is_empty() {
+            let value_style = if disabled {
+                Style::default().fg(ctx.theme.fg_muted)
+            } else if row.is_text() {
+                Style::default()
+                    .fg(ctx.theme.fg_bright)
+                    .bg(ctx.theme.bg_panel)
+            } else {
+                Style::default().fg(ctx.theme.fg_accent_link)
+            };
+            spans.push(Span::styled(value, value_style));
+        }
+        if !detail.is_empty() {
+            spans.push(Span::styled(
+                format!(
+                    "  {}",
+                    truncate_to_width(&detail, w.saturating_sub(label_w + 6))
+                ),
+                Style::default().fg(ctx.theme.fg_muted),
+            ));
+        }
+        let r = Rect::new(inner.x, y, inner.width, 1);
+        frame.render_widget(
+            Paragraph::new(Line::from(spans)).style(Style::default().bg(bg)),
+            r,
+        );
+        ctx.hit_registry
+            .register(r, z + 2, HitTarget::DialogOption(i));
+    }
+
+    let err = ctx.i18n.and_then(|i| d.error(i));
+    let (hint, color) = match &err {
+        Some(e) => (format!(" ✕ {e}"), ctx.theme.status_conflicted),
+        None => {
+            let summary = d.options.summary();
+            let cmd = if summary.is_empty() {
+                " git rebase".to_string()
+            } else {
+                format!(" git rebase {summary}")
+            };
+            (cmd, ctx.theme.fg_muted)
+        }
+    };
+    frame.render_widget(
+        Paragraph::new(Span::styled(
+            truncate_to_width(&hint, w),
+            Style::default().fg(color),
+        )),
+        Rect::new(inner.x, inner.bottom().saturating_sub(3), inner.width, 1),
+    );
+    frame.render_widget(
+        Paragraph::new(Span::styled(
+            truncate_to_width(ctx.t("dialog.rebase_opts.hint"), w),
+            Style::default().fg(ctx.theme.fg_muted),
+        )),
+        Rect::new(inner.x, inner.bottom().saturating_sub(2), inner.width, 1),
+    );
+    render_buttons(
+        frame,
+        ctx,
+        inner.x + 1,
+        inner.bottom().saturating_sub(1),
+        inner.right(),
+        &[
+            DialogButtonSpec {
+                label: ctx.t("dialog.rebase_opts.start_btn").into(),
+                selected: true,
+                enabled: err.is_none(),
+                danger: false,
+                target: HitTarget::DialogButton(DialogButtonKind::Confirm),
+            },
+            DialogButtonSpec {
+                label: ctx.cancel().into(),
+                selected: false,
+                enabled: true,
+                danger: false,
+                target: HitTarget::DialogButton(DialogButtonKind::Cancel),
+            },
+        ],
+        z,
+    );
+}
+
 fn render_input(
     frame: &mut Frame<'_>,
     screen: Rect,
@@ -877,17 +1307,33 @@ fn render_message(
 fn render_rebase(
     frame: &mut Frame<'_>,
     screen: Rect,
+    state: &AppState,
     ctx: &mut RenderContext<'_>,
     d: &RebaseTodoDialog,
     z: u8,
 ) {
-    let h = (d.entries.len() as u16 + 7).min(screen.height.saturating_sub(2));
-    let rect = centered(screen, 92, h);
+    let min_preview = if d.show_diff { 14u16 } else { 7u16 };
+    let desired_h = (d.entries.len() as u16 + min_preview + 7).max(16);
+    let h = desired_h.min(screen.height.saturating_sub(2));
+    let w = if d.show_diff {
+        screen.width.saturating_sub(6).min(112)
+    } else {
+        96
+    };
+    let rect = centered(screen, w, h);
     let base_str = d.base.map_or("--root".to_string(), |b| b.short());
     let title = ctx.t_fmt("dialog.rebase.title", &[("base", &base_str)]);
     let inner = frame_block(frame, screen, ctx, rect, &title, false, z);
-    let list_h = inner.height.saturating_sub(4) as usize;
-    let scroll = if d.selected >= list_h {
+    let usable_h = inner.height.saturating_sub(3) as usize; // reserve hint + error + buttons
+    let (list_h, preview_h) = if d.show_diff {
+        let lh = (usable_h / 3).max(3).min(d.entries.len().max(1) + 1);
+        (lh.saturating_sub(1), usable_h.saturating_sub(lh))
+    } else {
+        let ph = usable_h.clamp(3, 7).min(usable_h.saturating_sub(2));
+        let lh = usable_h.saturating_sub(ph + 1);
+        (lh, ph)
+    };
+    let scroll = if list_h > 0 && d.selected >= list_h {
         d.selected + 1 - list_h
     } else {
         0
@@ -914,8 +1360,10 @@ fn render_rebase(
         let color = match e.action {
             TodoAction::Pick => ctx.theme.fg_primary,
             TodoAction::Reword => ctx.theme.fg_accent_link,
+            TodoAction::Edit => ctx.theme.status_added,
             TodoAction::Squash | TodoAction::Fixup => ctx.theme.status_modified,
             TodoAction::Drop => ctx.theme.status_conflicted,
+            TodoAction::UpdateRef => ctx.theme.fg_muted,
         };
         let subject = e
             .message
@@ -928,20 +1376,26 @@ fn render_rebase(
             subject_style = subject_style
                 .fg(ctx.theme.fg_muted)
                 .add_modifier(Modifier::CROSSED_OUT);
+        } else if e.action == TodoAction::UpdateRef {
+            subject_style = Style::default()
+                .fg(ctx.theme.fg_muted)
+                .add_modifier(Modifier::ITALIC);
         }
         let act_lbl = ctx.todo_action_label(e.action);
-        let act_pad = " ".repeat(8usize.saturating_sub(act_lbl.width()));
+        let act_pad = " ".repeat(11usize.saturating_sub(act_lbl.width()));
+        let oid_col = if e.action == TodoAction::UpdateRef {
+            "  (ref)  ".to_string()
+        } else {
+            format!(" {}  ", e.oid.short())
+        };
         let line = Line::from(vec![
             Span::styled(
                 format!(" {act_lbl}{act_pad}"),
                 Style::default().fg(color).add_modifier(Modifier::BOLD),
             ),
+            Span::styled(oid_col, Style::default().fg(ctx.theme.fg_accent_link)),
             Span::styled(
-                format!(" {}  ", e.oid.short()),
-                Style::default().fg(ctx.theme.fg_accent_link),
-            ),
-            Span::styled(
-                truncate_to_width(subject, inner.width.saturating_sub(22) as usize),
+                truncate_to_width(subject, inner.width.saturating_sub(24) as usize),
                 subject_style,
             ),
         ]);
@@ -957,10 +1411,22 @@ fn render_rebase(
         ctx.hit_registry
             .register(r, z + 2, HitTarget::DialogOption(i));
     }
-    let hint_y = inner.bottom().saturating_sub(3);
+
+    // ── Bottom commit changed-files summary / full Diff preview ──
+    let preview_y = inner.y + 1 + list_h as u16;
+    if preview_h >= 2 && preview_y < inner.bottom().saturating_sub(2) {
+        let preview_rect = Rect::new(inner.x, preview_y, inner.width, preview_h as u16);
+        render_rebase_preview(frame, preview_rect, state, ctx, d);
+    }
+
+    let hint_y = inner.bottom().saturating_sub(2);
     let err = ctx.i18n.and_then(|i| d.error(i));
     let (hint, color) = match &err {
         Some(e) => (format!(" ✕ {e}"), ctx.theme.status_conflicted),
+        None if d.show_diff => (
+            ctx.t("dialog.rebase.diff_hint").to_string(),
+            ctx.theme.fg_muted,
+        ),
         None => (
             ctx.t("dialog.rebase.hint").to_string(),
             ctx.theme.fg_muted,
@@ -971,7 +1437,7 @@ fn render_rebase(
             truncate_to_width(&hint, inner.width as usize),
             Style::default().fg(color),
         )),
-        Rect::new(inner.x, hint_y + 1, inner.width, 1),
+        Rect::new(inner.x, hint_y, inner.width, 1),
     );
     render_buttons(
         frame,
@@ -997,4 +1463,209 @@ fn render_rebase(
         ],
         z,
     );
+}
+
+fn render_rebase_preview(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    state: &AppState,
+    ctx: &mut RenderContext<'_>,
+    d: &RebaseTodoDialog,
+) {
+    let w = area.width as usize;
+    let sep = "─".repeat(w);
+    let Some(details_key) = d.desired_details_key() else {
+        frame.render_widget(
+            Paragraph::new(Span::styled(sep, Style::default().fg(ctx.theme.border_splitter))),
+            Rect::new(area.x, area.y, area.width, 1),
+        );
+        if area.height >= 2 {
+            frame.render_widget(
+                Paragraph::new(Span::styled(
+                    format!(" {}", ctx.t("dialog.rebase.update_ref_readonly")),
+                    Style::default().fg(ctx.theme.fg_muted),
+                )),
+                Rect::new(area.x, area.y + 1, area.width, 1),
+            );
+        }
+        return;
+    };
+    let Some(bundle) = state.diff_caches.details.peek(&details_key) else {
+        frame.render_widget(
+            Paragraph::new(Span::styled(sep, Style::default().fg(ctx.theme.border_splitter))),
+            Rect::new(area.x, area.y, area.width, 1),
+        );
+        if area.height >= 2 {
+            frame.render_widget(
+                Paragraph::new(Span::styled(
+                    format!(" {}", ctx.t("dialog.rebase.preview_loading")),
+                    Style::default().fg(ctx.theme.fg_muted),
+                )),
+                Rect::new(area.x, area.y + 1, area.width, 1),
+            );
+        }
+        return;
+    };
+
+    let count_s = bundle.changes.len().to_string();
+    let header_text = if d.show_diff {
+        let sel_idx = d.selected_file.min(bundle.changes.len().saturating_sub(1));
+        if let Some(ch) = bundle.changes.get(sel_idx) {
+            let idx_s = (sel_idx + 1).to_string();
+            ctx.t_fmt(
+                "dialog.rebase.diff_header",
+                &[("idx", &idx_s), ("count", &count_s), ("path", &ch.path)],
+            )
+        } else {
+            ctx.t("dialog.rebase.preview_empty").to_string()
+        }
+    } else {
+        ctx.t_fmt("dialog.rebase.preview_header", &[("count", &count_s)])
+    };
+    let header_line = Line::from(vec![
+        Span::styled(
+            format!(" {header_text} "),
+            Style::default()
+                .fg(ctx.theme.fg_accent_link)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            "─".repeat(w.saturating_sub(header_text.width() + 2)),
+            Style::default().fg(ctx.theme.border_splitter),
+        ),
+    ]);
+    frame.render_widget(
+        Paragraph::new(header_line),
+        Rect::new(area.x, area.y, area.width, 1),
+    );
+    let body_h = area.height.saturating_sub(1) as usize;
+    if body_h == 0 {
+        return;
+    }
+
+    if bundle.changes.is_empty() {
+        frame.render_widget(
+            Paragraph::new(Span::styled(
+                format!(" {}", ctx.t("dialog.rebase.preview_empty")),
+                Style::default().fg(ctx.theme.fg_muted),
+            )),
+            Rect::new(area.x, area.y + 1, area.width, 1),
+        );
+        return;
+    }
+
+    let sel_file = d.selected_file.min(bundle.changes.len() - 1);
+    if !d.show_diff {
+        let start = if sel_file >= body_h {
+            sel_file + 1 - body_h
+        } else {
+            0
+        };
+        for (vis, (i, ch)) in bundle
+            .changes
+            .iter()
+            .enumerate()
+            .skip(start)
+            .take(body_h)
+            .enumerate()
+        {
+            let y = area.y + 1 + vis as u16;
+            let (badge, col) = match ch.kind {
+                FileStatusKind::Added => ("A", ctx.theme.status_added),
+                FileStatusKind::Deleted => ("D", ctx.theme.status_deleted),
+                FileStatusKind::Renamed => ("R", ctx.theme.status_renamed),
+                FileStatusKind::Copied => ("C", ctx.theme.status_renamed),
+                _ => ("M", ctx.theme.status_modified),
+            };
+            let stats = format!(" +{} -{}", ch.additions, ch.deletions);
+            let path_w = w.saturating_sub(stats.width() + 5);
+            let is_sel = i == sel_file;
+            let line = Line::from(vec![
+                Span::styled(
+                    format!(" {badge} "),
+                    Style::default().fg(col).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    truncate_to_width(&ch.path, path_w),
+                    Style::default().fg(ctx.theme.fg_primary),
+                ),
+                Span::styled(stats, Style::default().fg(ctx.theme.fg_muted)),
+            ]);
+            frame.render_widget(
+                Paragraph::new(line).style(Style::default().bg(if is_sel {
+                    ctx.theme.bg_panel
+                } else {
+                    ctx.theme.bg_elevated
+                })),
+                Rect::new(area.x, y, area.width, 1),
+            );
+        }
+        return;
+    }
+
+    // Full unified diff mode for the selected file.
+    let change = &bundle.changes[sel_file];
+    let diff_key = FileDiffKey {
+        details: details_key,
+        path: change.path.clone(),
+        old_path: change.old_path.clone(),
+        context: DiffContext::from_lines(state.config.jbgit.diff.context_lines),
+        whitespace: state.config.jbgit.diff.whitespace.to_core(),
+    };
+    let Some(diff) = state.diff_caches.peek_diff(&diff_key) else {
+        ctx.record_scroll_bound(ScrollPane::RebaseDiff, body_h, 0);
+        frame.render_widget(
+            Paragraph::new(Span::styled(
+                format!(" {}", ctx.t("dialog.rebase.preview_loading")),
+                Style::default().fg(ctx.theme.fg_muted),
+            )),
+            Rect::new(area.x, area.y + 1, area.width, 1),
+        );
+        return;
+    };
+
+    let mut diff_lines: Vec<Line<'static>> = Vec::new();
+    if diff.is_binary {
+        diff_lines.push(Line::from(Span::styled(
+            format!(" {}", ctx.t("diff.binary_file")),
+            Style::default().fg(ctx.theme.fg_muted),
+        )));
+    } else if diff.hunks.is_empty() {
+        diff_lines.push(Line::from(Span::styled(
+            format!(" {}", ctx.t("diff.no_changes")),
+            Style::default().fg(ctx.theme.fg_muted),
+        )));
+    } else {
+        for hunk in &diff.hunks {
+            diff_lines.push(Line::from(Span::styled(
+                truncate_to_width(&hunk.header, w),
+                Style::default()
+                    .fg(ctx.theme.fg_accent_link)
+                    .bg(ctx.theme.bg_panel),
+            )));
+            for dl in &hunk.lines {
+                let (prefix, fg) = match dl.kind {
+                    DiffLineKind::Added => ('+', ctx.theme.status_added),
+                    DiffLineKind::Deleted => ('-', ctx.theme.status_deleted),
+                    DiffLineKind::Context => (' ', ctx.theme.fg_primary),
+                    DiffLineKind::NoNewline => ('\\', ctx.theme.fg_muted),
+                };
+                let text = format!("{prefix}{}", dl.text);
+                diff_lines.push(Line::from(Span::styled(
+                    truncate_to_width(&text, w),
+                    Style::default().fg(fg),
+                )));
+            }
+        }
+    }
+    let total = diff_lines.len();
+    let max_scroll = total.saturating_sub(body_h);
+    ctx.record_scroll_bound(ScrollPane::RebaseDiff, body_h, max_scroll);
+    let offset = d.diff_scroll.offset().min(max_scroll);
+    for (vis, line) in diff_lines.into_iter().skip(offset).take(body_h).enumerate() {
+        frame.render_widget(
+            Paragraph::new(line),
+            Rect::new(area.x, area.y + 1 + vis as u16, area.width, 1),
+        );
+    }
 }

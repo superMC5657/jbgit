@@ -182,9 +182,11 @@ impl I18n {
         match action {
             TodoAction::Pick => self.t("dialog.rebase.action.pick"),
             TodoAction::Reword => self.t("dialog.rebase.action.reword"),
+            TodoAction::Edit => self.t("dialog.rebase.action.edit"),
             TodoAction::Squash => self.t("dialog.rebase.action.squash"),
             TodoAction::Fixup => self.t("dialog.rebase.action.fixup"),
             TodoAction::Drop => self.t("dialog.rebase.action.drop"),
+            TodoAction::UpdateRef => self.t("dialog.rebase.action.update_ref"),
         }
     }
 
@@ -437,10 +439,15 @@ impl I18n {
                 }
                 jbgit_core::PatchInput::Clipboard => self.t("git_op.apply_patch_clipboard").to_string(),
             },
-            GitOp::Rebase { onto, branch } => match branch {
-                Some(b) => self.t_fmt("git_op.rebase_branch", &[("branch", b), ("onto", onto)]),
-                None => self.t_fmt("git_op.rebase_onto", &[("onto", onto)]),
-            },
+            GitOp::Rebase { options } => {
+                let target = options
+                    .effective_onto()
+                    .unwrap_or(if options.root { "--root" } else { "HEAD" });
+                match options.effective_branch() {
+                    Some(b) => self.t_fmt("git_op.rebase_branch", &[("branch", b), ("onto", target)]),
+                    None => self.t_fmt("git_op.rebase_onto", &[("onto", target)]),
+                }
+            }
             GitOp::CherryPick { oids } => {
                 let c = oids.len().to_string();
                 self.t_fmt("git_op.cherry_pick", &[("count", &c)])
@@ -455,8 +462,8 @@ impl I18n {
                 self.t_fmt("git_op.reset", &[("mode", mode_lbl), ("short", &short)])
             }
             GitOp::Fetch => self.t("git_op.fetch").to_string(),
-            GitOp::Pull { rebase } => {
-                if *rebase {
+            GitOp::Pull { options } => {
+                if options.rebase {
                     self.t("git_op.pull_rebase").to_string()
                 } else {
                     self.t("git_op.pull").to_string()
@@ -491,9 +498,13 @@ impl I18n {
                 let c = todo.len().to_string();
                 self.t_fmt("git_op.rewrite_history", &[("count", &c)])
             }
-            GitOp::FixupCommit { target, .. } => {
+            GitOp::FixupCommit { target, kind, .. } => {
                 let short = target.short();
-                self.t_fmt("git_op.fixup_commit", &[("short", &short)])
+                let key = match kind {
+                    jbgit_core::FixupKind::Fixup => "git_op.fixup_commit",
+                    jbgit_core::FixupKind::Squash => "git_op.squash_commit",
+                };
+                self.t_fmt(key, &[("short", &short)])
             }
             GitOp::Ongoing { kind, step } => {
                 let k = self.ongoing_title(*kind);
@@ -785,7 +796,12 @@ custom_extra = "自定义内容"
             "检出 'main'"
         );
         assert_eq!(
-            zh.git_op_label(&GitOp::Pull { rebase: true }),
+            zh.git_op_label(&GitOp::Pull {
+                options: jbgit_core::PullOptions {
+                    rebase: true,
+                    ..Default::default()
+                },
+            }),
             "拉取更新 (变基)"
         );
         assert_eq!(

@@ -1,4 +1,6 @@
-use jbgit_core::{GitOp, MergeOptions, OngoingKind, OngoingStep, RefKind};
+use jbgit_core::{
+    GitOp, MergeOptions, OngoingKind, OngoingStep, PullOptions, RebaseOptions, RefKind,
+};
 
 use crate::app::{Action, AppState, ContextMenuItem};
 use crate::config::KeymapScope;
@@ -16,6 +18,10 @@ pub fn branch_menu_items(state: &AppState, name: &str, kind: RefKind) -> Vec<Con
     let checkout_sc = catalog::shortcut_for_action(state, &[KeymapScope::Branch], &KeyAction::Checkout);
     let new_branch_sc = catalog::shortcut_for_action(state, &[KeymapScope::Branch], &KeyAction::NewBranch);
     let pull_sc = catalog::shortcut_for_action(state, &[KeymapScope::Global], &KeyAction::GitPull);
+    let pull_dlg_sc =
+        catalog::shortcut_for_action(state, &[KeymapScope::Global], &KeyAction::GitPullDialog);
+    let rebase_dlg_sc =
+        catalog::shortcut_for_action(state, &[KeymapScope::Global], &KeyAction::GitRebaseDialog);
     let push_sc = catalog::shortcut_for_action(state, &[KeymapScope::Global], &KeyAction::GitPush);
     let rename_sc = catalog::shortcut_for_action(state, &[KeymapScope::Branch], &KeyAction::RenameBranch);
     let delete_sc = catalog::all_shortcuts_for_action(state, &[KeymapScope::Branch], &KeyAction::DeleteBranch);
@@ -92,8 +98,7 @@ pub fn branch_menu_items(state: &AppState, name: &str, kind: RefKind) -> Vec<Con
                     Some('k'),
                     None,
                     op(GitOp::Rebase {
-                        onto: cur.clone(),
-                        branch: Some(name.clone()),
+                        options: RebaseOptions::onto(cur.clone(), Some(name.clone())),
                     }),
                 )
                 .enabled_if(
@@ -131,11 +136,21 @@ pub fn branch_menu_items(state: &AppState, name: &str, kind: RefKind) -> Vec<Con
                     Some('b'),
                     None,
                     op(GitOp::Rebase {
-                        onto: name.clone(),
-                        branch: None,
+                        options: RebaseOptions::onto(name.clone(), None),
                     }),
                 )
                 .enabled_if(!is_current, i18n.t("menu.branch.rebase_self"))
+                .require(no_ongoing.clone()),
+            );
+            items.push(
+                run(
+                    i18n.t("menu.branch.rebase_options"),
+                    Some('r'),
+                    rebase_dlg_sc.as_deref(),
+                    vec![Action::PromptRebase {
+                        onto: (!is_current).then(|| name.clone()),
+                    }],
+                )
                 .require(no_ongoing.clone()),
             );
             items.push(
@@ -162,7 +177,9 @@ pub fn branch_menu_items(state: &AppState, name: &str, kind: RefKind) -> Vec<Con
             items.push(ContextMenuItem::separator());
             let upstream = info.and_then(|i| i.upstream.clone());
             let update = if is_current {
-                op(GitOp::Pull { rebase: false })
+                op(GitOp::Pull {
+                    options: PullOptions::default(),
+                })
             } else {
                 match upstream.as_ref().and_then(|u| u.split_once('/')) {
                     Some((remote, rb)) => op(GitOp::UpdateBranch {
@@ -191,6 +208,19 @@ pub fn branch_menu_items(state: &AppState, name: &str, kind: RefKind) -> Vec<Con
                         Ok(())
                     }),
             );
+            if is_current {
+                items.push(
+                    run(
+                        i18n.t("menu.branch.pull_options"),
+                        Some('l'),
+                        pull_dlg_sc.as_deref(),
+                        vec![Action::PromptPull],
+                    )
+                    .icon("↓")
+                    .enabled_if(!detached, i18n.t("menu.log.detached_no_branch"))
+                    .require(no_ongoing.clone()),
+                );
+            }
             items.push(
                 run(
                     i18n.t("menu.branch.push"),
@@ -290,9 +320,19 @@ pub fn branch_menu_items(state: &AppState, name: &str, kind: RefKind) -> Vec<Con
                     Some('b'),
                     None,
                     op(GitOp::Rebase {
-                        onto: name.to_string(),
-                        branch: None,
+                        options: RebaseOptions::onto(name.to_string(), None),
                     }),
+                )
+                .require(no_ongoing.clone()),
+            );
+            items.push(
+                run(
+                    i18n.t("menu.branch.rebase_options"),
+                    Some('r'),
+                    rebase_dlg_sc.as_deref(),
+                    vec![Action::PromptRebase {
+                        onto: Some(name.to_string()),
+                    }],
                 )
                 .require(no_ongoing.clone()),
             );
@@ -354,6 +394,17 @@ pub fn branch_menu_items(state: &AppState, name: &str, kind: RefKind) -> Vec<Con
                 .require(no_ongoing.clone()),
             );
             items.push(merge_options_item(state, name, &cur).require(no_ongoing.clone()));
+            items.push(
+                run(
+                    i18n.t("menu.branch.rebase_options"),
+                    Some('b'),
+                    rebase_dlg_sc.as_deref(),
+                    vec![Action::PromptRebase {
+                        onto: Some(name.to_string()),
+                    }],
+                )
+                .require(no_ongoing.clone()),
+            );
             items.push(ContextMenuItem::separator());
 
             let push_tag_dialog = |remote: &str| {

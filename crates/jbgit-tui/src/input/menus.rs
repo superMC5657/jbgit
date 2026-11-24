@@ -282,6 +282,7 @@ pub fn route_overlay_and_stash_click(
         }
         HitTarget::DialogButton(DialogButtonKind::Confirm) => vec![Action::DialogConfirm],
         HitTarget::DialogButton(DialogButtonKind::Cancel) => vec![Action::PopModal],
+        HitTarget::DialogButton(DialogButtonKind::Fetch) => vec![Action::PullDialogFetch],
         HitTarget::DialogCheckbox => vec![Action::DialogToggleCheckbox],
         HitTarget::RepoSwitcherRow(row) => {
             let mut out = vec![Action::RepoSwitcherSetState {

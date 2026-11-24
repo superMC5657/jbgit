@@ -363,6 +363,8 @@ pub fn is_action_applicable(run: &KeyAction, state: &AppState) -> bool {
         | KeyAction::ToggleBranchesPopup
         | KeyAction::GitFetch
         | KeyAction::GitPull
+        | KeyAction::GitPullDialog
+        | KeyAction::GitRebaseDialog
         | KeyAction::GitPush
         | KeyAction::UpdateProject
         | KeyAction::ConfigureRemotes
@@ -590,8 +592,12 @@ pub fn execute_action(run: &KeyAction, state: &AppState) -> Option<Vec<Action>> 
                     state.i18n.t("menu.log.detached_no_branch").to_string(),
                 )]);
             }
-            Some(vec![Action::RunGitOp(GitOp::Pull { rebase: false })])
+            Some(vec![Action::RunGitOp(GitOp::Pull {
+                options: jbgit_core::PullOptions::default(),
+            })])
         }
+        KeyAction::GitPullDialog => Some(vec![Action::PromptPull]),
+        KeyAction::GitRebaseDialog => Some(vec![Action::PromptRebase { onto: None }]),
         KeyAction::SwitchRepository => Some(vec![Action::OpenRepoSwitcher]),
         KeyAction::ApplyPatch => Some(notice_on_err(apply_patch_command(state, false))),
         KeyAction::ApplyPatchClipboard => Some(notice_on_err(apply_patch_command(state, true))),
@@ -1428,6 +1434,7 @@ pub fn commit_drop(state: &AppState, oids: &[Oid]) -> CommandResult {
         op(GitOp::RewriteHistory {
             base: plan.base,
             todo,
+            no_verify: false,
         }),
     ))))
 }
