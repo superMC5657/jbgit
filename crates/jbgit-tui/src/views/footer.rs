@@ -271,11 +271,13 @@ struct RawPill {
     action: Option<KeyAction>,
     key: String,
     label: String,
+    emphasized: bool,
 }
 
 struct FooterPill {
     key: String,
     label: String,
+    emphasized: bool,
 }
 
 impl FooterPill {
@@ -283,6 +285,19 @@ impl FooterPill {
         Self {
             key: key.into(),
             label: label.into(),
+            emphasized: false,
+        }
+    }
+
+    fn with_emphasized(
+        key: impl Into<String>,
+        label: impl Into<String>,
+        emphasized: bool,
+    ) -> Self {
+        Self {
+            key: key.into(),
+            label: label.into(),
+            emphasized,
         }
     }
 
@@ -379,6 +394,7 @@ fn fuse_pair(
         action: None,
         key: combined_key,
         label: merged_label,
+        emphasized: false,
     };
     pills.remove(drop);
 }
@@ -397,7 +413,7 @@ fn merge_paired_pills(mut raw: Vec<RawPill>, state: &AppState) -> Vec<FooterPill
         state.i18n.t("view.footer.pill.file").to_string(),
     );
     raw.into_iter()
-        .map(|p| FooterPill::new(p.key, p.label))
+        .map(|p| FooterPill::with_emphasized(p.key, p.label, p.emphasized))
         .collect()
 }
 
@@ -423,6 +439,7 @@ fn collect_scope_pills(
                 action: Some(b.run.clone()),
                 key: key_disp,
                 label: catalog::footer_pill_label(ctx.state, &b.run, b.desc.as_deref()),
+                emphasized: false,
             });
             seen_actions.push(b.run.clone());
         }
@@ -492,6 +509,20 @@ fn collect_footer_hints(state: &AppState) -> FooterHints {
             let commit_scopes = [KeymapScope::Commit];
             let mut seen_actions = Vec::new();
             let mut raw_pills = Vec::new();
+            let (esc_hint, edit_hint) =
+                catalog::commit_editor_structural_hints(state, editing_author);
+            let esc_label = if editing_author {
+                esc_hint.label
+            } else {
+                t("view.footer.pill.exit_edit")
+            };
+            raw_pills.push(RawPill {
+                action: None,
+                key: esc_hint.key,
+                label: esc_label,
+                emphasized: true,
+            });
+
             let ctx = KeyResolveCtx {
                 state,
                 filter_speed_search: false,
@@ -507,22 +538,11 @@ fn collect_footer_hints(state: &AppState) -> FooterHints {
                 &mut raw_pills,
             );
 
-            let (esc_hint, edit_hint) =
-                catalog::commit_editor_structural_hints(state, editing_author);
-            let esc_label = if editing_author {
-                esc_hint.label
-            } else {
-                t("view.footer.pill.back")
-            };
-            raw_pills.push(RawPill {
-                action: None,
-                key: esc_hint.key,
-                label: esc_label,
-            });
             raw_pills.push(RawPill {
                 action: None,
                 key: edit_hint.key,
                 label: edit_hint.label,
+                emphasized: false,
             });
 
             return FooterHints {
@@ -551,6 +571,7 @@ fn collect_footer_hints(state: &AppState) -> FooterHints {
             action: lead.action,
             key: lead.key,
             label: lead.label,
+            emphasized: false,
         });
     }
 
@@ -595,6 +616,7 @@ fn collect_footer_hints(state: &AppState) -> FooterHints {
                     action: probe.action,
                     key: probe.key,
                     label: probe.label,
+                    emphasized: false,
                 });
             }
 
@@ -603,6 +625,7 @@ fn collect_footer_hints(state: &AppState) -> FooterHints {
                     action: lit.action,
                     key: lit.key,
                     label: lit.label,
+                    emphasized: false,
                 });
             }
         }
@@ -705,6 +728,14 @@ fn render_dynamic_footer_hints_from_plan(
     let pill_label_style = Style::default()
         .bg(ctx.theme.bg_panel)
         .fg(ctx.theme.fg_muted);
+    let emphasized_badge_style = Style::default()
+        .bg(ctx.theme.border_focused)
+        .fg(ctx.theme.fg_bright)
+        .add_modifier(Modifier::BOLD);
+    let emphasized_label_style = Style::default()
+        .bg(ctx.theme.bg_panel)
+        .fg(ctx.theme.fg_bright)
+        .add_modifier(Modifier::BOLD);
 
     let mut lines: Vec<Line<'static>> = Vec::with_capacity(visible_rows);
 
@@ -717,8 +748,13 @@ fn render_dynamic_footer_hints_from_plan(
         for &pill_idx in pill_indices {
             let pill = &hints.pills[pill_idx];
             used_w += pill.display_width();
-            spans.push(Span::styled(pill.key_badge(), pill_badge_style));
-            spans.push(Span::styled(pill.label_text(), pill_label_style));
+            let (badge_style, label_style) = if pill.emphasized {
+                (emphasized_badge_style, emphasized_label_style)
+            } else {
+                (pill_badge_style, pill_label_style)
+            };
+            spans.push(Span::styled(pill.key_badge(), badge_style));
+            spans.push(Span::styled(pill.label_text(), label_style));
         }
 
         if is_last_row && hidden > 0 {

@@ -1120,3 +1120,70 @@ fn annotate_alt_g_resolves_without_shadowing_across_all_presets() {
         }
     }
 }
+
+#[test]
+fn terminal_too_small_guard_matches_40x10_threshold_and_i18n_text() {
+    let mut ts = TestSession::with_snapshot(snapshot());
+
+    // Below 40x10 renders the too-small guard with matching min 40x10 text in en-US and zh-CN.
+    for (w, h) in [(35, 8), (39, 10), (40, 9)] {
+        ts.state_mut().i18n = Arc::new(crate::i18n::I18n::load("en-US", None));
+        let en_buf = ts.render(w, h);
+        let en_txt = screen_text(&en_buf);
+        assert!(en_txt.contains("Terminal too small"), "{w}x{h}: {en_txt}");
+        assert!(en_txt.contains("(min 40x10)"), "{w}x{h}: {en_txt}");
+
+        ts.state_mut().i18n = Arc::new(crate::i18n::I18n::load("zh-CN", None));
+        let zh_buf = ts.render(w, h);
+        let zh_txt = screen_text(&zh_buf);
+        let zh_compact = zh_txt.replace(' ', "");
+        assert!(zh_compact.contains("终端窗口过小"), "{w}x{h}: {zh_txt}");
+        assert!(zh_compact.contains("(最小要求40x10)"), "{w}x{h}: {zh_txt}");
+    }
+
+    // At or above 40x10 renders the normal UI without the guard.
+    ts.state_mut().i18n = Arc::new(crate::i18n::I18n::load("en-US", None));
+    for (w, h) in [(40, 10), (50, 16)] {
+        let buf = ts.render(w, h);
+        let txt = screen_text(&buf);
+        assert!(!txt.contains("Terminal too small"), "{w}x{h}: {txt}");
+    }
+}
+
+#[test]
+fn commit_message_editor_shows_prominent_edit_mode_and_esc_exit_indicators() {
+    let mut ts = TestSession::with_snapshot(snapshot());
+    ts.dispatch(Action::SwitchTab(WorkspaceTab::Commit));
+    ts.dispatch(Action::FocusPane(PaneId::CommitChangesTree));
+
+    // Unfocused: ruler row must not display EDIT badge.
+    let buf_unfocused = ts.render(140, 40);
+    let ed_rect = ts.region_of(|t| matches!(t, HitTarget::CommitEditorArea));
+    let ruler_unfocused = row_text(&buf_unfocused, ed_rect.y);
+    assert!(!ruler_unfocused.contains("EDIT"), "{ruler_unfocused}");
+
+    // Focused in en-US: ruler shows EDIT badge; footer leads with emphasized Esc Exit edit pill.
+    ts.dispatch(Action::FocusPane(PaneId::CommitMessageEditor));
+    let buf_en = ts.render(140, 40);
+    let ruler_en = row_text(&buf_en, ed_rect.y);
+    assert!(ruler_en.contains("EDIT"), "{ruler_en}");
+
+    let footer_en = row_text(&buf_en, 39);
+    assert!(footer_en.contains("Esc"), "{footer_en}");
+    assert!(footer_en.contains("Exit edit"), "{footer_en}");
+
+    // Verify Esc key badge cell uses border_focused background and fg_bright foreground.
+    let esc_col = footer_en.find(" Esc ").expect(&footer_en) as u16;
+    let esc_cell = &buf_en[(esc_col + 1, 39)];
+    assert_eq!(esc_cell.bg, ts.state().theme.border_focused);
+    assert_eq!(esc_cell.fg, ts.state().theme.fg_bright);
+
+    // Focused in zh-CN: ruler shows 编辑中 and footer shows 退出编辑.
+    ts.state_mut().i18n = Arc::new(crate::i18n::I18n::load("zh-CN", None));
+    let buf_zh = ts.render(140, 40);
+    let ruler_zh = row_text(&buf_zh, ed_rect.y);
+    assert!(ruler_zh.replace(' ', "").contains("编辑中"), "{ruler_zh}");
+    let footer_zh = row_text(&buf_zh, 39);
+    assert!(footer_zh.contains("Esc"), "{footer_zh}");
+    assert!(footer_zh.replace(' ', "").contains("退出编辑"), "{footer_zh}");
+}

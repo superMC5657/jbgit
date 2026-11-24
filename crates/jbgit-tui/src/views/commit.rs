@@ -681,14 +681,24 @@ fn render_commit_message_editor(
         } else {
             state.i18n.t("view.commit.msg_hint_body")
         };
-        let left = vec![Span::styled(
+        let mut left = Vec::new();
+        if focused && !sw.empty_message_error() {
+            left.push(Span::styled(
+                state.i18n.t("view.commit.msg_editing_badge").to_string(),
+                Style::default()
+                    .fg(ctx.theme.fg_bright)
+                    .bg(ctx.theme.bg_selection_focused)
+                    .add_modifier(Modifier::BOLD),
+            ));
+        }
+        left.push(Span::styled(
             hint_text.to_string(),
             Style::default().fg(if sw.empty_message_error() {
                 ctx.theme.status_conflicted
             } else {
                 ctx.theme.fg_muted
             }),
-        )];
+        ));
         let right = vec![Span::styled(
             format!("{subj_len}/50 "),
             Style::default().fg(len_color),

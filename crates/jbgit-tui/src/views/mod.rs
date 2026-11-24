@@ -29,6 +29,9 @@ use crate::hit_test::HitTarget;
 use crate::theme::ThemePalette;
 use crate::widgets::{DividerProps, OneCellSplitter};
 
+pub(crate) const MIN_TERMINAL_WIDTH: u16 = 40;
+pub(crate) const MIN_TERMINAL_HEIGHT: u16 = 10;
+
 pub fn render_app(frame: &mut Frame<'_>, state: &mut AppState) {
     let area = frame.area();
     state.terminal_area = area;
@@ -42,9 +45,11 @@ pub fn render_app(frame: &mut Frame<'_>, state: &mut AppState) {
         area,
     );
 
-    if area.width < 40 || area.height < 10 {
+    if area.width < MIN_TERMINAL_WIDTH || area.height < MIN_TERMINAL_HEIGHT {
         let w_s = area.width.to_string();
         let h_s = area.height.to_string();
+        let min_w_s = MIN_TERMINAL_WIDTH.to_string();
+        let min_h_s = MIN_TERMINAL_HEIGHT.to_string();
         let msg = Paragraph::new(vec![
             Line::from(Span::styled(
                 state.i18n.t("view.common.terminal_too_small"),
@@ -53,9 +58,15 @@ pub fn render_app(frame: &mut Frame<'_>, state: &mut AppState) {
                     .add_modifier(Modifier::BOLD),
             )),
             Line::from(Span::styled(
-                state
-                    .i18n
-                    .t_fmt("view.common.terminal_size", &[("w", &w_s), ("h", &h_s)]),
+                state.i18n.t_fmt(
+                    "view.common.terminal_size",
+                    &[
+                        ("w", &w_s),
+                        ("h", &h_s),
+                        ("min_w", &min_w_s),
+                        ("min_h", &min_h_s),
+                    ],
+                ),
                 Style::default().fg(state.theme.fg_muted),
             )),
         ])
