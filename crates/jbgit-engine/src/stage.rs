@@ -483,7 +483,14 @@ struct ThreeDocPaths {
     local_path: String,
 }
 
-fn find_head_to_index_source(repo: &Repository, staged_path: &str) -> Option<String> {
+fn find_head_to_index_source(
+    repo: &Repository,
+    staged_path: &str,
+    token: &EpochToken,
+) -> Option<String> {
+    if token.is_stale() {
+        return None;
+    }
     let head_tree = repo.head().ok()?.peel_to_commit().ok()?.tree().ok()?;
     let index_entries = repo.index().map(|idx| idx.len()).unwrap_or(0);
     let mut diff_opts = DiffOptions::new();
@@ -496,7 +503,13 @@ fn find_head_to_index_source(repo: &Repository, staged_path: &str) -> Option<Str
     let mut diff = repo
         .diff_tree_to_index(Some(&head_tree), None, Some(&mut diff_opts))
         .ok()?;
+    if token.is_stale() {
+        return None;
+    }
     diff.find_similar(Some(&mut find_opts)).ok()?;
+    if token.is_stale() {
+        return None;
+    }
     for delta in diff.deltas() {
         if !matches!(delta.status(), Delta::Renamed | Delta::Copied) {
             continue;
@@ -515,7 +528,18 @@ fn find_head_to_index_source(repo: &Repository, staged_path: &str) -> Option<Str
     None
 }
 
-fn find_index_to_workdir_rename_target(repo: &Repository, staged_path: &str) -> Option<String> {
+fn find_index_to_workdir_rename_target(
+    repo: &Repository,
+    staged_path: &str,
+    token: &EpochToken,
+) -> Option<String> {
+    if token.is_stale() {
+        return None;
+    }
+    let index_entries = repo.index().map(|idx| idx.len()).unwrap_or(0);
+    if index_entries > LARGE_INDEX_ENTRIES {
+        return None;
+    }
     let mut diff_opts = DiffOptions::new();
     diff_opts
         .include_untracked(true)
@@ -524,9 +548,15 @@ fn find_index_to_workdir_rename_target(repo: &Repository, staged_path: &str) -> 
     let mut diff = repo
         .diff_index_to_workdir(None, Some(&mut diff_opts))
         .ok()?;
+    if token.is_stale() {
+        return None;
+    }
     let mut find_opts = DiffFindOptions::new();
     find_opts.renames(true).for_untracked(true);
     diff.find_similar(Some(&mut find_opts)).ok()?;
+    if token.is_stale() {
+        return None;
+    }
     for delta in diff.deltas() {
         if delta.status() != Delta::Renamed {
             continue;
@@ -548,7 +578,12 @@ fn find_index_to_workdir_rename_target(repo: &Repository, staged_path: &str) -> 
 /// Independently resolves the `HEAD`, `Staged` (index), and `Local` (workdir) paths
 /// for a staging diff key, handling staged renames/copies, unstaged renames, and
 /// dual-stage renames (`HEAD:a -> Index:b -> Workdir:c`).
-fn resolve_three_doc_paths(repo: &Repository, workdir: &Path, key: &StageDiffKey) -> ThreeDocPaths {
+fn resolve_three_doc_paths(
+    repo: &Repository,
+    workdir: &Path,
+    key: &StageDiffKey,
+    token: &EpochToken,
+) -> ThreeDocPaths {
     match key.side {
         StageDiffSide::Staged => {
             let staged_path = key.path.clone();
@@ -556,7 +591,7 @@ fn resolve_three_doc_paths(repo: &Repository, workdir: &Path, key: &StageDiffKey
             let local_path = if fs::symlink_metadata(workdir.join(&staged_path)).is_ok() {
                 staged_path.clone()
             } else {
-                find_index_to_workdir_rename_target(repo, &staged_path)
+                find_index_to_workdir_rename_target(repo, &staged_path, token)
                     .unwrap_or_else(|| staged_path.clone())
             };
             ThreeDocPaths {
@@ -577,7 +612,8 @@ fn resolve_three_doc_paths(repo: &Repository, workdir: &Path, key: &StageDiffKey
             let head_path = if in_head {
                 staged_path.clone()
             } else {
-                find_head_to_index_source(repo, &staged_path).unwrap_or_else(|| staged_path.clone())
+                find_head_to_index_source(repo, &staged_path, token)
+                    .unwrap_or_else(|| staged_path.clone())
             };
             ThreeDocPaths {
                 head_path,
@@ -782,7 +818,10 @@ pub(crate) fn load_stage_file_diff_sync(
             });
         }
 
-        let paths = resolve_three_doc_paths(repo, &location.workdir, key);
+        let paths = resolve_three_doc_paths(repo, &location.workdir, key, token);
+        if token.is_stale() {
+            return Err(EngineError::Cancelled);
+        }
 
         let vcs_side = read_head_tree_path(repo, &paths.head_path);
         let (staged_side, is_conflicted) = read_index_entry(repo, &paths.staged_path);
@@ -1131,9 +1170,8 @@ pub(crate) fn apply_stage_buffer_sync(
         entry.gid = 0;
         entry.file_size = 0;
 
-        if path_needs_git_clean_filter(repo, path, new_staged_bytes)
-            && let Ok(filtered_oid) = hash_object_with_filters(location, path, new_staged_bytes)
-        {
+        if path_needs_git_clean_filter(repo, path, new_staged_bytes) {
+            let filtered_oid = hash_object_with_filters(location, path, new_staged_bytes)?;
             entry.id = filtered_oid;
             index.add(&entry)?;
         } else {
@@ -1225,6 +1263,143 @@ fn is_submodule_target(repo: &Repository, index: &git2::Index, rel: &Path, full:
         || (full.is_dir() && full.join(".git").exists())
 }
 
+const ATTR_FLAGS: git2::AttrCheckFlags =
+    git2::AttrCheckFlags::FILE_THEN_INDEX.union(git2::AttrCheckFlags::NO_SYSTEM);
+
+/// Returns `true` when `path` has an external clean-filter driver (`filter=...`)
+/// or `working-tree-encoding` configured in `.gitattributes` that libgit2's
+/// `index.add_path` / `index.update_all` cannot execute.
+fn path_has_external_clean_filter(repo: &Repository, path: &str) -> bool {
+    let rel = Path::new(path);
+    let has_string_attr = |name: &str| {
+        matches!(
+            git2::AttrValue::from_string(repo.get_attr(rel, name, ATTR_FLAGS).ok().flatten()),
+            git2::AttrValue::String(s) if !s.is_empty()
+        )
+    };
+    has_string_attr("filter") || has_string_attr("working-tree-encoding")
+}
+
+fn dir_has_external_clean_filter(repo: &Repository, workdir: &Path, dir_rel: &str) -> bool {
+    let start = workdir.join(dir_rel);
+    let mut stack = vec![(start, dir_rel.to_string())];
+    let mut visited = 0usize;
+    while let Some((dir, rel_prefix)) = stack.pop() {
+        let Ok(entries) = fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            visited += 1;
+            if visited > 4096 {
+                return true;
+            }
+            let name = entry.file_name();
+            if name == ".git" {
+                continue;
+            }
+            let path = entry.path();
+            let Ok(meta) = fs::symlink_metadata(&path) else {
+                continue;
+            };
+            if meta.file_type().is_symlink() {
+                continue;
+            }
+            let child_rel = if rel_prefix.is_empty() {
+                name.to_string_lossy().into_owned()
+            } else {
+                format!("{rel_prefix}/{}", name.to_string_lossy())
+            };
+            if meta.file_type().is_dir() {
+                stack.push((path, child_rel));
+            } else if path_has_external_clean_filter(repo, &child_rel) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn tracked_worktree_changes_need_git_clean_filter(repo: &Repository) -> bool {
+    let mut opts = DiffOptions::new();
+    opts.include_typechange(true);
+    let Ok(diff) = repo.diff_index_to_workdir(None, Some(&mut opts)) else {
+        return false;
+    };
+    for delta in diff.deltas() {
+        if matches!(delta.status(), Delta::Modified | Delta::Typechange)
+            && let Some(p) = delta.new_file().path()
+        {
+            let rel = p.to_string_lossy().replace('\\', "/");
+            if path_has_external_clean_filter(repo, &rel) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn git_add_literal_paths_sync(
+    location: &RepoLocation,
+    paths: &[String],
+) -> Result<(), EngineError> {
+    if paths.is_empty() {
+        return Ok(());
+    }
+    let git = crate::cli::require_git_executable()?;
+    let (args, stdin_payload) = crate::cli::prepare_pathspec_args(
+        vec!["--literal-pathspecs".to_string(), "add".to_string()],
+        paths,
+    );
+    let mut cmd = crate::cli::non_interactive_std_write_command(&git, Some(&location.workdir));
+    cmd.args(&args).stdout(Stdio::piped()).stderr(Stdio::piped());
+    if stdin_payload.is_some() {
+        cmd.stdin(Stdio::piped());
+    }
+    let mut child = cmd.spawn().map_err(EngineError::Io)?;
+    let stdin_pipe = child.stdin.take();
+    let out = std::thread::scope(|s| -> Result<std::process::Output, EngineError> {
+        let writer = stdin_payload
+            .as_deref()
+            .zip(stdin_pipe)
+            .map(|(bytes, mut pipe)| {
+                s.spawn(move || {
+                    let _ = pipe.write_all(bytes);
+                })
+            });
+        let out = child.wait_with_output().map_err(EngineError::Io)?;
+        if let Some(h) = writer {
+            let _ = h.join();
+        }
+        Ok(out)
+    })?;
+    if !out.status.success() {
+        let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
+        return Err(EngineError::Other(if stderr.is_empty() {
+            format!("git add failed with status {}", out.status)
+        } else {
+            stderr
+        }));
+    }
+    Ok(())
+}
+
+fn git_add_update_tracked_sync(location: &RepoLocation) -> Result<(), EngineError> {
+    let git = crate::cli::require_git_executable()?;
+    let out = crate::cli::non_interactive_std_write_command(&git, Some(&location.workdir))
+        .args(["add", "-u"])
+        .output()
+        .map_err(EngineError::Io)?;
+    if !out.status.success() {
+        let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
+        return Err(EngineError::Other(if stderr.is_empty() {
+            format!("git add -u failed with status {}", out.status)
+        } else {
+            stderr
+        }));
+    }
+    Ok(())
+}
+
 fn stage_submodule_gitlink(
     location: &RepoLocation,
     repo: &Repository,
@@ -1239,6 +1414,9 @@ fn stage_submodule_gitlink(
             return Ok(());
         }
     }
+    // Reload libgit2's cached in-memory index from disk so prior external `git add`
+    // writes (earlier submodules or clean-filtered files) are not clobbered.
+    repo.index()?.read(true)?;
     let mut sub = repo.find_submodule(trimmed)?;
     sub.add_to_index(true)?;
     Ok(())
@@ -1298,6 +1476,7 @@ pub(crate) fn stage_targets_sync(
     with_thread_repo(&location.git_dir, |repo| {
         let mut index = repo.index()?;
         let mut index_dirty = false;
+        let mut cli_add_paths: Vec<String> = Vec::new();
         let mut submodule_paths: Vec<String> = Vec::new();
         for t in targets {
             let trimmed = t.path.trim_end_matches(['/', '\\']);
@@ -1320,12 +1499,22 @@ pub(crate) fn stage_targets_sync(
                     index_dirty = true;
                 }
                 Ok(meta) if meta.file_type().is_dir() => {
-                    index.add_all([trimmed], IndexAddOption::DEFAULT, None)?;
-                    index_dirty = true;
+                    if trimmed.contains(['[', ']', '*', '?'])
+                        || dir_has_external_clean_filter(repo, &location.workdir, trimmed)
+                    {
+                        cli_add_paths.push(trimmed.to_string());
+                    } else {
+                        index.add_all([trimmed], IndexAddOption::DEFAULT, None)?;
+                        index_dirty = true;
+                    }
                 }
                 Ok(_) => {
-                    index.add_path(rel)?;
-                    index_dirty = true;
+                    if path_has_external_clean_filter(repo, trimmed) {
+                        cli_add_paths.push(trimmed.to_string());
+                    } else {
+                        index.add_path(rel)?;
+                        index_dirty = true;
+                    }
                 }
                 Err(_) => {
                     let _ = index.conflict_remove(rel);
@@ -1347,8 +1536,15 @@ pub(crate) fn stage_targets_sync(
             index.write()?;
         }
         drop(index);
+        let ran_external_git = !cli_add_paths.is_empty() || !submodule_paths.is_empty();
+        if !cli_add_paths.is_empty() {
+            git_add_literal_paths_sync(location, &cli_add_paths)?;
+        }
         for sub in submodule_paths {
             stage_submodule_gitlink(location, repo, &sub)?;
+        }
+        if ran_external_git {
+            let _ = repo.index().and_then(|mut idx| idx.read(true));
         }
         Ok(())
     })
@@ -1356,11 +1552,96 @@ pub(crate) fn stage_targets_sync(
 
 pub(crate) fn stage_all_tracked_sync(location: &RepoLocation) -> Result<(), EngineError> {
     with_thread_repo(&location.git_dir, |repo| {
+        if tracked_worktree_changes_need_git_clean_filter(repo) {
+            git_add_update_tracked_sync(location)?;
+            repo.index()?.read(true)?;
+            return Ok(());
+        }
         let mut index = repo.index()?;
         index.update_all(["*"], None)?;
         index.write()?;
         Ok(())
     })
+}
+
+fn tree_entry_to_index_entry(path: &str, entry: &git2::TreeEntry<'_>) -> IndexEntry {
+    IndexEntry {
+        ctime: IndexTime::new(0, 0),
+        mtime: IndexTime::new(0, 0),
+        dev: 0,
+        ino: 0,
+        mode: entry.filemode() as u32,
+        uid: 0,
+        gid: 0,
+        file_size: 0,
+        id: entry.id(),
+        flags: 0,
+        flags_extended: 0,
+        path: path.as_bytes().to_vec(),
+    }
+}
+
+fn unstage_path_in_index(
+    index: &mut git2::Index,
+    head_tree: Option<&git2::Tree<'_>>,
+    raw_path: &str,
+) -> Result<(), EngineError> {
+    let trimmed = raw_path.trim_end_matches(['/', '\\']);
+    if trimmed.is_empty() {
+        return Ok(());
+    }
+    let prefix = format!("{trimmed}/");
+    let mut to_remove: Vec<std::path::PathBuf> = index
+        .iter()
+        .filter_map(|e| {
+            let p = String::from_utf8_lossy(&e.path).replace('\\', "/");
+            if p == trimmed || p.starts_with(&prefix) {
+                Some(std::path::PathBuf::from(p))
+            } else {
+                None
+            }
+        })
+        .collect();
+    to_remove.sort_unstable();
+    to_remove.dedup();
+    for p in to_remove {
+        let _ = index.conflict_remove(&p);
+        let _ = index.remove_path(&p);
+    }
+
+    if let Some(tree) = head_tree
+        && let Ok(entry) = tree.get_path(Path::new(trimmed))
+    {
+        match entry.kind() {
+            Some(ObjectType::Tree) => {
+                let mut restore_err = None;
+                let _ = tree.walk(git2::TreeWalkMode::PreOrder, |root, te| {
+                    if matches!(te.kind(), Some(ObjectType::Blob | ObjectType::Commit))
+                        && let Ok(name) = te.name()
+                    {
+                        let full_p = format!("{root}{name}");
+                        if full_p.starts_with(&prefix) {
+                            let idx_entry = tree_entry_to_index_entry(&full_p, te);
+                            if let Err(e) = index.add(&idx_entry) {
+                                restore_err = Some(e);
+                                return git2::TreeWalkResult::Abort;
+                            }
+                        }
+                    }
+                    git2::TreeWalkResult::Ok
+                });
+                if let Some(e) = restore_err {
+                    return Err(e.into());
+                }
+            }
+            Some(ObjectType::Blob | ObjectType::Commit) => {
+                let idx_entry = tree_entry_to_index_entry(trimmed, &entry);
+                index.add(&idx_entry)?;
+            }
+            _ => {}
+        }
+    }
+    Ok(())
 }
 
 pub(crate) fn unstage_targets_sync(
@@ -1379,18 +1660,16 @@ pub(crate) fn unstage_targets_sync(
             return Ok(());
         }
 
-        if let Ok(head) = repo.head()
-            && let Ok(obj) = head.peel(ObjectType::Commit)
-        {
-            repo.reset_default(Some(&obj), pathspecs.iter().map(String::as_str))?;
-        } else {
-            // Unborn HEAD: remove entries directly from Index
-            let mut index = repo.index()?;
-            for p in &pathspecs {
-                let _ = index.remove_path(Path::new(p));
-            }
-            index.write()?;
+        let head_tree = repo
+            .head()
+            .ok()
+            .and_then(|h| h.peel_to_commit().ok())
+            .and_then(|c| c.tree().ok());
+        let mut index = repo.index()?;
+        for p in &pathspecs {
+            unstage_path_in_index(&mut index, head_tree.as_ref(), p)?;
         }
+        index.write()?;
         Ok(())
     })
 }
@@ -1441,7 +1720,7 @@ fn remove_dir_no_follow(dir: &Path) -> std::io::Result<()> {
 
 /// Safely deletes an untracked file, symlink, or directory within `workdir` without
 /// ever traversing parent symlinks or following external links.
-fn safe_remove_untracked_path(workdir: &Path, rel_path: &str) -> Result<(), EngineError> {
+pub(crate) fn safe_remove_untracked_path(workdir: &Path, rel_path: &str) -> Result<(), EngineError> {
     let trimmed = rel_path.trim_end_matches(['/', '\\']);
     if trimmed.is_empty() {
         return Err(EngineError::Other(
@@ -1520,15 +1799,27 @@ pub(crate) fn discard_targets_sync(
                 || t.status_kind == FileStatusKind::Untracked
             {
                 safe_remove_untracked_path(&location.workdir, &t.path)?;
+            } else if let Some(old) = &t.old_path {
+                let old_trimmed = old.trim_end_matches(['/', '\\']);
+                if !old_trimmed.is_empty() && old_trimmed != trimmed {
+                    tracked_paths.push(old_trimmed.to_string());
+                    if index.get_path(rel, 0).is_some() {
+                        tracked_paths.push(trimmed.to_string());
+                    } else {
+                        safe_remove_untracked_path(&location.workdir, trimmed)?;
+                    }
+                } else {
+                    tracked_paths.push(trimmed.to_string());
+                }
             } else {
-                tracked_paths.push(t.path.clone());
+                tracked_paths.push(trimmed.to_string());
             }
         }
         drop(index);
         if !tracked_paths.is_empty() {
             let mut index = repo.index()?;
             let mut opts = CheckoutBuilder::new();
-            opts.force();
+            opts.force().disable_pathspec_match(true);
             for p in &tracked_paths {
                 opts.path(p);
             }
@@ -1820,16 +2111,9 @@ pub(crate) fn execute_commit_git2_sync(
             ));
         }
 
-        if req.stage_all_tracked {
-            let mut index = repo.index()?;
-            index.update_all(["*"], None)?;
-            index.write()?;
-        }
-
-        let mut index = repo.index()?;
-        let tree_oid = index.write_tree()?;
-        let tree = repo.find_tree(tree_oid)?;
-
+        // Validate identity, author override, commit message, and amend target BEFORE
+        // mutating `.git/index` (when `stage_all_tracked` is enabled) so validation
+        // errors never clobber the user's partial staging.
         let committer = repo.signature().map_err(|_| {
             EngineError::Other("Git user.name / user.email not configured".to_string())
         })?;
@@ -1856,8 +2140,28 @@ pub(crate) fn execute_commit_git2_sync(
             msg = append_signoff_if_needed(&msg, name, email);
         }
 
-        let oid = if req.amend {
-            let head_commit = repo.head()?.peel_to_commit()?;
+        let amend_head = if req.amend {
+            Some(repo.head()?.peel_to_commit()?)
+        } else {
+            None
+        };
+
+        if req.stage_all_tracked {
+            if tracked_worktree_changes_need_git_clean_filter(repo) {
+                git_add_update_tracked_sync(location)?;
+                repo.index()?.read(true)?;
+            } else {
+                let mut index = repo.index()?;
+                index.update_all(["*"], None)?;
+                index.write()?;
+            }
+        }
+
+        let mut index = repo.index()?;
+        let tree_oid = index.write_tree()?;
+        let tree = repo.find_tree(tree_oid)?;
+
+        let oid = if let Some(head_commit) = amend_head {
             let amend_author = if req.author_override.as_ref().is_some_and(|s| !s.trim().is_empty())
             {
                 author
@@ -2059,8 +2363,14 @@ pub(crate) fn undo_last_commit_sync(location: &RepoLocation) -> Result<String, E
             let parent = commit.parent(0)?;
             repo.reset(parent.as_object(), ResetType::Soft, None)?;
         } else {
-            // Root commit: detach/delete HEAD target ref so HEAD becomes unborn again
+            if !head.is_branch() || repo.head_detached().unwrap_or(false) {
+                return Err(EngineError::Other(
+                    "Cannot undo a root commit while HEAD is detached".to_string(),
+                ));
+            }
+            // Root commit on a branch: delete the branch ref so HEAD becomes unborn again.
             if let Ok(target_name) = head.name()
+                && target_name.starts_with("refs/heads/")
                 && let Ok(mut reference) = repo.find_reference(target_name)
             {
                 reference.delete()?;
@@ -2192,5 +2502,355 @@ mod tests {
         });
         assert!(force_off.iter().any(|a| a == "--no-gpg-sign"));
         assert!(!force_off.iter().any(|a| a == "-S"));
+    }
+
+    fn init_temp_repo() -> (tempfile::TempDir, RepoLocation) {
+        let dir = tempfile::tempdir().unwrap();
+        let git = crate::cli::require_git_executable().expect("git installed");
+        let run = |args: &[&str]| {
+            let out = crate::cli::non_interactive_std_write_command(&git, Some(dir.path()))
+                .args(args)
+                .output()
+                .expect("git");
+            assert!(
+                out.status.success(),
+                "git {:?} failed: {}",
+                args,
+                String::from_utf8_lossy(&out.stderr)
+            );
+        };
+        run(&["init"]);
+        run(&["config", "user.name", "Test User"]);
+        run(&["config", "user.email", "test@example.com"]);
+        run(&["config", "core.autocrlf", "false"]);
+        let git_dir = dir.path().join(".git");
+        let loc = RepoLocation {
+            workdir: dir.path().to_path_buf(),
+            git_dir: git_dir.clone(),
+            common_dir: git_dir,
+            is_bare: false,
+            repo_name: "test".into(),
+        };
+        (dir, loc)
+    }
+
+    fn run_git_in(dir: &Path, args: &[&str]) -> std::process::Output {
+        let git = crate::cli::require_git_executable().expect("git installed");
+        crate::cli::non_interactive_std_write_command(&git, Some(dir))
+            .args(args)
+            .output()
+            .expect("git")
+    }
+
+    #[test]
+    fn undo_last_commit_refuses_detached_root_without_unlinking_head() {
+        let (dir, loc) = init_temp_repo();
+        fs::write(dir.path().join("a.txt"), "one\n").unwrap();
+        assert!(run_git_in(dir.path(), &["add", "a.txt"]).status.success());
+        assert!(run_git_in(dir.path(), &["commit", "-m", "root"]).status.success());
+        assert!(
+            run_git_in(dir.path(), &["checkout", "--detach", "HEAD"])
+                .status
+                .success()
+        );
+
+        let err = undo_last_commit_sync(&loc)
+            .expect_err("must refuse undoing detached root commit");
+        assert!(
+            err.to_string().contains("detached"),
+            "unexpected error: {err}"
+        );
+        assert!(
+            loc.git_dir.join("HEAD").is_file(),
+            ".git/HEAD must NOT be unlinked"
+        );
+        Repository::open(&loc.git_dir).expect("repository must remain valid");
+    }
+
+    #[test]
+    fn apply_stage_buffer_propagates_clean_filter_failure() {
+        let (dir, loc) = init_temp_repo();
+        fs::write(dir.path().join(".gitattributes"), "*.secret filter=failfilt\n").unwrap();
+        assert!(
+            run_git_in(dir.path(), &["config", "filter.failfilt.clean", "false"])
+                .status
+                .success()
+        );
+        assert!(
+            run_git_in(dir.path(), &["config", "filter.failfilt.required", "true"])
+                .status
+                .success()
+        );
+        fs::write(dir.path().join("cred.secret"), "plaintext-secret\n").unwrap();
+
+        let err = apply_stage_buffer_sync(
+            &loc,
+            "cred.secret",
+            b"plaintext-secret\n",
+            GIT_MODE_REGULAR,
+            false,
+        )
+        .expect_err("clean filter failure must propagate error instead of staging raw bytes");
+        assert!(
+            err.to_string().contains("hash-object"),
+            "unexpected error: {err}"
+        );
+
+        let repo = Repository::open(&loc.git_dir).unwrap();
+        let idx = repo.index().unwrap();
+        assert!(
+            idx.get_path(Path::new("cred.secret"), 0).is_none(),
+            "failed clean filter must not leave unfiltered bytes in index"
+        );
+    }
+
+    #[test]
+    fn whole_file_and_commit_staging_invoke_external_clean_filter() {
+        let (dir, loc) = init_temp_repo();
+        fs::write(dir.path().join(".gitattributes"), "*.clean filter=upper\n").unwrap();
+        assert!(
+            run_git_in(dir.path(), &["config", "filter.upper.clean", "tr a-z A-Z"])
+                .status
+                .success()
+        );
+        fs::write(dir.path().join("doc.clean"), "hello\n").unwrap();
+
+        // 1. stage_targets_sync on file with clean filter.
+        stage_targets_sync(
+            &loc,
+            &[StageTarget {
+                path: "doc.clean".into(),
+                old_path: None,
+                group_kind: StageNodeKind::Untracked,
+                status_kind: FileStatusKind::Untracked,
+                is_submodule: false,
+            }],
+        )
+        .expect("stage_targets_sync");
+
+        let staged_1 = run_git_in(dir.path(), &["show", ":doc.clean"]);
+        assert!(staged_1.status.success());
+        assert_eq!(staged_1.stdout, b"HELLO\n");
+
+        // Commit initial version, then test `stage_all_tracked_sync`.
+        assert!(run_git_in(dir.path(), &["commit", "-m", "initial"]).status.success());
+        fs::write(dir.path().join("doc.clean"), "world\n").unwrap();
+        stage_all_tracked_sync(&loc).expect("stage_all_tracked_sync");
+        let staged_2 = run_git_in(dir.path(), &["show", ":doc.clean"]);
+        assert!(staged_2.status.success());
+        assert_eq!(staged_2.stdout, b"WORLD\n");
+
+        // 3. Test `execute_commit_git2_sync` with `stage_all_tracked: true`.
+        fs::write(dir.path().join("doc.clean"), "committed\n").unwrap();
+        let outcome = execute_commit_git2_sync(
+            &loc,
+            &CommitRequest {
+                message: "clean filter commit".into(),
+                stage_all_tracked: true,
+                ..Default::default()
+            },
+        )
+        .expect("execute_commit_git2_sync");
+        assert!(outcome.success);
+        let committed = run_git_in(dir.path(), &["show", "HEAD:doc.clean"]);
+        assert!(committed.status.success());
+        assert_eq!(committed.stdout, b"COMMITTED\n");
+    }
+
+    #[test]
+    fn glob_metacharacter_paths_stage_unstage_and_discard_cleanly() {
+        let (dir, loc) = init_temp_repo();
+        let route_dir = dir.path().join("app").join("[id]");
+        fs::create_dir_all(&route_dir).unwrap();
+        let route_file = route_dir.join("page.tsx");
+        fs::write(&route_file, "export const v = 1;\n").unwrap();
+
+        // 1. Stage untracked directory `app/[id]` containing `[id]` glob metacharacters.
+        stage_targets_sync(
+            &loc,
+            &[StageTarget {
+                path: "app/[id]".into(),
+                old_path: None,
+                group_kind: StageNodeKind::Untracked,
+                status_kind: FileStatusKind::Untracked,
+                is_submodule: false,
+            }],
+        )
+        .expect("stage dir with [id]");
+        let repo = Repository::open(&loc.git_dir).unwrap();
+        assert!(
+            repo.index()
+                .unwrap()
+                .get_path(Path::new("app/[id]/page.tsx"), 0)
+                .is_some(),
+            "app/[id]/page.tsx must be staged when staging dir `app/[id]`"
+        );
+
+        // Commit v1, modify to v2, stage v2, then unstage via `unstage_targets_sync`.
+        assert!(run_git_in(dir.path(), &["commit", "-m", "v1"]).status.success());
+        fs::write(&route_file, "export const v = 2;\n").unwrap();
+        stage_targets_sync(
+            &loc,
+            &[StageTarget {
+                path: "app/[id]/page.tsx".into(),
+                old_path: None,
+                group_kind: StageNodeKind::Unstaged,
+                status_kind: FileStatusKind::Modified,
+                is_submodule: false,
+            }],
+        )
+        .expect("stage modified [id] file");
+        assert_eq!(
+            run_git_in(dir.path(), &["show", ":app/[id]/page.tsx"]).stdout,
+            b"export const v = 2;\n"
+        );
+
+        unstage_targets_sync(
+            &loc,
+            &[StageTarget {
+                path: "app/[id]/page.tsx".into(),
+                old_path: None,
+                group_kind: StageNodeKind::Staged,
+                status_kind: FileStatusKind::Modified,
+                is_submodule: false,
+            }],
+        )
+        .expect("unstage [id] file");
+        assert_eq!(
+            run_git_in(dir.path(), &["show", ":app/[id]/page.tsx"]).stdout,
+            b"export const v = 1;\n",
+            "unstage must restore HEAD blob in index for `[id]` path"
+        );
+
+        // 3. Discard worktree change on `app/[id]/page.tsx`.
+        discard_targets_sync(
+            &loc,
+            &[StageTarget {
+                path: "app/[id]/page.tsx".into(),
+                old_path: None,
+                group_kind: StageNodeKind::Unstaged,
+                status_kind: FileStatusKind::Modified,
+                is_submodule: false,
+            }],
+        )
+        .expect("discard [id] file");
+        assert_eq!(
+            fs::read_to_string(&route_file).unwrap(),
+            "export const v = 1;\n",
+            "discard must restore worktree file for `[id]` path"
+        );
+    }
+
+    #[test]
+    fn discard_targets_restores_old_path_and_removes_new_path_on_unstaged_rename() {
+        let (dir, loc) = init_temp_repo();
+        fs::write(dir.path().join("old.rs"), "fn original() {}\n").unwrap();
+        assert!(run_git_in(dir.path(), &["add", "old.rs"]).status.success());
+        assert!(run_git_in(dir.path(), &["commit", "-m", "add old"]).status.success());
+
+        // Rename in worktree without staging.
+        fs::rename(dir.path().join("old.rs"), dir.path().join("new.rs")).unwrap();
+        assert!(!dir.path().join("old.rs").exists());
+        assert!(dir.path().join("new.rs").exists());
+
+        discard_targets_sync(
+            &loc,
+            &[StageTarget {
+                path: "new.rs".into(),
+                old_path: Some("old.rs".into()),
+                group_kind: StageNodeKind::Unstaged,
+                status_kind: FileStatusKind::Renamed,
+                is_submodule: false,
+            }],
+        )
+        .expect("discard unstaged rename");
+
+        assert!(
+            dir.path().join("old.rs").is_file(),
+            "old.rs must be restored from index"
+        );
+        assert_eq!(
+            fs::read_to_string(dir.path().join("old.rs")).unwrap(),
+            "fn original() {}\n"
+        );
+        assert!(
+            !dir.path().join("new.rs").exists(),
+            "untracked rename target new.rs must be removed"
+        );
+    }
+
+    #[test]
+    fn execute_commit_git2_validates_before_mutating_index() {
+        let (dir, loc) = init_temp_repo();
+        fs::write(dir.path().join("a.txt"), "a0\n").unwrap();
+        fs::write(dir.path().join("b.txt"), "b0\n").unwrap();
+        assert!(run_git_in(dir.path(), &["add", "a.txt", "b.txt"]).status.success());
+        assert!(run_git_in(dir.path(), &["commit", "-m", "base"]).status.success());
+
+        // Stage ONLY a.txt while leaving b.txt modified unstaged.
+        fs::write(dir.path().join("a.txt"), "a1\n").unwrap();
+        fs::write(dir.path().join("b.txt"), "b1\n").unwrap();
+        assert!(run_git_in(dir.path(), &["add", "a.txt"]).status.success());
+
+        // 1. Empty message must fail without staging b.txt.
+        let err = execute_commit_git2_sync(
+            &loc,
+            &CommitRequest {
+                message: "  \n# only comments\n".into(),
+                stage_all_tracked: true,
+                ..Default::default()
+            },
+        )
+        .expect_err("empty commit message must fail");
+        assert!(err.to_string().contains("empty commit message"));
+        assert_eq!(
+            run_git_in(dir.path(), &["show", ":b.txt"]).stdout,
+            b"b0\n",
+            "failed empty-message commit must not clobber partial staging"
+        );
+
+        // 2. Malformed author override must fail without staging b.txt.
+        let err = execute_commit_git2_sync(
+            &loc,
+            &CommitRequest {
+                message: "valid msg".into(),
+                author_override: Some("bad-author-no-brackets".into()),
+                stage_all_tracked: true,
+                ..Default::default()
+            },
+        )
+        .expect_err("malformed author override must fail");
+        assert!(
+            err.to_string().contains("author") || err.to_string().contains("Author"),
+            "unexpected error: {err}"
+        );
+        assert_eq!(
+            run_git_in(dir.path(), &["show", ":b.txt"]).stdout,
+            b"b0\n",
+            "failed author validation must not clobber partial staging"
+        );
+    }
+
+    #[test]
+    fn find_index_to_workdir_rename_target_respects_stale_epoch_token() {
+        let (dir, loc) = init_temp_repo();
+        let content = "line 1\nline 2\nline 3\nline 4\n";
+        fs::write(dir.path().join("orig.txt"), content).unwrap();
+        assert!(run_git_in(dir.path(), &["add", "orig.txt"]).status.success());
+        fs::rename(dir.path().join("orig.txt"), dir.path().join("moved.txt")).unwrap();
+
+        let repo = Repository::open(&loc.git_dir).unwrap();
+        let tracker = jbgit_core::RequestEpoch::new();
+        let fresh = tracker.issue();
+        assert_eq!(
+            find_index_to_workdir_rename_target(&repo, "orig.txt", &fresh).as_deref(),
+            Some("moved.txt")
+        );
+
+        let _newer = tracker.issue();
+        assert!(
+            find_index_to_workdir_rename_target(&repo, "orig.txt", &fresh).is_none(),
+            "stale EpochToken must short-circuit untracked rename scan"
+        );
     }
 }

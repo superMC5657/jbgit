@@ -210,8 +210,9 @@ pub(crate) fn compile_simple_steps(op: &GitOp) -> Option<Vec<CompiledStep>> {
         ])],
         GitOp::DeleteRemoteTag { remote, name } => vec![CompiledStep::new([
             "push",
-            remote.as_str(),
             "--delete",
+            "--",
+            remote.as_str(),
             &format!("refs/tags/{name}"),
         ])],
         GitOp::PushTag {
@@ -223,6 +224,7 @@ pub(crate) fn compile_simple_steps(op: &GitOp) -> Option<Vec<CompiledStep>> {
             if *force {
                 args.push("--force".to_string());
             }
+            args.push("--".to_string());
             args.push(remote.clone());
             args.push(format!("refs/tags/{name}:refs/tags/{name}"));
             vec![CompiledStep::new(args)]
@@ -253,7 +255,7 @@ pub(crate) fn compile_simple_steps(op: &GitOp) -> Option<Vec<CompiledStep>> {
             vec![CompiledStep::new(args)]
         }
         GitOp::FetchRemote { name } => {
-            vec![CompiledStep::new(["fetch", "--prune", name.as_str()])]
+            vec![CompiledStep::new(["fetch", "--prune", "--", name.as_str()])]
         }
         GitOp::AddWorktree {
             path,
@@ -395,6 +397,7 @@ pub(crate) fn compile_simple_steps(op: &GitOp) -> Option<Vec<CompiledStep>> {
             if let Some(flag) = tags.flag() {
                 args.push(flag.to_string());
             }
+            args.push("--".to_string());
             args.push(remote.clone());
             match up_to {
                 Some(oid) => args.push(format!("{oid}:{dest_ref}")),
@@ -440,6 +443,7 @@ pub(crate) fn compile_simple_steps(op: &GitOp) -> Option<Vec<CompiledStep>> {
             remote_branch,
         } => vec![CompiledStep::new(vec![
             "fetch".to_string(),
+            "--".to_string(),
             remote.clone(),
             format!("refs/heads/{remote_branch}:refs/heads/{branch}"),
         ])],
@@ -533,6 +537,7 @@ pub(crate) fn compile_simple_steps(op: &GitOp) -> Option<Vec<CompiledStep>> {
         GitOp::StashBranch { index, name } => vec![CompiledStep::new(vec![
             "stash".to_string(),
             "branch".to_string(),
+            "--".to_string(),
             name.clone(),
             format!("stash@{{{index}}}"),
         ])],
@@ -602,6 +607,7 @@ pub(crate) fn compile_simple_steps(op: &GitOp) -> Option<Vec<CompiledStep>> {
             "fetch",
             "--unshallow",
             "--progress",
+            "--",
             remote.as_str(),
         ])],
         GitOp::BisectStart { bad, good } => {
@@ -717,7 +723,7 @@ pub(crate) fn clean_prepared_message_with_char(raw: &str, comment_char: char) ->
 
 fn compile_merge(rev: &str, options: &MergeOptions) -> CompiledStep {
     if *options == MergeOptions::default() {
-        return CompiledStep::new(["merge", "--no-edit", rev]).with_env("GIT_EDITOR", ":");
+        return CompiledStep::new(["merge", "--no-edit", "--", rev]).with_env("GIT_EDITOR", ":");
     }
     let mut args = vec!["merge".to_string()];
     if let Some(flag) = options.ff.flag() {
@@ -748,6 +754,7 @@ fn compile_merge(rev: &str, options: &MergeOptions) -> CompiledStep {
         Some(m) => args.extend(["-m".to_string(), m.to_string()]),
         None => args.push("--no-edit".to_string()),
     }
+    args.push("--".to_string());
     args.push(rev.to_string());
     CompiledStep::new(args).with_env("GIT_EDITOR", ":")
 }
@@ -777,6 +784,7 @@ fn compile_pull(options: &PullOptions) -> CompiledStep {
         args.push("--no-verify".to_string());
     }
     if let Some(remote) = options.effective_remote() {
+        args.push("--".to_string());
         args.push(remote.to_string());
         if let Some(branch) = options.effective_branch() {
             args.push(branch.to_string());
@@ -809,17 +817,28 @@ fn compile_rebase(options: &RebaseOptions) -> CompiledStep {
             args.push(onto.to_string());
         }
         args.push("--root".to_string());
-    } else if let Some(upstream) = options.effective_upstream() {
-        if let Some(onto) = options.effective_onto() {
-            args.push("--onto".to_string());
-            args.push(onto.to_string());
+        if let Some(branch) = options.effective_branch() {
+            args.push("--".to_string());
+            args.push(branch.to_string());
         }
-        args.push(upstream.to_string());
-    } else if let Some(onto) = options.effective_onto() {
-        args.push(onto.to_string());
-    }
-    if let Some(branch) = options.effective_branch() {
-        args.push(branch.to_string());
+    } else {
+        let mut positional = Vec::new();
+        if let Some(upstream) = options.effective_upstream() {
+            if let Some(onto) = options.effective_onto() {
+                args.push("--onto".to_string());
+                args.push(onto.to_string());
+            }
+            positional.push(upstream.to_string());
+        } else if let Some(onto) = options.effective_onto() {
+            positional.push(onto.to_string());
+        }
+        if let Some(branch) = options.effective_branch() {
+            positional.push(branch.to_string());
+        }
+        if !positional.is_empty() {
+            args.push("--".to_string());
+            args.extend(positional);
+        }
     }
     let step = CompiledStep::new(args).with_env("GIT_EDITOR", ":");
     if use_interactive {
@@ -1272,12 +1291,26 @@ impl<R: GitCliRunner> Runner<'_, R> {
             }
             GitOp::AcceptSide { paths, ours } => self.run_accept_side(op, paths, ours).await,
             GitOp::ApplyPatch { source, options } => {
-                let (file, stdin) = match crate::details::resolve_patch_input(self.loc, &source) {
-                    Ok(x) => x,
-                    Err(e) => {
+                let loc = self.loc.clone();
+                let source_clone = source.clone();
+                let resolved = tokio::task::spawn_blocking(move || {
+                    crate::details::resolve_patch_input(&loc, &source_clone)
+                })
+                .await;
+                let (file, stdin) = match resolved {
+                    Ok(Ok(x)) => x,
+                    Ok(Err(e)) => {
                         return GitOpRunResult {
                             outcome: GitOpOutcome::failed(op, GitFailure::PatchDoesNotApply {
                                 detail: e,
+                            }),
+                            index_lock: None,
+                        };
+                    }
+                    Err(e) => {
+                        return GitOpRunResult {
+                            outcome: GitOpOutcome::failed(op, GitFailure::PatchDoesNotApply {
+                                detail: e.to_string(),
                             }),
                             index_lock: None,
                         };
@@ -1357,7 +1390,7 @@ impl<R: GitCliRunner> Runner<'_, R> {
                 if finished.outcome.success && rebase_active {
                     finished.outcome.paused_for_edit = true;
                 }
-                if !rebase_active {
+                if !rebase_active && finished.index_lock.is_none() {
                     let _ = std::fs::remove_dir_all(&dir);
                 }
                 finished
@@ -1388,27 +1421,24 @@ impl<R: GitCliRunner> Runner<'_, R> {
                 }
             }
             GitOp::DeleteFiles { paths } => {
-                for p in &paths {
-                    let full = self.loc.workdir.join(p);
-                    let res = if full.is_dir() {
-                        std::fs::remove_dir_all(&full)
-                    } else {
-                        std::fs::remove_file(&full)
-                    };
-                    if let Err(e) = res
-                        && e.kind() != std::io::ErrorKind::NotFound
-                    {
-                        return GitOpRunResult {
-                            outcome: GitOpOutcome::failed(
-                                op,
-                                GitFailure::Other(format!("{p}: {e}")),
-                            ),
-                            index_lock: None,
-                        };
+                let workdir = self.loc.workdir.clone();
+                let paths_owned = paths.clone();
+                let res = tokio::task::spawn_blocking(move || -> Result<(), String> {
+                    for p in &paths_owned {
+                        if let Err(e) = crate::stage::safe_remove_untracked_path(&workdir, p) {
+                            return Err(format!("{p}: {e}"));
+                        }
                     }
-                }
+                    Ok(())
+                })
+                .await;
+                let outcome = match res {
+                    Ok(Ok(())) => GitOpOutcome::ok(op),
+                    Ok(Err(msg)) => GitOpOutcome::failed(op, GitFailure::Other(msg)),
+                    Err(e) => GitOpOutcome::failed(op, GitFailure::Other(e.to_string())),
+                };
                 GitOpRunResult {
-                    outcome: GitOpOutcome::ok(op),
+                    outcome,
                     index_lock: None,
                 }
             }
@@ -2065,9 +2095,12 @@ impl<R: GitCliRunner> Runner<'_, R> {
             UpdateMode::Merge => CompiledStep::new(vec![
                 "merge".to_string(),
                 "--no-edit".to_string(),
+                "--".to_string(),
                 upstream_arg,
             ]),
-            UpdateMode::Rebase => CompiledStep::new(vec!["rebase".to_string(), upstream_arg]),
+            UpdateMode::Rebase => {
+                CompiledStep::new(vec!["rebase".to_string(), "--".to_string(), upstream_arg])
+            }
         }
         .with_env("GIT_EDITOR", ":");
         let res = self.step(&integrate, false).await;
@@ -2536,7 +2569,7 @@ mod tests {
         );
         assert_eq!(
             compiled_args(&GitOp::FetchRemote { name: "fork".into() }),
-            v(&["fetch", "--prune", "fork"])
+            v(&["fetch", "--prune", "--", "fork"])
         );
         assert_eq!(compiled_args(&GitOp::Fetch), v(&["fetch", "--all", "--prune"]));
     }
@@ -2727,6 +2760,7 @@ mod tests {
                 "push".to_string(),
                 "--porcelain".into(),
                 "--set-upstream".into(),
+                "--".into(),
                 "origin".into(),
                 format!("{}:refs/heads/feat", oid(7)),
             ]
@@ -2750,6 +2784,7 @@ mod tests {
                 "--porcelain",
                 "--force-with-lease",
                 "--follow-tags",
+                "--",
                 "upstream",
                 "refs/heads/local-feat:refs/heads/team/feat",
             ]
@@ -2773,6 +2808,7 @@ mod tests {
                 "--porcelain".into(),
                 "--no-verify".into(),
                 format!("--force-with-lease=refs/heads/feat:{}", oid(5)),
+                "--".into(),
                 "origin".into(),
                 "refs/heads/local-feat:refs/heads/feat".into(),
             ]
@@ -2794,6 +2830,7 @@ mod tests {
             vec![
                 "push".to_string(),
                 "--porcelain".into(),
+                "--".into(),
                 "origin".into(),
                 format!("{}:refs/heads/rescue", oid(8)),
             ]
@@ -2817,6 +2854,7 @@ mod tests {
                 "--porcelain",
                 "--force",
                 "--tags",
+                "--",
                 "origin",
                 "refs/heads/dev:refs/heads/dev",
             ]
@@ -2942,7 +2980,7 @@ mod tests {
         };
         assert_eq!(
             compile_simple_steps(&tag_del_remote).unwrap()[0].args,
-            vec!["push", "origin", "--delete", "refs/tags/v1.0"]
+            vec!["push", "--delete", "--", "origin", "refs/tags/v1.0"]
         );
 
         let tag_push = GitOp::PushTag {
@@ -2955,6 +2993,7 @@ mod tests {
             vec![
                 "push",
                 "--force",
+                "--",
                 "origin",
                 "refs/tags/v1.0:refs/tags/v1.0",
             ]
@@ -3116,7 +3155,7 @@ mod tests {
         assert!(!calls[0].is_read_only);
         assert_eq!(
             calls[0].args,
-            vec!["push", "--porcelain", "origin", "refs/heads/main:refs/heads/main"]
+            vec!["push", "--porcelain", "--", "origin", "refs/heads/main:refs/heads/main"]
         );
         assert!(calls[0].stdin.is_none());
         assert!(calls[0].env.is_empty());
@@ -3201,7 +3240,7 @@ mod tests {
             options: MergeOptions::default(),
         };
         let steps = compile_simple_steps(&plain).unwrap();
-        assert_eq!(steps[0].args, vec!["merge", "--no-edit", "feat"]);
+        assert_eq!(steps[0].args, vec!["merge", "--no-edit", "--", "feat"]);
         assert!(steps[0].stdin.is_none());
         assert_eq!(steps[0].env, vec![("GIT_EDITOR".into(), ":".into())]);
 
@@ -3230,6 +3269,7 @@ mod tests {
                 "--allow-unrelated-histories",
                 "-m",
                 "Merge feat\n\nwith body line",
+                "--",
                 "origin/feat",
             ]
         );
@@ -3244,7 +3284,7 @@ mod tests {
         };
         assert_eq!(
             compile_simple_steps(&squash).unwrap()[0].args,
-            vec!["merge", "--squash", "--no-edit", "feat"]
+            vec!["merge", "--squash", "--no-edit", "--", "feat"]
         );
 
         let ff_only_no_commit = GitOp::Merge {
@@ -3256,7 +3296,7 @@ mod tests {
         };
         assert_eq!(
             compile_simple_steps(&ff_only_no_commit).unwrap()[0].args,
-            vec!["merge", "--ff-only", "--no-edit", "feat"]
+            vec!["merge", "--ff-only", "--no-edit", "--", "feat"]
         );
 
         let no_commit = GitOp::Merge {
@@ -3269,7 +3309,7 @@ mod tests {
         };
         assert_eq!(
             compile_simple_steps(&no_commit).unwrap()[0].args,
-            vec!["merge", "--no-ff", "--no-commit", "--no-edit", "feat"]
+            vec!["merge", "--no-ff", "--no-commit", "--no-edit", "--", "feat"]
         );
         assert!(
             compile_simple_steps(&GitOp::UpdateProject {
@@ -3420,7 +3460,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             rebase_pull[0].args,
-            vec!["pull", "--rebase", "--no-verify", "origin", "main"]
+            vec!["pull", "--rebase", "--no-verify", "--", "origin", "main"]
         );
 
         // Pull with --ff-only / --squash / --no-commit.
@@ -3445,7 +3485,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             squash_pull[0].args,
-            vec!["pull", "--squash", "--no-commit", "upstream", "dev"]
+            vec!["pull", "--squash", "--no-commit", "--", "upstream", "dev"]
         );
 
         // Rebase simple, --onto, --root, and all flags.
@@ -3453,7 +3493,7 @@ mod tests {
             options: RebaseOptions::onto("main", Some("feat".into())),
         })
         .unwrap();
-        assert_eq!(plain_rebase[0].args, vec!["rebase", "main", "feat"]);
+        assert_eq!(plain_rebase[0].args, vec!["rebase", "--", "main", "feat"]);
         assert_eq!(plain_rebase[0].env, vec![("GIT_EDITOR".into(), ":".into())]);
 
         let onto_rebase = compile_simple_steps(&GitOp::Rebase {
@@ -3481,6 +3521,7 @@ mod tests {
                 "--autosquash",
                 "--onto",
                 "main",
+                "--",
                 "old-base",
                 "topic",
             ]
@@ -3662,5 +3703,307 @@ mod tests {
         })
         .unwrap();
         assert_eq!(s[0].args, vec!["stash", "pop", "--index", "stash@{0}"]);
+    }
+
+    #[test]
+    fn flag_like_remote_and_ref_arguments_are_separated_by_double_dash() {
+        let assert_after_dd = |args: &[String], value: &str| {
+            let dd = args
+                .iter()
+                .position(|a| a == "--")
+                .unwrap_or_else(|| panic!("missing `--` in {args:?}"));
+            let val = args
+                .iter()
+                .position(|a| a == value)
+                .unwrap_or_else(|| panic!("missing `{value}` in {args:?}"));
+            assert!(
+                val > dd,
+                "expected `{value}` after `--` in {args:?} (dd={dd}, val={val})"
+            );
+        };
+
+        let evil = "--upload-pack=evil";
+        let evil_push = "--receive-pack=evil";
+        let evil_exec = "--exec=evil";
+
+        let s = compile_simple_steps(&GitOp::DeleteRemoteTag {
+            remote: evil_push.into(),
+            name: "-tricky".into(),
+        })
+        .unwrap();
+        assert_after_dd(&s[0].args, evil_push);
+        assert_after_dd(&s[0].args, "refs/tags/-tricky");
+
+        let s = compile_simple_steps(&GitOp::PushTag {
+            remote: evil_push.into(),
+            name: "-tricky".into(),
+            force: false,
+        })
+        .unwrap();
+        assert_after_dd(&s[0].args, evil_push);
+
+        let s = compile_simple_steps(&GitOp::FetchRemote { name: evil.into() }).unwrap();
+        assert_after_dd(&s[0].args, evil);
+
+        let s = compile_simple_steps(&GitOp::Push {
+            branch: "main".into(),
+            remote: evil_push.into(),
+            remote_branch: "main".into(),
+            set_upstream: false,
+            force: PushForce::None,
+            tags: PushTagMode::None,
+            up_to: None,
+            no_verify: false,
+            expected_remote_oid: None,
+        })
+        .unwrap();
+        assert_after_dd(&s[0].args, evil_push);
+
+        let s = compile_simple_steps(&GitOp::UpdateBranch {
+            branch: "main".into(),
+            remote: evil.into(),
+            remote_branch: "main".into(),
+        })
+        .unwrap();
+        assert_after_dd(&s[0].args, evil);
+
+        let s = compile_simple_steps(&GitOp::Unshallow {
+            remote: evil.into(),
+        })
+        .unwrap();
+        assert_after_dd(&s[0].args, evil);
+
+        let s = compile_simple_steps(&GitOp::StashBranch {
+            index: 0,
+            name: "-tricky".into(),
+        })
+        .unwrap();
+        assert_after_dd(&s[0].args, "-tricky");
+
+        let s = compile_simple_steps(&GitOp::Merge {
+            rev: evil_exec.into(),
+            options: MergeOptions::default(),
+        })
+        .unwrap();
+        assert_after_dd(&s[0].args, evil_exec);
+
+        let s = compile_simple_steps(&GitOp::Pull {
+            options: PullOptions {
+                remote: Some(evil.into()),
+                branch: Some("-tricky".into()),
+                ..Default::default()
+            },
+        })
+        .unwrap();
+        assert_after_dd(&s[0].args, evil);
+        assert_after_dd(&s[0].args, "-tricky");
+
+        let s = compile_simple_steps(&GitOp::Rebase {
+            options: RebaseOptions {
+                onto: evil_exec.into(),
+                upstream: Some("-up".into()),
+                branch: Some("-br".into()),
+                ..Default::default()
+            },
+        })
+        .unwrap();
+        assert_after_dd(&s[0].args, "-up");
+        assert_after_dd(&s[0].args, "-br");
+
+        let s = compile_simple_steps(&GitOp::Rebase {
+            options: RebaseOptions {
+                onto: evil_exec.into(),
+                ..Default::default()
+            },
+        })
+        .unwrap();
+        assert_after_dd(&s[0].args, evil_exec);
+
+        let s = compile_simple_steps(&GitOp::Rebase {
+            options: RebaseOptions {
+                root: true,
+                branch: Some(evil_exec.into()),
+                ..Default::default()
+            },
+        })
+        .unwrap();
+        assert_after_dd(&s[0].args, evil_exec);
+    }
+
+    #[tokio::test]
+    async fn delete_files_enforces_workdir_containment_and_removes_inside_files() {
+        let root = tempfile::tempdir().unwrap();
+        let outside = root.path().join("outside.txt");
+        std::fs::write(&outside, "keep me").unwrap();
+
+        let repo_dir = root.path().join("repo");
+        std::fs::create_dir_all(repo_dir.join("sub")).unwrap();
+        let inside_file = repo_dir.join("untracked.txt");
+        let inside_nested = repo_dir.join("sub").join("leaf.txt");
+        std::fs::write(&inside_file, "delete me").unwrap();
+        std::fs::write(&inside_nested, "delete dir").unwrap();
+
+        let loc = RepoLocation {
+            workdir: repo_dir.clone(),
+            git_dir: repo_dir.join(".git"),
+            common_dir: repo_dir.join(".git"),
+            is_bare: false,
+            repo_name: "repo".into(),
+        };
+        let runner = RecordingCliRunner::with_responses(Vec::new());
+        let ids = AtomicU64::new(1);
+
+        // Traversal, absolute path, empty path, and repo root must all be rejected.
+        for bad in [
+            "../outside.txt".to_string(),
+            outside.to_string_lossy().into_owned(),
+            String::new(),
+            ".".to_string(),
+        ] {
+            let res = run_git_op(
+                &runner,
+                &loc,
+                &ids,
+                GitOp::DeleteFiles {
+                    paths: vec![bad.clone()],
+                },
+                None,
+                |_| {},
+            )
+            .await;
+            assert!(
+                !res.outcome.success,
+                "DeleteFiles must reject unsafe path `{bad}`"
+            );
+            assert!(outside.exists(), "outside file must never be deleted");
+        }
+
+        // Valid untracked file and directory inside workdir are removed.
+        let res = run_git_op(
+            &runner,
+            &loc,
+            &ids,
+            GitOp::DeleteFiles {
+                paths: vec!["untracked.txt".into(), "sub".into()],
+            },
+            None,
+            |_| {},
+        )
+        .await;
+        assert!(res.outcome.success, "expected ok: {:?}", res.outcome.failure);
+        assert!(!inside_file.exists());
+        assert!(!repo_dir.join("sub").exists());
+        assert!(outside.exists());
+    }
+
+    #[tokio::test]
+    async fn create_patch_file_preserves_crlf_for_git_apply() {
+        let dir = tempfile::tempdir().unwrap();
+        let git = crate::cli::require_git_executable().expect("git installed");
+        let run_git = |args: &[&str]| {
+            let out = crate::cli::non_interactive_std_write_command(&git, Some(dir.path()))
+                .args(args)
+                .output()
+                .expect("git");
+            assert!(
+                out.status.success(),
+                "git {:?} failed: {}",
+                args,
+                String::from_utf8_lossy(&out.stderr)
+            );
+        };
+        run_git(&["init"]);
+        run_git(&["config", "user.name", "Test"]);
+        run_git(&["config", "user.email", "test@example.com"]);
+        run_git(&["config", "core.autocrlf", "false"]);
+
+        let file = dir.path().join("win.txt");
+        std::fs::write(&file, b"alpha\r\nbeta\r\ngamma\r\n").unwrap();
+        run_git(&["add", "win.txt"]);
+        run_git(&["commit", "-m", "init crlf"]);
+
+        std::fs::write(&file, b"alpha\r\nbeta_edited\r\ngamma\r\n").unwrap();
+
+        let loc = RepoLocation {
+            workdir: dir.path().to_path_buf(),
+            git_dir: dir.path().join(".git"),
+            common_dir: dir.path().join(".git"),
+            is_bare: false,
+            repo_name: "crlf".into(),
+        };
+        let exec = crate::cli::GitCliExecutor::detect().expect("git executor");
+        let ids = AtomicU64::new(1);
+        let patch_path = dir.path().join("out.patch");
+        let res = run_git_op(
+            &exec,
+            &loc,
+            &ids,
+            GitOp::CreatePatchFile {
+                source: PatchSource::StagePaths {
+                    staged: Vec::new(),
+                    unstaged: vec!["win.txt".into()],
+                    untracked: Vec::new(),
+                },
+                output: patch_path.clone(),
+                reverse: false,
+            },
+            None,
+            |_| {},
+        )
+        .await;
+        assert!(res.outcome.success, "CreatePatchFile failed: {:?}", res.outcome);
+
+        let patch_bytes = std::fs::read(&patch_path).unwrap();
+        assert!(
+            patch_bytes.windows(2).any(|w| w == b"\r\n"),
+            "generated patch must preserve CRLF content bytes"
+        );
+
+        // Reset worktree file and verify `git apply --check` applies cleanly against CRLF file.
+        run_git(&["checkout", "--", "win.txt"]);
+        run_git(&["apply", "--check", patch_path.to_str().unwrap()]);
+    }
+
+    #[tokio::test]
+    async fn rewrite_history_keeps_jbgit_rebase_dir_on_index_lock_conflict() {
+        let dir = tempfile::tempdir().unwrap();
+        let git_dir = dir.path().join(".git");
+        std::fs::create_dir_all(&git_dir).unwrap();
+        let loc = RepoLocation {
+            workdir: dir.path().to_path_buf(),
+            git_dir: git_dir.clone(),
+            common_dir: git_dir.clone(),
+            is_bare: false,
+            repo_name: "repo".into(),
+        };
+        let runner = RecordingCliRunner::with_responses(vec![GitCliOutput {
+            exit_code: 128,
+            duration_ms: 1,
+            stdout_lines: Vec::new(),
+            stderr_lines: vec!["fatal: Unable to create '.git/index.lock': File exists.".into()],
+            index_lock_conflict: Some((
+                git_dir.join("index.lock"),
+                "index.lock exists".into(),
+            )),
+        }]);
+        let ids = AtomicU64::new(1);
+        let res = run_git_op(
+            &runner,
+            &loc,
+            &ids,
+            GitOp::RewriteHistory {
+                base: Some(oid(1)),
+                todo: vec![jbgit_core::TodoEntry::pick(oid(2), "commit")],
+                no_verify: false,
+            },
+            None,
+            |_| {},
+        )
+        .await;
+        assert!(res.index_lock.is_some());
+        assert!(
+            git_dir.join("jbgit-rebase").join("git-rebase-todo").is_file(),
+            ".git/jbgit-rebase must not be deleted when RewriteHistory fails on index.lock"
+        );
     }
 }
