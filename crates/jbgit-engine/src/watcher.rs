@@ -19,11 +19,13 @@ const IGNORE_DIR_CACHE_TTL: Duration = Duration::from_secs(2);
 const IGNORE_DIR_CACHE_MAX: usize = 4096;
 
 /// Suppresses intermediate FS refresh notifications while `jbgit-engine` itself is
-/// executing a mutating Git CLI command, coalescing them into one refresh on completion.
+/// executing a mutating Git operation, coalescing them into one refresh on completion,
+/// and serializes concurrent mutations so they cannot race on `.git/index`.
 #[derive(Debug, Default)]
 pub struct MutationGuard {
     active: AtomicUsize,
     pending: Mutex<RefreshScope>,
+    serial: Arc<tokio::sync::Mutex<()>>,
 }
 
 impl MutationGuard {
@@ -31,13 +33,26 @@ impl MutationGuard {
         Self {
             active: AtomicUsize::new(0),
             pending: Mutex::new(RefreshScope::None),
+            serial: Arc::new(tokio::sync::Mutex::new(())),
         }
     }
 
-    pub fn begin(self: &Arc<Self>) -> MutationToken {
+    fn begin(self: &Arc<Self>) -> MutationToken {
         self.active.fetch_add(1, Ordering::AcqRel);
         MutationToken {
             guard: Arc::clone(self),
+        }
+    }
+
+    /// Marks a mutation active immediately (so the watcher defers events and
+    /// `EngineHandle::shutdown` waits for queued work) and acquires the exclusive
+    /// mutation lock.
+    pub async fn acquire(self: &Arc<Self>) -> MutationPermit {
+        let token = self.begin();
+        let lock = Arc::clone(&self.serial).lock_owned().await;
+        MutationPermit {
+            _lock: lock,
+            _token: token,
         }
     }
 
@@ -69,7 +84,27 @@ impl MutationGuard {
     }
 }
 
-pub struct MutationToken {
+/// RAII permit representing an active, serialized repository mutation.
+///
+/// Field drop order is significant: `_lock` is released before `_token`
+/// decrements `active`, so queued mutations stay covered by `is_mutating()`
+/// and the last mutation only clears `is_mutating()` after releasing the lock.
+pub struct MutationPermit {
+    _lock: tokio::sync::OwnedMutexGuard<()>,
+    _token: MutationToken,
+}
+
+impl MutationPermit {
+    /// Releases the serialization lock and active mutation token in order, then
+    /// drains any watcher refresh scope deferred while the mutation ran.
+    pub fn finish(self) -> RefreshScope {
+        let guard = Arc::clone(&self._token.guard);
+        drop(self);
+        guard.take_pending()
+    }
+}
+
+struct MutationToken {
     guard: Arc<MutationGuard>,
 }
 
@@ -412,5 +447,33 @@ mod tests {
         drop(token);
         assert!(!guard.is_mutating());
         assert_eq!(guard.take_pending(), RefreshScope::All);
+    }
+
+    #[tokio::test]
+    async fn mutation_guard_acquire_serializes_and_finishes_in_order() {
+        let guard = Arc::new(MutationGuard::new());
+        let first = guard.acquire().await;
+        assert!(guard.is_mutating());
+        assert!(guard.record_or_defer(RefreshScope::StageStatus).is_none());
+
+        let guard_for_second = Arc::clone(&guard);
+        let second_acquired = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let second_flag = Arc::clone(&second_acquired);
+        let waiter = tokio::spawn(async move {
+            let permit = guard_for_second.acquire().await;
+            second_flag.store(true, Ordering::Release);
+            permit.finish()
+        });
+
+        tokio::task::yield_now().await;
+        assert!(!second_acquired.load(Ordering::Acquire));
+
+        let deferred = first.finish();
+        assert_eq!(deferred, RefreshScope::StageStatus);
+
+        let second_deferred = waiter.await.unwrap();
+        assert!(second_acquired.load(Ordering::Acquire));
+        assert_eq!(second_deferred, RefreshScope::None);
+        assert!(!guard.is_mutating());
     }
 }

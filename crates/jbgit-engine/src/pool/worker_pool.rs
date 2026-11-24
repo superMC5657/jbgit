@@ -13,15 +13,42 @@ thread_local! {
     static THREAD_REPOS: RefCell<HashMap<PathBuf, Repository>> = RefCell::new(HashMap::new());
 }
 
+/// Executes `f` with a thread-local [`Repository`] for `git_dir`, ensuring any
+/// cached `git_index` handle is reloaded from `.git/index` on disk first.
+///
+/// `git2::Repository` caches its `git_index` handle inside the thread-local
+/// `Repository` without automatically reloading on subsequent `repo.index()`,
+/// `repo.statuses()`, or `repo.reset_default()` calls. Whenever another worker
+/// thread or external `git` process modifies `.git/index`, any cached
+/// `Repository` would otherwise read or overwrite `.git/index` using its stale
+/// snapshot.
 pub(crate) fn with_thread_repo<F, T>(git_dir: &Path, f: F) -> Result<T, EngineError>
 where
     F: FnOnce(&Repository) -> Result<T, EngineError>,
 {
     THREAD_REPOS.with(|cell| {
         let mut map = cell.borrow_mut();
-        if !map.contains_key(git_dir) {
+        let was_cached = map.contains_key(git_dir);
+        if !was_cached {
             let repo = Repository::open(git_dir)?;
             map.insert(git_dir.to_path_buf(), repo);
+        }
+        if was_cached {
+            let reload_failed = {
+                let repo = map
+                    .get(git_dir)
+                    .ok_or_else(|| EngineError::RepoNotFound(git_dir.to_path_buf()))?;
+                !repo.is_bare()
+                    && repo
+                        .index()
+                        .ok()
+                        .is_some_and(|mut index| index.read(true).is_err())
+            };
+            if reload_failed {
+                map.remove(git_dir);
+                let fresh = Repository::open(git_dir)?;
+                return f(&fresh);
+            }
         }
         let repo = map
             .get(git_dir)

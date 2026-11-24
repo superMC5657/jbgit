@@ -8,7 +8,7 @@ use jbgit_core::{
     AmendCommitPreview, BlameBundle, BlameKey, BlameOptions, CommitChangesBundle, DetailsKey,
     DiffContext, DiffLineKind, FileDiff, FileDiffKey, FileHistoryBundle, FileHistoryKey,
     FileStatusKind, LineSelection, MAX_DIFF_FILE_BYTES, Oid, RefKind, RefreshScope, RepoSnapshot,
-    RepositoryState, RequestSlotId, StageStatusSnapshot,
+    RepositoryState, RequestSlotId, StageNodeKind, StageStatusSnapshot, StageTarget,
 };
 use jbgit_engine::{
     BlameFailureKind, CommitOutcome, CommitRequest, EngineBackend, EngineEvent, EngineHandle,
@@ -39,6 +39,24 @@ fn git(dir: &Path, args: &[&str]) {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
+}
+
+fn git_lines_sorted(dir: &Path, args: &[&str]) -> Vec<String> {
+    let out = git_output(dir, args);
+    assert!(
+        out.status.success(),
+        "git {:?} failed: stdout={}, stderr={}",
+        args,
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let mut lines: Vec<String> = String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter(|l| !l.is_empty())
+        .map(String::from)
+        .collect();
+    lines.sort();
+    lines
 }
 
 fn rev(dir: &Path, spec: &str) -> Oid {
@@ -89,6 +107,25 @@ async fn fetch_stage_status(
         _ => None,
     })
     .await
+}
+
+async fn wait_stage_mutation(rx: &mut UnboundedReceiver<EngineEvent>) {
+    recv_matching(rx, |ev| match ev {
+        EngineEvent::ExternalFsChanged(scope) if scope.needs_stage_refresh() => Some(()),
+        EngineEvent::Error(e) => panic!("unexpected engine error: {e}"),
+        _ => None,
+    })
+    .await
+}
+
+fn stage_target(path: &str, group_kind: StageNodeKind, status_kind: FileStatusKind) -> StageTarget {
+    StageTarget {
+        path: path.to_string(),
+        old_path: None,
+        status_kind,
+        group_kind,
+        is_submodule: false,
+    }
 }
 
 async fn fetch_commit_details(
@@ -3212,4 +3249,246 @@ async fn shallow_clone_detected_and_unshallowed_via_git_op() {
     let full_snap = fetch_snapshot(&handle, &mut rx).await;
     assert!(!full_snap.is_shallow);
     assert_eq!(full_snap.commits.len(), 3);
+}
+
+#[tokio::test]
+async fn sequential_stage_and_unstage_never_clobber_other_files_across_workers() {
+    let tmp = TempDir::new().unwrap();
+    let dir = tmp.path();
+    git(dir, &["init", "-b", "main"]);
+    fs::write(dir.join("README.md"), "init\n").unwrap();
+    git(dir, &["add", "README.md"]);
+    git(dir, &["commit", "-m", "init"]);
+
+    fs::write(dir.join("aab"), "a\n").unwrap();
+    fs::write(dir.join("bsa"), "b\n").unwrap();
+    fs::write(dir.join("ca"), "c\n").unwrap();
+    git(dir, &["add", "aab"]);
+
+    let loc = RepoLocation::discover(dir).unwrap();
+    let (handle, mut rx) = EngineSupervisor::start(loc, false).unwrap();
+
+    let git_staged = || git_lines_sorted(dir, &["diff", "--cached", "--name-only"]);
+
+    // Warm worker threads so multiple thread-local git2::Repository handles cache the initial index `{aab}`.
+    for _ in 0..8 {
+        let _ = handle.request_stage_status(false);
+        let _ = handle.request_stage_file_diff(StageDiffKey {
+            path: "aab".into(),
+            old_path: None,
+            side: StageDiffSide::Staged,
+            context: DiffContext::from_lines(3),
+        });
+    }
+    let initial = fetch_stage_status(&handle, &mut rx, false).await;
+    assert_eq!(initial.staged.len(), 1);
+    assert_eq!(git_staged(), vec!["aab"]);
+
+    // Repeat several cycles across workers: stage bsa, stage ca, unstage ca, unstage bsa, unstage aab, re-stage aab.
+    // With stale thread-local libgit2 index caches, staging `ca` reverts `bsa` to unstaged,
+    // and unstaging the sole staged file resurrects a previously unstaged file!
+    for cycle in 0..4 {
+        // 1. Stage `bsa` -> expect {aab, bsa}
+        let _ = handle.dispatch(TaskRequest::StageTargets {
+            targets: vec![stage_target(
+                "bsa",
+                StageNodeKind::Untracked,
+                FileStatusKind::Untracked,
+            )],
+        });
+        wait_stage_mutation(&mut rx).await;
+        let st = fetch_stage_status(&handle, &mut rx, false).await;
+        assert_eq!(
+            git_staged(),
+            vec!["aab", "bsa"],
+            "cycle {cycle}: staging bsa must keep aab staged"
+        );
+        assert_eq!(st.staged.len(), 2, "cycle {cycle}: UI stage snapshot after staging bsa");
+
+        // 2. Stage `ca` -> expect {aab, bsa, ca} (must NOT unstage `bsa`!)
+        let _ = handle.dispatch(TaskRequest::StageTargets {
+            targets: vec![stage_target(
+                "ca",
+                StageNodeKind::Untracked,
+                FileStatusKind::Untracked,
+            )],
+        });
+        wait_stage_mutation(&mut rx).await;
+        let st = fetch_stage_status(&handle, &mut rx, false).await;
+        assert_eq!(
+            git_staged(),
+            vec!["aab", "bsa", "ca"],
+            "cycle {cycle}: staging ca must not revert bsa to unstaged"
+        );
+        assert_eq!(st.staged.len(), 3, "cycle {cycle}: UI stage snapshot after staging ca");
+
+        // 3. Unstage `ca` -> expect {aab, bsa}
+        let _ = handle.dispatch(TaskRequest::UnstageTargets {
+            targets: vec![stage_target(
+                "ca",
+                StageNodeKind::Staged,
+                FileStatusKind::Added,
+            )],
+        });
+        wait_stage_mutation(&mut rx).await;
+        let st = fetch_stage_status(&handle, &mut rx, false).await;
+        assert_eq!(
+            git_staged(),
+            vec!["aab", "bsa"],
+            "cycle {cycle}: unstaging ca must leave aab and bsa staged"
+        );
+        assert_eq!(st.staged.len(), 2);
+
+        // 4. Unstage `bsa` -> expect {aab} (must NOT re-stage `ca`!)
+        let _ = handle.dispatch(TaskRequest::UnstageTargets {
+            targets: vec![stage_target(
+                "bsa",
+                StageNodeKind::Staged,
+                FileStatusKind::Added,
+            )],
+        });
+        wait_stage_mutation(&mut rx).await;
+        let st = fetch_stage_status(&handle, &mut rx, false).await;
+        assert_eq!(
+            git_staged(),
+            vec!["aab"],
+            "cycle {cycle}: unstaging bsa must not resurrect ca as staged"
+        );
+        assert_eq!(st.staged.len(), 1);
+
+        // 5. Unstage sole staged file `aab` -> expect {} (must NOT stage bsa or ca!)
+        let _ = handle.dispatch(TaskRequest::UnstageTargets {
+            targets: vec![stage_target(
+                "aab",
+                StageNodeKind::Staged,
+                FileStatusKind::Added,
+            )],
+        });
+        wait_stage_mutation(&mut rx).await;
+        let st = fetch_stage_status(&handle, &mut rx, false).await;
+        assert!(
+            git_staged().is_empty(),
+            "cycle {cycle}: unstaging sole staged file aab must leave 0 staged files, got {:?}",
+            git_staged()
+        );
+        assert!(st.staged.is_empty());
+
+        // 6. Stage `aab` again for next cycle -> expect {aab}
+        let _ = handle.dispatch(TaskRequest::StageTargets {
+            targets: vec![stage_target(
+                "aab",
+                StageNodeKind::Untracked,
+                FileStatusKind::Untracked,
+            )],
+        });
+        wait_stage_mutation(&mut rx).await;
+        let _ = fetch_stage_status(&handle, &mut rx, false).await;
+        assert_eq!(git_staged(), vec!["aab"]);
+    }
+
+    // 7. Rapid back-to-back (unawaited) stage dispatches must serialize cleanly without
+    // losing updates or tripping `index.lock`.
+    let _ = handle.dispatch(TaskRequest::StageTargets {
+        targets: vec![stage_target(
+            "bsa",
+            StageNodeKind::Untracked,
+            FileStatusKind::Untracked,
+        )],
+    });
+    let _ = handle.dispatch(TaskRequest::StageTargets {
+        targets: vec![stage_target(
+            "ca",
+            StageNodeKind::Untracked,
+            FileStatusKind::Untracked,
+        )],
+    });
+    wait_stage_mutation(&mut rx).await;
+    wait_stage_mutation(&mut rx).await;
+    assert_eq!(
+        git_staged(),
+        vec!["aab", "bsa", "ca"],
+        "back-to-back concurrent stage mutations must preserve all staged files"
+    );
+
+    // 8. Fast-path git2 commit after staging across workers must commit the latest index,
+    // not a stale thread-local snapshot.
+    let outcome = exec_commit(
+        &handle,
+        &mut rx,
+        1,
+        CommitRequest {
+            message: "add all three files".into(),
+            amend: false,
+            signoff: false,
+            run_hooks: false,
+            author_override: None,
+            stage_all_tracked: false,
+            and_push: false,
+        },
+    )
+    .await;
+    assert!(outcome.success, "commit failed: {outcome:?}");
+    assert_eq!(
+        git_lines_sorted(dir, &["ls-tree", "--name-only", "HEAD"]),
+        vec!["README.md", "aab", "bsa", "ca"]
+    );
+}
+
+#[tokio::test]
+async fn unborn_head_stage_and_unstage_across_workers_stays_consistent() {
+    let tmp = TempDir::new().unwrap();
+    let dir = tmp.path();
+    git(dir, &["init", "-b", "main"]);
+    fs::write(dir.join("aab"), "a\n").unwrap();
+    fs::write(dir.join("bsa"), "b\n").unwrap();
+
+    let loc = RepoLocation::discover(dir).unwrap();
+    let (handle, mut rx) = EngineSupervisor::start(loc, false).unwrap();
+
+    let git_cached = || git_lines_sorted(dir, &["ls-files"]);
+
+    // Warm worker caches on unborn repo (before `.git/index` exists).
+    for _ in 0..4 {
+        let _ = fetch_stage_status(&handle, &mut rx, false).await;
+    }
+
+    let _ = handle.dispatch(TaskRequest::StageTargets {
+        targets: vec![stage_target(
+            "aab",
+            StageNodeKind::Untracked,
+            FileStatusKind::Untracked,
+        )],
+    });
+    wait_stage_mutation(&mut rx).await;
+    assert_eq!(git_cached(), vec!["aab"]);
+
+    let _ = handle.dispatch(TaskRequest::StageTargets {
+        targets: vec![stage_target(
+            "bsa",
+            StageNodeKind::Untracked,
+            FileStatusKind::Untracked,
+        )],
+    });
+    wait_stage_mutation(&mut rx).await;
+    assert_eq!(git_cached(), vec!["aab", "bsa"]);
+
+    let _ = handle.dispatch(TaskRequest::UnstageTargets {
+        targets: vec![stage_target(
+            "aab",
+            StageNodeKind::Staged,
+            FileStatusKind::Added,
+        )],
+    });
+    wait_stage_mutation(&mut rx).await;
+    assert_eq!(git_cached(), vec!["bsa"]);
+
+    let _ = handle.dispatch(TaskRequest::UnstageTargets {
+        targets: vec![stage_target(
+            "bsa",
+            StageNodeKind::Staged,
+            FileStatusKind::Added,
+        )],
+    });
+    wait_stage_mutation(&mut rx).await;
+    assert!(git_cached().is_empty());
 }

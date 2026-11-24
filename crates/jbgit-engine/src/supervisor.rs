@@ -35,7 +35,7 @@ use crate::stage::{
     probe_commit_precheck_sync, stage_all_tracked_sync, stage_targets_sync, undo_last_commit_sync,
     unstage_targets_sync, write_worktree_buffer_sync,
 };
-use crate::watcher::{MutationGuard, RepoWatcher};
+use crate::watcher::{MutationGuard, MutationPermit, RepoWatcher};
 
 const DEFAULT_MAX_COMMITS: usize = 50_000;
 
@@ -1200,7 +1200,7 @@ fn spawn_execute_commit(ctx: &SupervisorContext, id: u64, request: CommitRequest
     let tx = ctx.event_tx.clone();
     let guard = Arc::clone(&ctx.mutation_guard);
     tokio::spawn(async move {
-        let token = guard.begin();
+        let permit = guard.acquire().await;
         let loc_pre = loc.clone();
         let precheck = pool
             .run_with(TaskPriority::Interactive, move || {
@@ -1221,7 +1221,7 @@ fn spawn_execute_commit(ctx: &SupervisorContext, id: u64, request: CommitRequest
                     })
                     .await
                 {
-                    drop(token);
+                    drop(permit);
                     let _ = tx.send(EngineEvent::CommitCompleted(CommitOutcome {
                         success: false,
                         commit_oid: None,
@@ -1263,8 +1263,7 @@ fn spawn_execute_commit(ctx: &SupervisorContext, id: u64, request: CommitRequest
         };
 
         let ok = outcome.success;
-        drop(token);
-        let deferred = guard.take_pending();
+        let deferred = permit.finish();
         if let Some(conflict) = index_lock {
             let _ = tx.send(EngineEvent::IndexLockDetected {
                 lock_path: conflict.lock_path,
@@ -1290,14 +1289,13 @@ fn spawn_undo_last_commit(ctx: &SupervisorContext) {
     let tx = ctx.event_tx.clone();
     let guard = Arc::clone(&ctx.mutation_guard);
     tokio::spawn(async move {
-        let token = guard.begin();
+        let permit = guard.acquire().await;
         let res = pool
             .run_with(TaskPriority::Interactive, move || {
                 undo_last_commit_sync(&loc)
             })
             .await;
-        drop(token);
-        let deferred = guard.take_pending();
+        let deferred = permit.finish();
         match res {
             Ok(restored_message) => {
                 let _ = tx.send(EngineEvent::UndoCommitCompleted { restored_message });
@@ -1327,7 +1325,11 @@ fn spawn_run_git_op(ctx: &SupervisorContext, op: GitOp) {
     tokio::spawn(async move {
         let read_only = op.is_read_only();
         let refresh = op.refresh_scope();
-        let token = (!read_only).then(|| guard.begin());
+        let permit = if read_only {
+            None
+        } else {
+            Some(guard.acquire().await)
+        };
         let fwd = tx.clone();
         let res = crate::ops::run_git_op(
             cli_exec.as_ref(),
@@ -1340,8 +1342,7 @@ fn spawn_run_git_op(ctx: &SupervisorContext, op: GitOp) {
             },
         )
         .await;
-        drop(token);
-        let deferred = guard.take_pending();
+        let deferred = permit.map_or_else(|| guard.take_pending(), MutationPermit::finish);
         if let Some(conflict) = res.index_lock {
             let _ = tx.send(EngineEvent::IndexLockDetected {
                 lock_path: conflict.lock_path,
@@ -1378,10 +1379,10 @@ fn spawn_run_git_cli(
     let tx = ctx.event_tx.clone();
     let guard = Arc::clone(&ctx.mutation_guard);
     tokio::spawn(async move {
-        let _token = if is_read_only {
+        let permit = if is_read_only {
             None
         } else {
-            Some(guard.begin())
+            Some(guard.acquire().await)
         };
 
         let res = cli_exec
@@ -1399,7 +1400,7 @@ fn spawn_run_git_cli(
             )
             .await;
 
-        drop(_token);
+        let deferred = permit.map_or_else(|| guard.take_pending(), MutationPermit::finish);
 
         match res {
             Ok(out) => {
@@ -1413,7 +1414,6 @@ fn spawn_run_git_cli(
                         retry_refresh_after: refresh_after,
                     });
                 }
-                let deferred = guard.take_pending();
                 let merged = refresh_after.merge(deferred);
                 if merged != RefreshScope::None {
                     let _ = tx.send(EngineEvent::ExternalFsChanged(merged));
@@ -1459,10 +1459,9 @@ fn spawn_guarded_mutation<F, Fut>(
     let tx = ctx.event_tx.clone();
     let guard = Arc::clone(&ctx.mutation_guard);
     tokio::spawn(async move {
-        let token = guard.begin();
+        let permit = guard.acquire().await;
         let res = op(pool, loc).await;
-        drop(token);
-        let deferred = guard.take_pending();
+        let deferred = permit.finish();
         match res {
             Ok(()) => {
                 let _ = tx.send(EngineEvent::ExternalFsChanged(scope.merge(deferred)));
