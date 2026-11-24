@@ -1,16 +1,14 @@
 use std::sync::Arc;
 
 use jbgit_core::{
-    EpochToken, FileHistoryBundle, FileHistoryEntry, FileHistoryKey, FileStatusKind, Oid,
+    EpochToken, FileHistoryBundle, FileHistoryEntry, FileHistoryKey, FileStatusKind,
+    HistoryBranchScope, Oid,
 };
 
 use super::blame::unquote_git_path;
 use crate::cli::non_interactive_std_command;
 use crate::error::EngineError;
 use crate::probe::RepoLocation;
-
-/// Default max commits loaded for a single-file history query.
-pub const DEFAULT_FILE_HISTORY_LIMIT: usize = 500;
 
 fn trim_leading_newlines(mut bytes: &[u8]) -> &[u8] {
     while let Some(&b) = bytes.first() {
@@ -433,6 +431,48 @@ fn is_empty_or_unborn_log_error(stderr: &str) -> bool {
         || low.contains("ambiguous argument")
 }
 
+/// Builds the `git log` arguments (starting at `"log"`) for a [`FileHistoryKey`].
+pub(crate) fn build_file_history_args(key: &FileHistoryKey) -> Vec<String> {
+    let limit = key.effective_limit();
+    let max_count_arg = format!("--max-count={}", limit.saturating_add(1));
+    let rev_arg = match &key.scope {
+        HistoryBranchScope::CurrentHead => key
+            .start_oid
+            .map(|o| o.to_string())
+            .unwrap_or_else(|| "HEAD".to_string()),
+        HistoryBranchScope::AllBranches => "--all".to_string(),
+        HistoryBranchScope::Branch(name) => name.clone(),
+    };
+
+    let mut args = vec![
+        "-c".to_string(),
+        "core.quotepath=false".to_string(),
+        "log".to_string(),
+        max_count_arg,
+    ];
+    if let Some((a, b)) = key.line_range {
+        let start = a.min(b).max(1);
+        let end = a.max(b).max(1);
+        let range_spec = format!("{start},{end}:{}", key.path);
+        args.push("--format=%x1e%H%x1f%an%x1f%at%x1f%s%x1f".to_string());
+        args.push("-L".to_string());
+        args.push(range_spec);
+        args.push(rev_arg);
+    } else {
+        if key.effective_follow() {
+            args.push("--follow".to_string());
+        }
+        args.push("-z".to_string());
+        args.push("--raw".to_string());
+        args.push("--numstat".to_string());
+        args.push("--format=%x1e%H%x1f%an%x1f%at%x1f%s%x1f".to_string());
+        args.push(rev_arg);
+        args.push("--".to_string());
+        args.push(key.path.clone());
+    }
+    args
+}
+
 /// Loads commit history for a single file using read-only `git log [--follow] -z --raw --numstat`.
 pub fn load_file_history_sync(
     location: &RepoLocation,
@@ -450,11 +490,8 @@ pub fn load_file_history_sync(
         });
     }
 
-    let start_rev = key
-        .start_oid
-        .map(|o| o.to_string())
-        .unwrap_or_else(|| "HEAD".to_string());
-    let max_count_arg = format!("--max-count={}", DEFAULT_FILE_HISTORY_LIMIT + 1);
+    let limit = key.effective_limit();
+    let log_args = build_file_history_args(key);
 
     let git = crate::cli::cached_git_executable().unwrap_or_else(|| std::path::PathBuf::from("git"));
     let mut cmd = non_interactive_std_command(&git, Some(&location.workdir));
@@ -462,31 +499,7 @@ pub fn load_file_history_sync(
         .arg(&location.git_dir)
         .arg("--work-tree")
         .arg(&location.workdir)
-        .args(["-c", "core.quotepath=false", "log", &max_count_arg]);
-    if let Some((a, b)) = key.line_range {
-        let start = a.min(b).max(1);
-        let end = a.max(b).max(1);
-        let range_spec = format!("{start},{end}:{}", key.path);
-        cmd.args([
-            "--format=%x1e%H%x1f%an%x1f%at%x1f%s%x1f",
-            "-L",
-            &range_spec,
-            &start_rev,
-        ]);
-    } else {
-        if key.follow_renames {
-            cmd.arg("--follow");
-        }
-        cmd.args([
-            "-z",
-            "--raw",
-            "--numstat",
-            "--format=%x1e%H%x1f%an%x1f%at%x1f%s%x1f",
-            &start_rev,
-            "--",
-            &key.path,
-        ]);
-    }
+        .args(&log_args);
 
     let output = cmd.output().map_err(|e| {
         if e.kind() == std::io::ErrorKind::NotFound {
@@ -517,9 +530,9 @@ pub fn load_file_history_sync(
     }
 
     let (mut entries, truncated) = if key.line_range.is_some() {
-        parse_line_history(&output.stdout, &key.path, DEFAULT_FILE_HISTORY_LIMIT)
+        parse_line_history(&output.stdout, &key.path, limit)
     } else {
-        parse_file_history_z(&output.stdout, DEFAULT_FILE_HISTORY_LIMIT)
+        parse_file_history_z(&output.stdout, limit)
     };
     if token.is_stale() {
         return Err(EngineError::Cancelled);

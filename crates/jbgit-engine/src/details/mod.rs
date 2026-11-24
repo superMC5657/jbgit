@@ -310,4 +310,57 @@ mod tests {
         assert!(!parse_ls_remote_tag_exists(out, "v1.0.0"));
         assert!(!parse_ls_remote_tag_exists(b"", "v1.0"));
     }
+
+    #[test]
+    fn file_history_args_respect_scope_follow_exclusion_and_limit() {
+        use jbgit_core::{FileHistoryKey, HistoryBranchScope};
+
+        let mut key = FileHistoryKey::new("src/a.rs", None, true, None);
+        key.limit = 250;
+        let args = file_history::build_file_history_args(&key);
+        assert!(args.iter().any(|a| a == "--max-count=251"));
+        assert!(args.iter().any(|a| a == "--follow"));
+        assert!(args.iter().any(|a| a == "HEAD"));
+
+        key.scope = HistoryBranchScope::AllBranches;
+        let all_args = file_history::build_file_history_args(&key);
+        assert!(all_args.iter().any(|a| a == "--all"));
+        assert!(
+            !all_args.iter().any(|a| a == "--follow"),
+            "git rejects --follow with --all"
+        );
+
+        key.scope = HistoryBranchScope::Branch("feature/x".into());
+        let br_args = file_history::build_file_history_args(&key);
+        assert!(br_args.iter().any(|a| a == "feature/x"));
+        assert!(br_args.iter().any(|a| a == "--follow"));
+    }
+
+    #[test]
+    fn parse_blame_porcelain_extracts_committer_time_and_tz() {
+        let oid_s = "1111111111111111111111111111111111111111";
+        let porcelain = format!(
+            "{oid_s} 1 1 1\n\
+author Alice\n\
+author-mail <alice@example.com>\n\
+author-time 1700000000\n\
+author-tz +0200\n\
+committer Bob\n\
+committer-mail <bob@example.com>\n\
+committer-time 1700050000\n\
+committer-tz -0500\n\
+summary rebased commit\n\
+filename src/lib.rs\n\
+\tlet x = 1;\n"
+        );
+        let parsed = parse_blame_porcelain(porcelain.as_bytes()).expect("parse porcelain");
+        let oid = oid_s.parse::<Oid>().unwrap();
+        let commit = &parsed.commits[&oid];
+        assert_eq!(commit.author.time, 1_700_000_000);
+        assert_eq!(commit.author.offset_minutes, 120);
+        assert_eq!(commit.committer_time, 1_700_050_000);
+        assert_eq!(commit.committer_offset_minutes, -300);
+        assert_eq!(commit.effective_time(false), 1_700_000_000);
+        assert_eq!(commit.effective_time(true), 1_700_050_000);
+    }
 }

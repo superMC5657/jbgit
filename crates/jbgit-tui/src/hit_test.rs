@@ -146,8 +146,11 @@ pub enum BranchCleanupButtonKind {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FileHistoryToolbarButton {
+    BranchScope,
     FollowRenames,
     CompareLocal,
+    CommitDetails,
+    AffectedFiles,
     SideBySide,
     Context,
     Whitespace,
@@ -173,9 +176,12 @@ pub enum ReflogToolbarButton {
 pub enum AnnotateToolbarButton {
     IgnoreWhitespace,
     DetectMoves,
+    DateMode,
+    ColorMode,
     PreviousRev,
     NavBack,
     ShowDiff,
+    CommitDetails,
     SelectionHistory,
     LocateInLog,
 }
@@ -398,6 +404,11 @@ pub enum HitTarget {
     FileHistoryRow {
         idx: usize,
     },
+    FileHistoryLoadMore,
+    FileHistoryAffectedFileRow {
+        idx: usize,
+    },
+    FileHistoryBlobArea,
     FileHistoryToolbar(FileHistoryToolbarButton),
     FileHistoryListArea,
     FileHistoryDiffArea,
@@ -415,8 +426,10 @@ pub enum HitTarget {
         line_idx: usize,
     },
     AnnotateToolbar(AnnotateToolbarButton),
+    AnnotateDetailStrip,
     AnnotateArea,
     AnnotateDiffArea,
+    FilterRestoreDirHistory,
     PushTargetBranch,
     PushRemotePicker,
     PushDefineRemote,

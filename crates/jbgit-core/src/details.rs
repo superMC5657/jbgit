@@ -252,10 +252,58 @@ impl CommitDetails {
 /// Maximum single-selection line span before prompting for confirmation.
 pub const MAX_SELECTION_HISTORY_LINES: u32 = 2_000;
 
+/// Default page size (and increment step) for File History queries.
+pub const DEFAULT_FILE_HISTORY_LIMIT: usize = 500;
+
+/// Move/copy detection level for `git blame` (JetBrains `GitAnnotationProvider` parity).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub enum MoveDetection {
+    /// No move/copy detection.
+    #[default]
+    None,
+    /// Detect moved or copied lines within the same file (`git blame -M`).
+    WithinFile,
+    /// Detect moved or copied lines across files in the same commit (`git blame -M -C`).
+    AcrossFiles,
+}
+
+impl MoveDetection {
+    pub const fn next(self) -> Self {
+        match self {
+            Self::None => Self::WithinFile,
+            Self::WithinFile => Self::AcrossFiles,
+            Self::AcrossFiles => Self::None,
+        }
+    }
+
+    pub const fn git_flags(self) -> &'static [&'static str] {
+        match self {
+            Self::None => &[],
+            Self::WithinFile => &["-M"],
+            Self::AcrossFiles => &["-M", "-C"],
+        }
+    }
+
+    pub const fn badge(self) -> &'static str {
+        match self {
+            Self::None => "off",
+            Self::WithinFile => "-M",
+            Self::AcrossFiles => "-M -C",
+        }
+    }
+
+    pub const fn is_enabled(self) -> bool {
+        !matches!(self, Self::None)
+    }
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub struct BlameOptions {
     pub ignore_whitespace: bool,
-    pub detect_moves: bool,
+    pub move_detection: MoveDetection,
+    /// When `true`, display and age-bucket blame lines using commit date
+    /// (`committer-time`) instead of author date (`author-time`).
+    pub prefer_commit_date: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -265,6 +313,23 @@ pub struct BlameKey {
     /// Target commit (`None` annotates the working tree file).
     pub rev: Option<Oid>,
     pub options: BlameOptions,
+}
+
+impl BlameKey {
+    /// Returns a normalized cache key whose git-affecting options match `self`.
+    /// `prefer_commit_date` only affects how already-parsed timestamps are displayed,
+    /// so toggling it can reuse the cached `BlameBundle` without re-running `git blame`.
+    pub fn cache_key(&self) -> Self {
+        Self {
+            path: self.path.clone(),
+            rev: self.rev,
+            options: BlameOptions {
+                ignore_whitespace: self.options.ignore_whitespace,
+                move_detection: self.options.move_detection,
+                prefer_commit_date: false,
+            },
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -279,9 +344,26 @@ pub struct BlameLine {
 pub struct BlameCommit {
     pub oid: Oid,
     pub author: PersonStamp,
+    /// Unix timestamp of the commit (`committer-time` from `--line-porcelain`).
+    /// `0` when absent (e.g. uncommitted lines).
+    pub committer_time: i64,
+    /// Committer timezone offset in minutes (`committer-tz`).
+    pub committer_offset_minutes: i32,
     pub summary: String,
     pub previous: Option<(Oid, String)>,
     pub is_boundary: bool,
+}
+
+impl BlameCommit {
+    /// Returns either `committer_time` (when `prefer_commit_date` is true and
+    /// available) or `author.time`.
+    pub fn effective_time(&self, prefer_commit_date: bool) -> i64 {
+        if prefer_commit_date && self.committer_time != 0 {
+            self.committer_time
+        } else {
+            self.author.time
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -310,6 +392,18 @@ impl BlameBundle {
     }
 }
 
+/// Branch traversal scope for File History queries.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
+pub enum HistoryBranchScope {
+    /// Start from `start_oid` (or `HEAD` when `start_oid` is `None`).
+    #[default]
+    CurrentHead,
+    /// Traverse all branches (`git log --all`). Incompatible with `--follow`.
+    AllBranches,
+    /// Start from a specific branch/ref name (e.g. `main` or `origin/main`).
+    Branch(String),
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct FileHistoryKey {
     /// Query relative path from repository root (POSIX `/` separated).
@@ -320,6 +414,46 @@ pub struct FileHistoryKey {
     pub follow_renames: bool,
     /// Optional 1-based inclusive line range (`git log -L <start>,<end>:<path>`).
     pub line_range: Option<(u32, u32)>,
+    /// Branch scope (`CurrentHead`, `AllBranches`, or a specific branch).
+    pub scope: HistoryBranchScope,
+    /// Maximum number of commits to fetch (paginated in steps of `DEFAULT_FILE_HISTORY_LIMIT`).
+    pub limit: usize,
+}
+
+impl FileHistoryKey {
+    pub fn new(
+        path: impl Into<String>,
+        start_oid: Option<Oid>,
+        follow_renames: bool,
+        line_range: Option<(u32, u32)>,
+    ) -> Self {
+        Self {
+            path: path.into(),
+            start_oid,
+            follow_renames,
+            line_range,
+            scope: HistoryBranchScope::CurrentHead,
+            limit: DEFAULT_FILE_HISTORY_LIMIT,
+        }
+    }
+
+    /// Returns whether `git log --follow` should be passed.
+    /// Git rejects `--follow` combined with `--all` or `-L`, so this helper
+    /// enforces the mutual exclusion centrally.
+    pub fn effective_follow(&self) -> bool {
+        self.follow_renames
+            && self.line_range.is_none()
+            && !matches!(self.scope, HistoryBranchScope::AllBranches)
+    }
+
+    /// Returns a positive commit limit (falls back to `DEFAULT_FILE_HISTORY_LIMIT` if `0`).
+    pub fn effective_limit(&self) -> usize {
+        if self.limit == 0 {
+            DEFAULT_FILE_HISTORY_LIMIT
+        } else {
+            self.limit
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2048,5 +2182,74 @@ diff --cc src/lib.rs
             new_oid: None,
         };
         assert_eq!(deleted.size_summary("(none)"), "512 B → (none) (-512 B)");
+    }
+
+    #[test]
+    fn move_detection_cycles_and_maps_git_flags() {
+        assert_eq!(MoveDetection::None.git_flags(), &[] as &[&str]);
+        assert_eq!(MoveDetection::WithinFile.git_flags(), &["-M"]);
+        assert_eq!(MoveDetection::AcrossFiles.git_flags(), &["-M", "-C"]);
+        assert_eq!(MoveDetection::None.next(), MoveDetection::WithinFile);
+        assert_eq!(MoveDetection::WithinFile.next(), MoveDetection::AcrossFiles);
+        assert_eq!(MoveDetection::AcrossFiles.next(), MoveDetection::None);
+    }
+
+    #[test]
+    fn file_history_key_disables_follow_for_all_branches_and_line_range() {
+        let mut key = FileHistoryKey::new("src/main.rs", None, true, None);
+        assert!(key.effective_follow());
+        assert_eq!(key.effective_limit(), DEFAULT_FILE_HISTORY_LIMIT);
+
+        key.scope = HistoryBranchScope::AllBranches;
+        assert!(!key.effective_follow());
+
+        key.scope = HistoryBranchScope::Branch("feat".into());
+        assert!(key.effective_follow());
+
+        key.line_range = Some((1, 10));
+        assert!(!key.effective_follow());
+
+        key.limit = 0;
+        assert_eq!(key.effective_limit(), DEFAULT_FILE_HISTORY_LIMIT);
+        key.limit = 1000;
+        assert_eq!(key.effective_limit(), 1000);
+    }
+
+    #[test]
+    fn blame_key_cache_key_normalizes_prefer_commit_date_and_commit_time_falls_back() {
+        let k1 = BlameKey {
+            path: "a.rs".into(),
+            rev: None,
+            options: BlameOptions {
+                ignore_whitespace: true,
+                move_detection: MoveDetection::WithinFile,
+                prefer_commit_date: false,
+            },
+        };
+        let k2 = BlameKey {
+            options: BlameOptions {
+                prefer_commit_date: true,
+                ..k1.options
+            },
+            ..k1.clone()
+        };
+        assert_eq!(k1.cache_key(), k2.cache_key());
+
+        let commit = BlameCommit {
+            oid: Oid::from_bytes([0x11; 20]),
+            author: PersonStamp {
+                name: "Alice".into(),
+                email: "a@x".into(),
+                time: 1000,
+                offset_minutes: 0,
+            },
+            committer_time: 2000,
+            committer_offset_minutes: 60,
+            summary: "s".into(),
+            previous: None,
+            is_boundary: false,
+        };
+        assert_eq!(commit.effective_time(false), 1000);
+        assert_eq!(commit.effective_time(true), 2000);
     }
 }

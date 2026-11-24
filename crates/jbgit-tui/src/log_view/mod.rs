@@ -12,7 +12,9 @@ mod push_dialog;
 mod reflog;
 mod workbench;
 
-pub use annotate::{AnnotateError, AnnotateFocus, AnnotateNavFrame, AnnotateState};
+pub use annotate::{
+    AnnotateColorMode, AnnotateError, AnnotateFocus, AnnotateNavFrame, AnnotateState,
+};
 pub use branches_pane::BranchesPaneState;
 #[cfg(test)]
 pub use details_pane::{ChangesExpandState, DETAILS_CACHE_CAPACITY};

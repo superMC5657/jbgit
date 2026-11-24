@@ -191,31 +191,35 @@ jbgit 默认采用**零冲突统一键位（`preset = "default"`）**，并通�
 
 ### 文件历史与冲突合并 (File History & Conflict Merge)
 
-**文件历史浮窗**（在 Log 或 Commit 变更树按 `H` 打开）：
+**文件历史浮窗**（在 Log 或 Commit 变更树按 `H` 打开；对目录按 `H` 或右键「显示选中目录的历史」会保存当前 Log 筛选条件快照，在 Log 按 `<Esc>` 或点击 `[← 恢复筛选]` 即可无损还原）：
 
 | 快捷键 | 功能描述 |
 | :--- | :--- |
-| `<Tab>` / `<Shift-Tab>` | 在提交列表与差异预览之间切换焦点 |
+| `<Tab>` / `<Shift-Tab>` | 在提交列表、全部影响文件（开启时）与差异预览之间切换焦点 |
 | `j` / `k` / `<PageUp>` / `<PageDown>` / `g g` / `G`（或 `<Home>` / `<End>`） | 上下移动、翻页及跳转顶部 / 底部 |
-| `<Shift-Up>` / `<Shift-Down>` | 扩展多选两个提交区间进行对比 |
+| `<Shift-Up>` / `<Shift-Down>` / `<Space>` | 扩展多选两个提交，或按 `<Space>` 标记/取消任意两个非相邻提交进行对比 |
+| `/` | 提交列表聚焦时开启模糊搜索（匹配提交信息/作者/短哈希）；Diff 聚焦时开启 Diff 内搜索 |
+| `B` / `L` | 切换分支范围（当前 HEAD / 全部分支 `--all` / 指定本地分支；`--all` 自动禁用 `--follow`）/ 分页加载更多 (+500) |
+| `.`（或右键提交行） | 打开文件历史上下文菜单（获取此版本、全部影响文件、打开仓库版本、复制补丁、复制哈希、切换提交详情等） |
+| `R` / `a` / `v` / `p` / `y` / `i` | 获取此版本 (`R`，需确认) / 显示全部影响文件 (`a`) / 打开仓库版本只读预览 (`v`) / 复制补丁 (`p`) / 复制哈希 (`y`) / 切换提交详情 (`i`) |
 | `<Enter>` | 跳转并在主 Log 视图定位到当前选中提交 |
 | `f` / `l` / `b`（或 `<Alt-g>`） | 切换追踪重命名 (`f`) / 对比本地工作区 (`l`) / 在当前提交打开 Annotate 逐行追溯 (`b`/`Alt-g`) |
-| `S` / `w` / `z`（或 `<F4>`） | 切换并排对比 (`S`) / 循环上下文行数 (`w`) / 全屏差异预览 (`z`/`F4`) |
-| `<Esc>` | 退出全屏 Diff 或关闭文件历史浮窗 |
+| `S` / `w` / `W` / `z`（或 `<F4>`） | 切换并排对比 (`S`) / 循环上下文行数 (`w`) / 自动换行 (`W`) / 全屏差异预览 (`z`/`F4`) |
+| `<Esc>` | 依次关闭仓库版本预览、搜索栏、影响文件/详情面板、标记锚点、全屏 Diff 或文件历史浮窗 |
 
-**Git Blame 逐行追溯浮窗 (Annotate)**（在 Log / Commit 变更树或 Diff 预览按 `<Alt-g>`，或由上下文菜单 / File History 按 `b` 进入）：
+**Git Blame 逐行追溯浮窗 (Annotate)**（在 Log / Commit 变更树或 Diff 预览按 `<Alt-g>`，或由上下文菜单 / File History 按 `b` 进入；内建 16 槽位 LRU 缓存，往返修订零重复执行 `git blame`，仓库刷新时自动失效）：
 
 | 快捷键 | 功能描述 |
 | :--- | :--- |
-| `j` / `k` / `<PageUp>` / `<PageDown>` / `g g` / `G` | 上下逐行浏览源码与提交年代热力条 / 跳转首尾行 |
+| `j` / `k` / `<PageUp>` / `<PageDown>` / `g g` / `G` | 上下逐行浏览源码与边栏 / 跳转首尾行 |
 | `:` / `<Ctrl-g>` | 输入目标行号快速跳转（Go to Line） |
 | `v` / `V`（或 `<Shift-Up>` / `<Shift-Down>`） | 开关可视行选择并扩展行区间（在 Commit Diff 预览同样支持 `v` 选中块/行） |
 | `H` | 对当前光标行或可视选中行区间执行 `git log -L` 查看 **所选代码行历史 (Selection History)** |
-| `p` / `P`（或 `<Backspace>`） | 追溯当前选中行的上一修订版本 (`Annotate Previous Revision`) / 返回导航栈 |
-| `w` / `m` | 切换忽略空白字符 (`-w`) / 跨文件代码移动与复制追踪 (`-M -C`) |
-| `d` / `<Tab>` | 开关底部内联 Diff 预览 / 在源码区与底部 Diff 之间切换焦点 |
-| `<Enter>` / `y` / `.` | 跳转到主 Log 对应提交 / 复制该行提交哈希 / 打开 Annotate 上下文菜单 |
-| `<Esc>` | 清除行跳转输入或退出可视选区，否则关闭 Annotate 浮窗 |
+| `r` / `p` / `P`（或 `<Backspace>`） | 追溯当前选中行所属修订 (`Annotate This Revision`) / 上一修订 (`Previous Revision`) / 返回导航栈 |
+| `w` / `m` / `D` / `C` | 切换忽略空白 (`-w`) / 移动复制检测三态循环 (`off` → `-M` → `-M -C`) / 切换作者日期与提交日期 (`D`) / 切换着色模式 (`Age` → `Author` → `None`) |
+| `i`（或点击底部详情条） / `d` / `<Tab>` | 展开完整提交信息与全部影响文件 (`i`) / 开关底部内联 Diff 预览 (`d`) / 切换焦点 (`Tab`) |
+| `<Enter>` / `y` / `.` | 跳转到主 Log 对应提交 / 复制该行提交哈希 / 打开 Annotate 上下文菜单（含独立列显隐开关：哈希/作者/日期） |
+| `<Esc>` | 依次关闭 Diff 搜索、行跳转输入、提交详情面板、可视选区或 Annotate 浮窗 |
 
 **多文件冲突队列与三栏 3-Way 合并浮窗**（按 `<Alt-c>` 或点击 Ongoing 横幅 `[Resolve Conflicts]` 进入；存在 ≥ 2 个冲突文件时自动打开冲突队列，单文件时直接进入三栏合并器，也可从右键菜单随时打开队列）：
 
@@ -427,7 +431,10 @@ file_history_vertical_ratio = [ 2, 3 ]
 [annotate]
 # 逐行注解 (Git Blame) 默认选项与热力边栏宽度
 ignore_whitespace = false
-detect_moves = false
+# 移动与复制检测级别: "none" | "within-file" (-M) | "across-files" (-M -C)（亦兼容旧布尔值 true/false）
+detect_moves = "none"
+# 是否默认使用提交日期（committer-time）而非作者日期（author-time）
+prefer_commit_date = false
 gutter_width = 28
 
 [push]

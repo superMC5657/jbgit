@@ -1299,9 +1299,11 @@ prepend_keymap = [
 
     #[test]
     fn test_annotate_config_defaults_and_overlay() {
+        use jbgit_config::MoveDetectionPref;
         let mut cfg = AppConfig::load_defaults();
         assert!(!cfg.jbgit.annotate.ignore_whitespace);
-        assert!(!cfg.jbgit.annotate.detect_moves);
+        assert_eq!(cfg.jbgit.annotate.detect_moves, MoveDetectionPref::None);
+        assert!(!cfg.jbgit.annotate.prefer_commit_date);
         assert_eq!(cfg.jbgit.annotate.gutter_width, 28);
 
         let ov: JbgitConfigOverlay = toml::from_str(
@@ -1309,14 +1311,32 @@ prepend_keymap = [
 [annotate]
 ignore_whitespace = true
 detect_moves = true
+prefer_commit_date = true
 gutter_width = 40
 "#,
         )
         .unwrap();
         cfg.jbgit.merge_overlay(&ov);
         assert!(cfg.jbgit.annotate.ignore_whitespace);
-        assert!(cfg.jbgit.annotate.detect_moves);
+        assert_eq!(
+            cfg.jbgit.annotate.detect_moves,
+            MoveDetectionPref::AcrossFiles
+        );
+        assert!(cfg.jbgit.annotate.prefer_commit_date);
         assert_eq!(cfg.jbgit.annotate.gutter_width, 40);
+
+        let within_ov: JbgitConfigOverlay = toml::from_str(
+            r#"
+[annotate]
+detect_moves = "within-file"
+"#,
+        )
+        .unwrap();
+        cfg.jbgit.merge_overlay(&within_ov);
+        assert_eq!(
+            cfg.jbgit.annotate.detect_moves,
+            MoveDetectionPref::WithinFile
+        );
 
         let clamp_ov: JbgitConfigOverlay = toml::from_str(
             r#"

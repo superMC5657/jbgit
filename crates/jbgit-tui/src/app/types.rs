@@ -45,6 +45,7 @@ pub enum ScrollPane {
     StashDiff,
     StageDiff,
     FileHistoryDiff,
+    FileHistoryBlob,
     Annotate,
     AnnotateDiff,
     PushCommits,

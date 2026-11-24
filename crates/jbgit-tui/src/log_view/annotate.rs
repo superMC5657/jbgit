@@ -31,6 +31,28 @@ pub enum AnnotateFocus {
     Diff,
 }
 
+/// Gutter coloring strategy in the Annotate view.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum AnnotateColorMode {
+    /// 5-bucket age heatmap (newer = warmer/brighter).
+    #[default]
+    Age,
+    /// Deterministic color per author name.
+    Author,
+    /// Monochrome / neutral gutter.
+    None,
+}
+
+impl AnnotateColorMode {
+    pub const fn next(self) -> Self {
+        match self {
+            Self::Age => Self::Author,
+            Self::Author => Self::None,
+            Self::None => Self::Age,
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct AnnotateState {
     pub key: BlameKey,
@@ -48,6 +70,15 @@ pub struct AnnotateState {
     pub show_diff: bool,
     pub focus: AnnotateFocus,
     pub diff: DiffSession,
+    /// Gutter column toggles (independently toggleable).
+    pub show_hash: bool,
+    pub show_author: bool,
+    pub show_date: bool,
+    /// Gutter coloring mode (`Age`, `Author`, `None`).
+    pub color_mode: AnnotateColorMode,
+    /// Full commit message & affected files panel (`i` or clicking detail strip).
+    pub show_commit_details: bool,
+    pub details_requested: Option<DetailsKey>,
 }
 
 impl AnnotateState {
@@ -80,7 +111,48 @@ impl AnnotateState {
             show_diff: false,
             focus: AnnotateFocus::Code,
             diff,
+            show_hash: true,
+            show_author: true,
+            show_date: true,
+            color_mode: AnnotateColorMode::Age,
+            show_commit_details: false,
+            details_requested: None,
         }
+    }
+
+    /// Applies a loaded (or cache-hit) [`BlameBundle`], resolving any pending
+    /// target line and clamping the cursor.
+    pub fn apply_loaded_bundle(&mut self, bundle: Arc<BlameBundle>) {
+        self.loading = false;
+        self.error = None;
+        let focus_line = self.pending_focus_line.take();
+        let target_cursor = focus_line
+            .and_then(|ln| {
+                bundle
+                    .lines
+                    .iter()
+                    .position(|l| l.final_line == ln)
+                    .or_else(|| usize::try_from(ln.saturating_sub(1)).ok())
+            })
+            .unwrap_or(self.cursor);
+        self.bundle = Some(bundle);
+        self.syntax = None;
+        self.visual_anchor = None;
+        self.cursor = target_cursor.min(self.line_count().saturating_sub(1));
+        self.ensure_cursor_visible();
+    }
+
+    /// Desired commit details key when the expanded commit details & affected
+    /// files panel is open on a committed line.
+    pub fn desired_details_key(&self) -> Option<DetailsKey> {
+        if !self.show_commit_details {
+            return None;
+        }
+        let line = self.selected_line()?;
+        if line.oid.is_zero() {
+            return None;
+        }
+        Some(DetailsKey::single(line.oid))
     }
 
     pub fn line_count(&self) -> usize {
@@ -225,20 +297,23 @@ impl AnnotateState {
         let Some(commit) = bundle.commits.get(&oid) else {
             return 4;
         };
+        let prefer_commit = self.key.options.prefer_commit_date;
+        let commit_ts = commit.effective_time(prefer_commit);
         let mut min_t = i64::MAX;
         let mut max_t = i64::MIN;
         for c in bundle.commits.values() {
-            if !c.oid.is_zero() && c.author.time > 0 {
-                min_t = min_t.min(c.author.time);
-                max_t = max_t.max(c.author.time);
+            let ct = c.effective_time(prefer_commit);
+            if !c.oid.is_zero() && ct > 0 {
+                min_t = min_t.min(ct);
+                max_t = max_t.max(ct);
             }
         }
-        if min_t < max_t && commit.author.time > 0 {
+        if min_t < max_t && commit_ts > 0 {
             let span = (max_t - min_t) as f64;
-            let age = (max_t - commit.author.time).max(0) as f64;
+            let age = (max_t - commit_ts).max(0) as f64;
             return ((age / span) * 4.99).floor().clamp(0.0, 4.0) as usize;
         }
-        let delta = (now - commit.author.time).max(0);
+        let delta = (now - commit_ts).max(0);
         if delta < 86_400 {
             0
         } else if delta < 7 * 86_400 {
@@ -267,5 +342,89 @@ impl AnnotateState {
         .into_iter()
         .flatten()
         .min()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use jbgit_core::{BlameOptions, PersonStamp};
+    use std::collections::HashMap;
+
+    #[test]
+    fn commit_age_bucket_recomputes_from_committer_time_when_prefer_commit_date_flips() {
+        let c1 = Oid::from_bytes([1u8; 20]);
+        let c2 = Oid::from_bytes([2u8; 20]);
+        let mut commits = HashMap::new();
+        // c1 was authored earlier (1000) than c2 (2000), but rebased/committed LATER (4000 vs 2000).
+        commits.insert(
+            c1,
+            BlameCommit {
+                oid: c1,
+                author: PersonStamp {
+                    name: "Alice".into(),
+                    email: "a@x".into(),
+                    time: 1000,
+                    offset_minutes: 0,
+                },
+                committer_time: 4000,
+                committer_offset_minutes: 0,
+                summary: "rebased older-authored commit".into(),
+                previous: None,
+                is_boundary: false,
+            },
+        );
+        commits.insert(
+            c2,
+            BlameCommit {
+                oid: c2,
+                author: PersonStamp {
+                    name: "Bob".into(),
+                    email: "b@x".into(),
+                    time: 2000,
+                    offset_minutes: 0,
+                },
+                committer_time: 2000,
+                committer_offset_minutes: 0,
+                summary: "newer-authored commit".into(),
+                previous: None,
+                is_boundary: false,
+            },
+        );
+        let key = BlameKey {
+            path: "src/a.rs".into(),
+            rev: None,
+            options: BlameOptions::default(),
+        };
+        let mut ann = AnnotateState::new(key.clone(), DiffContext::Three, false);
+        ann.apply_loaded_bundle(Arc::new(BlameBundle {
+            key,
+            lines: vec![
+                BlameLine {
+                    final_line: 1,
+                    orig_line: 1,
+                    oid: c1,
+                    orig_path: "src/a.rs".into(),
+                },
+                BlameLine {
+                    final_line: 2,
+                    orig_line: 2,
+                    oid: c2,
+                    orig_path: "src/a.rs".into(),
+                },
+            ],
+            commits,
+            content: Arc::from("line1\nline2"),
+            uncommitted_oid_present: false,
+        }));
+
+        // By author date: c1 (1000) is oldest (bucket 4), c2 (2000) is newest (bucket 0).
+        assert_eq!(ann.commit_age_bucket(c1, 5000), 4);
+        assert_eq!(ann.commit_age_bucket(c2, 5000), 0);
+
+        // Flip to commit date: c1 (4000) becomes newest (bucket 0), c2 (2000) becomes oldest (bucket 4)!
+        ann.key.options.prefer_commit_date = true;
+        assert_eq!(ann.commit_age_bucket(c1, 5000), 0);
+        assert_eq!(ann.commit_age_bucket(c2, 5000), 4);
     }
 }

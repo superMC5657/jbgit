@@ -24,8 +24,8 @@ use crate::i18n::I18n;
 use crate::theme::BranchColorManager;
 
 use super::{
-    BranchesPaneState, DETAILS_DEBOUNCE, DetailsPaneState, FilterBarState, LogPresentation,
-    LogSpeedSearchState, MAX_AGGREGATED_COMMITS, PathRequest, PresentationToggle,
+    BranchesPaneState, DETAILS_DEBOUNCE, DetailsPaneState, FilterBarState, FilterField,
+    LogPresentation, LogSpeedSearchState, MAX_AGGREGATED_COMMITS, PathRequest, PresentationToggle,
 };
 
 pub struct LogDispatchCtx<'a> {
@@ -1068,14 +1068,30 @@ impl LogWorkbench {
                 );
             }
             Action::ClearFilterField(field) => {
-                field.clear(&mut self.filter.spec);
-                self.on_filter_changed(
-                    ctx.snap,
-                    ctx.branch_colors,
-                    ctx.async_graph_enabled,
-                    ctx.i18n,
-                    ctx.status_notice,
-                );
+                if *field == FilterField::Paths
+                    && let Some(saved) = self.filter.saved_before_dir_history.take()
+                {
+                    self.filter.spec = saved;
+                    self.filter.path_matches = None;
+                    self.filter.path_requested = None;
+                    self.on_filter_changed(
+                        ctx.snap,
+                        ctx.branch_colors,
+                        ctx.async_graph_enabled,
+                        ctx.i18n,
+                        ctx.status_notice,
+                    );
+                    *ctx.status_notice = Some(ctx.i18n.t("toast.dir_history_restored").to_string());
+                } else {
+                    field.clear(&mut self.filter.spec);
+                    self.on_filter_changed(
+                        ctx.snap,
+                        ctx.branch_colors,
+                        ctx.async_graph_enabled,
+                        ctx.i18n,
+                        ctx.status_notice,
+                    );
+                }
             }
             Action::FilterLogByPath(path) => {
                 self.filter.spec.paths = PathFilter::single(path);
@@ -1091,6 +1107,40 @@ impl LogWorkbench {
                 if let Some(p) = self.filter.spec.paths.paths.first() {
                     *ctx.status_notice =
                         Some(ctx.i18n.t_fmt("toast.path_filter_set", &[("path", p)]));
+                }
+            }
+            Action::ShowDirectoryHistory(path) => {
+                if self.filter.saved_before_dir_history.is_none() {
+                    self.filter.saved_before_dir_history = Some(self.filter.spec.clone());
+                }
+                self.filter.spec.paths = PathFilter::single(path);
+                self.filter.path_matches = None;
+                self.filter.path_requested = None;
+                self.on_filter_changed(
+                    ctx.snap,
+                    ctx.branch_colors,
+                    ctx.async_graph_enabled,
+                    ctx.i18n,
+                    ctx.status_notice,
+                );
+                if let Some(p) = self.filter.spec.paths.paths.first() {
+                    *ctx.status_notice =
+                        Some(ctx.i18n.t_fmt("toast.dir_history_entered", &[("path", p)]));
+                }
+            }
+            Action::RestorePreDirHistoryFilter => {
+                if let Some(saved) = self.filter.saved_before_dir_history.take() {
+                    self.filter.spec = saved;
+                    self.filter.path_matches = None;
+                    self.filter.path_requested = None;
+                    self.on_filter_changed(
+                        ctx.snap,
+                        ctx.branch_colors,
+                        ctx.async_graph_enabled,
+                        ctx.i18n,
+                        ctx.status_notice,
+                    );
+                    *ctx.status_notice = Some(ctx.i18n.t("toast.dir_history_restored").to_string());
                 }
             }
             Action::FilterLogByRange { label, oids } => {
@@ -1125,6 +1175,7 @@ impl LogWorkbench {
                 }
             }
             Action::ClearAllFilters => {
+                self.filter.saved_before_dir_history = None;
                 self.filter.spec = Default::default();
                 self.on_filter_changed(
                     ctx.snap,

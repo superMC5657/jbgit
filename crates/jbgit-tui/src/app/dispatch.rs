@@ -1,6 +1,7 @@
+use std::sync::Arc;
 use std::time::Instant;
 
-use jbgit_core::{PaneId, RefreshScope, WorkspaceTab};
+use jbgit_core::{GitOp, PaneId, RefreshScope, RequestSlotId, WorkspaceTab};
 
 use crate::dialogs::{ChoiceDialog, Dialog};
 use crate::log_view::{
@@ -706,6 +707,43 @@ impl AppState {
                 };
                 let _ = self.log.dispatch(&Action::FilterLogByPath(path), &mut lctx);
             }
+            Action::ShowDirectoryHistory(path) => {
+                self.active_tab = WorkspaceTab::Log;
+                let now = self.now();
+                let mut lctx = LogDispatchCtx {
+                    snap: snap.as_ref(),
+                    branch_colors: &self.branch_colors,
+                    diff_caches: &self.diff_caches,
+                    i18n: &self.i18n,
+                    now,
+                    width,
+                    async_graph_enabled: self.async_graph_enabled,
+                    focused_pane: &mut self.focused_pane,
+                    status_notice: &mut self.status_notice,
+                    effects: &mut effects,
+                };
+                let _ = self
+                    .log
+                    .dispatch(&Action::ShowDirectoryHistory(path), &mut lctx);
+            }
+            Action::RestorePreDirHistoryFilter => {
+                let now = self.now();
+                let mut lctx = LogDispatchCtx {
+                    snap: snap.as_ref(),
+                    branch_colors: &self.branch_colors,
+                    diff_caches: &self.diff_caches,
+                    i18n: &self.i18n,
+                    now,
+                    width,
+                    async_graph_enabled: self.async_graph_enabled,
+                    focused_pane: &mut self.focused_pane,
+                    status_notice: &mut self.status_notice,
+                    effects: &mut effects,
+                };
+                let _ = self
+                    .log
+                    .dispatch(&Action::RestorePreDirHistoryFilter, &mut lctx);
+            }
             other => {
                 let now = self.now();
                 let handled = self.console.dispatch(&other)
@@ -874,16 +912,16 @@ impl AppState {
                     let hi = a.max(b).max(lo);
                     (lo, hi)
                 });
-                let key = jbgit_core::FileHistoryKey {
-                    path: norm,
-                    start_oid: *start_oid,
-                    follow_renames: if normalized_range.is_some() {
+                let key = jbgit_core::FileHistoryKey::new(
+                    norm,
+                    *start_oid,
+                    if normalized_range.is_some() {
                         false
                     } else {
                         *follow_renames
                     },
-                    line_range: normalized_range,
-                };
+                    normalized_range,
+                );
                 let mut fh = FileHistoryState::with_diff_prefs(
                     key.clone(),
                     self.log.details.diff.context,
@@ -959,10 +997,217 @@ impl AppState {
                 }
             }
             Action::FileHistoryToggleFollow => {
-                if let Some(fh) = self.modal_stack.file_history_mut()
+                let all_branches = self.modal_stack.file_history().is_some_and(|fh| {
+                    matches!(fh.key.scope, jbgit_core::HistoryBranchScope::AllBranches)
+                });
+                if all_branches {
+                    self.status_notice =
+                        Some(self.i18n.t("toast.file_history_follow_disabled_all").to_string());
+                } else if let Some(fh) = self.modal_stack.file_history_mut()
                     && let Some(key) = fh.toggle_follow()
                 {
                     effects.push(Effect::RequestFileHistory(key));
+                }
+            }
+            Action::FileHistoryCycleBranchScope => {
+                if self.modal_stack.file_history().is_some_and(|fh| !fh.is_selection_history()) {
+                    let anchor = self
+                        .hit_registry
+                        .find(|t| {
+                            matches!(
+                                t,
+                                crate::hit_test::HitTarget::FileHistoryToolbar(
+                                    crate::hit_test::FileHistoryToolbarButton::BranchScope
+                                )
+                            )
+                        })
+                        .map(|r| (r.rect.x, r.rect.y.saturating_add(1)))
+                        .unwrap_or_else(|| {
+                            (
+                                self.terminal_area.x + 6,
+                                self.terminal_area.y + 4,
+                            )
+                        });
+                    effects.extend(self.dispatch(Action::OpenContextMenuForTarget {
+                        target: crate::hit_test::HitTarget::FileHistoryToolbar(
+                            crate::hit_test::FileHistoryToolbarButton::BranchScope,
+                        ),
+                        anchor,
+                    }));
+                }
+            }
+            Action::FileHistorySetBranchScope(scope) => {
+                if let Some(fh) = self.modal_stack.file_history_mut()
+                    && let Some(key) = fh.set_branch_scope(scope.clone())
+                {
+                    effects.push(Effect::RequestFileHistory(key));
+                }
+            }
+            Action::FileHistoryLoadMore => {
+                if let Some(fh) = self.modal_stack.file_history_mut()
+                    && let Some(key) = fh.load_more()
+                {
+                    effects.push(Effect::RequestFileHistory(key));
+                }
+            }
+            Action::FileHistorySearchOpen => {
+                if let Some(fh) = self.modal_stack.file_history_mut() {
+                    fh.open_search();
+                }
+            }
+            Action::FileHistorySearchChar(ch) => {
+                if let Some(fh) = self.modal_stack.file_history_mut() {
+                    fh.search_push_char(*ch);
+                }
+            }
+            Action::FileHistorySearchBackspace => {
+                if let Some(fh) = self.modal_stack.file_history_mut() {
+                    fh.search_backspace();
+                }
+            }
+            Action::FileHistorySearchClear => {
+                if let Some(fh) = self.modal_stack.file_history_mut() {
+                    fh.search_clear();
+                }
+            }
+            Action::FileHistorySearchConfirm => {
+                if let Some(fh) = self.modal_stack.file_history_mut() {
+                    fh.search_confirm();
+                }
+            }
+            Action::FileHistorySearchClose => {
+                if let Some(fh) = self.modal_stack.file_history_mut() {
+                    fh.search_close();
+                }
+            }
+            Action::FileHistoryToggleMarkAnchor => {
+                if let Some(fh) = self.modal_stack.file_history_mut() {
+                    fh.toggle_mark_anchor();
+                }
+            }
+            Action::FileHistoryToggleCommitDetails => {
+                if let Some(fh) = self.modal_stack.file_history_mut() {
+                    fh.toggle_commit_details();
+                }
+            }
+            Action::FileHistoryToggleAffectedFiles => {
+                if let Some(fh) = self.modal_stack.file_history_mut() {
+                    fh.toggle_affected_files();
+                }
+            }
+            Action::FileHistoryAffectedMove(delta) => {
+                let len = self
+                    .modal_stack
+                    .file_history()
+                    .and_then(|fh| fh.desired_details_key())
+                    .and_then(|k| self.diff_caches.peek_details(&k))
+                    .map_or(0, |b| b.changes.len());
+                if let Some(fh) = self.modal_stack.file_history_mut() {
+                    fh.move_affected(*delta, len);
+                }
+            }
+            Action::FileHistoryAffectedSelect(idx) => {
+                let len = self
+                    .modal_stack
+                    .file_history()
+                    .and_then(|fh| fh.desired_details_key())
+                    .and_then(|k| self.diff_caches.peek_details(&k))
+                    .map_or(0, |b| b.changes.len());
+                if let Some(fh) = self.modal_stack.file_history_mut() {
+                    fh.select_affected(*idx, len);
+                }
+            }
+            Action::FileHistoryOpenRepoVersion => {
+                let target = self.modal_stack.file_history().and_then(|fh| {
+                    let e = fh.selected_entry()?;
+                    if e.kind == jbgit_core::FileStatusKind::Deleted {
+                        return None;
+                    }
+                    Some(jbgit_core::TreeBlobKey {
+                        oid: e.oid,
+                        path: e.path_at_commit.clone(),
+                    })
+                });
+                if let Some(key) = target {
+                    if let Some(fh) = self.modal_stack.file_history_mut() {
+                        fh.show_repo_version = true;
+                        fh.repo_version_blob = None;
+                        fh.repo_version_syntax = None;
+                        fh.repo_version_requested = Some(key.clone());
+                        fh.repo_version_scroll.reset();
+                    }
+                    self.tree_syntax.invalidate();
+                    effects.push(Effect::RequestTreeBlob(key));
+                } else if self.modal_stack.file_history().is_some() {
+                    self.status_notice =
+                        Some(self.i18n.t("menu.log_change.deleted_in_commit").to_string());
+                }
+            }
+            Action::FileHistoryCloseRepoVersion => {
+                if let Some(fh) = self.modal_stack.file_history_mut() {
+                    fh.close_repo_version();
+                }
+            }
+            Action::FileHistoryBlobScroll(delta) => {
+                self.scroll_pane(ScrollPane::FileHistoryBlob, *delta);
+            }
+            Action::FileHistoryGetVersion => {
+                if let Err(msg) = self.require_no_ongoing() {
+                    self.status_notice = Some(msg);
+                    return true;
+                }
+                let target = self.modal_stack.file_history().and_then(|fh| {
+                    let e = fh.selected_entry()?;
+                    if e.kind == jbgit_core::FileStatusKind::Deleted {
+                        return None;
+                    }
+                    Some((e.oid, e.path_at_commit.clone()))
+                });
+                if let Some((oid, path)) = target {
+                    let short = oid.short();
+                    let body_lines: Vec<String> = self
+                        .i18n
+                        .t_fmt("dialog.restore_file.body", &[("path", &path), ("short", &short)])
+                        .split('\n')
+                        .map(str::to_string)
+                        .collect();
+                    let dlg = ChoiceDialog::confirm(
+                        self.i18n.t("dialog.restore_file.title"),
+                        body_lines,
+                        self.i18n.t("dialog.restore_file.confirm_btn"),
+                        self.i18n.cancel(),
+                        vec![Action::RunGitOp(GitOp::CheckoutPaths {
+                            rev: oid.to_string(),
+                            paths: vec![path],
+                        })],
+                    );
+                    effects.extend(self.dispatch(Action::OpenDialog(Box::new(Dialog::Choice(dlg)))));
+                } else if self.modal_stack.file_history().is_some() {
+                    self.status_notice =
+                        Some(self.i18n.t("menu.log_change.deleted_in_commit").to_string());
+                }
+            }
+            Action::FileHistoryCopyPatch => {
+                if let Some((oid, path)) = self
+                    .modal_stack
+                    .file_history()
+                    .and_then(|fh| fh.selected_entry())
+                    .map(|e| (e.oid, e.path_at_commit.clone()))
+                {
+                    effects.extend(self.dispatch(Action::RunGitOp(GitOp::PatchToClipboard {
+                        source: jbgit_core::PatchSource::CommitFile { oid, path },
+                        reverse: false,
+                    })));
+                }
+            }
+            Action::FileHistoryCopyHash => {
+                if let Some(oid) = self
+                    .modal_stack
+                    .file_history()
+                    .and_then(|fh| fh.selected_entry())
+                    .map(|e| e.oid)
+                {
+                    effects.extend(self.dispatch(Action::CopyText(oid.to_string())));
                 }
             }
             Action::FileHistoryToggleCompareLocal => {
@@ -1072,19 +1317,44 @@ impl AppState {
                 }
             }
             Action::FileHistoryEscape => {
-                if self
-                    .modal_stack
-                    .file_history()
-                    .is_some_and(|fh| fh.diff.search.active)
-                {
+                let (repo_ver, diff_search, list_search, affected, details, pinned, zoomed) =
+                    match self.modal_stack.file_history() {
+                        Some(fh) => (
+                            fh.show_repo_version,
+                            fh.diff.search.active,
+                            fh.search_active,
+                            fh.show_affected_files,
+                            fh.show_commit_details,
+                            fh.anchor_pinned,
+                            fh.diff.zoomed,
+                        ),
+                        None => (false, false, false, false, false, false, false),
+                    };
+                if repo_ver {
+                    if let Some(fh) = self.modal_stack.file_history_mut() {
+                        fh.close_repo_version();
+                    }
+                } else if diff_search {
                     if let Some(fh) = self.modal_stack.file_history_mut() {
                         fh.diff.search.close();
                     }
-                } else if self
-                    .modal_stack
-                    .file_history()
-                    .is_some_and(|fh| fh.diff.zoomed)
-                {
+                } else if list_search {
+                    if let Some(fh) = self.modal_stack.file_history_mut() {
+                        fh.search_close();
+                    }
+                } else if affected {
+                    if let Some(fh) = self.modal_stack.file_history_mut() {
+                        fh.toggle_affected_files();
+                    }
+                } else if details {
+                    if let Some(fh) = self.modal_stack.file_history_mut() {
+                        fh.toggle_commit_details();
+                    }
+                } else if pinned {
+                    if let Some(fh) = self.modal_stack.file_history_mut() {
+                        fh.clear_anchor();
+                    }
+                } else if zoomed {
                     if let Some(fh) = self.modal_stack.file_history_mut() {
                         fh.toggle_zoom();
                     }
@@ -1095,6 +1365,18 @@ impl AppState {
             _ => return false,
         }
         true
+    }
+
+    fn load_or_request_blame(&mut self, key: jbgit_core::BlameKey, effects: &mut Vec<Effect>) {
+        self.blame_syntax.invalidate();
+        if let Some(cached) = self.diff_caches.get_blame(&key) {
+            if let Some(ann) = self.modal_stack.annotate_mut() {
+                ann.apply_loaded_bundle(Arc::clone(&cached));
+            }
+            self.schedule_blame_syntax(cached, effects);
+        } else {
+            effects.push(Effect::RequestBlame(key));
+        }
     }
 
     fn dispatch_annotate_action(&mut self, action: &Action, effects: &mut Vec<Effect>) -> bool {
@@ -1109,7 +1391,8 @@ impl AppState {
                     rev: *rev,
                     options: jbgit_core::BlameOptions {
                         ignore_whitespace: self.config.jbgit.annotate.ignore_whitespace,
-                        detect_moves: self.config.jbgit.annotate.detect_moves,
+                        move_detection: self.config.jbgit.annotate.detect_moves.to_core(),
+                        prefer_commit_date: self.config.jbgit.annotate.prefer_commit_date,
                     },
                 };
                 let ann = AnnotateState::with_diff_prefs(
@@ -1122,8 +1405,7 @@ impl AppState {
                 self.blur_active_pane(false);
                 self.modal_stack.dismiss_context_menus();
                 self.modal_stack.open_annotate(ann);
-                self.blame_syntax.invalidate();
-                effects.push(Effect::RequestBlame(key));
+                self.load_or_request_blame(key, effects);
             }
             Action::AnnotateMove(delta) => {
                 if let Some(ann) = self.modal_stack.annotate_mut() {
@@ -1149,7 +1431,7 @@ impl AppState {
                 }
             }
             Action::AnnotateToggleWhitespace => {
-                if let Some(ann) = self.modal_stack.annotate_mut() {
+                let key = self.modal_stack.annotate_mut().map(|ann| {
                     ann.key.options.ignore_whitespace = !ann.key.options.ignore_whitespace;
                     ann.pending_focus_line = ann.selected_line().map(|l| l.final_line);
                     ann.loading = true;
@@ -1157,23 +1439,58 @@ impl AppState {
                     ann.syntax = None;
                     ann.diff.requested = None;
                     ann.diff.pending = None;
-                    let key = ann.key.clone();
-                    self.blame_syntax.invalidate();
-                    effects.push(Effect::RequestBlame(key));
+                    ann.key.clone()
+                });
+                if let Some(key) = key {
+                    self.load_or_request_blame(key, effects);
                 }
             }
             Action::AnnotateToggleMoves => {
-                if let Some(ann) = self.modal_stack.annotate_mut() {
-                    ann.key.options.detect_moves = !ann.key.options.detect_moves;
+                let key = self.modal_stack.annotate_mut().map(|ann| {
+                    ann.key.options.move_detection = ann.key.options.move_detection.next();
                     ann.pending_focus_line = ann.selected_line().map(|l| l.final_line);
                     ann.loading = true;
                     ann.error = None;
                     ann.syntax = None;
                     ann.diff.requested = None;
                     ann.diff.pending = None;
-                    let key = ann.key.clone();
-                    self.blame_syntax.invalidate();
-                    effects.push(Effect::RequestBlame(key));
+                    ann.key.clone()
+                });
+                if let Some(key) = key {
+                    self.load_or_request_blame(key, effects);
+                }
+            }
+            Action::AnnotateToggleDateMode => {
+                if let Some(ann) = self.modal_stack.annotate_mut() {
+                    ann.key.options.prefer_commit_date = !ann.key.options.prefer_commit_date;
+                }
+            }
+            Action::AnnotateCycleColorMode => {
+                if let Some(ann) = self.modal_stack.annotate_mut() {
+                    ann.color_mode = ann.color_mode.next();
+                }
+            }
+            Action::AnnotateToggleHashColumn => {
+                if let Some(ann) = self.modal_stack.annotate_mut() {
+                    ann.show_hash = !ann.show_hash;
+                }
+            }
+            Action::AnnotateToggleAuthorColumn => {
+                if let Some(ann) = self.modal_stack.annotate_mut() {
+                    ann.show_author = !ann.show_author;
+                }
+            }
+            Action::AnnotateToggleDateColumn => {
+                if let Some(ann) = self.modal_stack.annotate_mut() {
+                    ann.show_date = !ann.show_date;
+                }
+            }
+            Action::AnnotateToggleCommitDetails => {
+                if let Some(ann) = self.modal_stack.annotate_mut() {
+                    ann.show_commit_details = !ann.show_commit_details;
+                    if !ann.show_commit_details {
+                        ann.details_requested = None;
+                    }
                 }
             }
             Action::AnnotateToggleDiff => {
@@ -1324,7 +1641,7 @@ impl AppState {
                     None
                 };
                 if let Some((prev_oid, prev_path, focus_line)) = target {
-                    if let Some(ann) = self.modal_stack.annotate_mut() {
+                    let new_key = self.modal_stack.annotate_mut().map(|ann| {
                         let nav_frame = AnnotateNavFrame {
                             key: ann.key.clone(),
                             cursor: ann.cursor,
@@ -1343,19 +1660,65 @@ impl AppState {
                         ann.diff.requested = None;
                         ann.diff.pending = None;
                         ann.diff.scroll.reset();
-                        let new_key = ann.key.clone();
-                        self.blame_syntax.invalidate();
-                        effects.push(Effect::RequestBlame(new_key));
+                        ann.details_requested = None;
+                        ann.key.clone()
+                    });
+                    if let Some(new_key) = new_key {
+                        self.load_or_request_blame(new_key, effects);
                     }
                 } else if self.modal_stack.annotate().is_some() {
                     self.status_notice = Some(self.i18n.t("toast.annotate_no_previous").to_string());
                 }
             }
+            Action::AnnotateThisRev => {
+                let target = self.modal_stack.annotate().and_then(|ann| {
+                    let line = ann.selected_line()?;
+                    if line.oid.is_zero() {
+                        return None;
+                    }
+                    let path = if line.orig_path.is_empty() {
+                        ann.key.path.clone()
+                    } else {
+                        line.orig_path.clone()
+                    };
+                    Some((line.oid, path, line.orig_line.max(1)))
+                });
+                if let Some((rev_oid, rev_path, focus_line)) = target {
+                    let new_key = self.modal_stack.annotate_mut().map(|ann| {
+                        let nav_frame = AnnotateNavFrame {
+                            key: ann.key.clone(),
+                            cursor: ann.cursor,
+                        };
+                        ann.nav_back.push(nav_frame);
+                        ann.key = jbgit_core::BlameKey {
+                            path: rev_path,
+                            rev: Some(rev_oid),
+                            options: ann.key.options,
+                        };
+                        ann.loading = true;
+                        ann.error = None;
+                        ann.syntax = None;
+                        ann.visual_anchor = None;
+                        ann.pending_focus_line = Some(focus_line);
+                        ann.diff.requested = None;
+                        ann.diff.pending = None;
+                        ann.diff.scroll.reset();
+                        ann.details_requested = None;
+                        ann.key.clone()
+                    });
+                    if let Some(new_key) = new_key {
+                        self.load_or_request_blame(new_key, effects);
+                    }
+                } else if self.modal_stack.annotate().is_some() {
+                    self.status_notice = Some(self.i18n.t("toast.annotate_uncommitted").to_string());
+                }
+            }
             Action::AnnotateNavBack => {
-                if let Some(ann) = self.modal_stack.annotate_mut()
-                    && let Some(frame) = ann.nav_back.pop()
-                {
+                let key = self.modal_stack.annotate_mut().and_then(|ann| {
+                    let frame = ann.nav_back.pop()?;
+                    let current_prefer_commit_date = ann.key.options.prefer_commit_date;
                     ann.key = frame.key;
+                    ann.key.options.prefer_commit_date = current_prefer_commit_date;
                     ann.cursor = frame.cursor;
                     ann.loading = true;
                     ann.error = None;
@@ -1365,9 +1728,11 @@ impl AppState {
                     ann.diff.requested = None;
                     ann.diff.pending = None;
                     ann.diff.scroll.reset();
-                    let key = ann.key.clone();
-                    self.blame_syntax.invalidate();
-                    effects.push(Effect::RequestBlame(key));
+                    ann.details_requested = None;
+                    Some(ann.key.clone())
+                });
+                if let Some(key) = key {
+                    self.load_or_request_blame(key, effects);
                 }
             }
             Action::AnnotateJumpToLog => self.jump_annotate_to_log(effects),
@@ -1446,14 +1811,16 @@ impl AppState {
                 }
             }
             Action::AnnotateEscape => {
-                let (has_search, has_goto, has_visual) = match self.modal_stack.annotate() {
-                    Some(ann) => (
-                        ann.diff.search.active,
-                        ann.goto_line_input.is_some(),
-                        ann.visual_anchor.is_some(),
-                    ),
-                    None => (false, false, false),
-                };
+                let (has_search, has_goto, has_details, has_visual) =
+                    match self.modal_stack.annotate() {
+                        Some(ann) => (
+                            ann.diff.search.active,
+                            ann.goto_line_input.is_some(),
+                            ann.show_commit_details,
+                            ann.visual_anchor.is_some(),
+                        ),
+                        None => (false, false, false, false),
+                    };
                 if has_search {
                     if let Some(ann) = self.modal_stack.annotate_mut() {
                         ann.diff.search.close();
@@ -1461,6 +1828,11 @@ impl AppState {
                 } else if has_goto {
                     if let Some(ann) = self.modal_stack.annotate_mut() {
                         ann.goto_line_input = None;
+                    }
+                } else if has_details {
+                    if let Some(ann) = self.modal_stack.annotate_mut() {
+                        ann.show_commit_details = false;
+                        ann.details_requested = None;
                     }
                 } else if has_visual {
                     if let Some(ann) = self.modal_stack.annotate_mut() {
@@ -1475,8 +1847,24 @@ impl AppState {
         true
     }
 
-    /// Schedules debounced diff fetches (0 ms on LRU cache hit) for `ModalLayer::FileHistory`.
+    /// Schedules debounced diff fetches (0 ms on LRU cache hit) and optional
+    /// commit-details fetches for `ModalLayer::FileHistory`.
     pub fn reconcile_file_history_requests(&mut self, now: Instant, effects: &mut Vec<Effect>) {
+        if let Some(det_key) = self
+            .modal_stack
+            .file_history()
+            .and_then(|fh| fh.desired_details_key())
+            && self.diff_caches.peek_details(&det_key).is_none()
+            && let Some(fh) = self.modal_stack.file_history_mut()
+            && fh.details_requested.as_ref() != Some(&det_key)
+        {
+            fh.details_requested = Some(det_key.clone());
+            effects.push(Effect::RequestCommitDetails {
+                slot: RequestSlotId::FileHistoryCommitDetails,
+                key: det_key,
+            });
+        }
+
         if self
             .modal_stack
             .file_history()
@@ -1504,7 +1892,7 @@ impl AppState {
         let desired_key = self
             .modal_stack
             .file_history()
-            .and_then(|fh| fh.desired_diff_key());
+            .and_then(|fh| fh.desired_diff_key_with_store(&self.diff_caches));
         let cached = self.modal_stack.file_history_mut().and_then(|fh| {
             fh.diff
                 .reconcile_fetch(desired_key, &mut self.diff_caches, now, DETAILS_DEBOUNCE)
@@ -1514,7 +1902,8 @@ impl AppState {
         }
     }
 
-    /// Schedules debounced diff fetches (0 ms on LRU cache hit) for `ModalLayer::Annotate`.
+    /// Schedules debounced diff fetches (0 ms on LRU cache hit) and optional
+    /// commit-details fetches for `ModalLayer::Annotate`.
     pub fn reconcile_annotate_requests(&mut self, now: Instant, effects: &mut Vec<Effect>) {
         let head_oid = self.repo_snapshot.as_ref().and_then(|s| s.head_oid);
         let desired_key = self
@@ -1527,6 +1916,21 @@ impl AppState {
         });
         if let Some(diff) = cached {
             self.schedule_file_syntax(diff, effects);
+        }
+
+        if let Some(det_key) = self
+            .modal_stack
+            .annotate()
+            .and_then(|ann| ann.desired_details_key())
+            && self.diff_caches.peek_details(&det_key).is_none()
+            && let Some(ann) = self.modal_stack.annotate_mut()
+            && ann.details_requested.as_ref() != Some(&det_key)
+        {
+            ann.details_requested = Some(det_key.clone());
+            effects.push(Effect::RequestCommitDetails {
+                slot: RequestSlotId::AnnotateCommitDetails,
+                key: det_key,
+            });
         }
     }
 

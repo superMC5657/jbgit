@@ -449,6 +449,20 @@ fn render_filter_bar(
         }
     }
 
+    if state.log.filter.saved_before_dir_history.is_some() {
+        put(
+            frame,
+            &mut x,
+            &format!(" [{}]", state.i18n.t("view.log.restore_dir_history_filter")),
+            Style::default()
+                .fg(theme.status_modified)
+                .bg(theme.bg_panel)
+                .add_modifier(Modifier::BOLD),
+            Some(HitTarget::FilterRestoreDirHistory),
+            reserve,
+        );
+    }
+
     for field in FilterField::ALL {
         let active = filter.field_active(field);
         let mut label = if !active {

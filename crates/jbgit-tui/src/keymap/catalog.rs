@@ -944,7 +944,7 @@ pub fn execute_action(run: &KeyAction, state: &AppState) -> Option<Vec<Action>> 
                         }])
                     }
                     ChangeRowKind::Dir { .. } => {
-                        Some(vec![Action::FilterLogByPath(row.key.clone())])
+                        Some(vec![Action::ShowDirectoryHistory(row.key.clone())])
                     }
                 }
             } else if state.active_tab == WorkspaceTab::Commit
@@ -1720,9 +1720,16 @@ pub fn annotate_stage_diff(state: &AppState, path: Option<&str>) -> CommandResul
 pub enum AnnotateCommand {
     SelectionHistory,
     PreviousRev,
+    ThisRev,
     ToggleDiff,
+    ToggleCommitDetails,
     IgnoreWhitespace,
     DetectMoves,
+    ToggleDateMode,
+    CycleColorMode,
+    ToggleHashColumn,
+    ToggleAuthorColumn,
+    ToggleDateColumn,
     LocateInLog,
     CopyHash,
 }
@@ -1732,9 +1739,16 @@ impl AnnotateCommand {
         match self {
             Self::SelectionHistory => "H",
             Self::PreviousRev => "p",
+            Self::ThisRev => "r",
             Self::ToggleDiff => "d",
+            Self::ToggleCommitDetails => "i",
             Self::IgnoreWhitespace => "w",
             Self::DetectMoves => "m",
+            Self::ToggleDateMode => "D",
+            Self::CycleColorMode => "C",
+            Self::ToggleHashColumn => "",
+            Self::ToggleAuthorColumn => "",
+            Self::ToggleDateColumn => "",
             Self::LocateInLog => "Enter",
             Self::CopyHash => "y",
         }
@@ -1744,9 +1758,16 @@ impl AnnotateCommand {
         match self {
             Self::SelectionHistory => Action::AnnotateShowSelectionHistory,
             Self::PreviousRev => Action::AnnotatePreviousRev,
+            Self::ThisRev => Action::AnnotateThisRev,
             Self::ToggleDiff => Action::AnnotateToggleDiff,
+            Self::ToggleCommitDetails => Action::AnnotateToggleCommitDetails,
             Self::IgnoreWhitespace => Action::AnnotateToggleWhitespace,
             Self::DetectMoves => Action::AnnotateToggleMoves,
+            Self::ToggleDateMode => Action::AnnotateToggleDateMode,
+            Self::CycleColorMode => Action::AnnotateCycleColorMode,
+            Self::ToggleHashColumn => Action::AnnotateToggleHashColumn,
+            Self::ToggleAuthorColumn => Action::AnnotateToggleAuthorColumn,
+            Self::ToggleDateColumn => Action::AnnotateToggleDateColumn,
             Self::LocateInLog => Action::AnnotateJumpToLog,
             Self::CopyHash => Action::AnnotateCopyHash,
         }
@@ -1757,9 +1778,13 @@ impl AnnotateCommand {
         match code {
             KeyCode::Char('H') => Some(Self::SelectionHistory),
             KeyCode::Char('p') => Some(Self::PreviousRev),
+            KeyCode::Char('r') => Some(Self::ThisRev),
             KeyCode::Char('d') => Some(Self::ToggleDiff),
+            KeyCode::Char('i') => Some(Self::ToggleCommitDetails),
             KeyCode::Char('w') => Some(Self::IgnoreWhitespace),
             KeyCode::Char('m') => Some(Self::DetectMoves),
+            KeyCode::Char('D') => Some(Self::ToggleDateMode),
+            KeyCode::Char('C') => Some(Self::CycleColorMode),
             KeyCode::Enter => Some(Self::LocateInLog),
             KeyCode::Char('y') => Some(Self::CopyHash),
             _ => None,
@@ -1797,14 +1822,20 @@ pub fn evaluate_annotate_command(state: &AppState, cmd: AnnotateCommand) -> Comm
                 return Err(i18n.t("toast.annotate_no_previous").into());
             }
         }
-        AnnotateCommand::LocateInLog | AnnotateCommand::CopyHash => {
+        AnnotateCommand::ThisRev | AnnotateCommand::LocateInLog | AnnotateCommand::CopyHash => {
             if ann.selected_line().is_none_or(|l| l.oid.is_zero()) {
                 return Err(i18n.t("toast.annotate_uncommitted").into());
             }
         }
         AnnotateCommand::ToggleDiff
+        | AnnotateCommand::ToggleCommitDetails
         | AnnotateCommand::IgnoreWhitespace
-        | AnnotateCommand::DetectMoves => {}
+        | AnnotateCommand::DetectMoves
+        | AnnotateCommand::ToggleDateMode
+        | AnnotateCommand::CycleColorMode
+        | AnnotateCommand::ToggleHashColumn
+        | AnnotateCommand::ToggleAuthorColumn
+        | AnnotateCommand::ToggleDateColumn => {}
     }
     Ok(vec![cmd.action()])
 }

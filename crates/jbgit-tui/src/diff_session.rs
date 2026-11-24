@@ -10,9 +10,9 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use jbgit_core::{
-    ChangeRowKind, ChangeTreeRow, CommitChangesBundle, CommitSignature, DetailsKey, DiffContext,
-    DiffHunk, FileChange, FileDiff, FileDiffKey, LruCache, Oid, PathFilter, StageDiffHunk,
-    WhitespaceMode, build_change_rows_filtered, side_by_side_rows,
+    BlameBundle, BlameKey, ChangeRowKind, ChangeTreeRow, CommitChangesBundle, CommitSignature,
+    DetailsKey, DiffContext, DiffHunk, FileChange, FileDiff, FileDiffKey, LruCache, Oid,
+    PathFilter, StageDiffHunk, WhitespaceMode, build_change_rows_filtered, side_by_side_rows,
 };
 use rustc_hash::FxHashSet;
 
@@ -22,18 +22,20 @@ use crate::syntax::{HighlightedDiff, LazyWordDiffCache, wrapped_line_row_count};
 pub const DETAILS_CACHE_CAPACITY: usize = 256;
 pub const DIFF_CACHE_CAPACITY: usize = 64;
 pub const SIGNATURES_CACHE_CAPACITY: usize = 1024;
+pub const BLAME_CACHE_CAPACITY: usize = 16;
 pub const DIFF_HORIZ_SCROLL_STEP: isize = 4;
 pub const DIFF_HORIZ_SCROLL_MAX: u16 = 4096;
 
-/// Single global LRU store shared by Log, Stash, and File History so any
-/// commit details, file diff, or syntax highlight loaded in one view is
-/// immediately available in every sibling view with zero dual-write sync.
+/// Single global LRU store shared by Log, Stash, File History, and Annotate so
+/// any commit details, file diff, syntax highlight, or blame bundle loaded in
+/// one view is immediately available in every sibling view with zero dual-write sync.
 #[derive(Debug)]
 pub struct DiffCacheStore {
     pub details: LruCache<DetailsKey, Arc<CommitChangesBundle>>,
     pub diffs: LruCache<FileDiffKey, Arc<FileDiff>>,
     pub syntax: LruCache<FileDiffKey, Arc<HighlightedDiff>>,
     pub signatures: LruCache<Oid, CommitSignature>,
+    pub blames: LruCache<BlameKey, Arc<BlameBundle>>,
 }
 
 impl Default for DiffCacheStore {
@@ -49,6 +51,7 @@ impl DiffCacheStore {
             diffs: LruCache::new(DIFF_CACHE_CAPACITY),
             syntax: LruCache::new(DIFF_CACHE_CAPACITY),
             signatures: LruCache::new(SIGNATURES_CACHE_CAPACITY),
+            blames: LruCache::new(BLAME_CACHE_CAPACITY),
         }
     }
 
@@ -82,6 +85,22 @@ impl DiffCacheStore {
 
     pub fn insert_syntax(&mut self, key: FileDiffKey, highlighted: Arc<HighlightedDiff>) {
         self.syntax.insert(key, highlighted);
+    }
+
+    pub fn peek_blame(&self, key: &BlameKey) -> Option<&Arc<BlameBundle>> {
+        self.blames.peek(&key.cache_key())
+    }
+
+    pub fn get_blame(&mut self, key: &BlameKey) -> Option<Arc<BlameBundle>> {
+        self.blames.get(&key.cache_key()).cloned()
+    }
+
+    pub fn insert_blame(&mut self, bundle: Arc<BlameBundle>) {
+        self.blames.insert(bundle.key.cache_key(), bundle);
+    }
+
+    pub fn clear_blames(&mut self) {
+        self.blames.clear();
     }
 
     /// Looks up cached blob OIDs for `key` from `details` so the engine can
@@ -1188,5 +1207,50 @@ mod tests {
         assert_eq!(session.search.matches.len(), 4);
         assert!(session.search.matches.iter().any(|m| m.side == 0));
         assert!(session.search.matches.iter().any(|m| m.side == 1));
+    }
+
+    #[test]
+    fn blame_cache_lru_hits_evicts_past_capacity_and_clears_on_invalidation() {
+        use jbgit_core::{BlameBundle, BlameKey, BlameOptions, MoveDetection};
+        use std::collections::HashMap;
+
+        let mut store = DiffCacheStore::new();
+        let make_key = |idx: u8, prefer_commit_date: bool| BlameKey {
+            path: format!("src/file_{idx}.rs"),
+            rev: Some(Oid::from_bytes([idx; 20])),
+            options: BlameOptions {
+                ignore_whitespace: false,
+                move_detection: MoveDetection::None,
+                prefer_commit_date,
+            },
+        };
+        let make_bundle = |key: BlameKey| {
+            Arc::new(BlameBundle {
+                key,
+                lines: Vec::new(),
+                commits: HashMap::new(),
+                content: Arc::from(""),
+                uncommitted_oid_present: false,
+            })
+        };
+
+        // Insert BLAME_CACHE_CAPACITY (16) bundles; verify prefer_commit_date shares cache key.
+        for i in 1..=(BLAME_CACHE_CAPACITY as u8) {
+            store.insert_blame(make_bundle(make_key(i, false)));
+        }
+        assert!(store.peek_blame(&make_key(1, true)).is_some());
+        // Touch item 1 via get_blame so item 2 becomes the LRU victim.
+        assert!(store.get_blame(&make_key(1, true)).is_some());
+
+        // Inserting item 17 evicts item 2 while keeping item 1 and item 17.
+        store.insert_blame(make_bundle(make_key(17, false)));
+        assert!(store.peek_blame(&make_key(2, false)).is_none());
+        assert!(store.peek_blame(&make_key(1, false)).is_some());
+        assert!(store.peek_blame(&make_key(17, false)).is_some());
+
+        // Snapshot invalidation clears all cached blame bundles.
+        store.clear_blames();
+        assert!(store.peek_blame(&make_key(1, false)).is_none());
+        assert!(store.peek_blame(&make_key(17, false)).is_none());
     }
 }

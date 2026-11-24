@@ -352,6 +352,12 @@ impl AppState {
                     fh.diff.scroll.scroll_by(delta, fallback);
                 }
             }
+            ScrollPane::FileHistoryBlob => {
+                if let Some(fh) = self.modal_stack.file_history_mut() {
+                    let fallback = fh.repo_version_line_count().saturating_sub(1);
+                    fh.repo_version_scroll.scroll_by(delta, fallback);
+                }
+            }
             ScrollPane::Annotate => {
                 if let Some(ann) = self.modal_stack.annotate_mut() {
                     let fallback = ann.line_count().saturating_sub(1);
@@ -500,6 +506,11 @@ impl AppState {
                 ScrollPane::ReflogDiff => {
                     if let Some(rf) = self.modal_stack.reflog_mut() {
                         rf.diff.scroll.bind_bound(viewport_h, max_scroll);
+                    }
+                }
+                ScrollPane::FileHistoryBlob => {
+                    if let Some(fh) = self.modal_stack.file_history_mut() {
+                        fh.repo_version_scroll.bind_bound(viewport_h, max_scroll);
                     }
                 }
                 ScrollPane::Annotate => {

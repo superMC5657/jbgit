@@ -695,6 +695,20 @@ pub(crate) fn preselect_actions_for_menu_target(
             }
             out
         }
+        HitTarget::FileHistoryRow { idx } => {
+            if state
+                .modal_stack
+                .file_history()
+                .is_some_and(|fh| fh.selected != *idx)
+            {
+                vec![Action::FileHistorySelect {
+                    idx: *idx,
+                    extend: false,
+                }]
+            } else {
+                Vec::new()
+            }
+        }
         HitTarget::AnnotateLine { line_idx } => {
             let preserve_visual = state
                 .modal_stack
@@ -819,6 +833,12 @@ pub(crate) fn build_menu_items_for_target(
         }
         HitTarget::LogChangeRow { .. } | HitTarget::Pane(PaneId::LogChangesTree) => {
             menus::log_change_menu_items(state)
+        }
+        HitTarget::FileHistoryRow { .. }
+        | HitTarget::FileHistoryListArea
+        | HitTarget::FileHistoryDiffArea => menus::file_history_menu_items(state),
+        HitTarget::FileHistoryToolbar(crate::hit_test::FileHistoryToolbarButton::BranchScope) => {
+            menus::file_history_scope_menu_items(state)
         }
         HitTarget::AnnotateLine { .. }
         | HitTarget::AnnotateArea

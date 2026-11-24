@@ -131,7 +131,13 @@ impl AppState {
                 if !self.tree_syntax.finish_cancelable(&key, epoch) {
                     return effects;
                 }
-                if let Some(s) = self.modal_stack.tree_browser_mut()
+                if let Some(fh) = self.modal_stack.file_history_mut()
+                    && fh.show_repo_version
+                    && fh.repo_version_requested.as_ref() == Some(&key)
+                {
+                    fh.repo_version_syntax = Some(highlighted);
+                    self.needs_redraw = true;
+                } else if let Some(s) = self.modal_stack.tree_browser_mut()
                     && s.preview_requested.as_ref() == Some(&key)
                 {
                     s.preview_syntax = Some(highlighted);
@@ -236,6 +242,7 @@ impl AppState {
                         p.refresh_from_snapshot(&snapshot);
                     }
                 }
+                self.diff_caches.clear_blames();
                 self.repo_snapshot = Some(snapshot);
                 self.apply_pending_remote_selection();
                 self.sync_open_push_dialog_remotes(&mut effects);
@@ -292,6 +299,23 @@ impl AppState {
                     if rf.desired_details_key().as_ref() == Some(&bundle.key) {
                         rf.changes.selected =
                             rf.changes.selected.min(bundle.changes.len().saturating_sub(1));
+                    }
+                }
+                if slot == RequestSlotId::AnnotateCommitDetails
+                    && let Some(ann) = self.modal_stack.annotate_mut()
+                    && ann.details_requested.as_ref() == Some(&bundle.key)
+                {
+                    ann.details_requested = None;
+                }
+                if slot == RequestSlotId::FileHistoryCommitDetails
+                    && let Some(fh) = self.modal_stack.file_history_mut()
+                {
+                    if fh.details_requested.as_ref() == Some(&bundle.key) {
+                        fh.details_requested = None;
+                    }
+                    if fh.desired_details_key().as_ref() == Some(&bundle.key) {
+                        fh.affected_selected =
+                            fh.affected_selected.min(bundle.changes.len().saturating_sub(1));
                     }
                 }
                 self.diff_caches.insert_details(bundle);
@@ -411,7 +435,7 @@ impl AppState {
                 let fh_wants = self
                     .modal_stack
                     .file_history()
-                    .and_then(|fh| fh.desired_diff_key())
+                    .and_then(|fh| fh.desired_diff_key_with_store(&self.diff_caches))
                     .as_ref()
                     == Some(&diff.key);
                 let head_oid = self.repo_snapshot.as_ref().and_then(|s| s.head_oid);
@@ -451,19 +475,7 @@ impl AppState {
                 let desired_after_load = if let Some(fh) = self.modal_stack.file_history_mut()
                     && fh.key == bundle.key
                 {
-                    fh.loading = false;
-                    fh.error = None;
-                    fh.anchor = None;
-                    fh.range_diff = None;
-                    fh.range_syntax = None;
-                    fh.diff.scroll.reset();
-                    fh.diff.pending = None;
-                    fh.selected = fh
-                        .key
-                        .start_oid
-                        .and_then(|start| bundle.entries.iter().position(|e| e.oid == start))
-                        .unwrap_or(0);
-                    fh.bundle = Some(bundle);
+                    fh.on_bundle_loaded(bundle);
                     if fh.uses_range_patch() {
                         if let (Some(range), Some(oid)) = (
                             fh.key.line_range,
@@ -474,7 +486,7 @@ impl AppState {
                         }
                         None
                     } else {
-                        fh.desired_diff_key()
+                        fh.desired_diff_key_with_store(&self.diff_caches)
                     }
                 } else {
                     None
@@ -502,27 +514,12 @@ impl AppState {
                 if !self.request_slots.accept(RequestSlotId::Annotate, epoch) {
                     return effects;
                 }
+                self.diff_caches.insert_blame(Arc::clone(&bundle));
                 let mut syntax_bundle: Option<Arc<jbgit_core::BlameBundle>> = None;
                 if let Some(ann) = self.modal_stack.annotate_mut()
-                    && ann.key == bundle.key
+                    && ann.key.cache_key() == bundle.key.cache_key()
                 {
-                    ann.loading = false;
-                    ann.error = None;
-                    let focus_line = ann.pending_focus_line.take();
-                    let target_cursor = focus_line
-                        .and_then(|ln| {
-                            bundle
-                                .lines
-                                .iter()
-                                .position(|l| l.final_line == ln)
-                                .or_else(|| usize::try_from(ln.saturating_sub(1)).ok())
-                        })
-                        .unwrap_or(ann.cursor);
-                    ann.bundle = Some(Arc::clone(&bundle));
-                    ann.syntax = None;
-                    ann.visual_anchor = None;
-                    ann.cursor = target_cursor.min(bundle.lines.len().saturating_sub(1));
-                    ann.ensure_cursor_visible();
+                    ann.apply_loaded_bundle(Arc::clone(&bundle));
                     syntax_bundle = Some(bundle);
                 }
                 if let Some(bundle) = syntax_bundle {

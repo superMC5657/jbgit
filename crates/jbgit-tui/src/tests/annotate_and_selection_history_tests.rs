@@ -36,6 +36,8 @@ fn sample_blame_bundle(c1: Oid, c2: Oid) -> Arc<BlameBundle> {
         BlameCommit {
             oid: c1,
             author: stamp("Alice", 1_700_000_000),
+            committer_time: 1_700_000_000,
+            committer_offset_minutes: 0,
             summary: "initial auth module".to_string(),
             previous: None,
             is_boundary: true,
@@ -46,6 +48,8 @@ fn sample_blame_bundle(c1: Oid, c2: Oid) -> Arc<BlameBundle> {
         BlameCommit {
             oid: c2,
             author: stamp("Bob", 1_700_086_400),
+            committer_time: 1_700_090_000,
+            committer_offset_minutes: 0,
             summary: "refine token expiry check".to_string(),
             previous: Some((c1, "src/old_auth.rs".to_string())),
             is_boundary: false,
@@ -57,6 +61,8 @@ fn sample_blame_bundle(c1: Oid, c2: Oid) -> Arc<BlameBundle> {
         BlameCommit {
             oid: zero,
             author: stamp("Not Committed Yet", 0),
+            committer_time: 0,
+            committer_offset_minutes: 0,
             summary: "Not Committed Yet".to_string(),
             previous: None,
             is_boundary: false,
@@ -238,12 +244,7 @@ fn annotate_entry_points_menus_and_alt_g_open_blame_modal() {
         .latest(RequestSlotId::FileHistoryList);
     ts.deliver_engine_event(EngineEvent::FileHistoryLoaded {
         bundle: Arc::new(FileHistoryBundle {
-            key: FileHistoryKey {
-                path: "src/auth.rs".into(),
-                start_oid: None,
-                follow_renames: true,
-                line_range: None,
-            },
+            key: FileHistoryKey::new("src/auth.rs", None, true, None),
             entries: vec![FileHistoryEntry {
                 oid: c2,
                 author_name: "Bob".into(),
@@ -332,7 +333,9 @@ fn annotate_renders_hunk_dedup_uncommitted_toggles_prev_rev_diff_goto_and_errors
     let reqs = ts.take_requests();
     assert!(reqs.iter().any(|(r, _)| matches!(
         r,
-        TaskRequest::LoadBlame { key } if key.options.ignore_whitespace && !key.options.detect_moves
+        TaskRequest::LoadBlame { key }
+            if key.options.ignore_whitespace
+                && key.options.move_detection == jbgit_core::MoveDetection::None
     )));
     let mut b_w = (*bundle).clone();
     b_w.key.options.ignore_whitespace = true;
@@ -347,11 +350,13 @@ fn annotate_renders_hunk_dedup_uncommitted_toggles_prev_rev_diff_goto_and_errors
     let reqs = ts.take_requests();
     assert!(reqs.iter().any(|(r, _)| matches!(
         r,
-        TaskRequest::LoadBlame { key } if key.options.ignore_whitespace && key.options.detect_moves
+        TaskRequest::LoadBlame { key }
+            if key.options.ignore_whitespace
+                && key.options.move_detection == jbgit_core::MoveDetection::WithinFile
     )));
     let mut b_m = (*bundle).clone();
     b_m.key.options.ignore_whitespace = true;
-    b_m.key.options.detect_moves = true;
+    b_m.key.options.move_detection = jbgit_core::MoveDetection::WithinFile;
     ts.deliver_engine_event(EngineEvent::BlameLoaded {
         bundle: Arc::new(b_m),
         epoch: ep_m,
@@ -367,20 +372,24 @@ fn annotate_renders_hunk_dedup_uncommitted_toggles_prev_rev_diff_goto_and_errors
         TaskRequest::LoadBlame { key }
             if key.path == "src/old_auth.rs" && key.rev == Some(c1)
     )));
+    // 'P' nav back hits DiffCacheStore blame LRU cache with ZERO new LoadBlame requests!
     ts.send_key(KeyCode::Char('P'), KeyModifiers::SHIFT);
     let ep_back = ts.state().request_slots.latest(RequestSlotId::Annotate);
-    assert!(ts.state().modal_stack.annotate().unwrap().nav_back.is_empty());
-    ts.deliver_engine_event(EngineEvent::BlameLoaded {
-        bundle: Arc::new(BlameBundle {
-            key: ts.state().modal_stack.annotate().unwrap().key.clone(),
-            lines: bundle.lines.clone(),
-            commits: bundle.commits.clone(),
-            content: Arc::clone(&bundle.content),
-            uncommitted_oid_present: true,
-        }),
-        epoch: ep_back,
-    });
-    assert!(ep_back > ep_p);
+    assert_eq!(
+        ep_back, ep_p,
+        "nav_back to a cached blame key must hit DiffCacheStore without re-requesting git blame"
+    );
+    let back_reqs = ts.take_requests();
+    assert!(
+        !back_reqs
+            .iter()
+            .any(|(r, _)| matches!(r, TaskRequest::LoadBlame { .. })),
+        "cached nav_back must emit zero LoadBlame requests"
+    );
+    let ann_back = ts.state().modal_stack.annotate().unwrap();
+    assert!(ann_back.nav_back.is_empty());
+    assert!(!ann_back.loading);
+    assert!(ann_back.bundle.is_some());
 
     // Go-to-Line via ':' -> "1" -> Enter
     ts.send_key(KeyCode::Char(':'), KeyModifiers::NONE);
@@ -529,12 +538,7 @@ fn selection_history_from_annotate_and_stage_diff_renders_range_patch_and_confir
         .latest(RequestSlotId::FileHistoryList);
     ts.deliver_engine_event(EngineEvent::FileHistoryLoaded {
         bundle: Arc::new(FileHistoryBundle {
-            key: FileHistoryKey {
-                path: "src/auth.rs".into(),
-                start_oid: Some(c2),
-                follow_renames: false,
-                line_range: Some((2, 3)),
-            },
+            key: FileHistoryKey::new("src/auth.rs", Some(c2), false, Some((2, 3))),
             entries: vec![FileHistoryEntry {
                 oid: c2,
                 author_name: "Bob".into(),
@@ -730,9 +734,259 @@ fn selection_history_from_annotate_and_stage_diff_renders_range_patch_and_confir
         rev: Some(oid(10)),
         options: BlameOptions {
             ignore_whitespace: true,
-            detect_moves: true,
+            move_detection: jbgit_core::MoveDetection::AcrossFiles,
+            prefer_commit_date: false,
         },
     };
     assert_eq!(key.rev, Some(oid(10)));
     assert_ne!(oid(10), oid_n(10));
+}
+
+#[test]
+fn annotate_moves_date_mode_columns_coloring_this_rev_details_and_cache_invalidation() {
+    use crate::log_view::AnnotateColorMode;
+    use jbgit_core::{CommitDetails, MoveDetection};
+
+    let snap = snapshot();
+    let c1 = snap.commits[0].oid;
+    let c2 = snap.commits[1].oid;
+    let mut ts = TestSession::with_snapshot(snap.clone());
+
+    ts.dispatch(Action::OpenAnnotate {
+        path: "src/auth.rs".into(),
+        rev: None,
+    });
+    let ep1 = ts.state().request_slots.latest(RequestSlotId::Annotate);
+    let _ = ts.take_requests();
+    let bundle = sample_blame_bundle(c1, c2);
+    ts.deliver_engine_event(EngineEvent::BlameLoaded {
+        bundle: Arc::clone(&bundle),
+        epoch: ep1,
+    });
+
+    // 1. Cycle MoveDetection: None -> WithinFile (-M) -> AcrossFiles (-M -C) -> None (cached!)
+    ts.send_key(KeyCode::Char('m'), KeyModifiers::NONE);
+    let ep_m1 = ts.state().request_slots.latest(RequestSlotId::Annotate);
+    let reqs = ts.take_requests();
+    assert!(reqs.iter().any(|(r, _)| matches!(
+        r,
+        TaskRequest::LoadBlame { key } if key.options.move_detection == MoveDetection::WithinFile
+    )));
+    let mut b_m1 = (*bundle).clone();
+    b_m1.key.options.move_detection = MoveDetection::WithinFile;
+    ts.deliver_engine_event(EngineEvent::BlameLoaded {
+        bundle: Arc::new(b_m1),
+        epoch: ep_m1,
+    });
+
+    ts.send_key(KeyCode::Char('m'), KeyModifiers::NONE);
+    let ep_m2 = ts.state().request_slots.latest(RequestSlotId::Annotate);
+    let reqs = ts.take_requests();
+    assert!(reqs.iter().any(|(r, _)| matches!(
+        r,
+        TaskRequest::LoadBlame { key } if key.options.move_detection == MoveDetection::AcrossFiles
+    )));
+    let mut b_m2 = (*bundle).clone();
+    b_m2.key.options.move_detection = MoveDetection::AcrossFiles;
+    ts.deliver_engine_event(EngineEvent::BlameLoaded {
+        bundle: Arc::new(b_m2),
+        epoch: ep_m2,
+    });
+
+    // Cycling back to None hits cache with zero LoadBlame requests!
+    ts.send_key(KeyCode::Char('m'), KeyModifiers::NONE);
+    assert!(
+        !ts.take_requests()
+            .iter()
+            .any(|(r, _)| matches!(r, TaskRequest::LoadBlame { .. })),
+        "cycling back to MoveDetection::None should hit blame LRU cache"
+    );
+    assert_eq!(
+        ts.state()
+            .modal_stack
+            .annotate()
+            .unwrap()
+            .key
+            .options
+            .move_detection,
+        MoveDetection::None
+    );
+
+    // 2. Toggle prefer_commit_date ('D'): instant 0ms update, zero LoadBlame requests
+    assert!(
+        !ts.state()
+            .modal_stack
+            .annotate()
+            .unwrap()
+            .key
+            .options
+            .prefer_commit_date
+    );
+    ts.send_key(KeyCode::Char('D'), KeyModifiers::SHIFT);
+    assert!(
+        ts.state()
+            .modal_stack
+            .annotate()
+            .unwrap()
+            .key
+            .options
+            .prefer_commit_date
+    );
+    assert!(
+        !ts.take_requests()
+            .iter()
+            .any(|(r, _)| matches!(r, TaskRequest::LoadBlame { .. })),
+        "toggling prefer_commit_date must not re-run git blame"
+    );
+    let _ = ts.render(120, 34);
+
+    // 3. Cycle coloring mode ('C'): Age -> Author -> None -> Age
+    assert_eq!(
+        ts.state().modal_stack.annotate().unwrap().color_mode,
+        AnnotateColorMode::Age
+    );
+    ts.send_key(KeyCode::Char('C'), KeyModifiers::SHIFT);
+    assert_eq!(
+        ts.state().modal_stack.annotate().unwrap().color_mode,
+        AnnotateColorMode::Author
+    );
+    let _ = ts.render(120, 34);
+    ts.send_key(KeyCode::Char('C'), KeyModifiers::SHIFT);
+    assert_eq!(
+        ts.state().modal_stack.annotate().unwrap().color_mode,
+        AnnotateColorMode::None
+    );
+    let _ = ts.render(120, 34);
+
+    // 4. Independent gutter column toggles (including all hidden) render cleanly
+    ts.dispatch(Action::AnnotateToggleHashColumn);
+    ts.dispatch(Action::AnnotateToggleAuthorColumn);
+    ts.dispatch(Action::AnnotateToggleDateColumn);
+    {
+        let ann = ts.state().modal_stack.annotate().unwrap();
+        assert!(!ann.show_hash && !ann.show_author && !ann.show_date);
+    }
+    let _ = ts.render(120, 34);
+    ts.dispatch(Action::AnnotateToggleHashColumn);
+    assert!(ts.state().modal_stack.annotate().unwrap().show_hash);
+
+    // 5. 'i' opens Commit Details & Affected Files via RequestSlotId::AnnotateCommitDetails
+    ts.send_key(KeyCode::Char('j'), KeyModifiers::NONE);
+    ts.send_key(KeyCode::Char('j'), KeyModifiers::NONE); // cursor on line 2 (c2)
+    ts.send_key(KeyCode::Char('i'), KeyModifiers::NONE);
+    assert!(
+        ts.state()
+            .modal_stack
+            .annotate()
+            .unwrap()
+            .show_commit_details
+    );
+    let reqs = ts.take_requests();
+    assert!(reqs.iter().any(|(r, _)| matches!(
+        r,
+        TaskRequest::LoadCommitDetails {
+            slot: RequestSlotId::AnnotateCommitDetails,
+            key
+        } if key.oids == vec![c2]
+    )));
+    let det_ep = ts
+        .state()
+        .request_slots
+        .latest(RequestSlotId::AnnotateCommitDetails);
+    ts.deliver_engine_event(EngineEvent::CommitDetailsLoaded {
+        slot: RequestSlotId::AnnotateCommitDetails,
+        bundle: Arc::new(CommitChangesBundle {
+            key: DetailsKey::single(c2),
+            details: vec![CommitDetails {
+                oid: c2,
+                parents: vec![c1],
+                author: stamp("Bob", 1_700_086_400),
+                committer: stamp("Bob", 1_700_090_000),
+                message: "refine token expiry check\n\nExtended TTL to 60s.".into(),
+                signature: Default::default(),
+            }],
+            changes: vec![
+                FileChange {
+                    path: "src/auth.rs".into(),
+                    old_path: None,
+                    kind: FileStatusKind::Modified,
+                    additions: 1,
+                    deletions: 1,
+                    is_binary: false,
+                    old_oid: None,
+                    new_oid: None,
+                    exists_in_workdir: true,
+                },
+                FileChange {
+                    path: "src/config.rs".into(),
+                    old_path: None,
+                    kind: FileStatusKind::Modified,
+                    additions: 2,
+                    deletions: 0,
+                    is_binary: false,
+                    old_oid: None,
+                    new_oid: None,
+                    exists_in_workdir: true,
+                },
+            ],
+        }),
+        epoch: det_ep,
+    });
+    let buf = ts.render(120, 34);
+    let rendered: String = (0..buf.area.height)
+        .map(|y| {
+            (0..buf.area.width)
+                .map(|x| buf[(x, y)].symbol())
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(rendered.contains("Extended TTL to 60s."));
+    assert!(rendered.contains("src/config.rs"));
+
+    // Esc closes commit details first without closing Annotate
+    ts.send_key(KeyCode::Esc, KeyModifiers::NONE);
+    assert!(
+        !ts.state()
+            .modal_stack
+            .annotate()
+            .unwrap()
+            .show_commit_details
+    );
+
+    // 6. 'r' Annotate This Revision opens blame at c2, pushes nav_back, and 'P' hits cache
+    ts.send_key(KeyCode::Char('r'), KeyModifiers::NONE);
+    assert_eq!(ts.state().modal_stack.annotate().unwrap().nav_back.len(), 1);
+    assert_eq!(ts.state().modal_stack.annotate().unwrap().key.rev, Some(c2));
+    let _ = ts.take_requests();
+    ts.send_key(KeyCode::Char('P'), KeyModifiers::SHIFT);
+    assert!(
+        ts.state()
+            .modal_stack
+            .annotate()
+            .unwrap()
+            .nav_back
+            .is_empty()
+    );
+    assert!(
+        !ts.take_requests()
+            .iter()
+            .any(|(r, _)| matches!(r, TaskRequest::LoadBlame { .. })),
+        "nav_back after Annotate This Revision must hit blame LRU cache"
+    );
+
+    // 7. RepoSnapshotLoaded invalidates DiffCacheStore::blames
+    assert!(!ts.state().diff_caches.blames.is_empty());
+    ts.deliver_engine_event(EngineEvent::RepoSnapshotLoaded {
+        snapshot: Arc::new(snap),
+        epoch: ts
+            .state()
+            .request_slots
+            .latest(RequestSlotId::RepoSnapshot)
+            .max(1),
+    });
+    assert!(
+        ts.state().diff_caches.blames.is_empty(),
+        "RepoSnapshotLoaded must invalidate blame LRU cache"
+    );
 }

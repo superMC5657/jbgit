@@ -1114,12 +1114,7 @@ async fn file_history_follow_renames_cjk_diffs_and_supervisor_epoch_cancellation
     let empty_hist = fetch_file_history(
         &empty_handle,
         &mut empty_rx,
-        FileHistoryKey {
-            path: "missing.txt".into(),
-            start_oid: None,
-            follow_renames: true,
-            line_range: None,
-        },
+        FileHistoryKey::new("missing.txt", None, true, None),
     )
     .await;
     assert!(empty_hist.entries.is_empty());
@@ -1159,12 +1154,7 @@ async fn file_history_follow_renames_cjk_diffs_and_supervisor_epoch_cancellation
     let follow = fetch_file_history(
         &handle,
         &mut rx,
-        FileHistoryKey {
-            path: "sub/b 中文.txt".into(),
-            start_oid: None,
-            follow_renames: true,
-            line_range: None,
-        },
+        FileHistoryKey::new("sub/b 中文.txt", None, true, None),
     )
     .await;
     assert!(!follow.truncated);
@@ -1233,12 +1223,7 @@ async fn file_history_follow_renames_cjk_diffs_and_supervisor_epoch_cancellation
     let no_follow = fetch_file_history(
         &handle,
         &mut rx,
-        FileHistoryKey {
-            path: "sub/b 中文.txt".into(),
-            start_oid: None,
-            follow_renames: false,
-            line_range: None,
-        },
+        FileHistoryKey::new("sub/b 中文.txt", None, false, None),
     )
     .await;
     assert_eq!(no_follow.entries.len(), 2);
@@ -1246,28 +1231,18 @@ async fn file_history_follow_renames_cjk_diffs_and_supervisor_epoch_cancellation
     let missing = fetch_file_history(
         &handle,
         &mut rx,
-        FileHistoryKey {
-            path: "does/not/exist.txt".into(),
-            start_oid: Some(Oid::from_bytes(follow.entries[0].oid.as_bytes().to_owned())),
-            follow_renames: true,
-            line_range: None,
-        },
+        FileHistoryKey::new(
+            "does/not/exist.txt",
+            Some(Oid::from_bytes(follow.entries[0].oid.as_bytes().to_owned())),
+            true,
+            None,
+        ),
     )
     .await;
     assert!(missing.entries.is_empty());
 
-    let e1 = handle.request_file_history(FileHistoryKey {
-        path: "sub/b 中文.txt".into(),
-        start_oid: None,
-        follow_renames: true,
-        line_range: None,
-    });
-    let e2 = handle.request_file_history(FileHistoryKey {
-        path: "sub/b 中文.txt".into(),
-        start_oid: None,
-        follow_renames: false,
-        line_range: None,
-    });
+    let e1 = handle.request_file_history(FileHistoryKey::new("sub/b 中文.txt", None, true, None));
+    let e2 = handle.request_file_history(FileHistoryKey::new("sub/b 中文.txt", None, false, None));
     assert!(e2 > e1);
 
     let latest = recv_matching(&mut rx, |ev| match ev {
@@ -1759,7 +1734,8 @@ async fn blame_tracks_commits_moves_uncommitted_lines_and_guards() {
             rev: None,
             options: BlameOptions {
                 ignore_whitespace: false,
-                detect_moves: true,
+                move_detection: jbgit_core::MoveDetection::AcrossFiles,
+                prefer_commit_date: false,
             },
         },
     )
@@ -1890,12 +1866,7 @@ async fn selection_history_traces_line_range_and_crosses_renames() {
     let sel = fetch_file_history(
         &handle,
         &mut rx,
-        FileHistoryKey {
-            path: "renamed_funcs.rs".into(),
-            start_oid: None,
-            follow_renames: false,
-            line_range: Some((1, 3)),
-        },
+        FileHistoryKey::new("renamed_funcs.rs", None, false, Some((1, 3))),
     )
     .await;
 
@@ -4990,4 +4961,111 @@ async fn create_patch_mixed_stage_untracked_and_tree_browser_index_export_dir_co
     )
     .replace("\r\n", "\n");
     assert_eq!(index_after_both, "fn v1() {}\n");
+}
+
+#[tokio::test]
+async fn file_history_branch_scopes_pagination_and_blame_move_and_commit_date() {
+    use jbgit_core::{HistoryBranchScope, MoveDetection};
+    use std::collections::HashSet;
+
+    let tmp = TempDir::new().unwrap();
+    let dir = tmp.path();
+    git(dir, &["init", "-b", "main"]);
+    git(dir, &["config", "user.name", "Tester"]);
+    git(dir, &["config", "user.email", "tester@example.com"]);
+    git(dir, &["config", "core.autocrlf", "false"]);
+
+    // Commit 1 on main with distinct author vs committer timestamps
+    fs::write(dir.join("shared.txt"), "alpha\nbeta\ngamma\n").unwrap();
+    git(dir, &["add", "shared.txt"]);
+    let status = std::process::Command::new("git")
+        .current_dir(dir)
+        .env("GIT_AUTHOR_DATE", "1700000000 +0000")
+        .env("GIT_COMMITTER_DATE", "1700100000 +0000")
+        .args(["commit", "-m", "c1: base"])
+        .status()
+        .unwrap();
+    assert!(status.success());
+
+    // Branch `feature` modifies shared.txt
+    git(dir, &["checkout", "-b", "feature"]);
+    fs::write(dir.join("shared.txt"), "alpha\nbeta\ngamma\nfeature_line\n").unwrap();
+    git(dir, &["add", "shared.txt"]);
+    git(dir, &["commit", "-m", "feat: touch shared.txt"]);
+
+    // Back to main: add 5 more commits touching shared.txt so pagination > limit is testable
+    git(dir, &["checkout", "main"]);
+    for i in 2..=6 {
+        fs::write(
+            dir.join("shared.txt"),
+            format!("alpha\nbeta\ngamma\nmain_v{i}\n"),
+        )
+        .unwrap();
+        git(dir, &["add", "shared.txt"]);
+        git(dir, &["commit", "-m", &format!("main: edit {i}")]);
+    }
+
+    let loc = RepoLocation::discover(dir).unwrap();
+    let (handle, mut rx) = EngineSupervisor::start(loc, false).unwrap();
+
+    // 1. AllBranches with follow_renames=true must NOT fail (git rejects --all --follow)
+    //    and must include both `feat: touch shared.txt` and `main: edit 6`.
+    let mut all_key = FileHistoryKey::new("shared.txt", None, true, None);
+    all_key.scope = HistoryBranchScope::AllBranches;
+    let all_hist = fetch_file_history(&handle, &mut rx, all_key).await;
+    let all_summaries: Vec<&str> = all_hist.entries.iter().map(|e| e.summary.as_str()).collect();
+    assert!(
+        all_summaries.contains(&"feat: touch shared.txt"),
+        "AllBranches must include feature commit; got {all_summaries:?}"
+    );
+    assert!(
+        all_summaries.contains(&"main: edit 6"),
+        "AllBranches must include main commits; got {all_summaries:?}"
+    );
+    assert_eq!(all_hist.entries.len(), 7);
+
+    // 2. Branch("feature") scope returns only feature's ancestry (c1 + feat)
+    let mut feat_key = FileHistoryKey::new("shared.txt", None, true, None);
+    feat_key.scope = HistoryBranchScope::Branch("feature".into());
+    let feat_hist = fetch_file_history(&handle, &mut rx, feat_key).await;
+    let feat_summaries: Vec<&str> = feat_hist.entries.iter().map(|e| e.summary.as_str()).collect();
+    assert_eq!(feat_summaries, vec!["feat: touch shared.txt", "c1: base"]);
+
+    // 3. Pagination: limit=3 truncates at 3; increasing limit=10 loads all 6 on main without duplicates
+    let mut page1_key = FileHistoryKey::new("shared.txt", None, true, None);
+    page1_key.limit = 3;
+    let page1 = fetch_file_history(&handle, &mut rx, page1_key).await;
+    assert_eq!(page1.entries.len(), 3);
+    assert!(page1.truncated);
+
+    let mut page2_key = FileHistoryKey::new("shared.txt", None, true, None);
+    page2_key.limit = 10;
+    let page2 = fetch_file_history(&handle, &mut rx, page2_key).await;
+    assert_eq!(page2.entries.len(), 6);
+    assert!(!page2.truncated);
+    let unique_oids: HashSet<Oid> = page2.entries.iter().map(|e| e.oid).collect();
+    assert_eq!(unique_oids.len(), 6, "pagination must never duplicate commits");
+
+    // 4. Blame parses distinct committer_time vs author.time and runs with MoveDetection::WithinFile (-M)
+    let blame = fetch_blame(
+        &handle,
+        &mut rx,
+        BlameKey {
+            path: "shared.txt".into(),
+            rev: None,
+            options: BlameOptions {
+                ignore_whitespace: false,
+                move_detection: MoveDetection::WithinFile,
+                prefer_commit_date: true,
+            },
+        },
+    )
+    .await
+    .expect("blame with WithinFile (-M)");
+    let c1_oid = blame.lines[0].oid;
+    let c1_commit = &blame.commits[&c1_oid];
+    assert_eq!(c1_commit.author.time, 1_700_000_000);
+    assert_eq!(c1_commit.committer_time, 1_700_100_000);
+    assert_eq!(c1_commit.effective_time(false), 1_700_000_000);
+    assert_eq!(c1_commit.effective_time(true), 1_700_100_000);
 }

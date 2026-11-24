@@ -10,7 +10,9 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::app::{AppState, RenderContext, ScrollPane};
 use crate::hit_test::{AnnotateToolbarButton, HitTarget};
-use crate::log_view::{AnnotateError, AnnotateFocus, AnnotateState, format_absolute_time};
+use crate::log_view::{
+    AnnotateColorMode, AnnotateError, AnnotateFocus, AnnotateState, format_absolute_time,
+};
 use crate::syntax::render_diff_line_spans_with_tab;
 use crate::views::log_details::{FileDiffRenderProps, render_file_diff_body};
 use crate::views::overlays::draw_shadow;
@@ -71,8 +73,11 @@ pub fn render_annotate_modal(
     if ann.key.options.ignore_whitespace {
         title.push_str(" [W]");
     }
-    if ann.key.options.detect_moves {
-        title.push_str(" [M]");
+    if ann.key.options.move_detection.is_enabled() {
+        title.push_str(&format!(" [{}]", ann.key.options.move_detection.badge()));
+    }
+    if ann.key.options.prefer_commit_date {
+        title.push_str(&format!(" [{}]", ctx.t("view.annotate.badge_commit_date")));
     }
     if let Some((lo, hi)) = ann.selected_line_range()
         && ann.visual_anchor.is_some()
@@ -116,6 +121,21 @@ pub fn render_annotate_modal(
             &[("count", &ann.nav_back.len().to_string())],
         )
     };
+    let moves_label = format!(
+        "{}:{}",
+        ctx.t("view.annotate.btn_moves"),
+        ann.key.options.move_detection.badge()
+    );
+    let date_label = if ann.key.options.prefer_commit_date {
+        ctx.t("view.annotate.btn_date_commit").to_string()
+    } else {
+        ctx.t("view.annotate.btn_date_author").to_string()
+    };
+    let color_label = match ann.color_mode {
+        AnnotateColorMode::Age => ctx.t("view.annotate.btn_color_age").to_string(),
+        AnnotateColorMode::Author => ctx.t("view.annotate.btn_color_author").to_string(),
+        AnnotateColorMode::None => ctx.t("view.annotate.btn_color_none").to_string(),
+    };
     let buttons = vec![
         (
             ctx.t("view.annotate.btn_whitespace").to_string(),
@@ -123,9 +143,19 @@ pub fn render_annotate_modal(
             AnnotateToolbarButton::IgnoreWhitespace,
         ),
         (
-            ctx.t("view.annotate.btn_moves").to_string(),
-            ann.key.options.detect_moves,
+            moves_label,
+            ann.key.options.move_detection.is_enabled(),
             AnnotateToolbarButton::DetectMoves,
+        ),
+        (
+            date_label,
+            ann.key.options.prefer_commit_date,
+            AnnotateToolbarButton::DateMode,
+        ),
+        (
+            color_label,
+            ann.color_mode != AnnotateColorMode::None,
+            AnnotateToolbarButton::ColorMode,
         ),
         (
             ctx.t("view.annotate.btn_prev_rev").to_string(),
@@ -141,6 +171,11 @@ pub fn render_annotate_modal(
             ctx.t("view.annotate.btn_diff").to_string(),
             ann.show_diff,
             AnnotateToolbarButton::ShowDiff,
+        ),
+        (
+            ctx.t("view.annotate.btn_details").to_string(),
+            ann.show_commit_details,
+            AnnotateToolbarButton::CommitDetails,
         ),
         (
             ctx.t("view.annotate.btn_selection_history").to_string(),
@@ -163,13 +198,17 @@ pub fn render_annotate_modal(
     );
 
     if content.height >= 2 && content.width >= 12 {
-        if ann.show_diff && content.height >= 10 {
+        if ann.show_commit_details && content.height >= 10 {
             let parts = Layout::default()
                 .direction(Direction::Vertical)
-                .constraints([
-                    Constraint::Percentage(62),
-                    Constraint::Min(4),
-                ])
+                .constraints([Constraint::Percentage(58), Constraint::Min(5)])
+                .split(content);
+            render_code_pane(frame, parts[0], ann, ctx, z + 2);
+            render_commit_details_pane(frame, parts[1], state, ann, ctx, z + 2);
+        } else if ann.show_diff && content.height >= 10 {
+            let parts = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Percentage(62), Constraint::Min(4)])
                 .split(content);
             render_code_pane(frame, parts[0], ann, ctx, z + 2);
             render_inline_diff_pane(frame, parts[1], state, ann, ctx, z + 2);
@@ -179,7 +218,7 @@ pub fn render_annotate_modal(
     }
 
     if detail_h > 0 {
-        render_detail_strip(frame, detail_rect, ann, ctx);
+        render_detail_strip(frame, detail_rect, ann, ctx, z + 2);
     }
 
     let hint = if ann.visual_anchor.is_some() {
@@ -303,49 +342,64 @@ fn render_code_pane(
         };
 
         let bucket = ann.commit_age_bucket(line.oid, now_ts);
-        let age_color = if line.oid.is_zero() {
+        let commit_opt = bundle.commits.get(&line.oid);
+        let accent_color = if line.oid.is_zero() {
             ctx.theme.status_modified
         } else {
-            ctx.theme.annotate_age_color(bucket)
+            match ann.color_mode {
+                AnnotateColorMode::Age => ctx.theme.annotate_age_color(bucket),
+                AnnotateColorMode::Author => {
+                    let author_name = commit_opt.map(|c| c.author.name.as_str()).unwrap_or("");
+                    ctx.branch_colors
+                        .get_track_color(jbgit_core::branch_color_id(author_name))
+                }
+                AnnotateColorMode::None => ctx.theme.fg_muted,
+            }
+        };
+
+        let any_meta_col = ann.show_hash || ann.show_author || ann.show_date;
+        let meta_w = if any_meta_col {
+            gutter_w.saturating_sub(1)
+        } else {
+            0
         };
 
         let mut spans: Vec<Span<'static>> = Vec::new();
         let stripe_fg = if same_as_prev_visible {
             ctx.theme.border_splitter
         } else {
-            age_color
+            accent_color
         };
         spans.push(Span::styled("▎", Style::default().fg(stripe_fg).bg(bg)));
 
-        let meta_w = gutter_w.saturating_sub(1);
-        if same_as_prev_visible {
-            spans.push(Span::styled(" ".repeat(meta_w), Style::default().bg(bg)));
-        } else {
-            let meta_text = format_gutter_meta(
-                line.oid.is_zero(),
-                &line.oid.short(),
-                bundle
-                    .commits
-                    .get(&line.oid)
-                    .map(|c| c.author.name.as_str())
-                    .unwrap_or(""),
-                bundle
-                    .commits
-                    .get(&line.oid)
-                    .map(|c| c.author.time)
-                    .unwrap_or(0),
-                &uncomm_label,
-                meta_w,
-            );
-            let meta_fg = if line.oid.is_zero() {
-                ctx.theme.status_modified
+        if meta_w > 0 {
+            if same_as_prev_visible {
+                spans.push(Span::styled(" ".repeat(meta_w), Style::default().bg(bg)));
             } else {
-                age_color
-            };
-            spans.push(Span::styled(
-                meta_text,
-                Style::default().fg(meta_fg).bg(bg),
-            ));
+                let effective_time = commit_opt
+                    .map(|c| c.effective_time(ann.key.options.prefer_commit_date))
+                    .unwrap_or(0);
+                let meta_text = format_gutter_meta(
+                    line.oid.is_zero(),
+                    ann.show_hash,
+                    ann.show_author,
+                    ann.show_date,
+                    &line.oid.short(),
+                    commit_opt.map(|c| c.author.name.as_str()).unwrap_or(""),
+                    effective_time,
+                    &uncomm_label,
+                    meta_w,
+                );
+                let meta_fg = if line.oid.is_zero() {
+                    ctx.theme.status_modified
+                } else {
+                    accent_color
+                };
+                spans.push(Span::styled(
+                    meta_text,
+                    Style::default().fg(meta_fg).bg(bg),
+                ));
+            }
         }
 
         let marker = if is_cursor {
@@ -391,8 +445,12 @@ fn render_code_pane(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn format_gutter_meta(
     uncommitted: bool,
+    show_hash: bool,
+    show_author: bool,
+    show_date: bool,
     short: &str,
     author: &str,
     time: i64,
@@ -403,31 +461,160 @@ fn format_gutter_meta(
         return String::new();
     }
     let text = if uncommitted {
-        if width >= 18 {
+        if show_hash && width >= 18 {
             format!("{short} {uncomm_label}")
         } else {
             uncomm_label.to_string()
         }
     } else {
-        let date = if time > 0 {
+        let date = if show_date && time > 0 {
             format_absolute_time(time, false)
         } else {
             String::new()
         };
-        if width >= 25 && !date.is_empty() {
-            let author_w = width.saturating_sub(short.width() + 1 + 1 + date.width() + 1);
-            let a = truncate_to_width(author, author_w);
-            let a_pad = " ".repeat(author_w.saturating_sub(a.width()));
-            format!("{short} {a}{a_pad} {date}")
-        } else if !author.is_empty() {
-            format!("{short} {author}")
-        } else {
-            short.to_string()
+        let mut parts: Vec<String> = Vec::new();
+        if show_hash {
+            parts.push(short.to_string());
         }
+        if show_author && !author.is_empty() {
+            if !date.is_empty() && width >= 20 {
+                let used = parts.iter().map(|p| p.width() + 1).sum::<usize>() + date.width() + 1;
+                let author_w = width.saturating_sub(used);
+                let a = truncate_to_width(author, author_w);
+                let a_pad = " ".repeat(author_w.saturating_sub(a.width()));
+                parts.push(format!("{a}{a_pad}"));
+            } else {
+                parts.push(author.to_string());
+            }
+        }
+        if !date.is_empty() {
+            parts.push(date);
+        }
+        parts.join(" ")
     };
     let clipped = truncate_to_width(&text, width);
     let pad = width.saturating_sub(clipped.width());
     format!("{clipped}{}", " ".repeat(pad))
+}
+
+fn render_commit_details_pane(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    state: &AppState,
+    ann: &AnnotateState,
+    ctx: &mut RenderContext<'_>,
+    _z: u8,
+) {
+    if area.height < 2 || area.width < 10 {
+        return;
+    }
+    let hdr_rect = Rect::new(area.x, area.y, area.width, 1);
+    let hdr_label = match ann.selected_line() {
+        Some(line) if !line.oid.is_zero() => ctx.t_fmt(
+            "view.annotate.details_title",
+            &[("oid", &line.oid.short())],
+        ),
+        _ => ctx.t("view.annotate.btn_details").to_string(),
+    };
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled("▌", Style::default().fg(ctx.theme.border_focused)),
+            Span::styled(
+                truncate_to_width(&hdr_label, area.width.saturating_sub(2) as usize),
+                Style::default()
+                    .fg(ctx.theme.fg_bright)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ]))
+        .style(Style::default().bg(ctx.theme.bg_panel)),
+        hdr_rect,
+    );
+
+    let body = Rect::new(area.x, area.y + 1, area.width, area.height.saturating_sub(1));
+    frame.render_widget(
+        Paragraph::new("").style(Style::default().bg(ctx.theme.bg_canvas)),
+        body,
+    );
+
+    let Some(det_key) = ann.desired_details_key() else {
+        frame.render_widget(
+            Paragraph::new(Span::styled(
+                truncate_to_width(ctx.t("toast.annotate_uncommitted"), body.width as usize),
+                Style::default().fg(ctx.theme.fg_muted),
+            )),
+            Rect::new(body.x, body.y, body.width, 1),
+        );
+        return;
+    };
+
+    let Some(bundle) = state.diff_caches.peek_details(&det_key) else {
+        frame.render_widget(
+            Paragraph::new(Span::styled(
+                truncate_to_width(ctx.t("common.loading"), body.width as usize),
+                Style::default().fg(ctx.theme.fg_muted),
+            )),
+            Rect::new(body.x, body.y, body.width, 1),
+        );
+        return;
+    };
+
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    let max_w = body.width.saturating_sub(1) as usize;
+    if let Some(details) = bundle.details.first() {
+        let author_line = format!(
+            "{}: {} <{}> ({})",
+            ctx.t("view.annotate.author_label"),
+            details.author.name,
+            details.author.email,
+            format_absolute_time(details.author.time, true),
+        );
+        lines.push(Line::from(Span::styled(
+            truncate_to_width(&author_line, max_w),
+            Style::default().fg(ctx.theme.fg_accent_link),
+        )));
+        if !details.same_author_and_committer() {
+            let committer_line = format!(
+                "{}: {} <{}> ({})",
+                ctx.t("view.annotate.committer_label"),
+                details.committer.name,
+                details.committer.email,
+                format_absolute_time(details.committer.time, true),
+            );
+            lines.push(Line::from(Span::styled(
+                truncate_to_width(&committer_line, max_w),
+                Style::default().fg(ctx.theme.fg_muted),
+            )));
+        }
+        for msg_line in details.message.lines() {
+            lines.push(Line::from(Span::styled(
+                truncate_to_width(msg_line, max_w),
+                Style::default().fg(ctx.theme.fg_primary),
+            )));
+        }
+    }
+    let files_hdr = ctx.t_fmt(
+        "view.annotate.affected_files_header",
+        &[("count", &bundle.changes.len().to_string())],
+    );
+    lines.push(Line::from(Span::styled(
+        truncate_to_width(&files_hdr, max_w),
+        Style::default()
+            .fg(ctx.theme.fg_bright)
+            .add_modifier(Modifier::BOLD),
+    )));
+    for ch in &bundle.changes {
+        let badge = ch.kind.badge_char();
+        let entry = format!(" {badge} {}", ch.path);
+        lines.push(Line::from(Span::styled(
+            truncate_to_width(&entry, max_w),
+            Style::default().fg(ctx.theme.fg_primary),
+        )));
+    }
+
+    frame.render_widget(
+        Paragraph::new(lines).style(Style::default().bg(ctx.theme.bg_canvas)),
+        body,
+    );
 }
 
 fn render_inline_diff_pane(
@@ -543,12 +730,15 @@ fn render_detail_strip(
     frame: &mut Frame<'_>,
     area: Rect,
     ann: &AnnotateState,
-    ctx: &RenderContext<'_>,
+    ctx: &mut RenderContext<'_>,
+    z: u8,
 ) {
     frame.render_widget(
         Paragraph::new("").style(Style::default().bg(ctx.theme.bg_panel)),
         area,
     );
+    ctx.hit_registry
+        .register(area, z, HitTarget::AnnotateDetailStrip);
 
     if let Some(buf) = &ann.goto_line_input {
         let prompt = ctx.t_fmt("view.annotate.goto_prompt", &[("input", buf)]);
@@ -592,8 +782,9 @@ fn render_detail_strip(
 
     if let Some(commit) = ann.selected_commit() {
         let now_ts = chrono::Utc::now().timestamp();
-        let rel = ctx.format_relative_time(commit.author.time, now_ts);
-        let abs = format_absolute_time(commit.author.time, true);
+        let ts = commit.effective_time(ann.key.options.prefer_commit_date);
+        let rel = ctx.format_relative_time(ts, now_ts);
+        let abs = format_absolute_time(ts, true);
         let header = format!(
             "{} • {} <{}> • {} ({}) • {}:{}",
             line.oid.short(),

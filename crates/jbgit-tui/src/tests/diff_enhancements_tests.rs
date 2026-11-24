@@ -837,12 +837,7 @@ fn file_history_diff_supports_search_whitespace_and_wrap_without_breaking_commit
         .max(1);
     ts.deliver_engine_event(EngineEvent::FileHistoryLoaded {
         bundle: Arc::new(jbgit_core::FileHistoryBundle {
-            key: jbgit_core::FileHistoryKey {
-                path: "src/app.rs".into(),
-                start_oid: Some(head),
-                follow_renames: true,
-                line_range: None,
-            },
+            key: jbgit_core::FileHistoryKey::new("src/app.rs", Some(head), true, None),
             entries: vec![jbgit_core::FileHistoryEntry {
                 oid: head,
                 author_name: "Alice".into(),

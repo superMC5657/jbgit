@@ -1,9 +1,13 @@
-//! Modal dual-split single-file history inspector (`--follow` rename tracking
-//! + syntax-highlighted diff preview).
+//! Modal dual-split single-file history inspector (`--follow` rename tracking,
+//! branch scope, pagination, inline search, context actions, affected files,
+//! repository version preview, and syntax-highlighted diff preview).
 
-use jbgit_core::{FileStatusKind, SplitAxis, SplitterId};
+use jbgit_core::{
+    DEFAULT_FILE_HISTORY_LIMIT, FileStatusKind, HistoryBranchScope, SplitAxis, SplitterId,
+    TreeBlobContent,
+};
 use ratatui::Frame;
-use ratatui::layout::Rect;
+use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph};
@@ -11,7 +15,8 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::app::{AppState, RenderContext, ScrollPane};
 use crate::hit_test::{FileHistoryToolbarButton, HitTarget};
-use crate::log_view::{FileHistoryFocus, FileHistoryState};
+use crate::log_view::{FileHistoryFocus, FileHistoryState, format_absolute_time};
+use crate::syntax::render_diff_line_spans_with_tab;
 use crate::views::log_details::{FileDiffRenderProps, render_file_diff_body};
 use crate::views::overlays::draw_shadow;
 use crate::views::{
@@ -66,7 +71,7 @@ pub fn render_file_history_modal(
             &[("path", &range_path), ("count", &count_s)],
         )
     } else {
-        let follow_tag = if fh.key.follow_renames {
+        let follow_tag = if fh.key.effective_follow() {
             ctx.t("view.file_history.follow_badge")
         } else {
             ""
@@ -113,9 +118,24 @@ pub fn render_file_history_modal(
 
     let mut buttons = Vec::new();
     if !fh.is_selection_history() {
+        let scope_label = match &fh.key.scope {
+            HistoryBranchScope::CurrentHead => ctx.t("view.file_history.scope_head").to_string(),
+            HistoryBranchScope::AllBranches => ctx.t("view.file_history.scope_all").to_string(),
+            HistoryBranchScope::Branch(b) => truncate_to_width(b, 16),
+        };
         buttons.push((
-            ctx.t("view.file_history.btn_follow").to_string(),
-            fh.key.follow_renames,
+            ctx.t_fmt("view.file_history.btn_scope", &[("scope", &scope_label)]),
+            !matches!(fh.key.scope, HistoryBranchScope::CurrentHead),
+            FileHistoryToolbarButton::BranchScope,
+        ));
+        let follow_label = if matches!(fh.key.scope, HistoryBranchScope::AllBranches) {
+            ctx.t("view.file_history.btn_follow_disabled").to_string()
+        } else {
+            ctx.t("view.file_history.btn_follow").to_string()
+        };
+        buttons.push((
+            follow_label,
+            fh.key.effective_follow(),
             FileHistoryToolbarButton::FollowRenames,
         ));
     }
@@ -124,6 +144,16 @@ pub fn render_file_history_modal(
             ctx.t("view.file_history.btn_compare_local").to_string(),
             fh.compare_with_local,
             FileHistoryToolbarButton::CompareLocal,
+        ),
+        (
+            ctx.t("view.file_history.btn_details").to_string(),
+            fh.show_commit_details,
+            FileHistoryToolbarButton::CommitDetails,
+        ),
+        (
+            ctx.t("view.file_history.btn_affected").to_string(),
+            fh.show_affected_files,
+            FileHistoryToolbarButton::AffectedFiles,
         ),
         (
             if fh.diff.side_by_side {
@@ -187,7 +217,9 @@ pub fn render_file_history_modal(
     );
 
     if content.height >= 2 && content.width >= 8 {
-        if fh.diff.zoomed {
+        if fh.show_repo_version {
+            render_repo_version_pane(frame, content, state, fh, ctx, z + 2);
+        } else if fh.diff.zoomed {
             render_diff_pane(frame, content, state, fh, ctx, z + 2);
         } else {
             let (splitter_id, axis) = if content.width >= 100 {
@@ -197,7 +229,16 @@ pub fn render_file_history_modal(
             };
             let split = state.splitters.split(content, splitter_id, axis);
             ctx.record_splitter_container(splitter_id, axis, split.container);
-            render_list_pane(frame, split.first, state, fh, ctx, z + 2);
+            if fh.show_affected_files && split.first.height >= 8 {
+                let parts = Layout::default()
+                    .direction(Direction::Vertical)
+                    .constraints([Constraint::Percentage(60), Constraint::Min(4)])
+                    .split(split.first);
+                render_list_pane(frame, parts[0], state, fh, ctx, z + 2);
+                render_affected_files_pane(frame, parts[1], state, fh, ctx, z + 2);
+            } else {
+                render_list_pane(frame, split.first, state, fh, ctx, z + 2);
+            }
             if !split.collapsed {
                 render_splitter_divider_z(frame, split.divider, splitter_id, axis, ctx, z + 3);
                 render_diff_pane(frame, split.second, state, fh, ctx, z + 2);
@@ -205,12 +246,16 @@ pub fn render_file_history_modal(
         }
     }
 
+    let hint = if fh.show_repo_version {
+        ctx.t("view.file_history.footer_repo_version")
+    } else if fh.is_selection_history() {
+        ctx.t("view.file_history.selection_footer_hint")
+    } else {
+        ctx.t("view.file_history.footer_hint")
+    };
     frame.render_widget(
         Paragraph::new(Span::styled(
-            truncate_to_width(
-                ctx.t("view.file_history.footer_hint"),
-                footer_rect.width as usize,
-            ),
+            truncate_to_width(hint, footer_rect.width as usize),
             Style::default().fg(ctx.theme.fg_muted),
         ))
         .style(Style::default().bg(ctx.theme.bg_panel)),
@@ -232,7 +277,7 @@ fn render_list_pane(
     ctx.hit_registry
         .register(area, z, HitTarget::FileHistoryListArea);
 
-    let focused = fh.focus == FileHistoryFocus::Commits;
+    let focused = fh.focus == FileHistoryFocus::Commits && !fh.diff.zoomed;
     let hdr_rect = Rect::new(area.x, area.y, area.width, 1);
     let hdr_bg = if focused {
         ctx.theme.bg_panel
@@ -272,7 +317,7 @@ fn render_list_pane(
         hdr_rect,
     );
 
-    let body = Rect::new(area.x, area.y + 1, area.width, area.height.saturating_sub(1));
+    let mut body = Rect::new(area.x, area.y + 1, area.width, area.height.saturating_sub(1));
     if body.height == 0 {
         return;
     }
@@ -280,6 +325,28 @@ fn render_list_pane(
         Paragraph::new("").style(Style::default().bg(ctx.theme.bg_canvas)),
         body,
     );
+
+    if fh.search_active && body.height >= 2 {
+        let search_rect = Rect::new(body.x, body.y, body.width, 1);
+        let cursor = if fh.search_editing { "█" } else { "" };
+        let count_tag = format!(" ({}/{})", fh.visible_len(), fh.entries().len());
+        let search_line = format!("/ {}{}{}", fh.search_query, cursor, count_tag);
+        frame.render_widget(
+            Paragraph::new(Span::styled(
+                truncate_to_width(&search_line, search_rect.width as usize),
+                Style::default()
+                    .fg(if fh.search_editing {
+                        ctx.theme.fg_bright
+                    } else {
+                        ctx.theme.fg_accent_link
+                    })
+                    .bg(ctx.theme.bg_panel),
+            ))
+            .style(Style::default().bg(ctx.theme.bg_panel)),
+            search_rect,
+        );
+        body = Rect::new(body.x, body.y + 1, body.width, body.height.saturating_sub(1));
+    }
 
     if fh.loading && fh.bundle.is_none() {
         frame.render_widget(
@@ -304,11 +371,16 @@ fn render_list_pane(
         return;
     }
 
-    let entries = fh.entries();
-    if entries.is_empty() {
+    let vis_len = fh.visible_len();
+    if vis_len == 0 {
+        let msg = if !fh.search_query.is_empty() {
+            ctx.t("view.file_history.no_search_matches")
+        } else {
+            ctx.t("view.file_history.empty")
+        };
         frame.render_widget(
             Paragraph::new(Span::styled(
-                truncate_to_width(ctx.t("view.file_history.empty"), body.width as usize),
+                truncate_to_width(msg, body.width as usize),
                 Style::default().fg(ctx.theme.fg_muted),
             )),
             Rect::new(body.x, body.y, body.width, 1),
@@ -316,25 +388,57 @@ fn render_list_pane(
         return;
     }
 
+    let show_load_more = fh.has_load_more_row();
+    let total_rows = vis_len + usize::from(show_load_more);
     let now = chrono::Local::now().timestamp();
-    let (selected, offset) = list_viewport(entries.len(), fh.selected, body.height as usize);
+    let (selected, offset) = list_viewport(
+        total_rows,
+        fh.selected.min(total_rows.saturating_sub(1)),
+        body.height as usize,
+    );
     let range = (!fh.compare_with_local)
         .then_some(fh.anchor)
         .flatten()
-        .filter(|&a| a != selected && a < entries.len())
+        .filter(|&a| a != selected && a < vis_len && selected < vis_len)
         .map(|a| (selected.min(a), selected.max(a)));
 
-    for (vis_y, idx) in (offset..entries.len())
+    for (vis_y, idx) in (offset..total_rows)
         .take(body.height as usize)
         .enumerate()
     {
-        let entry = &entries[idx];
         let rect = Rect::new(body.x, body.y + vis_y as u16, body.width, 1);
+        if show_load_more && idx == vis_len {
+            let hovered = ctx.hover_target == Some(&HitTarget::FileHistoryLoadMore);
+            let is_sel = idx == selected;
+            let bg = row_background(is_sel, focused, hovered, ctx.theme.bg_panel, ctx.theme);
+            let label = ctx.t_fmt(
+                "view.file_history.load_more",
+                &[("step", &DEFAULT_FILE_HISTORY_LIMIT.to_string())],
+            );
+            frame.render_widget(
+                Paragraph::new(Span::styled(
+                    truncate_to_width(&label, rect.width as usize),
+                    Style::default()
+                        .fg(ctx.theme.fg_accent_link)
+                        .add_modifier(Modifier::BOLD),
+                ))
+                .style(Style::default().bg(bg)),
+                rect,
+            );
+            ctx.hit_registry
+                .register(rect, z + 1, HitTarget::FileHistoryLoadMore);
+            continue;
+        }
+
+        let Some(entry) = fh.visible_entry(idx) else {
+            continue;
+        };
         let row_target = HitTarget::FileHistoryRow { idx };
         let hovered = ctx.hover_target == Some(&row_target);
         let is_sel = idx == selected;
+        let is_pinned_anchor = fh.anchor == Some(idx) && fh.anchor_pinned;
         let in_range = range.is_some_and(|(lo, hi)| (lo..=hi).contains(&idx));
-        let default_bg = if in_range {
+        let default_bg = if in_range || is_pinned_anchor {
             ctx.theme.bg_selection_unfocused
         } else {
             ctx.theme.bg_canvas
@@ -349,10 +453,21 @@ fn render_list_pane(
                 p.to_string()
             }
         };
+        let marker = if is_pinned_anchor {
+            "★"
+        } else if in_range {
+            "◆"
+        } else {
+            " "
+        };
         let mut left: Vec<Span<'static>> = vec![
             Span::styled(
-                if in_range { "◆" } else { " " },
-                Style::default().fg(ctx.theme.fg_accent_link),
+                marker,
+                Style::default().fg(if is_pinned_anchor {
+                    ctx.theme.status_modified
+                } else {
+                    ctx.theme.fg_accent_link
+                }),
             ),
             Span::styled(
                 format!("{} ", entry.kind.badge_char()),
@@ -431,6 +546,272 @@ fn render_list_pane(
     }
 }
 
+fn render_affected_files_pane(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    state: &AppState,
+    fh: &FileHistoryState,
+    ctx: &mut RenderContext<'_>,
+    z: u8,
+) {
+    if area.height < 2 || area.width < 8 {
+        return;
+    }
+    let focused = fh.focus == FileHistoryFocus::AffectedFiles;
+    let hdr_rect = Rect::new(area.x, area.y, area.width, 1);
+    let hdr_bg = if focused {
+        ctx.theme.bg_panel
+    } else {
+        ctx.theme.bg_canvas
+    };
+    let bar_fg = if focused {
+        ctx.theme.border_focused
+    } else {
+        ctx.theme.fg_muted
+    };
+
+    let bundle = fh
+        .desired_details_key()
+        .and_then(|k| state.diff_caches.peek_details(&k));
+    let count_s = bundle.map_or_else(|| "…".to_string(), |b| b.changes.len().to_string());
+    let title = ctx.t_fmt("view.file_history.affected_header", &[("count", &count_s)]);
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(if focused { "▌" } else { " " }, Style::default().fg(bar_fg)),
+            Span::styled(
+                truncate_to_width(&title, area.width.saturating_sub(2) as usize),
+                Style::default()
+                    .fg(if focused {
+                        ctx.theme.fg_bright
+                    } else {
+                        ctx.theme.fg_primary
+                    })
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ]))
+        .style(Style::default().bg(hdr_bg)),
+        hdr_rect,
+    );
+
+    let body = Rect::new(area.x, area.y + 1, area.width, area.height.saturating_sub(1));
+    frame.render_widget(
+        Paragraph::new("").style(Style::default().bg(ctx.theme.bg_canvas)),
+        body,
+    );
+
+    let Some(bundle) = bundle else {
+        frame.render_widget(
+            Paragraph::new(Span::styled(
+                truncate_to_width(ctx.t("common.loading"), body.width as usize),
+                Style::default().fg(ctx.theme.fg_muted),
+            )),
+            Rect::new(body.x, body.y, body.width, 1),
+        );
+        return;
+    };
+
+    if bundle.changes.is_empty() {
+        return;
+    }
+
+    let (sel, offset) = list_viewport(
+        bundle.changes.len(),
+        fh.affected_selected.min(bundle.changes.len() - 1),
+        body.height as usize,
+    );
+    for (vis_y, idx) in (offset..bundle.changes.len())
+        .take(body.height as usize)
+        .enumerate()
+    {
+        let ch = &bundle.changes[idx];
+        let row_rect = Rect::new(body.x, body.y + vis_y as u16, body.width, 1);
+        let target = HitTarget::FileHistoryAffectedFileRow { idx };
+        let hovered = ctx.hover_target == Some(&target);
+        let bg = row_background(idx == sel, focused, hovered, ctx.theme.bg_canvas, ctx.theme);
+        let status_color = ctx.theme.status_color(ch.kind);
+        frame.render_widget(
+            Paragraph::new(Line::from(vec![
+                Span::styled(
+                    format!(" {} ", ch.kind.badge_char()),
+                    Style::default()
+                        .fg(status_color)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    truncate_to_width(&ch.path, body.width.saturating_sub(4) as usize),
+                    Style::default().fg(if idx == sel {
+                        ctx.theme.fg_bright
+                    } else {
+                        ctx.theme.fg_primary
+                    }),
+                ),
+            ]))
+            .style(Style::default().bg(bg)),
+            row_rect,
+        );
+        ctx.hit_registry.register(row_rect, z + 1, target);
+    }
+}
+
+fn render_repo_version_pane(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    state: &AppState,
+    fh: &FileHistoryState,
+    ctx: &mut RenderContext<'_>,
+    z: u8,
+) {
+    if area.height < 2 || area.width < 10 {
+        return;
+    }
+    ctx.hit_registry
+        .register(area, z, HitTarget::FileHistoryBlobArea);
+
+    let hdr_rect = Rect::new(area.x, area.y, area.width, 1);
+    let hdr_label = match &fh.repo_version_requested {
+        Some(k) => ctx.t_fmt(
+            "view.file_history.repo_version_header",
+            &[("oid", &k.oid.short()), ("path", &k.path)],
+        ),
+        None => ctx.t("menu.file_history.open_repo_version").to_string(),
+    };
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled("▌", Style::default().fg(ctx.theme.border_focused)),
+            Span::styled(
+                truncate_to_width(&hdr_label, area.width.saturating_sub(2) as usize),
+                Style::default()
+                    .fg(ctx.theme.fg_bright)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ]))
+        .style(Style::default().bg(ctx.theme.bg_panel)),
+        hdr_rect,
+    );
+
+    let body = Rect::new(area.x, area.y + 1, area.width, area.height.saturating_sub(1));
+    frame.render_widget(
+        Paragraph::new("").style(Style::default().bg(ctx.theme.bg_canvas)),
+        body,
+    );
+    let h = body.height as usize;
+
+    let Some(blob) = fh.repo_version_blob.as_deref() else {
+        ctx.record_scroll_bound(ScrollPane::FileHistoryBlob, h, 0);
+        frame.render_widget(
+            Paragraph::new(Span::styled(
+                truncate_to_width(ctx.t("common.loading"), body.width as usize),
+                Style::default().fg(ctx.theme.fg_muted),
+            )),
+            Rect::new(body.x, body.y, body.width, 1),
+        );
+        return;
+    };
+
+    match &blob.content {
+        TreeBlobContent::Binary => {
+            ctx.record_scroll_bound(ScrollPane::FileHistoryBlob, h, 0);
+            let msg = ctx.t_fmt(
+                "view.tree.binary",
+                &[("size", &blob.size.to_string())],
+            );
+            frame.render_widget(
+                Paragraph::new(Span::styled(
+                    truncate_to_width(&msg, body.width as usize),
+                    Style::default().fg(ctx.theme.fg_muted),
+                )),
+                Rect::new(body.x, body.y, body.width, 1),
+            );
+        }
+        TreeBlobContent::Lfs(ptr) => {
+            ctx.record_scroll_bound(ScrollPane::FileHistoryBlob, h, 0);
+            let oid_short = truncate_to_width(&ptr.oid_sha256, 12);
+            let size_s = jbgit_core::format_byte_size(ptr.size);
+            let msg = ctx.t_fmt(
+                "view.tree.lfs_preview",
+                &[("oid", &oid_short), ("size", &size_s)],
+            );
+            frame.render_widget(
+                Paragraph::new(Span::styled(
+                    truncate_to_width(&msg, body.width as usize),
+                    Style::default().fg(ctx.theme.fg_accent_link),
+                )),
+                Rect::new(body.x, body.y, body.width, 1),
+            );
+        }
+        TreeBlobContent::TooLarge { limit, .. } => {
+            ctx.record_scroll_bound(ScrollPane::FileHistoryBlob, h, 0);
+            let mib = (limit / (1024 * 1024)).max(1).to_string();
+            let msg = ctx.t_fmt("view.tree.too_large", &[("mib", &mib)]);
+            frame.render_widget(
+                Paragraph::new(Span::styled(
+                    truncate_to_width(&msg, body.width as usize),
+                    Style::default().fg(ctx.theme.status_modified),
+                )),
+                Rect::new(body.x, body.y, body.width, 1),
+            );
+        }
+        TreeBlobContent::Missing => {
+            ctx.record_scroll_bound(ScrollPane::FileHistoryBlob, h, 0);
+            frame.render_widget(
+                Paragraph::new(Span::styled(
+                    truncate_to_width(ctx.t("view.tree.missing"), body.width as usize),
+                    Style::default().fg(ctx.theme.status_deleted),
+                )),
+                Rect::new(body.x, body.y, body.width, 1),
+            );
+        }
+        TreeBlobContent::Symlink(target) => {
+            ctx.record_scroll_bound(ScrollPane::FileHistoryBlob, h, 0);
+            let msg = ctx.t_fmt("view.tree.symlink_preview", &[("target", target)]);
+            frame.render_widget(
+                Paragraph::new(Span::styled(
+                    truncate_to_width(&msg, body.width as usize),
+                    Style::default().fg(ctx.theme.fg_accent_link),
+                )),
+                Rect::new(body.x, body.y, body.width, 1),
+            );
+        }
+        TreeBlobContent::Text(text) => {
+            let lines: Vec<&str> = text.lines().collect();
+            let max_scroll = lines.len().saturating_sub(h);
+            ctx.record_scroll_bound(ScrollPane::FileHistoryBlob, h, max_scroll);
+            let offset = fh.repo_version_scroll.offset().min(max_scroll);
+            let lineno_w = lines.len().max(1).to_string().len().max(3);
+            let tab_size = state.config.jbgit.diff.tab_size;
+            let code_w = (body.width as usize).saturating_sub(lineno_w + 4);
+            let bg = ctx.theme.bg_canvas;
+
+            for (vis_y, row_idx) in (offset..lines.len()).take(h).enumerate() {
+                let mut spans = vec![Span::styled(
+                    format!(" {:>lineno_w$} │ ", row_idx + 1),
+                    Style::default().fg(ctx.theme.fg_muted).bg(bg),
+                )];
+                let tokens = fh
+                    .repo_version_syntax
+                    .as_ref()
+                    .and_then(|s| s.lines.get(row_idx))
+                    .map(Vec::as_slice)
+                    .unwrap_or(&[]);
+                spans.extend(render_diff_line_spans_with_tab(
+                    lines[row_idx],
+                    tokens,
+                    &[],
+                    code_w,
+                    tab_size,
+                    Style::default().fg(ctx.theme.fg_primary).bg(bg),
+                    bg,
+                    ctx.theme.true_color,
+                ));
+                frame.render_widget(
+                    Paragraph::new(Line::from(spans)).style(Style::default().bg(bg)),
+                    Rect::new(body.x, body.y + vis_y as u16, body.width, 1),
+                );
+            }
+        }
+    }
+}
+
 fn render_diff_pane(
     frame: &mut Frame<'_>,
     area: Rect,
@@ -459,7 +840,14 @@ fn render_diff_pane(
     };
 
     let mut header_label = if let Some(cur) = fh.selected_entry() {
-        if fh.compare_with_local {
+        if fh.show_affected_files
+            && let Some(ch) = fh.selected_affected_file(&state.diff_caches)
+        {
+            ctx.t_fmt(
+                "view.file_history.diff_single",
+                &[("oid", &cur.oid.short()), ("path", &ch.path)],
+            )
+        } else if fh.compare_with_local {
             ctx.t_fmt(
                 "view.file_history.diff_compare_local",
                 &[("oid", &cur.oid.short()), ("path", &fh.key.path)],
@@ -536,10 +924,74 @@ fn render_diff_pane(
         hdr_rect,
     );
 
-    let body = Rect::new(area.x, area.y + 1, area.width, area.height.saturating_sub(1));
+    let mut body = Rect::new(area.x, area.y + 1, area.width, area.height.saturating_sub(1));
     if body.height == 0 {
         return;
     }
+
+    if fh.show_commit_details && body.height >= 5 {
+        let mut detail_lines: Vec<Line<'static>> = Vec::new();
+        let max_w = body.width.saturating_sub(2) as usize;
+        if let Some(det_key) = fh.desired_details_key()
+            && let Some(bundle) = state.diff_caches.peek_details(&det_key)
+            && let Some(det) = bundle.details.first()
+        {
+            detail_lines.push(Line::from(Span::styled(
+                truncate_to_width(
+                    &format!(
+                        "{}: {} <{}>  {}",
+                        ctx.t("view.annotate.author_label"),
+                        det.author.name,
+                        det.author.email,
+                        format_absolute_time(det.author.time, true),
+                    ),
+                    max_w,
+                ),
+                Style::default().fg(ctx.theme.fg_accent_link),
+            )));
+            if !det.same_author_and_committer() {
+                detail_lines.push(Line::from(Span::styled(
+                    truncate_to_width(
+                        &format!(
+                            "{}: {} <{}>  {}",
+                            ctx.t("view.annotate.committer_label"),
+                            det.committer.name,
+                            det.committer.email,
+                            format_absolute_time(det.committer.time, true),
+                        ),
+                        max_w,
+                    ),
+                    Style::default().fg(ctx.theme.fg_muted),
+                )));
+            }
+            for ln in det.message.lines().take(3) {
+                detail_lines.push(Line::from(Span::styled(
+                    truncate_to_width(ln, max_w),
+                    Style::default().fg(ctx.theme.fg_primary),
+                )));
+            }
+        } else {
+            detail_lines.push(Line::from(Span::styled(
+                truncate_to_width(ctx.t("common.loading"), max_w),
+                Style::default().fg(ctx.theme.fg_muted),
+            )));
+        }
+        let strip_h = (detail_lines.len() as u16).min(5).min(body.height.saturating_sub(2));
+        if strip_h > 0 {
+            let strip_rect = Rect::new(body.x, body.y, body.width, strip_h);
+            frame.render_widget(
+                Paragraph::new(detail_lines).style(Style::default().bg(ctx.theme.bg_panel)),
+                strip_rect,
+            );
+            body = Rect::new(
+                body.x,
+                body.y + strip_h,
+                body.width,
+                body.height.saturating_sub(strip_h),
+            );
+        }
+    }
+
     frame.render_widget(
         Paragraph::new("").style(Style::default().bg(ctx.theme.bg_canvas)),
         body,
@@ -580,7 +1032,7 @@ fn render_diff_pane(
         return;
     }
 
-    let Some(key) = fh.desired_diff_key() else {
+    let Some(key) = fh.desired_diff_key_with_store(&state.diff_caches) else {
         ctx.record_scroll_bound(ScrollPane::FileHistoryDiff, h, 0);
         let msg = if fh.loading {
             ctx.t("view.file_history.loading")
@@ -601,7 +1053,7 @@ fn render_diff_pane(
 
     let Some(diff) = state.diff_caches.peek_diff(&key) else {
         ctx.record_scroll_bound(ScrollPane::FileHistoryDiff, h, 0);
-        let msg = if fh.selected_entry().is_some_and(|e| e.is_binary) {
+        let msg = if !fh.show_affected_files && fh.selected_entry().is_some_and(|e| e.is_binary) {
             ctx.t("view.log_details.binary_diff")
         } else {
             ctx.t("view.log_details.loading_diff")

@@ -404,6 +404,9 @@ fn route_pane_fallback_key(key: KeyEvent, state: &AppState) -> Vec<Action> {
             KeyCode::Esc if state.log.graph.has_multi_selection() => {
                 vec![Action::ClearLogMultiSelection]
             }
+            KeyCode::Esc if state.log.filter.saved_before_dir_history.is_some() => {
+                vec![Action::RestorePreDirHistoryFilter]
+            }
             _ => Vec::new(),
         },
         PaneId::LogChangesTree => match key.code {
@@ -688,8 +691,43 @@ fn route_file_history_key(key: &KeyEvent, state: &AppState) -> Vec<Action> {
     let Some(fh) = state.modal_stack.file_history() else {
         return vec![Action::FileHistoryEscape];
     };
+    if fh.show_repo_version {
+        return match key.code {
+            KeyCode::Esc | KeyCode::Char('v') => vec![Action::FileHistoryCloseRepoVersion],
+            KeyCode::Down | KeyCode::Char('j') => vec![Action::FileHistoryBlobScroll(1)],
+            KeyCode::Up | KeyCode::Char('k') => vec![Action::FileHistoryBlobScroll(-1)],
+            KeyCode::PageDown => vec![Action::FileHistoryBlobScroll(15)],
+            KeyCode::PageUp => vec![Action::FileHistoryBlobScroll(-15)],
+            KeyCode::Home => vec![Action::FileHistoryBlobScroll(crate::app::SCROLL_GOTO_TOP)],
+            KeyCode::End | KeyCode::Char('G') => {
+                vec![Action::FileHistoryBlobScroll(crate::app::SCROLL_GOTO_BOTTOM)]
+            }
+            _ => Vec::new(),
+        };
+    }
     if fh.diff.search.editing {
         return route_diff_search_editing_key(key, DiffScope::FileHistory);
+    }
+    if fh.search_editing {
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        return match key.code {
+            KeyCode::Esc => vec![Action::FileHistorySearchClose],
+            KeyCode::Enter => vec![Action::FileHistorySearchConfirm],
+            KeyCode::Backspace => vec![Action::FileHistorySearchBackspace],
+            KeyCode::Char('u') if ctrl => vec![Action::FileHistorySearchClear],
+            KeyCode::Down => vec![Action::FileHistoryMove {
+                delta: 1,
+                extend: false,
+            }],
+            KeyCode::Up => vec![Action::FileHistoryMove {
+                delta: -1,
+                extend: false,
+            }],
+            KeyCode::Char(c) if !ctrl && !key.modifiers.contains(KeyModifiers::ALT) => {
+                vec![Action::FileHistorySearchChar(c)]
+            }
+            _ => Vec::new(),
+        };
     }
     let had_pending_g = fh.pending_g.is_some();
     let pending_g = fh
@@ -697,6 +735,8 @@ fn route_file_history_key(key: &KeyEvent, state: &AppState) -> Vec<Action> {
         .is_some_and(|t| state.now().saturating_duration_since(t) <= crate::log_view::FILE_HISTORY_G_WINDOW);
     let diff_zoomed = fh.diff.zoomed;
     let diff_focused = fh.focus == crate::log_view::FileHistoryFocus::Diff || diff_zoomed;
+    let affected_focused =
+        fh.focus == crate::log_view::FileHistoryFocus::AffectedFiles && fh.show_affected_files && !diff_zoomed;
 
     let mut prefix = Vec::new();
     if had_pending_g {
@@ -742,7 +782,41 @@ fn route_file_history_key(key: &KeyEvent, state: &AppState) -> Vec<Action> {
     let action = match key.code {
         KeyCode::Esc => Some(Action::FileHistoryEscape),
         KeyCode::Tab | KeyCode::BackTab => Some(Action::FileHistoryToggleFocus),
+        KeyCode::Enter if fh.is_on_load_more_row() => Some(Action::FileHistoryLoadMore),
         KeyCode::Enter => Some(Action::FileHistoryJumpToLog),
+        KeyCode::Char('.') | KeyCode::Menu => {
+            let idx = fh.selected;
+            let anchor = state
+                .hit_registry
+                .find(|t| matches!(t, HitTarget::FileHistoryRow { idx: i } if *i == idx))
+                .map(|r| {
+                    let x = r.rect.x + (r.rect.width / 2).min(r.rect.width.saturating_sub(1));
+                    (x, r.rect.y)
+                })
+                .unwrap_or_else(|| {
+                    (
+                        state.terminal_area.x + state.terminal_area.width / 4,
+                        state.terminal_area.y + 5,
+                    )
+                });
+            Some(Action::OpenContextMenuForTarget {
+                target: HitTarget::FileHistoryRow { idx },
+                anchor,
+            })
+        }
+        KeyCode::Char(' ') if !diff_focused && !affected_focused => {
+            Some(Action::FileHistoryToggleMarkAnchor)
+        }
+        KeyCode::Char('B') if !fh.is_selection_history() => {
+            Some(Action::FileHistoryCycleBranchScope)
+        }
+        KeyCode::Char('L') => Some(Action::FileHistoryLoadMore),
+        KeyCode::Char('i') => Some(Action::FileHistoryToggleCommitDetails),
+        KeyCode::Char('a') => Some(Action::FileHistoryToggleAffectedFiles),
+        KeyCode::Char('v') => Some(Action::FileHistoryOpenRepoVersion),
+        KeyCode::Char('y') => Some(Action::FileHistoryCopyHash),
+        KeyCode::Char('p') => Some(Action::FileHistoryCopyPatch),
+        KeyCode::Char('R') => Some(Action::FileHistoryGetVersion),
         KeyCode::Char('g') if !shift => {
             return vec![Action::FileHistorySetPendingG(Some(state.now()))];
         }
@@ -779,7 +853,8 @@ fn route_file_history_key(key: &KeyEvent, state: &AppState) -> Vec<Action> {
         KeyCode::Char('S') => Some(Action::DiffToggleSideBySide(DiffScope::FileHistory)),
         KeyCode::Char('w') => Some(Action::DiffCycleContext(DiffScope::FileHistory)),
         KeyCode::Char('W') => Some(Action::DiffToggleSoftWrap(DiffScope::FileHistory)),
-        KeyCode::Char('/') => Some(Action::DiffSearchOpen(DiffScope::FileHistory)),
+        KeyCode::Char('/') if diff_focused => Some(Action::DiffSearchOpen(DiffScope::FileHistory)),
+        KeyCode::Char('/') => Some(Action::FileHistorySearchOpen),
         KeyCode::Char('n') if fh.diff.search.active || diff_focused => {
             Some(Action::DiffSearchJump(DiffScope::FileHistory, 1))
         }
@@ -789,6 +864,12 @@ fn route_file_history_key(key: &KeyEvent, state: &AppState) -> Vec<Action> {
         KeyCode::Char('[') => Some(Action::DiffJumpHunk(DiffScope::FileHistory, -1)),
         KeyCode::Char(']') => Some(Action::DiffJumpHunk(DiffScope::FileHistory, 1)),
         KeyCode::Char('z') | KeyCode::F(4) => Some(Action::FileHistoryToggleZoom),
+        KeyCode::Down | KeyCode::Char('j') if affected_focused => {
+            Some(Action::FileHistoryAffectedMove(1))
+        }
+        KeyCode::Up | KeyCode::Char('k') if affected_focused => {
+            Some(Action::FileHistoryAffectedMove(-1))
+        }
         KeyCode::Up if shift && !diff_zoomed => Some(Action::FileHistoryMove {
             delta: -1,
             extend: true,

@@ -518,6 +518,11 @@ pub enum Action {
 
     // ── Log changes operations & single-file history ──
     FilterLogByPath(String),
+    /// Enters Directory History for `path`, saving the current `LogFilterSpec`
+    /// snapshot so the user can restore their prior Log filter losslessly.
+    ShowDirectoryHistory(String),
+    /// Restores the `LogFilterSpec` snapshot captured prior to `ShowDirectoryHistory`.
+    RestorePreDirHistoryFilter,
     CompareFileWithLocal {
         target: Oid,
         path: String,
@@ -549,6 +554,26 @@ pub enum Action {
     FileHistoryToggleFocus,
     FileHistoryJumpToLog,
     FileHistoryAnnotate,
+    FileHistoryCycleBranchScope,
+    FileHistorySetBranchScope(jbgit_core::HistoryBranchScope),
+    FileHistoryLoadMore,
+    FileHistorySearchOpen,
+    FileHistorySearchChar(char),
+    FileHistorySearchBackspace,
+    FileHistorySearchClear,
+    FileHistorySearchConfirm,
+    FileHistorySearchClose,
+    FileHistoryToggleMarkAnchor,
+    FileHistoryToggleCommitDetails,
+    FileHistoryToggleAffectedFiles,
+    FileHistoryAffectedMove(isize),
+    FileHistoryAffectedSelect(usize),
+    FileHistoryOpenRepoVersion,
+    FileHistoryCloseRepoVersion,
+    FileHistoryBlobScroll(isize),
+    FileHistoryGetVersion,
+    FileHistoryCopyPatch,
+    FileHistoryCopyHash,
     FileHistoryEscape,
 
     // ── Apply Patch / Create Patch / Browse Repository at Revision ──
@@ -585,10 +610,17 @@ pub enum Action {
     AnnotateToggleVisual,
     AnnotateToggleWhitespace,
     AnnotateToggleMoves,
+    AnnotateToggleDateMode,
+    AnnotateCycleColorMode,
+    AnnotateToggleHashColumn,
+    AnnotateToggleAuthorColumn,
+    AnnotateToggleDateColumn,
+    AnnotateToggleCommitDetails,
     AnnotateToggleDiff,
     AnnotateToggleFocus,
     AnnotateSetFocus(AnnotateFocus),
     AnnotatePreviousRev,
+    AnnotateThisRev,
     AnnotateNavBack,
     AnnotateJumpToLog,
     AnnotateShowSelectionHistory,

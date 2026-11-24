@@ -304,12 +304,81 @@ impl PerformanceSection {
     }
 }
 
+/// `[annotate].detect_moves` preference; accepts legacy booleans (`false` -> `None`,
+/// `true` -> `AcrossFiles`) as well as `"none"`, `"within-file"`, and `"across-files"`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum MoveDetectionPref {
+    #[default]
+    None,
+    WithinFile,
+    AcrossFiles,
+}
+
+impl MoveDetectionPref {
+    pub const fn to_core(self) -> jbgit_core::MoveDetection {
+        match self {
+            Self::None => jbgit_core::MoveDetection::None,
+            Self::WithinFile => jbgit_core::MoveDetection::WithinFile,
+            Self::AcrossFiles => jbgit_core::MoveDetection::AcrossFiles,
+        }
+    }
+}
+
+impl Serialize for MoveDetectionPref {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let s = match self {
+            Self::None => "none",
+            Self::WithinFile => "within-file",
+            Self::AcrossFiles => "across-files",
+        };
+        serializer.serialize_str(s)
+    }
+}
+
+impl<'de> Deserialize<'de> for MoveDetectionPref {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Visitor;
+        impl<'de> serde::de::Visitor<'de> for Visitor {
+            type Value = MoveDetectionPref;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("a boolean or \"none\" | \"within-file\" | \"across-files\"")
+            }
+
+            fn visit_bool<E: serde::de::Error>(self, v: bool) -> Result<Self::Value, E> {
+                Ok(if v {
+                    MoveDetectionPref::AcrossFiles
+                } else {
+                    MoveDetectionPref::None
+                })
+            }
+
+            fn visit_str<E: serde::de::Error>(self, v: &str) -> Result<Self::Value, E> {
+                match v.trim().to_ascii_lowercase().as_str() {
+                    "none" | "off" | "false" => Ok(MoveDetectionPref::None),
+                    "within-file" | "within_file" | "m" | "-m" => Ok(MoveDetectionPref::WithinFile),
+                    "across-files" | "across_files" | "c" | "-m -c" | "true" => {
+                        Ok(MoveDetectionPref::AcrossFiles)
+                    }
+                    other => Err(E::unknown_variant(
+                        other,
+                        &["none", "within-file", "across-files"],
+                    )),
+                }
+            }
+        }
+        deserializer.deserialize_any(Visitor)
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AnnotateSection {
     #[serde(default)]
     pub ignore_whitespace: bool,
     #[serde(default)]
-    pub detect_moves: bool,
+    pub detect_moves: MoveDetectionPref,
+    #[serde(default)]
+    pub prefer_commit_date: bool,
     #[serde(default = "default_annotate_gutter_width")]
     pub gutter_width: usize,
 }
@@ -322,7 +391,8 @@ impl Default for AnnotateSection {
     fn default() -> Self {
         Self {
             ignore_whitespace: false,
-            detect_moves: false,
+            detect_moves: MoveDetectionPref::None,
+            prefer_commit_date: false,
             gutter_width: default_annotate_gutter_width(),
         }
     }
@@ -941,6 +1011,9 @@ impl JbgitConfig {
             if let Some(dm) = ann.detect_moves {
                 self.annotate.detect_moves = dm;
             }
+            if let Some(pcd) = ann.prefer_commit_date {
+                self.annotate.prefer_commit_date = pcd;
+            }
             if let Some(gw) = ann.gutter_width {
                 self.annotate.gutter_width = gw.clamp(16, 60);
             }
@@ -1086,7 +1159,8 @@ pub struct PushSectionOverlay {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct AnnotateSectionOverlay {
     pub ignore_whitespace: Option<bool>,
-    pub detect_moves: Option<bool>,
+    pub detect_moves: Option<MoveDetectionPref>,
+    pub prefer_commit_date: Option<bool>,
     pub gutter_width: Option<usize>,
 }
 

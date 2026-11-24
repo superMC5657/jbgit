@@ -152,6 +152,12 @@ fn route_mouse_scroll(col: u16, row: u16, delta: isize, state: &AppState) -> Vec
                     extend: false,
                 }];
             }
+            HitTarget::FileHistoryAffectedFileRow { .. } => {
+                return vec![Action::FileHistoryAffectedMove(delta / 3)];
+            }
+            HitTarget::FileHistoryBlobArea => {
+                return vec![Action::FileHistoryBlobScroll(delta)];
+            }
             HitTarget::FileHistoryDiffArea => {
                 return vec![Action::DiffScroll(DiffScope::FileHistory, delta)];
             }
@@ -285,6 +291,7 @@ fn route_mouse_left_down(
         }
         HitTarget::FilterClear(field) => vec![Action::ClearFilterField(field)],
         HitTarget::FilterRangeClear => vec![Action::ClearRangeFilter],
+        HitTarget::FilterRestoreDirHistory => vec![Action::RestorePreDirHistoryFilter],
         HitTarget::FilterPresentation => vec![Action::OpenContextMenu {
             anchor: (col, row.saturating_add(1)),
             items: presentation_menu_items(state),
@@ -526,6 +533,11 @@ fn route_mouse_left_down(
             }
             actions
         }
+        HitTarget::FileHistoryLoadMore => vec![Action::FileHistoryLoadMore],
+        HitTarget::FileHistoryAffectedFileRow { idx } => {
+            vec![Action::FileHistoryAffectedSelect(idx)]
+        }
+        HitTarget::FileHistoryBlobArea => Vec::new(),
         HitTarget::FileHistoryListArea => {
             vec![Action::FileHistorySetFocus(
                 crate::log_view::FileHistoryFocus::Commits,
@@ -537,9 +549,16 @@ fn route_mouse_left_down(
             )]
         }
         HitTarget::FileHistoryToolbar(btn) => match btn {
+            FileHistoryToolbarButton::BranchScope => vec![Action::FileHistoryCycleBranchScope],
             FileHistoryToolbarButton::FollowRenames => vec![Action::FileHistoryToggleFollow],
             FileHistoryToolbarButton::CompareLocal => {
                 vec![Action::FileHistoryToggleCompareLocal]
+            }
+            FileHistoryToolbarButton::CommitDetails => {
+                vec![Action::FileHistoryToggleCommitDetails]
+            }
+            FileHistoryToolbarButton::AffectedFiles => {
+                vec![Action::FileHistoryToggleAffectedFiles]
             }
             FileHistoryToolbarButton::SideBySide => {
                 vec![Action::DiffToggleSideBySide(DiffScope::FileHistory)]
@@ -620,12 +639,16 @@ fn route_mouse_left_down(
         HitTarget::AnnotateToolbar(btn) => match btn {
             AnnotateToolbarButton::IgnoreWhitespace => vec![Action::AnnotateToggleWhitespace],
             AnnotateToolbarButton::DetectMoves => vec![Action::AnnotateToggleMoves],
+            AnnotateToolbarButton::DateMode => vec![Action::AnnotateToggleDateMode],
+            AnnotateToolbarButton::ColorMode => vec![Action::AnnotateCycleColorMode],
             AnnotateToolbarButton::PreviousRev => vec![Action::AnnotatePreviousRev],
             AnnotateToolbarButton::NavBack => vec![Action::AnnotateNavBack],
             AnnotateToolbarButton::ShowDiff => vec![Action::AnnotateToggleDiff],
+            AnnotateToolbarButton::CommitDetails => vec![Action::AnnotateToggleCommitDetails],
             AnnotateToolbarButton::SelectionHistory => vec![Action::AnnotateShowSelectionHistory],
             AnnotateToolbarButton::LocateInLog => vec![Action::AnnotateJumpToLog],
         },
+        HitTarget::AnnotateDetailStrip => vec![Action::AnnotateToggleCommitDetails],
         HitTarget::PushTargetBranch => vec![Action::PushStartEditTarget],
         HitTarget::PushRemotePicker => vec![Action::PushToggleRemotePicker],
         HitTarget::PushDefineRemote => vec![Action::PushDefineRemote],
@@ -716,7 +739,9 @@ fn route_mouse_right_down(col: u16, row: u16, state: &AppState) -> Vec<Action> {
             | HitTarget::HeaderRepoName
             | HitTarget::BranchPopupFetch
             | HitTarget::BranchPopupSettings
-            | HitTarget::FileHistoryRow { .. }
+            | HitTarget::FileHistoryLoadMore
+            | HitTarget::FileHistoryAffectedFileRow { .. }
+            | HitTarget::FileHistoryBlobArea
             | HitTarget::FileHistoryToolbar(_)
             | HitTarget::FileHistoryListArea
             | HitTarget::FileHistoryDiffArea
@@ -727,6 +752,8 @@ fn route_mouse_right_down(col: u16, row: u16, state: &AppState) -> Vec<Action> {
             | HitTarget::ReflogChangesArea
             | HitTarget::ReflogDiffArea
             | HitTarget::AnnotateToolbar(_)
+            | HitTarget::AnnotateDetailStrip
+            | HitTarget::FilterRestoreDirHistory
             | HitTarget::PushTargetBranch
             | HitTarget::PushRemotePicker
             | HitTarget::PushDefineRemote

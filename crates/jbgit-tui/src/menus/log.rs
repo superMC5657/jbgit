@@ -1010,7 +1010,7 @@ pub fn log_change_menu_items(state: &AppState) -> Vec<ContextMenuItem> {
             i18n.t("menu.log_change.show_dir_history"),
             Some('h'),
             hist_sc.as_deref(),
-            vec![Action::FilterLogByPath(row_path.clone())],
+            vec![Action::ShowDirectoryHistory(row_path.clone())],
         ));
     }
     items.push(run(
@@ -1113,58 +1113,253 @@ pub fn annotate_menu_items(state: &AppState) -> Vec<ContextMenuItem> {
         return Vec::new();
     };
     let i18n = &state.i18n;
-    let cmd_item = |label: String, mnemonic: char, cmd: catalog::AnnotateCommand| {
+    let cmd_item = |label: String, mnemonic: Option<char>, cmd: catalog::AnnotateCommand| {
+        let sc = cmd.shortcut();
         ContextMenuItem::from_command(
             label,
-            Some(mnemonic),
-            Some(cmd.shortcut()),
+            mnemonic,
+            (!sc.is_empty()).then_some(sc),
             catalog::evaluate_annotate_command(state, cmd),
         )
     };
     let check = |on: bool, label: &str| format!("{} {label}", if on { "✓" } else { " " });
+    let moves_label = format!(
+        "{} ({})",
+        i18n.t("menu.annotate.detect_moves"),
+        ann.key.options.move_detection.badge()
+    );
+    let color_label = match ann.color_mode {
+        crate::log_view::AnnotateColorMode::Age => i18n.t("menu.annotate.color_age"),
+        crate::log_view::AnnotateColorMode::Author => i18n.t("menu.annotate.color_author"),
+        crate::log_view::AnnotateColorMode::None => i18n.t("menu.annotate.color_none"),
+    };
 
     vec![
         cmd_item(
             i18n.t("menu.annotate.selection_history").into(),
-            'h',
+            Some('h'),
             catalog::AnnotateCommand::SelectionHistory,
         ),
         cmd_item(
+            i18n.t("menu.annotate.this_rev").into(),
+            Some('r'),
+            catalog::AnnotateCommand::ThisRev,
+        ),
+        cmd_item(
             i18n.t("menu.annotate.prev_rev").into(),
-            'p',
+            Some('p'),
             catalog::AnnotateCommand::PreviousRev,
         ),
         cmd_item(
             i18n.t("menu.annotate.toggle_diff").into(),
-            'd',
+            Some('d'),
             catalog::AnnotateCommand::ToggleDiff,
         ),
+        cmd_item(
+            check(
+                ann.show_commit_details,
+                i18n.t("menu.annotate.commit_details"),
+            ),
+            Some('i'),
+            catalog::AnnotateCommand::ToggleCommitDetails,
+        ),
+        ContextMenuItem::separator(),
         cmd_item(
             check(
                 ann.key.options.ignore_whitespace,
                 i18n.t("menu.annotate.ignore_whitespace"),
             ),
-            'w',
+            Some('w'),
             catalog::AnnotateCommand::IgnoreWhitespace,
         ),
         cmd_item(
-            check(
-                ann.key.options.detect_moves,
-                i18n.t("menu.annotate.detect_moves"),
-            ),
-            'm',
+            check(ann.key.options.move_detection.is_enabled(), &moves_label),
+            Some('m'),
             catalog::AnnotateCommand::DetectMoves,
+        ),
+        cmd_item(
+            check(
+                ann.key.options.prefer_commit_date,
+                i18n.t("menu.annotate.prefer_commit_date"),
+            ),
+            Some('t'),
+            catalog::AnnotateCommand::ToggleDateMode,
+        ),
+        cmd_item(
+            format!("{}: {color_label}", i18n.t("menu.annotate.color_mode")),
+            Some('c'),
+            catalog::AnnotateCommand::CycleColorMode,
+        ),
+        cmd_item(
+            check(ann.show_hash, i18n.t("menu.annotate.col_hash")),
+            None,
+            catalog::AnnotateCommand::ToggleHashColumn,
+        ),
+        cmd_item(
+            check(ann.show_author, i18n.t("menu.annotate.col_author")),
+            None,
+            catalog::AnnotateCommand::ToggleAuthorColumn,
+        ),
+        cmd_item(
+            check(ann.show_date, i18n.t("menu.annotate.col_date")),
+            None,
+            catalog::AnnotateCommand::ToggleDateColumn,
         ),
         ContextMenuItem::separator(),
         cmd_item(
             i18n.t("menu.annotate.locate_log").into(),
-            'j',
+            Some('j'),
             catalog::AnnotateCommand::LocateInLog,
         ),
         cmd_item(
             i18n.t("menu.annotate.copy_hash").into(),
-            'y',
+            Some('y'),
             catalog::AnnotateCommand::CopyHash,
         ),
     ]
+}
+
+/// Right-click / keyboard (`.`) context menu for a row inside `ModalLayer::FileHistory`.
+pub fn file_history_menu_items(state: &AppState) -> Vec<ContextMenuItem> {
+    let Some(fh) = state.modal_stack.file_history() else {
+        return Vec::new();
+    };
+    let Some(entry) = fh.selected_entry() else {
+        return Vec::new();
+    };
+    let i18n = &state.i18n;
+    let is_deleted = entry.kind == FileStatusKind::Deleted;
+    let ongoing = state.ongoing_kind().is_some();
+    let need_not_deleted = i18n.t("menu.log_change.deleted_in_commit");
+    let need_no_ongoing = i18n.t("toast.ongoing_in_progress");
+    let check = |on: bool, label: &str| format!("{} {label}", if on { "✓" } else { " " });
+    let is_marked = fh.anchor == Some(fh.selected) && fh.anchor_pinned;
+
+    vec![
+        run(
+            i18n.t("menu.file_history.get_version"),
+            Some('g'),
+            Some("R"),
+            vec![Action::FileHistoryGetVersion],
+        )
+        .enabled_if(!is_deleted, need_not_deleted)
+        .enabled_if(!ongoing, need_no_ongoing),
+        run(
+            check(
+                fh.show_affected_files,
+                i18n.t("menu.file_history.show_affected_files"),
+            ),
+            Some('a'),
+            Some("a"),
+            vec![Action::FileHistoryToggleAffectedFiles],
+        ),
+        run(
+            i18n.t("menu.file_history.open_repo_version"),
+            Some('v'),
+            Some("v"),
+            vec![Action::FileHistoryOpenRepoVersion],
+        )
+        .enabled_if(!is_deleted, need_not_deleted),
+        run(
+            i18n.t("menu.file_history.copy_patch"),
+            Some('p'),
+            Some("p"),
+            vec![Action::FileHistoryCopyPatch],
+        ),
+        run(
+            i18n.t("menu.file_history.copy_hash"),
+            Some('y'),
+            Some("y"),
+            vec![Action::FileHistoryCopyHash],
+        ),
+        run(
+            check(
+                fh.show_commit_details,
+                i18n.t("menu.file_history.toggle_commit_details"),
+            ),
+            Some('i'),
+            Some("i"),
+            vec![Action::FileHistoryToggleCommitDetails],
+        ),
+        ContextMenuItem::separator(),
+        run(
+            check(
+                is_marked,
+                i18n.t("menu.file_history.mark_for_compare"),
+            ),
+            Some('m'),
+            Some("Space"),
+            vec![Action::FileHistoryToggleMarkAnchor],
+        ),
+        run(
+            check(
+                fh.compare_with_local,
+                i18n.t("menu.file_history.compare_local"),
+            ),
+            Some('l'),
+            Some("l"),
+            vec![Action::FileHistoryToggleCompareLocal],
+        ),
+        run(
+            i18n.t("menu.file_history.annotate"),
+            Some('b'),
+            Some("b"),
+            vec![Action::FileHistoryAnnotate],
+        ),
+        run(
+            i18n.t("menu.file_history.locate_log"),
+            Some('j'),
+            Some("Enter"),
+            vec![Action::FileHistoryJumpToLog],
+        ),
+    ]
+}
+
+/// Branch scope selector menu inside `ModalLayer::FileHistory`.
+pub fn file_history_scope_menu_items(state: &AppState) -> Vec<ContextMenuItem> {
+    let Some(fh) = state.modal_stack.file_history() else {
+        return Vec::new();
+    };
+    let i18n = &state.i18n;
+    let check = |on: bool, label: &str| format!("{} {label}", if on { "✓" } else { " " });
+    let mut items = vec![
+        run(
+            check(
+                fh.key.scope == jbgit_core::HistoryBranchScope::CurrentHead,
+                i18n.t("menu.file_history.scope_head"),
+            ),
+            Some('h'),
+            None,
+            vec![Action::FileHistorySetBranchScope(
+                jbgit_core::HistoryBranchScope::CurrentHead,
+            )],
+        ),
+        run(
+            check(
+                fh.key.scope == jbgit_core::HistoryBranchScope::AllBranches,
+                i18n.t("menu.file_history.scope_all"),
+            ),
+            Some('a'),
+            None,
+            vec![Action::FileHistorySetBranchScope(
+                jbgit_core::HistoryBranchScope::AllBranches,
+            )],
+        ),
+    ];
+    let branches = super::local_names(state);
+    if !branches.is_empty() {
+        items.push(ContextMenuItem::separator());
+        for name in branches.into_iter().take(24) {
+            let active = fh.key.scope == jbgit_core::HistoryBranchScope::Branch(name.clone());
+            items.push(run(
+                check(active, &name),
+                None,
+                None,
+                vec![Action::FileHistorySetBranchScope(
+                    jbgit_core::HistoryBranchScope::Branch(name),
+                )],
+            ));
+        }
+    }
+    items
 }

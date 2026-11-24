@@ -640,12 +640,7 @@ fn file_history_modal_end_to_end_renames_compare_navigation_and_scroll() {
             if k.path == "new_name.rs" && k.start_oid == Some(c2) && k.follow_renames
     )));
 
-    let hist_key = FileHistoryKey {
-        path: "new_name.rs".into(),
-        start_oid: Some(c2),
-        follow_renames: true,
-        line_range: None,
-    };
+    let hist_key = FileHistoryKey::new("new_name.rs", Some(c2), true, None);
     let make_hist_entries = || {
         vec![
             FileHistoryEntry {
@@ -940,12 +935,7 @@ fn file_history_modal_end_to_end_renames_compare_navigation_and_scroll() {
         .latest(jbgit_core::RequestSlotId::FileHistoryList);
     ts.deliver_engine_event(EngineEvent::FileHistoryLoaded {
         bundle: Arc::new(FileHistoryBundle {
-            key: FileHistoryKey {
-                path: "new_name.rs".into(),
-                start_oid: Some(c1),
-                follow_renames: true,
-                line_range: None,
-            },
+            key: FileHistoryKey::new("new_name.rs", Some(c1), true, None),
             entries: vec![FileHistoryEntry {
                 oid: c1,
                 author_name: "Alice".into(),
@@ -984,12 +974,7 @@ fn file_history_modal_end_to_end_renames_compare_navigation_and_scroll() {
         .latest(jbgit_core::RequestSlotId::FileHistoryList);
     ts.deliver_engine_event(EngineEvent::FileHistoryLoaded {
         bundle: Arc::new(FileHistoryBundle {
-            key: FileHistoryKey {
-                path: "new_name.rs".into(),
-                start_oid: Some(c1),
-                follow_renames: true,
-                line_range: None,
-            },
+            key: FileHistoryKey::new("new_name.rs", Some(c1), true, None),
             entries: vec![FileHistoryEntry {
                 oid: c1,
                 author_name: "Alice".into(),
@@ -1270,5 +1255,369 @@ fn directory_context_menu_starts_on_enabled_item_and_disabled_mnemonic_updates_f
     assert!(
         footer.contains("Copy Patch of File: Select a file"),
         "footer must show disabled item's own reason, got: {footer}"
+    );
+}
+
+#[test]
+fn file_history_context_menu_repo_version_affected_files_scope_pagination_search_space_and_dir_restore()
+{
+    use jbgit_core::{
+        CommitDetails, DEFAULT_FILE_HISTORY_LIMIT, HistoryBranchScope, PatchSource, PersonStamp,
+        RequestSlotId, TreeBlob, TreeBlobContent, TreeBlobKey,
+    };
+
+    let snap = super::snapshot();
+    let c1 = snap.commits[0].oid;
+    let c2 = snap.commits[1].oid;
+    let c3 = snap.commits[2].oid;
+    let mut ts = TestSession::with_snapshot(snap);
+
+    // 1. Directory History filter snapshot & lossless restore
+    ts.dispatch(Action::ApplyFilterField {
+        field: crate::log_view::FilterField::Branch,
+        expr: "main".into(),
+    });
+    ts.dispatch(Action::ApplyFilterField {
+        field: crate::log_view::FilterField::User,
+        expr: "Alice".into(),
+    });
+    let orig_spec = ts.state().log.filter.spec.clone();
+    assert!(!orig_spec.branch.is_empty());
+    assert!(!orig_spec.user.is_empty());
+    assert!(orig_spec.paths.is_empty());
+
+    ts.dispatch(Action::ShowDirectoryHistory("src/sub".into()));
+    assert_eq!(ts.state().log.filter.spec.paths.paths, vec!["src/sub"]);
+    assert_eq!(
+        ts.state().log.filter.saved_before_dir_history.as_ref(),
+        Some(&orig_spec)
+    );
+    let _ = ts.render(120, 34);
+    // Clickable restore chip must be registered in hit_registry
+    assert!(
+        ts.hit_center_of(|t| matches!(t, HitTarget::FilterRestoreDirHistory))
+            .is_some(),
+        "FilterRestoreDirHistory chip must be rendered"
+    );
+    // Pressing Esc in Log restores previous filter losslessly!
+    ts.dispatch(Action::FocusPane(PaneId::LogCommitTable));
+    ts.send_key(KeyCode::Esc, KeyModifiers::NONE);
+    assert_eq!(ts.state().log.filter.spec, orig_spec);
+    assert!(ts.state().log.filter.saved_before_dir_history.is_none());
+
+    // 2. Open FileHistory with 3 commits & truncated=true
+    ts.dispatch(Action::OpenFileHistory {
+        path: "new_name.rs".into(),
+        start_oid: Some(c3),
+        follow_renames: true,
+        line_range: None,
+    });
+    let ep = ts
+        .state()
+        .request_slots
+        .latest(RequestSlotId::FileHistoryList);
+    let _ = ts.take_requests();
+    let entries = vec![
+        FileHistoryEntry {
+            oid: c3,
+            author_name: "Alice".into(),
+            author_time: 1_700_000_180,
+            summary: "fix auth timeout".into(),
+            kind: FileStatusKind::Modified,
+            path_at_commit: "new_name.rs".into(),
+            old_path: None,
+            additions: 4,
+            deletions: 1,
+            is_binary: false,
+            range_patch: None,
+        },
+        FileHistoryEntry {
+            oid: c2,
+            author_name: "Bob".into(),
+            author_time: 1_700_000_120,
+            summary: "refactor parser".into(),
+            kind: FileStatusKind::Modified,
+            path_at_commit: "new_name.rs".into(),
+            old_path: None,
+            additions: 2,
+            deletions: 2,
+            is_binary: false,
+            range_patch: None,
+        },
+        FileHistoryEntry {
+            oid: c1,
+            author_name: "Carol".into(),
+            author_time: 1_700_000_060,
+            summary: "initial seed".into(),
+            kind: FileStatusKind::Added,
+            path_at_commit: "old_name.rs".into(),
+            old_path: None,
+            additions: 10,
+            deletions: 0,
+            is_binary: false,
+            range_patch: None,
+        },
+    ];
+    ts.deliver_engine_event(EngineEvent::FileHistoryLoaded {
+        bundle: Arc::new(FileHistoryBundle {
+            key: FileHistoryKey::new("new_name.rs", Some(c3), true, None),
+            entries: entries.clone(),
+            truncated: true,
+        }),
+        epoch: ep,
+    });
+    let _ = ts.render(130, 36);
+
+    // 3. Right-click on FileHistoryRow opens context menu with all 6 core actions
+    let (rx, ry) = ts
+        .hit_center_of(|t| matches!(t, HitTarget::FileHistoryRow { idx: 0 }))
+        .expect("FileHistoryRow 0 hit target");
+    ts.send_mouse(MouseEventKind::Down(MouseButton::Right), rx, ry);
+    let menu_labels: Vec<String> = match ts.state().modal_stack.last() {
+        Some(ModalLayer::ContextMenu { items, .. }) => items
+            .iter()
+            .filter(|i| !i.label.is_empty())
+            .map(|i| i.label.clone())
+            .collect(),
+        other => panic!("expected FileHistory ContextMenu, got {other:?}"),
+    };
+    for expected in [
+        "Get Version (Restore File)",
+        "Show All Affected Files",
+        "Open Repository Version",
+        "Copy Patch",
+        "Copy Revision Hash",
+        "Toggle Commit Details",
+    ] {
+        assert!(
+            menu_labels.iter().any(|l| l.contains(expected)),
+            "missing '{expected}' in FileHistory context menu: {menu_labels:?}"
+        );
+    }
+
+    // Activate Copy Revision Hash from menu
+    let copy_idx = match ts.state().modal_stack.last() {
+        Some(ModalLayer::ContextMenu { items, .. }) => items
+            .iter()
+            .position(|i| i.label.contains("Copy Revision Hash"))
+            .unwrap(),
+        _ => unreachable!(),
+    };
+    ts.dispatch(Action::ContextMenuActivateItem {
+        depth: 0,
+        idx: copy_idx,
+    });
+    assert_eq!(ts.clipboard().last().map(String::as_str), Some(c3.to_string().as_str()));
+
+    // Copy Patch ('p') dispatches declarative GitOp::PatchToClipboard
+    let _ = ts.take_requests();
+    ts.send_key(KeyCode::Char('p'), KeyModifiers::NONE);
+    assert!(ts.take_requests().iter().any(|(r, _)| matches!(
+        r,
+        TaskRequest::RunGitOp {
+            op: GitOp::PatchToClipboard {
+                source: PatchSource::CommitFile { oid, path },
+                reverse: false,
+            },
+            ..
+        } if *oid == c3 && path == "new_name.rs"
+    )));
+
+    // Get Version ('R') opens confirmation dialog -> Left to focus Confirm -> Enter emits GitOp::CheckoutPaths
+    ts.send_key(KeyCode::Char('R'), KeyModifiers::SHIFT);
+    assert!(matches!(
+        ts.state().modal_stack.last(),
+        Some(ModalLayer::Dialog(_))
+    ));
+    ts.send_key(KeyCode::Left, KeyModifiers::NONE);
+    ts.send_key(KeyCode::Enter, KeyModifiers::NONE);
+    assert!(ts.take_requests().iter().any(|(r, _)| matches!(
+        r,
+        TaskRequest::RunGitOp {
+            op: GitOp::CheckoutPaths { rev, paths },
+            ..
+        } if *rev == c3.to_string() && paths == &vec!["new_name.rs".to_string()]
+    )));
+
+    // 4. Open Repository Version ('v') loads TreeBlob and renders read-only preview
+    ts.send_key(KeyCode::Char('v'), KeyModifiers::NONE);
+    let blob_ep = ts.state().request_slots.latest(RequestSlotId::TreeBlob);
+    assert!(ts.take_requests().iter().any(|(r, _)| matches!(
+        r,
+        TaskRequest::LoadTreeBlob { key } if key.oid == c3 && key.path == "new_name.rs"
+    )));
+    ts.deliver_engine_event(EngineEvent::TreeBlobLoaded {
+        blob: Arc::new(TreeBlob {
+            key: TreeBlobKey {
+                oid: c3,
+                path: "new_name.rs".into(),
+            },
+            size: 28,
+            content: TreeBlobContent::Text("fn repo_version_marker() {}\n".into()),
+        }),
+        epoch: blob_ep,
+    });
+    let buf = ts.render(130, 36);
+    let rendered: String = (0..buf.area.height)
+        .map(|y| {
+            (0..buf.area.width)
+                .map(|x| buf[(x, y)].symbol())
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(rendered.contains("repo_version_marker"));
+    ts.send_key(KeyCode::Esc, KeyModifiers::NONE);
+    assert!(!ts.state().modal_stack.file_history().unwrap().show_repo_version);
+
+    // 5. Toggle Commit Details ('i') and Show All Affected Files ('a') without leaving modal
+    ts.send_key(KeyCode::Char('i'), KeyModifiers::NONE);
+    ts.send_key(KeyCode::Char('a'), KeyModifiers::NONE);
+    let det_ep = ts
+        .state()
+        .request_slots
+        .latest(RequestSlotId::FileHistoryCommitDetails);
+    assert!(ts.take_requests().iter().any(|(r, _)| matches!(
+        r,
+        TaskRequest::LoadCommitDetails {
+            slot: RequestSlotId::FileHistoryCommitDetails,
+            key
+        } if key.oids == vec![c3]
+    )));
+    ts.deliver_engine_event(EngineEvent::CommitDetailsLoaded {
+        slot: RequestSlotId::FileHistoryCommitDetails,
+        bundle: Arc::new(CommitChangesBundle {
+            key: DetailsKey::single(c3),
+            details: vec![CommitDetails {
+                oid: c3,
+                parents: vec![c2],
+                author: PersonStamp {
+                    name: "Alice".into(),
+                    email: "alice@example.com".into(),
+                    time: 1_700_000_180,
+                    offset_minutes: 0,
+                },
+                committer: PersonStamp {
+                    name: "Alice".into(),
+                    email: "alice@example.com".into(),
+                    time: 1_700_000_180,
+                    offset_minutes: 0,
+                },
+                message: "fix auth timeout\n\nDetailed body line.".into(),
+                signature: Default::default(),
+            }],
+            changes: vec![
+                FileChange {
+                    path: "new_name.rs".into(),
+                    old_path: None,
+                    kind: FileStatusKind::Modified,
+                    additions: 4,
+                    deletions: 1,
+                    is_binary: false,
+                    old_oid: None,
+                    new_oid: None,
+                    exists_in_workdir: true,
+                },
+                FileChange {
+                    path: "sibling.rs".into(),
+                    old_path: None,
+                    kind: FileStatusKind::Modified,
+                    additions: 2,
+                    deletions: 0,
+                    is_binary: false,
+                    old_oid: None,
+                    new_oid: None,
+                    exists_in_workdir: true,
+                },
+            ],
+        }),
+        epoch: det_ep,
+    });
+    // Move to second affected file -> desired_diff_key switches to sibling.rs!
+    ts.send_key(KeyCode::Char('j'), KeyModifiers::NONE);
+    let desired = ts
+        .state()
+        .modal_stack
+        .file_history()
+        .unwrap()
+        .desired_diff_key_with_store(&ts.state().diff_caches)
+        .unwrap();
+    assert_eq!(desired.path, "sibling.rs");
+    // Close affected files & commit details via Esc (twice)
+    ts.send_key(KeyCode::Esc, KeyModifiers::NONE);
+    ts.send_key(KeyCode::Esc, KeyModifiers::NONE);
+    assert!(!ts.state().modal_stack.file_history().unwrap().show_affected_files);
+    assert!(!ts.state().modal_stack.file_history().unwrap().show_commit_details);
+
+    // 6. Inline '/' fuzzy search on Commits list
+    ts.send_key(KeyCode::Char('/'), KeyModifiers::NONE);
+    for ch in "Carol".chars() {
+        ts.send_key(KeyCode::Char(ch), KeyModifiers::NONE);
+    }
+    ts.send_key(KeyCode::Enter, KeyModifiers::NONE);
+    {
+        let fh = ts.state().modal_stack.file_history().unwrap();
+        assert_eq!(fh.visible_len(), 1);
+        assert_eq!(fh.selected_entry().unwrap().oid, c1);
+    }
+    ts.send_key(KeyCode::Esc, KeyModifiers::NONE);
+    assert_eq!(
+        ts.state().modal_stack.file_history().unwrap().visible_len(),
+        3
+    );
+
+    // 7. Space non-adjacent two-version comparison (pin c3, jump down 2 to c1)
+    ts.dispatch(Action::FileHistorySelect {
+        idx: 0,
+        extend: false,
+    });
+    ts.send_key(KeyCode::Char(' '), KeyModifiers::NONE);
+    ts.send_key(KeyCode::Char('j'), KeyModifiers::NONE);
+    ts.send_key(KeyCode::Char('j'), KeyModifiers::NONE);
+    {
+        let fh = ts.state().modal_stack.file_history().unwrap();
+        let (older, newer) = fh.comparison_pair().expect("Space non-adjacent pair");
+        assert_eq!((older.oid, newer.oid), (c1, c3));
+        assert_eq!(
+            fh.desired_diff_key().unwrap().details,
+            DetailsKey::compare_versions(c1, c3)
+        );
+    }
+    // Esc clears Space anchor pin
+    ts.send_key(KeyCode::Esc, KeyModifiers::NONE);
+    assert!(
+        ts.state()
+            .modal_stack
+            .file_history()
+            .unwrap()
+            .comparison_pair()
+            .is_none()
+    );
+
+    // 8. Pagination [Load More (+500)] increments limit to 1000
+    let _ = ts.render(130, 36);
+    let (lm_x, lm_y) = ts
+        .hit_center_of(|t| matches!(t, HitTarget::FileHistoryLoadMore))
+        .expect("Load More row must be rendered when truncated");
+    let _ = ts.take_requests();
+    ts.send_mouse(MouseEventKind::Down(MouseButton::Left), lm_x, lm_y);
+    assert!(ts.take_requests().iter().any(|(r, _)| matches!(
+        r,
+        TaskRequest::LoadFileHistory { key } if key.limit == DEFAULT_FILE_HISTORY_LIMIT * 2
+    )));
+
+    // 9. Branch scope AllBranches disables --follow and shows helpful toast on 'f'
+    ts.dispatch(Action::FileHistorySetBranchScope(
+        HistoryBranchScope::AllBranches,
+    ));
+    assert!(ts.take_requests().iter().any(|(r, _)| matches!(
+        r,
+        TaskRequest::LoadFileHistory { key }
+            if key.scope == HistoryBranchScope::AllBranches && !key.effective_follow()
+    )));
+    ts.send_key(KeyCode::Char('f'), KeyModifiers::NONE);
+    assert_eq!(
+        ts.state().status_notice.as_deref(),
+        Some(ts.state().i18n.t("toast.file_history_follow_disabled_all"))
     );
 }

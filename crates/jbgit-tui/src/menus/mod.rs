@@ -10,7 +10,8 @@ mod stash;
 
 pub use branch::{branch_menu_items, ongoing_menu_items, ref_menu_items, remote_group_menu_items};
 pub use log::{
-    annotate_menu_items, log_change_menu_items, log_commit_menu_items, log_diff_menu_items,
+    annotate_menu_items, file_history_menu_items, file_history_scope_menu_items,
+    log_change_menu_items, log_commit_menu_items, log_diff_menu_items,
 };
 pub use stage::{stage_diff_menu_items, stage_hunk_menu_items, stage_tree_menu_items};
 pub use stash::{stash_button_actions, stash_file_menu_items, stash_menu_items};

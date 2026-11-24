@@ -295,6 +295,9 @@ impl LogSpeedSearchState {
 #[derive(Debug, Default)]
 pub struct FilterBarState {
     pub spec: LogFilterSpec,
+    /// Snapshot of `spec` saved when entering Directory History so exiting
+    /// restores the user's previous Log filter losslessly.
+    pub saved_before_dir_history: Option<LogFilterSpec>,
     /// Text box has keyboard focus (`Ctrl+L` / `/`).
     pub editing_text: bool,
     /// Path matches for `spec.paths` (paths they were computed for + set).

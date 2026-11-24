@@ -175,6 +175,8 @@ pub fn parse_blame_porcelain_cancellable(
         let mut author_email: Option<String> = None;
         let mut author_time: Option<i64> = None;
         let mut author_tz: Option<i32> = None;
+        let mut committer_time: Option<i64> = None;
+        let mut committer_tz: Option<i32> = None;
         let mut summary: Option<String> = None;
         let mut previous: Option<(Oid, String)> = None;
         let mut is_boundary = false;
@@ -207,6 +209,12 @@ pub fn parse_blame_porcelain_cancellable(
                 }
             } else if let Some(rest) = meta_line.strip_prefix(b"author-tz ") {
                 author_tz = Some(parse_tz_offset(rest));
+            } else if let Some(rest) = meta_line.strip_prefix(b"committer-time ") {
+                if let Ok(ts) = String::from_utf8_lossy(rest).trim().parse::<i64>() {
+                    committer_time = Some(ts);
+                }
+            } else if let Some(rest) = meta_line.strip_prefix(b"committer-tz ") {
+                committer_tz = Some(parse_tz_offset(rest));
             } else if let Some(rest) = meta_line.strip_prefix(b"summary ") {
                 summary = Some(String::from_utf8_lossy(rest).into_owned());
             } else if let Some(rest) = meta_line.strip_prefix(b"previous ") {
@@ -258,6 +266,8 @@ pub fn parse_blame_porcelain_cancellable(
                 time: author_time.unwrap_or(0),
                 offset_minutes: author_tz.unwrap_or(0),
             },
+            committer_time: committer_time.unwrap_or(0),
+            committer_offset_minutes: committer_tz.unwrap_or(0),
             summary: summary.take().unwrap_or_default(),
             previous: previous.take(),
             is_boundary,
@@ -281,6 +291,16 @@ pub fn parse_blame_porcelain_cancellable(
             && commit.author.offset_minutes == 0
         {
             commit.author.offset_minutes = tz;
+        }
+        if let Some(ts) = committer_time
+            && commit.committer_time == 0
+        {
+            commit.committer_time = ts;
+        }
+        if let Some(tz) = committer_tz
+            && commit.committer_offset_minutes == 0
+        {
+            commit.committer_offset_minutes = tz;
         }
         if let Some(sum) = summary
             && commit.summary.is_empty()
@@ -359,9 +379,7 @@ pub(crate) fn load_blame_sync(
     if key.options.ignore_whitespace {
         cmd.arg("-w");
     }
-    if key.options.detect_moves {
-        cmd.args(["-M", "-C"]);
-    }
+    cmd.args(key.options.move_detection.git_flags());
     if let Some(rev) = key.rev {
         cmd.arg(rev.to_string());
     }

@@ -1,6 +1,6 @@
 # 08: FileHistory 模态内操作补全、分支筛选与 Annotate 深度增强
 
-Status: ready-for-agent
+Status: resolved
 Spec: [../spec.md](../spec.md)
 Milestone: M10 — reference 深度对齐与正确性加固
 Priority: P1
@@ -24,7 +24,7 @@ Priority: P1
 
 ## 2. 任务清单
 
-- [ ] **FileHistory 模态内右键菜单与动作补齐**：
+- [x] **FileHistory 模态内右键菜单与动作补齐**：
   - 在 `input/menus.rs` 接入 `HitTarget::FileHistoryRow` 右键菜单与 `.` 键盘菜单，补齐 `Vcs.FileHistory.ContextMenu` 核心 6 项动作：
     1. **Get Version**（二次确认后执行 `GitOp::CheckoutPaths`，将此文件恢复到所选版本）；
     2. **Show All Affected Files**（展开/弹窗查看该提交变更的全部文件列表及 Diff，不退出 FileHistory）；
@@ -32,11 +32,11 @@ Priority: P1
     4. **Create / Copy Patch**（单文件补丁复制到剪贴板或导出）；
     5. **Copy Revision Hash**；
     6. **Toggle Commit Details**（切换显示所选历史条目的完整提交正文、作者/提交者邮箱与时间戳）。
-- [ ] **FileHistory 分支筛选、分页与内联搜索**：
+- [x] **FileHistory 分支筛选、分页与内联搜索**：
   - `FileHistoryKey` 新增 `scope: HistoryBranchScope { CurrentHead, AllBranches, Branch(String) }` 与 `limit: usize`（初始 500，列表底端显示 `[Load More (+500)]` 行，按 `Enter` 或点击续加载；`AllBranches` 时自动停用 Git 不兼容的 `--follow` 并在工具栏提示）；
   - 模态内支持 `/` 模糊搜索过滤历史条目（按提交消息 / 作者 / 短哈希），支持 `Space` 标记任意两条不相邻历史版本进行对比；
   - 目录历史（"Show Directory History"）保存进入前的 Log 筛选快照，退出或按返回快捷键时可无损恢复主 Log 筛选（不再永久冲掉用户原筛选）。
-- [ ] **Annotate 细粒度选项、视图定制与 LRU 缓存**：
+- [x] **Annotate 细粒度选项、视图定制与 LRU 缓存**：
   - `BlameOptions` 将 `detect_moves: bool` 升级为 `MoveDetection { None, WithinFile /* -M */, AcrossFiles /* -M -C */ }`，并新增 `prefer_commit_date: bool`（解析 `committer-time` / `committer-tz`）；
   - `AnnotateState` 支持：
     - 独立开关 Gutter 列（Hash / Author / Date）与着色模式（`Age` 年龄热力图 / `Author` 按作者分配色板 / `None`）；
