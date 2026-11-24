@@ -10,9 +10,9 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use jbgit_core::{
-    ChangeRowKind, ChangeTreeRow, CommitChangesBundle, DetailsKey, DiffContext, DiffHunk,
-    CommitSignature, FileChange, FileDiff, FileDiffKey, LruCache, Oid, StageDiffHunk,
-    build_change_rows, side_by_side_rows,
+    ChangeRowKind, ChangeTreeRow, CommitChangesBundle, CommitSignature, DetailsKey, DiffContext,
+    DiffHunk, FileChange, FileDiff, FileDiffKey, LruCache, Oid, PathFilter, StageDiffHunk,
+    build_change_rows_filtered, side_by_side_rows,
 };
 use rustc_hash::FxHashSet;
 
@@ -185,10 +185,16 @@ struct CachedChangeRows {
     bundle: Arc<CommitChangesBundle>,
     group_by_dir: bool,
     collapsed: FxHashSet<String>,
+    affected_filter: Option<PathFilter>,
     rows: Arc<[ChangeTreeRow]>,
 }
 
-type CachedAllChangeRowsEntry = (Arc<CommitChangesBundle>, Arc<[ChangeTreeRow]>);
+#[derive(Debug)]
+struct CachedAllChangeRows {
+    bundle: Arc<CommitChangesBundle>,
+    affected_filter: Option<PathFilter>,
+    rows: Arc<[ChangeTreeRow]>,
+}
 
 /// Shared changed-files directory tree session used by both `[2 Log]` and `[3 Stash]`.
 #[derive(Debug)]
@@ -197,8 +203,10 @@ pub struct ChangesTreeSession {
     pub selected: usize,
     pub group_by_dir: bool,
     pub collapsed: FxHashSet<String>,
+    /// Active path filter applied when "Show Only Affected Changes" is enabled.
+    pub affected_filter: Option<PathFilter>,
     cached_change_rows: RefCell<Option<CachedChangeRows>>,
-    cached_all_change_rows: RefCell<Option<CachedAllChangeRowsEntry>>,
+    cached_all_change_rows: RefCell<Option<CachedAllChangeRows>>,
 }
 
 impl Default for ChangesTreeSession {
@@ -208,6 +216,7 @@ impl Default for ChangesTreeSession {
             selected: 0,
             group_by_dir: true,
             collapsed: FxHashSet::default(),
+            affected_filter: None,
             cached_change_rows: RefCell::new(None),
             cached_all_change_rows: RefCell::new(None),
         }
@@ -222,6 +231,43 @@ impl ChangesTreeSession {
         store.peek_details(self.current_key.as_ref()?)
     }
 
+    fn matches_affected_filter(&self, change: &FileChange) -> bool {
+        self.affected_filter
+            .as_ref()
+            .is_none_or(|pf| pf.matches_change(&change.path, change.old_path.as_deref()))
+    }
+
+    /// Returns `(shown_count, total_count)` for the currently loaded bundle.
+    pub fn visible_change_counts(&self, store: &DiffCacheStore) -> Option<(usize, usize)> {
+        let bundle = self.current_bundle(store)?;
+        let total = bundle.changes.len();
+        let shown = if self.affected_filter.is_some() {
+            bundle
+                .changes
+                .iter()
+                .filter(|c| self.matches_affected_filter(c))
+                .count()
+        } else {
+            total
+        };
+        Some((shown, total))
+    }
+
+    /// Returns `(additions, deletions)` summed over currently visible (filtered) changes.
+    pub fn visible_totals(&self, store: &DiffCacheStore) -> (usize, usize) {
+        let Some(bundle) = self.current_bundle(store) else {
+            return (0, 0);
+        };
+        if self.affected_filter.is_none() {
+            return bundle.totals();
+        }
+        bundle
+            .changes
+            .iter()
+            .filter(|c| self.matches_affected_filter(c))
+            .fold((0, 0), |(a, d), c| (a + c.additions, d + c.deletions))
+    }
+
     pub fn change_rows(&self, store: &DiffCacheStore) -> Arc<[ChangeTreeRow]> {
         let Some(bundle) = self.current_bundle(store) else {
             return Arc::from([]);
@@ -232,16 +278,23 @@ impl ChangesTreeSession {
                 && Arc::ptr_eq(&cached.bundle, bundle)
                 && cached.group_by_dir == self.group_by_dir
                 && cached.collapsed == self.collapsed
+                && cached.affected_filter == self.affected_filter
             {
                 return Arc::clone(&cached.rows);
             }
         }
-        let rows: Arc<[ChangeTreeRow]> =
-            build_change_rows(&bundle.changes, self.group_by_dir, &self.collapsed).into();
+        let rows: Arc<[ChangeTreeRow]> = build_change_rows_filtered(
+            &bundle.changes,
+            self.group_by_dir,
+            &self.collapsed,
+            |c| self.matches_affected_filter(c),
+        )
+        .into();
         *self.cached_change_rows.borrow_mut() = Some(CachedChangeRows {
             bundle: Arc::clone(bundle),
             group_by_dir: self.group_by_dir,
             collapsed: self.collapsed.clone(),
+            affected_filter: self.affected_filter.clone(),
             rows: Arc::clone(&rows),
         });
         rows
@@ -251,15 +304,25 @@ impl ChangesTreeSession {
         let bundle = self.current_bundle(store)?;
         {
             let guard = self.cached_all_change_rows.borrow();
-            if let Some((b, rows)) = guard.as_ref()
-                && Arc::ptr_eq(b, bundle)
+            if let Some(cached) = guard.as_ref()
+                && Arc::ptr_eq(&cached.bundle, bundle)
+                && cached.affected_filter == self.affected_filter
             {
-                return Some(Arc::clone(rows));
+                return Some(Arc::clone(&cached.rows));
             }
         }
-        let rows: Arc<[ChangeTreeRow]> =
-            build_change_rows(&bundle.changes, true, &FxHashSet::default()).into();
-        *self.cached_all_change_rows.borrow_mut() = Some((Arc::clone(bundle), Arc::clone(&rows)));
+        let rows: Arc<[ChangeTreeRow]> = build_change_rows_filtered(
+            &bundle.changes,
+            true,
+            &FxHashSet::default(),
+            |c| self.matches_affected_filter(c),
+        )
+        .into();
+        *self.cached_all_change_rows.borrow_mut() = Some(CachedAllChangeRows {
+            bundle: Arc::clone(bundle),
+            affected_filter: self.affected_filter.clone(),
+            rows: Arc::clone(&rows),
+        });
         Some(rows)
     }
 

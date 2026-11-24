@@ -72,8 +72,9 @@ jbgit 默认采用**零冲突统一键位（`preset = "default"`）**，并通�
 
 | 快捷键 | 功能描述 |
 | :--- | :--- |
-| `j` / `k` 或 `<Down>` / `<Up>` | 上下移动光标浏览提交记录 |
-| `<Shift-Up>` / `<Shift-Down>` | 扩展多选提交记录（`<Esc>` 取消多选） |
+| `j` / `k` 或 `<Down>` / `<Up>` | 上下移动光标浏览提交记录（`<Ctrl-Up>` / `<Ctrl-Down>` 仅移动光标而不清空多选） |
+| `<Shift-Up>` / `<Shift-Down>` / `<Shift-Click>` | 以锚点连续区间多选提交记录（`<Ctrl-Shift-Click>` 追加区间） |
+| `<Space>` / `<Ctrl-Click>` | *(提交表)* 勾选 / 取消勾选当前提交（支持非连续多选，选中项带 `◆` 标记，按 `<Esc>` 收起回到单选；超过 100 个提交时右侧变更区需按 `<Enter>` 或点击确认加载聚合变更） |
 | `<PageUp>` / `<PageDown>` | 整页翻滚提交列表 / 变更树 |
 | `g g` / `G`（或 `<Home>` / `<End>`） | 快速跳转至列表顶部 / 底部 |
 | `<Left>` / `<Right>` / `<Shift-Right>` | *(提交表)* 跳转至子提交 / 第 1 父提交 / 第 2 父提交（多父时弹出选择） |
@@ -84,7 +85,9 @@ jbgit 默认采用**零冲突统一键位（`preset = "default"`）**，并通�
 | `c` | 检出 (Checkout) 选中的提交或分支 |
 | `n` | 在当前提交创建新分支 |
 | `y` | 复制选中提交哈希 |
-| `<Ctrl-d>` | 版本差异对比（选中两个提交时对比两者；单选时开关差异预览） |
+| `<Ctrl-d>` | 版本差异对比（任意选中两个提交（含非连续）时自动按较旧 → 较新对比两者；单选时开关差异预览） |
+| `X` | *(双提交对比模式)* 交换对比方向（Base ↔ Target），亦可在变更树 / Diff 工具栏点击 `⇄ 交换` |
+| `a` | 切换「仅显示受影响变更」（启用 Paths 路径筛选时仅列出命中路径的变更文件，标题栏显示可点击的 `[已筛选: M/N]` 徽标） |
 | `<F4>` / `<Ctrl-Enter>` | *(变更树 / Diff)* 切换全屏差异预览 |
 | `v` / `e` / `E` | *(变更树)* 切换按目录树分组 (`v`) / 全部展开 (`e`) / 全部折叠 (`E`) |
 | `H` | *(变更树)* 查看选中文件的完整提交历史（File History） |
@@ -325,6 +328,10 @@ glyph_mode = "nerd_font"
 # 是否默认折叠长分支标签胶囊 (紧凑模式)
 compact_refs = false
 
+[log]
+# 启用路径筛选 (Paths) 时，右侧变更文件树是否仅显示命中筛选路径的文件
+show_only_affected_changes = true
+
 [diff]
 # 是否开启代码语法高亮
 syntax_highlight = true
@@ -510,10 +517,10 @@ prepend_keymap = [
 | 作用域 | 可用 `run` 动作标识符 |
 | :--- | :--- |
 | `global` | `quit`, `help`, `context_menu`, `refresh`, `tab_commit`, `tab_log`, `tab_branches`, `tab_stash`, `tab_console`, `focus_next`, `focus_prev`, `toggle_branches_popup`, `toggle_branches_pane`, `git_fetch`, `git_pull`, `git_push`, `update_project`, `configure_remotes`, `switch_repository`, `worktrees`, `update_submodules`, `unshallow`, `goto_revision`, `palette`, `toggle_glyph_mode`, `cycle_graph_renderer`, `git_status_probe`, `noop` |
-| `log` | `cursor_down`, `cursor_up`, `goto_top`, `goto_bottom`, `page_down_half`, `page_up_half`, `goto_revision`, `focus_filter`, `toggle_branches_pane`, `compare_or_diff`, `zoom_diff`, `copy_hash`, `checkout`, `new_branch`, `uncommit`, `reword`, `drop_commit`, `choose_parent`, `toggle_group`, `file_history`, `annotate`, `collapse_linear_branch`, `expand_linear_branch`, `collapse_all_linear_branches`, `expand_all_linear_branches`, `browse_revision` |
+| `log` | `cursor_down`, `cursor_up`, `goto_top`, `goto_bottom`, `page_down_half`, `page_up_half`, `goto_revision`, `focus_filter`, `toggle_branches_pane`, `toggle_log_row_selection`, `compare_or_diff`, `swap_compare_direction`, `toggle_only_affected_changes`, `zoom_diff`, `copy_hash`, `checkout`, `new_branch`, `uncommit`, `reword`, `drop_commit`, `choose_parent`, `toggle_group`, `file_history`, `annotate`, `collapse_linear_branch`, `expand_linear_branch`, `collapse_all_linear_branches`, `expand_all_linear_branches`, `browse_revision` |
 | `branch` | `branch_search`, `toggle_favorite`, `checkout`, `new_branch`, `rename_branch`, `delete_branch`, `navigate_branch` |
 | `commit` | `cursor_down`, `cursor_up`, `goto_top`, `goto_bottom`, `toggle_stage`, `stage_selection`, `unstage_selection`, `focus_commit_msg`, `commit`, `commit_and_push`, `toggle_amend`, `toggle_signoff`, `commit_history`, `select_all`, `discard_changes`, `toggle_group`, `edit_file`, `file_history`, `annotate`, `apply_patch`, `apply_patch_clipboard` |
-| `diff` | `cursor_down`, `cursor_up`, `goto_top`, `goto_bottom`, `prev_hunk`, `next_hunk`, `prev_file`, `next_file`, `toggle_side_by_side`, `cycle_diff_context`, `cycle_diff_dock`, `zoom_diff`, `toggle_stage`, `stage_selection`, `unstage_selection`, `toggle_visual`, `rollback_selection`, `undo_rollback`, `switch_diff_side`, `three_way_inspector` |
+| `diff` | `cursor_down`, `cursor_up`, `goto_top`, `goto_bottom`, `prev_hunk`, `next_hunk`, `prev_file`, `next_file`, `toggle_side_by_side`, `cycle_diff_context`, `cycle_diff_dock`, `zoom_diff`, `swap_compare_direction`, `toggle_stage`, `stage_selection`, `unstage_selection`, `toggle_visual`, `rollback_selection`, `undo_rollback`, `switch_diff_side`, `three_way_inspector` |
 | `stash` | `cursor_down`, `cursor_up`, `goto_top`, `goto_bottom`, `stash_new`, `stash_apply`, `stash_pop`, `stash_drop`, `stash_branch`, `stash_clear`, `toggle_group` |
 | `console` | `cursor_down`, `cursor_up`, `goto_top`, `goto_bottom`, `page_down_half`, `page_up_half` |
 

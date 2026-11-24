@@ -56,10 +56,23 @@ pub(super) fn render_commit_details(
     let details = &state.log.details;
     let Some(key) = &details.changes.current_key else {
         ctx.record_scroll_bound(ScrollPane::LogDetails, h, 0);
-        frame.render_widget(
-            muted_line(ctx, ctx.t("view.log_details.no_commit_selected")),
-            area,
-        );
+        if let Some(blocked) = &details.many_changes_blocked {
+            let count_s = blocked.oids.len().to_string();
+            frame.render_widget(
+                Paragraph::new(Line::from(Span::styled(
+                    ctx.t_fmt("view.log_details.commits_selected", &[("count", &count_s)]),
+                    Style::default()
+                        .fg(ctx.theme.fg_bright)
+                        .add_modifier(Modifier::BOLD),
+                ))),
+                area,
+            );
+        } else {
+            frame.render_widget(
+                muted_line(ctx, ctx.t("view.log_details.no_commit_selected")),
+                area,
+            );
+        }
         return;
     };
     let Some(bundle) = details.current_bundle(&state.diff_caches) else {

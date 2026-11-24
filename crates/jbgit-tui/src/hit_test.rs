@@ -23,12 +23,15 @@ pub enum ChangesToolbarButton {
     CollapseAll,
     DiffPreview,
     SwitchParent,
+    OnlyAffected,
+    SwapCompare,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DiffToolbarButton {
     SideBySide,
     Context,
+    SwapCompare,
     Dock,
     Zoom,
     Close,
@@ -204,6 +207,10 @@ pub enum HitTarget {
         idx: usize,
     },
     ChangesToolbar(ChangesToolbarButton),
+    /// Clickable `[Filtered: M/N]` badge on the Log Changes header or empty-filter hint.
+    ChangesFilteredBadge,
+    /// Clickable prompt to load aggregated changes when > MAX_AGGREGATED_COMMITS are selected.
+    ChangesLoadMany,
     DetailsHash {
         oid: Oid,
     },

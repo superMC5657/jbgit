@@ -418,7 +418,18 @@ pub fn build_change_rows(
     group_by_dir: bool,
     collapsed: &FxHashSet<String>,
 ) -> Vec<ChangeTreeRow> {
-    let mut order: Vec<usize> = (0..changes.len()).collect();
+    build_change_rows_filtered(changes, group_by_dir, collapsed, |_| true)
+}
+
+/// Like [`build_change_rows`], retaining only entries satisfying `keep` while
+/// preserving original `change_idx` indices into `changes`.
+pub fn build_change_rows_filtered(
+    changes: &[FileChange],
+    group_by_dir: bool,
+    collapsed: &FxHashSet<String>,
+    mut keep: impl FnMut(&FileChange) -> bool,
+) -> Vec<ChangeTreeRow> {
+    let mut order: Vec<usize> = (0..changes.len()).filter(|&i| keep(&changes[i])).collect();
     order.sort_by(|&a, &b| changes[a].path.cmp(&changes[b].path));
 
     if !group_by_dir {

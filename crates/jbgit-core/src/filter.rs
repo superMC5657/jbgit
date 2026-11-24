@@ -431,6 +431,35 @@ impl PathFilter {
             n => format!("{} +{}", self.paths[0], n - 1),
         }
     }
+
+    /// True when `path` hits any configured path filter (exact file, directory
+    /// prefix with `/` boundary, or glob pattern). Empty filter matches all.
+    pub fn matches_path(&self, path: &str) -> bool {
+        if self.paths.is_empty() {
+            return true;
+        }
+        let owned;
+        let norm = if path.contains('\\') {
+            owned = path.replace('\\', "/");
+            owned.trim_start_matches("./").trim_end_matches('/')
+        } else {
+            path.trim_start_matches("./").trim_end_matches('/')
+        };
+        self.paths.iter().any(|fp| {
+            norm == fp
+                || (norm.starts_with(fp.as_str()) && norm.as_bytes().get(fp.len()) == Some(&b'/'))
+                || ((fp.contains('*') || fp.contains('?')) && glob_match(fp, norm))
+        })
+    }
+
+    /// True when either the post-change `path` or pre-rename `old_path` hits
+    /// this filter (aligned with IDEA `VcsLogAsyncChangesTreeModel.collectAffectedChanges`).
+    pub fn matches_change(&self, path: &str, old_path: Option<&str>) -> bool {
+        if self.paths.is_empty() {
+            return true;
+        }
+        self.matches_path(path) || old_path.is_some_and(|old| self.matches_path(old))
+    }
 }
 
 /// Read-only commit-set constraint (Update Info "View", `GitUpdateInfoAsLog`):
@@ -901,6 +930,32 @@ mod tests {
         assert_eq!(pf2.paths, vec!["sub dir/中文.txt".to_string()]);
         assert!(PathFilter::single("").is_empty());
         assert!(PathFilter::single("./").is_empty());
+    }
+
+    #[test]
+    fn path_filter_matches_exact_dir_prefix_renames_and_globs() {
+        let empty = PathFilter::default();
+        assert!(empty.matches_change("anything.rs", None));
+
+        let file = PathFilter::single("src/a.rs");
+        assert!(file.matches_change("src/a.rs", None));
+        assert!(file.matches_change("./src\\a.rs", None));
+        assert!(!file.matches_change("src/a.rs.bak", None));
+        assert!(!file.matches_change("src/b.rs", None));
+        // Rename touching either old or new path matches.
+        assert!(file.matches_change("src/renamed.rs", Some("src/a.rs")));
+        assert!(file.matches_change("src/a.rs", Some("src/old.rs")));
+
+        let dir = PathFilter::parse("src/sub docs/");
+        assert!(dir.matches_change("src/sub/mod.rs", None));
+        assert!(dir.matches_change("src/sub/deep/file.rs", None));
+        assert!(dir.matches_change("docs/manual.md", None));
+        assert!(!dir.matches_change("src/sub2/mod.rs", None));
+        assert!(!dir.matches_change("src/other.rs", None));
+
+        let glob = PathFilter::parse("src/*.rs");
+        assert!(glob.matches_change("src/a.rs", None));
+        assert!(!glob.matches_change("docs/a.md", None));
     }
 
     #[test]

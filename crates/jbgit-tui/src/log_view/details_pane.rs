@@ -2,8 +2,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use jbgit_core::{
-    ChangeTreeRow, CommitChangesBundle, DetailsKey, DiffContext, EpochToken, FileChange, FileDiff,
-    FileDiffKey, LruCache, Oid, RequestSlot,
+    ChangeTreeRow, CommitChangesBundle, DetailsKey, DetailsMode, DiffContext, EpochToken,
+    FileChange, FileDiff, FileDiffKey, LruCache, Oid, RequestSlot,
 };
 
 use crate::app::ScrollViewport;
@@ -15,6 +15,9 @@ pub use crate::diff_session::{ChangesExpandState, DETAILS_CACHE_CAPACITY};
 pub const DETAILS_DEBOUNCE: Duration = Duration::from_millis(30);
 /// Per-snapshot memo of containing-branch BFS results.
 pub const CONTAINING_CACHE_CAPACITY: usize = 256;
+/// Maximum number of commits auto-aggregated in the Log Changes pane before
+/// requiring explicit user confirmation (`VcsLogUtil.getShownChangesLimit()`).
+pub const MAX_AGGREGATED_COMMITS: usize = 100;
 
 /// Inline diff preview dock location (`MoveDiffPreviewToRight` / `MoveDiffPreviewToBottom`).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -69,6 +72,11 @@ pub struct DetailsPaneState {
     pub diff_dock: DiffPreviewDock,
     /// Path to auto-select once the next `CommitChangesBundle` resolves.
     pub pending_select_path: Option<String>,
+    /// Multi-commit selection withheld by [`MAX_AGGREGATED_COMMITS`] until the
+    /// user presses Enter / clicks to confirm loading aggregated changes.
+    pub many_changes_blocked: Option<DetailsKey>,
+    /// Exact large-selection key the user explicitly confirmed loading.
+    pub many_changes_confirmed: Option<DetailsKey>,
 }
 
 impl Default for DetailsPaneState {
@@ -86,11 +94,20 @@ impl Default for DetailsPaneState {
             diff_preview: false,
             diff_dock: DiffPreviewDock::Details,
             pending_select_path: None,
+            many_changes_blocked: None,
+            many_changes_confirmed: None,
         }
     }
 }
 
 impl DetailsPaneState {
+    pub fn is_comparing_versions(&self) -> bool {
+        self.compare_override
+            .as_ref()
+            .or(self.changes.current_key.as_ref())
+            .is_some_and(|k| k.mode == DetailsMode::CompareVersions && k.oids.len() >= 2)
+    }
+
     pub fn current_bundle<'a>(
         &self,
         store: &'a DiffCacheStore,

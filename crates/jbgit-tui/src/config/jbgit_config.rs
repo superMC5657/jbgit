@@ -431,6 +431,8 @@ pub struct JbgitConfig {
     #[serde(default)]
     pub graph: GraphSection,
     #[serde(default)]
+    pub log: LogSection,
+    #[serde(default)]
     pub diff: DiffSection,
     #[serde(default)]
     pub annotate: AnnotateSection,
@@ -444,6 +446,22 @@ pub struct JbgitConfig {
     pub layout: LayoutSection,
     #[serde(default)]
     pub performance: PerformanceSection,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct LogSection {
+    /// When a Path filter is active, show only changes affecting the filtered
+    /// paths in the Log Changes tree (`ShowOnlyAffectedChangesAction`).
+    #[serde(default = "default_true")]
+    pub show_only_affected_changes: bool,
+}
+
+impl Default for LogSection {
+    fn default() -> Self {
+        Self {
+            show_only_affected_changes: true,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -749,6 +767,11 @@ impl JbgitConfig {
                 self.graph.compact_refs = c;
             }
         }
+        if let Some(log) = &overlay.log
+            && let Some(only_affected) = log.show_only_affected_changes
+        {
+            self.log.show_only_affected_changes = only_affected;
+        }
         if let Some(df) = &overlay.diff {
             if let Some(sh) = df.syntax_highlight {
                 self.diff.syntax_highlight = sh;
@@ -852,6 +875,7 @@ pub struct JbgitConfigOverlay {
     pub general: Option<GeneralSectionOverlay>,
     pub keymap: Option<KeymapSectionOverlay>,
     pub graph: Option<GraphSectionOverlay>,
+    pub log: Option<LogSectionOverlay>,
     pub diff: Option<DiffSectionOverlay>,
     pub annotate: Option<AnnotateSectionOverlay>,
     pub push: Option<PushSectionOverlay>,
@@ -859,6 +883,11 @@ pub struct JbgitConfigOverlay {
     pub worktree: Option<WorktreeSectionOverlay>,
     pub layout: Option<LayoutSectionOverlay>,
     pub performance: Option<PerformanceSectionOverlay>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct LogSectionOverlay {
+    pub show_only_affected_changes: Option<bool>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

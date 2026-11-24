@@ -155,6 +155,11 @@ pub enum Action {
     // ── Commit table (center pane) ──
     SelectLogRow(usize),
     ExtendLogSelectionTo(usize),
+    AddLogSelectionRangeTo(usize),
+    ToggleLogRow(usize),
+    ToggleLogRowSelection,
+    MoveLogCursorOnly(isize),
+    ClearLogMultiSelection,
     ScrollLog(isize),
     ExtendLogSelection(isize),
     LogPage {
@@ -193,6 +198,8 @@ pub enum Action {
     ChangesExpand(ChangesHost, bool),
     ChangesToggleGroupByDir(ChangesHost),
     ChangesExpandAll(ChangesHost, bool),
+    ConfirmLoadManyChanges,
+    SwapCompareDirection,
     SwitchMergeParent,
     ToggleDiffPreview,
     DiffCycleDock,

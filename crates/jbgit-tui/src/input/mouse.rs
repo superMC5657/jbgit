@@ -291,7 +291,18 @@ fn route_mouse_left_down(
             }
             ChangesToolbarButton::DiffPreview => vec![Action::ToggleDiffPreview],
             ChangesToolbarButton::SwitchParent => vec![Action::SwitchMergeParent],
+            ChangesToolbarButton::OnlyAffected => vec![Action::TogglePresentation(
+                crate::log_view::PresentationToggle::ShowOnlyAffectedChanges,
+            )],
+            ChangesToolbarButton::SwapCompare => vec![Action::SwapCompareDirection],
         },
+        HitTarget::ChangesFilteredBadge => vec![Action::TogglePresentation(
+            crate::log_view::PresentationToggle::ShowOnlyAffectedChanges,
+        )],
+        HitTarget::ChangesLoadMany => vec![
+            Action::FocusPane(PaneId::LogChangesTree),
+            Action::ConfirmLoadManyChanges,
+        ],
         HitTarget::DetailsHash { oid } => vec![Action::CopyText(oid.to_string())],
         HitTarget::DetailsParent { oid } => vec![Action::JumpToCommit(oid)],
         HitTarget::DetailsArea | HitTarget::DiffArea => {
@@ -300,6 +311,7 @@ fn route_mouse_left_down(
         HitTarget::DiffToolbar(btn) => match btn {
             DiffToolbarButton::SideBySide => vec![Action::DiffToggleSideBySide(DiffScope::Log)],
             DiffToolbarButton::Context => vec![Action::DiffCycleContext(DiffScope::Log)],
+            DiffToolbarButton::SwapCompare => vec![Action::SwapCompareDirection],
             DiffToolbarButton::Dock => vec![Action::DiffCycleDock],
             DiffToolbarButton::Zoom => vec![Action::ZoomDiff(!state.log.details.diff.zoomed)],
             DiffToolbarButton::Close => {
@@ -315,19 +327,55 @@ fn route_mouse_left_down(
             ref_name,
             ..
         } => {
-            let mut actions = vec![
-                Action::FocusPane(PaneId::LogCommitTable),
-                Action::SelectLogRow(visible_row),
-            ];
-            if is_double {
-                actions.push(Action::OpenBranchesPopup { query: ref_name });
+            if ctrl && shift {
+                vec![
+                    Action::FocusPane(PaneId::LogCommitTable),
+                    Action::AddLogSelectionRangeTo(visible_row),
+                ]
+            } else if ctrl {
+                vec![
+                    Action::FocusPane(PaneId::LogCommitTable),
+                    Action::ToggleLogRow(visible_row),
+                ]
+            } else if shift {
+                vec![
+                    Action::FocusPane(PaneId::LogCommitTable),
+                    Action::ExtendLogSelectionTo(visible_row),
+                ]
+            } else {
+                let mut actions = vec![
+                    Action::FocusPane(PaneId::LogCommitTable),
+                    Action::SelectLogRow(visible_row),
+                ];
+                if is_double {
+                    actions.push(Action::OpenBranchesPopup { query: ref_name });
+                }
+                actions
             }
-            actions
         }
-        HitTarget::CommitRefOverflow { visible_row, .. } => vec![
-            Action::FocusPane(PaneId::LogCommitTable),
-            Action::SelectLogRow(visible_row),
-        ],
+        HitTarget::CommitRefOverflow { visible_row, .. } => {
+            if ctrl && shift {
+                vec![
+                    Action::FocusPane(PaneId::LogCommitTable),
+                    Action::AddLogSelectionRangeTo(visible_row),
+                ]
+            } else if ctrl {
+                vec![
+                    Action::FocusPane(PaneId::LogCommitTable),
+                    Action::ToggleLogRow(visible_row),
+                ]
+            } else if shift {
+                vec![
+                    Action::FocusPane(PaneId::LogCommitTable),
+                    Action::ExtendLogSelectionTo(visible_row),
+                ]
+            } else {
+                vec![
+                    Action::FocusPane(PaneId::LogCommitTable),
+                    Action::SelectLogRow(visible_row),
+                ]
+            }
+        }
         HitTarget::GraphPrintElement {
             visible_row,
             commit_oid,
@@ -343,16 +391,26 @@ fn route_mouse_left_down(
             ],
             GraphHitKind::Node { .. } | GraphHitKind::Edge { .. } => {
                 let expand_edge = match kind {
-                    GraphHitKind::Edge { up_row, down_row } if !shift => {
+                    GraphHitKind::Edge { up_row, down_row } if !shift && !ctrl => {
                         Some(Action::GraphExpandEdge { up_row, down_row })
                     }
                     GraphHitKind::Node {
                         collapsed_below: true,
                         ..
-                    } if !shift => Some(Action::GraphExpandBelow(visible_row)),
+                    } if !shift && !ctrl => Some(Action::GraphExpandBelow(visible_row)),
                     _ => None,
                 };
-                if shift {
+                if ctrl && shift {
+                    vec![
+                        Action::FocusPane(PaneId::LogCommitTable),
+                        Action::AddLogSelectionRangeTo(visible_row),
+                    ]
+                } else if ctrl {
+                    vec![
+                        Action::FocusPane(PaneId::LogCommitTable),
+                        Action::ToggleLogRow(visible_row),
+                    ]
+                } else if shift {
                     vec![
                         Action::FocusPane(PaneId::LogCommitTable),
                         Action::ExtendLogSelectionTo(visible_row),
@@ -384,7 +442,17 @@ fn route_mouse_left_down(
             visible_row,
             commit_oid,
         } => {
-            if shift {
+            if ctrl && shift {
+                vec![
+                    Action::FocusPane(PaneId::LogCommitTable),
+                    Action::AddLogSelectionRangeTo(visible_row),
+                ]
+            } else if ctrl {
+                vec![
+                    Action::FocusPane(PaneId::LogCommitTable),
+                    Action::ToggleLogRow(visible_row),
+                ]
+            } else if shift {
                 vec![
                     Action::FocusPane(PaneId::LogCommitTable),
                     Action::ExtendLogSelectionTo(visible_row),

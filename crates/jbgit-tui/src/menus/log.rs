@@ -578,7 +578,7 @@ pub fn log_diff_menu_items(state: &AppState) -> Vec<ContextMenuItem> {
         }],
         _ => Vec::new(),
     };
-    vec![
+    let mut items = vec![
         run(
             i18n.t("menu.log_change.annotate"),
             Some('a'),
@@ -616,17 +616,83 @@ pub fn log_diff_menu_items(state: &AppState) -> Vec<ContextMenuItem> {
             zoom_sc.as_deref(),
             vec![Action::ZoomDiff(!state.log.details.diff.zoomed)],
         ),
-    ]
+    ];
+    if state.log.details.is_comparing_versions() {
+        let swap_sc = catalog::shortcut_for_action(
+            state,
+            &[KeymapScope::Diff, KeymapScope::Log],
+            &KeyAction::SwapCompareDirection,
+        );
+        items.push(run(
+            i18n.t("menu.log.swap_compare_direction"),
+            Some('x'),
+            swap_sc.as_deref(),
+            vec![Action::SwapCompareDirection],
+        ));
+    }
+    items
 }
 
 /// Right-click / keyboard menu for `[2 Log]` Changes tree (`PaneId::LogChangesTree`).
 pub fn log_change_menu_items(state: &AppState) -> Vec<ContextMenuItem> {
+    let i18n = &state.i18n;
+    let path_filter_active = !state.log.filter.spec.paths.is_empty();
+    let only_affected_item = || {
+        let check = if state.log.presentation.show_only_affected_changes {
+            "✓"
+        } else {
+            " "
+        };
+        let sc = catalog::shortcut_for_action(
+            state,
+            &[KeymapScope::Log],
+            &KeyAction::ToggleOnlyAffectedChanges,
+        );
+        run(
+            format!("{} {}", check, i18n.t("presentation.show_only_affected_changes")),
+            None,
+            sc.as_deref(),
+            vec![Action::TogglePresentation(
+                crate::log_view::PresentationToggle::ShowOnlyAffectedChanges,
+            )],
+        )
+    };
+    let swap_item = || {
+        let swap_sc = catalog::shortcut_for_action(
+            state,
+            &[KeymapScope::Log, KeymapScope::Diff],
+            &KeyAction::SwapCompareDirection,
+        );
+        run(
+            i18n.t("menu.log.swap_compare_direction"),
+            Some('x'),
+            swap_sc.as_deref(),
+            vec![Action::SwapCompareDirection],
+        )
+    };
+
     let Some(bundle) = state.log.details.current_bundle(&state.diff_caches) else {
-        return Vec::new();
+        return if state.log.details.many_changes_blocked.is_some() {
+            vec![run(
+                i18n.t("menu.log_change.load_many_changes"),
+                Some('l'),
+                Some("Enter"),
+                vec![Action::ConfirmLoadManyChanges],
+            )]
+        } else {
+            Vec::new()
+        };
     };
     let rows = state.log.details.change_rows(&state.diff_caches);
     let Some(row) = rows.get(state.log.details.changes.selected) else {
-        return Vec::new();
+        let mut fallback = Vec::new();
+        if path_filter_active {
+            fallback.push(only_affected_item());
+        }
+        if state.log.details.is_comparing_versions() {
+            fallback.push(swap_item());
+        }
+        return fallback;
     };
 
     let file_change = match row.kind {
@@ -742,6 +808,12 @@ pub fn log_change_menu_items(state: &AppState) -> Vec<ContextMenuItem> {
         None,
         vec![Action::FilterLogByPath(row_path.clone())],
     ));
+    if path_filter_active {
+        items.push(only_affected_item());
+    }
+    if state.log.details.is_comparing_versions() {
+        items.push(swap_item());
+    }
     items.push(ContextMenuItem::separator());
 
     // ── Restore & edit ──

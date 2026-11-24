@@ -335,7 +335,9 @@ pub fn is_action_applicable(run: &KeyAction, state: &AppState) -> bool {
                 | KeyAction::CycleDiffContext
                 | KeyAction::ZoomDiff
                 | KeyAction::ChooseParent
-        );
+                | KeyAction::SwapCompareDirection
+        ) && (!matches!(run, KeyAction::SwapCompareDirection)
+            || state.log.details.is_comparing_versions());
     }
 
     match run {
@@ -407,12 +409,23 @@ pub fn is_action_applicable(run: &KeyAction, state: &AppState) -> bool {
                 )
         }
         KeyAction::CopyHash
+        | KeyAction::ToggleLogRowSelection
         | KeyAction::Uncommit
         | KeyAction::Reword
         | KeyAction::DropCommit
         | KeyAction::CollapseLinearBranch
         | KeyAction::ExpandLinearBranch => {
             state.active_tab == WorkspaceTab::Log && state.focused_pane == PaneId::LogCommitTable
+        }
+        KeyAction::ToggleOnlyAffectedChanges => {
+            state.active_tab == WorkspaceTab::Log
+                && matches!(
+                    state.focused_pane,
+                    PaneId::LogCommitTable | PaneId::LogChangesTree | PaneId::LogDetailsDiff
+                )
+        }
+        KeyAction::SwapCompareDirection => {
+            state.active_tab == WorkspaceTab::Log && state.log.details.is_comparing_versions()
         }
         KeyAction::CollapseAllLinearBranches | KeyAction::ExpandAllLinearBranches => {
             state.active_tab == WorkspaceTab::Log
@@ -751,6 +764,11 @@ pub fn execute_action(run: &KeyAction, state: &AppState) -> Option<Vec<Action>> 
                 Some(vec![Action::ToggleDiffPreview])
             }
         }
+        KeyAction::SwapCompareDirection => Some(vec![Action::SwapCompareDirection]),
+        KeyAction::ToggleLogRowSelection => Some(vec![Action::ToggleLogRowSelection]),
+        KeyAction::ToggleOnlyAffectedChanges => Some(vec![Action::TogglePresentation(
+            crate::log_view::PresentationToggle::ShowOnlyAffectedChanges,
+        )]),
         KeyAction::CopyHash => {
             let oids = state.selected_commits_oldest_first();
             if oids.is_empty() {

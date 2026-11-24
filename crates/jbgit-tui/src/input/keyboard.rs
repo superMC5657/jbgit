@@ -279,6 +279,8 @@ fn route_pane_fallback_key(key: KeyEvent, state: &AppState) -> Vec<Action> {
             _ => Vec::new(),
         },
         PaneId::LogCommitTable => match key.code {
+            KeyCode::Down if ctrl => vec![Action::MoveLogCursorOnly(1)],
+            KeyCode::Up if ctrl => vec![Action::MoveLogCursorOnly(-1)],
             KeyCode::Down if shift => vec![Action::ExtendLogSelection(1)],
             KeyCode::Up if shift => vec![Action::ExtendLogSelection(-1)],
             KeyCode::PageDown => vec![Action::LogPage {
@@ -306,9 +308,13 @@ fn route_pane_fallback_key(key: KeyEvent, state: &AppState) -> Vec<Action> {
             }
             KeyCode::Right => vec![Action::GoToParent(0)],
             KeyCode::Left => vec![Action::GoToChild],
+            KeyCode::Enter if state.log.details.many_changes_blocked.is_some() => vec![
+                Action::FocusPane(PaneId::LogChangesTree),
+                Action::ConfirmLoadManyChanges,
+            ],
             KeyCode::Enter => vec![Action::FocusPane(PaneId::LogChangesTree)],
-            KeyCode::Esc if state.log.graph.anchor.is_some() => {
-                vec![Action::SelectLogRow(state.log.graph.selected_idx)]
+            KeyCode::Esc if state.log.graph.has_multi_selection() => {
+                vec![Action::ClearLogMultiSelection]
             }
             _ => Vec::new(),
         },
@@ -317,6 +323,9 @@ fn route_pane_fallback_key(key: KeyEvent, state: &AppState) -> Vec<Action> {
             KeyCode::PageUp => vec![Action::ChangesMove(ChangesHost::Log, -10)],
             KeyCode::Right => vec![Action::ChangesExpand(ChangesHost::Log, true)],
             KeyCode::Left => vec![Action::ChangesExpand(ChangesHost::Log, false)],
+            KeyCode::Enter if state.log.details.many_changes_blocked.is_some() => {
+                vec![Action::ConfirmLoadManyChanges]
+            }
             KeyCode::Enter if ctrl => vec![Action::ZoomDiff(true)],
             KeyCode::Enter => {
                 let row = state

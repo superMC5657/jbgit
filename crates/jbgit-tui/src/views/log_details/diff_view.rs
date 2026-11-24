@@ -588,6 +588,17 @@ pub fn render_diff_preview(
         ),
     ];
     if host == DiffHost::Log {
+        if changes
+            .current_key
+            .as_ref()
+            .is_some_and(|k| k.mode == jbgit_core::DetailsMode::CompareVersions && k.oids.len() >= 2)
+        {
+            buttons.push((
+                ctx.t("view.log_details.toolbar_swap").to_string(),
+                false,
+                DiffToolbarButton::SwapCompare,
+            ));
+        }
         let zoom_label = if zoomed {
             ctx.t("view.log_details.restore_btn").to_string()
         } else {

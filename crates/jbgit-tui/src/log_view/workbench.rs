@@ -7,8 +7,8 @@ use std::time::Instant;
 
 use jbgit_core::graph::SortType;
 use jbgit_core::{
-    BranchFilter, BranchNodeKind, CommitSummary, DetailsKey, DiffContext, Oid, PaneId, PathFilter,
-    RefKind, RepoSnapshot, RequestSlot, RequestSlotId,
+    BranchFilter, BranchNodeKind, CommitSummary, DetailsKey, DetailsMode, DiffContext, Oid, PaneId,
+    PathFilter, RefKind, RepoSnapshot, RequestSlot, RequestSlotId,
 };
 
 use crate::app::{
@@ -23,7 +23,7 @@ use crate::theme::BranchColorManager;
 
 use super::{
     BranchesPaneState, DETAILS_DEBOUNCE, DetailsPaneState, FilterBarState, LogPresentation,
-    PathRequest, PresentationToggle,
+    MAX_AGGREGATED_COMMITS, PathRequest, PresentationToggle,
 };
 
 pub struct LogDispatchCtx<'a> {
@@ -65,12 +65,14 @@ impl LogWorkbench {
     pub fn new(
         diff_context: DiffContext,
         compact_refs: bool,
+        show_only_affected_changes: bool,
         graph_mode: GraphRendererMode,
     ) -> Self {
         let mut details = DetailsPaneState::default();
         details.diff.context = diff_context;
         let presentation = LogPresentation {
             compact_refs,
+            show_only_affected_changes,
             ..Default::default()
         };
         Self {
@@ -171,6 +173,21 @@ impl LogWorkbench {
         }
     }
 
+    pub fn sync_affected_filter(&mut self) {
+        let next = if self.presentation.show_only_affected_changes
+            && !self.filter.spec.paths.is_empty()
+        {
+            Some(self.filter.spec.paths.clone())
+        } else {
+            None
+        };
+        if self.details.changes.affected_filter != next {
+            self.details.changes.affected_filter = next;
+            self.details.changes.selected = 0;
+            self.details.diff.scroll.reset();
+        }
+    }
+
     pub fn on_filter_changed(
         &mut self,
         snap: Option<&Arc<RepoSnapshot>>,
@@ -181,6 +198,7 @@ impl LogWorkbench {
     ) {
         // Any explicit re-filter also covers a pending debounced text edit.
         self.filter.clear_text_debounce();
+        self.sync_affected_filter();
         self.graph.filter_generation = self.graph.filter_generation.wrapping_add(1);
         self.ensure_graph_cache(snap, branch_colors, async_enabled);
         if let Some(err) = &self.graph.filter_error {
@@ -395,6 +413,13 @@ impl LogWorkbench {
                 p.use_author_date = !p.use_author_date;
                 ("presentation.use_author_date", p.use_author_date)
             }
+            PresentationToggle::ShowOnlyAffectedChanges => {
+                p.show_only_affected_changes = !p.show_only_affected_changes;
+                (
+                    "presentation.show_only_affected_changes",
+                    p.show_only_affected_changes,
+                )
+            }
         };
         let label = ctx.i18n.t(label_key);
         let state = ctx.i18n.on_off(on);
@@ -402,6 +427,7 @@ impl LogWorkbench {
             ctx.i18n
                 .t_fmt("toast.presentation_toggle", &[("label", label), ("state", state)]),
         );
+        self.sync_affected_filter();
         self.ensure_graph_cache(ctx.snap, ctx.branch_colors, ctx.async_graph_enabled);
     }
 
@@ -809,6 +835,22 @@ impl LogWorkbench {
             Action::ExtendLogSelectionTo(idx) => {
                 self.graph.extend_selection_to(*idx);
             }
+            Action::AddLogSelectionRangeTo(idx) => {
+                self.graph.add_range_selection_to(*idx);
+            }
+            Action::ToggleLogRow(idx) => {
+                self.graph.toggle_row_selection(*idx, false);
+            }
+            Action::ToggleLogRowSelection => {
+                let idx = self.graph.selected_idx;
+                self.graph.toggle_row_selection(idx, true);
+            }
+            Action::MoveLogCursorOnly(delta) => {
+                self.graph.move_cursor_only(*delta);
+            }
+            Action::ClearLogMultiSelection => {
+                self.graph.clear_multi_selection();
+            }
             Action::ScrollLog(delta) => {
                 self.graph.scroll_by(*delta, false);
             }
@@ -918,6 +960,46 @@ impl LogWorkbench {
             Action::ChangesExpandAll(ChangesHost::Log, expand) => {
                 self.details.changes.expand_all(*expand, ctx.diff_caches);
             }
+            Action::ConfirmLoadManyChanges => {
+                if let Some(key) = self.details.many_changes_blocked.take() {
+                    self.details.many_changes_confirmed = Some(key.clone());
+                    self.details.changes.current_key = Some(key.clone());
+                    self.details.changes.selected = 0;
+                    self.details.details_scroll.reset();
+                    self.details.diff.scroll.reset();
+                    self.details.pending = None;
+                    if !ctx.diff_caches.details.contains(&key) {
+                        ctx.effects.push(Effect::RequestCommitDetails {
+                            slot: RequestSlotId::LogCommitDetails,
+                            key,
+                        });
+                    }
+                }
+            }
+            Action::SwapCompareDirection => {
+                let swapped = self
+                    .details
+                    .compare_override
+                    .as_ref()
+                    .or(self.details.changes.current_key.as_ref())
+                    .and_then(|k| {
+                        (k.mode == DetailsMode::CompareVersions && k.oids.len() >= 2)
+                            .then_some((k.oids[1], k.oids[0]))
+                    });
+                if let Some((new_base, new_target)) = swapped {
+                    let keep_path = self
+                        .details
+                        .selected_change(ctx.diff_caches)
+                        .map(|c| c.path.clone());
+                    self.start_compare_versions(
+                        new_base,
+                        new_target,
+                        ctx.i18n,
+                        ctx.status_notice,
+                    );
+                    self.details.pending_select_path = keep_path;
+                }
+            }
             Action::SwitchMergeParent => {
                 let oids = self.graph.selected_oids(ctx.snap);
                 let parents = match oids.as_slice() {
@@ -1025,6 +1107,8 @@ impl LogWorkbench {
             }
         }
 
+        self.sync_affected_filter();
+
         let desired = if let Some(cmp) = &self.details.compare_override {
             Some(cmp.clone())
         } else {
@@ -1039,25 +1123,45 @@ impl LogWorkbench {
             };
             (!oids.is_empty()).then_some(DetailsKey::commits(oids, parent_index))
         };
-        if desired != self.details.changes.current_key {
-            self.details.changes.current_key = desired.clone();
+        let many_blocked = desired.as_ref().is_some_and(|k| {
+            k.mode == DetailsMode::Commits
+                && k.oids.len() > MAX_AGGREGATED_COMMITS
+                && self.details.many_changes_confirmed.as_ref() != Some(k)
+                && !ctx.diff_caches.details.contains(k)
+        });
+        if many_blocked {
+            self.details.many_changes_blocked = desired;
+            self.details.changes.current_key = None;
             self.details.changes.selected = 0;
             self.details.details_scroll.reset();
             self.details.diff.scroll.reset();
-            self.details.pending = match desired {
-                Some(k) if ctx.diff_caches.details.get(&k).is_some() => None,
-                Some(k) if self.details.compare_override.is_some() => {
-                    ctx.effects.push(Effect::RequestCommitDetails {
-                        slot: RequestSlotId::LogCommitDetails,
-                        key: k,
-                    });
-                    None
+            self.details.pending = None;
+            self.details.diff.zoomed = false;
+        } else {
+            self.details.many_changes_blocked = None;
+            if self.details.many_changes_confirmed.as_ref() != desired.as_ref() {
+                self.details.many_changes_confirmed = None;
+            }
+            if desired != self.details.changes.current_key {
+                self.details.changes.current_key = desired.clone();
+                self.details.changes.selected = 0;
+                self.details.details_scroll.reset();
+                self.details.diff.scroll.reset();
+                self.details.pending = match desired {
+                    Some(k) if ctx.diff_caches.details.get(&k).is_some() => None,
+                    Some(k) if self.details.compare_override.is_some() => {
+                        ctx.effects.push(Effect::RequestCommitDetails {
+                            slot: RequestSlotId::LogCommitDetails,
+                            key: k,
+                        });
+                        None
+                    }
+                    Some(k) => Some((k, now + DETAILS_DEBOUNCE)),
+                    None => None,
+                };
+                if self.details.current_bundle(ctx.diff_caches).is_none() {
+                    self.details.diff.zoomed = false;
                 }
-                Some(k) => Some((k, now + DETAILS_DEBOUNCE)),
-                None => None,
-            };
-            if self.details.current_bundle(ctx.diff_caches).is_none() {
-                self.details.diff.zoomed = false;
             }
         }
 

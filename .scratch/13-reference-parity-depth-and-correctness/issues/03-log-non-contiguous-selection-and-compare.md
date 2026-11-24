@@ -1,6 +1,6 @@
 # 03: Log 非连续多选解锁任意两提交对比与「仅显示受影响变更」
 
-Status: ready-for-agent
+Status: resolved
 Spec: [../spec.md](../spec.md)
 Milestone: M10 — reference 深度对齐与正确性加固
 Priority: P0
@@ -24,7 +24,7 @@ Priority: P0
 
 ## 2. 任务清单
 
-- [ ] **非连续多选集合模型（`LogGraphState`）**：
+- [x] **非连续多选集合模型（`LogGraphState`）**：
   - 引入基于 `Oid`（或稳定 `visible_row` 集合，快照重载后按 `Oid` 恢复）的多选集合 `selected_rows: BTreeSet<usize>` + `cursor_idx: usize` + `range_anchor: Option<usize>`；
   - 交互约定（与 IDEA 及终端习惯一致）：
     - 普通上下移动 / 左键单击：单选光标行并清空其他选中；
@@ -32,10 +32,10 @@ Priority: P0
     - `Ctrl+Click` / 键盘 `Space`（或在 Log 表格作用域绑定 `ToggleLogRowSelection`）：切换当前行的选中态而不清除其他已选行；
     - `Esc`（无弹窗且多选数量 > 1 时）：收起多选回到单选当前光标行；
   - 表格渲染：所有选中行高亮（光标行与非光标选中行使用可区分的焦点/次级高亮或左侧 `◆` 标记），状态栏/标题显示 `N selected`。
-- [ ] **任意两提交对比与大选区护栏**：
+- [x] **任意两提交对比与大选区护栏**：
   - 当选中数恰好为 2（无论是否相邻）时，`Compare Versions` 菜单项与快捷键生效，按拓扑/提交时间顺序将较旧者作为 `base`、较新者作为 `target` 发起双提交 Diff（并支持交换对比方向）；
   - 多选超过阈值（默认 `MAX_AGGREGATED_COMMITS = 100`，对齐 `VcsLogUtil.getShownChangesLimit()`）时，右侧 Changes 面板显示「已选 N 个提交，按 Enter 确认加载聚合变更」占位提示，防止误选数千提交卡死聚合。
-- [ ] **「Show Only Affected Changes」开关**：
+- [x] **「Show Only Affected Changes」开关**：
   - 在 `LogPresentation` 新增 `show_only_affected_changes: bool`（持久化到 `jbgit.toml` `[log]`，默认 `true` 或可由按钮/快捷键切换）；
   - 当 `PathFilter` 激活且开启该开关时，右侧 `LogChangesTree` 自动过滤仅显示命中当前路径筛选的变更文件，并在 Changes 面板标题栏显示 `[Filtered: M/N]` 徽标及一键点击切换全部/受影响文件。
 

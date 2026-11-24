@@ -15,7 +15,9 @@ pub use annotate::{AnnotateError, AnnotateFocus, AnnotateNavFrame, AnnotateState
 pub use branches_pane::BranchesPaneState;
 #[cfg(test)]
 pub use details_pane::{ChangesExpandState, DETAILS_CACHE_CAPACITY};
-pub use details_pane::{DETAILS_DEBOUNCE, DetailsPaneState, DiffPreviewDock};
+pub use details_pane::{
+    DETAILS_DEBOUNCE, DetailsPaneState, DiffPreviewDock, MAX_AGGREGATED_COMMITS,
+};
 pub use file_history::{FILE_HISTORY_G_WINDOW, FileHistoryFocus, FileHistoryState};
 pub use filter_bar::{
     FilterBarState, FilterField, PathMatches, PathRequest, complete_last_token, filter_suggestions,

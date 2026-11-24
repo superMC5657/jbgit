@@ -1128,7 +1128,7 @@ impl AppState {
                     self.status_notice = Some(self.i18n.t_fmt("toast.created_patches", &[("count", &count_s)]));
                 }
                 GitOp::RewordHead { .. } | GitOp::RewriteHistory { .. } => {
-                    self.log.graph.anchor = None;
+                    self.log.graph.clear_multi_selection();
                 }
                 GitOp::UpdateProject { .. } => {
                     self.notify_update_info(outcome.update_info.as_ref());

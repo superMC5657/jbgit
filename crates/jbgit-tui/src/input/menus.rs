@@ -1005,6 +1005,13 @@ pub fn presentation_menu_items(state: &AppState) -> Vec<ContextMenuItem> {
             None,
             PresentationToggle::UseAuthorDate,
         ),
+        item(
+            p.show_only_affected_changes,
+            "presentation.show_only_affected_changes",
+            'a',
+            None,
+            PresentationToggle::ShowOnlyAffectedChanges,
+        ),
         ContextMenuItem::separator(),
         // Shortcuts live in `?` help; a shortcut column would widen this
         // cascading menu past the room left of its parent.

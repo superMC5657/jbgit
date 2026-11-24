@@ -1,5 +1,5 @@
 use std::cell::RefCell;
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashSet};
 use std::sync::Arc;
 
 use jbgit_core::graph::{
@@ -504,6 +504,14 @@ impl LogGraphJob {
     }
 }
 
+/// Selection snapshot captured by OID before a graph rebuild or reload.
+struct CapturedSelection {
+    cursor_oid: Option<Oid>,
+    anchor_oid: Option<Oid>,
+    selected_oids: Vec<Oid>,
+    mark_mode: bool,
+}
+
 /// Log-tab graph projection cache, viewport scroll, multi-selection and
 /// back/forward navigation history (`MainFrame.myHistory`).
 pub struct LogGraphState {
@@ -511,9 +519,16 @@ pub struct LogGraphState {
     /// Collapsed linear segments; `options.collapse` mirrors `collapse.mode`.
     pub collapse: CollapseState,
     pub cached: Option<CachedLogGraph>,
+    /// Focused cursor row (`cursor_idx`).
     pub selected_idx: usize,
-    /// Shift-selection anchor; the selection is `anchor..=selected_idx` (either order).
+    /// Explicit multi-selection set (non-contiguous `Ctrl+Click` / `Space` or
+    /// contiguous `Shift` range). Empty in implicit single-cursor selection.
+    pub selected_rows: BTreeSet<usize>,
+    /// Shift-selection anchor (`range_anchor`).
     pub anchor: Option<usize>,
+    /// True after keyboard `Space` toggle so `j`/`k`/`Up`/`Down` move the
+    /// cursor without clearing marked rows until `Esc` or a plain click.
+    mark_mode: bool,
     pub scroll_offset: usize,
     pub last_viewport_h: usize,
     pub back_history: Vec<Oid>,
@@ -533,7 +548,9 @@ impl Default for LogGraphState {
             collapse: CollapseState::default(),
             cached: None,
             selected_idx: 0,
+            selected_rows: BTreeSet::new(),
             anchor: None,
+            mark_mode: false,
             scroll_offset: 0,
             last_viewport_h: 20,
             back_history: Vec::new(),
@@ -558,17 +575,13 @@ impl LogGraphState {
         (snapshot_stale, visible_stale)
     }
 
-    fn preserve_selection_after_rebuild(
-        &mut self,
-        selected_oid: Option<Oid>,
-        anchor_oid: Option<Oid>,
-    ) {
+    fn preserve_selection_after_rebuild(&mut self, captured: CapturedSelection) {
         let Some(cached) = self.cached.as_ref() else {
             return;
         };
         // A reload can fold a new segment over the selected commit (e.g. the
         // ref that pinned it was deleted): keep it visible.
-        if let Some(oid) = selected_oid
+        if let Some(oid) = captured.cursor_oid
             && let Some(id) = cached.collapsed_segment_hiding(&oid)
         {
             self.collapse.set_collapsed(id, false);
@@ -578,38 +591,77 @@ impl LogGraphState {
             return;
         };
         let len = cached.visible_count();
-        match selected_oid.and_then(|oid| cached.row_of_oid(&oid)) {
+        match captured.cursor_oid.and_then(|oid| cached.row_of_oid(&oid)) {
             Some(row) => self.selected_idx = row,
             None => {
                 self.selected_idx = 0;
                 self.scroll_offset = 0;
             }
         }
-        self.anchor = anchor_oid.and_then(|oid| cached.row_of_oid(&oid));
+        self.anchor = captured.anchor_oid.and_then(|oid| cached.row_of_oid(&oid));
+        self.selected_rows.clear();
+        for oid in &captured.selected_oids {
+            if let Some(row) = cached.row_of_oid(oid) {
+                self.selected_rows.insert(row);
+            }
+        }
         if len == 0 {
             self.selected_idx = 0;
+            self.selected_rows.clear();
             self.anchor = None;
+            self.mark_mode = false;
+        } else if captured.selected_oids.is_empty() {
+            self.mark_mode = false;
+        } else if self.selected_rows.is_empty() {
+            // Every explicitly selected commit disappeared (filtered/rebased out).
+            self.mark_mode = false;
+            self.anchor = None;
+        } else if self.selected_rows.len() == 1
+            && !captured.mark_mode
+            && self.selected_rows.contains(&self.selected_idx)
+        {
+            // Non-mark selection shrank to just the cursor row: return to implicit single-select.
+            self.selected_rows.clear();
+            self.mark_mode = false;
+            self.anchor = None;
+        } else {
+            self.mark_mode = captured.mark_mode;
         }
         self.adjust_scroll(len, false);
     }
 
-    fn capture_selection_oids(&self) -> (Option<Oid>, Option<Oid>) {
+    fn capture_selection_oids(&self) -> CapturedSelection {
         let Some(cached) = self.cached.as_ref() else {
-            return (None, None);
+            return CapturedSelection {
+                cursor_oid: None,
+                anchor_oid: None,
+                selected_oids: Vec::new(),
+                mark_mode: false,
+            };
         };
         let snap = &cached.snapshot;
-        let selected_oid = cached
+        let cursor_oid = cached
             .commit_at_visible_row(snap, self.selected_idx)
             .map(|c| c.oid);
         let anchor_oid = self
             .anchor
             .and_then(|row| cached.commit_at_visible_row(snap, row).map(|c| c.oid));
-        (selected_oid, anchor_oid)
+        let selected_oids = self
+            .selected_rows
+            .iter()
+            .filter_map(|&row| cached.commit_at_visible_row(snap, row).map(|c| c.oid))
+            .collect();
+        CapturedSelection {
+            cursor_oid,
+            anchor_oid,
+            selected_oids,
+            mark_mode: self.mark_mode,
+        }
     }
 
     /// Ensures the permanent graph matches `repo_snapshot` and the visible
     /// projection matches the current options / filter generation, keeping the
-    /// selected commit selected when it survives the re-projection.
+    /// selected commit(s) selected when they survive the re-projection.
     pub fn ensure_cache(
         &mut self,
         repo_snapshot: Option<&Arc<RepoSnapshot>>,
@@ -627,7 +679,7 @@ impl LogGraphState {
             return;
         }
 
-        let (selected_oid, anchor_oid) = self.capture_selection_oids();
+        let captured = self.capture_selection_oids();
 
         if snapshot_stale {
             // Fresh snapshot: compute the filter against the new permanent node ids
@@ -667,7 +719,7 @@ impl LogGraphState {
         self.graph_slot.invalidate();
         self.rebuild_in_progress = false;
 
-        self.preserve_selection_after_rebuild(selected_oid, anchor_oid);
+        self.preserve_selection_after_rebuild(captured);
     }
 
     /// Issues an off-thread [`LogGraphJob`] when the snapshot has at least
@@ -724,16 +776,22 @@ impl LogGraphState {
         }
         self.graph_slot.clear_in_flight();
         self.rebuild_in_progress = false;
-        let (selected_oid, anchor_oid) = self.capture_selection_oids();
+        let captured = self.capture_selection_oids();
         self.cached = Some(rebuilt.cached);
         self.filter_error = rebuilt.filter_error;
-        self.preserve_selection_after_rebuild(selected_oid, anchor_oid);
+        self.preserve_selection_after_rebuild(captured);
         true
     }
 
     pub fn on_snapshot_loaded(&mut self) {
-        // Keep selection by oid (handled in ensure_cache); drop row-based state.
-        self.anchor = None;
+        // Keep selection by oid (captured from the previous `cached` during
+        // `ensure_cache` / `apply_rebuilt`); only drop row-based state when no
+        // previous cache exists.
+        if self.cached.is_none() {
+            self.selected_rows.clear();
+            self.anchor = None;
+            self.mark_mode = false;
+        }
     }
 
     pub fn visible_count(&self) -> usize {
@@ -759,26 +817,78 @@ impl LogGraphState {
             .map(|c| c.oid)
     }
 
-    /// Selected visible rows, top to bottom.
+    /// Bounding range of selected visible rows (for contiguous ranges and legacy checks).
     pub fn selected_range(&self) -> std::ops::RangeInclusive<usize> {
-        match self.anchor {
-            Some(a) => a.min(self.selected_idx)..=a.max(self.selected_idx),
-            None => self.selected_idx..=self.selected_idx,
+        if let (Some(&first), Some(&last)) = (self.selected_rows.first(), self.selected_rows.last())
+        {
+            first..=last
+        } else {
+            self.selected_idx..=self.selected_idx
         }
     }
 
+    /// Selected visible rows in ascending (top-to-bottom) order.
+    pub fn selected_rows_vec(&self) -> Vec<usize> {
+        let len = self.visible_count();
+        if len == 0 {
+            return Vec::new();
+        }
+        if self.selected_rows.is_empty() {
+            vec![self.selected_idx.min(len - 1)]
+        } else {
+            self.selected_rows
+                .iter()
+                .copied()
+                .filter(|&r| r < len)
+                .collect()
+        }
+    }
+
+    pub fn selection_count(&self) -> usize {
+        let len = self.visible_count();
+        if len == 0 {
+            0
+        } else if self.selected_rows.is_empty() {
+            1
+        } else {
+            self.selected_rows.iter().filter(|&&r| r < len).count()
+        }
+    }
+
+    /// True when explicit multi-selection (more than one row or keyboard mark mode) is active.
+    pub fn has_multi_selection(&self) -> bool {
+        self.selection_count() > 1 || self.mark_mode || !self.selected_rows.is_empty()
+    }
+
+    pub fn is_mark_mode(&self) -> bool {
+        self.mark_mode
+    }
+
     pub fn is_row_selected(&self, row: usize) -> bool {
-        self.selected_range().contains(&row)
+        let len = self.visible_count();
+        if len == 0 || row >= len {
+            return false;
+        }
+        if self.selected_rows.is_empty() {
+            row == self.selected_idx
+        } else {
+            self.selected_rows.contains(&row)
+        }
     }
 
     /// Selected commit oids in visible (top-to-bottom) order.
     pub fn selected_oids(&self, repo_snapshot: Option<&Arc<RepoSnapshot>>) -> Vec<Oid> {
-        if self.visible_count() == 0 {
-            return Vec::new();
-        }
-        self.selected_range()
+        self.selected_rows_vec()
+            .into_iter()
             .filter_map(|row| self.commit_at(repo_snapshot, row).map(|c| c.oid))
             .collect()
+    }
+
+    /// Collapses any multi-selection back to single-selecting the current cursor row.
+    pub fn clear_multi_selection(&mut self) {
+        self.selected_rows.clear();
+        self.anchor = None;
+        self.mark_mode = false;
     }
 
     pub fn select_row(&mut self, idx: usize) {
@@ -786,21 +896,89 @@ impl LogGraphState {
         if len == 0 {
             return;
         }
+        self.selected_rows.clear();
         self.anchor = None;
+        self.mark_mode = false;
         self.selected_idx = idx.min(len - 1);
         self.adjust_scroll(len, false);
     }
 
-    /// Extends the selection to `idx` keeping (or creating) the anchor.
+    /// Extends a contiguous range selection from `anchor` to `idx`, replacing prior selection.
     pub fn extend_selection_to(&mut self, idx: usize) {
         let len = self.visible_count();
         if len == 0 {
             return;
         }
-        if self.anchor.is_none() {
-            self.anchor = Some(self.selected_idx);
+        let target = idx.min(len - 1);
+        let anchor = *self.anchor.get_or_insert(self.selected_idx.min(len - 1));
+        self.selected_idx = target;
+        self.mark_mode = false;
+        self.selected_rows.clear();
+        for r in anchor.min(target)..=anchor.max(target) {
+            self.selected_rows.insert(r);
         }
-        self.selected_idx = idx.min(len - 1);
+        self.adjust_scroll(len, false);
+    }
+
+    /// Adds a contiguous range `anchor..=idx` into the existing selection (`Ctrl+Shift+Click`).
+    pub fn add_range_selection_to(&mut self, idx: usize) {
+        let len = self.visible_count();
+        if len == 0 {
+            return;
+        }
+        let target = idx.min(len - 1);
+        let anchor = *self.anchor.get_or_insert(self.selected_idx.min(len - 1));
+        if self.selected_rows.is_empty() {
+            self.selected_rows.insert(self.selected_idx.min(len - 1));
+        }
+        for r in anchor.min(target)..=anchor.max(target) {
+            self.selected_rows.insert(r);
+        }
+        self.selected_idx = target;
+        self.adjust_scroll(len, false);
+    }
+
+    /// Toggles `idx` in the non-contiguous selection set (`Ctrl+Click` when
+    /// `sticky == false`, keyboard `Space` when `sticky == true`).
+    pub fn toggle_row_selection(&mut self, idx: usize, sticky: bool) {
+        let len = self.visible_count();
+        if len == 0 {
+            return;
+        }
+        let target = idx.min(len - 1);
+        let cur = self.selected_idx.min(len - 1);
+        if self.selected_rows.is_empty() {
+            if target != cur {
+                self.selected_rows.insert(cur);
+            }
+            self.selected_rows.insert(target);
+            self.mark_mode = sticky;
+        } else {
+            if !self.selected_rows.remove(&target) {
+                self.selected_rows.insert(target);
+            }
+            if self.selected_rows.is_empty() {
+                self.mark_mode = false;
+                self.anchor = None;
+            } else if sticky {
+                self.mark_mode = true;
+            }
+        }
+        self.selected_idx = target;
+        if !self.selected_rows.is_empty() {
+            self.anchor = Some(target);
+        }
+        self.adjust_scroll(len, false);
+    }
+
+    /// Moves only the focused cursor row without clearing multi-selection (`Ctrl+Up/Down`).
+    pub fn move_cursor_only(&mut self, delta: isize) {
+        let len = self.visible_count();
+        if len == 0 {
+            return;
+        }
+        self.selected_idx =
+            (self.selected_idx as isize + delta).clamp(0, (len - 1) as isize) as usize;
         self.adjust_scroll(len, false);
     }
 
@@ -812,6 +990,9 @@ impl LogGraphState {
         let next = (self.selected_idx as isize + delta).clamp(0, (len - 1) as isize) as usize;
         if extend {
             self.extend_selection_to(next);
+        } else if self.mark_mode {
+            self.selected_idx = next;
+            self.adjust_scroll(len, false);
         } else {
             self.select_row(next);
         }
@@ -839,7 +1020,9 @@ impl LogGraphState {
             self.push_history(repo_snapshot);
             self.forward_history.clear();
         }
+        self.selected_rows.clear();
         self.anchor = None;
+        self.mark_mode = false;
         self.selected_idx = target;
         self.adjust_scroll(len, center);
     }
@@ -881,24 +1064,24 @@ impl LogGraphState {
     }
 
     /// Collapses (`true`) or expands (`false`) `ids`, keeping the selected
-    /// commit (and the shift anchor) selected and visible.
+    /// commit(s) (and the shift anchor) selected and visible.
     pub fn set_segments_collapsed(&mut self, ids: &[SegmentId], collapsed: bool) {
         if ids.is_empty() {
             return;
         }
-        let (selected_oid, anchor_oid) = self.capture_selection_oids();
+        let captured = self.capture_selection_oids();
         for &id in ids {
             self.collapse.set_collapsed(id, collapsed);
         }
         self.rebuild_collapsed_now();
-        self.preserve_selection_after_rebuild(selected_oid, anchor_oid);
+        self.preserve_selection_after_rebuild(captured);
     }
 
     /// Folds `id` and moves the cursor to its up end when the selected commit
     /// sits inside it (vim `zc` semantics).
     pub fn collapse_segment_moving_cursor(&mut self, id: SegmentId) {
-        let (selected_oid, _) = self.capture_selection_oids();
-        let inside = selected_oid.is_some_and(|oid| {
+        let mut captured = self.capture_selection_oids();
+        let inside = captured.cursor_oid.is_some_and(|oid| {
             self.cached.as_ref().is_some_and(|c| {
                 c.permanent
                     .linear
@@ -910,17 +1093,23 @@ impl LogGraphState {
         let up = self.cached.as_ref().and_then(|c| c.segment_up_oid(id));
         self.collapse.set_collapsed(id, true);
         self.rebuild_collapsed_now();
-        let keep = if inside { up } else { selected_oid };
-        self.anchor = None;
-        self.preserve_selection_after_rebuild(keep, None);
+        if inside {
+            captured.cursor_oid = up;
+        }
+        captured.anchor_oid = None;
+        self.preserve_selection_after_rebuild(captured);
     }
 
-    /// Collapse All Linear Branches (the selected commit's segment stays open).
+    /// Collapse All Linear Branches (selected commits' segments stay open).
     pub fn collapse_all(&mut self) {
-        let (selected_oid, anchor_oid) = self.capture_selection_oids();
+        let captured = self.capture_selection_oids();
         self.collapse.collapse_all();
         if let Some(cached) = self.cached.as_ref() {
-            for oid in [selected_oid, anchor_oid].into_iter().flatten() {
+            for oid in [captured.cursor_oid, captured.anchor_oid]
+                .into_iter()
+                .flatten()
+                .chain(captured.selected_oids.iter().copied())
+            {
                 if let Some(seg) = cached
                     .permanent
                     .linear
@@ -932,15 +1121,15 @@ impl LogGraphState {
             }
         }
         self.rebuild_collapsed_now();
-        self.preserve_selection_after_rebuild(selected_oid, anchor_oid);
+        self.preserve_selection_after_rebuild(captured);
     }
 
     /// Expand All.
     pub fn expand_all(&mut self) {
-        let (selected_oid, anchor_oid) = self.capture_selection_oids();
+        let captured = self.capture_selection_oids();
         self.collapse.expand_all();
         self.rebuild_collapsed_now();
-        self.preserve_selection_after_rebuild(selected_oid, anchor_oid);
+        self.preserve_selection_after_rebuild(captured);
     }
 
     /// Jumps to `oid` if it is visible; returns `false` when filtered out / unknown.
@@ -982,7 +1171,9 @@ impl LogGraphState {
                     self.back_history.push(cur);
                 }
             }
+            self.selected_rows.clear();
             self.anchor = None;
+            self.mark_mode = false;
             self.selected_idx = row;
             self.adjust_scroll(len, true);
             return true;

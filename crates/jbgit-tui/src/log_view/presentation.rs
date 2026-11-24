@@ -11,6 +11,7 @@ pub enum PresentationToggle {
     ShowSignatureColumn,
     RelativeDates,
     UseAuthorDate,
+    ShowOnlyAffectedChanges,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -26,6 +27,8 @@ pub struct LogPresentation {
     pub relative_dates: bool,
     /// Show author date instead of commit date.
     pub use_author_date: bool,
+    /// When a Path filter is active, show only changes matching filtered paths.
+    pub show_only_affected_changes: bool,
 }
 
 impl Default for LogPresentation {
@@ -39,6 +42,7 @@ impl Default for LogPresentation {
             show_signature_column: false,
             relative_dates: true,
             use_author_date: false,
+            show_only_affected_changes: true,
         }
     }
 }

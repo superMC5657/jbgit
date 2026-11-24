@@ -4,12 +4,15 @@ use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
+use unicode_width::UnicodeWidthStr;
 
 use crate::app::{AppState, RenderContext};
 use crate::diff_session::{ChangesExpandState, ChangesTreeSession, DiffCacheStore};
 use crate::hit_test::{ChangesToolbarButton, HitTarget};
+use crate::log_view::MAX_AGGREGATED_COMMITS;
 use crate::views::{
     fit_left_right_spans, list_viewport, render_pane_frame, render_toolbar, row_background,
+    wrap_text,
 };
 
 use super::{DiffHost, muted_line};
@@ -21,6 +24,9 @@ pub struct ChangesBrowserProps<'a> {
     pub pane: PaneId,
     pub diff_preview: bool,
     pub merge_parent: usize,
+    pub many_changes_count: Option<usize>,
+    pub path_filter_active: bool,
+    pub show_only_affected: bool,
 }
 
 pub fn render_changes_pane(
@@ -39,6 +45,14 @@ pub fn render_changes_pane(
             pane: PaneId::LogChangesTree,
             diff_preview: state.log.details.diff_preview,
             merge_parent: state.log.details.merge_parent,
+            many_changes_count: state
+                .log
+                .details
+                .many_changes_blocked
+                .as_ref()
+                .map(|k| k.oids.len()),
+            path_filter_active: !state.log.filter.spec.paths.is_empty(),
+            show_only_affected: state.log.presentation.show_only_affected_changes,
         },
         ctx,
     );
@@ -57,46 +71,91 @@ pub fn render_changes_browser(
         pane,
         diff_preview,
         merge_parent,
+        many_changes_count,
+        path_filter_active,
+        show_only_affected,
     } = props;
     let bundle = changes.current_bundle(caches);
-    let subtitle = match (bundle, &changes.current_key) {
-        (Some(b), _) => {
-            let (add, del) = b.totals();
-            let stats = ctx.t_fmt(
-                "view.log_details.files_stats",
-                &[
-                    ("count", &b.changes.len().to_string()),
-                    ("add", &add.to_string()),
-                    ("del", &del.to_string()),
-                ],
-            );
-            match b.key.mode {
-                DetailsMode::CompareVersions if b.key.oids.len() >= 2 => ctx.t_fmt(
-                    "view.log_details.compare_versions_sub",
+    let counts = changes.visible_change_counts(caches);
+    let subtitle = if let Some(count) = many_changes_count {
+        ctx.t_fmt(
+            "view.log_details.many_changes_sub",
+            &[
+                ("count", &count.to_string()),
+                ("limit", &MAX_AGGREGATED_COMMITS.to_string()),
+            ],
+        )
+    } else {
+        match (bundle, &changes.current_key) {
+            (Some(b), _) => {
+                let (shown, _) = counts.unwrap_or((b.changes.len(), b.changes.len()));
+                let (add, del) = changes.visible_totals(caches);
+                let stats = ctx.t_fmt(
+                    "view.log_details.files_stats",
                     &[
-                        ("a", &b.key.oids[0].short()),
-                        ("b", &b.key.oids[1].short()),
-                        ("stats", &stats),
+                        ("count", &shown.to_string()),
+                        ("add", &add.to_string()),
+                        ("del", &del.to_string()),
                     ],
-                ),
-                DetailsMode::CompareWithLocal if !b.key.oids.is_empty() => ctx.t_fmt(
-                    "view.log_details.compare_local_sub",
-                    &[("a", &b.key.oids[0].short()), ("stats", &stats)],
-                ),
-                _ if b.key.oids.len() > 1 => ctx.t_fmt(
-                    "view.log_details.commits_stats_sub",
-                    &[
-                        ("count", &b.key.oids.len().to_string()),
-                        ("stats", &stats),
-                    ],
-                ),
-                _ => stats,
+                );
+                match b.key.mode {
+                    DetailsMode::CompareVersions if b.key.oids.len() >= 2 => ctx.t_fmt(
+                        "view.log_details.compare_versions_sub",
+                        &[
+                            ("a", &b.key.oids[0].short()),
+                            ("b", &b.key.oids[1].short()),
+                            ("stats", &stats),
+                        ],
+                    ),
+                    DetailsMode::CompareWithLocal if !b.key.oids.is_empty() => ctx.t_fmt(
+                        "view.log_details.compare_local_sub",
+                        &[("a", &b.key.oids[0].short()), ("stats", &stats)],
+                    ),
+                    _ if b.key.oids.len() > 1 => ctx.t_fmt(
+                        "view.log_details.commits_stats_sub",
+                        &[
+                            ("count", &b.key.oids.len().to_string()),
+                            ("stats", &stats),
+                        ],
+                    ),
+                    _ => stats,
+                }
             }
+            (None, Some(_)) => ctx.t("common.loading").to_string(),
+            (None, None) => String::new(),
         }
-        (None, Some(_)) => ctx.t("common.loading").to_string(),
-        (None, None) => String::new(),
     };
     let body = render_pane_frame(frame, area, pane, &subtitle, ctx);
+
+    // Clickable `[Filtered: M/N]` badge on the Changes pane title bar when PathFilter + Show Only Affected is active.
+    if host == DiffHost::Log
+        && path_filter_active
+        && show_only_affected
+        && let Some((shown, total)) = counts
+        && area.height > 0
+    {
+        let badge = ctx.t_fmt(
+            "view.log_details.filtered_badge",
+            &[("shown", &shown.to_string()), ("total", &total.to_string())],
+        );
+        let badge_w = badge.width() as u16;
+        if badge_w > 0 && area.width > badge_w + 10 {
+            let badge_rect = Rect::new(area.right().saturating_sub(badge_w), area.y, badge_w, 1);
+            let hovered = ctx.hover_target == Some(&HitTarget::ChangesFilteredBadge);
+            let style = Style::default()
+                .fg(ctx.theme.fg_bright)
+                .bg(if hovered {
+                    ctx.theme.border_focused
+                } else {
+                    ctx.theme.bg_selection_unfocused
+                })
+                .add_modifier(Modifier::BOLD);
+            frame.render_widget(Paragraph::new(Span::styled(badge, style)), badge_rect);
+            ctx.hit_registry
+                .register(badge_rect, 3, HitTarget::ChangesFilteredBadge);
+        }
+    }
+
     if body.height == 0 || body.width == 0 {
         return;
     }
@@ -105,6 +164,10 @@ pub fn render_changes_browser(
         .filter(|b| b.key.mode == DetailsMode::Commits && b.key.oids.len() == 1)
         .and_then(|b| b.details.first())
         .map_or(0, |d| d.parents.len());
+    let is_compare_versions = changes
+        .current_key
+        .as_ref()
+        .is_some_and(|k| k.mode == DetailsMode::CompareVersions && k.oids.len() >= 2);
     let expand_state = changes.expand_state(caches);
     let mut buttons = vec![
         (
@@ -129,6 +192,28 @@ pub fn render_changes_browser(
             diff_preview,
             ChangesToolbarButton::DiffPreview,
         ));
+        if is_compare_versions {
+            buttons.push((
+                ctx.t("view.log_details.toolbar_swap").to_string(),
+                false,
+                ChangesToolbarButton::SwapCompare,
+            ));
+        }
+        if path_filter_active {
+            let lbl = if show_only_affected {
+                if let Some((shown, total)) = counts {
+                    ctx.t_fmt(
+                        "view.log_details.toolbar_affected_count",
+                        &[("shown", &shown.to_string()), ("total", &total.to_string())],
+                    )
+                } else {
+                    ctx.t("view.log_details.toolbar_affected").to_string()
+                }
+            } else {
+                ctx.t("view.log_details.toolbar_affected").to_string()
+            };
+            buttons.push((lbl, show_only_affected, ChangesToolbarButton::OnlyAffected));
+        }
         if merge_parents >= 2 {
             buttons.push((
                 ctx.t_fmt(
@@ -164,6 +249,40 @@ pub fn render_changes_browser(
     if list.height == 0 {
         return;
     }
+    if let Some(count) = many_changes_count {
+        let prompt = ctx.t_fmt(
+            "view.log_details.many_changes_prompt",
+            &[
+                ("count", &count.to_string()),
+                ("limit", &MAX_AGGREGATED_COMMITS.to_string()),
+            ],
+        );
+        let hovered = ctx.hover_target == Some(&HitTarget::ChangesLoadMany);
+        let style = Style::default()
+            .fg(if hovered {
+                ctx.theme.fg_bright
+            } else {
+                ctx.theme.fg_accent_link
+            })
+            .bg(if hovered {
+                ctx.theme.bg_hover
+            } else {
+                ctx.theme.bg_canvas
+            })
+            .add_modifier(Modifier::BOLD);
+        let wrapped = wrap_text(prompt.trim_start(), list.width.saturating_sub(2).max(1) as usize);
+        let lines: Vec<Line<'static>> = wrapped
+            .into_iter()
+            .take(list.height as usize)
+            .map(|l| Line::from(Span::styled(format!(" {l}"), style)))
+            .collect();
+        let prompt_h = (lines.len() as u16).max(1).min(list.height);
+        let prompt_rect = Rect::new(list.x, list.y, list.width, prompt_h);
+        frame.render_widget(Paragraph::new(lines), prompt_rect);
+        ctx.hit_registry
+            .register(prompt_rect, 2, HitTarget::ChangesLoadMany);
+        return;
+    }
     let Some(bundle) = bundle else {
         let msg = if changes.current_key.is_some() {
             ctx.t("view.log_details.loading_changes")
@@ -178,6 +297,36 @@ pub fn render_changes_browser(
         return;
     }
     let rows = changes.change_rows(caches);
+    if rows.is_empty() && path_filter_active && show_only_affected {
+        let msg = ctx.t_fmt(
+            "view.log_details.no_affected_changes",
+            &[("total", &bundle.changes.len().to_string())],
+        );
+        let hovered = ctx.hover_target == Some(&HitTarget::ChangesFilteredBadge);
+        let style = Style::default()
+            .fg(if hovered {
+                ctx.theme.fg_bright
+            } else {
+                ctx.theme.fg_accent_link
+            })
+            .bg(if hovered {
+                ctx.theme.bg_hover
+            } else {
+                ctx.theme.bg_canvas
+            });
+        let wrapped = wrap_text(msg.trim_start(), list.width.saturating_sub(2).max(1) as usize);
+        let lines: Vec<Line<'static>> = wrapped
+            .into_iter()
+            .take(list.height as usize)
+            .map(|l| Line::from(Span::styled(format!(" {l}"), style)))
+            .collect();
+        let msg_h = (lines.len() as u16).max(1).min(list.height);
+        let msg_rect = Rect::new(list.x, list.y, list.width, msg_h);
+        frame.render_widget(Paragraph::new(lines), msg_rect);
+        ctx.hit_registry
+            .register(msg_rect, 2, HitTarget::ChangesFilteredBadge);
+        return;
+    }
     render_change_rows_inner(
         frame,
         list,

@@ -148,8 +148,7 @@ pub fn render_log_tab(
                 state.i18n.t("view.log.unborn_head").to_string()
             } else {
                 let visible = state.log.graph.visible_count();
-                let sel = state.log.graph.selected_range();
-                let sel_n = sel.end() - sel.start() + 1;
+                let sel_n = state.log.graph.selection_count();
                 let total_s = s.commits.len().to_string();
                 let vis_s = visible.to_string();
                 let mut out = if visible == s.commits.len() {
@@ -160,7 +159,7 @@ pub fn render_log_tab(
                         &[("visible", &vis_s), ("total", &total_s)],
                     )
                 };
-                if sel_n > 1 {
+                if sel_n > 1 || (sel_n == 1 && state.log.graph.is_mark_mode()) {
                     let sel_s = sel_n.to_string();
                     out.push_str(&state.i18n.t_fmt("view.log.selected_count", &[("count", &sel_s)]));
                 }
@@ -510,7 +509,9 @@ fn render_commits_table(
         let commit = cached
             .commit_at_visible_row(snap, row_idx)
             .expect("visible row maps to valid commit");
+        let is_cursor = row_idx == state.log.graph.selected_idx;
         let is_sel = state.log.graph.is_row_selected(row_idx);
+        let has_multi = state.log.graph.has_multi_selection();
         let is_in_current_branch = presentation.highlight_current_branch
             && cached.current_branch_reachable.contains(perm_id as usize);
         let is_hovered = matches!(
@@ -527,7 +528,16 @@ fn render_commits_table(
         } else {
             ctx.theme.bg_canvas
         };
-        let bg = row_background(is_sel, focused, is_hovered, default_bg, ctx.theme);
+        let bg = if is_sel && is_cursor {
+            row_background(true, focused, is_hovered, default_bg, ctx.theme)
+        } else if is_sel {
+            // Secondary highlight distinguishes non-cursor selected rows from the cursor row.
+            ctx.theme.bg_selection_unfocused
+        } else if is_cursor && has_multi {
+            ctx.theme.bg_hover
+        } else {
+            row_background(false, focused, is_hovered, default_bg, ctx.theme)
+        };
 
         let raw_elems = elem_gen.print_elements(vis_row);
         let mut rendered = Vec::with_capacity(raw_elems.len());
@@ -638,7 +648,9 @@ fn render_commits_table(
         if text_w == 0 {
             continue;
         }
+        let is_cursor = row_idx == state.log.graph.selected_idx;
         let is_sel = state.log.graph.is_row_selected(row_idx);
+        let has_multi = state.log.graph.has_multi_selection();
         let is_head = snap.head_oid == Some(commit.oid);
         let main_w = text_w.saturating_sub(right_cols);
         let main_rect = Rect::new(text_x, row_y, main_w, 1);
@@ -647,6 +659,29 @@ fn render_commits_table(
             Paragraph::new("").style(Style::default().bg(bg)),
             Rect::new(text_x, row_y, text_w, 1),
         );
+
+        if has_multi && main_rect.width > 0 {
+            let marker_rect = Rect::new(main_rect.x, row_y, 1, 1);
+            if is_sel {
+                let marker_fg = if is_cursor {
+                    ctx.theme.fg_bright
+                } else {
+                    ctx.theme.fg_accent_link
+                };
+                frame.render_widget(
+                    Paragraph::new(Span::styled("◆", Style::default().fg(marker_fg).bg(bg))),
+                    marker_rect,
+                );
+            } else if is_cursor {
+                frame.render_widget(
+                    Paragraph::new(Span::styled(
+                        "▸",
+                        Style::default().fg(ctx.theme.fg_bright).bg(bg),
+                    )),
+                    marker_rect,
+                );
+            }
+        }
 
         let head_marker = is_head.then(|| RefInfo::head_marker(commit.oid));
         let groups = group_refs_for_table(

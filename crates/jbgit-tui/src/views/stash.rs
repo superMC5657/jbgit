@@ -219,6 +219,9 @@ fn render_stash_preview(
             pane: PaneId::StashDiffPreview,
             diff_preview: true,
             merge_parent: 0,
+            many_changes_count: None,
+            path_filter_active: false,
+            show_only_affected: false,
         },
         ctx,
     );

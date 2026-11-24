@@ -40,7 +40,8 @@ pub use details::{
     LfsPointer, MAX_DIFF_FILE_BYTES, MAX_OUTGOING_COMMITS, MAX_SELECTION_HISTORY_LINES,
     MAX_WORD_DIFF_LINE_BYTES, MessageLineKind, NO_NEWLINE_LINE_TEXT, OutgoingBundle, OutgoingKey,
     PersonStamp, SideBySideRow, SignatureStatus, apply_word_diff, apply_word_diff_with_budget,
-    build_change_rows, classify_message_line, has_lfs_filter_in_gitattributes, issue_ref_ranges,
+    build_change_rows, build_change_rows_filtered, classify_message_line,
+    has_lfs_filter_in_gitattributes, issue_ref_ranges,
     parse_lfs_pointer, parse_unified_patch_hunks, side_by_side_rows, word_diff,
 };
 pub use epoch::{EpochToken, RequestEpoch, RequestSlot, RequestSlotId, RequestSlotTable, SlotRegistry};

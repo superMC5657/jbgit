@@ -33,6 +33,10 @@ glyph_mode = "nerd_font"
 # 是否默认折叠长分支标签胶囊 (紧凑模式)
 compact_refs = false
 
+[log]
+# 启用路径筛选 (Paths) 时，右侧变更文件树是否仅显示命中筛选路径的文件
+show_only_affected_changes = true
+
 [diff]
 # 代码差异高亮: 是否开启语法加亮 (基于 syntect)
 syntax_highlight = true

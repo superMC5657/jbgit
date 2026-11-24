@@ -126,6 +126,7 @@ impl AppState {
             GlyphModePref::NerdFont => GlyphMode::NerdFont,
         };
         let compact_refs = config.jbgit.graph.compact_refs;
+        let show_only_affected_changes = config.jbgit.log.show_only_affected_changes;
         let graph_mode = match config.jbgit.graph.backend {
             GraphBackendPref::Auto => crate::graph::GraphRendererMode::Auto,
             GraphBackendPref::Vector => crate::graph::GraphRendererMode::Vector,
@@ -148,7 +149,12 @@ impl AppState {
             locales_dir.as_deref(),
         ));
 
-        let log = LogWorkbench::new(diff_context, compact_refs, graph_mode);
+        let log = LogWorkbench::new(
+            diff_context,
+            compact_refs,
+            show_only_affected_changes,
+            graph_mode,
+        );
         let stage_workbench = CommitWorkbench::with_diff_context(diff_context);
         let stash = StashWorkbench::with_diff_context(diff_context);
 
