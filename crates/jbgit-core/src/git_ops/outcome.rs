@@ -38,6 +38,8 @@ pub enum GitFailure {
     EmptyCherryPick,
     /// GPG / pinentry / secret-key signing failure (commit `-S` or signed tag `-s`).
     GpgSignFailed { detail: String },
+    /// Update Project discovered after `fetch --prune` that the branch's upstream ref is gone.
+    UpstreamGone { branch: String, upstream: String },
     /// Anything else (first meaningful stderr line).
     Other(String),
 }

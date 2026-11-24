@@ -476,9 +476,11 @@ impl RepoSnapshot {
         self.commits.iter().find(|c| c.oid == *oid)
     }
 
-    fn walk_ancestors(&self, start: Oid, target: Option<Oid>) -> (HashSet<Oid>, bool) {
-        let idx: HashMap<Oid, &CommitSummary> =
-            self.commits.iter().map(|c| (c.oid, c)).collect();
+    fn walk_ancestors_with_index(
+        idx: &HashMap<Oid, &CommitSummary>,
+        start: Oid,
+        target: Option<Oid>,
+    ) -> (HashSet<Oid>, bool) {
         let mut seen = HashSet::new();
         let mut stack = vec![start];
         while let Some(o) = stack.pop() {
@@ -493,6 +495,12 @@ impl RepoSnapshot {
             }
         }
         (seen, false)
+    }
+
+    fn walk_ancestors(&self, start: Oid, target: Option<Oid>) -> (HashSet<Oid>, bool) {
+        let idx: HashMap<Oid, &CommitSummary> =
+            self.commits.iter().map(|c| (c.oid, c)).collect();
+        Self::walk_ancestors_with_index(&idx, start, target)
     }
 
     /// All commit Oids reachable from `start` within the loaded snapshot.
@@ -570,11 +578,15 @@ impl RepoSnapshot {
         extra_protected: &[String],
     ) -> Vec<CleanupBranchCandidate> {
         let base_oid = self.resolve_revision(base_ref).or(self.head_oid);
-        let commit_time: HashMap<Oid, i64> = self
-            .commits
-            .iter()
-            .map(|c| (c.oid, c.timestamp))
-            .collect();
+        let idx: HashMap<Oid, &CommitSummary> =
+            self.commits.iter().map(|c| (c.oid, c)).collect();
+        let base_reachable = base_oid.map(|b| Self::walk_ancestors_with_index(&idx, b, None).0);
+        let head_reachable = if self.head_oid == base_oid {
+            None
+        } else {
+            self.head_oid
+                .map(|h| Self::walk_ancestors_with_index(&idx, h, None).0)
+        };
         let mut out = Vec::new();
         for r in &self.refs {
             if r.kind != RefKind::LocalBranch {
@@ -591,8 +603,16 @@ impl RepoSnapshot {
             if self.worktree_of_branch(&r.name).is_some() {
                 continue;
             }
-            let merged_into_base = base_oid.is_some_and(|b| self.reaches(b, r.target_oid));
-            let merged_into_head = self.head_oid.is_some_and(|h| self.reaches(h, r.target_oid));
+            let merged_into_base = base_reachable
+                .as_ref()
+                .is_some_and(|set| set.contains(&r.target_oid));
+            let merged_into_head = if self.head_oid == base_oid {
+                merged_into_base
+            } else {
+                head_reachable
+                    .as_ref()
+                    .is_some_and(|set| set.contains(&r.target_oid))
+            };
             let upstream_gone = self.is_upstream_gone(r);
             if !merged_into_base && !upstream_gone {
                 continue;
@@ -600,7 +620,7 @@ impl RepoSnapshot {
             out.push(CleanupBranchCandidate {
                 name: r.name.clone(),
                 tip: r.target_oid,
-                last_commit_time: commit_time.get(&r.target_oid).copied().unwrap_or(0),
+                last_commit_time: idx.get(&r.target_oid).map_or(0, |c| c.timestamp),
                 upstream: r.upstream.clone(),
                 upstream_gone,
                 merged_into_base,
@@ -630,16 +650,15 @@ impl RepoSnapshot {
             .any(|oid| idx.get(oid).is_some_and(|c| c.parents.len() > 1))
     }
 
-    /// True if `branch` has an upstream name whose remote-tracking ref is no
-    /// longer present in [`Self::refs`].
+    /// True if `branch` has an upstream name whose tracked remote or local ref
+    /// is no longer present in [`Self::refs`].
     pub fn is_upstream_gone(&self, branch: &RefInfo) -> bool {
         let Some(up) = branch.upstream.as_deref() else {
             return false;
         };
-        !self
-            .refs
-            .iter()
-            .any(|r| r.kind == RefKind::RemoteBranch && r.name == up)
+        !self.refs.iter().any(|r| {
+            matches!(r.kind, RefKind::RemoteBranch | RefKind::LocalBranch) && r.name == up
+        })
     }
 
     /// Remote-tracking ref matching `<remote>/<remote_branch>`.

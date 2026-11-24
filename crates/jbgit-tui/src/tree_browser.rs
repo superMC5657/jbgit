@@ -158,6 +158,11 @@ impl TreeBrowserState {
         None
     }
 
+    pub fn clear_search_index_request(&mut self) {
+        self.search_index_requested = false;
+        self.search_index_pending = false;
+    }
+
     pub fn on_index_loaded(&mut self, oid: Oid, paths: Arc<Vec<String>>) {
         if oid != self.oid {
             return;

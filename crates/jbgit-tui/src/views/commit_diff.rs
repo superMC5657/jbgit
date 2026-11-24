@@ -275,10 +275,13 @@ pub fn render_stage_diff_workbench(
     let width = diff_area.width as usize;
     let half = width / 2;
     let right_cell_w = width.saturating_sub(half + 1);
-    let unified_text_w = width.saturating_sub(14).max(1);
-    let split_left_w = half.saturating_sub(8).max(1);
-    let split_right_w = right_cell_w.saturating_sub(8).max(1);
+    // Match `render_diff_unified_wrapped_rows` (`DIFF_LINE_NUM_W*2 + 3 + has_gutter = 12`)
+    // and `render_diff_side_wrapped_cells` (`DIFF_LINE_NUM_W + 2 + g_cols = 7`).
+    let unified_text_w = width.saturating_sub(12).max(1);
+    let split_left_w = half.saturating_sub(7).max(1);
+    let split_right_w = right_cell_w.saturating_sub(7).max(1);
     sw.record_diff_wrap_widths(unified_text_w, split_left_w, split_right_w);
+    sw.record_diff_tab_size(tab_size);
     let allow_partial = diff.key.side != StageDiffSide::AmendCommit
         && !diff.is_line_staging_disabled()
         && sw.diff_whitespace() == WhitespaceMode::Default;
@@ -411,13 +414,20 @@ pub fn render_stage_diff_workbench(
 
         let pills_w: usize = pills.iter().map(|(t, _, _)| t.width() + 1).sum();
         let header_w = width.saturating_sub(pills_w + 1);
-        let left = vec![Span::styled(
-            format!(" {}", truncate_to_width(&hunk.hunk.header, header_w)),
-            Style::default()
-                .fg(theme.fg_accent_link)
-                .bg(bg)
-                .add_modifier(Modifier::BOLD),
-        )];
+        let (sr, active_sr) = sw.diff_search().ranges_for(row_idx, 0);
+        let base_hdr = Style::default()
+            .fg(theme.fg_accent_link)
+            .bg(bg)
+            .add_modifier(Modifier::BOLD);
+        let mut left = vec![Span::styled(" ", base_hdr)];
+        left.extend(crate::views::log_details::render_hunk_header_spans(
+            &hunk.hunk.header,
+            header_w,
+            base_hdr,
+            &sr,
+            active_sr,
+            theme,
+        ));
         let right: Vec<Span<'static>> = pills
             .iter()
             .flat_map(|(t, col, _)| {

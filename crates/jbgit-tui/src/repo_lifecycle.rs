@@ -256,8 +256,13 @@ impl CloneDialogState {
     }
 
     pub fn push_progress(&mut self, line: String) {
+        let replace_last = line.starts_with('\r');
         let trimmed = line.trim().to_string();
         if trimmed.is_empty() {
+            return;
+        }
+        if replace_last && let Some(last) = self.progress_lines.last_mut() {
+            *last = trimmed;
             return;
         }
         self.progress_lines.push(trimmed);
@@ -428,7 +433,10 @@ pub fn route_clone_repo_key(key: &KeyEvent, state: &AppState) -> Vec<Action> {
         return Vec::new();
     };
     if cd.cloning {
-        return Vec::new();
+        return match key.code {
+            KeyCode::Esc => vec![Action::CloneRepoCancel],
+            _ => Vec::new(),
+        };
     }
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     let alt = key.modifiers.contains(KeyModifiers::ALT);

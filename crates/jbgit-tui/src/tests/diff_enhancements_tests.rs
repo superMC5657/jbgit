@@ -307,8 +307,8 @@ fn diff_whitespace_mode_cycling_and_stage_partial_staging_guard() {
     seed_log_diff(&mut ts, head, "src/indent.rs", diff);
     let _ = ts.take_requests();
 
-    // Press `b` -> cycles Default -> IgnoreChange (-b) and requests new diff key.
-    ts.send_key(KeyCode::Char('b'), KeyModifiers::NONE);
+    // Press `I` -> cycles Default -> IgnoreChange (-b) and requests new diff key.
+    ts.send_key(KeyCode::Char('I'), KeyModifiers::SHIFT);
     assert_eq!(
         ts.state().log.details.diff.whitespace,
         WhitespaceMode::IgnoreChange
@@ -351,12 +351,12 @@ fn diff_whitespace_mode_cycling_and_stage_partial_staging_guard() {
     );
 
     // Cycle again -> IgnoreAll (-w) -> Default.
-    ts.send_key(KeyCode::Char('b'), KeyModifiers::NONE);
+    ts.send_key(KeyCode::Char('I'), KeyModifiers::SHIFT);
     assert_eq!(
         ts.state().log.details.diff.whitespace,
         WhitespaceMode::IgnoreAll
     );
-    ts.send_key(KeyCode::Char('b'), KeyModifiers::NONE);
+    ts.send_key(KeyCode::Char('I'), KeyModifiers::SHIFT);
     assert_eq!(
         ts.state().log.details.diff.whitespace,
         WhitespaceMode::Default
@@ -386,8 +386,8 @@ fn diff_whitespace_mode_cycling_and_stage_partial_staging_guard() {
     let _ = ts.take_requests();
     ts.dispatch(Action::FocusPane(PaneId::CommitDiffPreview));
 
-    // Press `b` in Stage Diff -> cycles to IgnoreChange and requests StageDiffKey with IgnoreChange.
-    ts.send_key(KeyCode::Char('b'), KeyModifiers::NONE);
+    // Press `I` in Stage Diff -> cycles to IgnoreChange and requests StageDiffKey with IgnoreChange.
+    ts.send_key(KeyCode::Char('I'), KeyModifiers::SHIFT);
     assert_eq!(
         ts.state().stage_workbench.diff_whitespace(),
         WhitespaceMode::IgnoreChange
@@ -730,7 +730,7 @@ soft_wrap = true
 fn diff_new_keybindings_resolve_without_shadowing_across_all_presets() {
     let expected: &[(KeyEvent, KeyAction)] = &[
         (
-            KeyEvent::new(KeyCode::Char('b'), KeyModifiers::NONE),
+            KeyEvent::new(KeyCode::Char('I'), KeyModifiers::SHIFT),
             KeyAction::CycleDiffWhitespace,
         ),
         (
@@ -757,6 +757,8 @@ fn diff_new_keybindings_resolve_without_shadowing_across_all_presets() {
             KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE),
             KeyAction::DiffSearch,
         ),
+    ];
+    let search_only: &[(KeyEvent, KeyAction)] = &[
         (
             KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE),
             KeyAction::DiffSearchNext,
@@ -805,6 +807,23 @@ fn diff_new_keybindings_resolve_without_shadowing_across_all_presets() {
             }
             ts.dispatch(Action::FocusPane(pane));
 
+            // Global `b` (Branches popup) must NOT be shadowed by Diff whitespace toggle!
+            if !zoomed {
+                let m_b = check_scopes(&[KeyEvent::new(KeyCode::Char('b'), KeyModifiers::NONE)], ts.state());
+                assert!(
+                    matches!(m_b, MatchResult::Exact(b) if b.run == KeyAction::ToggleBranchesPopup),
+                    "preset={preset:?} tab={tab:?} pane={pane:?}: `b` must remain ToggleBranchesPopup"
+                );
+            }
+            // Without an active diff search, `n` must NOT shadow Log `new_branch` or Stash `stash_new`!
+            if !zoomed && tab == WorkspaceTab::Stash {
+                let m_n = check_scopes(&[KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE)], ts.state());
+                assert!(
+                    matches!(m_n, MatchResult::Exact(b) if b.run == KeyAction::StashNew),
+                    "preset={preset:?}: `n` in Stash diff without active search must remain StashNew"
+                );
+            }
+
             for (key, expected_action) in expected {
                 let m = check_scopes(&[*key], ts.state());
                 assert!(
@@ -812,6 +831,24 @@ fn diff_new_keybindings_resolve_without_shadowing_across_all_presets() {
                     "preset={preset:?} tab={tab:?} pane={pane:?} zoomed={zoomed} key={key:?}: expected {expected_action:?}"
                 );
             }
+
+            // Once diff search is active, `n`/`N` resolve to DiffSearchNext / DiffSearchPrev.
+            let scope = match tab {
+                WorkspaceTab::Commit => crate::app::DiffScope::Stage,
+                WorkspaceTab::Stash => crate::app::DiffScope::Stash,
+                _ => crate::app::DiffScope::Log,
+            };
+            ts.dispatch(Action::DiffSearchOpen(scope));
+            ts.dispatch(Action::DiffSearchChar(scope, 'x'));
+            ts.dispatch(Action::DiffSearchConfirm(scope));
+            for (key, expected_action) in search_only {
+                let m = check_scopes(&[*key], ts.state());
+                assert!(
+                    matches!(m, MatchResult::Exact(b) if b.run == *expected_action),
+                    "preset={preset:?} tab={tab:?} pane={pane:?} zoomed={zoomed} key={key:?}: expected {expected_action:?}"
+                );
+            }
+            ts.dispatch(Action::DiffSearchClose(scope));
         }
     }
 }

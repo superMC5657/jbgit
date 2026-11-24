@@ -219,7 +219,7 @@ pub(crate) fn route_stage_left_click(
                 depth: 0,
             }],
         }),
-        HitTarget::StageResolveConflicts => Ok(vec![Action::ResolveConflictsNotice]),
+        HitTarget::StageResolveConflicts => Ok(vec![Action::OngoingResolve]),
         HitTarget::StageDiffToolbar(btn) => Ok(match btn {
             StageDiffToolbarButton::SwitchSide => vec![Action::StageDiffSwitchSide],
             StageDiffToolbarButton::SideBySide => {

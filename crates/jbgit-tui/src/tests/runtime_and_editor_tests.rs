@@ -2830,6 +2830,11 @@ fn commit_polish_template_merge_msg_reformat_author_identity_allow_empty_and_und
             commit_template: Some("# Template hint".into()),
             ..Default::default()
         },
+        epoch: ts
+            .state()
+            .request_slots
+            .latest(jbgit_core::RequestSlotId::CommitPrecheck)
+            .max(1),
     });
     assert_eq!(ts.state().stage_workbench.editor().text(), "# Template hint");
 
@@ -2844,6 +2849,11 @@ fn commit_polish_template_merge_msg_reformat_author_identity_allow_empty_and_und
             prepared_message: Some("Merge branch 'feat' into main\n# Conflicts:\n#\ta.txt".into()),
             ..Default::default()
         },
+        epoch: ts
+            .state()
+            .request_slots
+            .latest(jbgit_core::RequestSlotId::CommitPrecheck)
+            .max(2),
     });
     assert!(
         ts.state()

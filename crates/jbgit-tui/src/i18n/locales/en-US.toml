@@ -129,6 +129,9 @@ cleanup_branches = "Cleanup Branches…"
 
 [menu.log]
 new_worktree_here = "New Worktree from Here…"
+cherry_pick_record_origin = "Cherry-Pick (-x Record Origin)"
+bisect_mark_bad = "Mark Bad (Bisect)"
+bisect_start_good = "Start Bisect (Good Here, Bad HEAD)"
 checkout_revision = "Checkout Revision '{short}'"
 checkout_branch = "Checkout '{name}'"
 checkout_detached = "Checkout Revision '{short}' (Detached HEAD)"
@@ -218,6 +221,7 @@ finish_ongoing_first = "Finish or abort the ongoing operation first"
 
 [menu.log_change]
 toggle_diff = "Toggle Diff Preview"
+deleted_in_commit = "File was deleted in this commit"
 fullscreen_diff = "Full-Screen Diff"
 compare_local = "Compare with Local"
 load_many_changes = "Load Aggregated Changes"
@@ -334,6 +338,7 @@ copy_hash = "Copy Commit Hash"
 
 [menu.file_history]
 get_version = "Get Version (Restore File)"
+create_patch = "Create Patch…"
 show_affected_files = "Show All Affected Files"
 open_repo_version = "Open Repository Version"
 copy_patch = "Copy Patch"
@@ -647,6 +652,7 @@ action.update_ref = "update-ref"
 
 [dialog.pull]
 title = "Pull Changes into '{cur}'"
+err_branch_without_remote = "Select a remote before specifying a remote branch"
 subtitle = "Pull into '{cur}' from '{remote}' ({count} remote branch(es))"
 fetching = "Fetching remote branches…"
 row_remote = "Remote"
@@ -1013,6 +1019,7 @@ category.tags = "Tags"
 
 [view.log_details]
 diff_preview = "Diff Preview"
+no_files = "No changed files"
 diff_file = "Diff · {path}"
 loading_changes = " Loading changes…"
 select_commit_changes = " Select a commit to see its changes"
@@ -1291,6 +1298,8 @@ editor_hint = " Enter apply · Tab complete · ↑↓ pick · empty = all · Esc
 
 [diff]
 context.full = "Full"
+binary_file = "Binary file"
+no_changes = "No changes"
 whitespace.default = "Exact"
 dock.details = "Details"
 dock.right = "Right"
@@ -1305,6 +1314,11 @@ days_ago = "{n}d ago"
 
 [toast]
 linear_bek_expanded = "Expanded LinearBek merge {short}"
+ongoing_in_progress = "Finish or abort the ongoing Git operation first"
+repo_clone_cancelled = "Repository clone cancelled"
+worktree_setup_ok = "Worktree '{name}' setup completed: {cmd}"
+worktree_setup_failed = "Worktree '{name}' setup failed ({cmd}): {err}"
+deleted_branches_partial = "Deleted {count} branch(es) before failing on '{failed}'"
 worktree_unsupported = "Working trees need git ≥ 2.17 (found {version})"
 worktree_already_open = "'{name}' is the current working tree"
 worktree_cannot_open = "'{name}' cannot be opened (bare or prunable)"
@@ -1978,6 +1992,9 @@ file_not_found = "File not found"
 
 [dialog.create_patch]
 title = "Create Patch"
+warn_worktree = "Target path '{path}' is inside the working tree and will leave an untracked file. Write anyway?"
+warn_overwrite = "File '{path}' already exists. Overwrite it?"
+confirm_write = "Write Patch"
 destination = "Output"
 to_file = "File / Directory"
 to_clipboard = "Clipboard"
@@ -2127,3 +2144,12 @@ body = "The previous cherry-pick is now empty (its changes are already present).
 skip_btn = "Skip (--skip)"
 allow_empty_btn = "Allow Empty (--allow-empty)"
 abort_btn = "Abort (--abort)"
+
+[dialog.rebase_todo]
+title = "Interactive Rebase from {target}"
+
+[dialog.bisect_start]
+title = "Start Git Bisect?"
+body_bad = "Start bisect marking {short} ({subject}) as bad? Git may detach HEAD while bisecting."
+body_good = "Start bisect marking HEAD as bad and {short} ({subject}) as good? Git will detach HEAD to test commits."
+confirm_btn = "Start Bisect"

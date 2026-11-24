@@ -186,6 +186,35 @@ fn route_mouse_scroll(col: u16, row: u16, delta: isize, state: &AppState) -> Vec
             HitTarget::PushDiffArea => {
                 return vec![Action::DiffScroll(DiffScope::Push, delta)];
             }
+            HitTarget::ConflictQueueRow(_) => {
+                return vec![Action::ConflictQueueMove(delta / 3)];
+            }
+            HitTarget::ConflictMergeBlock(_) => {
+                return vec![Action::ConflictScroll(delta)];
+            }
+            HitTarget::BranchCleanupRow(_) => {
+                return vec![Action::BranchCleanupMove(delta / 3)];
+            }
+            HitTarget::DialogBody => match state.modal_stack.last() {
+                Some(crate::app::ModalLayer::CommitMessage { .. }) => {
+                    return vec![Action::ScrollCommitMessageModal(delta)];
+                }
+                Some(crate::app::ModalLayer::ConflictResolver(_)) => {
+                    return vec![Action::ConflictScroll(delta)];
+                }
+                Some(crate::app::ModalLayer::ConflictQueue(_)) => {
+                    return vec![Action::ConflictQueueMove(delta / 3)];
+                }
+                Some(crate::app::ModalLayer::BranchCleanup(_)) => {
+                    return vec![Action::BranchCleanupMove(delta / 3)];
+                }
+                Some(crate::app::ModalLayer::Dialog(d))
+                    if matches!(d.as_ref(), crate::dialogs::Dialog::RebaseTodo(r) if r.show_diff) =>
+                {
+                    return vec![Action::ScrollRebaseDiff(delta)];
+                }
+                _ => {}
+            },
             _ => {}
         }
     }

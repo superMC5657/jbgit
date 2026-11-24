@@ -290,9 +290,43 @@ impl HighlightedFile {
     }
 }
 
+/// Expands `\t` characters in `text` to column-aligned spaces at `tab_size` stops.
+pub fn expand_tabs_to_stops(text: &str, tab_size: usize) -> String {
+    if !text.contains('\t') {
+        return text.to_string();
+    }
+    use unicode_width::UnicodeWidthChar;
+    let tab = tab_size.clamp(1, 16);
+    let mut out = String::with_capacity(text.len() + 8);
+    let mut col = 0usize;
+    for ch in text.chars() {
+        if ch == '\t' {
+            let spaces = tab - (col % tab);
+            for _ in 0..spaces {
+                out.push(' ');
+            }
+            col += spaces;
+        } else {
+            out.push(ch);
+            col += ch.width().unwrap_or(0);
+        }
+    }
+    out
+}
+
 /// Tokenizes one source line using `path`'s syntax grammar (for small visible
 /// windows such as the three-pane conflict merger and inline Result editor).
+///
+/// Results are cached in a thread-local LRU keyed by `(syntax_name, line)` so
+/// 60 FPS redraws never re-run `syntect` regex tokenization on unchanged lines.
 pub fn highlight_single_line(path: &str, line: &str) -> Vec<SyntaxToken> {
+    use std::cell::RefCell;
+
+    thread_local! {
+        static SINGLE_LINE_CACHE: RefCell<jbgit_core::LruCache<(String, String), Vec<SyntaxToken>>> =
+            RefCell::new(jbgit_core::LruCache::new(2048));
+    }
+
     if line.is_empty() || line.len() > MAX_SYNTAX_LINE_BYTES {
         return Vec::new();
     }
@@ -300,6 +334,10 @@ pub fn highlight_single_line(path: &str, line: &str) -> Vec<SyntaxToken> {
     let syntax = find_syntax(assets, path);
     if syntax.name == "Plain Text" {
         return Vec::new();
+    }
+    let cache_key = (syntax.name.clone(), line.to_string());
+    if let Some(cached) = SINGLE_LINE_CACHE.with(|c| c.borrow_mut().get(&cache_key).cloned()) {
+        return cached;
     }
     let mut hl = HighlightLines::new(syntax, &assets.theme);
     let mut buf = String::with_capacity(line.len() + 1);
@@ -325,6 +363,7 @@ pub fn highlight_single_line(path: &str, line: &str) -> Vec<SyntaxToken> {
             break;
         }
     }
+    SINGLE_LINE_CACHE.with(|c| c.borrow_mut().insert(cache_key, toks.clone()));
     toks
 }
 

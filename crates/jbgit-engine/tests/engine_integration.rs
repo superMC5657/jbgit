@@ -2858,11 +2858,13 @@ async fn load_tree_blob(
     rx: &mut UnboundedReceiver<EngineEvent>,
     key: jbgit_core::TreeBlobKey,
 ) -> Arc<jbgit_core::TreeBlob> {
-    let epoch = handle.request_tree_blob(key.clone());
+    let epoch = handle.request_tree_blob(jbgit_core::RequestSlotId::TreeBlob, key.clone());
     recv_matching(rx, |ev| match ev {
-        EngineEvent::TreeBlobLoaded { blob, epoch: e } if e == epoch && blob.key == key => {
-            Some(blob)
-        }
+        EngineEvent::TreeBlobLoaded {
+            slot: jbgit_core::RequestSlotId::TreeBlob,
+            blob,
+            epoch: e,
+        } if e == epoch && blob.key == key => Some(blob),
         _ => None,
     })
     .await
@@ -5356,4 +5358,78 @@ async fn worktree_add_copies_worktreeinclude_ignored_files() {
         !wt_dir.join("ignored.log").exists(),
         "unmatched ignored file must not be copied"
     );
+}
+
+#[tokio::test]
+async fn stage_status_reports_new_path_for_staged_unstaged_and_dual_renames() {
+    let tmp = TempDir::new().unwrap();
+    let dir = tmp.path().to_path_buf();
+    git(&dir, &["init", "-b", "main"]);
+    git(&dir, &["config", "user.name", "Test"]);
+    git(&dir, &["config", "user.email", "test@example.com"]);
+
+    // Use enough distinct content so libgit2 rename detection confidently tracks renames.
+    let body = (0..30)
+        .map(|i| format!("line {i}: rename tracking payload for stage_status regression\n"))
+        .collect::<String>();
+    fs::write(dir.join("a.txt"), &body).unwrap();
+    git(&dir, &["add", "a.txt"]);
+    git(&dir, &["commit", "-m", "init"]);
+
+    // Dual-stage rename: HEAD `a.txt` -> staged `b.txt` -> worktree `c.txt`.
+    git(&dir, &["mv", "a.txt", "b.txt"]);
+    fs::rename(dir.join("b.txt"), dir.join("c.txt")).unwrap();
+
+    let loc = RepoLocation::discover(&dir).unwrap();
+    let (handle, mut rx) = EngineSupervisor::start(loc, false).unwrap();
+    handle.request_stage_status(false);
+    let status = recv_matching(&mut rx, |ev| match ev {
+        EngineEvent::StageStatusLoaded { status, .. } => Some(status),
+        _ => None,
+    })
+    .await;
+
+    let staged_entry = status
+        .staged
+        .iter()
+        .find(|e| e.kind == jbgit_core::FileStatusKind::Renamed)
+        .expect("expected staged rename a.txt -> b.txt");
+    assert_eq!(staged_entry.path, "b.txt");
+    assert_eq!(staged_entry.old_path.as_deref(), Some("a.txt"));
+
+    let unstaged_entry = status
+        .unstaged
+        .iter()
+        .find(|e| e.kind == jbgit_core::FileStatusKind::Renamed)
+        .expect("expected unstaged rename b.txt -> c.txt");
+    assert_eq!(unstaged_entry.path, "c.txt");
+    assert_eq!(unstaged_entry.old_path.as_deref(), Some("b.txt"));
+}
+
+#[tokio::test]
+async fn clone_repository_async_does_not_double_relative_subdir_paths() {
+    let tmp = TempDir::new().unwrap();
+    let origin = tmp.path().join("origin");
+    fs::create_dir_all(&origin).unwrap();
+    git(&origin, &["init", "-b", "main"]);
+    git(&origin, &["config", "user.name", "Test"]);
+    git(&origin, &["config", "user.email", "test@example.com"]);
+    fs::write(origin.join("hello.txt"), "hi\n").unwrap();
+    git(&origin, &["add", "."]);
+    git(&origin, &["commit", "-m", "init"]);
+
+    // Use a nested target path; clone_repository_async must resolve it once without
+    // doubling `sub/myrepo` into `sub/sub/myrepo`.
+    let rel_parent = tmp.path().join("nested_dest");
+    let target = rel_parent.join("cloned_repo");
+    let req = jbgit_engine::CloneRequest {
+        url: origin.display().to_string(),
+        target_dir: target.clone(),
+        depth: None,
+        recurse_submodules: false,
+    };
+    let res = jbgit_engine::clone_repository_async(req, None, None, |_| {}).await;
+    let out = res.expect("clone should succeed");
+    assert!(out.join("hello.txt").is_file(), "cloned worktree missing at {out:?}");
+    assert!(!out.join("cloned_repo").exists(), "target path must not be doubled");
 }

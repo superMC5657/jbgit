@@ -61,6 +61,7 @@ jbgit 默认采用**零冲突统一键位（`preset = "default"`）**，并通�
 | `b` / `g b` / `` <Ctrl-`> `` / `<Ctrl-~>` / `<Alt-b>`*(非 Log 页)* | 呼出全局分支速查浮窗（`<Esc>` 关闭） |
 | `f` / `p` / `P` | 远程同步：**Fetch (`f`)** / **快捷 Pull (`p`)** / **Push… (`P`)** |
 | `<Alt-l>` / `<Alt-e>` | 打开 **Pull… 选项对话框 (`<Alt-l>`)** / **标准 Rebase… 选项对话框 (`<Alt-e>`)** |
+| `<Alt-Shift-g>` / `<Alt-Shift-b>` / `<Alt-Shift-s>` / `<Alt-Shift-r>` | *(Bisect 进行中)* 标记当前提交为 **Good** / **Bad** / **Skip** / **Reset** 结束二分查找 |
 | `<Alt-u>` | **Update Project**（三套预设一致）：贮藏本地改动 → `fetch --all --prune` → 当前分支按 `[update].mode` 合并或变基 upstream → 其他跟踪分支仅快进 → 可选同步更新已初始化子模块 → 恢复改动；若当前分支无上游或上游已删除 (`[gone]`) 会自动弹出跟踪分支选择器；完成通知 `<Alt-z>`「查看」打开只读 Range 筛选的 Log。头部分支胶囊中的 `↓N` 计数可点击打开模式选择（含子模块时提供 `Update Submodules` 复选框） |
 | `<Alt-r>` | **Configure Remotes…**：远端列表（添加 / 重命名 / 编辑 URL / 删除 / 获取），详见[四、远端与凭据](#四远端与凭据-remotes--credentials) |
 | `<Alt-o>` / 点击头部仓库名 | **切换仓库**：最近仓库 / 当前仓库的 linked worktree / 已初始化子模块，模糊过滤，`<Ctrl-o>` 输入任意路径；详见[五、切换仓库与 Worktree](#五切换仓库与-worktree-repositories--working-trees) |
@@ -159,7 +160,7 @@ jbgit 默认采用**零冲突统一键位（`preset = "default"`）**，并通�
 | `{` / `}` | 跳转至上一个 / 下一个变更文件 |
 | `S` | 切换单列统一对比 (Unified) / 双列并排对比 (Side-by-Side) |
 | `w` | 循环切换上下文保留行数 (3 行 / 10 行 / 全量) |
-| `b` | 循环切换忽略空白模式（`Exact` → `-b` 忽略空白数量变化 → `-w` 忽略全部空白；Commit Diff 开启忽略空白时自动禁用局部行/块暂存，避免丢失空白） |
+| `I` | 循环切换忽略空白模式（`Exact` → `-b` 忽略空白数量变化 → `-w` 忽略全部空白；Commit Diff 开启忽略空白时自动禁用局部行/块暂存，避免丢失空白） |
 | `W` | 切换软换行（Soft Wrap，按显示宽度与 CJK 字符边界自动折行并同步滚屏高度） |
 | `h` / `l` 或 `<Left>` / `<Right>` | 未开启软换行时按列水平滚动（`<Shift-Left>` / `<Shift-Right>` 大步进），标题栏显示 `Col +N` 指示；Tab 字符按真实 `tab_size` 列对齐展开 |
 | `/` · `n` / `N` · `<Esc>` | Diff 内联搜索：`/` 打开底部搜索栏（忽略大小写、实时统计 `[cur/total]` 并高亮命中片段），`Enter` 确认后用 `n` / `N` 跳转下一/上一命中并自动居中滚屏，`<Esc>` 优先关闭搜索 |
@@ -373,6 +374,17 @@ compact_refs = false
 [log]
 # 启用路径筛选 (Paths) 时，右侧变更文件树是否仅显示命中筛选路径的文件
 show_only_affected_changes = true
+# 是否高亮当前 Git 用户的提交 (My Commits)
+highlight_my_commits = true
+# 是否淡化显示已被 cherry-pick 到 HEAD 的提交 (Already Cherry-Picked)
+highlight_cherry_picked = true
+# 提交日志表是否显示 Author 列与 Date 列
+show_author_column = true
+show_date_column = true
+# 是否将提交引用胶囊右对齐显示
+align_labels_right = false
+# 是否默认启用 LinearBek 线性化合并折叠视图
+linear_bek = false
 
 [diff]
 # 是否开启代码语法高亮
@@ -463,6 +475,16 @@ executable = ""
 [commit]
 # 当仓库 core.autocrlf 未设为 true/input 且待提交的暂存文本包含 CRLF (\r\n) 换行符时发出提交前提醒
 warn_crlf = true
+
+[performance]
+# 超过该索引条目阈值时按大仓库自适应降级 status 扫描开销
+large_index_entries = 20000
+# 工作区未暂存重命名检测策略: "auto" (大仓库自动关闭) | "always" | "never"
+worktree_renames = "auto"
+# 未跟踪目录递归展开策略: "always" | "auto" (大仓库仅展示目录项) | "never"
+recurse_untracked_dirs = "always"
+# 快照加载时是否预读提交正文（关闭可降低超大仓库冷启动内存，但文本搜索仅匹配标题/作者/哈希）
+load_commit_bodies = true
 ```
 
 > 提示：若在同一配置层中同时存在 `jbgit.toml` 和 `theme.toml`，且 `theme.toml` 未显式设置 `flavor` 或 `[glyphs].mode`，则会继承该层 `jbgit.toml` 中的 `[general].flavor` 与 `[graph].glyph_mode`。
@@ -577,7 +599,7 @@ prepend_keymap = [
 
 | 作用域 | 可用 `run` 动作标识符 |
 | :--- | :--- |
-| `global` | `quit`, `help`, `context_menu`, `refresh`, `tab_commit`, `tab_log`, `tab_branches`, `tab_stash`, `tab_console`, `focus_next`, `focus_prev`, `toggle_branches_popup`, `toggle_branches_pane`, `git_fetch`, `git_pull`, `git_push`, `update_project`, `configure_remotes`, `switch_repository`, `clone_repository`, `worktrees`, `resolve_conflicts`, `update_submodules`, `unshallow`, `bisect_good`, `bisect_bad`, `bisect_skip`, `bisect_reset`, `cycle_gpg_sign`, `goto_revision`, `palette`, `toggle_glyph_mode`, `cycle_graph_renderer`, `git_status_probe`, `noop` |
+| `global` | `quit`, `help`, `context_menu`, `refresh`, `tab_commit`, `tab_log`, `tab_branches`, `tab_stash`, `tab_console`, `focus_next`, `focus_prev`, `toggle_branches_popup`, `toggle_branches_pane`, `git_fetch`, `git_pull`, `git_pull_dialog`, `git_rebase_dialog`, `git_push`, `update_project`, `configure_remotes`, `switch_repository`, `clone_repository`, `worktrees`, `resolve_conflicts`, `update_submodules`, `unshallow`, `bisect_good`, `bisect_bad`, `bisect_skip`, `bisect_reset`, `cycle_gpg_sign`, `goto_revision`, `palette`, `toggle_glyph_mode`, `cycle_graph_renderer`, `git_status_probe`, `noop` |
 | `log` | `cursor_down`, `cursor_up`, `goto_top`, `goto_bottom`, `page_down_half`, `page_up_half`, `goto_revision`, `focus_filter`, `toggle_branches_pane`, `toggle_log_row_selection`, `compare_or_diff`, `swap_compare_direction`, `toggle_only_affected_changes`, `zoom_diff`, `copy_hash`, `copy_commit_message`, `copy_row_summary`, `checkout`, `new_branch`, `uncommit`, `reword`, `drop_commit`, `choose_parent`, `toggle_group`, `file_history`, `annotate`, `collapse_linear_branch`, `expand_linear_branch`, `collapse_all_linear_branches`, `expand_all_linear_branches`, `browse_revision`, `toggle_no_merges`, `toggle_linear_bek`, `log_speed_search`, `maximize_commit_message`, `open_reflog`, `log_load_more` |
 | `branch` | `branch_search`, `toggle_favorite`, `checkout`, `new_branch`, `rename_branch`, `delete_branch`, `navigate_branch`, `open_reflog` |
 | `commit` | `cursor_down`, `cursor_up`, `goto_top`, `goto_bottom`, `toggle_stage`, `stage_selection`, `unstage_selection`, `focus_commit_msg`, `commit`, `commit_and_push`, `toggle_amend`, `toggle_signoff`, `commit_history`, `select_all`, `discard_changes`, `toggle_group`, `edit_file`, `file_history`, `annotate`, `apply_patch`, `apply_patch_clipboard` |

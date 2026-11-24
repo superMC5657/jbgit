@@ -214,7 +214,7 @@ fn rebase_dialog_validates_version_root_onto_and_remembers_choices() {
 
     let preview = screen_text(&ts.render(120, 40));
     assert!(
-        preview.contains("git rebase --update-refs --autosquash --onto topic origin/main"),
+        preview.contains("git rebase -i --update-refs --autosquash --onto topic origin/main"),
         "{preview}"
     );
 

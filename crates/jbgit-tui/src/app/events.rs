@@ -18,10 +18,19 @@ impl AppState {
                 }
             }
             UiAsyncEvent::Askpass(req) => self.enqueue_credential(req),
+            UiAsyncEvent::InitRepoFinished(dir) => {
+                self.modal_stack
+                    .retain(|l| !matches!(l, ModalLayer::Welcome(_)));
+                self.request_repo_switch(&dir, true);
+                self.needs_redraw = true;
+            }
             UiAsyncEvent::InitRepoFailed(err) => {
-                if let Some(ModalLayer::Welcome(ws)) = self.modal_stack.last_mut() {
-                    ws.initializing = false;
-                    ws.error = Some(err.clone());
+                for layer in self.modal_stack.iter_mut().rev() {
+                    if let ModalLayer::Welcome(ws) = layer {
+                        ws.initializing = false;
+                        ws.error = Some(err.clone());
+                        break;
+                    }
                 }
                 self.status_notice = Some(
                     self.i18n
@@ -48,7 +57,8 @@ impl AppState {
                         self.i18n
                             .t_fmt("toast.repo_cloned", &[("path", &shown)]),
                     );
-                    self.pending_repo_switch = Some(dir);
+                    let auto_confirm = self.repo_snapshot.is_none();
+                    self.request_repo_switch(&dir, auto_confirm);
                     self.needs_redraw = true;
                 }
                 Err(err) => {
@@ -66,6 +76,27 @@ impl AppState {
                     self.needs_redraw = true;
                 }
             },
+            UiAsyncEvent::WorktreeSetupFinished {
+                worktree,
+                command,
+                result,
+            } => {
+                let name = worktree.file_name().map_or_else(
+                    || worktree.display().to_string(),
+                    |n| n.to_string_lossy().into(),
+                );
+                self.status_notice = Some(match result {
+                    Ok(()) => self.i18n.t_fmt(
+                        "toast.worktree_setup_ok",
+                        &[("name", &name), ("cmd", &command)],
+                    ),
+                    Err(err) => self.i18n.t_fmt(
+                        "toast.worktree_setup_failed",
+                        &[("name", &name), ("cmd", &command), ("err", &err)],
+                    ),
+                });
+                self.needs_redraw = true;
+            }
             UiAsyncEvent::LogGraphRebuilt(rebuilt) => {
                 if self.log.graph.apply_rebuilt(*rebuilt) {
                     if let Some(err) = &self.log.graph.filter_error {
@@ -205,6 +236,7 @@ impl AppState {
                 if is_stage_status
                     && self.stage_workbench.status().map(Arc::as_ptr) != prev_stage_ptr
                 {
+                    self.diff_caches.clear_worktree_blames();
                     self.check_conflict_resolver_staleness();
                 }
                 self.reconcile_all_requests(&mut effects);
@@ -247,6 +279,11 @@ impl AppState {
                 self.repo_snapshot = Some(snapshot);
                 self.apply_pending_remote_selection();
                 self.sync_open_push_dialog_remotes(&mut effects);
+                if let Some(rf) = self.modal_stack.reflog_mut() {
+                    rf.loading = true;
+                    rf.error = None;
+                    effects.push(Effect::RequestReflog(rf.key.clone()));
+                }
                 effects.push(Effect::RequestCommitPrecheck);
             }
             EngineEvent::RefAheadBehindBackfilled { epoch, updates } => {
@@ -280,15 +317,20 @@ impl AppState {
                     }
                 }
                 let rebase_sync = slot == RequestSlotId::RebaseCommitDetails;
-                if rebase_sync
-                    && let Some(ModalLayer::Dialog(d)) = self.modal_stack.last_mut()
-                    && let crate::dialogs::Dialog::RebaseTodo(r) = d.as_mut()
-                {
-                    if r.details_requested.as_ref() == Some(&bundle.key) {
-                        r.details_requested = None;
-                    }
-                    if r.desired_details_key().as_ref() == Some(&bundle.key) {
-                        r.selected_file = r.selected_file.min(bundle.changes.len().saturating_sub(1));
+                if rebase_sync {
+                    for layer in self.modal_stack.iter_mut().rev() {
+                        if let ModalLayer::Dialog(d) = layer
+                            && let crate::dialogs::Dialog::RebaseTodo(r) = d.as_mut()
+                        {
+                            if r.details_requested.as_ref() == Some(&bundle.key) {
+                                r.details_requested = None;
+                            }
+                            if r.desired_details_key().as_ref() == Some(&bundle.key) {
+                                r.selected_file =
+                                    r.selected_file.min(bundle.changes.len().saturating_sub(1));
+                            }
+                            break;
+                        }
                     }
                 }
                 if slot == RequestSlotId::ReflogCommitDetails
@@ -412,11 +454,15 @@ impl AppState {
                         }
                     }
                     RequestSlotId::RebaseFileDiff => {
-                        if let Some(ModalLayer::Dialog(d)) = self.modal_stack.last_mut()
-                            && let crate::dialogs::Dialog::RebaseTodo(r) = d.as_mut()
-                            && r.diff_requested.as_ref() == Some(&diff.key)
-                        {
-                            r.diff_requested = None;
+                        for layer in self.modal_stack.iter_mut().rev() {
+                            if let ModalLayer::Dialog(d) = layer
+                                && let crate::dialogs::Dialog::RebaseTodo(r) = d.as_mut()
+                            {
+                                if r.diff_requested.as_ref() == Some(&diff.key) {
+                                    r.diff_requested = None;
+                                }
+                                break;
+                            }
                         }
                     }
                     RequestSlotId::ReflogFileDiff => {
@@ -458,8 +504,24 @@ impl AppState {
                     .and_then(|rf| rf.desired_diff_key(&self.diff_caches))
                     .as_ref()
                     == Some(&diff.key);
-                let is_wanted =
-                    log_wants || stash_wants || fh_wants || ann_wants || push_wants || reflog_wants;
+                let rebase_wants = self.modal_stack.iter().rev().any(|l| {
+                    matches!(
+                        l,
+                        ModalLayer::Dialog(d)
+                            if matches!(
+                                d.as_ref(),
+                                crate::dialogs::Dialog::RebaseTodo(r)
+                                    if r.diff_requested.as_ref() == Some(&diff.key)
+                            )
+                    )
+                });
+                let is_wanted = log_wants
+                    || stash_wants
+                    || fh_wants
+                    || ann_wants
+                    || push_wants
+                    || reflog_wants
+                    || rebase_wants;
                 self.diff_caches.insert_diff(Arc::clone(&diff));
                 if is_wanted && self.diff_caches.peek_syntax(&diff.key).is_none() {
                     self.schedule_file_syntax(diff, &mut effects);
@@ -537,7 +599,7 @@ impl AppState {
                     return effects;
                 }
                 if let Some(ann) = self.modal_stack.annotate_mut()
-                    && ann.key == key
+                    && ann.key.cache_key() == key.cache_key()
                 {
                     ann.loading = false;
                     ann.bundle = None;
@@ -596,8 +658,8 @@ impl AppState {
                 message,
                 epoch,
             } => self.on_tree_load_failed(&key, message, epoch, &mut effects),
-            EngineEvent::TreeBlobLoaded { blob, epoch } => {
-                self.on_tree_blob_loaded(blob, epoch, &mut effects);
+            EngineEvent::TreeBlobLoaded { slot, blob, epoch } => {
+                self.on_tree_blob_loaded(slot, blob, epoch, &mut effects);
             }
             EngineEvent::TreeIndexLoaded { oid, paths, epoch } => {
                 self.on_tree_index_loaded(oid, paths, epoch);
@@ -802,6 +864,30 @@ impl AppState {
                         pd.error = Some(msg.clone());
                     }
                 }
+                if let Some(rf) = self.modal_stack.reflog_mut() {
+                    rf.loading = false;
+                    rf.details_requested = None;
+                    rf.diff.requested = None;
+                    if rf.bundle.is_none() && rf.error.is_none() {
+                        rf.error = Some(msg.clone());
+                    }
+                }
+                if let Some(tb) = self.modal_stack.tree_browser_mut() {
+                    tb.in_flight = None;
+                    tb.clear_search_index_request();
+                    tb.preview_requested = None;
+                }
+                if let Some(ap) = self.modal_stack.apply_patch_mut() {
+                    ap.pending_check_due = None;
+                }
+                for layer in self.modal_stack.iter_mut() {
+                    if let ModalLayer::Dialog(d) = layer
+                        && let crate::dialogs::Dialog::RebaseTodo(r) = d.as_mut()
+                    {
+                        r.details_requested = None;
+                        r.diff_requested = None;
+                    }
+                }
                 self.status_notice = Some(self.i18n.t_fmt("toast.engine_error", &[("msg", &msg)]));
             }
         }
@@ -814,6 +900,7 @@ impl AppState {
         let Some(status) = self.stage_workbench.status().cloned() else {
             return;
         };
+        let mut prompt_all_resolved = false;
         if let Some(cq) = self.modal_stack.conflict_queue_mut() {
             let is_reversed = cq.is_reversed;
             for entry in &mut cq.entries {
@@ -833,6 +920,13 @@ impl AppState {
                     cq.completion_prompted = false;
                 }
             }
+            if !cq.entries.is_empty() && cq.all_resolved() && !cq.completion_prompted {
+                cq.completion_prompted = true;
+                prompt_all_resolved = true;
+            }
+        }
+        if prompt_all_resolved && self.modal_stack.conflict_merge().is_none() {
+            self.open_all_conflicts_resolved_dialog();
         }
         let Some(cm) = self.modal_stack.conflict_merge_mut() else {
             return;

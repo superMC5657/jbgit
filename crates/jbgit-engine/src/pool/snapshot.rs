@@ -155,7 +155,10 @@ fn side_info_from_entry(repo: &Repository, entry: &git2::IndexEntry) -> Conflict
     let size = if entry.mode == GITLINK_MODE {
         None
     } else {
-        repo.find_blob(entry.id).ok().map(|b| b.size() as u64)
+        repo.odb()
+            .ok()
+            .and_then(|odb| odb.read_header(entry.id).ok())
+            .map(|(sz, _)| sz as u64)
     };
     ConflictSideInfo {
         oid: to_core_oid(entry.id),
@@ -260,22 +263,47 @@ pub(crate) fn load_conflict_document_sync(
             }));
         }
 
-        let base_bytes = ancestor_entry
-            .as_ref()
-            .and_then(|e| repo.find_blob(e.id).ok())
-            .map(|b| b.content().to_vec());
-        let yours_bytes = yours_entry
-            .as_ref()
-            .and_then(|e| repo.find_blob(e.id).ok())
-            .map(|b| b.content().to_vec());
-        let theirs_bytes = theirs_entry
-            .as_ref()
-            .and_then(|e| repo.find_blob(e.id).ok())
-            .map(|b| b.content().to_vec());
-        let worktree_bytes = if full_path.is_file() {
-            std::fs::read(&full_path).unwrap_or_default()
+        let read_stage_checked = |entry: &Option<git2::IndexEntry>| -> Result<Option<Vec<u8>>, ()> {
+            let Some(e) = entry.as_ref() else {
+                return Ok(None);
+            };
+            match crate::blob_reader::read_blob(repo, e.id, Some(e.mode)) {
+                crate::blob_reader::CheckedBlob::Loaded {
+                    is_binary: true, ..
+                }
+                | crate::blob_reader::CheckedBlob::TooLarge { .. } => Err(()),
+                crate::blob_reader::CheckedBlob::Loaded { bytes, .. } => Ok(Some(bytes)),
+                crate::blob_reader::CheckedBlob::Missing => Ok(None),
+            }
+        };
+        let worktree_checked = if full_path.is_file() {
+            match crate::blob_reader::read_worktree_path(&location.workdir, path) {
+                crate::blob_reader::CheckedBlob::Loaded {
+                    is_binary: true, ..
+                }
+                | crate::blob_reader::CheckedBlob::TooLarge { .. } => Err(()),
+                crate::blob_reader::CheckedBlob::Loaded { bytes, .. } => Ok(bytes),
+                crate::blob_reader::CheckedBlob::Missing => Ok(Vec::new()),
+            }
         } else {
-            Vec::new()
+            Ok(Vec::new())
+        };
+
+        let (Ok(base_bytes), Ok(yours_bytes), Ok(theirs_bytes), Ok(worktree_bytes)) = (
+            read_stage_checked(&ancestor_entry),
+            read_stage_checked(&yours_entry),
+            read_stage_checked(&theirs_entry),
+            worktree_checked,
+        ) else {
+            return Ok(LoadedConflict::Special(SpecialConflictInfo {
+                path: path.to_string(),
+                kind: SpecialConflictKind::Binary,
+                is_reversed,
+                ours: ours_info,
+                theirs: theirs_info,
+                ours_label: special_ours_label,
+                theirs_label: special_theirs_label,
+            }));
         };
 
         let is_binary = base_bytes.as_deref().is_some_and(is_binary_bytes)

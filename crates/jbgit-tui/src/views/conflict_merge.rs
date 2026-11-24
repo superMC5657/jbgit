@@ -20,19 +20,32 @@ fn skip_display_cols(text: &str, skip_cols: usize, tab_size: usize) -> usize {
     if skip_cols == 0 {
         return 0;
     }
-    let tab_w = tab_size.max(1);
-    let mut skipped = 0usize;
+    let tab_w = tab_size.clamp(1, 16);
+    let mut col = 0usize;
     for (idx, ch) in text.char_indices() {
-        if skipped >= skip_cols {
+        if col >= skip_cols {
             return idx;
         }
-        skipped += if ch == '\t' {
-            tab_w
+        let adv = if ch == '\t' {
+            tab_w - (col % tab_w)
         } else {
             ch.width().unwrap_or(0)
         };
+        if col + adv > skip_cols {
+            // Do not skip past a wide char that straddles the viewport left edge.
+            return idx;
+        }
+        col += adv;
     }
     text.len()
+}
+
+fn is_conflict_placeholder(text: &str) -> bool {
+    matches!(
+        text,
+        "<File will be deleted>" | "<Discarded (Neither)>" | "<Empty>"
+    ) || text.starts_with("⚠ ")
+        || text.starts_with("Non-conflicting (")
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -63,7 +76,7 @@ fn build_pane_spans(
         return spans;
     }
 
-    let is_placeholder = text.starts_with("⚠ ") || text.starts_with('<');
+    let is_placeholder = is_conflict_placeholder(text);
     let use_syntax = syntax_on && !is_placeholder && !text.is_empty();
     let raw_tokens = if use_syntax {
         highlight_single_line(path, text)

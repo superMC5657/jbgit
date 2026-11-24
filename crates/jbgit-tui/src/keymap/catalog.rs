@@ -62,12 +62,8 @@ const COMMIT_EDITOR_ACTIONS: [KeyAction; 5] = [
     KeyAction::CommitHistory,
 ];
 
-const ADVANCED_TOOL_ACTIONS: [(&KeyAction, &str); 13] = [
+const ADVANCED_TOOL_ACTIONS: [(&KeyAction, &str); 9] = [
     (&KeyAction::CloneRepository, "—"),
-    (&KeyAction::BisectGood, "—"),
-    (&KeyAction::BisectBad, "—"),
-    (&KeyAction::BisectSkip, "—"),
-    (&KeyAction::BisectReset, "—"),
     (&KeyAction::CycleGpgSign, "—"),
     (&KeyAction::Palette, "—"),
     (&KeyAction::ToggleGlyphMode, "F12"),
@@ -321,6 +317,15 @@ const fn diff_scope(state: &AppState) -> DiffScope {
     }
 }
 
+fn is_diff_search_active(state: &AppState) -> bool {
+    match state.active_tab {
+        WorkspaceTab::Log => state.log.details.diff.search.active,
+        WorkspaceTab::Commit => state.stage_workbench.diff_search().active,
+        WorkspaceTab::Stash => state.stash.diff().search.active,
+        WorkspaceTab::Console => false,
+    }
+}
+
 pub fn is_action_applicable(run: &KeyAction, state: &AppState) -> bool {
     if !run.is_active() {
         return false;
@@ -351,7 +356,10 @@ pub fn is_action_applicable(run: &KeyAction, state: &AppState) -> bool {
                 | KeyAction::ChooseParent
                 | KeyAction::SwapCompareDirection
         ) && (!matches!(run, KeyAction::SwapCompareDirection)
-            || state.log.details.is_comparing_versions());
+            || state.log.details.is_comparing_versions()
+            || state.log.branch_compare.is_some())
+            && (!matches!(run, KeyAction::DiffSearchNext | KeyAction::DiffSearchPrev)
+                || is_diff_search_active(state));
     }
 
     match run {
@@ -435,9 +443,10 @@ pub fn is_action_applicable(run: &KeyAction, state: &AppState) -> bool {
         | KeyAction::ToggleDiffSoftWrap
         | KeyAction::DiffScrollLeft
         | KeyAction::DiffScrollRight
-        | KeyAction::DiffSearch
-        | KeyAction::DiffSearchNext
-        | KeyAction::DiffSearchPrev => is_diff_focused(state),
+        | KeyAction::DiffSearch => is_diff_focused(state),
+        KeyAction::DiffSearchNext | KeyAction::DiffSearchPrev => {
+            is_diff_focused(state) && is_diff_search_active(state)
+        }
 
         KeyAction::Checkout => {
             state.active_tab == WorkspaceTab::Log
@@ -465,7 +474,8 @@ pub fn is_action_applicable(run: &KeyAction, state: &AppState) -> bool {
                 )
         }
         KeyAction::SwapCompareDirection => {
-            state.active_tab == WorkspaceTab::Log && state.log.details.is_comparing_versions()
+            state.active_tab == WorkspaceTab::Log
+                && (state.log.details.is_comparing_versions() || state.log.branch_compare.is_some())
         }
         KeyAction::CollapseAllLinearBranches | KeyAction::ExpandAllLinearBranches => {
             state.active_tab == WorkspaceTab::Log
@@ -1844,9 +1854,7 @@ pub fn evaluate_annotate_command(state: &AppState, cmd: AnnotateCommand) -> Comm
                             .and_then(|s| s.head_oid)
                             .is_some()
                 } else {
-                    ann.selected_commit()
-                        .and_then(|c| c.previous.as_ref())
-                        .is_some()
+                    ann.selected_previous().is_some()
                 }
             });
             if !has_prev {

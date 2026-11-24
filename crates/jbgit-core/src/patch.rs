@@ -162,15 +162,17 @@ pub fn needs_three_way_index_fallback(check: &PatchCheck) -> bool {
 }
 
 /// Strips `strip` leading `/`-separated path components and prepends `directory` if non-empty.
+///
+/// Mirrors `git apply -p<n>`: when `strip` is greater than or equal to the number of path
+/// components, the path is stripped away and an empty string is returned.
 pub fn apply_strip_and_directory(raw_path: &str, strip: u8, directory: Option<&str>) -> String {
     let norm = raw_path.replace('\\', "/");
     let parts: Vec<&str> = norm.split('/').filter(|s| !s.is_empty()).collect();
-    let stripped = if parts.is_empty() {
-        String::new()
-    } else {
-        let skip = (strip as usize).min(parts.len().saturating_sub(1));
-        parts[skip..].join("/")
-    };
+    let skip = strip as usize;
+    if parts.is_empty() || skip >= parts.len() {
+        return String::new();
+    }
+    let stripped = parts[skip..].join("/");
     match directory
         .map(|d| d.replace('\\', "/"))
         .map(|d| d.trim_matches('/').to_string())
@@ -195,8 +197,10 @@ fn parse_header_path(raw: &str) -> Option<String> {
     Some(unquote_path(without_ts))
 }
 
-fn parse_diff_git_b_path(line: &str) -> Option<String> {
-    let rest = line.strip_prefix("diff --git ")?;
+fn parse_diff_git_paths(line: &str) -> (Option<String>, Option<String>) {
+    let Some(rest) = line.strip_prefix("diff --git ") else {
+        return (None, None);
+    };
     // Handle quoted or unquoted `a/... b/...`: scan tokens cleanly.
     let mut tokens: Vec<String> = Vec::new();
     let bytes = rest.as_bytes();
@@ -232,13 +236,19 @@ fn parse_diff_git_b_path(line: &str) -> Option<String> {
         }
     }
     if tokens.len() == 2 {
-        return Some(tokens.remove(1));
+        let b = tokens.pop();
+        let a = tokens.pop();
+        return (a, b);
     }
     // Unquoted path containing spaces: `a/<p> b/<p>` — find ` b/` separator.
     if let Some(pos) = rest.rfind(" b/") {
-        return Some(rest[pos + 1..].to_string());
+        return (
+            Some(rest[..pos].to_string()),
+            Some(rest[pos + 1..].to_string()),
+        );
     }
-    tokens.pop()
+    let last = tokens.pop();
+    (last.clone(), last)
 }
 
 /// Splits raw unified/git patch text into per-file sections and detects Git `index` headers.
@@ -247,6 +257,18 @@ pub fn parse_patch_sections(
     strip: u8,
     directory: Option<&str>,
 ) -> (Vec<PatchFileSection>, bool) {
+    parse_patch_sections_with_options(patch_text, strip, directory, false)
+}
+
+/// Splits raw unified/git patch text into per-file sections, naming renamed
+/// files after their pre-image (`---` / `a/`) path when `reverse` is `true`
+/// so section lookup matches `git apply -R --numstat`.
+pub fn parse_patch_sections_with_options(
+    patch_text: &str,
+    strip: u8,
+    directory: Option<&str>,
+    reverse: bool,
+) -> (Vec<PatchFileSection>, bool) {
     let mut sections: Vec<PatchFileSection> = Vec::new();
     let mut has_index_headers = false;
 
@@ -254,25 +276,33 @@ pub fn parse_patch_sections(
     let has_diff_git = lines.iter().any(|l| l.starts_with("diff --git "));
 
     let mut cur_lines: Vec<&str> = Vec::new();
-    let mut cur_raw_path: Option<String> = None;
     let mut cur_from_path: Option<String> = None;
     let mut cur_to_path: Option<String> = None;
-    let mut cur_git_path: Option<String> = None;
+    let mut cur_git_a: Option<String> = None;
+    let mut cur_git_b: Option<String> = None;
 
     let flush = |sections: &mut Vec<PatchFileSection>,
                  cur_lines: &mut Vec<&str>,
-                 cur_raw_path: &mut Option<String>,
                  cur_from_path: &mut Option<String>,
                  cur_to_path: &mut Option<String>,
-                 cur_git_path: &mut Option<String>| {
+                 cur_git_a: &mut Option<String>,
+                 cur_git_b: &mut Option<String>| {
         if cur_lines.is_empty() {
             return;
         }
-        let chosen = cur_to_path
-            .take()
-            .or_else(|| cur_from_path.take())
-            .or_else(|| cur_git_path.take())
-            .or_else(|| cur_raw_path.take());
+        let chosen = if reverse {
+            cur_from_path
+                .take()
+                .or_else(|| cur_to_path.take())
+                .or_else(|| cur_git_a.take())
+                .or_else(|| cur_git_b.take())
+        } else {
+            cur_to_path
+                .take()
+                .or_else(|| cur_from_path.take())
+                .or_else(|| cur_git_b.take())
+                .or_else(|| cur_git_a.take())
+        };
         if let Some(raw) = chosen {
             let path = apply_strip_and_directory(&raw, strip, directory);
             if !path.is_empty() {
@@ -283,10 +313,10 @@ pub fn parse_patch_sections(
             }
         }
         cur_lines.clear();
-        *cur_raw_path = None;
         *cur_from_path = None;
         *cur_to_path = None;
-        *cur_git_path = None;
+        *cur_git_a = None;
+        *cur_git_b = None;
     };
 
     let mut idx = 0;
@@ -305,13 +335,15 @@ pub fn parse_patch_sections(
             flush(
                 &mut sections,
                 &mut cur_lines,
-                &mut cur_raw_path,
                 &mut cur_from_path,
                 &mut cur_to_path,
-                &mut cur_git_path,
+                &mut cur_git_a,
+                &mut cur_git_b,
             );
             if line.starts_with("diff --git ") {
-                cur_git_path = parse_diff_git_b_path(line);
+                let (a, b) = parse_diff_git_paths(line);
+                cur_git_a = a;
+                cur_git_b = b;
             }
         }
 
@@ -340,10 +372,10 @@ pub fn parse_patch_sections(
     flush(
         &mut sections,
         &mut cur_lines,
-        &mut cur_raw_path,
         &mut cur_from_path,
         &mut cur_to_path,
-        &mut cur_git_path,
+        &mut cur_git_a,
+        &mut cur_git_b,
     );
 
     (sections, has_index_headers)
@@ -564,7 +596,7 @@ mod tests {
         );
         assert_eq!(
             apply_strip_and_directory("only.txt", 5, Some("sub")),
-            "sub/only.txt"
+            ""
         );
     }
 

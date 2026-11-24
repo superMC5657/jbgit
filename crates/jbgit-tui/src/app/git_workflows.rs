@@ -208,6 +208,10 @@ impl AppState {
                             && let Some(err) = cp.error(&self.i18n)
                         {
                             self.status_notice = Some(err);
+                        } else if let Dialog::Identity(id) = d.as_ref()
+                            && let Some(err) = id.error(&self.i18n)
+                        {
+                            self.status_notice = Some(err);
                         }
                     }
                 }
@@ -331,6 +335,17 @@ impl AppState {
                     .branch_cleanup_mut()
                     .and_then(|bc| bc.delete_op());
                 if let Some(op) = op {
+                    if let GitOp::Sequence(ops) = &op {
+                        self.pending_batch_branch_deletes = ops
+                            .iter()
+                            .filter_map(|o| match o {
+                                GitOp::DeleteBranch { name, tip, .. } => Some((name.clone(), *tip)),
+                                _ => None,
+                            })
+                            .collect();
+                    } else {
+                        self.pending_batch_branch_deletes.clear();
+                    }
                     self.modal_stack.pop();
                     self.start_git_op(op, effects);
                 }
@@ -513,7 +528,8 @@ impl AppState {
                             KeyCode::Char(c) if !ctrl && !alt => ed.insert_char(c),
                             _ => {}
                         }
-                        ed.ensure_cursor_visible(60, 5);
+                        let tab_size = self.config.jbgit.diff.tab_size;
+                        ed.ensure_cursor_visible_with_tab(60, 5, tab_size);
                     }
                 }
                 if let Some(msg) = notice {
@@ -531,6 +547,16 @@ impl AppState {
                     let deletes = doc.deletes_file();
                     let path = doc.path.clone();
                     let unresolved = doc.unresolved_count();
+                    if doc.side_presence == jbgit_core::ConflictSidePresence::BothDeleted
+                        && !all_resolved
+                    {
+                        let count_s = unresolved.to_string();
+                        self.status_notice = Some(self.i18n.t_fmt(
+                            "toast.saved_unresolved_conflict",
+                            &[("path", &path), ("count", &count_s)],
+                        ));
+                        return true;
+                    }
                     let content = if deletes {
                         Vec::new()
                     } else {
@@ -678,13 +704,19 @@ impl AppState {
             Action::PromptMerge { rev } => self.prompt_merge(rev),
             Action::RememberMergeOptions(options) => {
                 if let Some(path) = self.merge_options_path() {
-                    let _ = std::fs::write(path, options.to_remembered());
+                    let body = options.to_remembered();
+                    super::spawn_background_io("jbgit-opts-writer", move || {
+                        let _ = std::fs::write(path, body);
+                    });
                 }
             }
             Action::PromptPull => self.prompt_pull(),
             Action::RememberPullOptions(options) => {
                 if let Some(path) = self.pull_options_path() {
-                    let _ = std::fs::write(path, options.to_remembered());
+                    let body = options.to_remembered();
+                    super::spawn_background_io("jbgit-opts-writer", move || {
+                        let _ = std::fs::write(path, body);
+                    });
                 }
             }
             Action::PullDialogFetch => {
@@ -705,7 +737,57 @@ impl AppState {
             Action::PromptRebase { onto } => self.prompt_rebase(onto.clone()),
             Action::RememberRebaseOptions(options) => {
                 if let Some(path) = self.rebase_options_path() {
-                    let _ = std::fs::write(path, options.to_remembered());
+                    let body = options.to_remembered();
+                    super::spawn_background_io("jbgit-opts-writer", move || {
+                        let _ = std::fs::write(path, body);
+                    });
+                }
+            }
+            Action::OpenInteractiveRebaseFromDialog(options) => {
+                let opened = self.open_interactive_rebase_onto(&options.onto);
+                if !opened {
+                    self.start_git_op(GitOp::Rebase { options: options.clone() }, effects);
+                }
+            }
+            Action::ConfirmCreatePatchFile {
+                source,
+                output,
+                reverse,
+                remember_dir,
+            } => {
+                let workdir = self.current_workdir();
+                let in_worktree = !workdir.as_os_str().is_empty() && output.starts_with(&workdir);
+                let exists = output.is_file();
+                let run_actions = vec![
+                    Action::RememberPatchDir(remember_dir.clone()),
+                    Action::RunGitOp(GitOp::CreatePatchFile {
+                        source: source.clone(),
+                        output: output.clone(),
+                        reverse: *reverse,
+                    }),
+                ];
+                if in_worktree || exists {
+                    let i18n = self.i18n.clone();
+                    let shown = output.display().to_string();
+                    let body_key = if in_worktree {
+                        "dialog.create_patch.warn_worktree"
+                    } else {
+                        "dialog.create_patch.warn_overwrite"
+                    };
+                    self.push_dialog(Dialog::Choice(ChoiceDialog::buttons(
+                        i18n.t("dialog.create_patch.title"),
+                        vec![i18n.t_fmt(body_key, &[("path", &shown)])],
+                        vec![
+                            ChoiceOption::new(
+                                i18n.t("dialog.create_patch.confirm_write"),
+                                Some('w'),
+                                run_actions,
+                            ),
+                            ChoiceOption::new(i18n.t("common.cancel"), Some('c'), Vec::new()),
+                        ],
+                    )));
+                } else {
+                    self.run_actions(run_actions, effects);
                 }
             }
             Action::PromptUpdateProject => self.prompt_update_project(),
@@ -885,7 +967,15 @@ impl AppState {
                 None
             }
         } else {
-            None
+            let remaining = self
+                .stage_workbench
+                .status()
+                .map_or(0, |s| s.conflicted.iter().filter(|c| c.path != path).count());
+            if remaining == 0 && self.ongoing_kind().is_some() {
+                Some(Err(()))
+            } else {
+                None
+            }
         };
         match next_step {
             Some(Ok(next_path)) => {
@@ -1216,10 +1306,15 @@ impl AppState {
             );
             return;
         };
-        let local_name = remote_ref
-            .split_once('/')
-            .map_or(remote_ref, |(_, short)| short)
-            .to_string();
+        let local_name = snap
+            .split_tracking(remote_ref)
+            .map(|(_, short)| short.to_string())
+            .unwrap_or_else(|| {
+                remote_ref
+                    .split_once('/')
+                    .map_or(remote_ref, |(_, short)| short)
+                    .to_string()
+            });
         if current == local_name {
             self.notify_error(self.i18n.t_fmt(
                 "toast.checkout_rebase_same_current",
@@ -1589,9 +1684,8 @@ impl AppState {
         let remote_branch = if is_detached {
             String::new()
         } else {
-            split_up
-                .map(|(_, rb)| rb.to_string())
-                .or(refspec_target)
+            refspec_target
+                .or_else(|| split_up.map(|(_, rb)| rb.to_string()))
                 .unwrap_or_else(|| branch.to_string())
         };
         let set_upstream = !is_detached && upstream.is_none();
@@ -1768,6 +1862,57 @@ impl AppState {
             git_version,
             remembered,
         )));
+    }
+
+    /// Resolves `onto` in the current snapshot and opens `RebaseTodoDialog` for the
+    /// linear first-parent commits in `onto..HEAD`. Returns `false` if no linear
+    /// rewrite plan can be built (caller falls back to `GitOp::Rebase`).
+    fn open_interactive_rebase_onto(&mut self, onto: &str) -> bool {
+        let Some(snap) = self.snapshot().cloned() else {
+            return false;
+        };
+        let Some(head_oid) = snap.head_oid else {
+            return false;
+        };
+        let Some(onto_oid) = snap.resolve_revision(onto) else {
+            return false;
+        };
+        if head_oid == onto_oid {
+            return false;
+        }
+        // Walk first-parent chain from HEAD to find the direct child of `onto_oid`.
+        let mut cur = head_oid;
+        let mut oldest = None;
+        for _ in 0..5000 {
+            let Some(c) = snap.commit(&cur) else {
+                break;
+            };
+            if c.parents.len() > 1 {
+                return false;
+            }
+            if c.parents.first() == Some(&onto_oid) {
+                oldest = Some(cur);
+                break;
+            }
+            let Some(&parent) = c.parents.first() else {
+                break;
+            };
+            cur = parent;
+        }
+        let Some(oldest_oid) = oldest else {
+            return false;
+        };
+        match snap.plan_rewrite_typed(oldest_oid) {
+            Ok(plan) => {
+                self.push_dialog(Dialog::RebaseTodo(crate::dialogs::RebaseTodoDialog::new(
+                    plan.base,
+                    plan.entries,
+                    plan.messages,
+                )));
+                true
+            }
+            Err(_) => false,
+        }
     }
 
     /// Requests single-flight commit details and (when open) file diff for the
@@ -2153,6 +2298,7 @@ impl AppState {
                     self.notify_deleted_tag(name, *tip);
                 }
                 GitOp::Sequence(ops) => {
+                    self.pending_batch_branch_deletes.clear();
                     if !ops.is_empty()
                         && ops
                             .iter()
@@ -2386,8 +2532,26 @@ impl AppState {
                             .t_fmt("toast.unshallow_done", &[("remote", remote)]),
                     );
                 }
+                GitOp::BisectStart { .. } | GitOp::BisectMark { .. } => {
+                    if let Some(culprit_line) = outcome
+                        .stdout
+                        .iter()
+                        .find(|l| l.contains("is the first bad commit"))
+                    {
+                        let text = culprit_line.trim().to_string();
+                        self.status_notice = Some(text.clone());
+                        self.notification = Some(Notification {
+                            text,
+                            is_error: false,
+                            action: Some((
+                                self.i18n.t("banner.bisect_reset_btn").into(),
+                                vec![Action::RunGitOp(GitOp::BisectReset)],
+                            )),
+                        });
+                    }
+                }
                 GitOp::Ongoing {
-                    step: OngoingStep::Continue | OngoingStep::Abort,
+                    step: OngoingStep::Continue | OngoingStep::Abort | OngoingStep::Skip,
                     ..
                 } => {
                     if outcome.paused_for_edit {
@@ -2892,6 +3056,9 @@ impl AppState {
                 };
                 self.notify_error(i18n.t_fmt("toast.remote_exists", &[("name", &name)]));
             }
+            Some(GitFailure::UpstreamGone { branch, .. }) => {
+                self.prompt_set_upstream(&branch);
+            }
             Some(GitFailure::Other(msg)) => {
                 self.notify_error(i18n.t_fmt("toast.op_failed_msg", &[("label", &label), ("error", &msg)]));
             }
@@ -2921,6 +3088,37 @@ impl AppState {
                 | GitFailure::WorktreeLocked,
             ) => self.notify_error(i18n.t_fmt("toast.op_failed", &[("label", &label)])),
             None => self.notify_error(i18n.t_fmt("toast.op_failed", &[("label", &label)])),
+        }
+
+        // If a Branch Cleanup batch DeleteBranch sequence stopped partway through,
+        // still attach an Undo/Restore toast for all preceding branches already deleted.
+        if let GitOp::DeleteBranch { name, .. } = &op
+            && !self.pending_batch_branch_deletes.is_empty()
+        {
+            let batch = std::mem::take(&mut self.pending_batch_branch_deletes);
+            if let Some(failed_idx) = batch.iter().position(|(b, _)| b == name)
+                && failed_idx > 0
+            {
+                let restore_ops: Vec<GitOp> = batch[..failed_idx]
+                    .iter()
+                    .map(|(b, tip)| GitOp::RestoreBranch {
+                        name: b.clone(),
+                        oid: *tip,
+                    })
+                    .collect();
+                let count_s = restore_ops.len().to_string();
+                self.notification = Some(Notification {
+                    text: i18n.t_fmt(
+                        "toast.deleted_branches_partial",
+                        &[("count", &count_s), ("failed", name)],
+                    ),
+                    is_error: true,
+                    action: Some((
+                        i18n.t_fmt("toast.restore_branches_batch_btn", &[("count", &count_s)]),
+                        vec![Action::RunGitOp(GitOp::Sequence(restore_ops))],
+                    )),
+                });
+            }
         }
     }
 

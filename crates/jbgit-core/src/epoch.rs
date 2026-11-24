@@ -100,10 +100,12 @@ pub enum RequestSlotId {
     TreeIndex = 29,
     FileHistoryCommitDetails = 30,
     AnnotateCommitDetails = 31,
+    CommitPrecheck = 32,
+    FileHistoryRepoVersion = 33,
 }
 
 impl RequestSlotId {
-    pub const COUNT: usize = 32;
+    pub const COUNT: usize = 34;
 
     pub const ALL: [Self; Self::COUNT] = [
         Self::RepoSnapshot,
@@ -138,6 +140,8 @@ impl RequestSlotId {
         Self::TreeIndex,
         Self::FileHistoryCommitDetails,
         Self::AnnotateCommitDetails,
+        Self::CommitPrecheck,
+        Self::FileHistoryRepoVersion,
     ];
 
     #[inline]
@@ -317,9 +321,17 @@ impl<K: PartialEq> RequestSlot<K> {
 }
 
 /// Consumer-side table of latest request epochs indexed by [`RequestSlotId`].
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct RequestSlotTable {
     latest_epochs: [u64; RequestSlotId::COUNT],
+}
+
+impl Default for RequestSlotTable {
+    fn default() -> Self {
+        Self {
+            latest_epochs: [0; RequestSlotId::COUNT],
+        }
+    }
 }
 
 impl RequestSlotTable {

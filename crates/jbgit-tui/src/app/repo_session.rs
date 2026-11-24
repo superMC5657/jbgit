@@ -150,6 +150,20 @@ impl AppState {
                     }
                 }
             }
+            Action::CloneRepoCancel => {
+                for layer in self.modal_stack.iter_mut().rev() {
+                    if let ModalLayer::CloneRepo(cd) = layer {
+                        if cd.cloning {
+                            cd.cloning = false;
+                            cd.error = Some(self.i18n.t("toast.repo_clone_cancelled").to_string());
+                            self.pending_clone_cancel = true;
+                            self.status_notice =
+                                Some(self.i18n.t("toast.repo_clone_cancelled").to_string());
+                        }
+                        break;
+                    }
+                }
+            }
             Action::OpenWorktrees => {
                 if !crate::worktrees_view::worktrees_supported(self) {
                     let notice = crate::worktrees_view::unsupported_notice(self);
@@ -189,17 +203,30 @@ impl AppState {
             Action::PromptNewWorktreeFromBranch(remote_ref) => {
                 if crate::worktrees_view::worktrees_supported(self) {
                     let ctx = crate::worktrees_view::dialog_ctx(self);
-                    let short = remote_ref
-                        .split_once('/')
-                        .map_or(remote_ref.as_str(), |(_, b)| b)
-                        .to_string();
-                    let d = ctx.path_dialog(
+                    let short = self
+                        .repo_snapshot
+                        .as_deref()
+                        .and_then(|s| s.split_tracking(remote_ref).map(|(_, b)| b.to_string()))
+                        .unwrap_or_else(|| {
+                            remote_ref
+                                .split_once('/')
+                                .map_or(remote_ref.as_str(), |(_, b)| b)
+                                .to_string()
+                        });
+                    let local_exists = self.repo_snapshot.as_deref().is_some_and(|s| {
+                        s.refs
+                            .iter()
+                            .any(|r| r.kind == jbgit_core::RefKind::LocalBranch && r.name == short)
+                    });
+                    let wt_branch = if local_exists {
+                        jbgit_core::WorktreeBranch::Existing(short)
+                    } else {
                         jbgit_core::WorktreeBranch::New {
                             name: short,
                             start: remote_ref.clone(),
-                        },
-                        &self.i18n,
-                    );
+                        }
+                    };
+                    let d = ctx.path_dialog(wt_branch, &self.i18n);
                     self.push_modal(ModalLayer::Dialog(Box::new(d)));
                 } else {
                     let notice = crate::worktrees_view::unsupported_notice(self);
@@ -243,6 +270,8 @@ impl AppState {
                     | Dialog::Message(_)
             ),
             ModalLayer::PushDialog(_) => true,
+            ModalLayer::CloneRepo(cd) => cd.cloning,
+            ModalLayer::Welcome(ws) => ws.initializing,
             _ => false,
         });
         if open_flow {
@@ -254,11 +283,14 @@ impl AppState {
     /// Unsaved choices in the built-in conflict resolver.
     fn has_unsaved_conflict_edits(&self) -> bool {
         self.modal_stack.iter().any(|l| match l {
-            ModalLayer::ConflictResolver(c) => c.doc.as_ref().is_some_and(|doc| {
-                doc.segments.iter().any(|s| {
-                    matches!(s, ConflictSegment::Conflict(b) if b.choice != ConflictChoice::Unresolved)
-                })
-            }),
+            ModalLayer::ConflictResolver(c) => {
+                c.inline_editor.is_some()
+                    || c.doc.as_ref().is_some_and(|doc| {
+                        doc.segments.iter().any(|s| {
+                            matches!(s, ConflictSegment::Conflict(b) if b.choice != ConflictChoice::Unresolved)
+                        })
+                    })
+            }
             _ => false,
         })
     }

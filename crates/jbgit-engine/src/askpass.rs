@@ -399,7 +399,7 @@ pub fn request_credential(addr: &str, token: &str, prompt: &str) -> io::Result<O
     let mut msg = Vec::with_capacity(token.len() + prompt.len() + 8);
     msg.extend_from_slice(&(token.len() as u32).to_be_bytes());
     msg.extend_from_slice(token.as_bytes());
-    let prompt = prompt.replace(['\r', '\n'], " ");
+    let prompt = prompt.replace("\r\n", "\n").replace('\r', "");
     msg.extend_from_slice(&(prompt.len() as u32).to_be_bytes());
     msg.extend_from_slice(prompt.as_bytes());
     conn.write_all(&msg)?;

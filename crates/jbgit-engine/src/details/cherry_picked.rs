@@ -1,5 +1,4 @@
 use std::collections::HashSet;
-use std::path::PathBuf;
 
 use jbgit_core::{CherryPickedKey, EpochToken, Oid, parse_git_cherry_output};
 
@@ -22,7 +21,7 @@ pub fn load_cherry_picked_sync(
         return Ok(HashSet::new());
     }
 
-    let git = crate::cli::cached_git_executable().unwrap_or_else(|| PathBuf::from("git"));
+    let git = crate::cli::require_git_executable()?;
     let mut cmd = non_interactive_std_command(&git, Some(&location.workdir));
     cmd.arg("--git-dir")
         .arg(&location.git_dir)

@@ -822,7 +822,10 @@ impl ConflictDocument {
             ConflictSidePresence::BothPresent => false,
             ConflictSidePresence::DeletedByTheirs => block.choice == ConflictChoice::Theirs,
             ConflictSidePresence::DeletedByOurs => block.choice == ConflictChoice::Ours,
-            ConflictSidePresence::BothDeleted => block.choice != ConflictChoice::Unresolved,
+            ConflictSidePresence::BothDeleted => !matches!(
+                block.choice,
+                ConflictChoice::Unresolved | ConflictChoice::Custom(_)
+            ),
         }
     }
 
@@ -930,29 +933,38 @@ impl ConflictDocument {
                 ConflictSegment::Common(ls) => lines.extend(ls.iter().cloned()),
                 ConflictSegment::Conflict(b) => match b.resolved_lines() {
                     Some(resolved) => lines.extend(resolved),
-                    None => {
-                        if self.is_reversed {
-                            lines.push(format!("<<<<<<< {}", b.theirs_label));
-                            lines.extend(b.theirs_lines.iter().cloned());
-                            if !b.base_lines.is_empty() {
-                                lines.push("||||||| base".to_string());
-                                lines.extend(b.base_lines.iter().cloned());
-                            }
-                            lines.push("=======".to_string());
+                    None => match b.kind {
+                        ThreeWayBlockKind::LeftOnly | ThreeWayBlockKind::BothSame => {
                             lines.extend(b.ours_lines.iter().cloned());
-                            lines.push(format!(">>>>>>> {}", b.ours_label));
-                        } else {
-                            lines.push(format!("<<<<<<< {}", b.ours_label));
-                            lines.extend(b.ours_lines.iter().cloned());
-                            if !b.base_lines.is_empty() {
-                                lines.push("||||||| base".to_string());
-                                lines.extend(b.base_lines.iter().cloned());
-                            }
-                            lines.push("=======".to_string());
-                            lines.extend(b.theirs_lines.iter().cloned());
-                            lines.push(format!(">>>>>>> {}", b.theirs_label));
                         }
-                    }
+                        ThreeWayBlockKind::RightOnly => {
+                            lines.extend(b.theirs_lines.iter().cloned());
+                        }
+                        _ if self.side_presence == ConflictSidePresence::BothDeleted => {}
+                        _ => {
+                            if self.is_reversed {
+                                lines.push(format!("<<<<<<< {}", b.theirs_label));
+                                lines.extend(b.theirs_lines.iter().cloned());
+                                if !b.base_lines.is_empty() {
+                                    lines.push("||||||| base".to_string());
+                                    lines.extend(b.base_lines.iter().cloned());
+                                }
+                                lines.push("=======".to_string());
+                                lines.extend(b.ours_lines.iter().cloned());
+                                lines.push(format!(">>>>>>> {}", b.ours_label));
+                            } else {
+                                lines.push(format!("<<<<<<< {}", b.ours_label));
+                                lines.extend(b.ours_lines.iter().cloned());
+                                if !b.base_lines.is_empty() {
+                                    lines.push("||||||| base".to_string());
+                                    lines.extend(b.base_lines.iter().cloned());
+                                }
+                                lines.push("=======".to_string());
+                                lines.extend(b.theirs_lines.iter().cloned());
+                                lines.push(format!(">>>>>>> {}", b.theirs_label));
+                            }
+                        }
+                    },
                 },
             }
         }
@@ -1015,7 +1027,10 @@ impl ConflictDocument {
                             b.choice == ConflictChoice::Theirs
                         }
                         ConflictSidePresence::DeletedByOurs => b.choice == ConflictChoice::Ours,
-                        ConflictSidePresence::BothDeleted => b.choice != ConflictChoice::Unresolved,
+                        ConflictSidePresence::BothDeleted => !matches!(
+                            b.choice,
+                            ConflictChoice::Unresolved | ConflictChoice::Custom(_)
+                        ),
                     };
                     let merged_lines = if choice_deletes {
                         vec!["<File will be deleted>".to_string()]
@@ -1436,5 +1451,42 @@ my replayed change
             conflict_side_statuses(Some("Added by Both"), true),
             (Added, Added)
         );
+    }
+
+    #[test]
+    fn render_resolved_emits_clean_non_conflicting_blocks_and_both_deleted_custom_keeps_file() {
+        let mut doc = ConflictDocument::from_three_way(
+            "a.txt",
+            "left-only\nkeep\n",
+            Some("base\nkeep\n"),
+            Some("left-only\nkeep\n"),
+            Some("base\nkeep\n"),
+            ConflictParseOptions::default(),
+        );
+        // Reset non-conflicting LeftOnly block back to Unresolved — must still render cleanly without markers.
+        doc.reset_block(0);
+        let rendered = doc.render_resolved();
+        assert!(!rendered.contains("<<<<<<<"), "{rendered}");
+        assert_eq!(rendered, "left-only\nkeep\n");
+
+        // BothDeleted with Custom inline edit must NOT report deletes_file() == true.
+        let mut del_doc = ConflictDocument::from_three_way(
+            "gone.txt",
+            "",
+            Some("old\n"),
+            None,
+            None,
+            ConflictParseOptions {
+                side_presence: ConflictSidePresence::BothDeleted,
+                ..Default::default()
+            },
+        );
+        assert_eq!(del_doc.side_presence, ConflictSidePresence::BothDeleted);
+        assert!(!del_doc.deletes_file(), "unresolved BothDeleted must not auto-delete");
+        del_doc.set_choice(0, ConflictChoice::Ours);
+        assert!(del_doc.deletes_file());
+        del_doc.set_choice(0, ConflictChoice::Custom(vec!["revived".into()]));
+        assert!(!del_doc.deletes_file());
+        assert_eq!(del_doc.render_resolved(), "revived");
     }
 }

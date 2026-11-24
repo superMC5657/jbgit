@@ -126,6 +126,8 @@ impl FileHistoryState {
         let entry = self.selected_entry()?.clone();
         if let Some((oid, diff)) = &self.range_diff
             && *oid == entry.oid
+            && diff.key.context == self.diff.context
+            && diff.key.whitespace == self.diff.whitespace
         {
             return Some(Arc::clone(diff));
         }
@@ -280,7 +282,7 @@ impl FileHistoryState {
         }
         self.range_diff = None;
         self.range_syntax = None;
-        self.diff.scroll.reset();
+        self.diff.reset_view_offsets();
         self.diff.pending = None;
         self.affected_selected = 0;
         self.affected_scroll.reset();
@@ -451,7 +453,7 @@ impl FileHistoryState {
 
     /// Toggles `Space`-pinned non-adjacent comparison anchor on the current row.
     pub fn toggle_mark_anchor(&mut self) {
-        if self.visible_len() == 0 {
+        if self.visible_len() == 0 || self.is_on_load_more_row() {
             return;
         }
         if self.anchor == Some(self.selected) && self.anchor_pinned {
@@ -461,14 +463,14 @@ impl FileHistoryState {
             self.anchor = Some(self.selected);
             self.anchor_pinned = true;
         }
-        self.diff.scroll.reset();
+        self.diff.reset_view_offsets();
         self.diff.pending = None;
     }
 
     pub fn clear_anchor(&mut self) {
         self.anchor = None;
         self.anchor_pinned = false;
-        self.diff.scroll.reset();
+        self.diff.reset_view_offsets();
         self.diff.pending = None;
     }
 
@@ -511,7 +513,13 @@ impl FileHistoryState {
         if self.loading || !self.bundle.as_ref().is_some_and(|b| b.truncated) {
             return None;
         }
-        self.pending_preserve_oid = self.selected_entry().map(|e| e.oid);
+        // When triggered from the virtual `[Load More]` row, anchor on the last
+        // currently loaded entry so reload stays at the pagination boundary and
+        // preserves any `Space`-pinned comparison anchor.
+        self.pending_preserve_oid = self
+            .selected_entry()
+            .or_else(|| self.visible_entry(self.visible_len().saturating_sub(1)))
+            .map(|e| e.oid);
         self.key.limit = self
             .key
             .effective_limit()

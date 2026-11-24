@@ -329,8 +329,23 @@ fn render_stage_tree_pane(
                         Style::default().fg(ctx.theme.fg_muted),
                     ));
                 } else if let Some(clabel) = conflict_label {
+                    let is_rev = state
+                        .repo_snapshot
+                        .as_deref()
+                        .is_some_and(|s| jbgit_core::is_reverse_conflict_state(&s.state));
+                    let shown_label = if is_rev {
+                        match clabel.as_str() {
+                            "Deleted by Them" => "Deleted by Us",
+                            "Deleted by Us" => "Deleted by Them",
+                            "Added by Us" => "Added by Them",
+                            "Added by Them" => "Added by Us",
+                            other => other,
+                        }
+                    } else {
+                        clabel.as_str()
+                    };
                     right.push(Span::styled(
-                        format!("{clabel} "),
+                        format!("{shown_label} "),
                         Style::default().fg(ctx.theme.status_conflicted),
                     ));
                 } else if is_hovered {

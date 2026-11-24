@@ -340,7 +340,7 @@ fn match_refspec_pattern<'a>(pattern: &str, full_src: &'a str, short_src: &'a st
             return Some(mid);
         }
         None
-    } else if pattern == full_src || pattern == short_src {
+    } else if pattern == full_src || pattern == short_src || pattern == "HEAD" {
         Some("")
     } else {
         None

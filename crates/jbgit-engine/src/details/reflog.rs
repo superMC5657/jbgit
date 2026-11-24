@@ -1,5 +1,3 @@
-use std::path::PathBuf;
-
 use jbgit_core::{
     EpochToken, REFLOG_GIT_FORMAT, ReflogBundle, ReflogKey, parse_reflog_output,
 };
@@ -9,7 +7,7 @@ use crate::error::EngineError;
 use crate::probe::RepoLocation;
 
 /// Loads paginated Git reflog entries via read-only
-/// `git reflog show --format=... -n <limit+1> <ref_name>`.
+/// `git reflog show --date=unix --format=... -n <limit+1> <ref_name> --`.
 pub fn load_reflog_sync(
     location: &RepoLocation,
     key: &ReflogKey,
@@ -27,13 +25,21 @@ pub fn load_reflog_sync(
     let format_arg = format!("--format={REFLOG_GIT_FORMAT}");
     let limit_arg = format!("-n{fetch_n}");
 
-    let git = crate::cli::cached_git_executable().unwrap_or_else(|| PathBuf::from("git"));
+    let git = crate::cli::require_git_executable()?;
     let mut cmd = non_interactive_std_command(&git, Some(&location.workdir));
     cmd.arg("--git-dir")
         .arg(&location.git_dir)
         .arg("--work-tree")
         .arg(&location.workdir)
-        .args(["reflog", "show", &format_arg, &limit_arg, ref_name]);
+        .args([
+            "reflog",
+            "show",
+            "--date=unix",
+            &format_arg,
+            &limit_arg,
+            ref_name,
+            "--",
+        ]);
 
     let output = cmd.output().map_err(|e| {
         if e.kind() == std::io::ErrorKind::NotFound {

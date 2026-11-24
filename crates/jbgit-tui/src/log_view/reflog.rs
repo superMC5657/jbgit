@@ -50,6 +50,20 @@ pub struct ReflogState {
 
 impl ReflogState {
     pub fn new(ref_name: impl Into<String>, diff_context: DiffContext) -> Self {
+        Self::new_with_prefs(
+            ref_name,
+            diff_context,
+            jbgit_core::WhitespaceMode::Default,
+            false,
+        )
+    }
+
+    pub fn new_with_prefs(
+        ref_name: impl Into<String>,
+        diff_context: DiffContext,
+        whitespace: jbgit_core::WhitespaceMode,
+        soft_wrap: bool,
+    ) -> Self {
         Self {
             key: ReflogKey::for_ref(ref_name),
             bundle: None,
@@ -58,7 +72,7 @@ impl ReflogState {
             selected: 0,
             focus: ReflogFocus::Entries,
             changes: ChangesTreeSession::default(),
-            diff: DiffSession::new(diff_context),
+            diff: DiffSession::from_prefs(diff_context, whitespace, soft_wrap),
             details_requested: None,
         }
     }
@@ -145,6 +159,10 @@ impl ReflogState {
             context: self.diff.context,
             whitespace: self.diff.whitespace,
         })
+    }
+
+    pub fn next_deadline(&self) -> Option<std::time::Instant> {
+        self.diff.next_deadline()
     }
 
     pub fn load_more(&mut self) -> ReflogKey {

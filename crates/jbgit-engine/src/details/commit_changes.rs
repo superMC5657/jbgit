@@ -21,7 +21,9 @@ use super::{delta_path, person, to_git2_oid};
 const MAX_STAT_FILES: usize = 2_000;
 
 pub fn verify_commit_signature_sync(git_dir: &Path, oid: Oid) -> CommitSignature {
-    let git = crate::cli::cached_git_executable().unwrap_or_else(|| std::path::PathBuf::from("git"));
+    let Ok(git) = crate::cli::require_git_executable() else {
+        return CommitSignature::cannot_check();
+    };
     let mut cmd = crate::cli::non_interactive_std_command(&git, None);
     cmd.arg("--git-dir")
         .arg(git_dir)
@@ -55,7 +57,9 @@ pub fn verify_commit_signatures_batch_sync(
                 .collect()
         }
     };
-    let git = crate::cli::cached_git_executable().unwrap_or_else(|| std::path::PathBuf::from("git"));
+    let Ok(git) = crate::cli::require_git_executable() else {
+        return fallback();
+    };
     let mut cmd = crate::cli::non_interactive_std_command(&git, None);
     cmd.arg("--git-dir")
         .arg(git_dir)

@@ -536,6 +536,10 @@ impl ConflictInlineEditor {
 
     /// Keeps cursor visible inside a `(width, height)` editor viewport.
     pub fn ensure_cursor_visible(&mut self, width: usize, height: usize) {
+        self.ensure_cursor_visible_with_tab(width, height, 4);
+    }
+
+    pub fn ensure_cursor_visible_with_tab(&mut self, width: usize, height: usize, tab_size: usize) {
         if height > 0 {
             if self.cursor_row < self.v_scroll {
                 self.v_scroll = self.cursor_row;
@@ -544,7 +548,7 @@ impl ConflictInlineEditor {
             }
         }
         if width > 0 {
-            let cur_w = self.cursor_display_col();
+            let cur_w = self.cursor_display_col_with_tab(tab_size);
             if cur_w < self.h_scroll {
                 self.h_scroll = cur_w;
             } else if cur_w >= self.h_scroll + width {
@@ -554,15 +558,23 @@ impl ConflictInlineEditor {
     }
 
     pub fn cursor_display_col(&self) -> usize {
+        self.cursor_display_col_with_tab(4)
+    }
+
+    pub fn cursor_display_col_with_tab(&self, tab_size: usize) -> usize {
         use unicode_width::UnicodeWidthChar;
-        self.lines
-            .get(self.cursor_row)
-            .map_or(0, |line| {
-                line.chars()
-                    .take(self.cursor_col)
-                    .map(|c| if c == '\t' { 4 } else { c.width().unwrap_or(0) })
-                    .sum()
-            })
+        let tab = tab_size.clamp(1, 16);
+        self.lines.get(self.cursor_row).map_or(0, |line| {
+            let mut col = 0usize;
+            for c in line.chars().take(self.cursor_col) {
+                if c == '\t' {
+                    col += tab - (col % tab);
+                } else {
+                    col += c.width().unwrap_or(0);
+                }
+            }
+            col
+        })
     }
 }
 
@@ -837,12 +849,20 @@ pub enum UiAsyncEvent {
     LogGraphRebuilt(Box<LogGraphRebuilt>),
     /// Credential prompt from the `GIT_ASKPASS` / `SSH_ASKPASS` bridge.
     Askpass(jbgit_engine::askpass::AskpassRequest),
+    /// `git init` invoked from the Welcome modal succeeded.
+    InitRepoFinished(std::path::PathBuf),
     /// `git init` invoked from the Welcome modal failed.
     InitRepoFailed(String),
     /// One progress / stderr line streamed from an active `git clone`.
     CloneProgress(String),
     /// Active `git clone` completed with either the cloned directory or an error message.
     CloneFinished(Result<std::path::PathBuf, String>),
+    /// Post-creation `[worktree] setup_command` finished.
+    WorktreeSetupFinished {
+        worktree: std::path::PathBuf,
+        command: String,
+        result: Result<(), String>,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -871,7 +891,10 @@ pub enum Effect {
     RequestOutgoing(OutgoingKey),
     RequestPatchCheck(PatchCheckKey),
     RequestTree(TreeKey),
-    RequestTreeBlob(TreeBlobKey),
+    RequestTreeBlob {
+        slot: RequestSlotId,
+        key: TreeBlobKey,
+    },
     RequestTreeIndex(Oid),
     ExportTreeBlob {
         oid: Oid,

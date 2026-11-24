@@ -395,7 +395,12 @@ impl<'a> PrintElementGenerator<'a> {
             .linear
             .down_edges(row)
             .iter()
-            .any(|e| e.edge_type == GraphEdgeType::Collapsed);
+            .any(|e| e.edge_type == GraphEdgeType::Collapsed)
+            || self
+                .visible
+                .bek_merges
+                .iter()
+                .any(|m| m.merge_row == row);
 
         out.push(GraphPrintElement::Node {
             row,

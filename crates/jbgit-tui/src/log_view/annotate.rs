@@ -250,6 +250,10 @@ impl AnnotateState {
         self.visual_anchor = None;
     }
 
+    pub fn selected_previous(&self) -> Option<&(Oid, String)> {
+        self.bundle.as_ref()?.previous_for(self.cursor)
+    }
+
     pub fn desired_diff_key(&self, head_oid: Option<Oid>) -> Option<FileDiffKey> {
         if !self.show_diff {
             return None;
@@ -267,14 +271,13 @@ impl AnnotateState {
                 whitespace: self.diff.whitespace,
             });
         }
-        let commit = bundle.commits.get(&line.oid);
         let path = if line.orig_path.is_empty() {
             bundle.key.path.clone()
         } else {
             line.orig_path.clone()
         };
-        let old_path = commit
-            .and_then(|c| c.previous.as_ref())
+        let old_path = bundle
+            .previous_for(self.cursor)
             .map(|(_, prev_path)| prev_path)
             .filter(|prev_path| !prev_path.is_empty() && *prev_path != &path)
             .cloned();
@@ -405,12 +408,14 @@ mod tests {
                     orig_line: 1,
                     oid: c1,
                     orig_path: "src/a.rs".into(),
+                    previous: None,
                 },
                 BlameLine {
                     final_line: 2,
                     orig_line: 2,
                     oid: c2,
                     orig_path: "src/a.rs".into(),
+                    previous: None,
                 },
             ],
             commits,

@@ -83,14 +83,18 @@ pub struct ApplyPatchState {
     pub editing_dir: Option<String>,
     /// Debounced `--check --numstat` deadline after option/checkbox edits.
     pub pending_check_due: Option<Instant>,
-    /// Last `(effective_strip, normalized_directory)` used when populating `known_files`.
-    last_path_transform: (u8, Option<String>),
+    /// Last `(effective_strip, normalized_directory, reverse)` used when populating `known_files`.
+    last_path_transform: (u8, Option<String>, bool),
 }
 
 impl ApplyPatchState {
     pub fn new(source: PatchInput) -> Self {
         let options = ApplyOptions::default();
-        let last_path_transform = (options.effective_strip(), options.normalized_directory());
+        let last_path_transform = (
+            options.effective_strip(),
+            options.normalized_directory(),
+            options.reverse,
+        );
         Self {
             source,
             options,
@@ -177,6 +181,7 @@ impl ApplyPatchState {
         let next = (
             self.options.effective_strip(),
             self.options.normalized_directory(),
+            self.options.reverse,
         );
         if next != self.last_path_transform {
             self.last_path_transform = next;
@@ -189,6 +194,7 @@ impl ApplyPatchState {
         let transform = (
             check.key.options.effective_strip(),
             check.key.options.normalized_directory(),
+            check.key.options.reverse,
         );
         let transform_changed = transform != self.last_path_transform;
         if transform_changed {

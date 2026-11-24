@@ -493,7 +493,7 @@ pub fn load_file_history_sync(
     let limit = key.effective_limit();
     let log_args = build_file_history_args(key);
 
-    let git = crate::cli::cached_git_executable().unwrap_or_else(|| std::path::PathBuf::from("git"));
+    let git = crate::cli::require_git_executable()?;
     let mut cmd = non_interactive_std_command(&git, Some(&location.workdir));
     cmd.arg("--git-dir")
         .arg(&location.git_dir)

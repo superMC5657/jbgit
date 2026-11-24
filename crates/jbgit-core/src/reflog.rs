@@ -170,9 +170,9 @@ pub fn parse_reflog_output(raw: &str, key: ReflogKey) -> ReflogBundle {
         let Ok(oid) = hash.parse::<Oid>() else {
             continue;
         };
-        let selector = fields.next().unwrap_or("").trim().to_string();
+        let raw_selector = fields.next().unwrap_or("").trim();
         let message = fields.next().unwrap_or("").trim().to_string();
-        let timestamp = fields
+        let commit_ts = fields
             .next()
             .and_then(|s| s.trim().parse::<i64>().ok())
             .unwrap_or(0);
@@ -182,6 +182,17 @@ pub fn parse_reflog_output(raw: &str, key: ReflogKey) -> ReflogBundle {
             has_more = true;
             break;
         }
+        // When invoked with `--date=unix`, `%gd` emits `<ref>@{<unix_ts>}`.
+        // Extract the reflog entry timestamp and restore the `<ref>@{<idx>}` label.
+        let (selector, timestamp) = if let Some((prefix, rest)) = raw_selector.rsplit_once("@{")
+            && let Some(inner) = rest.strip_suffix('}')
+            && let Ok(ts) = inner.parse::<i64>()
+            && ts >= 100_000_000
+        {
+            (format!("{prefix}@{{{}}}", entries.len()), ts)
+        } else {
+            (raw_selector.to_string(), commit_ts)
+        };
         let action = ReflogActionKind::classify(&message);
         entries.push(ReflogEntry {
             oid,
@@ -287,5 +298,23 @@ mod tests {
             ReflogActionKind::classify("WIP on main: abc"),
             ReflogActionKind::Other
         );
+    }
+
+    #[test]
+    fn parse_reflog_output_extracts_unix_timestamp_and_restores_selector_index() {
+        let (h1, o1) = hex_oid(0xaa);
+        let (h2, o2) = hex_oid(0xbb);
+        let raw = format!(
+            "{h1}\x1fHEAD@{{1700000999}}\x1freset: moving to HEAD~1\x1f1600000000\x1fAlice\x1e\
+             {h2}\x1fHEAD@{{1700000500}}\x1fcommit: feat\x1f1600000000\x1fBob\x1e"
+        );
+        let bundle = parse_reflog_output(&raw, ReflogKey::for_ref("HEAD"));
+        assert_eq!(bundle.entries.len(), 2);
+        assert_eq!(bundle.entries[0].oid, o1);
+        assert_eq!(bundle.entries[0].selector, "HEAD@{0}");
+        assert_eq!(bundle.entries[0].timestamp, 1_700_000_999);
+        assert_eq!(bundle.entries[1].oid, o2);
+        assert_eq!(bundle.entries[1].selector, "HEAD@{1}");
+        assert_eq!(bundle.entries[1].timestamp, 1_700_000_500);
     }
 }

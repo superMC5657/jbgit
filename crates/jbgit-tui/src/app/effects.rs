@@ -123,11 +123,9 @@ pub fn execute_effects_with_host(
                             .request_slots
                             .note_dispatched(RequestSlotId::TreeBrowser, epoch);
                     }
-                    Effect::RequestTreeBlob(key) => {
-                        let epoch = handle.request_tree_blob(key);
-                        state
-                            .request_slots
-                            .note_dispatched(RequestSlotId::TreeBlob, epoch);
+                    Effect::RequestTreeBlob { slot, key } => {
+                        let epoch = handle.request_tree_blob(slot, key);
+                        state.request_slots.note_dispatched(slot, epoch);
                     }
                     Effect::RequestTreeIndex(oid) => {
                         let epoch = handle.request_tree_index(oid);
@@ -163,7 +161,10 @@ pub fn execute_effects_with_host(
                             .note_dispatched(RequestSlotId::AmendPreview, epoch);
                     }
                     Effect::RequestCommitPrecheck => {
-                        handle.request_commit_precheck();
+                        let epoch = handle.request_commit_precheck();
+                        state
+                            .request_slots
+                            .note_dispatched(RequestSlotId::CommitPrecheck, epoch);
                     }
                     Effect::ApplyStageBuffer {
                         path,

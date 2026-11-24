@@ -146,6 +146,17 @@ fn bisect_banner_buttons_command_catalog_and_log_menu() {
     assert!(start_bad.is_enabled());
     let _ = ts_clean.take_git_ops();
     ts_clean.dispatch_many(item_run_actions(start_bad));
+    // Starting bisect pops a confirmation dialog first (never detaches HEAD silently).
+    assert!(
+        ts_clean.take_git_ops().is_empty(),
+        "Start Bisect must require confirmation before detaching HEAD"
+    );
+    assert!(matches!(
+        ts_clean.state().modal_stack.last(),
+        Some(ModalLayer::Dialog(_))
+    ));
+    ts_clean.send_key(KeyCode::Left, KeyModifiers::NONE);
+    ts_clean.send_key(KeyCode::Enter, KeyModifiers::NONE);
     assert_eq!(
         ts_clean.take_git_ops(),
         vec![GitOp::BisectStart {
@@ -533,12 +544,65 @@ fn worktree_remote_branch_menu_force_checkbox_and_setup_command_confirmation() {
 
 #[test]
 fn issue_14_keymaps_and_i18n_have_no_conflicts_across_all_presets() {
+    use std::collections::HashMap;
+
     for preset in [KeymapPreset::Default, KeymapPreset::Jetbrains, KeymapPreset::Vim] {
         let km = KeymapConfig::for_preset(preset.clone());
         assert!(
             !km.global.key_bindings.is_empty(),
             "preset {preset:?} must load cleanly"
         );
+        // Verify no duplicate `on` chord maps to two distinct actions within any single scope.
+        let scopes: [(&str, &[_]); 7] = [
+            ("global", &km.global.key_bindings),
+            ("log", &km.log.key_bindings),
+            ("branch", &km.branch.key_bindings),
+            ("commit", &km.commit.key_bindings),
+            ("diff", &km.diff.key_bindings),
+            ("stash", &km.stash.key_bindings),
+            ("console", &km.console.key_bindings),
+        ];
+        for (scope_name, bindings) in scopes {
+            let mut seen: HashMap<&[String], &KeyAction> = HashMap::new();
+            for b in bindings {
+                if !b.run.is_active() {
+                    continue;
+                }
+                if let Some(prev) = seen.insert(b.on.as_slice(), &b.run) {
+                    // Intentional prepend_keymap overrides in jetbrains/vim may override
+                    // the same key with a new action, which takes precedence in matching,
+                    // EXCEPT in `Default` where every binding in a scope must be unique!
+                    if preset == KeymapPreset::Default {
+                        assert_eq!(
+                            prev, &b.run,
+                            "Default preset scope [{scope_name}] has duplicate chord {:?}: {prev:?} vs {:?}",
+                            b.on, b.run
+                        );
+                    }
+                }
+            }
+        }
+        // Verify [diff] does not shadow [global] `b` (toggle_branches_popup).
+        assert!(
+            !km.diff
+                .key_bindings
+                .iter()
+                .any(|b| b.on.as_slice() == ["b"] && b.run != KeyAction::ToggleBranchesPopup),
+            "preset {preset:?}: [diff] must not bind `b` and shadow [global] toggle_branches_popup"
+        );
+        // Verify Bisect global shortcuts are bound in every preset.
+        for ka in [
+            KeyAction::BisectGood,
+            KeyAction::BisectBad,
+            KeyAction::BisectSkip,
+            KeyAction::BisectReset,
+        ] {
+            assert!(
+                km.primary_key_for(&[crate::config::KeymapScope::Global], &ka)
+                    .is_some(),
+                "preset {preset:?}: missing global keybinding for {ka:?}"
+            );
+        }
     }
 
     let en = I18n::load("en-US", None);
@@ -570,4 +634,65 @@ fn issue_14_keymaps_and_i18n_have_no_conflicts_across_all_presets() {
             "missing zh-CN help for {ka:?}"
         );
     }
+}
+
+#[test]
+fn create_patch_inside_worktree_requires_confirmation_before_writing() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let mut snap = snapshot_with_bisect();
+    snap.state = RepositoryState::Clean;
+    snap.bisect = None;
+    snap.workdir = tmp.path().to_path_buf();
+    let mut ts = TestSession::with_snapshot(snap);
+
+    let inside_path = tmp.path().join("dirty.patch");
+    let source = jbgit_core::PatchSource::Commits {
+        oids: vec![ts.state().repo_snapshot.as_ref().unwrap().commits[0].oid],
+        base: None,
+    };
+    ts.dispatch(Action::ConfirmCreatePatchFile {
+        source: source.clone(),
+        output: inside_path.clone(),
+        reverse: false,
+        remember_dir: tmp.path().to_path_buf(),
+    });
+    // Must pop confirmation dialog instead of writing untracked file silently.
+    assert!(ts.take_git_ops().is_empty());
+    assert!(matches!(
+        ts.state().modal_stack.last(),
+        Some(ModalLayer::Dialog(_))
+    ));
+    ts.send_key(KeyCode::Enter, KeyModifiers::NONE);
+    assert_eq!(
+        ts.take_git_ops(),
+        vec![GitOp::CreatePatchFile {
+            source,
+            output: inside_path,
+            reverse: false,
+        }]
+    );
+}
+
+#[test]
+fn reflog_pending_diff_debounce_is_reported_in_app_next_deadline() {
+    let mut ts = TestSession::with_snapshot(snapshot_with_bisect());
+    let head_oid = ts.state().repo_snapshot.as_ref().unwrap().commits[0].oid;
+    ts.dispatch(Action::OpenReflog("HEAD".into()));
+    let now = ts.state().now();
+    if let Some(rf) = ts.state_mut().modal_stack.reflog_mut() {
+        rf.diff.pending = Some((
+            jbgit_core::FileDiffKey {
+                details: jbgit_core::DetailsKey::single(head_oid),
+                path: "a.txt".into(),
+                old_path: None,
+                context: jbgit_core::DiffContext::Three,
+                whitespace: jbgit_core::WhitespaceMode::Default,
+            },
+            now + std::time::Duration::from_millis(50),
+        ));
+    }
+    assert!(
+        ts.state().next_deadline().is_some(),
+        "AppState::next_deadline() must include pending Reflog diff debounce"
+    );
 }

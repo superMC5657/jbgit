@@ -95,12 +95,53 @@ pub fn render_banner(
         };
         let amber = ctx.theme.ref_detached.icon;
         let bg = ctx.theme.ref_detached.pill_bg;
-        let buttons = [
-            (state.i18n.t("banner.bisect_good_btn"), BisectButton::Good),
-            (state.i18n.t("banner.bisect_bad_btn"), BisectButton::Bad),
-            (state.i18n.t("banner.bisect_skip_btn"), BisectButton::Skip),
-            (state.i18n.t("banner.bisect_reset_btn"), BisectButton::Reset),
+        let raw_buttons = [
+            (
+                state.i18n.t("banner.bisect_good_btn"),
+                BisectButton::Good,
+                crate::keymap::KeyAction::BisectGood,
+            ),
+            (
+                state.i18n.t("banner.bisect_bad_btn"),
+                BisectButton::Bad,
+                crate::keymap::KeyAction::BisectBad,
+            ),
+            (
+                state.i18n.t("banner.bisect_skip_btn"),
+                BisectButton::Skip,
+                crate::keymap::KeyAction::BisectSkip,
+            ),
+            (
+                state.i18n.t("banner.bisect_reset_btn"),
+                BisectButton::Reset,
+                crate::keymap::KeyAction::BisectReset,
+            ),
         ];
+        let full_buttons: Vec<(String, BisectButton)> = raw_buttons
+            .iter()
+            .map(|(lbl, btn, ka)| {
+                let sc = crate::keymap::catalog::shortcut_for_action(
+                    state,
+                    &[crate::config::KeymapScope::Global],
+                    ka,
+                );
+                let text = match sc {
+                    Some(k) => format!("{lbl} {k}"),
+                    None => (*lbl).to_string(),
+                };
+                (text, *btn)
+            })
+            .collect();
+        let full_w: usize = full_buttons.iter().map(|(l, _)| l.width() + 4).sum();
+        let buttons: Vec<(String, BisectButton)> =
+            if (area.width as usize) >= full_w + text.width() + 4 {
+                full_buttons
+            } else {
+            raw_buttons
+                .iter()
+                .map(|(lbl, btn, _)| ((*lbl).to_string(), *btn))
+                .collect()
+        };
         let buttons_w: usize = buttons.iter().map(|(l, _)| l.width() + 4).sum();
         let text_w = (area.width as usize).saturating_sub(buttons_w + 1);
         let shown = truncate_to_width(&format!(" {text}"), text_w);

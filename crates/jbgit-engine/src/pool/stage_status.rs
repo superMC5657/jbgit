@@ -123,11 +123,11 @@ pub fn load_stage_status_with_config_sync(
         }
         for entry in statuses.iter() {
             let st = entry.status();
-            let path = entry.path().unwrap_or_default().replace('\\', "/");
+            let fallback_path = entry.path().unwrap_or_default().replace('\\', "/");
 
             if st.contains(Status::CONFLICTED) {
                 snap.conflicted.push(StageEntry {
-                    path,
+                    path: fallback_path,
                     old_path: None,
                     kind: FileStatusKind::Conflicted,
                 });
@@ -136,7 +136,7 @@ pub fn load_stage_status_with_config_sync(
 
             if st.contains(Status::IGNORED) {
                 snap.ignored.push(StageEntry {
-                    path,
+                    path: fallback_path,
                     old_path: None,
                     kind: FileStatusKind::Ignored,
                 });
@@ -144,51 +144,68 @@ pub fn load_stage_status_with_config_sync(
             }
 
             if let Some(kind) = index_status_kind(st, entry.head_to_index().map(|d| d.status())) {
-                let old_path = entry
-                    .head_to_index()
-                    .and_then(|d| {
-                        d.old_file()
-                            .path()
-                            .map(|p| p.to_string_lossy().replace('\\', "/"))
-                    })
-                    .filter(|old| old != &path);
+                // `StatusEntry::path()` returns `old_file.path` in libgit2; for renames/copies
+                // resolve `new_file.path` and `old_file.path` independently from `head_to_index`.
+                let (staged_path, old_path) = if let Some(d) = entry.head_to_index() {
+                    let old = d
+                        .old_file()
+                        .path()
+                        .map(|p| p.to_string_lossy().replace('\\', "/"));
+                    let new = d
+                        .new_file()
+                        .path()
+                        .map(|p| p.to_string_lossy().replace('\\', "/"));
+                    let path = new.or_else(|| old.clone()).unwrap_or_else(|| fallback_path.clone());
+                    let old_path = old.filter(|o| o != &path);
+                    (path, old_path)
+                } else {
+                    (fallback_path.clone(), None)
+                };
                 snap.staged.push(StageEntry {
-                    path: path.clone(),
+                    path: staged_path,
                     old_path,
                     kind,
                 });
             }
 
             if st.contains(Status::WT_NEW) {
+                let wt_path = entry
+                    .index_to_workdir()
+                    .and_then(|d| {
+                        d.new_file()
+                            .path()
+                            .or_else(|| d.old_file().path())
+                            .map(|p| p.to_string_lossy().replace('\\', "/"))
+                    })
+                    .unwrap_or(fallback_path);
                 snap.untracked.push(StageEntry {
-                    path,
+                    path: wt_path,
                     old_path: None,
                     kind: FileStatusKind::Untracked,
                 });
-            } else if let Some(kind) = worktree_status_kind(st) {
-                let old_path = entry
-                    .index_to_workdir()
-                    .and_then(|d| {
-                        d.old_file()
-                            .path()
-                            .map(|p| p.to_string_lossy().replace('\\', "/"))
-                    })
-                    .filter(|old| old != &path);
-                snap.unstaged.push(StageEntry {
-                    path,
-                    old_path,
-                    kind,
-                });
-            } else if let Some(diff) = entry.index_to_workdir()
-                && let Some(kind) = delta_to_kind(diff.status())
+            } else if let Some(kind) = worktree_status_kind(st)
+                .or_else(|| entry.index_to_workdir().and_then(|d| delta_to_kind(d.status())))
             {
-                let old_path = diff
-                    .old_file()
-                    .path()
-                    .map(|p| p.to_string_lossy().replace('\\', "/"))
-                    .filter(|old| old != &path);
+                // Independently resolve worktree `new_file.path` vs index `old_file.path` so
+                // unstaged renames and dual-stage renames (`HEAD -> Index -> Workdir`) keep
+                // their true destination paths.
+                let (wt_path, old_path) = if let Some(d) = entry.index_to_workdir() {
+                    let old = d
+                        .old_file()
+                        .path()
+                        .map(|p| p.to_string_lossy().replace('\\', "/"));
+                    let new = d
+                        .new_file()
+                        .path()
+                        .map(|p| p.to_string_lossy().replace('\\', "/"));
+                    let path = new.or_else(|| old.clone()).unwrap_or(fallback_path);
+                    let old_path = old.filter(|o| o != &path);
+                    (path, old_path)
+                } else {
+                    (fallback_path, None)
+                };
                 snap.unstaged.push(StageEntry {
-                    path,
+                    path: wt_path,
                     old_path,
                     kind,
                 });

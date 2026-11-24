@@ -590,6 +590,11 @@ impl TuiSession {
         self.state.pending_clone_repo.take()
     }
 
+    /// True if the user cancelled an active `git clone` task.
+    pub fn take_clone_cancel_request(&mut self) -> bool {
+        std::mem::take(&mut self.state.pending_clone_cancel)
+    }
+
     /// Confirmed `[worktree] setup_command` `(worktree_path, command)` to run.
     pub fn take_worktree_setup_request(&mut self) -> Option<(PathBuf, String)> {
         self.state.pending_worktree_setup.take()

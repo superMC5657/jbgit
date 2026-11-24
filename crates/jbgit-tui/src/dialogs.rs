@@ -913,11 +913,11 @@ impl RebaseTodoDialog {
 
     pub fn move_selected(&mut self, delta: isize) {
         let len = self.entries.len();
-        if len == 0 {
+        if len == 0 || !self.entries[self.selected].action.is_editable() {
             return;
         }
         let to = (self.selected as isize + delta).clamp(0, len as isize - 1) as usize;
-        if to != self.selected {
+        if to != self.selected && self.entries[to].action.is_editable() {
             self.entries.swap(self.selected, to);
             if self.selected < self.messages.len() && to < self.messages.len() {
                 self.messages.swap(self.selected, to);
@@ -1429,6 +1429,9 @@ impl PullDialog {
     }
 
     pub fn error(&self, i18n: &I18n) -> Option<String> {
+        if self.options.effective_remote().is_none() && self.options.effective_branch().is_some() {
+            return Some(i18n.t("dialog.pull.err_branch_without_remote").into());
+        }
         self.options.validate().err().map(|c| {
             let (a, b) = c.flags();
             i18n.t_fmt("dialog.pull.conflict", &[("a", a), ("b", b)])
@@ -1559,7 +1562,10 @@ impl RebaseDialog {
     }
 
     pub fn editing_text(&self) -> bool {
-        self.row().is_text() && !(self.row() == RebaseDialogRow::Upstream && self.options.root)
+        self.row().is_text()
+            && !(self.row() == RebaseDialogRow::Upstream
+                && self.options.root
+                && self.options.effective_upstream().is_none())
     }
 
     pub fn move_selection(&mut self, delta: isize) {
@@ -1591,7 +1597,7 @@ impl RebaseDialog {
             RebaseDialogRow::Onto => {
                 self.options.onto.pop();
             }
-            RebaseDialogRow::Upstream if !self.options.root => {
+            RebaseDialogRow::Upstream => {
                 if let Some(u) = self.options.upstream.as_mut() {
                     u.pop();
                     if u.is_empty() {
@@ -1685,6 +1691,18 @@ impl RebaseDialog {
             branch: self.options.effective_branch().map(ToString::to_string),
             ..self.options.clone()
         };
+        if options.interactive
+            && !options.root
+            && !options.autosquash
+            && options.effective_upstream().is_none()
+            && options.effective_branch().is_none()
+            && !options.onto.is_empty()
+        {
+            return vec![
+                Action::RememberRebaseOptions(options.clone()),
+                Action::OpenInteractiveRebaseFromDialog(options),
+            ];
+        }
         vec![
             Action::RememberRebaseOptions(options.clone()),
             Action::RunGitOp(GitOp::Rebase { options }),
@@ -1747,7 +1765,7 @@ impl CreatePatchDialog {
 
     pub fn error(&self, i18n: &I18n) -> Option<String> {
         if !self.to_clipboard && self.path.trim().is_empty() {
-            return Some(i18n.t("dialog.input.empty").into());
+            return Some(i18n.t("common.cannot_be_empty").into());
         }
         None
     }
@@ -1770,14 +1788,12 @@ impl CreatePatchDialog {
                 .map(std::path::Path::to_path_buf)
                 .unwrap_or_else(|| self.base.clone())
         };
-        vec![
-            Action::RememberPatchDir(remember_dir),
-            Action::RunGitOp(GitOp::CreatePatchFile {
-                source: self.source.clone(),
-                output: dest,
-                reverse: self.reverse,
-            }),
-        ]
+        vec![Action::ConfirmCreatePatchFile {
+            source: self.source.clone(),
+            output: dest,
+            reverse: self.reverse,
+            remember_dir,
+        }]
     }
 }
 
@@ -2604,6 +2620,10 @@ pub fn route_dialog_key(dialog: &mut Dialog, key: &KeyEvent, i18n: &I18n) -> Dia
             }
         }
         Dialog::RebaseTodo(d) if d.show_diff => match key.code {
+            KeyCode::Char('V') => {
+                d.no_verify = !d.no_verify;
+                DialogKey::Redraw
+            }
             KeyCode::Char('d') if plain || ctrl => {
                 d.show_diff = false;
                 DialogKey::Redraw
@@ -2672,6 +2692,10 @@ pub fn route_dialog_key(dialog: &mut Dialog, key: &KeyEvent, i18n: &I18n) -> Dia
             }
             KeyCode::Char(']') if plain => {
                 d.selected_file = d.selected_file.saturating_add(1);
+                DialogKey::Redraw
+            }
+            KeyCode::Char('V') => {
+                d.no_verify = !d.no_verify;
                 DialogKey::Redraw
             }
             KeyCode::Char('d') if plain || ctrl => {

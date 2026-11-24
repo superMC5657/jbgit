@@ -103,6 +103,11 @@ impl DiffCacheStore {
         self.blames.clear();
     }
 
+    /// Evicts cached working-tree (`rev == None`) blame entries after local file edits.
+    pub fn clear_worktree_blames(&mut self) {
+        self.blames.retain(|k, _| k.rev.is_some());
+    }
+
     /// Looks up cached blob OIDs for `key` from `details` so the engine can
     /// take the `O(1)` blob-lookup fast path instead of re-diffing trees.
     pub fn known_oids_for(&self, key: &FileDiffKey) -> Option<(Option<Oid>, Option<Oid>)> {
@@ -802,6 +807,7 @@ pub struct DiffSession {
     pub requested: Option<FileDiffKey>,
     pub rows_cache: FileDiffRowsCache,
     last_wrap_widths: Cell<(usize, usize, usize)>,
+    last_tab_size: Cell<usize>,
 }
 
 impl Default for DiffSession {
@@ -833,12 +839,21 @@ impl DiffSession {
             requested: None,
             rows_cache: FileDiffRowsCache::default(),
             last_wrap_widths: Cell::new((80, 36, 36)),
+            last_tab_size: Cell::new(4),
         }
     }
 
     pub fn record_wrap_widths(&self, unified_w: usize, split_left_w: usize, split_right_w: usize) {
         self.last_wrap_widths
             .set((unified_w.max(1), split_left_w.max(1), split_right_w.max(1)));
+    }
+
+    pub fn record_tab_size(&self, tab_size: usize) {
+        self.last_tab_size.set(tab_size.clamp(1, 16));
+    }
+
+    pub fn tab_size(&self) -> usize {
+        self.last_tab_size.get()
     }
 
     pub fn wrap_widths(&self) -> (usize, usize, usize) {
@@ -868,8 +883,9 @@ impl DiffSession {
         let rows = self.rows_for(diff);
         let content_rows: usize = if self.soft_wrap {
             let (uw, slw, srw) = self.last_wrap_widths.get();
+            let tab = self.last_tab_size.get();
             rows.iter()
-                .map(|&r| diff_row_visual_height(r, |hh| &diff.hunks[hh], true, uw, slw, srw, 4))
+                .map(|&r| diff_row_visual_height(r, |hh| &diff.hunks[hh], true, uw, slw, srw, tab))
                 .sum()
         } else {
             rows.len()
@@ -891,13 +907,14 @@ impl DiffSession {
                 .collect();
         }
         let (uw, slw, srw) = self.last_wrap_widths.get();
+        let tab = self.last_tab_size.get();
         let mut vis = 0usize;
         let mut out = Vec::new();
         for &r in rows.iter() {
             if matches!(r, DiffRow::Header(_)) {
                 out.push(vis);
             }
-            vis += diff_row_visual_height(r, |hh| &diff.hunks[hh], true, uw, slw, srw, 4);
+            vis += diff_row_visual_height(r, |hh| &diff.hunks[hh], true, uw, slw, srw, tab);
         }
         out
     }
@@ -930,19 +947,18 @@ impl DiffSession {
 
     pub fn toggle_side_by_side(&mut self) {
         self.side_by_side = !self.side_by_side;
-        self.horiz_scroll = 0;
-        self.scroll.reset();
+        self.reset_view_offsets();
     }
 
     pub fn cycle_context(&mut self) {
         self.context = self.context.next();
-        self.scroll.reset();
+        self.reset_view_offsets();
         self.pending = None;
     }
 
     pub fn cycle_whitespace(&mut self) {
         self.whitespace = self.whitespace.next();
-        self.scroll.reset();
+        self.reset_view_offsets();
         self.pending = None;
     }
 
@@ -979,7 +995,27 @@ impl DiffSession {
             return;
         };
         let rows = self.rows_for(diff);
-        let anchor = self.scroll.offset().min(rows.len());
+        let anchor = if self.soft_wrap {
+            let target_vis = self.scroll.offset();
+            let (uw, slw, srw) = self.last_wrap_widths.get();
+            let mut acc = 0usize;
+            rows.iter()
+                .position(|&r| {
+                    acc += diff_row_visual_height(
+                        r,
+                        |hh| &diff.hunks[hh],
+                        true,
+                        uw,
+                        slw,
+                        srw,
+                        tab_size,
+                    );
+                    acc > target_vis
+                })
+                .unwrap_or(rows.len())
+        } else {
+            self.scroll.offset().min(rows.len())
+        };
         if let Some(row_idx) = self.search.recompute(&rows, |hh| &diff.hunks[hh], anchor) {
             self.center_on_row(row_idx, diff, tab_size);
         }

@@ -48,12 +48,21 @@ impl GitCliRunner for GitCliExecutor {
 /// Single canonical non-interactive `std::process::Command` constructor for `git`
 /// (used by both `GitCliExecutor::detect` and synchronous read-only helpers in `details`).
 pub(crate) fn non_interactive_std_command(git: &Path, cwd: Option<&Path>) -> std::process::Command {
+    let mut cmd = non_interactive_std_write_command(git, cwd);
+    cmd.env("GIT_OPTIONAL_LOCKS", "0");
+    cmd
+}
+
+/// Non-interactive `std::process::Command` for mutating helpers (omits `GIT_OPTIONAL_LOCKS=0`).
+pub(crate) fn non_interactive_std_write_command(
+    git: &Path,
+    cwd: Option<&Path>,
+) -> std::process::Command {
     let mut cmd = std::process::Command::new(git);
     if let Some(dir) = cwd {
         cmd.current_dir(dir);
     }
-    cmd.env("GIT_OPTIONAL_LOCKS", "0")
-        .env("GIT_TERMINAL_PROMPT", "0")
+    cmd.env("GIT_TERMINAL_PROMPT", "0")
         .env("GIT_PAGER", "cat")
         .env("LC_ALL", "C.UTF-8")
         .stdin(Stdio::null());
@@ -209,12 +218,18 @@ impl GitCliExecutor {
 
         let mut child = cmd.spawn()?;
 
-        if let Some(payload) = stdin_payload
+        // Write stdin concurrently with reading stdout/stderr to avoid OS pipe buffer deadlocks.
+        let stdin_writer = if let Some(payload) = stdin_payload
             && let Some(mut stdin) = child.stdin.take()
         {
-            let _ = stdin.write_all(payload).await;
-            let _ = stdin.shutdown().await;
-        }
+            let owned = payload.to_vec();
+            Some(tokio::spawn(async move {
+                let _ = stdin.write_all(&owned).await;
+                let _ = stdin.shutdown().await;
+            }))
+        } else {
+            None
+        };
 
         let stdout = child.stdout.take();
         let stderr = child.stderr.take();
@@ -273,6 +288,9 @@ impl GitCliExecutor {
             }
         }
 
+        if let Some(writer) = stdin_writer {
+            let _ = writer.await;
+        }
         let status = child.wait().await?;
         let exit_code = status.code().unwrap_or(-1);
         let duration_ms = start.elapsed().as_millis() as u64;
@@ -426,6 +444,17 @@ pub(crate) fn cached_git_executable() -> Option<PathBuf> {
     git_binary_info().map(|(p, _)| p)
 }
 
+/// Resolves the `git` binary strictly: returns [`EngineError::InvalidGitExecutable`]
+/// when an explicit `[git] executable` override is configured and invalid (never
+/// silently falling back to `"git"` on `PATH`).
+pub(crate) fn require_git_executable() -> Result<PathBuf, EngineError> {
+    if let Some(path) = cached_git_executable() {
+        return Ok(path);
+    }
+    let configured = configured_git_executable();
+    detect_git_executable(configured.as_deref()).map(|info| info.path)
+}
+
 /// Max pathspecs passed on the command line to read-only helpers; beyond this
 /// callers use their libgit2 fallback (`git log` has no `--pathspec-from-file`).
 pub(crate) const MAX_INLINE_PATHSPECS: usize = PATHSPEC_FROM_FILE_THRESHOLD;
@@ -519,7 +548,14 @@ fn standard_git_install_candidates() -> Vec<PathBuf> {
 /// 3. Platform standard installation directories fallback.
 pub fn find_git_executable_with_override(configured: Option<&str>) -> Result<PathBuf, EngineError> {
     if let Some(raw) = configured.map(str::trim).filter(|s| !s.is_empty()) {
-        let path = expand_tilde_path(raw);
+        let expanded = expand_tilde_path(raw);
+        let path = if expanded.is_relative() {
+            std::env::current_dir()
+                .map(|cwd| cwd.join(&expanded))
+                .unwrap_or(expanded)
+        } else {
+            expanded
+        };
         if !path.is_file() {
             return Err(EngineError::InvalidGitExecutable {
                 path,

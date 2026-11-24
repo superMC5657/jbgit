@@ -166,6 +166,7 @@ fn clone_dialog_accessible_from_switcher_and_catalog_infers_dir_and_streams_prog
     ts.state_mut().i18n = Arc::new(I18n::load("en-US", None));
 
     // 6. Deliver CloneFinished(Ok(dest)) -> closes modal and triggers pending_repo_switch
+    std::fs::create_dir_all(&expected_dest).unwrap();
     ts.deliver_ui_async(UiAsyncEvent::CloneFinished(Ok(expected_dest.clone())));
     assert!(ts.state().modal_stack.is_empty());
     assert_eq!(

@@ -162,6 +162,7 @@ async fn main() -> Result<()> {
         spawn_wezterm_cell_probe(cell_px_tx.clone());
     }
 
+    let mut active_clone_task: Option<tokio::task::JoinHandle<()>> = None;
     while !session.should_quit() {
         let engine_ref = repo.handle.as_ref().map(|h| h as &dyn EngineBackend);
         let generation = repo.generation;
@@ -262,32 +263,31 @@ async fn main() -> Result<()> {
                 .git
                 .configured_executable()
                 .map(str::to_string);
-            match tokio::task::spawn_blocking(move || {
-                jbgit_engine::init_repository_sync(&dir_for_task, git_exe.as_deref())
-            })
-            .await
-            {
-                Ok(Ok(loc)) => {
-                    switch_repository(&mut session, &mut repo, &mut host, &loc.workdir).await;
-                }
-                Ok(Err(e)) => {
-                    let _ = host
-                        .ui_async_tx
-                        .send(SessionInput::UiAsync(UiAsyncEvent::InitRepoFailed(
-                            e.to_string(),
-                        )));
-                }
-                Err(e) => {
-                    let _ = host
-                        .ui_async_tx
-                        .send(SessionInput::UiAsync(UiAsyncEvent::InitRepoFailed(
-                            e.to_string(),
-                        )));
-                }
-            }
+            let ui_tx = host.ui_async_tx.clone();
+            tokio::spawn(async move {
+                let res = tokio::task::spawn_blocking(move || {
+                    jbgit_engine::init_repository_sync(&dir_for_task, git_exe.as_deref())
+                })
+                .await;
+                let ev = match res {
+                    Ok(Ok(loc)) => UiAsyncEvent::InitRepoFinished(loc.workdir),
+                    Ok(Err(e)) => UiAsyncEvent::InitRepoFailed(e.to_string()),
+                    Err(e) => UiAsyncEvent::InitRepoFailed(e.to_string()),
+                };
+                let _ = ui_tx.send(SessionInput::UiAsync(ev));
+            });
+        }
+
+        if session.take_clone_cancel_request()
+            && let Some(handle) = active_clone_task.take()
+        {
+            handle.abort();
         }
 
         if let Some(clone_req) = session.take_clone_repo_request() {
+            if let Some(prev) = active_clone_task.take() {
+                prev.abort();
+            }
             let askpass_env = repo.askpass_env();
             let git_exe = session
                 .state()
@@ -297,7 +297,7 @@ async fn main() -> Result<()> {
                 .configured_executable()
                 .map(str::to_string);
             let ui_tx = host.ui_async_tx.clone();
-            tokio::spawn(async move {
+            active_clone_task = Some(tokio::spawn(async move {
                 let ui_prog_tx = ui_tx.clone();
                 let result = jbgit_engine::clone_repository_async(
                     clone_req,
@@ -311,10 +311,11 @@ async fn main() -> Result<()> {
                 .await
                 .map_err(|e| e.to_string());
                 let _ = ui_tx.send(SessionInput::UiAsync(UiAsyncEvent::CloneFinished(result)));
-            });
+            }));
         }
 
         if let Some((wt_dir, setup_cmd)) = session.take_worktree_setup_request() {
+            let ui_tx = host.ui_async_tx.clone();
             tokio::spawn(async move {
                 let mut cmd = if cfg!(windows) {
                     let mut c = tokio::process::Command::new("cmd");
@@ -325,13 +326,32 @@ async fn main() -> Result<()> {
                     c.args(["-c", &setup_cmd]);
                     c
                 };
-                let _ = cmd
+                let result = match cmd
                     .current_dir(&wt_dir)
                     .stdin(std::process::Stdio::null())
-                    .stdout(std::process::Stdio::null())
-                    .stderr(std::process::Stdio::null())
-                    .status()
-                    .await;
+                    .output()
+                    .await
+                {
+                    Ok(out) if out.status.success() => Ok(()),
+                    Ok(out) => {
+                        let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
+                        let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
+                        let detail = if !stderr.is_empty() {
+                            stderr
+                        } else if !stdout.is_empty() {
+                            stdout
+                        } else {
+                            format!("exit status {}", out.status)
+                        };
+                        Err(detail)
+                    }
+                    Err(e) => Err(e.to_string()),
+                };
+                let _ = ui_tx.send(SessionInput::UiAsync(UiAsyncEvent::WorktreeSetupFinished {
+                    worktree: wt_dir,
+                    command: setup_cmd,
+                    result,
+                }));
             });
         }
 

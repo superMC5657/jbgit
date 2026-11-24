@@ -124,9 +124,13 @@ pub fn log_commit_menu_items(state: &AppState) -> Vec<ContextMenuItem> {
 
     // ── Cherry-pick & revert ──
     let in_head: Vec<bool> = oids.iter().map(|o| state.is_ancestor_of_head(*o)).collect();
-    let mainline_dialog = |is_revert: bool, no_commit: bool| -> Vec<Action> {
-        if single && primary.parents.len() > 1 {
-            let mut opts: Vec<crate::dialogs::ChoiceOption> = primary
+    let merge_commit_in_selection = oids
+        .iter()
+        .find_map(|o| snap.commit(o).filter(|c| c.parents.len() > 1));
+    let mainline_dialog = |is_revert: bool, no_commit: bool, record_origin: bool| -> Vec<Action> {
+        if let Some(merge_c) = merge_commit_in_selection {
+            let merge_short = merge_c.oid.short();
+            let mut opts: Vec<crate::dialogs::ChoiceOption> = merge_c
                 .parents
                 .iter()
                 .enumerate()
@@ -141,16 +145,18 @@ pub fn log_commit_menu_items(state: &AppState) -> Vec<ContextMenuItem> {
                         .map(|c| ellipsize(&c.subject, 44))
                         .unwrap_or_default();
                     let git_op = if is_revert {
+                        let mut newest_first = oids.clone();
+                        newest_first.reverse();
                         GitOp::Revert {
-                            oids: vec![primary.oid],
+                            oids: newest_first,
                             no_commit,
                             mainline: Some(parent_num),
                         }
                     } else {
                         GitOp::CherryPick {
-                            oids: vec![primary.oid],
+                            oids: oids.clone(),
                             no_commit,
-                            record_origin: false,
+                            record_origin,
                             mainline: Some(parent_num),
                         }
                     };
@@ -178,7 +184,10 @@ pub fn log_commit_menu_items(state: &AppState) -> Vec<ContextMenuItem> {
                 i18n.t(title_key),
                 vec![i18n.t_fmt(
                     "dialog.mainline.prompt",
-                    &[("short", &short), ("subject", &ellipsize(&primary.subject, 48))],
+                    &[
+                        ("short", &merge_short),
+                        ("subject", &ellipsize(&merge_c.subject, 48)),
+                    ],
                 )],
                 opts,
             )))
@@ -194,7 +203,7 @@ pub fn log_commit_menu_items(state: &AppState) -> Vec<ContextMenuItem> {
             op(GitOp::CherryPick {
                 oids: oids.clone(),
                 no_commit,
-                record_origin: false,
+                record_origin,
                 mainline: None,
             })
         }
@@ -208,7 +217,7 @@ pub fn log_commit_menu_items(state: &AppState) -> Vec<ContextMenuItem> {
             },
             Some('p'),
             None,
-            mainline_dialog(false, false),
+            mainline_dialog(false, false, false),
         )
         .icon("🍒")
         .enabled_if(
@@ -223,7 +232,21 @@ pub fn log_commit_menu_items(state: &AppState) -> Vec<ContextMenuItem> {
             i18n.t("menu.log.cherry_pick_no_commit"),
             None,
             None,
-            mainline_dialog(false, true),
+            mainline_dialog(false, true, false),
+        )
+        .enabled_if(
+            !in_head.iter().any(|b| *b),
+            i18n.t("menu.log.cherry_pick_in_head"),
+        )
+        .enabled_if(head.is_some(), i18n.t("menu.log.no_current_branch"))
+        .require(no_ongoing.clone()),
+    );
+    items.push(
+        run(
+            i18n.t("menu.log.cherry_pick_record_origin"),
+            None,
+            None,
+            mainline_dialog(false, false, true),
         )
         .enabled_if(
             !in_head.iter().any(|b| *b),
@@ -241,7 +264,7 @@ pub fn log_commit_menu_items(state: &AppState) -> Vec<ContextMenuItem> {
             },
             Some('v'),
             None,
-            mainline_dialog(true, false),
+            mainline_dialog(true, false, false),
         )
         .enabled_if(
             in_head.iter().all(|b| *b),
@@ -254,7 +277,7 @@ pub fn log_commit_menu_items(state: &AppState) -> Vec<ContextMenuItem> {
             i18n.t("menu.log.revert_no_commit"),
             None,
             None,
-            mainline_dialog(true, true),
+            mainline_dialog(true, true, false),
         )
         .enabled_if(
             in_head.iter().all(|b| *b),
@@ -528,53 +551,71 @@ pub fn log_commit_menu_items(state: &AppState) -> Vec<ContextMenuItem> {
         .icon("🏷")
         .enabled_if(single, need_single(new_tag_lbl)),
     );
-    let bisect_bad_lbl = i18n.t("menu.log.bisect_start_bad");
-    items.push(
-        run(
-            bisect_bad_lbl,
-            None,
-            None,
-            op(if state.is_bisecting() {
-                GitOp::BisectMark {
-                    good: false,
-                    rev: Some(primary.oid.to_string()),
-                }
-            } else {
-                GitOp::BisectStart {
-                    bad: Some(primary.oid.to_string()),
-                    good: Vec::new(),
-                }
+    let bisect_bad_lbl = if state.is_bisecting() {
+        i18n.t("menu.log.bisect_mark_bad")
+    } else {
+        i18n.t("menu.log.bisect_start_bad")
+    };
+    let bisect_bad_actions = if state.is_bisecting() {
+        op(GitOp::BisectMark {
+            good: false,
+            rev: Some(primary.oid.to_string()),
+        })
+    } else {
+        dialog(Dialog::Choice(ChoiceDialog::confirm(
+            i18n.t("dialog.bisect_start.title"),
+            vec![i18n.t_fmt(
+                "dialog.bisect_start.body_bad",
+                &[("short", &short), ("subject", &ellipsize(&primary.subject, 48))],
+            )],
+            i18n.t("dialog.bisect_start.confirm_btn"),
+            i18n.cancel(),
+            op(GitOp::BisectStart {
+                bad: Some(primary.oid.to_string()),
+                good: Vec::new(),
             }),
-        )
-        .enabled_if(single, need_single(bisect_bad_lbl))
-        .enabled_if(
-            state.ongoing_kind().is_none(),
-            i18n.t("menu.log.finish_ongoing_first"),
-        ),
+        )))
+    };
+    items.push(
+        run(bisect_bad_lbl, None, None, bisect_bad_actions)
+            .enabled_if(single, need_single(bisect_bad_lbl))
+            .enabled_if(
+                state.ongoing_kind().is_none(),
+                i18n.t("menu.log.finish_ongoing_first"),
+            ),
     );
-    let bisect_good_lbl = i18n.t("menu.log.bisect_mark_good");
-    items.push(
-        run(
-            bisect_good_lbl,
-            None,
-            None,
-            op(if state.is_bisecting() {
-                GitOp::BisectMark {
-                    good: true,
-                    rev: Some(primary.oid.to_string()),
-                }
-            } else {
-                GitOp::BisectStart {
-                    bad: Some("HEAD".to_string()),
-                    good: vec![primary.oid.to_string()],
-                }
+    let bisect_good_lbl = if state.is_bisecting() {
+        i18n.t("menu.log.bisect_mark_good")
+    } else {
+        i18n.t("menu.log.bisect_start_good")
+    };
+    let bisect_good_actions = if state.is_bisecting() {
+        op(GitOp::BisectMark {
+            good: true,
+            rev: Some(primary.oid.to_string()),
+        })
+    } else {
+        dialog(Dialog::Choice(ChoiceDialog::confirm(
+            i18n.t("dialog.bisect_start.title"),
+            vec![i18n.t_fmt(
+                "dialog.bisect_start.body_good",
+                &[("short", &short), ("subject", &ellipsize(&primary.subject, 48))],
+            )],
+            i18n.t("dialog.bisect_start.confirm_btn"),
+            i18n.cancel(),
+            op(GitOp::BisectStart {
+                bad: Some("HEAD".to_string()),
+                good: vec![primary.oid.to_string()],
             }),
-        )
-        .enabled_if(single, need_single(bisect_good_lbl))
-        .enabled_if(
-            state.ongoing_kind().is_none(),
-            i18n.t("menu.log.finish_ongoing_first"),
-        ),
+        )))
+    };
+    items.push(
+        run(bisect_good_lbl, None, None, bisect_good_actions)
+            .enabled_if(single, need_single(bisect_good_lbl))
+            .enabled_if(
+                state.ongoing_kind().is_none(),
+                i18n.t("menu.log.finish_ongoing_first"),
+            ),
     );
     items.push(ContextMenuItem::separator());
 
@@ -1324,6 +1365,19 @@ pub fn file_history_menu_items(state: &AppState) -> Vec<ContextMenuItem> {
         )
         .enabled_if(!is_deleted, need_not_deleted),
         run(
+            i18n.t("menu.file_history.create_patch"),
+            Some('s'),
+            None,
+            dialog(crate::dialogs::create_patch_dialog(
+                state,
+                PatchSource::CommitFile {
+                    oid: entry.oid,
+                    path: entry.path_at_commit.clone(),
+                },
+                false,
+            )),
+        ),
+        run(
             i18n.t("menu.file_history.copy_patch"),
             Some('p'),
             Some("p"),
@@ -1413,6 +1467,35 @@ pub fn file_history_scope_menu_items(state: &AppState) -> Vec<ContextMenuItem> {
     if !branches.is_empty() {
         items.push(ContextMenuItem::separator());
         for name in branches.into_iter().take(24) {
+            let active = fh.key.scope == jbgit_core::HistoryBranchScope::Branch(name.clone());
+            items.push(run(
+                check(active, &name),
+                None,
+                None,
+                vec![Action::FileHistorySetBranchScope(
+                    jbgit_core::HistoryBranchScope::Branch(name),
+                )],
+            ));
+        }
+    }
+    let remotes: Vec<String> = state
+        .repo_snapshot
+        .as_deref()
+        .map(|s| {
+            let mut r: Vec<String> = s
+                .refs
+                .iter()
+                .filter(|r| r.kind == jbgit_core::RefKind::RemoteBranch)
+                .map(|r| r.name.clone())
+                .collect();
+            r.sort();
+            r.dedup();
+            r
+        })
+        .unwrap_or_default();
+    if !remotes.is_empty() {
+        items.push(ContextMenuItem::separator());
+        for name in remotes.into_iter().take(24) {
             let active = fh.key.scope == jbgit_core::HistoryBranchScope::Branch(name.clone());
             items.push(run(
                 check(active, &name),

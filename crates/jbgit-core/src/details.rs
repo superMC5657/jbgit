@@ -338,6 +338,9 @@ pub struct BlameLine {
     pub orig_line: u32,
     pub oid: Oid,
     pub orig_path: String,
+    /// Per-line `previous <oid> <path>` from `git blame --line-porcelain` (preserves
+    /// distinct source paths when `-M -C` attributes lines from multiple files in one commit).
+    pub previous: Option<(Oid, String)>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -389,6 +392,16 @@ impl BlameBundle {
     pub fn commit_for(&self, line_idx: usize) -> Option<&BlameCommit> {
         let line = self.lines.get(line_idx)?;
         self.commits.get(&line.oid)
+    }
+
+    /// Returns the previous `(oid, path)` for `line_idx`, preferring per-line
+    /// `--line-porcelain` metadata over commit-level `previous` so `-M -C`
+    /// multi-file commits resolve the exact source path.
+    pub fn previous_for(&self, line_idx: usize) -> Option<&(Oid, String)> {
+        let line = self.lines.get(line_idx)?;
+        line.previous
+            .as_ref()
+            .or_else(|| self.commits.get(&line.oid).and_then(|c| c.previous.as_ref()))
     }
 }
 

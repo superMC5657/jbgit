@@ -570,11 +570,12 @@ fn lfs_diffs_and_tree_browser_render_pointer_placeholders() {
         .take_requests()
         .into_iter()
         .find_map(|(r, ep)| match r {
-            TaskRequest::LoadTreeBlob { key } => Some((key, ep.unwrap())),
+            TaskRequest::LoadTreeBlob { key, .. } => Some((key, ep.unwrap())),
             _ => None,
         })
         .expect("LoadTreeBlob requested");
     ts.deliver_engine_event(EngineEvent::TreeBlobLoaded {
+        slot: RequestSlotId::TreeBlob,
         blob: Arc::new(TreeBlob {
             key: blob_key,
             size: 130,
@@ -639,11 +640,17 @@ fn commit_hooks_dimmed_when_absent_and_mode_symlink_no_newline_diffs_render() {
     ts.dispatch(Action::SwitchTab(WorkspaceTab::Commit));
 
     // 1. When no commit hooks exist, Hooks checkbox renders dimmed `Hooks (none)` and refuses toggle.
+    let pre_ep = ts
+        .state()
+        .request_slots
+        .latest(RequestSlotId::CommitPrecheck)
+        .max(1);
     ts.deliver_engine_event(EngineEvent::CommitPrecheckLoaded {
         info: CommitPrecheckInfo {
             has_commit_hooks: false,
             ..Default::default()
         },
+        epoch: pre_ep,
     });
     let screen_no_hooks = screen_text(&ts.render(160, 36));
     assert!(
@@ -667,6 +674,7 @@ fn commit_hooks_dimmed_when_absent_and_mode_symlink_no_newline_diffs_render() {
             has_commit_hooks: true,
             ..Default::default()
         },
+        epoch: pre_ep + 1,
     });
     let screen_with_hooks = screen_text(&ts.render(160, 36));
     assert!(

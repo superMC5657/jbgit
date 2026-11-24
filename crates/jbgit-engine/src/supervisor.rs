@@ -89,8 +89,9 @@ pub enum TaskRequest {
     LoadTree {
         key: TreeKey,
     },
-    /// File content at a revision for the tree browser preview.
+    /// File content at a revision for the tree browser or file history preview.
     LoadTreeBlob {
+        slot: RequestSlotId,
         key: TreeBlobKey,
     },
     /// Recursive file path index for `/` fuzzy search in the tree browser.
@@ -190,7 +191,7 @@ impl TaskRequest {
             Self::LoadOutgoing { .. } => Some(RequestSlotId::PushOutgoing),
             Self::CheckPatch { .. } => Some(RequestSlotId::PatchCheck),
             Self::LoadTree { .. } => Some(RequestSlotId::TreeBrowser),
-            Self::LoadTreeBlob { .. } => Some(RequestSlotId::TreeBlob),
+            Self::LoadTreeBlob { slot, .. } => Some(*slot),
             Self::LoadTreeIndex { .. } => Some(RequestSlotId::TreeIndex),
             Self::VerifyCommitSignatures { .. } => Some(RequestSlotId::LogSignatures),
             Self::LoadCherryPicked { .. } => Some(RequestSlotId::LogCherryPicked),
@@ -200,8 +201,8 @@ impl TaskRequest {
             Self::LoadStageFileDiff { .. } => Some(RequestSlotId::StageFileDiff),
             Self::LoadAmendPreview => Some(RequestSlotId::AmendPreview),
             Self::LoadConflictDocument { .. } => Some(RequestSlotId::ConflictDocument),
-            Self::ProbeCommitPrecheck
-            | Self::ApplyStageBuffer { .. }
+            Self::ProbeCommitPrecheck => Some(RequestSlotId::CommitPrecheck),
+            Self::ApplyStageBuffer { .. }
             | Self::WriteWorktreeBuffer { .. }
             | Self::StageTargets { .. }
             | Self::StageAllTracked
@@ -299,6 +300,7 @@ pub enum EngineEvent {
         epoch: u64,
     },
     TreeBlobLoaded {
+        slot: RequestSlotId,
         blob: Arc<TreeBlob>,
         epoch: u64,
     },
@@ -331,6 +333,7 @@ pub enum EngineEvent {
     },
     CommitPrecheckLoaded {
         info: CommitPrecheckInfo,
+        epoch: u64,
     },
     /// Pre-commit CRLF warning: commit was paused so the user can choose Fix & Commit,
     /// Commit As Is, or Don't Warn Again.
@@ -457,8 +460,8 @@ pub trait EngineBackend: Send + Sync {
             .expect("LoadTree always has a slot")
     }
 
-    fn request_tree_blob(&self, key: TreeBlobKey) -> u64 {
-        self.dispatch(TaskRequest::LoadTreeBlob { key })
+    fn request_tree_blob(&self, slot: RequestSlotId, key: TreeBlobKey) -> u64 {
+        self.dispatch(TaskRequest::LoadTreeBlob { slot, key })
             .expect("LoadTreeBlob always has a slot")
     }
 
@@ -506,8 +509,9 @@ pub trait EngineBackend: Send + Sync {
             .expect("LoadConflictDocument always has a slot")
     }
 
-    fn request_commit_precheck(&self) {
-        let _ = self.dispatch(TaskRequest::ProbeCommitPrecheck);
+    fn request_commit_precheck(&self) -> u64 {
+        self.dispatch(TaskRequest::ProbeCommitPrecheck)
+            .expect("ProbeCommitPrecheck always has a slot")
     }
 }
 
@@ -637,6 +641,7 @@ struct SupervisorContext {
     slots: SlotRegistry,
     pool: Arc<Git2WorkerPool>,
     cli: Option<Arc<GitCliExecutor>>,
+    cli_error: Option<String>,
     mutation_guard: Arc<MutationGuard>,
     event_tx: UnboundedSender<EngineEvent>,
     op_ids: Arc<AtomicU64>,
@@ -686,6 +691,7 @@ impl EngineSupervisor {
         askpass: Option<AskpassEnv>,
         git_executable: Option<String>,
     ) -> Result<(EngineHandle, UnboundedReceiver<EngineEvent>), EngineError> {
+        crate::cli::set_configured_git_executable(git_executable.clone());
         let slots = SlotRegistry::new();
         let pool = Arc::new(Git2WorkerPool::new(4));
         let cli_res = GitCliExecutor::detect_with_executable(git_executable.as_deref());
@@ -698,12 +704,12 @@ impl EngineSupervisor {
 
         let (task_tx, mut task_rx) = mpsc::unbounded_channel::<ScheduledTask>();
         let (event_tx, event_rx) = mpsc::unbounded_channel::<EngineEvent>();
-        if let Some(err) = cli_error
+        if let Some(ref err) = cli_error
             && git_executable
                 .as_deref()
                 .is_some_and(|s| !s.trim().is_empty())
         {
-            let _ = event_tx.send(EngineEvent::Error(err));
+            let _ = event_tx.send(EngineEvent::Error(err.clone()));
         }
 
         let watcher = if enable_watcher {
@@ -734,6 +740,7 @@ impl EngineSupervisor {
             slots: slots.clone(),
             pool,
             cli: cli.map(Arc::new),
+            cli_error,
             mutation_guard: Arc::clone(&mutation_guard),
             event_tx,
             op_ids: Arc::new(AtomicU64::new(1)),
@@ -890,7 +897,7 @@ fn handle_task_request(ctx: &SupervisorContext, task: ScheduledTask) {
                 .cli
                 .as_ref()
                 .map(|c| c.info().path)
-                .unwrap_or_else(|| PathBuf::from("git"));
+                .or_else(|| crate::cli::require_git_executable().ok());
             let token = token.expect("CheckRemoteTag token");
             let epoch = token.epoch();
             let tx = ctx.event_tx.clone();
@@ -898,7 +905,10 @@ fn handle_task_request(ctx: &SupervisorContext, task: ScheduledTask) {
                 if token.is_stale() {
                     return;
                 }
-                let exists = check_remote_tag_async(&git_exe, &loc, &remote, &tag).await;
+                let exists = match git_exe {
+                    Some(exe) => check_remote_tag_async(&exe, &loc, &remote, &tag).await,
+                    None => None,
+                };
                 if !token.is_stale() {
                     let _ = tx.send(EngineEvent::RemoteTagChecked {
                         remote,
@@ -969,7 +979,7 @@ fn handle_task_request(ctx: &SupervisorContext, task: ScheduledTask) {
                 }
             });
         }
-        TaskRequest::LoadTreeBlob { key } => {
+        TaskRequest::LoadTreeBlob { slot, key } => {
             let pool = Arc::clone(&ctx.pool);
             let loc = ctx.location.clone();
             let token = token.expect("LoadTreeBlob token");
@@ -982,7 +992,7 @@ fn handle_task_request(ctx: &SupervisorContext, task: ScheduledTask) {
                     })
                     .await
                 },
-                move |blob| EngineEvent::TreeBlobLoaded { blob, epoch },
+                move |blob| EngineEvent::TreeBlobLoaded { slot, blob, epoch },
             );
         }
         TaskRequest::LoadTreeIndex { oid } => {
@@ -1143,15 +1153,23 @@ fn handle_task_request(ctx: &SupervisorContext, task: ScheduledTask) {
         TaskRequest::ProbeCommitPrecheck => {
             let pool = Arc::clone(&ctx.pool);
             let loc = ctx.location.clone();
+            let token = token.expect("ProbeCommitPrecheck token");
+            let epoch = token.epoch();
             let tx = ctx.event_tx.clone();
             tokio::spawn(async move {
+                if token.is_stale() {
+                    return;
+                }
                 let info = pool
-                    .run_with(TaskPriority::Background, move || {
+                    .run_epoch(TaskPriority::Background, token.clone(), move |_| {
                         Ok(probe_commit_precheck_sync(&loc))
                     })
-                    .await
-                    .unwrap_or_default();
-                let _ = tx.send(EngineEvent::CommitPrecheckLoaded { info });
+                    .await;
+                if let Ok(info) = info
+                    && !token.is_stale()
+                {
+                    let _ = tx.send(EngineEvent::CommitPrecheckLoaded { info, epoch });
+                }
             });
         }
         TaskRequest::ApplyStageBuffer {
@@ -1350,7 +1368,7 @@ fn spawn_load_commit_details(
     let epoch = token.epoch();
     let tx = ctx.event_tx.clone();
     let sig_cache = Arc::clone(&ctx.sig_cache);
-    let sig_epoch = ctx.slots.epoch_for(RequestSlotId::CommitSignature).clone();
+    let details_token = ctx.slots.token_for(slot, epoch);
     tokio::spawn(async move {
         let loc_details = loc.clone();
         let res = pool
@@ -1380,11 +1398,10 @@ fn spawn_load_commit_details(
                     epoch,
                 });
                 if !unverified_oids.is_empty() {
-                    let sig_token = sig_epoch.issue();
                     let git_dir = loc.git_dir;
                     tokio::task::spawn_blocking(move || {
                         for oid in unverified_oids {
-                            if sig_token.is_stale() {
+                            if details_token.is_stale() {
                                 break;
                             }
                             let signature = verify_commit_signature_sync(&git_dir, oid);
@@ -1393,7 +1410,12 @@ fn spawn_load_commit_details(
                                     sig_cache.lock().unwrap_or_else(|e| e.into_inner());
                                 cache.insert(oid, signature.clone());
                             }
-                            let _ = tx.send(EngineEvent::CommitSignatureVerified { oid, signature });
+                            if !details_token.is_stale() {
+                                let _ = tx.send(EngineEvent::CommitSignatureVerified {
+                                    oid,
+                                    signature,
+                                });
+                            }
                         }
                     });
                 }
@@ -1459,15 +1481,22 @@ fn spawn_verify_commit_signatures(
     });
 }
 
-fn spawn_execute_commit(ctx: &SupervisorContext, id: u64, request: CommitRequest) {
+fn spawn_execute_commit(ctx: &SupervisorContext, id: u64, mut request: CommitRequest) {
     let pool = Arc::clone(&ctx.pool);
     let cli_exec = ctx.cli.as_ref().map(Arc::clone);
+    let cli_error = ctx.cli_error.clone();
     let loc = ctx.location.clone();
     let tx = ctx.event_tx.clone();
     let guard = Arc::clone(&ctx.mutation_guard);
     let op_ids = Arc::clone(&ctx.op_ids);
     tokio::spawn(async move {
         let permit = guard.acquire().await;
+        let finish_permit = |permit: MutationPermit, tx: &UnboundedSender<EngineEvent>| {
+            let deferred = permit.finish();
+            if deferred != RefreshScope::None {
+                let _ = tx.send(EngineEvent::ExternalFsChanged(deferred));
+            }
+        };
         if request.check_crlf {
             let loc_crlf = loc.clone();
             let stage_all = request.stage_all_tracked;
@@ -1477,7 +1506,7 @@ fn spawn_execute_commit(ctx: &SupervisorContext, id: u64, request: CommitRequest
                 })
                 .await
             {
-                drop(permit);
+                finish_permit(permit, &tx);
                 let _ = tx.send(EngineEvent::CommitCrlfWarning {
                     request,
                     files: problem.files,
@@ -1485,9 +1514,11 @@ fn spawn_execute_commit(ctx: &SupervisorContext, id: u64, request: CommitRequest
                 return;
             }
         }
+        let mut staged_tracked_early = false;
         if request.fix_autocrlf {
             let fixed = if let Some(cli) = cli_exec.as_ref() {
-                let cfg_id = op_ids.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                let cfg_id = crate::ops::OP_CONSOLE_ID_BASE
+                    + op_ids.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 let args = vec![
                     "config".to_string(),
                     "core.autocrlf".to_string(),
@@ -1520,7 +1551,7 @@ fn spawn_execute_commit(ctx: &SupervisorContext, id: u64, request: CommitRequest
                     })
                     .await
                 {
-                    drop(permit);
+                    finish_permit(permit, &tx);
                     let _ = tx.send(EngineEvent::CommitCompleted(CommitOutcome {
                         success: false,
                         commit_oid: None,
@@ -1533,6 +1564,28 @@ fn spawn_execute_commit(ctx: &SupervisorContext, id: u64, request: CommitRequest
                     return;
                 }
             }
+            if request.stage_all_tracked {
+                let loc_stage = loc.clone();
+                if let Err(e) = pool
+                    .run_with(TaskPriority::Interactive, move || {
+                        stage_all_tracked_sync(&loc_stage)
+                    })
+                    .await
+                {
+                    finish_permit(permit, &tx);
+                    let _ = tx.send(EngineEvent::CommitCompleted(CommitOutcome {
+                        success: false,
+                        commit_oid: None,
+                        short_sha: None,
+                        summary: "Stage all tracked failed".to_string(),
+                        error_output: Some(e.to_string()),
+                        and_push: false,
+                        preserved_message: Some(request.message),
+                    }));
+                    return;
+                }
+                staged_tracked_early = true;
+            }
             let loc_norm = loc.clone();
             if let Err(e) = pool
                 .run_with(TaskPriority::Interactive, move || {
@@ -1540,7 +1593,7 @@ fn spawn_execute_commit(ctx: &SupervisorContext, id: u64, request: CommitRequest
                 })
                 .await
             {
-                drop(permit);
+                finish_permit(permit, &tx);
                 let _ = tx.send(EngineEvent::CommitCompleted(CommitOutcome {
                     success: false,
                     commit_oid: None,
@@ -1561,14 +1614,31 @@ fn spawn_execute_commit(ctx: &SupervisorContext, id: u64, request: CommitRequest
             .await
             .unwrap_or_default();
         let effective_gpg = request.gpg_sign.unwrap_or(precheck.gpg_sign);
-        let use_cli = ((precheck.has_commit_hooks && request.run_hooks)
+        let needs_cli = (precheck.has_commit_hooks && request.run_hooks)
             || effective_gpg
             || request.gpg_sign.is_some()
-            || precheck.has_sequencer_state)
-            && cli_exec.is_some();
+            || precheck.has_sequencer_state;
 
-        let (outcome, index_lock) = if use_cli {
-            if request.stage_all_tracked {
+        if needs_cli && cli_exec.is_none() {
+            finish_permit(permit, &tx);
+            let detail = cli_error.unwrap_or_else(|| {
+                "Git CLI is required for signed commits, commit hooks, or merge/sequencer commits."
+                    .to_string()
+            });
+            let _ = tx.send(EngineEvent::CommitCompleted(CommitOutcome {
+                success: false,
+                commit_oid: None,
+                short_sha: None,
+                summary: "Git CLI unavailable for commit".to_string(),
+                error_output: Some(detail),
+                and_push: false,
+                preserved_message: Some(request.message),
+            }));
+            return;
+        }
+
+        let (outcome, index_lock) = if needs_cli {
+            if request.stage_all_tracked && !staged_tracked_early {
                 let loc_stage = loc.clone();
                 if let Err(e) = pool
                     .run_with(TaskPriority::Interactive, move || {
@@ -1576,7 +1646,7 @@ fn spawn_execute_commit(ctx: &SupervisorContext, id: u64, request: CommitRequest
                     })
                     .await
                 {
-                    drop(permit);
+                    finish_permit(permit, &tx);
                     let _ = tx.send(EngineEvent::CommitCompleted(CommitOutcome {
                         success: false,
                         commit_oid: None,
@@ -1596,6 +1666,9 @@ fn spawn_execute_commit(ctx: &SupervisorContext, id: u64, request: CommitRequest
             })
             .await
         } else {
+            if staged_tracked_early {
+                request.stage_all_tracked = false;
+            }
             let req_for_git2 = request.clone();
             let outcome = match pool
                 .run_with(TaskPriority::Interactive, move || {
@@ -1667,9 +1740,11 @@ fn spawn_undo_last_commit(ctx: &SupervisorContext) {
 
 fn spawn_run_git_op(ctx: &SupervisorContext, op: GitOp) {
     let Some(cli_exec) = ctx.cli.as_ref().map(Arc::clone) else {
-        let _ = ctx
-            .event_tx
-            .send(EngineEvent::Error(EngineError::GitNotFound.to_string()));
+        let msg = ctx
+            .cli_error
+            .clone()
+            .unwrap_or_else(|| EngineError::GitNotFound.to_string());
+        let _ = ctx.event_tx.send(EngineEvent::Error(msg));
         return;
     };
     let loc = ctx.location.clone();
@@ -1725,9 +1800,11 @@ fn spawn_run_git_cli(
     refresh_after: RefreshScope,
 ) {
     let Some(cli_exec) = ctx.cli.as_ref().map(Arc::clone) else {
-        let _ = ctx
-            .event_tx
-            .send(EngineEvent::Error(EngineError::GitNotFound.to_string()));
+        let msg = ctx
+            .cli_error
+            .clone()
+            .unwrap_or_else(|| EngineError::GitNotFound.to_string());
+        let _ = ctx.event_tx.send(EngineEvent::Error(msg));
         return;
     };
     let loc = ctx.location.clone();

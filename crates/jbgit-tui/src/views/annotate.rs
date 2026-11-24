@@ -799,7 +799,7 @@ fn render_detail_strip(
             },
             line.orig_line,
         );
-        let summary = if let Some((prev, _)) = &commit.previous {
+        let summary = if let Some((prev, _)) = ann.selected_previous() {
             format!("{}  (parent {})", commit.summary, prev.short())
         } else {
             commit.summary.clone()

@@ -177,7 +177,18 @@ impl LogWorkbench {
             .filter
             .spec
             .branch
-            .single_compared_branch(snap.head_branch.as_deref())?;
+            .single_compared_branch(snap.head_branch.as_deref())
+            .or_else(|| {
+                let bc = self.branch_compare.as_ref()?;
+                let head = snap.head_branch.as_deref();
+                if head == Some(bc.left.as_str()) {
+                    Some(bc.right.as_str())
+                } else if head == Some(bc.right.as_str()) {
+                    Some(bc.left.as_str())
+                } else {
+                    Some(bc.right.as_str())
+                }
+            })?;
         Some(CherryPickedKey {
             head_oid,
             branch: branch.to_string(),
@@ -1401,6 +1412,9 @@ impl LogWorkbench {
         // Single commit-navigation exit: clear transient comparison / pending path overrides.
         self.details.compare_override = None;
         self.details.pending_select_path = None;
+        if let Some(bc) = self.branch_compare.as_mut() {
+            bc.tree_diff = false;
+        }
         true
     }
 
@@ -1408,11 +1422,11 @@ impl LogWorkbench {
         match action {
             Action::ChangesMove(ChangesHost::Log, delta) => {
                 self.details.changes.move_selection(*delta, ctx.diff_caches);
-                self.details.diff.scroll.reset();
+                self.details.diff.reset_view_offsets();
             }
             Action::ChangesSelect(ChangesHost::Log, idx) => {
                 self.details.changes.select_row(*idx, ctx.diff_caches);
-                self.details.diff.scroll.reset();
+                self.details.diff.reset_view_offsets();
             }
             Action::ChangesExpand(ChangesHost::Log, expand) => {
                 self.details
@@ -1463,6 +1477,14 @@ impl LogWorkbench {
                         ctx.status_notice,
                     );
                     self.details.pending_select_path = keep_path;
+                } else if self.branch_compare.is_some() {
+                    let _ = self.cycle_branch_compare_direction(
+                        ctx.snap,
+                        ctx.branch_colors,
+                        ctx.async_graph_enabled,
+                        ctx.i18n,
+                        ctx.status_notice,
+                    );
                 }
             }
             Action::SwitchMergeParent => {
@@ -1544,12 +1566,14 @@ impl LogWorkbench {
             Action::DiffSearchChar(DiffScope::Log, ch) => {
                 self.details.diff.search.push_char(*ch);
                 let diff = self.details.current_diff(ctx.diff_caches).cloned();
-                self.details.diff.refresh_search(diff.as_ref(), 4);
+                let tab = self.details.diff.tab_size();
+                self.details.diff.refresh_search(diff.as_ref(), tab);
             }
             Action::DiffSearchBackspace(DiffScope::Log) => {
                 self.details.diff.search.backspace();
                 let diff = self.details.current_diff(ctx.diff_caches).cloned();
-                self.details.diff.refresh_search(diff.as_ref(), 4);
+                let tab = self.details.diff.tab_size();
+                self.details.diff.refresh_search(diff.as_ref(), tab);
             }
             Action::DiffSearchClear(DiffScope::Log) => {
                 self.details.diff.search.clear_query();
@@ -1562,7 +1586,8 @@ impl LogWorkbench {
             }
             Action::DiffSearchJump(DiffScope::Log, delta) => {
                 let diff = self.details.current_diff(ctx.diff_caches).cloned();
-                self.details.diff.jump_search(*delta, diff.as_ref(), 4);
+                let tab = self.details.diff.tab_size();
+                self.details.diff.jump_search(*delta, diff.as_ref(), tab);
             }
             Action::DiffScroll(DiffScope::Log, delta) => {
                 self.scroll_pane(ScrollPane::LogDiff, *delta, ctx.diff_caches);
@@ -1675,7 +1700,7 @@ impl LogWorkbench {
                 self.details.changes.current_key = desired.clone();
                 self.details.changes.selected = 0;
                 self.details.details_scroll.reset();
-                self.details.diff.scroll.reset();
+                self.details.diff.reset_view_offsets();
                 self.details.pending = match desired {
                     Some(k) if ctx.diff_caches.details.get(&k).is_some() => None,
                     Some(k) if self.details.compare_override.is_some() => {

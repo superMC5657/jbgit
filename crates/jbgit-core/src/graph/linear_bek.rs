@@ -14,8 +14,8 @@ use crate::Oid;
 use crate::graph::permanent::{PermanentGraph, VisibleRowIdx};
 use crate::graph::visible::{GraphEdge, GraphEdgeType, VisibleLinearGraph};
 
-/// Maximum number of commits inside a single foldable merge fragment (matches IDEA).
-pub const LINEAR_BEK_MAX_BLOCK_SIZE: usize = 20;
+/// Maximum number of commits inside a single foldable merge fragment (matches IDEA's `MAX_BLOCK_SIZE = 200`).
+pub const LINEAR_BEK_MAX_BLOCK_SIZE: usize = 200;
 /// Maximum descendant search distance for the magic-set ancestor check (matches IDEA).
 pub const LINEAR_BEK_MAGIC_SET_SIZE: usize = 10;
 
@@ -148,7 +148,7 @@ pub fn apply_linear_bek(
 
     let mut folded = Vec::new();
 
-    for merge_row_usize in 0..m {
+    for merge_row_usize in (0..m).rev() {
         let merge_row = merge_row_usize as VisibleRowIdx;
         let merge_oid = permanent
             .linear
@@ -293,10 +293,9 @@ fn find_fragment(
     for &(down, _) in &down_adj[right_child as usize] {
         queue.push(Reverse((down, right_child)));
     }
-    // Root commit directly merged (right_child has no down edges): fold into tail.
+    // Root commit directly merged (`--allow-unrelated-histories`): do not invent an ancestry edge.
     if queue.is_empty() {
-        fragment.add_tail(right_child);
-        return Some(fragment);
+        return None;
     }
 
     let mut magic_set: Option<HashSet<VisibleRowIdx>> = None;
@@ -318,6 +317,8 @@ fn find_fragment(
             for &(d, _) in &down_adj[next as usize] {
                 queue.push(Reverse((d, next)));
             }
+            fragment.add_body(up_node);
+        } else if next < right_child + rows_count {
             fragment.add_body(up_node);
         } else if next > left_child {
             let li = layout_of(next);

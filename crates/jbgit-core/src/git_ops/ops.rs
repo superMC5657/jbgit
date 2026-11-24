@@ -525,7 +525,7 @@ impl RebaseOptions {
     /// Compact command-line preview of arguments after `git rebase`.
     pub fn summary(&self) -> String {
         let mut parts: Vec<String> = Vec::new();
-        if self.interactive {
+        if self.interactive || self.autosquash {
             parts.push("-i".into());
         }
         if self.rebase_merges {
@@ -561,20 +561,20 @@ impl RebaseOptions {
         parts.join(" ")
     }
 
-    /// Serialises remembered flag choices (never branch/onto/upstream) as `key=value` lines.
+    /// Serialises remembered flag choices (never branch/onto/upstream or one-shot `root`)
+    /// as `key=value` lines.
     pub fn to_remembered(&self) -> String {
         format!(
-            "interactive={}\nrebase_merges={}\nupdate_refs={}\nkeep_empty={}\nautosquash={}\nroot={}\n",
+            "interactive={}\nrebase_merges={}\nupdate_refs={}\nkeep_empty={}\nautosquash={}\n",
             self.interactive,
             self.rebase_merges,
             self.update_refs,
             self.keep_empty,
             self.autosquash,
-            self.root,
         )
     }
 
-    /// Parses [`Self::to_remembered`] output; unknown keys are ignored.
+    /// Parses [`Self::to_remembered`] output; unknown keys (and legacy `root`) are ignored.
     pub fn from_remembered(text: &str) -> Self {
         let mut out = Self::default();
         for line in text.lines() {
@@ -588,7 +588,6 @@ impl RebaseOptions {
                 "update_refs" => out.update_refs = v == "true",
                 "keep_empty" => out.keep_empty = v == "true",
                 "autosquash" => out.autosquash = v == "true",
-                "root" => out.root = v == "true",
                 _ => {}
             }
         }
@@ -1432,7 +1431,10 @@ pub fn infer_clone_dir_name(url: &str) -> Option<String> {
     let last = path_part
         .rsplit(['/', '\\'])
         .find(|seg| !seg.is_empty())?;
-    let stripped = if last.len() >= 4 && last[last.len() - 4..].eq_ignore_ascii_case(".git") {
+    let last_bytes = last.as_bytes();
+    let stripped = if last_bytes.len() >= 4
+        && last_bytes[last_bytes.len() - 4..].eq_ignore_ascii_case(b".git")
+    {
         &last[..last.len() - 4]
     } else {
         last
@@ -1561,6 +1563,8 @@ pub fn match_worktreeinclude_paths(patterns_text: &str, candidates: &[String]) -
         dir_only: bool,
         anchored: bool,
         pattern: String,
+        prefix_slash: String,
+        glob_sub: String,
     }
 
     let mut rules: Vec<Rule> = Vec::new();
@@ -1580,11 +1584,15 @@ pub fn match_worktreeinclude_paths(patterns_text: &str, candidates: &[String]) -
         if pat.is_empty() {
             continue;
         }
+        let prefix_slash = format!("{pat}/");
+        let glob_sub = format!("{pat}/**");
         rules.push(Rule {
             negated,
             dir_only,
             anchored,
             pattern: pat,
+            prefix_slash,
+            glob_sub,
         });
     }
 
@@ -1601,28 +1609,27 @@ pub fn match_worktreeinclude_paths(patterns_text: &str, candidates: &[String]) -
         if norm.is_empty() {
             continue;
         }
+        let basename = norm.rsplit('/').next().unwrap_or(&norm);
         let mut include = false;
         for rule in &rules {
             let hit = if rule.dir_only {
                 // Match any file inside a matching directory prefix.
                 if rule.anchored {
-                    norm.starts_with(&format!("{}/", rule.pattern))
-                        || crate::glob_match(&format!("{}/**", rule.pattern), &norm)
+                    norm.starts_with(&rule.prefix_slash)
+                        || crate::glob_match(&rule.glob_sub, &norm)
                 } else {
-                    norm.split('/')
-                        .take(norm.split('/').count().saturating_sub(1))
+                    norm.rsplit('/')
+                        .skip(1)
                         .any(|seg| crate::glob_match(&rule.pattern, seg))
                 }
             } else if rule.anchored {
-                crate::glob_match(&rule.pattern, &norm)
-                    || norm.starts_with(&format!("{}/", rule.pattern))
+                crate::glob_match(&rule.pattern, &norm) || norm.starts_with(&rule.prefix_slash)
             } else {
-                let basename = norm.rsplit('/').next().unwrap_or(&norm);
                 crate::glob_match(&rule.pattern, basename)
                     || crate::glob_match(&rule.pattern, &norm)
                     || norm
-                        .split('/')
-                        .take(norm.split('/').count().saturating_sub(1))
+                        .rsplit('/')
+                        .skip(1)
                         .any(|seg| crate::glob_match(&rule.pattern, seg))
             };
             if hit {
@@ -1699,5 +1706,36 @@ config/local/
                 "packages/web/app.local.json",
             ]
         );
+    }
+
+    #[test]
+    fn infer_clone_dir_name_handles_multibyte_utf8_without_panicking() {
+        assert_eq!(
+            infer_clone_dir_name("https://example.com/org/仓库.git").as_deref(),
+            Some("仓库")
+        );
+        assert_eq!(
+            infer_clone_dir_name("https://example.com/org/仓库名").as_deref(),
+            Some("仓库名")
+        );
+        assert_eq!(
+            infer_clone_dir_name("https://example.com/org/项目.GIT").as_deref(),
+            Some("项目")
+        );
+    }
+
+    #[test]
+    fn rebase_options_summary_includes_i_for_autosquash_and_does_not_persist_root() {
+        let opts = RebaseOptions {
+            onto: "main".into(),
+            autosquash: true,
+            root: true,
+            ..Default::default()
+        };
+        assert!(opts.summary().starts_with("-i "), "{}", opts.summary());
+        let saved = opts.to_remembered();
+        let restored = RebaseOptions::from_remembered(&saved);
+        assert!(!restored.root, "one-shot --root must never be persisted");
+        assert!(restored.autosquash);
     }
 }

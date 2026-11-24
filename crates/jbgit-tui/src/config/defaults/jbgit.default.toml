@@ -75,7 +75,10 @@ soft_wrap = false
 [annotate]
 # 逐行注解 (Git Blame) 默认行为
 ignore_whitespace = false
-detect_moves = false
+# 移动/复制检测级别: "none" | "within-file" (-M) | "across-files" (-M -C)
+detect_moves = "none"
+# 是否默认使用提交日期 (committer-time) 而非作者日期 (author-time)
+prefer_commit_date = false
 gutter_width = 28
 
 [push]

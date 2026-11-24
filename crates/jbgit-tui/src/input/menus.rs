@@ -523,8 +523,40 @@ pub fn route_overlay_and_stash_click(
             DiffToolbarButton::SoftWrap => vec![Action::DiffToggleSoftWrap(DiffScope::Stash)],
             _ => Vec::new(),
         },
-        HitTarget::ConflictMergeBlock(id) => vec![Action::ConflictSetBlock(*id)],
+        HitTarget::ConflictMergeBlock(id) => {
+            if state
+                .modal_stack
+                .conflict_merge()
+                .is_some_and(|cm| cm.inline_editor.is_some())
+            {
+                Vec::new()
+            } else {
+                vec![Action::ConflictSetBlock(*id)]
+            }
+        }
         HitTarget::ConflictMergeButton(btn) => {
+            let inline_open = state
+                .modal_stack
+                .conflict_merge()
+                .is_some_and(|cm| cm.inline_editor.is_some());
+            if inline_open {
+                return Some(match btn {
+                    ConflictMergeButtonKind::SaveAndStage => vec![
+                        Action::ConflictInlineEditKey(crossterm::event::KeyEvent::new(
+                            crossterm::event::KeyCode::F(2),
+                            crossterm::event::KeyModifiers::NONE,
+                        )),
+                        Action::ConflictSaveAndStage,
+                    ],
+                    ConflictMergeButtonKind::Cancel => vec![Action::ConflictInlineEditKey(
+                        crossterm::event::KeyEvent::new(
+                            crossterm::event::KeyCode::Esc,
+                            crossterm::event::KeyModifiers::NONE,
+                        ),
+                    )],
+                    _ => Vec::new(),
+                });
+            }
             let path = state
                 .modal_stack
                 .conflict_merge()
@@ -1272,7 +1304,7 @@ pub fn presentation_menu_items(state: &AppState) -> Vec<ContextMenuItem> {
                 "presentation.graph_renderer",
                 &[("mode", i18n.graph_renderer_label(state.log.graph_renderer.mode()))],
             ),
-            Some('g'),
+            Some('r'),
             GraphRendererMode::ALL
                 .into_iter()
                 .map(|mode| {

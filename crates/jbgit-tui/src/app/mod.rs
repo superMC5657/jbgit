@@ -26,6 +26,20 @@ pub use types::{
 };
 pub(crate) use types::initial_menu_selection;
 
+/// Runs a fire-and-forget config/options persistence write off the UI event loop
+/// in production, and synchronously under `#[cfg(test)]` for deterministic tests.
+pub(crate) fn spawn_background_io(name: &str, f: impl FnOnce() + Send + 'static) {
+    #[cfg(test)]
+    {
+        let _ = name;
+        f();
+    }
+    #[cfg(not(test))]
+    {
+        let _ = std::thread::Builder::new().name(name.into()).spawn(f);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::apply_scroll_delta;

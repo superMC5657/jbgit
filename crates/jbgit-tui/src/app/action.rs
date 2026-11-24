@@ -29,6 +29,7 @@ pub enum DiffScope {
     Annotate,
     Push,
     Stage,
+    Reflog,
 }
 
 #[derive(Debug, Clone)]
@@ -191,6 +192,7 @@ pub enum Action {
     JumpToCommit(Oid),
     OpenCommitMessageModal,
     ScrollCommitMessageModal(isize),
+    ScrollRebaseDiff(isize),
     OpenReflog(String),
     CloseReflog,
     ReflogFocus(crate::log_view::ReflogFocus),
@@ -453,6 +455,15 @@ pub enum Action {
     },
     /// Persist the Rebase dialog choices (`<common_dir>/jbgit-rebase-options`).
     RememberRebaseOptions(RebaseOptions),
+    /// Opens `RebaseTodoDialog` for commits after `options.onto` when `Interactive (-i)` is checked.
+    OpenInteractiveRebaseFromDialog(RebaseOptions),
+    /// Validates destination path (worktree/overwrite confirmation) before `GitOp::CreatePatchFile`.
+    ConfirmCreatePatchFile {
+        source: jbgit_core::PatchSource,
+        output: std::path::PathBuf,
+        reverse: bool,
+        remember_dir: std::path::PathBuf,
+    },
     /// `Update Project…` mode chooser.
     PromptUpdateProject,
     /// `Unshallow Repository…` confirmation dialog.
@@ -491,6 +502,7 @@ pub enum Action {
     CloneRepoUpdate(crate::repo_lifecycle::CloneDialogAction),
     /// Validate and launch `git clone` from the active `Clone Repository…` modal.
     CloneRepoSubmit,
+    CloneRepoCancel,
     /// Resolve a pre-commit CRLF warning dialog (`Fix & Commit` / `Commit As Is` / `Don't warn again`).
     CommitCrlfResolve {
         request: CommitRequest,

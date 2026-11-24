@@ -361,6 +361,14 @@ pub(crate) fn renormalize_staged_crlf_entries_sync(
             if entry.mode == GIT_MODE_SYMLINK || entry.mode == GIT_MODE_GITLINK {
                 continue;
             }
+            if repo
+                .odb()
+                .ok()
+                .and_then(|odb| odb.read_header(entry.id).ok())
+                .is_some_and(|(sz, _)| sz > jbgit_core::MAX_DIFF_FILE_BYTES)
+            {
+                continue;
+            }
             let Ok(blob) = repo.find_blob(entry.id) else {
                 continue;
             };
@@ -1000,17 +1008,26 @@ fn hash_object_with_filters(
     rel_path: &str,
     bytes: &[u8],
 ) -> Result<git2::Oid, EngineError> {
-    let git = crate::cli::cached_git_executable().unwrap_or_else(|| std::path::PathBuf::from("git"));
-    let mut cmd = crate::cli::non_interactive_std_command(&git, Some(&location.workdir));
+    let git = crate::cli::require_git_executable()?;
+    let mut cmd = crate::cli::non_interactive_std_write_command(&git, Some(&location.workdir));
     cmd.args(["hash-object", "-w", "--stdin", "--path", rel_path])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     let mut child = cmd.spawn().map_err(EngineError::Io)?;
-    if let Some(mut stdin) = child.stdin.take() {
-        stdin.write_all(bytes).map_err(EngineError::Io)?;
-    }
-    let out = child.wait_with_output().map_err(EngineError::Io)?;
+    let stdin_pipe = child.stdin.take();
+    let out = std::thread::scope(|s| -> Result<std::process::Output, EngineError> {
+        let writer = stdin_pipe.map(|mut pipe| {
+            s.spawn(move || {
+                let _ = pipe.write_all(bytes);
+            })
+        });
+        let out = child.wait_with_output().map_err(EngineError::Io)?;
+        if let Some(h) = writer {
+            let _ = h.join();
+        }
+        Ok(out)
+    })?;
     if !out.status.success() {
         let stderr = String::from_utf8_lossy(&out.stderr);
         return Err(EngineError::Other(format!(
@@ -1050,9 +1067,19 @@ pub(crate) fn apply_stage_buffer_sync(
     with_thread_repo(&location.git_dir, |repo| {
         let mut index = repo.index()?;
         let existing = index.get_path(Path::new(path), 0);
+        let head_is_special = repo
+            .head()
+            .ok()
+            .and_then(|h| h.peel_to_tree().ok())
+            .and_then(|t| t.get_path(Path::new(path)).ok())
+            .is_some_and(|e| {
+                let m = e.filemode() as u32;
+                m == GIT_MODE_SYMLINK || m == GIT_MODE_GITLINK
+            });
         if existing
             .as_ref()
             .is_some_and(|e| e.mode == GIT_MODE_SYMLINK || e.mode == GIT_MODE_GITLINK)
+            || head_is_special
         {
             return Err(EngineError::Other(
                 "Line-level staging is not supported for symbolic links or type changes — stage or unstage the whole file instead."
@@ -1203,8 +1230,8 @@ fn stage_submodule_gitlink(
     repo: &Repository,
     trimmed: &str,
 ) -> Result<(), EngineError> {
-    if let Some(git) = crate::cli::cached_git_executable() {
-        let out = crate::cli::non_interactive_std_command(&git, Some(&location.workdir))
+    if let Ok(git) = crate::cli::require_git_executable() {
+        let out = crate::cli::non_interactive_std_write_command(&git, Some(&location.workdir))
             .args(["add", "--", trimmed])
             .output()
             .map_err(EngineError::Io)?;
@@ -1222,9 +1249,9 @@ fn discard_submodule_gitlink(
     repo: &Repository,
     trimmed: &str,
 ) -> Result<(), EngineError> {
-    let git = crate::cli::cached_git_executable().unwrap_or_else(|| std::path::PathBuf::from("git"));
+    let git = crate::cli::require_git_executable()?;
     // First try `git submodule update -- <path>` which restores the index-recorded pointer commit.
-    let out = crate::cli::non_interactive_std_command(&git, Some(&location.workdir))
+    let out = crate::cli::non_interactive_std_write_command(&git, Some(&location.workdir))
         .args(["submodule", "update", "--", trimmed])
         .output();
     if let Ok(out) = out
@@ -1247,7 +1274,7 @@ fn discard_submodule_gitlink(
         });
     if let Some(oid) = target_oid {
         let sub_dir = location.workdir.join(trimmed);
-        let out = crate::cli::non_interactive_std_command(&git, Some(&sub_dir))
+        let out = crate::cli::non_interactive_std_write_command(&git, Some(&sub_dir))
             .args(["checkout", "--detach", &oid.to_string()])
             .output()
             .map_err(EngineError::Io)?;
@@ -1649,6 +1676,7 @@ pub fn probe_commit_precheck_sync(location: &RepoLocation) -> CommitPrecheckInfo
         let hooks_dir = cfg
             .as_ref()
             .and_then(|c| c.get_string("core.hooksPath").ok())
+            .filter(|s| !s.trim().is_empty())
             .map(|p| expand_git_config_path(&p, &location.workdir))
             .unwrap_or_else(|| location.common_dir.join("hooks"));
 

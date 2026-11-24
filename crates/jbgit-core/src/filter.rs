@@ -339,6 +339,22 @@ impl BranchFilter {
             start_heads.extend(heads);
         }
 
+        let exclude_reach = if !expanded.exclude.is_empty() && !expanded.ranges.is_empty() {
+            let excl_heads: Vec<_> = snapshot
+                .refs
+                .iter()
+                .filter(|r| expanded.exclude.iter().any(|p| Self::ref_matches(p, r)))
+                .filter_map(|r| graph.node_of_oid(&r.target_oid))
+                .collect();
+            if excl_heads.is_empty() {
+                None
+            } else {
+                Some(ReachableNodes::contained_in_branch(graph, &excl_heads))
+            }
+        } else {
+            None
+        };
+
         for (from, to) in &expanded.ranges {
             let to_node = snapshot
                 .resolve_revision(to)
@@ -346,11 +362,12 @@ impl BranchFilter {
             let from_node = snapshot
                 .resolve_revision(from)
                 .and_then(|oid| graph.node_of_oid(&oid));
-            if let Some(t) = to_node {
+            if let (Some(f), Some(t)) = (from_node, to_node) {
                 let mut reach_to = ReachableNodes::contained_in_branch(graph, &[t]);
-                if let Some(f) = from_node {
-                    let reach_from = ReachableNodes::contained_in_branch(graph, &[f]);
-                    reach_to.difference_with(&reach_from);
+                let reach_from = ReachableNodes::contained_in_branch(graph, &[f]);
+                reach_to.difference_with(&reach_from);
+                if let Some(ref excl) = exclude_reach {
+                    reach_to.difference_with(excl);
                 }
                 mask.union_with(&reach_to);
                 start_heads.push(t);
@@ -1291,5 +1308,19 @@ mod tests {
             BranchFilter::parse("main").single_compared_branch(Some("main")),
             None
         );
+
+        // Typo in `from` of `from..to` must NOT widen to all commits reachable from `to`.
+        let bad_range = LogFilterSpec {
+            branch: BranchFilter::parse("nonexistent_branch..main"),
+            ..Default::default()
+        };
+        assert!(matched(&bad_range).is_empty());
+
+        // Exclusions `-branch` must subtract from `a..b` ranges too.
+        let range_with_excl = LogFilterSpec {
+            branch: BranchFilter::parse("feature/a..main -main"),
+            ..Default::default()
+        };
+        assert!(matched(&range_with_excl).is_empty());
     }
 }

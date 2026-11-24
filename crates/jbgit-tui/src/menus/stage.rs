@@ -716,7 +716,14 @@ fn build_flexible_ignore_submenu(
 
     let nested = paths
         .first()
-        .and_then(|p| nearest_nested_gitignore(workdir, p));
+        .and_then(|p| nearest_nested_gitignore(workdir, p))
+        .filter(|(dir, _)| {
+            let prefix = format!("{dir}/");
+            paths.iter().all(|p| {
+                let norm = p.trim().trim_start_matches(['/', '\\']).replace('\\', "/");
+                norm.starts_with(&prefix)
+            })
+        });
 
     let mut sub: Vec<ContextMenuItem> = Vec::new();
     let reason = i18n.t("menu.stage.only_untracked_ignore");

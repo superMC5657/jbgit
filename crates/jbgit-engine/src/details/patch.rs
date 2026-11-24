@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 
 use jbgit_core::{
     ApplyOptions, EpochToken, PatchCheck, PatchCheckKey, PatchInput, first_apply_error,
-    parse_apply_check, parse_patch_sections,
+    parse_apply_check,
 };
 
 use crate::cli::non_interactive_std_command;
@@ -14,6 +14,19 @@ use crate::probe::RepoLocation;
 
 /// Maximum patch size parsed for in-modal per-file diff preview (8 MiB).
 const MAX_PATCH_PREVIEW_BYTES: usize = 8 * 1024 * 1024;
+
+/// Escapes Git wildmatch glob metacharacters (`\`, `*`, `?`, `[`, `]`) so
+/// `git apply --include=<path>` matches literal paths such as `app/[id]/page.tsx`.
+fn escape_wildmatch_path(path: &str) -> String {
+    let mut out = String::with_capacity(path.len());
+    for ch in path.chars() {
+        if matches!(ch, '\\' | '*' | '?' | '[' | ']') {
+            out.push('\\');
+        }
+        out.push(ch);
+    }
+    out
+}
 
 /// `git apply` arguments. `file` = `None` reads the patch from stdin (`-`).
 pub(crate) fn apply_args(options: &ApplyOptions, check: bool, file: Option<&Path>) -> Vec<String> {
@@ -37,7 +50,8 @@ pub(crate) fn apply_args(options: &ApplyOptions, check: bool, file: Option<&Path
     for path in &options.include_paths {
         let trimmed = path.trim();
         if !trimmed.is_empty() {
-            args.push(format!("--include={trimmed}"));
+            let escaped = escape_wildmatch_path(trimmed);
+            args.push(format!("--include={escaped}"));
         }
     }
     args.push("--whitespace=nowarn".to_string());
@@ -118,10 +132,11 @@ pub(crate) fn check_patch_sync(
         }
     };
     let preview_text = read_patch_preview_text(file.as_deref(), stdin.as_deref());
-    let (sections, has_index_headers) = parse_patch_sections(
+    let (sections, has_index_headers) = jbgit_core::parse_patch_sections_with_options(
         &preview_text,
         key.options.effective_strip(),
         key.options.normalized_directory().as_deref(),
+        key.options.reverse,
     );
     let failed = |error: String| PatchCheck {
         key: key.clone(),
@@ -133,7 +148,7 @@ pub(crate) fn check_patch_sync(
     if token.is_stale() {
         return Err(EngineError::Cancelled);
     }
-    let git = crate::cli::cached_git_executable().unwrap_or_else(|| std::path::PathBuf::from("git"));
+    let git = crate::cli::require_git_executable()?;
     let mut cmd = non_interactive_std_command(&git, Some(&loc.workdir));
     cmd.arg("--git-dir")
         .arg(&loc.git_dir)
@@ -153,14 +168,21 @@ pub(crate) fn check_patch_sync(
             EngineError::Io(e)
         }
     })?;
-    if let Some(bytes) = stdin
-        && let Some(mut pipe) = child.stdin.take()
-    {
-        use std::io::Write;
-        // A rejected patch may close stdin early; the exit status reports it.
-        let _ = pipe.write_all(&bytes);
-    }
-    let output = child.wait_with_output()?;
+    let stdin_pipe = child.stdin.take();
+    let output = std::thread::scope(|s| -> std::io::Result<std::process::Output> {
+        let writer = stdin.zip(stdin_pipe).map(|(bytes, mut pipe)| {
+            s.spawn(move || {
+                use std::io::Write;
+                // A rejected patch may close stdin early; the exit status reports it.
+                let _ = pipe.write_all(&bytes);
+            })
+        });
+        let output = child.wait_with_output()?;
+        if let Some(h) = writer {
+            let _ = h.join();
+        }
+        Ok(output)
+    })?;
     if token.is_stale() {
         return Err(EngineError::Cancelled);
     }

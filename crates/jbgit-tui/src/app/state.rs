@@ -98,6 +98,11 @@ pub struct AppState {
     pub(crate) pending_init_repo: Option<PathBuf>,
     /// Confirmed `git clone` request the host must execute and bind on success.
     pub(crate) pending_clone_repo: Option<jbgit_engine::CloneRequest>,
+    /// Set when the user cancels an active `git clone` task.
+    pub(crate) pending_clone_cancel: bool,
+    /// `(branch_name, tip_oid)` list from an in-flight Branch Cleanup batch delete
+    /// so partial failures still offer Undo/Restore for already-deleted branches.
+    pub(crate) pending_batch_branch_deletes: Vec<(String, jbgit_core::Oid)>,
     /// Confirmed `[worktree] setup_command` the host should run in the new worktree.
     pub(crate) pending_worktree_setup: Option<(PathBuf, String)>,
     /// User-level most-recently-opened repositories.
@@ -230,6 +235,8 @@ impl AppState {
             pending_repo_switch: None,
             pending_init_repo: None,
             pending_clone_repo: None,
+            pending_clone_cancel: false,
+            pending_batch_branch_deletes: Vec::new(),
             pending_worktree_setup: None,
             recent_repos: crate::repo_switcher::RecentRepos::in_memory(),
             git_version: None,
@@ -621,10 +628,13 @@ impl AppState {
                     }
                 }
                 ScrollPane::RebaseDiff => {
-                    if let Some(ModalLayer::Dialog(d)) = self.modal_stack.last_mut()
-                        && let crate::dialogs::Dialog::RebaseTodo(r) = d.as_mut()
-                    {
-                        r.diff_scroll.bind_bound(viewport_h, max_scroll);
+                    for layer in self.modal_stack.iter_mut().rev() {
+                        if let ModalLayer::Dialog(d) = layer
+                            && let crate::dialogs::Dialog::RebaseTodo(r) = d.as_mut()
+                        {
+                            r.diff_scroll.bind_bound(viewport_h, max_scroll);
+                            break;
+                        }
                     }
                 }
             }
@@ -643,6 +653,7 @@ impl AppState {
             || self.modal_stack.file_history().is_some_and(|fh| fh.loading)
             || self.modal_stack.annotate().is_some_and(|ann| ann.loading)
             || self.modal_stack.push_dialog().is_some_and(|pd| pd.loading)
+            || self.modal_stack.reflog().is_some_and(|rf| rf.loading)
             || self.console.has_running()
             || !self.credentials.is_empty()
             || self.modal_stack.iter().any(|l| match l {
@@ -669,6 +680,9 @@ impl AppState {
             self.modal_stack
                 .push_dialog()
                 .and_then(PushDialogState::next_deadline),
+            self.modal_stack
+                .reflog()
+                .and_then(crate::log_view::ReflogState::next_deadline),
             self.modal_stack
                 .apply_patch()
                 .and_then(crate::patch_view::ApplyPatchState::next_deadline),

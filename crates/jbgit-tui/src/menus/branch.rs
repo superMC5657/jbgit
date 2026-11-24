@@ -194,7 +194,7 @@ pub fn branch_menu_items(state: &AppState, name: &str, kind: RefKind) -> Vec<Con
                     options: PullOptions::default(),
                 })
             } else {
-                match upstream.as_ref().and_then(|u| u.split_once('/')) {
+                match upstream.as_deref().and_then(|u| snap.split_tracking(u)) {
                     Some((remote, rb)) => op(GitOp::UpdateBranch {
                         branch: name.clone(),
                         remote: remote.to_string(),
@@ -295,7 +295,9 @@ pub fn branch_menu_items(state: &AppState, name: &str, kind: RefKind) -> Vec<Con
             items.push(star_item(&full, &name));
         }
         RefKind::RemoteBranch => {
-            let (_remote, short) = name.split_once('/').unwrap_or(("origin", name));
+            let (_remote, short) = snap
+                .split_tracking(name)
+                .unwrap_or_else(|| name.split_once('/').unwrap_or(("origin", name)));
             let full = format!("refs/remotes/{name}");
             let target_oid = snap
                 .refs

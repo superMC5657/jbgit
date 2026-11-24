@@ -49,6 +49,48 @@ fn route_paste(text: &str, state: &AppState) -> Vec<Action> {
         return vec![Action::CommitEditorPaste(text.to_string())];
     }
 
+    if state.active_tab == WorkspaceTab::Log
+        && state.log.details.diff.search.editing
+        && (state.log.details.diff.zoomed
+            || (state.focused_pane == PaneId::LogDetailsDiff && state.log.details.diff_preview))
+    {
+        return text
+            .chars()
+            .filter(|c| *c != '\n' && *c != '\r' && !c.is_control())
+            .map(|c| Action::DiffSearchChar(crate::app::DiffScope::Log, c))
+            .collect();
+    }
+
+    if state.active_tab == WorkspaceTab::Commit
+        && state.focused_pane == PaneId::CommitDiffPreview
+        && state.stage_workbench.diff_search().editing
+    {
+        return text
+            .chars()
+            .filter(|c| *c != '\n' && *c != '\r' && !c.is_control())
+            .map(|c| Action::DiffSearchChar(crate::app::DiffScope::Stage, c))
+            .collect();
+    }
+
+    if state.active_tab == WorkspaceTab::Stash
+        && state.focused_pane == PaneId::StashDiffPreview
+        && state.stash.diff().search.editing
+    {
+        return text
+            .chars()
+            .filter(|c| *c != '\n' && *c != '\r' && !c.is_control())
+            .map(|c| Action::DiffSearchChar(crate::app::DiffScope::Stash, c))
+            .collect();
+    }
+
+    if state.active_tab == WorkspaceTab::Log && state.log.speed_search.editing {
+        return text
+            .chars()
+            .filter(|c| *c != '\n' && *c != '\r' && !c.is_control())
+            .map(Action::LogSpeedSearchInput)
+            .collect();
+    }
+
     if state.active_tab == WorkspaceTab::Log && state.log.filter.editing_text {
         return text
             .chars()

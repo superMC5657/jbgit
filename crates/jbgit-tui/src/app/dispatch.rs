@@ -136,6 +136,9 @@ impl AppState {
             Action::ScrollCommitMessageModal(delta) => {
                 self.scroll_pane(ScrollPane::CommitMessageModal, delta);
             }
+            Action::ScrollRebaseDiff(delta) => {
+                self.scroll_pane(ScrollPane::RebaseDiff, delta);
+            }
             Action::LoadMoreCommits => {
                 let has_more = self
                     .repo_snapshot
@@ -201,8 +204,10 @@ impl AppState {
                 };
                 match top {
                     ModalLayer::ConflictResolver(cm) => {
+                        let tab_size = self.config.jbgit.diff.tab_size;
                         if let Some(ed) = &mut cm.inline_editor {
                             ed.insert_text(&text);
+                            ed.ensure_cursor_visible_with_tab(60, 5, tab_size);
                         }
                     }
                     ModalLayer::CloneRepo(cd) => {
@@ -326,12 +331,55 @@ impl AppState {
                         }
                     }
                     ModalLayer::Annotate(ann) => {
-                        if let Some(buf) = ann.goto_line_input.as_mut() {
+                        if ann.diff.search.editing {
+                            let chars: Vec<char> = text
+                                .chars()
+                                .filter(|c| *c != '\n' && *c != '\r' && !c.is_control())
+                                .collect();
+                            for ch in chars {
+                                effects.extend(
+                                    self.dispatch(Action::DiffSearchChar(DiffScope::Annotate, ch)),
+                                );
+                            }
+                        } else if let Some(buf) = ann.goto_line_input.as_mut() {
                             for ch in text.chars().filter(|c| c.is_ascii_digit()) {
                                 if buf.len() < 9 {
                                     buf.push(ch);
                                 }
                             }
+                        }
+                    }
+                    ModalLayer::FileHistory(fh) if fh.diff.search.editing => {
+                        let chars: Vec<char> = text
+                            .chars()
+                            .filter(|c| *c != '\n' && *c != '\r' && !c.is_control())
+                            .collect();
+                        for ch in chars {
+                            effects.extend(
+                                self.dispatch(Action::DiffSearchChar(DiffScope::FileHistory, ch)),
+                            );
+                        }
+                    }
+                    ModalLayer::Reflog(rf) if rf.diff.search.editing => {
+                        let chars: Vec<char> = text
+                            .chars()
+                            .filter(|c| *c != '\n' && *c != '\r' && !c.is_control())
+                            .collect();
+                        for ch in chars {
+                            effects.extend(
+                                self.dispatch(Action::DiffSearchChar(DiffScope::Reflog, ch)),
+                            );
+                        }
+                    }
+                    ModalLayer::PushDialog(pd) if pd.diff.search.editing => {
+                        let chars: Vec<char> = text
+                            .chars()
+                            .filter(|c| *c != '\n' && *c != '\r' && !c.is_control())
+                            .collect();
+                        for ch in chars {
+                            effects.extend(
+                                self.dispatch(Action::DiffSearchChar(DiffScope::Push, ch)),
+                            );
                         }
                     }
                     ModalLayer::PushDialog(pd) if pd.editing_target => {
@@ -342,6 +390,26 @@ impl AppState {
                         if !clean.is_empty() {
                             pd.target_draft.push_str(&clean);
                             pd.completion_selected = 0;
+                        }
+                    }
+                    ModalLayer::TreeBrowser(tb) if tb.search_open => {
+                        let chars: Vec<char> = text
+                            .chars()
+                            .filter(|c| *c != '\n' && *c != '\r' && !c.is_control())
+                            .collect();
+                        for ch in chars {
+                            tb.apply(&crate::tree_browser::TreeBrowserAction::SearchInput(ch));
+                        }
+                    }
+                    ModalLayer::ApplyPatch(ap) if ap.editing_dir.is_some() => {
+                        let clean: String = text
+                            .chars()
+                            .filter(|c| *c != '\n' && *c != '\r' && !c.is_control())
+                            .collect();
+                        if !clean.is_empty()
+                            && let Some(buf) = ap.editing_dir.as_mut()
+                        {
+                            buf.push_str(&clean);
                         }
                     }
                     _ => {}
@@ -412,7 +480,12 @@ impl AppState {
                         }
                         crate::dialogs::Dialog::CreatePatch(cp) => {
                             let rows = crate::dialogs::CreatePatchRow::ALL;
-                            cp.selected = idx.min(rows.len() - 1);
+                            let target = idx.min(rows.len() - 1);
+                            if cp.to_clipboard && rows[target] == crate::dialogs::CreatePatchRow::Path
+                            {
+                                return effects;
+                            }
+                            cp.selected = target;
                             let row = cp.row();
                             if row != crate::dialogs::CreatePatchRow::Path {
                                 cp.toggle(row);
@@ -614,6 +687,19 @@ impl AppState {
             }
             Action::PopModal => {
                 self.menu_hover = None;
+                // Do not allow backdrop click / PopModal to orphan an in-flight clone
+                // or dismiss the only Welcome screen when no repository is bound.
+                match self.modal_stack.last() {
+                    Some(ModalLayer::CloneRepo(cd)) if cd.cloning => {
+                        return effects;
+                    }
+                    Some(ModalLayer::Welcome(_))
+                        if self.repo_snapshot.is_none() && self.modal_stack.len() == 1 =>
+                    {
+                        return effects;
+                    }
+                    _ => {}
+                }
                 if !self.answer_credential(false) {
                     self.modal_stack.pop();
                 }
@@ -645,8 +731,11 @@ impl AppState {
                     self.config.jbgit.commit.warn_crlf = false;
                     let workdir = self.current_workdir();
                     if self.repo_snapshot.is_some() && workdir.is_dir() {
-                        let _ =
-                            crate::config::AppConfig::persist_repo_commit_warn_crlf(&workdir, false);
+                        super::spawn_background_io("jbgit-cfg-writer", move || {
+                            let _ = crate::config::AppConfig::persist_repo_commit_warn_crlf(
+                                &workdir, false,
+                            );
+                        });
                     }
                 }
                 request.check_crlf = false;
@@ -1158,7 +1247,10 @@ impl AppState {
                         fh.repo_version_scroll.reset();
                     }
                     self.tree_syntax.invalidate();
-                    effects.push(Effect::RequestTreeBlob(key));
+                    effects.push(Effect::RequestTreeBlob {
+                        slot: RequestSlotId::FileHistoryRepoVersion,
+                        key,
+                    });
                 } else if self.modal_stack.file_history().is_some() {
                     self.status_notice =
                         Some(self.i18n.t("menu.log_change.deleted_in_commit").to_string());
@@ -1527,6 +1619,7 @@ impl AppState {
             Action::AnnotateToggleFocus => {
                 if let Some(ann) = self.modal_stack.annotate_mut()
                     && ann.show_diff
+                    && !ann.show_commit_details
                 {
                     ann.focus = match ann.focus {
                         AnnotateFocus::Code => AnnotateFocus::Diff,
@@ -1536,7 +1629,7 @@ impl AppState {
             }
             Action::AnnotateSetFocus(focus) => {
                 if let Some(ann) = self.modal_stack.annotate_mut() {
-                    ann.focus = if ann.show_diff {
+                    ann.focus = if ann.show_diff && !ann.show_commit_details {
                         *focus
                     } else {
                         AnnotateFocus::Code
@@ -1646,16 +1739,14 @@ impl AppState {
                                 (h, p, line.final_line)
                             })
                         } else {
-                            ann.selected_commit()
-                                .and_then(|c| c.previous.as_ref())
-                                .map(|(oid, prev_path)| {
-                                    let p = if prev_path.is_empty() {
-                                        ann.key.path.clone()
-                                    } else {
-                                        prev_path.clone()
-                                    };
-                                    (*oid, p, line.orig_line.max(1))
-                                })
+                            ann.selected_previous().map(|(oid, prev_path)| {
+                                let p = if prev_path.is_empty() {
+                                    ann.key.path.clone()
+                                } else {
+                                    prev_path.clone()
+                                };
+                                (*oid, p, line.orig_line.max(1))
+                            })
                         }
                     })
                 } else {
@@ -2545,9 +2636,11 @@ impl AppState {
                 } else {
                     ref_name.trim().to_string()
                 };
-                let state = crate::log_view::ReflogState::new(
+                let state = crate::log_view::ReflogState::new_with_prefs(
                     ref_name,
                     self.log.details.diff.context,
+                    self.config.jbgit.diff.whitespace.to_core(),
+                    self.config.jbgit.diff.soft_wrap,
                 );
                 let key = state.key.clone();
                 self.blur_active_pane(false);
@@ -2585,13 +2678,13 @@ impl AppState {
             Action::ReflogChangesMove(delta) => {
                 if let Some(rf) = self.modal_stack.reflog_mut() {
                     rf.changes.move_selection(*delta, &self.diff_caches);
-                    rf.diff.scroll.reset();
+                    rf.diff.reset_view_offsets();
                 }
             }
             Action::ReflogChangesSelect(idx) => {
                 if let Some(rf) = self.modal_stack.reflog_mut() {
                     rf.changes.select_row(*idx, &self.diff_caches);
-                    rf.diff.scroll.reset();
+                    rf.diff.reset_view_offsets();
                 }
             }
             Action::ReflogDiffScroll(delta) => {
@@ -2605,6 +2698,78 @@ impl AppState {
             Action::ReflogCycleContext => {
                 if let Some(rf) = self.modal_stack.reflog_mut() {
                     rf.diff.cycle_context();
+                }
+            }
+            Action::DiffJumpHunk(DiffScope::Reflog, delta) => {
+                if let Some(rf) = self.modal_stack.reflog_mut() {
+                    let diff = rf
+                        .desired_diff_key(&self.diff_caches)
+                        .and_then(|k| self.diff_caches.peek_diff(&k));
+                    rf.diff.jump_hunk(*delta, diff);
+                }
+            }
+            Action::DiffCycleWhitespace(DiffScope::Reflog) => {
+                if let Some(rf) = self.modal_stack.reflog_mut() {
+                    rf.diff.cycle_whitespace();
+                }
+            }
+            Action::DiffToggleSoftWrap(DiffScope::Reflog) => {
+                if let Some(rf) = self.modal_stack.reflog_mut() {
+                    rf.diff.toggle_soft_wrap();
+                }
+            }
+            Action::DiffScrollHoriz(DiffScope::Reflog, delta) => {
+                if let Some(rf) = self.modal_stack.reflog_mut() {
+                    rf.diff.scroll_horiz(*delta);
+                }
+            }
+            Action::DiffSearchOpen(DiffScope::Reflog) => {
+                if let Some(rf) = self.modal_stack.reflog_mut() {
+                    rf.diff.search.open();
+                }
+            }
+            Action::DiffSearchChar(DiffScope::Reflog, ch) => {
+                let tab_size = self.config.jbgit.diff.tab_size;
+                if let Some(rf) = self.modal_stack.reflog_mut() {
+                    rf.diff.search.push_char(*ch);
+                    let diff = rf
+                        .desired_diff_key(&self.diff_caches)
+                        .and_then(|k| self.diff_caches.peek_diff(&k).cloned());
+                    rf.diff.refresh_search(diff.as_ref(), tab_size);
+                }
+            }
+            Action::DiffSearchBackspace(DiffScope::Reflog) => {
+                let tab_size = self.config.jbgit.diff.tab_size;
+                if let Some(rf) = self.modal_stack.reflog_mut() {
+                    rf.diff.search.backspace();
+                    let diff = rf
+                        .desired_diff_key(&self.diff_caches)
+                        .and_then(|k| self.diff_caches.peek_diff(&k).cloned());
+                    rf.diff.refresh_search(diff.as_ref(), tab_size);
+                }
+            }
+            Action::DiffSearchClear(DiffScope::Reflog) => {
+                if let Some(rf) = self.modal_stack.reflog_mut() {
+                    rf.diff.search.clear_query();
+                }
+            }
+            Action::DiffSearchConfirm(DiffScope::Reflog) => {
+                if let Some(rf) = self.modal_stack.reflog_mut() {
+                    rf.diff.search.finish_editing();
+                }
+            }
+            Action::DiffSearchClose(DiffScope::Reflog) => {
+                if let Some(rf) = self.modal_stack.reflog_mut() {
+                    rf.diff.search.close();
+                }
+            }
+            Action::DiffSearchJump(DiffScope::Reflog, delta) => {
+                let tab_size = self.config.jbgit.diff.tab_size;
+                if let Some(rf) = self.modal_stack.reflog_mut() {
+                    let diff = rf
+                        .desired_diff_key(&self.diff_caches)
+                        .and_then(|k| self.diff_caches.peek_diff(&k).cloned());
+                    rf.diff.jump_search(*delta, diff.as_ref(), tab_size);
                 }
             }
             Action::ReflogLoadMore => {

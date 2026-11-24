@@ -1441,12 +1441,19 @@ fn file_history_context_menu_repo_version_affected_files_scope_pagination_search
 
     // 4. Open Repository Version ('v') loads TreeBlob and renders read-only preview
     ts.send_key(KeyCode::Char('v'), KeyModifiers::NONE);
-    let blob_ep = ts.state().request_slots.latest(RequestSlotId::TreeBlob);
+    let blob_ep = ts
+        .state()
+        .request_slots
+        .latest(RequestSlotId::FileHistoryRepoVersion);
     assert!(ts.take_requests().iter().any(|(r, _)| matches!(
         r,
-        TaskRequest::LoadTreeBlob { key } if key.oid == c3 && key.path == "new_name.rs"
+        TaskRequest::LoadTreeBlob {
+            slot: RequestSlotId::FileHistoryRepoVersion,
+            key
+        } if key.oid == c3 && key.path == "new_name.rs"
     )));
     ts.deliver_engine_event(EngineEvent::TreeBlobLoaded {
+        slot: RequestSlotId::FileHistoryRepoVersion,
         blob: Arc::new(TreeBlob {
             key: TreeBlobKey {
                 oid: c3,

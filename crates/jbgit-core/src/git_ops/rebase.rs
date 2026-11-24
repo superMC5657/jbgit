@@ -209,9 +209,7 @@ pub fn render_todo(
             e.oid,
             sanitize_subject(&e.subject)
         ));
-        let next_folds = entries
-            .get(idx + 1)
-            .is_some_and(|n| matches!(n.action, TodoAction::Squash | TodoAction::Fixup));
+        let next_folds = next_commit_folds(entries, idx);
         let needs_amend = match e.action {
             TodoAction::Reword => e.message.is_some(),
             TodoAction::Squash | TodoAction::Fixup => e.message.is_some() && !next_folds,
@@ -259,9 +257,7 @@ pub fn default_squash_messages(entries: &mut [TodoEntry], full_message: impl Fn(
             }
             TodoAction::Fixup | TodoAction::Drop | TodoAction::UpdateRef => {}
         }
-        let next_folds = entries
-            .get(idx + 1)
-            .is_some_and(|n| matches!(n.action, TodoAction::Squash | TodoAction::Fixup));
+        let next_folds = next_commit_folds(entries, idx);
         if matches!(action, TodoAction::Squash | TodoAction::Fixup)
             && !next_folds
             && entries[idx].message.is_none()
@@ -275,6 +271,18 @@ pub fn default_squash_messages(entries: &mut [TodoEntry], full_message: impl Fn(
             }
         }
     }
+}
+
+/// True when the next non-`Drop`, non-`UpdateRef` entry after `idx` folds into
+/// the preceding commit (`Squash` or `Fixup`).
+fn next_commit_folds(entries: &[TodoEntry], idx: usize) -> bool {
+    entries
+        .get(idx + 1..)
+        .and_then(|rest| {
+            rest.iter()
+                .find(|e| !matches!(e.action, TodoAction::Drop | TodoAction::UpdateRef))
+        })
+        .is_some_and(|n| matches!(n.action, TodoAction::Squash | TodoAction::Fixup))
 }
 
 fn sanitize_subject(s: &str) -> String {

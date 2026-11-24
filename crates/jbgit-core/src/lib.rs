@@ -79,6 +79,7 @@ pub use patch::{
     ApplyMode, ApplyOptions, PatchCheck, PatchCheckKey, PatchFileSection, PatchFileStat,
     PatchInput, apply_strip_and_directory, build_untracked_file_patch, first_apply_error,
     needs_three_way_index_fallback, parse_apply_check, parse_apply_conflicts, parse_patch_sections,
+    parse_patch_sections_with_options,
 };
 pub use reflog::{
     CherryPickedKey, DEFAULT_REFLOG_LIMIT, REFLOG_GIT_FORMAT, ReflogActionKind, ReflogBundle,

@@ -5,7 +5,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::askpass::AskpassEnv;
-use crate::cli::{CliCommand, CliStreamEvent, GitCliExecutor, non_interactive_std_command};
+use crate::cli::{CliCommand, CliStreamEvent, GitCliExecutor};
 use crate::error::EngineError;
 use crate::probe::RepoLocation;
 
@@ -43,7 +43,7 @@ pub fn init_repository_sync(
         fs::create_dir_all(dir)?;
     }
     let git_info = crate::cli::detect_git_executable(git_executable)?;
-    let mut cmd = non_interactive_std_command(&git_info.path, Some(dir));
+    let mut cmd = crate::cli::non_interactive_std_write_command(&git_info.path, Some(dir));
     cmd.arg("init");
     let output = cmd.output()?;
     if !output.status.success() {
@@ -78,23 +78,43 @@ where
             "Target directory cannot be empty".to_string(),
         ));
     }
-    if let Some(parent) = req.target_dir.parent()
-        && !parent.as_os_str().is_empty()
-        && !parent.exists()
-    {
-        fs::create_dir_all(parent)?;
-    }
+    // Absolutize relative target_dir so passing it alongside `current_dir = parent`
+    // never doubles nested relative paths (`sub/repo` -> `sub/sub/repo`).
+    let target_dir = if req.target_dir.is_relative() {
+        std::env::current_dir()
+            .map(|cwd| cwd.join(&req.target_dir))
+            .unwrap_or_else(|_| req.target_dir.clone())
+    } else {
+        req.target_dir.clone()
+    };
+    let req = CloneRequest {
+        target_dir: target_dir.clone(),
+        ..req
+    };
 
-    let cli = GitCliExecutor::detect_with_executable(git_executable)?;
+    let parent_to_create = target_dir
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .map(Path::to_path_buf);
+    let git_exe_owned = git_executable.map(str::to_string);
+    let (cli, workdir) = tokio::task::spawn_blocking(move || -> Result<_, EngineError> {
+        if let Some(ref parent) = parent_to_create
+            && !parent.exists()
+        {
+            fs::create_dir_all(parent)?;
+        }
+        let cli = GitCliExecutor::detect_with_executable(git_exe_owned.as_deref())?;
+        let workdir = parent_to_create
+            .filter(|p| p.is_dir())
+            .or_else(|| std::env::current_dir().ok())
+            .unwrap_or_else(|| PathBuf::from("."));
+        Ok((cli, workdir))
+    })
+    .await
+    .map_err(|e| EngineError::Other(format!("clone setup task failed: {e}")))??;
+
     let args = compile_clone_args(&req);
     let env = askpass.map(AskpassEnv::vars).unwrap_or_default();
-    let workdir = req
-        .target_dir
-        .parent()
-        .filter(|p| !p.as_os_str().is_empty() && p.is_dir())
-        .map(Path::to_path_buf)
-        .or_else(|| std::env::current_dir().ok())
-        .unwrap_or_else(|| PathBuf::from("."));
 
     let out = cli
         .execute(

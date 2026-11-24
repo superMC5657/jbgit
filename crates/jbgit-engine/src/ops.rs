@@ -149,22 +149,31 @@ pub(crate) fn compile_simple_steps(op: &GitOp) -> Option<Vec<CompiledStep>> {
             vec![CompiledStep::new(args)]
         }
         GitOp::RenameBranch { old, new } => {
-            vec![CompiledStep::new(["branch", "-m", old.as_str(), new.as_str()])]
+            vec![CompiledStep::new([
+                "branch",
+                "-m",
+                "--",
+                old.as_str(),
+                new.as_str(),
+            ])]
         }
         GitOp::DeleteBranch { name, force, .. } => vec![CompiledStep::new([
             "branch",
             if *force { "-D" } else { "-d" },
+            "--",
             name.as_str(),
         ])],
         GitOp::RestoreBranch { name, oid } => vec![CompiledStep::new(vec![
             "branch".to_string(),
+            "--".to_string(),
             name.clone(),
             oid.to_string(),
         ])],
         GitOp::DeleteRemoteBranch { remote, branch } => vec![CompiledStep::new([
             "push",
-            remote.as_str(),
             "--delete",
+            "--",
+            remote.as_str(),
             branch.as_str(),
         ])],
         GitOp::CreateTag {
@@ -405,8 +414,10 @@ pub(crate) fn compile_simple_steps(op: &GitOp) -> Option<Vec<CompiledStep>> {
                 name_args.push("--global".to_string());
                 email_args.push("--global".to_string());
             }
+            name_args.push("--".to_string());
             name_args.push("user.name".to_string());
             name_args.push(name.clone());
+            email_args.push("--".to_string());
             email_args.push("user.email".to_string());
             email_args.push(email.clone());
             vec![CompiledStep::new(name_args), CompiledStep::new(email_args)]
@@ -414,11 +425,13 @@ pub(crate) fn compile_simple_steps(op: &GitOp) -> Option<Vec<CompiledStep>> {
         GitOp::SetUpstream { branch, upstream } => vec![CompiledStep::new(vec![
             "branch".to_string(),
             format!("--set-upstream-to={upstream}"),
+            "--".to_string(),
             branch.clone(),
         ])],
         GitOp::UnsetUpstream { branch } => vec![CompiledStep::new(vec![
             "branch".to_string(),
             "--unset-upstream".to_string(),
+            "--".to_string(),
             branch.clone(),
         ])],
         GitOp::UpdateBranch {
@@ -689,14 +702,16 @@ pub(crate) fn parse_branch_refs(lines: &[String]) -> BranchRefTable {
     table
 }
 
-/// Keeps a commit-message file Git prepared for the next commit, minus `#` comments.
+/// Keeps a commit-message file Git prepared for the next commit, minus comment lines
+/// matching the repository's `core.commentChar`.
+#[cfg(test)]
 pub(crate) fn clean_prepared_message(raw: &str) -> Option<String> {
-    let text: Vec<&str> = raw
-        .lines()
-        .filter(|l| !l.starts_with('#'))
-        .collect();
-    let joined = text.join("\n");
-    let trimmed = joined.trim();
+    clean_prepared_message_with_char(raw, '#')
+}
+
+pub(crate) fn clean_prepared_message_with_char(raw: &str, comment_char: char) -> Option<String> {
+    let cleaned = jbgit_core::strip_commit_comments(raw, comment_char);
+    let trimmed = cleaned.trim();
     (!trimmed.is_empty()).then(|| trimmed.to_string())
 }
 
@@ -814,31 +829,6 @@ fn compile_rebase(options: &RebaseOptions) -> CompiledStep {
     }
 }
 
-fn push_format_patch_target(
-    args: &mut Vec<String>,
-    oids: &[jbgit_core::Oid],
-    base: Option<jbgit_core::Oid>,
-) -> bool {
-    match oids {
-        [one] => {
-            args.push("-1".to_string());
-            args.push(one.to_string());
-            true
-        }
-        [newest, ..] => {
-            match base {
-                Some(b) => args.push(format!("{b}..{newest}")),
-                None => {
-                    args.push("--root".to_string());
-                    args.push(newest.to_string());
-                }
-            }
-            true
-        }
-        [] => false,
-    }
-}
-
 /// Standard Git empty-tree object id (used when diffing against an unborn HEAD).
 const EMPTY_TREE_OID: &str = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
 
@@ -848,35 +838,31 @@ pub(crate) fn compile_patch_source(
     head_exists: bool,
 ) -> Vec<CompiledStep> {
     match source {
-        PatchSource::Commits { oids, base } => {
+        PatchSource::Commits { oids, .. } => {
             if !reverse {
-                let mut args = vec!["format-patch".to_string(), "--stdout".to_string()];
-                if !push_format_patch_target(&mut args, oids, *base) {
-                    return Vec::new();
-                }
-                vec![CompiledStep::new(args)]
+                oids.iter()
+                    .rev()
+                    .map(|oid| {
+                        CompiledStep::new([
+                            "format-patch",
+                            "--stdout",
+                            "-1",
+                            &oid.to_string(),
+                        ])
+                    })
+                    .collect()
             } else {
-                match oids.as_slice() {
-                    [one] => vec![CompiledStep::new([
-                        "show",
-                        "--format=",
-                        "--patch",
-                        "-R",
-                        &one.to_string(),
-                    ])],
-                    [newest, ..] => {
-                        let mut args = vec!["diff".to_string(), "-R".to_string()];
-                        match base {
-                            Some(b) => args.push(format!("{b}..{newest}")),
-                            None => {
-                                args.push(EMPTY_TREE_OID.to_string());
-                                args.push(newest.to_string());
-                            }
-                        }
-                        vec![CompiledStep::new(args)]
-                    }
-                    [] => Vec::new(),
-                }
+                oids.iter()
+                    .map(|oid| {
+                        CompiledStep::new([
+                            "show",
+                            "--format=",
+                            "--patch",
+                            "-R",
+                            &oid.to_string(),
+                        ])
+                    })
+                    .collect()
             }
         }
         PatchSource::CommitFile { oid, path } => {
@@ -952,9 +938,19 @@ pub(crate) fn compile_patch_source(
 
 /// Compiles the CLI steps for [`GitOp::AcceptSide`]: paths whose accepted stage
 /// has a blob run `git checkout --ours/--theirs` + `git add`; paths whose
-/// accepted stage is absent (Delete/Modify or Both-Deleted) run `git rm -f`.
+/// accepted stage is absent (Delete/Modify or Both-Deleted) run `git rm -rf`.
+#[cfg(test)]
 pub(crate) fn compile_accept_side_steps(
     to_checkout_add: &[String],
+    to_remove: &[String],
+    git_ours: bool,
+) -> Vec<CompiledStep> {
+    compile_accept_side_steps_with_gitlinks(to_checkout_add, &[], to_remove, git_ours)
+}
+
+fn compile_accept_side_steps_with_gitlinks(
+    to_checkout_add: &[String],
+    to_update_gitlinks: &[(String, String)],
     to_remove: &[String],
     git_ours: bool,
 ) -> Vec<CompiledStep> {
@@ -972,32 +968,50 @@ pub(crate) fn compile_accept_side_steps(
             to_checkout_add,
         ));
     }
+    for (path, oid_hex) in to_update_gitlinks {
+        // Update submodule gitlink index entry directly to the chosen commit OID
+        // (avoids `git add` overwriting stage 0 with the unchanged submodule workdir HEAD).
+        steps.push(CompiledStep::new(vec![
+            "update-index".to_string(),
+            "--cacheinfo".to_string(),
+            format!("160000,{oid_hex},{path}"),
+        ]));
+    }
     if !to_remove.is_empty() {
         steps.push(CompiledStep::with_pathspecs(
-            vec!["rm".to_string(), "-f".to_string()],
+            vec!["rm".to_string(), "-r".to_string(), "-f".to_string()],
             to_remove,
         ));
     }
     steps
 }
 
+struct AcceptSidePlan {
+    git_ours: bool,
+    to_checkout_add: Vec<String>,
+    to_update_gitlinks: Vec<(String, String)>,
+    to_remove: Vec<String>,
+}
+
 /// Resolves semantic `ours` (`true` = Accept Yours, `false` = Accept Theirs)
 /// against the repository state (flipping `--ours`/`--theirs` during rebase)
-/// and partitions `paths` into `(to_checkout_add, to_remove)` based on index
-/// conflict stage presence.
-fn plan_accept_side(
-    git_dir: &Path,
-    paths: &[String],
-    ours: bool,
-) -> (bool, Vec<String>, Vec<String>) {
+/// and partitions `paths` into `(to_checkout_add, to_update_gitlinks, to_remove)`
+/// based on index conflict stage presence and mode.
+fn plan_accept_side(git_dir: &Path, paths: &[String], ours: bool) -> AcceptSidePlan {
     let Ok(repo) = git2::Repository::open(git_dir) else {
-        return (ours, paths.to_vec(), Vec::new());
+        return AcceptSidePlan {
+            git_ours: ours,
+            to_checkout_add: paths.to_vec(),
+            to_update_gitlinks: Vec::new(),
+            to_remove: Vec::new(),
+        };
     };
     let probe = crate::probe::probe_repo_state(&repo);
     let reversed = is_reverse_conflict_state(&probe.state);
     let git_ours = ours ^ reversed;
 
-    let mut stage_presence: HashMap<String, (bool, bool)> = HashMap::new();
+    type ConflictStageEntry = (Option<(u32, String)>, Option<(u32, String)>);
+    let mut stage_entries: HashMap<String, ConflictStageEntry> = HashMap::new();
     if let Ok(index) = repo.index()
         && let Ok(conflicts) = index.conflicts()
     {
@@ -1009,28 +1023,38 @@ fn plan_accept_side(
                 .or(item.ancestor.as_ref())
                 .map(|e| String::from_utf8_lossy(&e.path).replace('\\', "/"));
             if let Some(p) = entry_path {
-                stage_presence.insert(p, (item.our.is_some(), item.their.is_some()));
+                let our_info = item.our.as_ref().map(|e| (e.mode, e.id.to_string()));
+                let their_info = item.their.as_ref().map(|e| (e.mode, e.id.to_string()));
+                stage_entries.insert(p, (our_info, their_info));
             }
         }
     }
 
     let mut to_checkout_add = Vec::new();
+    let mut to_update_gitlinks = Vec::new();
     let mut to_remove = Vec::new();
     for p in paths {
         let norm = p.replace('\\', "/");
-        match stage_presence.get(&norm).copied() {
-            Some((has_our, has_their)) => {
-                let chosen_exists = if git_ours { has_our } else { has_their };
-                if chosen_exists {
-                    to_checkout_add.push(p.clone());
-                } else {
-                    to_remove.push(p.clone());
+        match stage_entries.get(&norm) {
+            Some((our_info, their_info)) => {
+                let chosen = if git_ours { our_info } else { their_info };
+                match chosen {
+                    Some((mode, oid_hex)) if *mode == jbgit_core::GIT_MODE_GITLINK => {
+                        to_update_gitlinks.push((norm, oid_hex.clone()));
+                    }
+                    Some(_) => to_checkout_add.push(p.clone()),
+                    None => to_remove.push(p.clone()),
                 }
             }
             None => to_checkout_add.push(p.clone()),
         }
     }
-    (git_ours, to_checkout_add, to_remove)
+    AcceptSidePlan {
+        git_ours,
+        to_checkout_add,
+        to_update_gitlinks,
+        to_remove,
+    }
 }
 
 /// Whether a compiled step talks to a remote (and may need credentials).
@@ -1192,9 +1216,16 @@ impl<R: GitCliRunner> Runner<'_, R> {
             if res.outcome.success
                 && let Some(file) = prepared
             {
-                res.outcome.prepared_message = std::fs::read_to_string(self.loc.git_dir.join(file))
+                let comment_char = git2::Repository::open(&self.loc.git_dir)
                     .ok()
-                    .and_then(|raw| clean_prepared_message(&raw));
+                    .and_then(|r| r.config().ok())
+                    .and_then(|c| c.get_string("core.commentChar").ok())
+                    .map(|v| jbgit_core::parse_comment_char(Some(&v)))
+                    .unwrap_or('#');
+                res.outcome.prepared_message =
+                    std::fs::read_to_string(self.loc.git_dir.join(file))
+                        .ok()
+                        .and_then(|raw| clean_prepared_message_with_char(&raw, comment_char));
             }
             if is_ongoing_rebase {
                 let active = self.is_rebase_active();
@@ -1208,7 +1239,16 @@ impl<R: GitCliRunner> Runner<'_, R> {
             if res.outcome.success
                 && let GitOp::AddWorktree { path, .. } = &res.outcome.op
             {
-                apply_worktreeinclude_sync(&self.loc.workdir, path);
+                let src = self.loc.workdir.clone();
+                let dst = if path.is_relative() {
+                    src.join(path)
+                } else {
+                    path.clone()
+                };
+                let _ = tokio::task::spawn_blocking(move || {
+                    apply_worktreeinclude_sync(&src, &dst);
+                })
+                .await;
             }
             return res;
         }
@@ -1403,9 +1443,13 @@ impl<R: GitCliRunner> Runner<'_, R> {
                 index_lock: None,
             };
         }
-        let (git_ours, to_checkout_add, to_remove) =
-            plan_accept_side(&self.loc.git_dir, &paths, ours);
-        let steps = compile_accept_side_steps(&to_checkout_add, &to_remove, git_ours);
+        let plan = plan_accept_side(&self.loc.git_dir, &paths, ours);
+        let steps = compile_accept_side_steps_with_gitlinks(
+            &plan.to_checkout_add,
+            &plan.to_update_gitlinks,
+            &plan.to_remove,
+            plan.git_ours,
+        );
         self.run_steps(op, steps).await
     }
 
@@ -1448,8 +1492,8 @@ impl<R: GitCliRunner> Runner<'_, R> {
             extra.dedup();
             for rel in extra {
                 let abs = self.loc.workdir.join(rel);
-                let bytes = match std::fs::read(&abs) {
-                    Ok(b) => b,
+                let meta = match std::fs::symlink_metadata(&abs) {
+                    Ok(m) => m,
                     Err(e) => {
                         return Err(Box::new((
                             GitFailure::Other(format!("failed to read '{rel}': {e}")),
@@ -1458,8 +1502,63 @@ impl<R: GitCliRunner> Runner<'_, R> {
                         )));
                     }
                 };
-                if let Some(patch_text) = jbgit_core::build_untracked_file_patch(rel, &bytes, reverse)
-                {
+                if meta.file_type().is_symlink() {
+                    let target = match std::fs::read_link(&abs) {
+                        Ok(t) => t.to_string_lossy().replace('\\', "/"),
+                        Err(e) => {
+                            return Err(Box::new((
+                                GitFailure::Other(format!("failed to read symlink '{rel}': {e}")),
+                                Vec::new(),
+                                None,
+                            )));
+                        }
+                    };
+                    let norm = rel.replace('\\', "/");
+                    lines.push(format!("diff --git a/{norm} b/{norm}"));
+                    if reverse {
+                        lines.push("deleted file mode 120000".to_string());
+                        lines.push(format!("--- a/{norm}"));
+                        lines.push("+++ /dev/null".to_string());
+                        lines.push("@@ -1 +0,0 @@".to_string());
+                        lines.push(format!("-{target}"));
+                        lines.push("\\ No newline at end of file".to_string());
+                    } else {
+                        lines.push("new file mode 120000".to_string());
+                        lines.push("--- /dev/null".to_string());
+                        lines.push(format!("+++ b/{norm}"));
+                        lines.push("@@ -0,0 +1 @@".to_string());
+                        lines.push(format!("+{target}"));
+                        lines.push("\\ No newline at end of file".to_string());
+                    }
+                    continue;
+                }
+                let use_binary_cli = meta.len() as usize > jbgit_core::MAX_DIFF_FILE_BYTES;
+                let maybe_patch = if use_binary_cli {
+                    None
+                } else {
+                    let abs_read = abs.clone();
+                    let bytes = match tokio::task::spawn_blocking(move || std::fs::read(&abs_read))
+                        .await
+                    {
+                        Ok(Ok(b)) => b,
+                        Ok(Err(e)) => {
+                            return Err(Box::new((
+                                GitFailure::Other(format!("failed to read '{rel}': {e}")),
+                                Vec::new(),
+                                None,
+                            )));
+                        }
+                        Err(e) => {
+                            return Err(Box::new((
+                                GitFailure::Other(format!("failed to read '{rel}': {e}")),
+                                Vec::new(),
+                                None,
+                            )));
+                        }
+                    };
+                    jbgit_core::build_untracked_file_patch(rel, &bytes, reverse)
+                };
+                if let Some(patch_text) = maybe_patch {
                     let trimmed = patch_text.strip_suffix('\n').unwrap_or(&patch_text);
                     if !trimmed.is_empty() {
                         lines.extend(trimmed.split('\n').map(str::to_string));
@@ -1543,26 +1642,41 @@ impl<R: GitCliRunner> Runner<'_, R> {
         // Directory target for non-reversed commit range -> `git format-patch -o <dir>`.
         if wants_dir
             && !reverse
-            && let PatchSource::Commits { oids, base } = &source
+            && let PatchSource::Commits { oids, .. } = &source
         {
+            if oids.is_empty() {
+                return GitOpRunResult {
+                    outcome: GitOpOutcome::ok(op),
+                    index_lock: None,
+                };
+            }
             if let Err(e) = std::fs::create_dir_all(&abs) {
                 return GitOpRunResult {
                     outcome: GitOpOutcome::failed(op, GitFailure::Other(e.to_string())),
                     index_lock: None,
                 };
             }
-            let mut args = vec![
-                "format-patch".to_string(),
-                "-o".to_string(),
-                abs.display().to_string(),
-            ];
-            if !push_format_patch_target(&mut args, oids, *base) {
-                return GitOpRunResult {
-                    outcome: GitOpOutcome::ok(op),
-                    index_lock: None,
-                };
-            }
-            return self.run_steps(op, vec![CompiledStep::new(args)]).await;
+            let out_dir = abs.display().to_string();
+            // Emit one format-patch invocation per commit (oldest first) so
+            // non-contiguous selections export only the selected commits with
+            // clean sequential numbering (`0001-…`, `0002-…`).
+            let steps: Vec<CompiledStep> = oids
+                .iter()
+                .rev()
+                .enumerate()
+                .map(|(idx, oid)| {
+                    CompiledStep::new(vec![
+                        "format-patch".to_string(),
+                        "-o".to_string(),
+                        out_dir.clone(),
+                        "--start-number".to_string(),
+                        (idx + 1).to_string(),
+                        "-1".to_string(),
+                        oid.to_string(),
+                    ])
+                })
+                .collect();
+            return self.run_steps(op, steps).await;
         }
 
         let dest = if wants_dir {
@@ -1620,6 +1734,9 @@ impl<R: GitCliRunner> Runner<'_, R> {
         let mut combined_stderr = Vec::new();
         let mut last_stdout = Vec::new();
         let mut any_stash_kept = false;
+        let mut prepared_message = None;
+        let mut update_info = None;
+        let mut paused_for_edit = false;
         for inner in &ops {
             let mut res = match inner.clone() {
                 GitOp::Smart(s) => Box::pin(self.run_smart(*s)).await,
@@ -1628,6 +1745,13 @@ impl<R: GitCliRunner> Runner<'_, R> {
             combined_stderr.extend(res.outcome.stderr.iter().cloned());
             last_stdout = res.outcome.stdout.clone();
             any_stash_kept |= res.outcome.stash_kept;
+            if res.outcome.prepared_message.is_some() {
+                prepared_message = res.outcome.prepared_message.clone();
+            }
+            if res.outcome.update_info.is_some() {
+                update_info = res.outcome.update_info.clone();
+            }
+            paused_for_edit |= res.outcome.paused_for_edit;
             if !res.outcome.success {
                 res.outcome.stderr = combined_stderr;
                 res.outcome.stash_kept = any_stash_kept;
@@ -1638,6 +1762,9 @@ impl<R: GitCliRunner> Runner<'_, R> {
         outcome.stdout = last_stdout;
         outcome.stderr = combined_stderr;
         outcome.stash_kept = any_stash_kept;
+        outcome.prepared_message = prepared_message;
+        outcome.update_info = update_info;
+        outcome.paused_for_edit = paused_for_edit;
         GitOpRunResult {
             outcome,
             index_lock: None,
@@ -1916,10 +2043,6 @@ impl<R: GitCliRunner> Runner<'_, R> {
 
         // 4. Current branch.
         if fetched.tip(&current.upstream).is_none() {
-            let msg = format!(
-                "Upstream '{}' of '{}' no longer exists",
-                current.upstream_short, current.name
-            );
             bail!(
                 StepResult {
                     exit_code: 1,
@@ -1927,7 +2050,10 @@ impl<R: GitCliRunner> Runner<'_, R> {
                     stderr: Vec::new(),
                     index_lock: None,
                 },
-                GitFailure::Other(msg)
+                GitFailure::UpstreamGone {
+                    branch: current.name.clone(),
+                    upstream: current.upstream_short.clone(),
+                }
             );
         }
         let upstream_arg = if current.upstream_short.is_empty() {
@@ -2089,7 +2215,8 @@ impl<R: GitCliRunner> Runner<'_, R> {
         if !stashed {
             return res;
         }
-        if matches!(res.outcome.failure, Some(GitFailure::Conflicts)) {
+        if matches!(res.outcome.failure, Some(GitFailure::Conflicts)) || res.outcome.paused_for_edit
+        {
             res.outcome.stash_kept = true;
             return res;
         }
@@ -2098,6 +2225,7 @@ impl<R: GitCliRunner> Runner<'_, R> {
         if !pop.ok() {
             res.outcome.stash_kept = true;
             if res.outcome.success {
+                res.outcome.success = false;
                 res.outcome.failure = Some(GitFailure::Conflicts);
             }
             if res.index_lock.is_none() {
@@ -2154,11 +2282,32 @@ pub fn apply_worktreeinclude_sync(src_workdir: &std::path::Path, dest_workdir: &
         return Vec::new();
     }
 
+    let repo = git2::Repository::discover(src_workdir).ok();
+    let tracked_paths: HashSet<String> = repo
+        .as_ref()
+        .and_then(|r| r.index().ok())
+        .map(|idx| {
+            idx.iter()
+                .map(|e| String::from_utf8_lossy(&e.path).replace('\\', "/"))
+                .collect()
+        })
+        .unwrap_or_default();
+
     let mut candidates = Vec::new();
-    collect_worktreeinclude_candidates(src_workdir, src_workdir, 0, &mut candidates);
+    collect_worktreeinclude_candidates(
+        src_workdir,
+        src_workdir,
+        0,
+        &rules_text,
+        &tracked_paths,
+        &mut candidates,
+    );
     let matched = jbgit_core::match_worktreeinclude_paths(&rules_text, &candidates);
     let mut copied = Vec::new();
     for rel in matched {
+        if tracked_paths.contains(&rel) {
+            continue;
+        }
         let src = src_workdir.join(&rel);
         let dst = dest_workdir.join(&rel);
         if !src.is_file() || dst.exists() {
@@ -2174,14 +2323,24 @@ pub fn apply_worktreeinclude_sync(src_workdir: &std::path::Path, dest_workdir: &
     copied
 }
 
+fn dir_explicitly_mentioned(rules_text: &str, dir_name: &str) -> bool {
+    rules_text.lines().any(|l| {
+        let t = l.trim();
+        !t.is_empty() && !t.starts_with('#') && t.contains(dir_name)
+    })
+}
+
 fn collect_worktreeinclude_candidates(
     root: &std::path::Path,
     dir: &std::path::Path,
     depth: usize,
+    rules_text: &str,
+    tracked_paths: &HashSet<String>,
     out: &mut Vec<String>,
 ) {
     const MAX_DEPTH: usize = 8;
     const MAX_FILES: usize = 10_000;
+    const HEAVY_DIRS: [&str; 6] = ["node_modules", "target", ".venv", "venv", "dist", "build"];
     if depth > MAX_DEPTH || out.len() >= MAX_FILES {
         return;
     }
@@ -2193,7 +2352,8 @@ fn collect_worktreeinclude_candidates(
             break;
         }
         let name = entry.file_name();
-        if name == ".git" || name == ".worktreeinclude" {
+        let name_str = name.to_string_lossy();
+        if name_str == ".git" || name_str == ".worktreeinclude" {
             continue;
         }
         let path = entry.path();
@@ -2204,11 +2364,26 @@ fn collect_worktreeinclude_candidates(
             continue;
         }
         if meta.is_dir() {
-            collect_worktreeinclude_candidates(root, &path, depth + 1, out);
+            if HEAVY_DIRS.contains(&name_str.as_ref())
+                && !dir_explicitly_mentioned(rules_text, &name_str)
+            {
+                continue;
+            }
+            collect_worktreeinclude_candidates(
+                root,
+                &path,
+                depth + 1,
+                rules_text,
+                tracked_paths,
+                out,
+            );
         } else if meta.is_file()
             && let Ok(rel) = path.strip_prefix(root)
         {
-            out.push(rel.to_string_lossy().replace('\\', "/"));
+            let rel_str = rel.to_string_lossy().replace('\\', "/");
+            if !tracked_paths.contains(&rel_str) {
+                out.push(rel_str);
+            }
         }
     }
 }
@@ -2227,8 +2402,13 @@ fn append_lines(path: &PathBuf, lines: &[String]) -> std::io::Result<()> {
         f.write_all(b"\n")?;
     }
     let existing_text = String::from_utf8_lossy(&existing);
+    let mut seen: HashSet<String> = existing_text
+        .lines()
+        .map(|e| e.trim().to_string())
+        .collect();
     for l in lines {
-        if existing_text.lines().any(|e| e.trim() == l.trim()) {
+        let trimmed = l.trim();
+        if trimmed.is_empty() || !seen.insert(trimmed.to_string()) {
             continue;
         }
         f.write_all(l.as_bytes())?;
@@ -2651,11 +2831,11 @@ mod tests {
         assert_eq!(id_steps.len(), 2);
         assert_eq!(
             id_steps[0].args,
-            vec!["config", "--global", "user.name", "Alice"]
+            vec!["config", "--global", "--", "user.name", "Alice"]
         );
         assert_eq!(
             id_steps[1].args,
-            vec!["config", "--global", "user.email", "alice@example.com"]
+            vec!["config", "--global", "--", "user.email", "alice@example.com"]
         );
 
         let set_up = GitOp::SetUpstream {
@@ -2664,7 +2844,7 @@ mod tests {
         };
         assert_eq!(
             compile_simple_steps(&set_up).unwrap()[0].args,
-            vec!["branch", "--set-upstream-to=origin/feat", "feat"]
+            vec!["branch", "--set-upstream-to=origin/feat", "--", "feat"]
         );
 
         let tag_light = GitOp::CreateTag {
@@ -2784,13 +2964,25 @@ mod tests {
             oids: vec![oid(2), oid(1)],
             base: None,
         };
+        let fwd_steps = compile_patch_source(&patch_commits, false, true);
+        assert_eq!(fwd_steps.len(), 2);
         assert_eq!(
-            compile_patch_source(&patch_commits, false, true)[0].args,
-            vec!["format-patch", "--stdout", "--root", &oid(2).to_string()]
+            fwd_steps[0].args,
+            vec!["format-patch", "--stdout", "-1", &oid(1).to_string()]
         );
         assert_eq!(
-            compile_patch_source(&patch_commits, true, true)[0].args,
-            vec!["diff", "-R", EMPTY_TREE_OID, &oid(2).to_string()]
+            fwd_steps[1].args,
+            vec!["format-patch", "--stdout", "-1", &oid(2).to_string()]
+        );
+        let rev_steps = compile_patch_source(&patch_commits, true, true);
+        assert_eq!(rev_steps.len(), 2);
+        assert_eq!(
+            rev_steps[0].args,
+            vec!["show", "--format=", "--patch", "-R", &oid(2).to_string()]
+        );
+        assert_eq!(
+            rev_steps[1].args,
+            vec!["show", "--format=", "--patch", "-R", &oid(1).to_string()]
         );
 
         let patch_file = PatchSource::CommitFile {
@@ -3379,13 +3571,16 @@ mod tests {
             upstream: "origin/feat".into(),
         })
         .unwrap();
-        assert_eq!(s[0].args, vec!["branch", "--set-upstream-to=origin/feat", "feat"]);
+        assert_eq!(
+            s[0].args,
+            vec!["branch", "--set-upstream-to=origin/feat", "--", "feat"]
+        );
 
         let s = compile_simple_steps(&GitOp::UnsetUpstream {
             branch: "feat".into(),
         })
         .unwrap();
-        assert_eq!(s[0].args, vec!["branch", "--unset-upstream", "feat"]);
+        assert_eq!(s[0].args, vec!["branch", "--unset-upstream", "--", "feat"]);
 
         let s = compile_simple_steps(&GitOp::CheckoutNewBranch {
             name: "feat".into(),

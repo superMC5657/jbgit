@@ -2011,6 +2011,7 @@ fn render_rebase_preview(
             Style::default().fg(ctx.theme.fg_muted),
         )));
     } else {
+        let tab_size = ctx.diff_tab_size();
         for hunk in &diff.hunks {
             diff_lines.push(Line::from(Span::styled(
                 truncate_to_width(&hunk.header, w),
@@ -2025,7 +2026,8 @@ fn render_rebase_preview(
                     DiffLineKind::Context => (' ', ctx.theme.fg_primary),
                     DiffLineKind::NoNewline => ('\\', ctx.theme.fg_muted),
                 };
-                let text = format!("{prefix}{}", dl.text);
+                let expanded = crate::syntax::expand_tabs_to_stops(&dl.text, tab_size);
+                let text = format!("{prefix}{expanded}");
                 diff_lines.push(Line::from(Span::styled(
                     truncate_to_width(&text, w),
                     Style::default().fg(fg),

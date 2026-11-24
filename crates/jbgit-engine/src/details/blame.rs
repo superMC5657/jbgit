@@ -251,6 +251,7 @@ pub fn parse_blame_porcelain_cancellable(
             last_filename_by_oid.get(&oid).cloned().unwrap_or_default()
         };
 
+        let line_previous = previous.clone();
         let commit = commits.entry(oid).or_insert_with(|| BlameCommit {
             oid,
             author: PersonStamp {
@@ -317,6 +318,7 @@ pub fn parse_blame_porcelain_cancellable(
             orig_line,
             oid,
             orig_path,
+            previous: line_previous,
         });
     }
 
@@ -369,13 +371,13 @@ pub(crate) fn load_blame_sync(
         return Err(EngineError::Cancelled);
     }
 
-    let git = crate::cli::cached_git_executable().unwrap_or_else(|| std::path::PathBuf::from("git"));
+    let git = crate::cli::require_git_executable()?;
     let mut cmd = non_interactive_std_command(&git, Some(&location.workdir));
     cmd.arg("--git-dir")
         .arg(&location.git_dir)
         .arg("--work-tree")
         .arg(&location.workdir)
-        .args(["-c", "core.quotepath=false", "blame", "--porcelain"]);
+        .args(["-c", "core.quotepath=false", "blame", "--line-porcelain"]);
     if key.options.ignore_whitespace {
         cmd.arg("-w");
     }

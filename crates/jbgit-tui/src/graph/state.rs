@@ -1163,13 +1163,18 @@ impl LogGraphState {
     /// `sticky == false`, keyboard `Space` when `sticky == true`).
     pub fn toggle_row_selection(&mut self, idx: usize, sticky: bool) {
         let len = self.visible_count();
-        if len == 0 {
+        if len == 0 || idx >= len {
             return;
         }
-        let target = idx.min(len - 1);
+        let target = idx;
+        let on_load_more = self.is_cursor_on_load_more();
         let cur = self.selected_idx.min(len - 1);
         if self.selected_rows.is_empty() {
-            if target != cur {
+            if !sticky && !on_load_more && target == cur {
+                // Ctrl+Click on the already-focused single row keeps clean single selection.
+                return;
+            }
+            if !on_load_more && target != cur {
                 self.selected_rows.insert(cur);
             }
             self.selected_rows.insert(target);

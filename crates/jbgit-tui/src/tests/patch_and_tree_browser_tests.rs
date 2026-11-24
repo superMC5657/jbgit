@@ -399,7 +399,7 @@ fn deliver_listing(ts: &mut TestSession, key: TreeKey, epoch: u64, entries: Vec<
 
 fn blob_request(reqs: &[(TaskRequest, Option<u64>)]) -> Option<(TreeBlobKey, u64)> {
     reqs.iter().find_map(|(req, epoch)| match req {
-        TaskRequest::LoadTreeBlob { key } => Some((key.clone(), epoch.unwrap())),
+        TaskRequest::LoadTreeBlob { key, .. } => Some((key.clone(), epoch.unwrap())),
         _ => None,
     })
 }
@@ -474,6 +474,7 @@ fn tree_browser_lazy_loads_previews_files_and_runs_commands() {
     let (blob_key, epoch) = blob_request(&reqs).expect("preview requested");
     assert_eq!(blob_key.path, "src/main.rs");
     ts.deliver_engine_event(EngineEvent::TreeBlobLoaded {
+        slot: jbgit_core::RequestSlotId::TreeBlob,
         blob: Arc::new(TreeBlob {
             key: blob_key,
             size: 13,
@@ -527,6 +528,7 @@ fn tree_browser_lazy_loads_previews_files_and_runs_commands() {
     let reqs = requests(&ts);
     let (bin_key, epoch) = blob_request(&reqs).expect("preview requested");
     ts.deliver_engine_event(EngineEvent::TreeBlobLoaded {
+        slot: jbgit_core::RequestSlotId::TreeBlob,
         blob: Arc::new(TreeBlob {
             key: bin_key,
             size: 2048,
@@ -641,6 +643,7 @@ fn tree_browser_fuzzy_search_reveals_nested_file_symlink_export_and_batch_restor
     let reqs = requests(&ts);
     let (sym_key, sym_ep) = blob_request(&reqs).expect("symlink preview");
     ts.deliver_engine_event(EngineEvent::TreeBlobLoaded {
+        slot: jbgit_core::RequestSlotId::TreeBlob,
         blob: Arc::new(TreeBlob {
             key: sym_key,
             size: 10,

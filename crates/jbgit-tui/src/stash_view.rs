@@ -115,7 +115,7 @@ impl StashWorkbench {
                 if len > 0 {
                     self.selected = (*idx).min(len - 1);
                     self.changes.selected = 0;
-                    self.diff.scroll.reset();
+                    self.diff.reset_view_offsets();
                 }
             }
             Action::StashMove(delta) => {
@@ -124,16 +124,16 @@ impl StashWorkbench {
                     let next = (self.selected as isize + delta).clamp(0, len as isize - 1);
                     self.selected = next as usize;
                     self.changes.selected = 0;
-                    self.diff.scroll.reset();
+                    self.diff.reset_view_offsets();
                 }
             }
             Action::ChangesMove(ChangesHost::Stash, delta) => {
                 self.changes.move_selection(*delta, store);
-                self.diff.scroll.reset();
+                self.diff.reset_view_offsets();
             }
             Action::ChangesSelect(ChangesHost::Stash, idx) => {
                 self.changes.select_row(*idx, store);
-                self.diff.scroll.reset();
+                self.diff.reset_view_offsets();
             }
             Action::ChangesExpand(ChangesHost::Stash, expand) => {
                 self.changes.expand_or_collapse(*expand, store);
@@ -146,7 +146,7 @@ impl StashWorkbench {
             }
             Action::DiffNextFile(DiffScope::Stash, delta) => {
                 self.changes.select_next_file(*delta, store);
-                self.diff.scroll.reset();
+                self.diff.reset_view_offsets();
             }
             Action::DiffJumpHunk(DiffScope::Stash, delta) => {
                 let diff = self.diff_key(store).and_then(|k| store.peek_diff(&k));
@@ -173,12 +173,14 @@ impl StashWorkbench {
             Action::DiffSearchChar(DiffScope::Stash, ch) => {
                 self.diff.search.push_char(*ch);
                 let diff = self.diff_key(store).and_then(|k| store.peek_diff(&k).cloned());
-                self.diff.refresh_search(diff.as_ref(), 4);
+                let tab = self.diff.tab_size();
+                self.diff.refresh_search(diff.as_ref(), tab);
             }
             Action::DiffSearchBackspace(DiffScope::Stash) => {
                 self.diff.search.backspace();
                 let diff = self.diff_key(store).and_then(|k| store.peek_diff(&k).cloned());
-                self.diff.refresh_search(diff.as_ref(), 4);
+                let tab = self.diff.tab_size();
+                self.diff.refresh_search(diff.as_ref(), tab);
             }
             Action::DiffSearchClear(DiffScope::Stash) => {
                 self.diff.search.clear_query();
@@ -191,7 +193,8 @@ impl StashWorkbench {
             }
             Action::DiffSearchJump(DiffScope::Stash, delta) => {
                 let diff = self.diff_key(store).and_then(|k| store.peek_diff(&k).cloned());
-                self.diff.jump_search(*delta, diff.as_ref(), 4);
+                let tab = self.diff.tab_size();
+                self.diff.jump_search(*delta, diff.as_ref(), tab);
             }
             Action::DiffScroll(DiffScope::Stash, delta) => {
                 self.scroll_diff(*delta, store);
@@ -224,7 +227,7 @@ impl StashWorkbench {
         if desired != self.changes.current_key {
             self.changes.current_key = desired.clone();
             self.changes.selected = 0;
-            self.diff.scroll.reset();
+            self.diff.reset_view_offsets();
         }
         let Some(key) = desired else {
             return;

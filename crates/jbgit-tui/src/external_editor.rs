@@ -209,7 +209,11 @@ where
             }
             Effect::OpenExternalMergetool(rel) => {
                 drop(term_guard.take());
-                let _ = std::process::Command::new("git")
+                let git_bin = jbgit_engine::find_git_executable_with_override(
+                    state.config.jbgit.git.configured_executable(),
+                )
+                .unwrap_or_else(|_| std::path::PathBuf::from("git"));
+                let _ = std::process::Command::new(&git_bin)
                     .args(["mergetool", "-y", "--", rel])
                     .current_dir(&state.repo_path_display)
                     .status();

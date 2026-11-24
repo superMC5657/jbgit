@@ -56,7 +56,8 @@ impl BranchCleanupState {
         for r in &snap.refs {
             if r.kind == jbgit_core::RefKind::LocalBranch
                 && !r.is_head
-                && jbgit_core::is_protected_branch(&r.name)
+                && (jbgit_core::is_protected_branch(&r.name)
+                    || jbgit_core::matches_protected_branch_patterns(&r.name, extra_protected))
                 && !base_choices.iter().any(|b| b == &r.name)
             {
                 base_choices.push(r.name.clone());

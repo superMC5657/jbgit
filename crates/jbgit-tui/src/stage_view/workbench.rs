@@ -136,6 +136,7 @@ pub struct CommitWorkbench {
     diff_soft_wrap: bool,
     diff_search: DiffSearchState,
     diff_wrap_widths: Cell<(usize, usize, usize)>,
+    diff_tab_size: Cell<usize>,
     diff_scroll: ScrollViewport,
     diff_cursor_row: usize,
     visual_anchor_row: Option<usize>,
@@ -168,6 +169,7 @@ pub struct CommitWorkbench {
     precheck_loaded: bool,
     last_loaded_prepared_msg: Option<String>,
     template_applied: bool,
+    editor_from_draft: bool,
     commit_in_progress: bool,
     empty_message_error: bool,
     commit_history: Vec<String>,
@@ -202,6 +204,7 @@ impl Default for CommitWorkbench {
             diff_soft_wrap: false,
             diff_search: DiffSearchState::default(),
             diff_wrap_widths: Cell::new((80, 36, 36)),
+            diff_tab_size: Cell::new(4),
             diff_scroll: ScrollViewport::new(),
             diff_cursor_row: 0,
             visual_anchor_row: None,
@@ -232,6 +235,7 @@ impl Default for CommitWorkbench {
             precheck_loaded: false,
             last_loaded_prepared_msg: None,
             template_applied: false,
+            editor_from_draft: false,
             commit_in_progress: false,
             empty_message_error: false,
             commit_history: Vec::new(),
@@ -312,6 +316,10 @@ impl CommitWorkbench {
     ) {
         self.diff_wrap_widths
             .set((unified_w.max(1), split_left_w.max(1), split_right_w.max(1)));
+    }
+
+    pub fn record_diff_tab_size(&self, tab_size: usize) {
+        self.diff_tab_size.set(tab_size.clamp(1, 16));
     }
 
     pub fn diff_visual_row_offset_of(&self, row_idx: usize, tab_size: usize) -> usize {
@@ -866,6 +874,7 @@ impl CommitWorkbench {
             && !raw.trim().is_empty()
         {
             self.editor.set_text(&raw);
+            self.editor_from_draft = true;
         }
         self.draft_path = Some(path);
     }
@@ -873,6 +882,7 @@ impl CommitWorkbench {
     /// Records a commit-message edit; the draft is written [`DRAFT_DEBOUNCE`]
     /// after the last edit by [`Self::flush_draft_due`] on a background thread.
     pub fn mark_draft_dirty(&mut self, now: Instant) {
+        self.editor_from_draft = false;
         if self.draft_path.is_none() {
             return;
         }
@@ -1484,6 +1494,11 @@ impl CommitWorkbench {
             stage_syntax.invalidate();
             self.current_diff_key = desired.clone();
             self.diff_scroll.reset();
+            self.diff_horiz_scroll = 0;
+            if self.diff_search.active {
+                self.diff_search.matches.clear();
+                self.diff_search.current = 0;
+            }
             self.diff_cursor_row = 0;
             self.visual_anchor_row = None;
 
@@ -1644,8 +1659,12 @@ impl CommitWorkbench {
                 }
                 None
             }
-            EngineEvent::CommitPrecheckLoaded { info } => {
+            EngineEvent::CommitPrecheckLoaded { info, epoch } => {
+                if !request_slots.accept(RequestSlotId::CommitPrecheck, epoch) {
+                    return None;
+                }
                 let prev_template = self.precheck.commit_template.clone();
+                let had_sequencer = self.precheck.has_sequencer_state;
                 self.precheck = info;
                 self.precheck_loaded = true;
                 if !self.amend {
@@ -1653,10 +1672,16 @@ impl CommitWorkbench {
                         let editor_matches_prev_template = prev_template
                             .as_deref()
                             .is_some_and(|tpl| self.editor.text() == tpl);
+                        let newly_entered_sequencer =
+                            self.precheck.has_sequencer_state && !had_sequencer;
                         if self.last_loaded_prepared_msg.as_ref() != Some(&prepared)
-                            && (self.editor.is_empty() || editor_matches_prev_template)
+                            && (self.editor.is_empty()
+                                || editor_matches_prev_template
+                                || self.editor_from_draft
+                                || newly_entered_sequencer)
                         {
                             self.editor.set_text(&prepared);
+                            self.editor_from_draft = false;
                             self.empty_message_error = false;
                             self.last_loaded_prepared_msg = Some(prepared);
                         }
@@ -1726,7 +1751,14 @@ impl CommitWorkbench {
             EngineEvent::UndoCommitCompleted { restored_message } => {
                 self.last_commit_banner = None;
                 self.set_amend_preview(None);
-                if self.editor.is_empty() && !restored_message.is_empty() {
+                let editor_is_only_template = self
+                    .precheck
+                    .commit_template
+                    .as_deref()
+                    .is_some_and(|tpl| self.editor.text() == tpl);
+                if (self.editor.is_empty() || editor_is_only_template)
+                    && !restored_message.is_empty()
+                {
                     self.editor.set_text(&restored_message);
                     self.mark_draft_dirty(ctx.now);
                 }
@@ -1960,8 +1992,9 @@ impl CommitWorkbench {
                         .viewport_height()
                         .filter(|&h| h > 0)
                         .unwrap_or(18);
-                    let vis_row = self.diff_visual_row_offset_of(self.diff_cursor_row, 4);
-                    let total_vis = self.diff_total_visual_rows(4).max(len);
+                    let tab = self.diff_tab_size.get();
+                    let vis_row = self.diff_visual_row_offset_of(self.diff_cursor_row, tab);
+                    let total_vis = self.diff_total_visual_rows(tab).max(len);
                     self.diff_scroll
                         .ensure_visible(vis_row, total_vis, viewport_h);
                 }
@@ -1989,7 +2022,8 @@ impl CommitWorkbench {
                             .unwrap_or(*headers.last().unwrap())
                     };
                     self.diff_cursor_row = target;
-                    let vis_target = self.diff_visual_row_offset_of(target, 4);
+                    let tab = self.diff_tab_size.get();
+                    let vis_target = self.diff_visual_row_offset_of(target, tab);
                     self.diff_scroll.set_offset(vis_target);
                 }
             }
@@ -2035,12 +2069,22 @@ impl CommitWorkbench {
                 self.diff_side_by_side = !self.diff_side_by_side;
                 self.diff_horiz_scroll = 0;
                 self.visual_anchor_row = None;
+                if self.diff_search.active {
+                    self.diff_search.matches.clear();
+                    self.diff_search.current = 0;
+                    self.refresh_diff_search();
+                }
             }
             Action::DiffCycleContext(DiffScope::Stage) => {
                 self.diff_context = self.diff_context.next();
                 self.requested_diff = None;
                 self.pending_diff = None;
                 self.visual_anchor_row = None;
+                self.diff_horiz_scroll = 0;
+                if self.diff_search.active {
+                    self.diff_search.matches.clear();
+                    self.diff_search.current = 0;
+                }
                 self.pending_select_immediate = true;
             }
             Action::DiffCycleWhitespace(DiffScope::Stage) => {
@@ -2048,6 +2092,11 @@ impl CommitWorkbench {
                 self.requested_diff = None;
                 self.pending_diff = None;
                 self.visual_anchor_row = None;
+                self.diff_horiz_scroll = 0;
+                if self.diff_search.active {
+                    self.diff_search.matches.clear();
+                    self.diff_search.current = 0;
+                }
                 self.pending_select_immediate = true;
                 let ws_lbl = ctx.i18n.diff_whitespace_label(self.diff_whitespace);
                 *ctx.status_notice = Some(
@@ -2236,7 +2285,8 @@ impl CommitWorkbench {
 
     fn center_diff_on_row(&mut self, row_idx: usize) {
         self.diff_cursor_row = row_idx;
-        let vis = self.diff_visual_row_offset_of(row_idx, 4);
+        let tab = self.diff_tab_size.get();
+        let vis = self.diff_visual_row_offset_of(row_idx, tab);
         let vh = self.diff_scroll.viewport_height().unwrap_or(18);
         self.diff_scroll.set_offset(vis.saturating_sub(vh / 2));
     }
@@ -2617,7 +2667,7 @@ impl CommitWorkbench {
                     author_override,
                     stage_all_tracked: force_stage_all_tracked,
                     and_push,
-                    check_crlf: ctx.warn_crlf,
+                    check_crlf: cfg!(windows) && ctx.warn_crlf,
                     fix_autocrlf: false,
                     gpg_sign: self.gpg_sign,
                 };
@@ -2639,7 +2689,7 @@ impl CommitWorkbench {
             author_override,
             stage_all_tracked: force_stage_all_tracked,
             and_push,
-            check_crlf: ctx.warn_crlf,
+            check_crlf: cfg!(windows) && ctx.warn_crlf,
             fix_autocrlf: false,
             gpg_sign: self.gpg_sign,
         };

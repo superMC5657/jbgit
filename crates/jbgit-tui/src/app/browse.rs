@@ -109,6 +109,7 @@ impl AppState {
             ApplyPatchAction::ToggleReverse => {
                 if let Some(s) = self.modal_stack.apply_patch_mut() {
                     s.options.reverse = !s.options.reverse;
+                    s.on_path_transform_changed();
                     s.schedule_check(now);
                 }
             }
@@ -253,7 +254,10 @@ impl AppState {
         if let Some(key) = s.wanted_preview() {
             s.preview_requested = Some(key.clone());
             s.preview_syntax = None;
-            effects.push(Effect::RequestTreeBlob(key));
+            effects.push(Effect::RequestTreeBlob {
+                slot: RequestSlotId::TreeBlob,
+                key,
+            });
         }
     }
 
@@ -342,29 +346,37 @@ impl AppState {
 
     pub(crate) fn on_tree_blob_loaded(
         &mut self,
+        slot: RequestSlotId,
         blob: Arc<TreeBlob>,
         epoch: u64,
         effects: &mut Vec<Effect>,
     ) {
-        if !self.request_slots.accept(RequestSlotId::TreeBlob, epoch) {
+        if !self.request_slots.accept(slot, epoch) {
             return;
         }
         let mut delivered = false;
-        if let Some(fh) = self.modal_stack.file_history_mut()
-            && fh.show_repo_version
-            && fh.repo_version_requested.as_ref() == Some(&blob.key)
-        {
-            fh.repo_version_blob = Some(Arc::clone(&blob));
-            fh.repo_version_syntax = None;
-            fh.repo_version_scroll.reset();
-            delivered = true;
-        } else if let Some(s) = self.modal_stack.tree_browser_mut()
-            && s.preview_requested.as_ref() == Some(&blob.key)
-        {
-            s.preview = Some(Arc::clone(&blob));
-            s.preview_syntax = None;
-            s.preview_scroll.reset();
-            delivered = true;
+        match slot {
+            RequestSlotId::FileHistoryRepoVersion => {
+                if let Some(fh) = self.modal_stack.file_history_mut()
+                    && fh.show_repo_version
+                    && fh.repo_version_requested.as_ref() == Some(&blob.key)
+                {
+                    fh.repo_version_blob = Some(Arc::clone(&blob));
+                    fh.repo_version_syntax = None;
+                    fh.repo_version_scroll.reset();
+                    delivered = true;
+                }
+            }
+            _ => {
+                if let Some(s) = self.modal_stack.tree_browser_mut()
+                    && s.preview_requested.as_ref() == Some(&blob.key)
+                {
+                    s.preview = Some(Arc::clone(&blob));
+                    s.preview_syntax = None;
+                    s.preview_scroll.reset();
+                    delivered = true;
+                }
+            }
         }
         if !delivered {
             return;

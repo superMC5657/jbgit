@@ -414,6 +414,14 @@ fn route_pane_fallback_key(key: KeyEvent, state: &AppState) -> Vec<Action> {
             KeyCode::Esc if state.log.graph.has_multi_selection() => {
                 vec![Action::ClearLogMultiSelection]
             }
+            KeyCode::Esc if state.log.branch_compare.is_some() => {
+                vec![Action::CloseBranchCompare]
+            }
+            KeyCode::Char('T')
+                if !ctrl && !alt && state.log.branch_compare.is_some() =>
+            {
+                vec![Action::ToggleBranchCompareTreeDiff]
+            }
             KeyCode::Esc if state.log.filter.saved_before_dir_history.is_some() => {
                 vec![Action::RestorePreDirHistoryFilter]
             }
@@ -1250,9 +1258,14 @@ fn route_reflog_key(key: &KeyEvent, state: &AppState) -> Vec<Action> {
     let Some(rf) = state.modal_stack.reflog() else {
         return Vec::new();
     };
+    if rf.diff.search.editing {
+        return route_diff_search_editing_key(key, DiffScope::Reflog);
+    }
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     let alt = key.modifiers.contains(KeyModifiers::ALT);
+    let shift = key.modifiers.contains(KeyModifiers::SHIFT);
     match key.code {
+        KeyCode::Esc if rf.diff.search.active => vec![Action::DiffSearchClose(DiffScope::Reflog)],
         KeyCode::Esc | KeyCode::Char('q') if !ctrl && !alt => vec![Action::CloseReflog],
         KeyCode::Tab => vec![Action::ReflogCycleFocus(false)],
         KeyCode::BackTab => vec![Action::ReflogCycleFocus(true)],
@@ -1286,6 +1299,39 @@ fn route_reflog_key(key: &KeyEvent, state: &AppState) -> Vec<Action> {
             ReflogFocus::Changes => vec![Action::ReflogChangesSelect(usize::MAX)],
             ReflogFocus::Diff => vec![Action::ReflogDiffScroll(crate::app::SCROLL_GOTO_BOTTOM)],
         },
+        KeyCode::Char('/') if !ctrl && !alt && rf.focus == ReflogFocus::Diff => {
+            vec![Action::DiffSearchOpen(DiffScope::Reflog)]
+        }
+        KeyCode::Char('n') if !ctrl && !alt && rf.focus == ReflogFocus::Diff && rf.diff.search.active => {
+            vec![Action::DiffSearchJump(DiffScope::Reflog, 1)]
+        }
+        KeyCode::Char('N') if !ctrl && !alt && rf.focus == ReflogFocus::Diff && rf.diff.search.active => {
+            vec![Action::DiffSearchJump(DiffScope::Reflog, -1)]
+        }
+        KeyCode::Char('h') | KeyCode::Left if !ctrl && !alt && rf.focus == ReflogFocus::Diff => {
+            vec![Action::DiffScrollHoriz(
+                DiffScope::Reflog,
+                if shift { -16 } else { -4 },
+            )]
+        }
+        KeyCode::Char('l') | KeyCode::Right if !ctrl && !alt && rf.focus == ReflogFocus::Diff => {
+            vec![Action::DiffScrollHoriz(
+                DiffScope::Reflog,
+                if shift { 16 } else { 4 },
+            )]
+        }
+        KeyCode::Char('[') if !ctrl && !alt && rf.focus == ReflogFocus::Diff => {
+            vec![Action::DiffJumpHunk(DiffScope::Reflog, -1)]
+        }
+        KeyCode::Char(']') if !ctrl && !alt && rf.focus == ReflogFocus::Diff => {
+            vec![Action::DiffJumpHunk(DiffScope::Reflog, 1)]
+        }
+        KeyCode::Char('B') if !ctrl && !alt => {
+            vec![Action::DiffCycleWhitespace(DiffScope::Reflog)]
+        }
+        KeyCode::Char('W') if !ctrl && !alt => {
+            vec![Action::DiffToggleSoftWrap(DiffScope::Reflog)]
+        }
         KeyCode::Char('c') if !ctrl && !alt => vec![Action::ReflogCheckoutSelected],
         KeyCode::Char('n') if !ctrl && !alt => vec![Action::ReflogNewBranchSelected],
         KeyCode::Char('p') if !ctrl && !alt => vec![Action::ReflogCherryPickSelected],

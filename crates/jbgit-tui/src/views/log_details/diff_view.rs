@@ -648,6 +648,66 @@ pub fn render_lfs_diff_placeholder(
     frame.render_widget(Paragraph::new(lines), area);
 }
 
+/// Renders a hunk header line (`@@ ... @@`) truncated to `max_width` with inline
+/// search match highlights applied.
+pub(crate) fn render_hunk_header_spans(
+    header: &str,
+    max_width: usize,
+    base: Style,
+    search_ranges: &[(usize, usize)],
+    active_search: Option<(usize, usize)>,
+    theme: &ThemePalette,
+) -> Vec<Span<'static>> {
+    if search_ranges.is_empty() && active_search.is_none() {
+        return vec![Span::styled(truncate_to_width(header, max_width), base)];
+    }
+    let truncated = truncate_to_width(header, max_width);
+    let len = truncated.len();
+    let mut cuts = vec![0usize, len];
+    for &(s, e) in search_ranges {
+        let s = s.min(len);
+        let e = e.min(len);
+        if s < e && truncated.is_char_boundary(s) && truncated.is_char_boundary(e) {
+            cuts.push(s);
+            cuts.push(e);
+        }
+    }
+    if let Some((s, e)) = active_search {
+        let s = s.min(len);
+        let e = e.min(len);
+        if s < e && truncated.is_char_boundary(s) && truncated.is_char_boundary(e) {
+            cuts.push(s);
+            cuts.push(e);
+        }
+    }
+    cuts.sort_unstable();
+    cuts.dedup();
+
+    let mut out = Vec::with_capacity(cuts.len());
+    for pair in cuts.windows(2) {
+        let (a, b) = (pair[0], pair[1]);
+        if a >= b {
+            continue;
+        }
+        let is_active = active_search.is_some_and(|(s, e)| a >= s && b <= e);
+        let is_match = search_ranges.iter().any(|&(s, e)| a >= s && b <= e);
+        let style = if is_active {
+            Style::default()
+                .fg(theme.bg_canvas)
+                .bg(theme.status_modified)
+                .add_modifier(Modifier::BOLD)
+        } else if is_match {
+            Style::default()
+                .fg(theme.fg_primary)
+                .bg(theme.bg_selection_focused)
+        } else {
+            base
+        };
+        out.push(Span::styled(truncated[a..b].to_string(), style));
+    }
+    out
+}
+
 pub fn render_file_diff_body(
     frame: &mut Frame<'_>,
     area: Rect,
@@ -734,6 +794,7 @@ pub fn render_file_diff_body(
     let rows = session.rows_for(diff);
     let theme = ctx.theme;
     let tab_size = ctx.diff_tab_size();
+    session.record_tab_size(tab_size);
     let horiz_scroll = if session.soft_wrap {
         0
     } else {
@@ -802,13 +863,21 @@ pub fn render_file_diff_body(
                     ctx.t("view.log_details.diff_truncated").to_string(),
                     Style::default().fg(theme.status_conflicted),
                 )),
-                Some(DiffRow::Header(hh)) => Line::from(Span::styled(
-                    truncate_to_width(&diff.hunks[*hh].header, width),
-                    Style::default()
+                Some(DiffRow::Header(hh)) => {
+                    let (sr, active_sr) = session.search.ranges_for(row_idx, 0);
+                    let base = Style::default()
                         .fg(theme.fg_accent_link)
-                        .bg(theme.diff_mod_bg),
-                ))
-                .style(Style::default().bg(theme.diff_mod_bg)),
+                        .bg(theme.diff_mod_bg);
+                    Line::from(render_hunk_header_spans(
+                        &diff.hunks[*hh].header,
+                        width,
+                        base,
+                        &sr,
+                        active_sr,
+                        theme,
+                    ))
+                    .style(Style::default().bg(theme.diff_mod_bg))
+                }
                 Some(DiffRow::Unified(hh, l)) => {
                     let hunk_lines = &diff.hunks[*hh].lines;
                     let lazy_wr = session
@@ -931,11 +1000,17 @@ pub fn render_file_diff_body(
         match row {
             DiffRow::Header(hh) => {
                 let rect = Rect::new(body.x, body.y + drawn as u16, body.width, 1);
-                let line = Line::from(Span::styled(
-                    truncate_to_width(&diff.hunks[hh].header, width),
-                    Style::default()
-                        .fg(theme.fg_accent_link)
-                        .bg(theme.diff_mod_bg),
+                let (sr, active_sr) = session.search.ranges_for(row_idx, 0);
+                let base = Style::default()
+                    .fg(theme.fg_accent_link)
+                    .bg(theme.diff_mod_bg);
+                let line = Line::from(render_hunk_header_spans(
+                    &diff.hunks[hh].header,
+                    width,
+                    base,
+                    &sr,
+                    active_sr,
+                    theme,
                 ))
                 .style(Style::default().bg(theme.diff_mod_bg));
                 frame.render_widget(Paragraph::new(line), rect);

@@ -163,7 +163,7 @@ pub(crate) fn load_tree_index_sync(
     if token.is_stale() {
         return Err(EngineError::Cancelled);
     }
-    let git = crate::cli::cached_git_executable().unwrap_or_else(|| std::path::PathBuf::from("git"));
+    let git = crate::cli::require_git_executable()?;
     let mut cmd = crate::cli::non_interactive_std_command(&git, Some(&loc.workdir));
     cmd.arg("--git-dir")
         .arg(&loc.git_dir)

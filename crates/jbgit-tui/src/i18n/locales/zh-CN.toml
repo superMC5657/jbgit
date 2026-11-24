@@ -129,6 +129,9 @@ cleanup_branches = "清理已合并分支…"
 
 [menu.log]
 new_worktree_here = "从此处新建 Worktree…"
+cherry_pick_record_origin = "拣选 (-x 记录来源提交)"
+bisect_mark_bad = "标记为 Bad (Bisect)"
+bisect_start_good = "开始二分查找（此处 Good，HEAD Bad）"
 checkout_revision = "检出修订版本 '{short}'"
 checkout_branch = "检出 '{name}'"
 checkout_detached = "检出 '{short}' (游离 HEAD)"
@@ -218,6 +221,7 @@ finish_ongoing_first = "请先完成或中止当前正在进行的操作"
 
 [menu.log_change]
 toggle_diff = "切换差异预览"
+deleted_in_commit = "该文件在此提交中已被删除"
 fullscreen_diff = "全屏查看差异"
 compare_local = "与本地工作区对比"
 load_many_changes = "加载聚合变更"
@@ -334,6 +338,7 @@ copy_hash = "复制提交哈希"
 
 [menu.file_history]
 get_version = "获取此版本（还原文件）"
+create_patch = "创建补丁…"
 show_affected_files = "显示全部影响文件"
 open_repo_version = "打开仓库版本"
 copy_patch = "复制补丁"
@@ -647,6 +652,7 @@ action.update_ref = "更新引用"
 
 [dialog.pull]
 title = "拉取更新到 '{cur}'"
+err_branch_without_remote = "指定远程分支前请先选择远端 (Remote)"
 subtitle = "从 '{remote}' 拉取到 '{cur}'（共 {count} 个远程分支）"
 fetching = "正在获取远程分支列表…"
 row_remote = "远端 (Remote)"
@@ -1013,6 +1019,7 @@ category.tags = "标签"
 
 [view.log_details]
 diff_preview = "差异预览"
+no_files = "无变更文件"
 diff_file = "差异 · {path}"
 loading_changes = " 正在加载变更…"
 select_commit_changes = " 选择提交以查看变更文件"
@@ -1291,6 +1298,8 @@ editor_hint = " Enter 应用 · Tab 补全 · ↑↓ 选择 · 留空重置为�
 
 [diff]
 context.full = "全量"
+binary_file = "二进制文件"
+no_changes = "无差异内容"
 whitespace.default = "精确"
 dock.details = "详情面板"
 dock.right = "右侧栏"
@@ -1305,6 +1314,11 @@ days_ago = "{n}天前"
 
 [toast]
 linear_bek_expanded = "已展开 LinearBek 合并提交 {short}"
+ongoing_in_progress = "请先完成或中止当前正在进行的 Git 操作"
+repo_clone_cancelled = "已取消克隆仓库"
+worktree_setup_ok = "Worktree '{name}' 初始化命令完成：{cmd}"
+worktree_setup_failed = "Worktree '{name}' 初始化命令失败（{cmd}）：{err}"
+deleted_branches_partial = "在删除 '{failed}' 失败前已删除 {count} 个分支"
 worktree_unsupported = "Worktree 功能需要 git ≥ 2.17（当前 {version}）"
 worktree_already_open = "'{name}' 就是当前工作区"
 worktree_cannot_open = "无法打开 '{name}'（裸仓库或已失效）"
@@ -1978,6 +1992,9 @@ file_not_found = "文件不存在"
 
 [dialog.create_patch]
 title = "创建补丁"
+warn_worktree = "目标路径 '{path}' 位于工作区内部，写入后将产生未跟踪文件。仍要写入吗？"
+warn_overwrite = "文件 '{path}' 已存在，是否覆盖？"
+confirm_write = "确认写入"
 destination = "输出目标"
 to_file = "文件 / 目录"
 to_clipboard = "剪贴板"
@@ -2127,3 +2144,12 @@ body = "当前拣选的提交为空（其更改已存在）。请选择后续操
 skip_btn = "跳过 (--skip)"
 allow_empty_btn = "允许空提交 (--allow-empty)"
 abort_btn = "中止 (--abort)"
+
+[dialog.rebase_todo]
+title = "交互式变基（起点 {target}）"
+
+[dialog.bisect_start]
+title = "开始 Git Bisect 二分查找？"
+body_bad = "是否将 {short}（{subject}）标记为 Bad 并开始二分查找？执行期间 Git 可能会进入游离 HEAD 状态。"
+body_good = "是否将 HEAD 标记为 Bad、将 {short}（{subject}）标记为 Good 并开始二分查找？Git 将切换至游离 HEAD 以定位引入问题的提交。"
+confirm_btn = "开始二分查找"
