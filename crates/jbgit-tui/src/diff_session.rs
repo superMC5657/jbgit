@@ -7,7 +7,7 @@
 
 use std::cell::RefCell;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use jbgit_core::{
     ChangeRowKind, ChangeTreeRow, CommitChangesBundle, DetailsKey, DiffContext, DiffHunk,
@@ -533,6 +533,48 @@ impl DiffSession {
 
     pub fn next_deadline(&self) -> Option<Instant> {
         self.pending.as_ref().map(|(_, at)| *at)
+    }
+
+    /// Reconciles a desired diff key against `caches`: clears `pending` on
+    /// miss/hit, returns `Some(diff)` if cached and needing syntax highlight, or
+    /// schedules a debounced fetch when neither cached nor already requested.
+    pub fn reconcile_fetch(
+        &mut self,
+        desired: Option<FileDiffKey>,
+        caches: &mut DiffCacheStore,
+        now: Instant,
+        debounce: Duration,
+    ) -> Option<Arc<FileDiff>> {
+        let Some(key) = desired else {
+            self.pending = None;
+            return None;
+        };
+        if let Some(cached) = caches.get_diff(&key) {
+            self.pending = None;
+            if caches.get_syntax(&key).is_none() {
+                return Some(cached);
+            }
+        } else if self.requested.as_ref() != Some(&key)
+            && self.pending.as_ref().map(|(k, _)| k) != Some(&key)
+        {
+            self.pending = Some((key, now + debounce));
+        }
+        None
+    }
+
+    /// Pops a pending diff request whose deadline has arrived and returns it
+    /// if not already cached or in flight.
+    pub fn flush_due(&mut self, caches: &DiffCacheStore, now: Instant) -> Option<FileDiffKey> {
+        let (key, at) = self.pending.take()?;
+        if at <= now {
+            if !caches.diffs.contains(&key) && self.requested.as_ref() != Some(&key) {
+                self.requested = Some(key.clone());
+                return Some(key);
+            }
+        } else {
+            self.pending = Some((key, at));
+        }
+        None
     }
 }
 

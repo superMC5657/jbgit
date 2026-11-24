@@ -11,7 +11,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph};
 use unicode_width::UnicodeWidthStr;
 
-use crate::app::{Action, AppState, ModalLayer, RenderContext};
+use crate::app::{Action, AppState, ModalLayer, RenderContext, ScrollPane, ScrollViewport};
 use crate::dialogs::{
     ChoiceDialog, Dialog, add_remote_dialog, rename_remote_dialog, set_remote_url_dialog,
 };
@@ -25,6 +25,7 @@ use crate::views::truncate_to_width;
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct RemotesState {
     pub selected: usize,
+    pub scroll: ScrollViewport,
 }
 
 impl RemotesState {
@@ -36,7 +37,10 @@ impl RemotesState {
                 s.remotes.iter().position(|r| r.name == def)
             })
             .unwrap_or(0);
-        Self { selected }
+        Self {
+            selected,
+            scroll: ScrollViewport::new(),
+        }
     }
 }
 
@@ -102,14 +106,24 @@ fn open(d: Dialog) -> Vec<Action> {
     vec![Action::OpenDialog(Box::new(d))]
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RemoteCommand {
+    Add,
+    Rename,
+    EditFetchUrl,
+    EditPushUrl,
+    Remove,
+    Fetch,
+}
+
 /// Actions for an editing command on the selected remote.
-pub fn remote_command(state: &AppState, cmd: char) -> Vec<Action> {
+pub fn remote_command(state: &AppState, cmd: RemoteCommand) -> Vec<Action> {
     let Some(rs) = top_state(state) else {
         return Vec::new();
     };
     let snap = state.repo_snapshot.as_deref();
     let i18n = &state.i18n;
-    if cmd == 'a' {
+    if cmd == RemoteCommand::Add {
         return open(add_remote_dialog(snap, i18n));
     }
     let Some(remote) = selected_remote(state, &rs) else {
@@ -117,14 +131,14 @@ pub fn remote_command(state: &AppState, cmd: char) -> Vec<Action> {
     };
     let name = remote.name.as_str();
     match cmd {
-        'r' => open(rename_remote_dialog(snap, name, i18n)),
-        'e' => open(set_remote_url_dialog(snap, name, false, i18n)),
-        'p' => open(set_remote_url_dialog(snap, name, true, i18n)),
-        'd' => open(remove_remote_confirm(snap, name, i18n)),
-        'f' => vec![Action::RunGitOp(GitOp::FetchRemote {
+        RemoteCommand::Add => unreachable!(),
+        RemoteCommand::Rename => open(rename_remote_dialog(snap, name, i18n)),
+        RemoteCommand::EditFetchUrl => open(set_remote_url_dialog(snap, name, false, i18n)),
+        RemoteCommand::EditPushUrl => open(set_remote_url_dialog(snap, name, true, i18n)),
+        RemoteCommand::Remove => open(remove_remote_confirm(snap, name, i18n)),
+        RemoteCommand::Fetch => vec![Action::RunGitOp(GitOp::FetchRemote {
             name: name.to_string(),
         })],
-        _ => Vec::new(),
     }
 }
 
@@ -142,12 +156,12 @@ pub fn route_remotes_key(key: &KeyEvent, state: &AppState) -> Vec<Action> {
         KeyCode::Down | KeyCode::Char('j') => vec![Action::RemotesMove(1)],
         KeyCode::Home | KeyCode::Char('g') => vec![Action::RemotesSelect(0)],
         KeyCode::End | KeyCode::Char('G') => vec![Action::RemotesSelect(usize::MAX)],
-        KeyCode::Char('a' | 'n') | KeyCode::Insert => remote_command(state, 'a'),
-        KeyCode::Char('r') | KeyCode::F(2) => remote_command(state, 'r'),
-        KeyCode::Char('e') | KeyCode::Enter => remote_command(state, 'e'),
-        KeyCode::Char('p') => remote_command(state, 'p'),
-        KeyCode::Char('d') | KeyCode::Delete => remote_command(state, 'd'),
-        KeyCode::Char('f') => remote_command(state, 'f'),
+        KeyCode::Char('a' | 'n') | KeyCode::Insert => remote_command(state, RemoteCommand::Add),
+        KeyCode::Char('r') | KeyCode::F(2) => remote_command(state, RemoteCommand::Rename),
+        KeyCode::Char('e') | KeyCode::Enter => remote_command(state, RemoteCommand::EditFetchUrl),
+        KeyCode::Char('p') => remote_command(state, RemoteCommand::EditPushUrl),
+        KeyCode::Char('d') | KeyCode::Delete => remote_command(state, RemoteCommand::Remove),
+        KeyCode::Char('f') => remote_command(state, RemoteCommand::Fetch),
         _ => Vec::new(),
     }
 }
@@ -161,6 +175,9 @@ pub fn apply_selection(state: &mut AppState, select: Option<usize>, delta: isize
             Some(idx) => idx.min(len.saturating_sub(1)),
             None => (cur as isize + delta).clamp(0, len.saturating_sub(1) as isize) as usize,
         };
+        if let Some(vh) = rs.scroll.viewport_height() {
+            rs.scroll.ensure_visible(rs.selected, len, vh);
+        }
     }
 }
 
@@ -218,6 +235,7 @@ pub fn render_remotes_modal(
     let list_h = inner.height.saturating_sub(2);
 
     if list.is_empty() {
+        ctx.record_scroll_bound(ScrollPane::Remotes, (list_h / 2).max(1) as usize, 0);
         frame.render_widget(
             Paragraph::new(Span::styled(
                 format!(" {}", ctx.t("view.remotes.empty")),
@@ -228,7 +246,14 @@ pub fn render_remotes_modal(
     } else {
         let selected = rs.selected.min(list.len() - 1);
         let per_page = (list_h / 2).max(1) as usize;
-        let first = selected.saturating_sub(per_page.saturating_sub(1));
+        let mut vp = rs.scroll;
+        vp.ensure_visible(selected, list.len(), per_page);
+        let first = vp.offset();
+        ctx.record_scroll_bound(
+            ScrollPane::Remotes,
+            per_page,
+            list.len().saturating_sub(per_page),
+        );
         let name_w = list
             .iter()
             .map(|r| r.name.width())

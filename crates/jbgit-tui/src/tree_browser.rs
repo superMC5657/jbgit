@@ -3,7 +3,6 @@
 //! commit with a syntax-highlighted, size-guarded file preview, plus
 //! Compare with Local / Get Version / Annotate / Show History / Copy Path.
 
-use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
@@ -19,7 +18,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph};
 use unicode_width::UnicodeWidthStr;
 
-use crate::app::{Action, AppState, ModalLayer, RenderContext};
+use crate::app::{Action, AppState, ModalLayer, RenderContext, ScrollPane, ScrollViewport};
 use crate::dialogs::{ChoiceDialog, ChoiceOption, Dialog};
 use crate::hit_test::HitTarget;
 use crate::syntax::{HighlightedFile, render_diff_line_spans_with_tab};
@@ -69,12 +68,12 @@ pub struct TreeBrowserState {
     pub errors: HashMap<String, String>,
     pub rows: Vec<TreeRow>,
     pub selected: usize,
-    pub scroll: Cell<usize>,
+    pub scroll: ScrollViewport,
     pub focus: TreeBrowserFocus,
     pub preview: Option<Arc<TreeBlob>>,
     pub preview_requested: Option<TreeBlobKey>,
     pub preview_syntax: Option<Arc<HighlightedFile>>,
-    pub preview_scroll: usize,
+    pub preview_scroll: ScrollViewport,
 }
 
 impl TreeBrowserState {
@@ -89,12 +88,12 @@ impl TreeBrowserState {
             errors: HashMap::new(),
             rows: Vec::new(),
             selected: 0,
-            scroll: Cell::new(0),
+            scroll: ScrollViewport::new(),
             focus: TreeBrowserFocus::Tree,
             preview: None,
             preview_requested: None,
             preview_syntax: None,
-            preview_scroll: 0,
+            preview_scroll: ScrollViewport::new(),
         }
     }
 
@@ -148,6 +147,13 @@ impl TreeBrowserState {
             self.selected = i;
         }
         self.selected = self.selected.min(self.rows.len().saturating_sub(1));
+        self.sync_list_scroll();
+    }
+
+    fn sync_list_scroll(&mut self) {
+        if let Some(vh) = self.scroll.viewport_height() {
+            self.scroll.ensure_visible(self.selected, self.rows.len(), vh);
+        }
     }
 
     fn push_rows(&self, dir: &str, depth: usize, out: &mut Vec<TreeRow>) {
@@ -204,7 +210,7 @@ impl TreeBrowserState {
             .filter(|b| b.key.path == e.path && b.key.oid == self.oid)
     }
 
-    fn preview_line_count(&self) -> usize {
+    pub(crate) fn preview_line_count(&self) -> usize {
         match self.preview_for_selection().map(|b| &b.content) {
             Some(TreeBlobContent::Text(t)) => t.lines().count(),
             _ => 0,
@@ -221,14 +227,16 @@ impl TreeBrowserState {
                 } else if len > 0 {
                     self.selected =
                         (self.selected as isize + delta).clamp(0, len as isize - 1) as usize;
-                    self.preview_scroll = 0;
+                    self.preview_scroll.reset();
+                    self.sync_list_scroll();
                 }
             }
             TreeBrowserAction::Select(i) => {
                 if len > 0 {
                     self.selected = (*i).min(len - 1);
                     self.focus = TreeBrowserFocus::Tree;
-                    self.preview_scroll = 0;
+                    self.preview_scroll.reset();
+                    self.sync_list_scroll();
                 }
             }
             TreeBrowserAction::Expand => {
@@ -240,6 +248,7 @@ impl TreeBrowserState {
                         // Step into the first child.
                         if self.selected + 1 < len {
                             self.selected += 1;
+                            self.sync_list_scroll();
                         }
                     } else {
                         self.expand(&e.path);
@@ -262,6 +271,7 @@ impl TreeBrowserState {
                     && let Some(i) = self.rows.iter().position(|r| r.entry.path == parent)
                 {
                     self.selected = i;
+                    self.sync_list_scroll();
                 }
             }
             TreeBrowserAction::Toggle(i) => {
@@ -269,6 +279,7 @@ impl TreeBrowserState {
                     return;
                 }
                 self.selected = (*i).min(len - 1);
+                self.sync_list_scroll();
                 let Some(e) = self.selected_entry().cloned() else {
                     return;
                 };
@@ -293,9 +304,8 @@ impl TreeBrowserState {
     }
 
     fn scroll_preview(&mut self, delta: isize) {
-        let max = self.preview_line_count().saturating_sub(1);
-        self.preview_scroll =
-            (self.preview_scroll as isize + delta).clamp(0, max as isize) as usize;
+        let fallback = self.preview_line_count().saturating_sub(1);
+        self.preview_scroll.scroll_by(delta, fallback);
     }
 }
 
@@ -306,9 +316,17 @@ fn top(state: &AppState) -> Option<&TreeBrowserState> {
     }
 }
 
-/// Commands on the selected entry: `c` compare with local, `g` get version,
-/// `a` annotate, `h` history, `y` copy path.
-pub fn tree_command(state: &AppState, cmd: char) -> Vec<Action> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TreeCommand {
+    CopyPath,
+    CompareWithLocal,
+    Annotate,
+    ShowHistory,
+    GetVersion,
+}
+
+/// Commands on the selected entry.
+pub fn tree_command(state: &AppState, cmd: TreeCommand) -> Vec<Action> {
     let i18n = &state.i18n;
     let Some(s) = top(state) else {
         return Vec::new();
@@ -323,30 +341,32 @@ pub fn tree_command(state: &AppState, cmd: char) -> Vec<Action> {
         ))]
     };
     match cmd {
-        'y' => vec![Action::CopyText(e.path.clone())],
+        TreeCommand::CopyPath => vec![Action::CopyText(e.path.clone())],
         _ if e.kind == TreeEntryKind::Submodule => read_only(),
-        'c' if e.kind == TreeEntryKind::Blob => vec![
+        TreeCommand::CompareWithLocal if e.kind == TreeEntryKind::Blob => vec![
             Action::PopModal,
             Action::CompareFileWithLocal {
                 target: s.oid,
                 path: e.path.clone(),
             },
         ],
-        'c' => vec![Action::PopModal, Action::CompareWithLocal { target: s.oid }],
-        'a' if e.kind == TreeEntryKind::Blob => vec![Action::OpenAnnotate {
+        TreeCommand::CompareWithLocal => {
+            vec![Action::PopModal, Action::CompareWithLocal { target: s.oid }]
+        }
+        TreeCommand::Annotate if e.kind == TreeEntryKind::Blob => vec![Action::OpenAnnotate {
             path: e.path.clone(),
             rev: Some(s.oid),
         }],
-        'a' => vec![Action::Notice(
+        TreeCommand::Annotate => vec![Action::Notice(
             i18n.t("view.tree.annotate_file_only").into(),
         )],
-        'h' => vec![Action::OpenFileHistory {
+        TreeCommand::ShowHistory => vec![Action::OpenFileHistory {
             path: e.path.clone(),
             start_oid: Some(s.oid),
             follow_renames: e.kind == TreeEntryKind::Blob,
             line_range: None,
         }],
-        'g' => {
+        TreeCommand::GetVersion => {
             if let Err(msg) = state.require_no_ongoing() {
                 return vec![Action::Notice(msg)];
             }
@@ -373,7 +393,6 @@ pub fn tree_command(state: &AppState, cmd: char) -> Vec<Action> {
                 ),
             )))]
         }
-        _ => Vec::new(),
     }
 }
 
@@ -407,8 +426,11 @@ pub fn route_tree_browser_key(key: &KeyEvent, state: &AppState) -> Vec<Action> {
             None => Vec::new(),
         },
         KeyCode::Tab | KeyCode::BackTab => vec![tb(TreeBrowserAction::ToggleFocus)],
-        KeyCode::Char(c @ ('c' | 'g' | 'a' | 'y')) => tree_command(state, c),
-        KeyCode::Char('h' | 'H') => tree_command(state, 'h'),
+        KeyCode::Char('c') => tree_command(state, TreeCommand::CompareWithLocal),
+        KeyCode::Char('g') => tree_command(state, TreeCommand::GetVersion),
+        KeyCode::Char('a') => tree_command(state, TreeCommand::Annotate),
+        KeyCode::Char('y') => tree_command(state, TreeCommand::CopyPath),
+        KeyCode::Char('h' | 'H') => tree_command(state, TreeCommand::ShowHistory),
         _ => Vec::new(),
     }
 }
@@ -495,6 +517,7 @@ fn render_tree_pane(
     let h = area.height as usize;
     let width = area.width as usize;
     if s.rows.is_empty() {
+        ctx.record_scroll_bound(ScrollPane::TreeBrowserList, h, 0);
         let text = if let Some(err) = s.errors.get("") {
             err.clone()
         } else if s.is_loading("") {
@@ -511,14 +534,14 @@ fn render_tree_pane(
         );
         return;
     }
-    let mut first = s.scroll.get();
-    if s.selected < first {
-        first = s.selected;
-    } else if s.selected >= first + h {
-        first = s.selected + 1 - h;
-    }
-    first = first.min(s.rows.len().saturating_sub(h));
-    s.scroll.set(first);
+    let mut vp = s.scroll;
+    vp.ensure_visible(s.selected, s.rows.len(), h);
+    let first = vp.offset();
+    ctx.record_scroll_bound(
+        ScrollPane::TreeBrowserList,
+        h,
+        s.rows.len().saturating_sub(h),
+    );
     let glyphs = ctx.glyph_mode.symbols();
     let focused = s.focus == TreeBrowserFocus::Tree;
     for (v, (idx, row)) in s.rows.iter().enumerate().skip(first).take(h).enumerate() {
@@ -586,7 +609,9 @@ fn render_preview_pane(
         .register(area, z + 2, HitTarget::TreeBrowserPreview);
     let width = area.width as usize;
     let muted = Style::default().fg(ctx.theme.fg_muted);
-    let placeholder = |frame: &mut Frame<'_>, text: String| {
+    let h = area.height as usize;
+    let placeholder = |frame: &mut Frame<'_>, ctx: &mut RenderContext<'_>, text: String| {
+        ctx.record_scroll_bound(ScrollPane::TreeBrowserPreview, h, 0);
         frame.render_widget(
             Paragraph::new(Span::styled(
                 truncate_to_width(&format!(" {text}"), width),
@@ -596,6 +621,7 @@ fn render_preview_pane(
         );
     };
     let Some(e) = s.selected_entry() else {
+        ctx.record_scroll_bound(ScrollPane::TreeBrowserPreview, h, 0);
         return;
     };
     match e.kind {
@@ -607,6 +633,7 @@ fn render_preview_pane(
                 .unwrap_or_else(|| "?".into());
             return placeholder(
                 frame,
+                ctx,
                 ctx.t_fmt("view.tree.dir_summary", &[("path", &e.path), ("count", &n)]),
             );
         }
@@ -614,6 +641,7 @@ fn render_preview_pane(
             let short = e.oid.short();
             return placeholder(
                 frame,
+                ctx,
                 ctx.t_fmt(
                     "view.tree.submodule_preview",
                     &[("path", &e.path), ("short", &short)],
@@ -623,7 +651,7 @@ fn render_preview_pane(
         TreeEntryKind::Blob => {}
     }
     let Some(blob) = s.preview_for_selection() else {
-        return placeholder(frame, ctx.t("view.tree.loading").to_string());
+        return placeholder(frame, ctx, ctx.t("view.tree.loading").to_string());
     };
     let text = match &blob.content {
         TreeBlobContent::Text(t) => t,
@@ -631,6 +659,7 @@ fn render_preview_pane(
             let size = ptr.format_size();
             return placeholder(
                 frame,
+                ctx,
                 ctx.t_fmt(
                     "view.tree.lfs_preview",
                     &[("oid", ptr.short_oid()), ("size", &size)],
@@ -639,21 +668,22 @@ fn render_preview_pane(
         }
         TreeBlobContent::Binary => {
             let size = blob.size.to_string();
-            return placeholder(frame, ctx.t_fmt("view.tree.binary", &[("size", &size)]));
+            return placeholder(frame, ctx, ctx.t_fmt("view.tree.binary", &[("size", &size)]));
         }
         TreeBlobContent::TooLarge { limit } => {
             let mib = (limit / (1024 * 1024)).to_string();
-            return placeholder(frame, ctx.t_fmt("view.tree.too_large", &[("mib", &mib)]));
+            return placeholder(frame, ctx, ctx.t_fmt("view.tree.too_large", &[("mib", &mib)]));
         }
         TreeBlobContent::Missing => {
-            return placeholder(frame, ctx.t("view.tree.missing").to_string());
+            return placeholder(frame, ctx, ctx.t("view.tree.missing").to_string());
         }
     };
     let lines: Vec<&str> = text.lines().collect();
     let total = lines.len().max(1);
     let lineno_w = total.to_string().len();
-    let h = area.height as usize;
-    let first = s.preview_scroll.min(total.saturating_sub(h.max(1)));
+    let max_scroll = total.saturating_sub(h.max(1));
+    ctx.record_scroll_bound(ScrollPane::TreeBrowserPreview, h, max_scroll);
+    let first = s.preview_scroll.offset().min(max_scroll);
     let tab_size = ctx.diff_tab_size();
     let bg = ctx.theme.bg_elevated;
     for (v, (i, src)) in lines.iter().enumerate().skip(first).take(h).enumerate() {

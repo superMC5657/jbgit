@@ -648,7 +648,7 @@ fn compile_patch_source(source: &PatchSource) -> Vec<CompiledStep> {
 pub(crate) fn is_network_step(args: &[String]) -> bool {
     matches!(
         args.first().map(String::as_str),
-        Some("fetch" | "pull" | "push" | "ls-remote")
+        Some("fetch" | "pull" | "push" | "ls-remote" | "submodule")
     )
 }
 
@@ -656,8 +656,8 @@ pub(crate) fn is_network_step(args: &[String]) -> bool {
 /// classified [`GitOpOutcome`] and any `index.lock` conflict.
 ///
 /// `askpass` (when set) is added to the environment of network steps only
-/// (`fetch` / `pull` / `push` / `ls-remote`), so credential prompts reach the
-/// TUI; local commands never see it.
+/// (`fetch` / `pull` / `push` / `ls-remote` / `submodule`), so credential
+/// prompts reach the TUI; local commands never see it.
 pub(crate) async fn run_git_op<R, F>(
     cli: &R,
     loc: &RepoLocation,
@@ -670,7 +670,11 @@ where
     R: GitCliRunner,
     F: Fn(CliStreamEvent) + Send + Sync,
 {
-    let askpass_vars = askpass.map(AskpassEnv::vars).unwrap_or_default();
+    let askpass_vars = if op.is_network() {
+        askpass.map(AskpassEnv::vars).unwrap_or_default()
+    } else {
+        Vec::new()
+    };
     let runner = Runner {
         cli,
         loc,
@@ -2169,5 +2173,54 @@ mod tests {
         assert_eq!(calls.len(), 1);
         assert!(calls[0].is_read_only);
         assert_eq!(calls[0].args[0], "for-each-ref");
+    }
+
+    #[tokio::test]
+    async fn askpass_env_is_passed_to_submodule_update_and_omitted_for_local_ops() {
+        let askpass = AskpassEnv::new(PathBuf::from("/usr/bin/jbgit"), "pipe://test", "tok");
+        let ids = AtomicU64::new(1);
+
+        let runner = RecordingCliRunner::with_responses(Vec::new());
+        let res = run_git_op(
+            &runner,
+            &dummy_loc(),
+            &ids,
+            GitOp::SubmoduleUpdate {
+                path: Some("vendor/lib".into()),
+            },
+            Some(&askpass),
+            |_| {},
+        )
+        .await;
+        assert!(res.outcome.success);
+        let calls = runner.calls();
+        assert_eq!(calls.len(), 1);
+        assert!(
+            calls[0].env.iter().any(|(k, _)| k == "GIT_ASKPASS"),
+            "SubmoduleUpdate must receive GIT_ASKPASS: {:?}",
+            calls[0].env
+        );
+
+        let local_runner = RecordingCliRunner::with_responses(Vec::new());
+        let local_res = run_git_op(
+            &local_runner,
+            &dummy_loc(),
+            &ids,
+            GitOp::CreateBranch {
+                name: "topic".into(),
+                start: "HEAD".into(),
+            },
+            Some(&askpass),
+            |_| {},
+        )
+        .await;
+        assert!(local_res.outcome.success);
+        let local_calls = local_runner.calls();
+        assert_eq!(local_calls.len(), 1);
+        assert!(
+            local_calls[0].env.is_empty(),
+            "local ops must not receive askpass env: {:?}",
+            local_calls[0].env
+        );
     }
 }

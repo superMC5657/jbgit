@@ -75,14 +75,6 @@ impl AppState {
                     }
                 }
             }
-            UiAsyncEvent::SyntaxHighlighted {
-                key: SyntaxJobKey::Blame(_),
-                ..
-            } => {}
-            UiAsyncEvent::SyntaxHighlighted {
-                key: SyntaxJobKey::TreeBlob(_),
-                ..
-            } => {}
             UiAsyncEvent::TreeBlobSyntaxHighlighted {
                 key,
                 epoch,
@@ -472,9 +464,9 @@ impl AppState {
                     pd.error = None;
                     pd.outgoing = Some(bundle);
                     pd.selected_commit = 0;
-                    pd.commit_scroll = 0;
+                    pd.commit_scroll.reset();
                     pd.selected_file = 0;
-                    pd.file_scroll = 0;
+                    pd.file_scroll.reset();
                     pd.show_diff = false;
                     pd.details_requested = None;
                     pd.details_pending = None;

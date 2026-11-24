@@ -245,15 +245,6 @@ pub fn stage_tree_menu_items(state: &AppState, idx: usize) -> Vec<ContextMenuIte
             }]
         })
         .unwrap_or_default();
-    let ann_action = file_path
-        .as_ref()
-        .map(|p| {
-            vec![Action::OpenAnnotate {
-                path: p.clone(),
-                rev: None,
-            }]
-        })
-        .unwrap_or_default();
     items.push(
         run(
             i18n.t("menu.stage.file_history"),
@@ -264,16 +255,12 @@ pub fn stage_tree_menu_items(state: &AppState, idx: usize) -> Vec<ContextMenuIte
         .enabled_if(file_path.is_some(), i18n.t("menu.stage.select_file"))
         .enabled_if(!untracked && !ignored, i18n.t("menu.stage.only_tracked_history")),
     );
-    items.push(
-        run(
-            i18n.t("menu.stage.annotate"),
-            Some('b'),
-            ann_sc.as_deref(),
-            ann_action,
-        )
-        .enabled_if(file_path.is_some(), i18n.t("menu.stage.select_file"))
-        .enabled_if(!untracked && !ignored, i18n.t("menu.stage.only_tracked_history")),
-    );
+    items.push(ContextMenuItem::from_command(
+        i18n.t("menu.stage.annotate"),
+        Some('b'),
+        ann_sc.as_deref(),
+        catalog::annotate_stage_entry_at(state, idx),
+    ));
     items.push(
         run(
             i18n.t("menu.stage.create_patch_clipboard"),
@@ -377,23 +364,13 @@ fn stage_diff_common_items(
     let ann_sc = catalog::shortcut_for_action(state, &[KeymapScope::Commit], &KeyAction::Annotate);
     let staged = side == Some(StageDiffSide::Staged);
     let paths: Vec<String> = path.iter().cloned().collect();
-    let ann_actions = path
-        .as_ref()
-        .map(|p| {
-            vec![Action::OpenAnnotate {
-                path: p.clone(),
-                rev: None,
-            }]
-        })
-        .unwrap_or_default();
     vec![
-        run(
+        ContextMenuItem::from_command(
             i18n.t("menu.stage.annotate"),
             Some('b'),
             ann_sc.as_deref(),
-            ann_actions,
-        )
-        .enabled_if(path.is_some(), i18n.t("menu.stage.no_file_selected")),
+            catalog::annotate_stage_diff(state, path.as_deref()),
+        ),
         run(
             i18n.t("menu.stage.copy_patch"),
             Some('c'),

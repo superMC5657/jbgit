@@ -629,24 +629,20 @@ impl AppState {
         };
         let local = snap.local_branch(branch);
         let upstream = local.and_then(|l| l.upstream.clone());
-        let mut remotes = snap.available_remotes();
-        let preferred_remote = upstream
-            .as_ref()
-            .and_then(|u| u.split_once('/').map(|(r, _)| r.to_string()))
-            .unwrap_or_else(|| self.default_remote());
-        if !remotes.contains(&preferred_remote) {
-            remotes.push(preferred_remote.clone());
-        }
-        let remote_idx = remotes
-            .iter()
-            .position(|r| r == &preferred_remote)
+        let remotes = snap.available_remotes();
+        let split_up = upstream.as_deref().and_then(|u| snap.split_tracking(u));
+        let preferred_remote = split_up
+            .map(|(r, _)| r.to_string())
+            .or_else(|| snap.default_remote());
+        let remote_idx = preferred_remote
+            .as_deref()
+            .and_then(|p| remotes.iter().position(|r| r == p))
             .unwrap_or(0);
-        let remote_branch = upstream
-            .as_ref()
-            .and_then(|u| u.split_once('/').map(|(_, rb)| rb.to_string()))
+        let remote_branch = split_up
+            .map(|(_, rb)| rb.to_string())
             .unwrap_or_else(|| branch.to_string());
         let set_upstream = upstream.is_none();
-        let pd = PushDialogState::new(
+        let mut pd = PushDialogState::new(
             branch.to_string(),
             remotes,
             remote_idx,
@@ -655,10 +651,16 @@ impl AppState {
             up_to,
             jbgit_core::DiffContext::from_lines(self.config.jbgit.diff.context_lines),
         );
+        let has_remote = !pd.remote().is_empty();
+        if !has_remote {
+            pd.loading = false;
+        }
         let key = pd.outgoing_key();
         self.blur_active_pane(false);
         self.modal_stack.open_push_dialog(pd);
-        effects.push(Effect::RequestOutgoing(key));
+        if has_remote {
+            effects.push(Effect::RequestOutgoing(key));
+        }
     }
 
     fn merge_options_path(&self) -> Option<std::path::PathBuf> {
@@ -1225,42 +1227,74 @@ impl AppState {
                         target_branch,
                         &self.config.jbgit.push.protected_branches,
                     );
-                    let retry_push = GitOp::Push {
-                        branch: branch.clone(),
-                        remote: remote.clone(),
-                        remote_branch: target_branch.to_string(),
-                        set_upstream: *set_upstream,
-                        force: *force,
-                        tags: *tags,
-                        up_to: *up_to,
-                    };
+                    let branch_tip = self
+                        .snapshot()
+                        .and_then(|s| s.local_branch(branch))
+                        .map(|b| b.target_oid);
+                    let partial_up_to = up_to.filter(|oid| branch_tip != Some(*oid));
                     let mut options = Vec::new();
-                    if is_current {
+                    if partial_up_to.is_some() {
+                        if is_current {
+                            options.push(ChoiceOption::new(
+                                i18n.t("dialog.push.merge_only_btn"),
+                                Some('m'),
+                                vec![Action::RunGitOp(GitOp::Sequence(vec![
+                                    GitOp::Fetch,
+                                    GitOp::Merge {
+                                        rev: target_ref.clone(),
+                                        options: MergeOptions::default(),
+                                    },
+                                ]))],
+                            ));
+                        }
                         options.push(ChoiceOption::new(
-                            i18n.t("dialog.push.merge_retry_btn"),
-                            Some('m'),
+                            i18n.t("dialog.push.rebase_only_btn"),
+                            Some('r'),
                             vec![Action::RunGitOp(GitOp::Sequence(vec![
                                 GitOp::Fetch,
-                                GitOp::Merge {
-                                    rev: target_ref.clone(),
-                                    options: MergeOptions::default(),
+                                GitOp::Rebase {
+                                    onto: target_ref.clone(),
+                                    branch: (!is_current).then(|| branch.clone()),
                                 },
-                                retry_push.clone(),
+                            ]))],
+                        ));
+                    } else {
+                        let retry_push = GitOp::Push {
+                            branch: branch.clone(),
+                            remote: remote.clone(),
+                            remote_branch: target_branch.to_string(),
+                            set_upstream: *set_upstream,
+                            force: *force,
+                            tags: *tags,
+                            up_to: None,
+                        };
+                        if is_current {
+                            options.push(ChoiceOption::new(
+                                i18n.t("dialog.push.merge_retry_btn"),
+                                Some('m'),
+                                vec![Action::RunGitOp(GitOp::Sequence(vec![
+                                    GitOp::Fetch,
+                                    GitOp::Merge {
+                                        rev: target_ref.clone(),
+                                        options: MergeOptions::default(),
+                                    },
+                                    retry_push.clone(),
+                                ]))],
+                            ));
+                        }
+                        options.push(ChoiceOption::new(
+                            i18n.t("dialog.push.rebase_retry_btn"),
+                            Some('r'),
+                            vec![Action::RunGitOp(GitOp::Sequence(vec![
+                                GitOp::Fetch,
+                                GitOp::Rebase {
+                                    onto: target_ref.clone(),
+                                    branch: (!is_current).then(|| branch.clone()),
+                                },
+                                retry_push,
                             ]))],
                         ));
                     }
-                    options.push(ChoiceOption::new(
-                        i18n.t("dialog.push.rebase_retry_btn"),
-                        Some('r'),
-                        vec![Action::RunGitOp(GitOp::Sequence(vec![
-                            GitOp::Fetch,
-                            GitOp::Rebase {
-                                onto: target_ref.clone(),
-                                branch: (!is_current).then(|| branch.clone()),
-                            },
-                            retry_push,
-                        ]))],
-                    ));
                     if !force.is_force() && !is_protected {
                         options.push(
                             ChoiceOption::new(
@@ -1284,7 +1318,12 @@ impl AppState {
                         "dialog.push.rejected_body",
                         &[("remote", remote), ("branch", target_branch)],
                     )];
-                    if is_protected {
+                    if let Some(oid) = partial_up_to {
+                        body.push(i18n.t_fmt(
+                            "dialog.push.rejected_up_to_note",
+                            &[("oid", &oid.short())],
+                        ));
+                    } else if is_protected {
                         body.push(i18n.t_fmt(
                             "dialog.push_full.protected_force_blocked",
                             &[("branch", target_branch)],

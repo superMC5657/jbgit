@@ -15,8 +15,8 @@ use jbgit_engine::{
 use rustc_hash::FxHashSet;
 
 use crate::app::{
-    Action, DiffScope, EditorMoveKind, Effect, ModalLayer, ScrollViewport, SyntaxJob, SyntaxJobKey,
-    SyntaxTarget, apply_scroll_delta,
+    Action, DiffScope, EditorMoveKind, Effect, ModalLayer, ScrollViewport, SyntaxJob, SyntaxTarget,
+    apply_scroll_delta,
 };
 use crate::dialogs::{ChoiceDialog, Dialog};
 use crate::diff_session::{DiffRow, build_stage_diff_rows};
@@ -1282,7 +1282,6 @@ impl CommitWorkbench {
         }
         if let Some((epoch, cancel)) = stage_syntax.begin_cancelable(diff.key.clone()) {
             effects.push(Effect::RequestSyntaxHighlight(SyntaxJob {
-                key: SyntaxJobKey::Stage(diff.key.clone()),
                 epoch,
                 target: SyntaxTarget::Stage(diff),
                 cancel,

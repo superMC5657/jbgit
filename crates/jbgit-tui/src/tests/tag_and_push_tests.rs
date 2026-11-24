@@ -609,3 +609,139 @@ fn push_dialog_preview_target_completion_up_to_protected_branches_and_retry() {
         .clone();
     assert_eq!(summary_text, "Pushed 10 commit(s) to origin/main · 1 tag(s)");
 }
+
+#[test]
+fn prompt_push_empty_remotes_slash_remote_and_push_rejected_up_to() {
+    // 1. Empty remotes: no phantom "origin", loading=false, no RequestOutgoing, can_push=Err.
+    let mut main_head = local("main", 12);
+    main_head.is_head = true;
+    let empty_snap = RepoSnapshot {
+        repo_name: "local-only".into(),
+        head_branch: Some("main".into()),
+        head_oid: Some(oid(12)),
+        refs: vec![main_head.clone()],
+        commits: vec![make_commit(12, vec![], "init")],
+        remotes: vec![],
+        ..Default::default()
+    };
+    let mut ts = TestSession::with_snapshot(empty_snap);
+    let _ = ts.take_requests();
+    ts.dispatch(Action::PromptPush {
+        branch: "main".into(),
+        up_to: None,
+    });
+    assert!(
+        ts.take_requests()
+            .into_iter()
+            .all(|(r, _)| !matches!(r, TaskRequest::LoadOutgoing { .. }))
+    );
+    let pd = ts.state().modal_stack.push_dialog().unwrap();
+    assert!(pd.remotes.is_empty());
+    assert!(!pd.loading);
+    assert!(
+        pd.can_push(&ts.state().config.jbgit.push.protected_branches, &ts.state().i18n)
+            .is_err()
+    );
+    ts.send_key(KeyCode::Esc, KeyModifiers::NONE);
+
+    // 2. Remote name containing `/`: split_tracking picks "team/upstream" and "feat/demo".
+    let mut slash_branch = local("feat/demo", 12);
+    slash_branch.is_head = true;
+    slash_branch.upstream = Some("team/upstream/feat/demo".into());
+    let slash_snap = RepoSnapshot {
+        repo_name: "slash".into(),
+        head_branch: Some("feat/demo".into()),
+        head_oid: Some(oid(12)),
+        refs: vec![
+            slash_branch,
+            remote("team/upstream/feat/demo", 10),
+        ],
+        commits: vec![make_commit(12, vec![oid(10)], "tip"), make_commit(10, vec![], "base")],
+        remotes: super::remote_infos(&["origin", "team/upstream"]),
+        ..Default::default()
+    };
+    let mut ts_slash = TestSession::with_snapshot(slash_snap);
+    let _ = ts_slash.take_requests();
+    ts_slash.dispatch(Action::PromptPush {
+        branch: "feat/demo".into(),
+        up_to: None,
+    });
+    let pd_slash = ts_slash.state().modal_stack.push_dialog().unwrap();
+    assert_eq!(pd_slash.remote(), "team/upstream");
+    assert_eq!(pd_slash.remote_branch, "feat/demo");
+
+    // 3. PushRejected with older up_to: offers Fetch & Merge / Fetch & Rebase without stale up_to push.
+    let mut main_snap = snapshot();
+    main_snap.remotes = super::remote_infos(&["origin"]);
+    let mut ts_rej = TestSession::with_snapshot(main_snap);
+    ts_rej.deliver_engine_event(EngineEvent::GitOpFinished(GitOpOutcome::failed(
+        GitOp::Push {
+            branch: "main".into(),
+            remote: "origin".into(),
+            remote_branch: "main".into(),
+            set_upstream: false,
+            force: PushForce::None,
+            tags: PushTagMode::None,
+            up_to: Some(oid(10)), // older than main tip oid(12)
+        },
+        GitFailure::PushRejected,
+    )));
+    match ts_rej.state().modal_stack.last() {
+        Some(ModalLayer::Dialog(d)) => match d.as_ref() {
+            Dialog::Choice(c) => {
+                let labels: Vec<&str> = c.options.iter().map(|o| o.label.as_str()).collect();
+                assert!(labels.contains(&"Fetch & Merge"), "{labels:?}");
+                assert!(labels.contains(&"Fetch & Rebase"), "{labels:?}");
+                assert!(!labels.contains(&"Merge & Retry"), "{labels:?}");
+                assert!(!labels.contains(&"Rebase & Retry"), "{labels:?}");
+            }
+            other => panic!("expected ChoiceDialog, got {other:?}"),
+        },
+        other => panic!("expected Dialog, got {other:?}"),
+    }
+    ts_rej.send_key(KeyCode::Char('r'), KeyModifiers::NONE);
+    assert_eq!(
+        ts_rej.take_git_ops(),
+        vec![GitOp::Sequence(vec![
+            GitOp::Fetch,
+            GitOp::Rebase {
+                onto: "origin/main".into(),
+                branch: None,
+            },
+        ])]
+    );
+
+    // 4. PushRejected when up_to == branch tip: retries with up_to: None after rebase.
+    ts_rej.deliver_engine_event(EngineEvent::GitOpFinished(GitOpOutcome::failed(
+        GitOp::Push {
+            branch: "main".into(),
+            remote: "origin".into(),
+            remote_branch: "main".into(),
+            set_upstream: false,
+            force: PushForce::None,
+            tags: PushTagMode::None,
+            up_to: Some(oid(12)),
+        },
+        GitFailure::PushRejected,
+    )));
+    ts_rej.send_key(KeyCode::Char('r'), KeyModifiers::NONE);
+    assert_eq!(
+        ts_rej.take_git_ops(),
+        vec![GitOp::Sequence(vec![
+            GitOp::Fetch,
+            GitOp::Rebase {
+                onto: "origin/main".into(),
+                branch: None,
+            },
+            GitOp::Push {
+                branch: "main".into(),
+                remote: "origin".into(),
+                remote_branch: "main".into(),
+                set_upstream: false,
+                force: PushForce::None,
+                tags: PushTagMode::None,
+                up_to: None,
+            },
+        ])]
+    );
+}

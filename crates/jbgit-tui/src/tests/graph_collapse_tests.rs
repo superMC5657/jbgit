@@ -239,12 +239,37 @@ fn clicking_fold_marker_or_collapsed_edge_expands() {
     });
     assert_eq!(visible_count(&ts), 13);
 
-    // A normal edge click is a no-op for folding.
+    // Clicking an expanded segment edge collapses that segment, and clicking
+    // the resulting collapsed edge expands it back.
     ts.dispatch(Action::GraphExpandEdge {
         up_row: 0,
         down_row: 1,
     });
+    assert_eq!(visible_count(&ts), 10);
+    let collapsed_down = ts
+        .state()
+        .log
+        .graph
+        .cached
+        .as_ref()
+        .unwrap()
+        .row_of_oid(&oid(10))
+        .unwrap();
+    ts.dispatch(Action::GraphExpandEdge {
+        up_row: 0,
+        down_row: collapsed_down,
+    });
     assert_eq!(visible_count(&ts), 13);
+
+    // An edge outside any collapsible linear segment is a no-op for folding.
+    let mut ts_extra = TestSession::with_snapshot(diamond(true));
+    ts_extra.dispatch(Action::SwitchTab(WorkspaceTab::Log));
+    let before = visible_count(&ts_extra);
+    ts_extra.dispatch(Action::GraphExpandEdge {
+        up_row: 0,
+        down_row: 1,
+    });
+    assert_eq!(visible_count(&ts_extra), before);
 }
 
 #[test]

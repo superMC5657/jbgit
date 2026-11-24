@@ -755,18 +755,36 @@ impl LogWorkbench {
                 self.graph.set_segments_collapsed(ids, false);
                 self.notify_fold(before, ctx);
             }
-            Action::GraphExpandEdge { .. } | Action::GraphExpandBelow(_) => {
+            Action::GraphExpandEdge { up_row, down_row } => {
+                let collapsed_ids = self
+                    .graph
+                    .cached
+                    .as_ref()
+                    .map(|c| c.collapsed_segments_at_edge(*up_row, *down_row))
+                    .unwrap_or_default();
+                if !collapsed_ids.is_empty() {
+                    let before = self.graph.visible_count();
+                    self.graph.set_segments_collapsed(&collapsed_ids, false);
+                    self.notify_fold(before, ctx);
+                } else if !self.graph.options.first_parent_only
+                    && let Some(seg_id) = self
+                        .graph
+                        .cached
+                        .as_ref()
+                        .filter(|c| !c.filtered)
+                        .and_then(|c| c.expanded_segment_at_edge(*up_row, *down_row))
+                {
+                    let before = self.graph.visible_count();
+                    self.graph.collapse_segment_moving_cursor(seg_id);
+                    self.notify_fold(before, ctx);
+                }
+            }
+            Action::GraphExpandBelow(row) => {
                 let ids = self
                     .graph
                     .cached
                     .as_ref()
-                    .map(|c| match action {
-                        Action::GraphExpandEdge { up_row, down_row } => {
-                            c.collapsed_segments_at_edge(*up_row, *down_row)
-                        }
-                        Action::GraphExpandBelow(row) => c.collapsed_segments_below(*row),
-                        _ => Vec::new(),
-                    })
+                    .map(|c| c.collapsed_segments_below(*row))
                     .unwrap_or_default();
                 if ids.is_empty() {
                     return true;
@@ -1123,9 +1141,11 @@ impl LogWorkbench {
                     && let Some((epoch, cancel)) = ctx.file_syntax.begin_cancelable(cached.key.clone())
                 {
                     ctx.effects.push(Effect::RequestSyntaxHighlight(SyntaxJob {
-                        key: SyntaxJobKey::File(cached.key.clone()),
                         epoch,
-                        target: SyntaxTarget::File(cached),
+                        target: SyntaxTarget::File {
+                            key: SyntaxJobKey::File(cached.key.clone()),
+                            diff: cached,
+                        },
                         cancel,
                     }));
                 }

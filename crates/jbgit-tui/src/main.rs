@@ -104,7 +104,6 @@ async fn switch_repository(
     repo: &mut RepoSession,
     host: &mut ProdHost,
     target: &std::path::Path,
-    askpass: Option<jbgit_engine::askpass::AskpassEnv>,
 ) {
     let loc = match RepoSession::discover(target) {
         Ok(loc) => loc,
@@ -123,6 +122,7 @@ async fn switch_repository(
     }
     let old = std::mem::replace(repo, RepoSession::detached());
     let writes_finished = old.unbind().await;
+    let askpass = start_askpass(host.ui_async_tx.clone());
     let (next_repo, next_state) = RepoSession::bind_location(loc, askpass);
     *repo = next_repo;
     session.rebind(next_state, writes_finished);
@@ -143,10 +143,7 @@ async fn main() -> Result<()> {
 
     let (ui_async_tx, mut ui_async_rx) = tokio::sync::mpsc::unbounded_channel::<SessionInput>();
     let askpass_server = start_askpass(ui_async_tx.clone());
-    let askpass_env = askpass_server
-        .as_ref()
-        .and_then(|s| s.env_for_current_exe().ok());
-    let (mut repo, mut session) = init_engine_and_session(target_path, askpass_env.clone());
+    let (mut repo, mut session) = init_engine_and_session(target_path, askpass_server);
     repo.generation = session.generation();
     tokio::task::spawn_blocking(jbgit_tui::syntax::warmup_syntax_assets);
 
@@ -257,15 +254,15 @@ async fn main() -> Result<()> {
         session.finish_batch(batch_effects, engine_ref, &mut host, &mut report);
 
         if let Some(target) = session.take_repo_switch_request() {
-            switch_repository(&mut session, &mut repo, &mut host, &target, askpass_env.clone()).await;
+            switch_repository(&mut session, &mut repo, &mut host, &target).await;
         }
     }
 
+    let _ = repo.unbind().await;
     let release = session.shutdown();
     if !release.is_empty() {
         let _ = std::io::stdout().write_all(&release);
     }
     drop(host.term_guard);
-    drop(askpass_server);
     Ok(())
 }

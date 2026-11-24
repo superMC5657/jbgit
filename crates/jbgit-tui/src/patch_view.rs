@@ -15,7 +15,7 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph};
 
-use crate::app::{Action, AppState, ModalLayer, RenderContext};
+use crate::app::{Action, AppState, ModalLayer, RenderContext, ScrollPane, ScrollViewport};
 use crate::hit_test::HitTarget;
 use crate::views::overlays::draw_shadow;
 use crate::views::truncate_to_width;
@@ -27,7 +27,7 @@ pub struct ApplyPatchState {
     pub mode: ApplyMode,
     /// Preflight of `key()`; `None` while loading.
     pub check: Option<Arc<PatchCheck>>,
-    pub scroll: usize,
+    pub scroll: ScrollViewport,
 }
 
 impl ApplyPatchState {
@@ -36,7 +36,7 @@ impl ApplyPatchState {
             source,
             mode: ApplyMode::default(),
             check: None,
-            scroll: 0,
+            scroll: ScrollViewport::new(),
         }
     }
 
@@ -282,15 +282,19 @@ pub fn render_apply_patch_modal(
     let list_top = inner.y + 4;
     let list_h = inner.bottom().saturating_sub(list_top + 2) as usize;
     match check {
-        None => line(
-            frame,
-            list_top,
-            Line::from(Span::styled(
-                format!(" {}", ctx.t("dialog.apply_patch.checking")),
-                muted,
-            )),
-        ),
+        None => {
+            ctx.record_scroll_bound(ScrollPane::ApplyPatch, list_h, 0);
+            line(
+                frame,
+                list_top,
+                Line::from(Span::styled(
+                    format!(" {}", ctx.t("dialog.apply_patch.checking")),
+                    muted,
+                )),
+            );
+        }
         Some(c) if !c.applies() => {
+            ctx.record_scroll_bound(ScrollPane::ApplyPatch, list_h, 0);
             let err = c.error.clone().unwrap_or_default();
             line(
                 frame,
@@ -315,7 +319,9 @@ pub fn render_apply_patch_modal(
             }
         }
         Some(c) => {
-            let first = s.scroll.min(c.files.len().saturating_sub(list_h.max(1)));
+            let max_scroll = c.files.len().saturating_sub(list_h.max(1));
+            ctx.record_scroll_bound(ScrollPane::ApplyPatch, list_h, max_scroll);
+            let first = s.scroll.offset().min(max_scroll);
             for (row, f) in c.files.iter().skip(first).take(list_h).enumerate() {
                 let counts = match (f.added, f.deleted) {
                     (Some(a), Some(d)) => vec![

@@ -588,6 +588,11 @@ fn branches_checked_out_elsewhere_link_to_their_worktree() {
     assert!(text.contains("⎇ jbgit-feature"), "{text}");
     ts.state_mut().modal_stack.truncate(0);
 
+    // Log Branches Pane also marks the branch checked out in a linked worktree.
+    ts.dispatch(Action::SwitchTab(jbgit_core::WorkspaceTab::Log));
+    let log_text = screen_text(&ts.render(140, 32));
+    assert!(log_text.contains("⎇ jbgit-feature"), "{log_text}");
+
     // Checkout is disabled with the reason; "Open in Worktree" switches.
     let items = crate::menus::branch_menu_items(
         ts.state(),

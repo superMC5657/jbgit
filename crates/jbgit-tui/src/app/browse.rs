@@ -8,7 +8,7 @@ use jbgit_core::{ApplyMode, PatchCheck, RequestSlotId, TreeBlob, TreeKey, TreeLi
 use crate::patch_view::ApplyPatchState;
 use crate::tree_browser::TreeBrowserState;
 
-use super::{Action, AppState, Effect, ModalLayer, SyntaxJob, SyntaxJobKey, SyntaxTarget};
+use super::{Action, AppState, Effect, ModalLayer, ScrollPane, SyntaxJob, SyntaxTarget};
 
 impl AppState {
     pub(crate) fn dispatch_browse_action(
@@ -38,7 +38,7 @@ impl AppState {
                     let next = mode.unwrap_or_else(|| s.mode.next());
                     if next != s.mode {
                         s.mode = next;
-                        s.scroll = 0;
+                        s.scroll.reset();
                         if s.current_check().is_none() {
                             effects.push(Effect::RequestPatchCheck(s.key()));
                         }
@@ -46,11 +46,7 @@ impl AppState {
                 }
             }
             Action::ApplyPatchScroll(delta) => {
-                if let Some(s) = self.modal_stack.apply_patch_mut() {
-                    let len = s.current_check().map_or(0, |c| c.files.len());
-                    s.scroll = (s.scroll as isize + delta).clamp(0, len.saturating_sub(1) as isize)
-                        as usize;
-                }
+                self.scroll_pane(ScrollPane::ApplyPatch, *delta);
             }
             Action::ApplyPatchConfirm => {
                 for a in crate::patch_view::confirm_actions(self) {
@@ -127,7 +123,7 @@ impl AppState {
                 self.status_notice = Some(self.i18n.t("dialog.apply_patch.try_3way").into());
             }
             s.check = Some(check);
-            s.scroll = 0;
+            s.scroll.reset();
         }
     }
 
@@ -179,7 +175,7 @@ impl AppState {
         }
         s.preview = Some(Arc::clone(&blob));
         s.preview_syntax = None;
-        s.preview_scroll = 0;
+        s.preview_scroll.reset();
         let jbgit_core::TreeBlobContent::Text(text) = &blob.content else {
             return;
         };
@@ -188,7 +184,6 @@ impl AppState {
         }
         if let Some((epoch, cancel)) = self.tree_syntax.begin_cancelable(blob.key.clone()) {
             effects.push(Effect::RequestSyntaxHighlight(SyntaxJob {
-                key: SyntaxJobKey::TreeBlob(blob.key.clone()),
                 epoch,
                 target: SyntaxTarget::TreeBlob(Arc::clone(&blob)),
                 cancel,

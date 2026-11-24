@@ -1136,56 +1136,32 @@ impl AppState {
             }
             return;
         }
-        let desired_key = match self.modal_stack.file_history_mut() {
-            Some(fh) => match fh.desired_diff_key() {
-                Some(k) => k,
-                None => {
-                    fh.diff.pending = None;
-                    return;
-                }
-            },
-            None => return,
-        };
-        if let Some(cached) = self.diff_caches.get_diff(&desired_key) {
-            if let Some(fh) = self.modal_stack.file_history_mut() {
-                fh.diff.pending = None;
-            }
-            if self.diff_caches.get_syntax(&desired_key).is_none() {
-                self.schedule_file_syntax(cached, effects);
-            }
-        } else if let Some(fh) = self.modal_stack.file_history_mut()
-            && fh.diff.requested.as_ref() != Some(&desired_key)
-            && fh.diff.pending.as_ref().map(|(k, _)| k) != Some(&desired_key)
-        {
-            fh.diff.pending = Some((desired_key, now + DETAILS_DEBOUNCE));
+        let desired_key = self
+            .modal_stack
+            .file_history()
+            .and_then(|fh| fh.desired_diff_key());
+        let cached = self.modal_stack.file_history_mut().and_then(|fh| {
+            fh.diff
+                .reconcile_fetch(desired_key, &mut self.diff_caches, now, DETAILS_DEBOUNCE)
+        });
+        if let Some(diff) = cached {
+            self.schedule_file_syntax(diff, effects);
         }
     }
 
     /// Schedules debounced diff fetches (0 ms on LRU cache hit) for `ModalLayer::Annotate`.
     pub fn reconcile_annotate_requests(&mut self, now: Instant, effects: &mut Vec<Effect>) {
         let head_oid = self.repo_snapshot.as_ref().and_then(|s| s.head_oid);
-        let desired_key = match self.modal_stack.annotate_mut() {
-            Some(ann) => match ann.desired_diff_key(head_oid) {
-                Some(k) => k,
-                None => {
-                    ann.diff.pending = None;
-                    return;
-                }
-            },
-            None => return,
-        };
-        if let Some(cached) = self.diff_caches.get_diff(&desired_key) {
-            if let Some(ann) = self.modal_stack.annotate_mut() {
-                ann.diff.pending = None;
-            }
-            if self.diff_caches.get_syntax(&desired_key).is_none() {
-                self.schedule_file_syntax(cached, effects);
-            }
-        } else if let Some(ann) = self.modal_stack.annotate_mut()
-            && ann.diff.requested.as_ref() != Some(&desired_key)
-            && ann.diff.pending.as_ref().map(|(k, _)| k) != Some(&desired_key)
-        {
-            ann.diff.pending = Some((desired_key, now + DETAILS_DEBOUNCE));
+        let desired_key = self
+            .modal_stack
+            .annotate()
+            .and_then(|ann| ann.desired_diff_key(head_oid));
+        let cached = self.modal_stack.annotate_mut().and_then(|ann| {
+            ann.diff
+                .reconcile_fetch(desired_key, &mut self.diff_caches, now, DETAILS_DEBOUNCE)
+        });
+        if let Some(diff) = cached {
+            self.schedule_file_syntax(diff, effects);
         }
     }
 
@@ -1223,8 +1199,11 @@ impl AppState {
                             .clamp(0, len as isize - 1) as usize;
                         if next != pd.selected_commit {
                             pd.selected_commit = next;
+                            if let Some(vh) = pd.commit_scroll.viewport_height() {
+                                pd.commit_scroll.ensure_visible(next, len, vh);
+                            }
                             pd.selected_file = 0;
-                            pd.file_scroll = 0;
+                            pd.file_scroll.reset();
                             pd.show_diff = false;
                             pd.diff.scroll.reset();
                             pd.diff.pending = None;
@@ -1240,8 +1219,11 @@ impl AppState {
                         let next = (*idx).min(len - 1);
                         if next != pd.selected_commit {
                             pd.selected_commit = next;
+                            if let Some(vh) = pd.commit_scroll.viewport_height() {
+                                pd.commit_scroll.ensure_visible(next, len, vh);
+                            }
                             pd.selected_file = 0;
-                            pd.file_scroll = 0;
+                            pd.file_scroll.reset();
                             pd.show_diff = false;
                             pd.diff.scroll.reset();
                             pd.diff.pending = None;
@@ -1258,6 +1240,9 @@ impl AppState {
                             .clamp(0, len as isize - 1) as usize;
                         if next != pd.selected_file {
                             pd.selected_file = next;
+                            if let Some(vh) = pd.file_scroll.viewport_height() {
+                                pd.file_scroll.ensure_visible(next, len, vh);
+                            }
                             pd.diff.scroll.reset();
                             pd.diff.pending = None;
                             pd.diff.requested = None;
@@ -1272,6 +1257,9 @@ impl AppState {
                         let next = (*idx).min(len - 1);
                         if next != pd.selected_file {
                             pd.selected_file = next;
+                            if let Some(vh) = pd.file_scroll.viewport_height() {
+                                pd.file_scroll.ensure_visible(next, len, vh);
+                            }
                             pd.diff.scroll.reset();
                             pd.diff.pending = None;
                             pd.diff.requested = None;
@@ -1392,9 +1380,9 @@ impl AppState {
                             pd.error = None;
                             pd.outgoing = None;
                             pd.selected_commit = 0;
-                            pd.commit_scroll = 0;
+                            pd.commit_scroll.reset();
                             pd.selected_file = 0;
-                            pd.file_scroll = 0;
+                            pd.file_scroll.reset();
                             pd.show_diff = false;
                             pd.details_requested = None;
                             pd.details_pending = None;
@@ -1450,9 +1438,9 @@ impl AppState {
                         pd.error = None;
                         pd.outgoing = None;
                         pd.selected_commit = 0;
-                        pd.commit_scroll = 0;
+                        pd.commit_scroll.reset();
                         pd.selected_file = 0;
-                        pd.file_scroll = 0;
+                        pd.file_scroll.reset();
                         pd.show_diff = false;
                         pd.details_requested = None;
                         pd.details_pending = None;
@@ -1481,9 +1469,9 @@ impl AppState {
                             pd.error = None;
                             pd.outgoing = None;
                             pd.selected_commit = 0;
-                            pd.commit_scroll = 0;
+                            pd.commit_scroll.reset();
                             pd.selected_file = 0;
-                            pd.file_scroll = 0;
+                            pd.file_scroll.reset();
                             pd.show_diff = false;
                             pd.details_requested = None;
                             pd.details_pending = None;
@@ -1609,28 +1597,16 @@ impl AppState {
             }
         }
 
-        let desired_diff = match self.modal_stack.push_dialog() {
-            Some(pd) => pd.desired_diff_key(&self.diff_caches),
-            None => return,
-        };
-        let Some(diff_key) = desired_diff else {
-            if let Some(pd) = self.modal_stack.push_dialog_mut() {
-                pd.diff.pending = None;
-            }
-            return;
-        };
-        if let Some(cached) = self.diff_caches.get_diff(&diff_key) {
-            if let Some(pd) = self.modal_stack.push_dialog_mut() {
-                pd.diff.pending = None;
-            }
-            if self.diff_caches.get_syntax(&diff_key).is_none() {
-                self.schedule_file_syntax(cached, effects);
-            }
-        } else if let Some(pd) = self.modal_stack.push_dialog_mut()
-            && pd.diff.requested.as_ref() != Some(&diff_key)
-            && pd.diff.pending.as_ref().map(|(k, _)| k) != Some(&diff_key)
-        {
-            pd.diff.pending = Some((diff_key, now + DETAILS_DEBOUNCE));
+        let desired_diff = self
+            .modal_stack
+            .push_dialog()
+            .and_then(|pd| pd.desired_diff_key(&self.diff_caches));
+        let cached = self.modal_stack.push_dialog_mut().and_then(|pd| {
+            pd.diff
+                .reconcile_fetch(desired_diff, &mut self.diff_caches, now, DETAILS_DEBOUNCE)
+        });
+        if let Some(diff) = cached {
+            self.schedule_file_syntax(diff, effects);
         }
     }
 }

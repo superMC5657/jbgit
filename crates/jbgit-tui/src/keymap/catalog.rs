@@ -1505,17 +1505,18 @@ pub fn annotate_log_change(state: &AppState) -> CommandResult {
 }
 
 pub fn annotate_stage_entry(state: &AppState) -> CommandResult {
-    let i18n = &state.i18n;
     if state.focused_pane == PaneId::CommitDiffPreview {
-        let Some(diff_key) = state.stage_workbench.current_diff_key() else {
-            return Err(i18n.t("menu.stage.no_file_selected").into());
-        };
-        return Ok(vec![Action::OpenAnnotate {
-            path: diff_key.path.clone(),
-            rev: None,
-        }]);
+        let path = state
+            .stage_workbench
+            .current_diff_key()
+            .map(|k| k.path.as_str());
+        return annotate_stage_diff(state, path);
     }
-    let idx = state.stage_workbench.selected_idx();
+    annotate_stage_entry_at(state, state.stage_workbench.selected_idx())
+}
+
+pub fn annotate_stage_entry_at(state: &AppState, idx: usize) -> CommandResult {
+    let i18n = &state.i18n;
     let group = state
         .stage_workbench
         .rows()
@@ -1535,4 +1536,109 @@ pub fn annotate_stage_entry(state: &AppState) -> CommandResult {
         path: entry.path,
         rev: None,
     }])
+}
+
+pub fn annotate_stage_diff(state: &AppState, path: Option<&str>) -> CommandResult {
+    let Some(path) = path else {
+        return Err(state.i18n.t("menu.stage.no_file_selected").into());
+    };
+    Ok(vec![Action::OpenAnnotate {
+        path: path.to_string(),
+        rev: None,
+    }])
+}
+
+/// Commands inside `ModalLayer::Annotate` shared by keyboard routing and the
+/// Annotate context menu.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AnnotateCommand {
+    SelectionHistory,
+    PreviousRev,
+    ToggleDiff,
+    IgnoreWhitespace,
+    DetectMoves,
+    LocateInLog,
+    CopyHash,
+}
+
+impl AnnotateCommand {
+    pub const fn shortcut(self) -> &'static str {
+        match self {
+            Self::SelectionHistory => "H",
+            Self::PreviousRev => "p",
+            Self::ToggleDiff => "d",
+            Self::IgnoreWhitespace => "w",
+            Self::DetectMoves => "m",
+            Self::LocateInLog => "Enter",
+            Self::CopyHash => "y",
+        }
+    }
+
+    pub const fn action(self) -> Action {
+        match self {
+            Self::SelectionHistory => Action::AnnotateShowSelectionHistory,
+            Self::PreviousRev => Action::AnnotatePreviousRev,
+            Self::ToggleDiff => Action::AnnotateToggleDiff,
+            Self::IgnoreWhitespace => Action::AnnotateToggleWhitespace,
+            Self::DetectMoves => Action::AnnotateToggleMoves,
+            Self::LocateInLog => Action::AnnotateJumpToLog,
+            Self::CopyHash => Action::AnnotateCopyHash,
+        }
+    }
+
+    pub fn from_key(code: crossterm::event::KeyCode) -> Option<Self> {
+        use crossterm::event::KeyCode;
+        match code {
+            KeyCode::Char('H') => Some(Self::SelectionHistory),
+            KeyCode::Char('p') => Some(Self::PreviousRev),
+            KeyCode::Char('d') => Some(Self::ToggleDiff),
+            KeyCode::Char('w') => Some(Self::IgnoreWhitespace),
+            KeyCode::Char('m') => Some(Self::DetectMoves),
+            KeyCode::Enter => Some(Self::LocateInLog),
+            KeyCode::Char('y') => Some(Self::CopyHash),
+            _ => None,
+        }
+    }
+}
+
+pub fn evaluate_annotate_command(state: &AppState, cmd: AnnotateCommand) -> CommandResult {
+    let i18n = &state.i18n;
+    let Some(ann) = state.modal_stack.annotate() else {
+        return Err(String::new());
+    };
+    match cmd {
+        AnnotateCommand::SelectionHistory => {
+            if ann.selected_line_range().is_none() {
+                return Err(i18n.t("menu.stage.no_selection_range").into());
+            }
+        }
+        AnnotateCommand::PreviousRev => {
+            let has_prev = ann.selected_line().is_some_and(|l| {
+                if l.oid.is_zero() {
+                    ann.key.rev.is_none()
+                        && state
+                            .repo_snapshot
+                            .as_ref()
+                            .and_then(|s| s.head_oid)
+                            .is_some()
+                } else {
+                    ann.selected_commit()
+                        .and_then(|c| c.previous.as_ref())
+                        .is_some()
+                }
+            });
+            if !has_prev {
+                return Err(i18n.t("toast.annotate_no_previous").into());
+            }
+        }
+        AnnotateCommand::LocateInLog | AnnotateCommand::CopyHash => {
+            if ann.selected_line().is_none_or(|l| l.oid.is_zero()) {
+                return Err(i18n.t("toast.annotate_uncommitted").into());
+            }
+        }
+        AnnotateCommand::ToggleDiff
+        | AnnotateCommand::IgnoreWhitespace
+        | AnnotateCommand::DetectMoves => {}
+    }
+    Ok(vec![cmd.action()])
 }

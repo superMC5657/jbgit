@@ -229,6 +229,44 @@ impl CachedLogGraph {
             .collect()
     }
 
+    /// Expanded collapsible segment that owns the visible edge `up_row` → `down_row`, if any.
+    pub fn expanded_segment_at_edge(&self, up_row: usize, down_row: usize) -> Option<SegmentId> {
+        let linear = &self.visible.linear;
+        let (Ok(up), Ok(down)) = (
+            VisibleRowIdx::try_from(up_row),
+            VisibleRowIdx::try_from(down_row),
+        ) else {
+            return None;
+        };
+        if up >= linear.visible_count() || down >= linear.visible_count() {
+            return None;
+        }
+        let is_expanded_edge = linear
+            .down_edges(up)
+            .iter()
+            .any(|e| e.down == down && e.edge_type != GraphEdgeType::Collapsed);
+        if !is_expanded_edge {
+            return None;
+        }
+        let up_perm = linear.perm_id(up);
+        let down_perm = linear.perm_id(down);
+        if let Some(seg) = self.segments.segment_of(up_perm)
+            && (self
+                .segments
+                .segment_of(down_perm)
+                .is_some_and(|d| d.id == seg.id)
+                || seg.down == down_perm)
+        {
+            return Some(seg.id);
+        }
+        if let Some(seg) = self.segments.segment_of(down_perm)
+            && seg.up == up_perm
+        {
+            return Some(seg.id);
+        }
+        None
+    }
+
     /// Collapsed segments hanging directly below visible `row`.
     pub fn collapsed_segments_below(&self, row: usize) -> Vec<SegmentId> {
         let Ok(r) = VisibleRowIdx::try_from(row) else {

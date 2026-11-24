@@ -311,6 +311,14 @@ impl RepoSnapshot {
         }
     }
 
+    /// Splits a remote-tracking short name into `(remote, remote_branch)`,
+    /// handling remote names that contain `/` (e.g. `team/upstream/feat/x`).
+    pub fn split_tracking<'a>(&self, tracking: &'a str) -> Option<(&'a str, &'a str)> {
+        let remote = self.remote_of_tracking(tracking)?;
+        let branch = tracking.get(remote.len() + 1..)?;
+        Some((remote, branch))
+    }
+
     /// Remote-tracking refs (`refs/remotes/<name>/*`) that belong to `remote`.
     pub fn tracking_refs_of(&self, remote: &str) -> Vec<&RefInfo> {
         self.refs
@@ -693,6 +701,13 @@ mod tests {
         snap.remotes.clear();
         assert_eq!(snap.default_remote(), None);
         assert_eq!(snap.remote_of_tracking("origin/feat/x"), Some("origin"));
+        assert_eq!(snap.split_tracking("origin/feat/x"), Some(("origin", "feat/x")));
+
+        snap.remotes = vec![remote("team"), remote("team/upstream")];
+        assert_eq!(
+            snap.split_tracking("team/upstream/feat/x"),
+            Some(("team/upstream", "feat/x"))
+        );
     }
 
     #[test]

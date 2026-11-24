@@ -290,8 +290,7 @@ fn render_target_pane(
         }
         let cands = pd.completion_candidates(state.repo_snapshot.as_deref());
         let avail = inner.bottom().saturating_sub(y) as usize;
-        let sel = pd.completion_selected.min(cands.len().saturating_sub(1));
-        let scroll = sel.saturating_sub(avail.saturating_sub(1));
+        let (sel, scroll) = list_viewport(cands.len(), pd.completion_selected, avail);
         for (vis, (idx, cand)) in cands
             .iter()
             .enumerate()
@@ -435,7 +434,15 @@ fn render_commits_pane(
 
     let now_ts = chrono::Local::now().timestamp();
     let h = inner.height as usize;
-    let (selected, scroll) = list_viewport(commits.len(), pd.selected_commit, h);
+    let selected = pd.selected_commit.min(commits.len() - 1);
+    let mut vp = pd.commit_scroll;
+    vp.ensure_visible(selected, commits.len(), h);
+    let scroll = vp.offset();
+    ctx.record_scroll_bound(
+        ScrollPane::PushCommits,
+        h,
+        commits.len().saturating_sub(h),
+    );
     let w = inner.width as usize;
 
     for (vis, (idx, c)) in commits.iter().enumerate().skip(scroll).take(h).enumerate() {
@@ -589,7 +596,15 @@ fn render_files_pane(
     }
 
     let h = inner.height as usize;
-    let (selected, scroll) = list_viewport(changes.len(), pd.selected_file, h);
+    let selected = pd.selected_file.min(changes.len() - 1);
+    let mut vp = pd.file_scroll;
+    vp.ensure_visible(selected, changes.len(), h);
+    let scroll = vp.offset();
+    ctx.record_scroll_bound(
+        ScrollPane::PushFiles,
+        h,
+        changes.len().saturating_sub(h),
+    );
     let w = inner.width as usize;
 
     for (vis, (idx, ch)) in changes.iter().enumerate().skip(scroll).take(h).enumerate() {

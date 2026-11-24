@@ -722,32 +722,12 @@ pub fn log_change_menu_items(state: &AppState) -> Vec<ContextMenuItem> {
                 line_range: None,
             }],
         ));
-        let ann_actions = single_oid
-            .map(|oid| {
-                let target_path = if is_deleted {
-                    file_change
-                        .and_then(|c| c.old_path.as_ref())
-                        .cloned()
-                        .unwrap_or_else(|| row_path.clone())
-                } else {
-                    row_path.clone()
-                };
-                vec![Action::OpenAnnotate {
-                    path: target_path,
-                    rev: Some(oid),
-                }]
-            })
-            .unwrap_or_default();
-        items.push(
-            run(
-                i18n.t("menu.log_change.annotate"),
-                Some('a'),
-                ann_sc.as_deref(),
-                ann_actions,
-            )
-            .enabled_if(single_oid.is_some(), need_single)
-            .enabled_if(!is_deleted, i18n.t("menu.log_change.cannot_annotate_deleted")),
-        );
+        items.push(ContextMenuItem::from_command(
+            i18n.t("menu.log_change.annotate"),
+            Some('a'),
+            ann_sc.as_deref(),
+            catalog::annotate_log_change(state),
+        ));
     } else {
         items.push(run(
             i18n.t("menu.log_change.show_dir_history"),
@@ -849,90 +829,58 @@ pub fn annotate_menu_items(state: &AppState) -> Vec<ContextMenuItem> {
         return Vec::new();
     };
     let i18n = &state.i18n;
-    let is_uncommitted = ann.selected_line().is_none_or(|l| l.oid.is_zero());
-    let uncommitted_reason = i18n.t("toast.annotate_uncommitted");
-    let has_prev = ann.selected_line().is_some_and(|l| {
-        if l.oid.is_zero() {
-            ann.key.rev.is_none()
-                && state
-                    .repo_snapshot
-                    .as_ref()
-                    .and_then(|s| s.head_oid)
-                    .is_some()
-        } else {
-            ann.selected_commit()
-                .and_then(|c| c.previous.as_ref())
-                .is_some()
-        }
-    });
-    let no_prev_reason = i18n.t("toast.annotate_no_previous");
+    let cmd_item = |label: String, mnemonic: char, cmd: catalog::AnnotateCommand| {
+        ContextMenuItem::from_command(
+            label,
+            Some(mnemonic),
+            Some(cmd.shortcut()),
+            catalog::evaluate_annotate_command(state, cmd),
+        )
+    };
+    let check = |on: bool, label: &str| format!("{} {label}", if on { "✓" } else { " " });
 
     vec![
-        run(
-            i18n.t("menu.annotate.selection_history"),
-            Some('h'),
-            Some("H"),
-            vec![Action::AnnotateShowSelectionHistory],
-        )
-        .enabled_if(
-            ann.selected_line_range().is_some(),
-            i18n.t("menu.stage.no_selection_range"),
+        cmd_item(
+            i18n.t("menu.annotate.selection_history").into(),
+            'h',
+            catalog::AnnotateCommand::SelectionHistory,
         ),
-        run(
-            i18n.t("menu.annotate.prev_rev"),
-            Some('p'),
-            Some("p"),
-            vec![Action::AnnotatePreviousRev],
-        )
-        .enabled_if(has_prev, no_prev_reason),
-        run(
-            i18n.t("menu.annotate.toggle_diff"),
-            Some('d'),
-            Some("d"),
-            vec![Action::AnnotateToggleDiff],
+        cmd_item(
+            i18n.t("menu.annotate.prev_rev").into(),
+            'p',
+            catalog::AnnotateCommand::PreviousRev,
         ),
-        run(
-            format!(
-                "{} {}",
-                if ann.key.options.ignore_whitespace {
-                    "✓"
-                } else {
-                    " "
-                },
-                i18n.t("menu.annotate.ignore_whitespace")
+        cmd_item(
+            i18n.t("menu.annotate.toggle_diff").into(),
+            'd',
+            catalog::AnnotateCommand::ToggleDiff,
+        ),
+        cmd_item(
+            check(
+                ann.key.options.ignore_whitespace,
+                i18n.t("menu.annotate.ignore_whitespace"),
             ),
-            Some('w'),
-            Some("w"),
-            vec![Action::AnnotateToggleWhitespace],
+            'w',
+            catalog::AnnotateCommand::IgnoreWhitespace,
         ),
-        run(
-            format!(
-                "{} {}",
-                if ann.key.options.detect_moves {
-                    "✓"
-                } else {
-                    " "
-                },
-                i18n.t("menu.annotate.detect_moves")
+        cmd_item(
+            check(
+                ann.key.options.detect_moves,
+                i18n.t("menu.annotate.detect_moves"),
             ),
-            Some('m'),
-            Some("m"),
-            vec![Action::AnnotateToggleMoves],
+            'm',
+            catalog::AnnotateCommand::DetectMoves,
         ),
         ContextMenuItem::separator(),
-        run(
-            i18n.t("menu.annotate.locate_log"),
-            Some('j'),
-            Some("Enter"),
-            vec![Action::AnnotateJumpToLog],
-        )
-        .enabled_if(!is_uncommitted, uncommitted_reason),
-        run(
-            i18n.t("menu.annotate.copy_hash"),
-            Some('y'),
-            Some("y"),
-            vec![Action::AnnotateCopyHash],
-        )
-        .enabled_if(!is_uncommitted, uncommitted_reason),
+        cmd_item(
+            i18n.t("menu.annotate.locate_log").into(),
+            'j',
+            catalog::AnnotateCommand::LocateInLog,
+        ),
+        cmd_item(
+            i18n.t("menu.annotate.copy_hash").into(),
+            'y',
+            catalog::AnnotateCommand::CopyHash,
+        ),
     ]
 }

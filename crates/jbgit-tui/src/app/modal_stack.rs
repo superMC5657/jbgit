@@ -323,6 +323,13 @@ impl ModalStack {
         })
     }
 
+    pub fn apply_patch(&self) -> Option<&crate::patch_view::ApplyPatchState> {
+        self.layers.iter().rev().find_map(|l| match l {
+            ModalLayer::ApplyPatch(s) => Some(s.as_ref()),
+            _ => None,
+        })
+    }
+
     pub fn apply_patch_mut(&mut self) -> Option<&mut crate::patch_view::ApplyPatchState> {
         self.layers.iter_mut().rev().find_map(|l| match l {
             ModalLayer::ApplyPatch(s) => Some(s.as_mut()),
@@ -330,9 +337,37 @@ impl ModalStack {
         })
     }
 
+    pub fn tree_browser(&self) -> Option<&crate::tree_browser::TreeBrowserState> {
+        self.layers.iter().rev().find_map(|l| match l {
+            ModalLayer::TreeBrowser(s) => Some(s.as_ref()),
+            _ => None,
+        })
+    }
+
     pub fn tree_browser_mut(&mut self) -> Option<&mut crate::tree_browser::TreeBrowserState> {
         self.layers.iter_mut().rev().find_map(|l| match l {
             ModalLayer::TreeBrowser(s) => Some(s.as_mut()),
+            _ => None,
+        })
+    }
+
+    pub fn remotes_mut(&mut self) -> Option<&mut crate::remotes_view::RemotesState> {
+        self.layers.iter_mut().rev().find_map(|l| match l {
+            ModalLayer::Remotes(s) => Some(s),
+            _ => None,
+        })
+    }
+
+    pub fn worktrees_mut(&mut self) -> Option<&mut crate::worktrees_view::WorktreesState> {
+        self.layers.iter_mut().rev().find_map(|l| match l {
+            ModalLayer::Worktrees(s) => Some(s),
+            _ => None,
+        })
+    }
+
+    pub fn repo_switcher_mut(&mut self) -> Option<&mut crate::repo_switcher::RepoSwitcherState> {
+        self.layers.iter_mut().rev().find_map(|l| match l {
+            ModalLayer::RepoSwitcher(s) => Some(s.as_mut()),
             _ => None,
         })
     }

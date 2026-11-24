@@ -327,6 +327,18 @@ pub fn render_branches_pane(
                     node.label.clone()
                 };
                 spans.push(Span::styled(leaf_label, style));
+                if kind == RefKind::LocalBranch
+                    && !node.is_current
+                    && let Some(wt) = state
+                        .repo_snapshot
+                        .as_deref()
+                        .and_then(|s| node.ref_name.as_deref().and_then(|n| s.worktree_of_branch(n)))
+                {
+                    right.push(Span::styled(
+                        format!(" ⎇ {}", truncate_to_width(&wt.name(), 18)),
+                        Style::default().fg(ctx.theme.status_modified),
+                    ));
+                }
                 if let Some((ahead, behind)) = node.ahead_behind {
                     if ahead > 0 {
                         right.push(Span::styled(

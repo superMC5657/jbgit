@@ -340,6 +340,26 @@ impl AppState {
                     cm.scroll.scroll_by(delta, fallback);
                 }
             }
+            ScrollPane::TreeBrowserPreview => {
+                if let Some(tb) = self.modal_stack.tree_browser_mut() {
+                    let fallback = tb.preview_line_count().saturating_sub(1);
+                    tb.preview_scroll.scroll_by(delta, fallback);
+                }
+            }
+            ScrollPane::ApplyPatch => {
+                if let Some(ap) = self.modal_stack.apply_patch_mut() {
+                    let fallback = ap
+                        .current_check()
+                        .map_or(0, |c| c.files.len().saturating_sub(1));
+                    ap.scroll.scroll_by(delta, fallback);
+                }
+            }
+            ScrollPane::TreeBrowserList
+            | ScrollPane::PushCommits
+            | ScrollPane::PushFiles
+            | ScrollPane::Worktrees
+            | ScrollPane::RepoSwitcher
+            | ScrollPane::Remotes => {}
         }
     }
 
@@ -382,6 +402,23 @@ impl AppState {
                         ann.diff.scroll.bind_bound(viewport_h, max_scroll);
                     }
                 }
+                ScrollPane::PushCommits => {
+                    if let Some(pd) = self.modal_stack.push_dialog_mut() {
+                        let total = pd.visible_commits().len();
+                        pd.commit_scroll
+                            .ensure_visible(pd.selected_commit, total, viewport_h);
+                    }
+                }
+                ScrollPane::PushFiles => {
+                    let total = self
+                        .modal_stack
+                        .push_dialog()
+                        .map_or(0, |pd| pd.selected_file_changes(&self.diff_caches).len());
+                    if let Some(pd) = self.modal_stack.push_dialog_mut() {
+                        pd.file_scroll
+                            .ensure_visible(pd.selected_file, total, viewport_h);
+                    }
+                }
                 ScrollPane::PushDiff => {
                     if let Some(pd) = self.modal_stack.push_dialog_mut() {
                         pd.diff.scroll.bind_bound(viewport_h, max_scroll);
@@ -390,6 +427,46 @@ impl AppState {
                 ScrollPane::ConflictMerge => {
                     if let Some(cm) = self.modal_stack.conflict_merge_mut() {
                         cm.scroll.bind_bound(viewport_h, max_scroll);
+                    }
+                }
+                ScrollPane::TreeBrowserList => {
+                    if let Some(tb) = self.modal_stack.tree_browser_mut() {
+                        let total = tb.rows.len();
+                        tb.scroll.ensure_visible(tb.selected, total, viewport_h);
+                    }
+                }
+                ScrollPane::TreeBrowserPreview => {
+                    if let Some(tb) = self.modal_stack.tree_browser_mut() {
+                        tb.preview_scroll.bind_bound(viewport_h, max_scroll);
+                    }
+                }
+                ScrollPane::ApplyPatch => {
+                    if let Some(ap) = self.modal_stack.apply_patch_mut() {
+                        ap.scroll.bind_bound(viewport_h, max_scroll);
+                    }
+                }
+                ScrollPane::Worktrees => {
+                    let total = self
+                        .repo_snapshot
+                        .as_deref()
+                        .map_or(0, |s| s.worktrees.len());
+                    if let Some(ws) = self.modal_stack.worktrees_mut() {
+                        ws.scroll.ensure_visible(ws.selected, total, viewport_h);
+                    }
+                }
+                ScrollPane::RepoSwitcher => {
+                    if let Some(rs) = self.modal_stack.repo_switcher_mut() {
+                        let total = rs.visible().len();
+                        rs.scroll.ensure_visible(rs.selected, total, viewport_h);
+                    }
+                }
+                ScrollPane::Remotes => {
+                    let total = self
+                        .repo_snapshot
+                        .as_deref()
+                        .map_or(0, |s| s.remotes.len());
+                    if let Some(rs) = self.modal_stack.remotes_mut() {
+                        rs.scroll.ensure_visible(rs.selected, total, viewport_h);
                     }
                 }
             }
@@ -505,21 +582,12 @@ impl AppState {
             self.jump_file_history_to_log(effects);
         }
         if let Some(fh) = self.modal_stack.file_history_mut()
-            && let Some((key, at)) = fh.diff.pending.take()
+            && let Some(key) = fh.diff.flush_due(&self.diff_caches, now)
         {
-            if at <= now {
-                if !self.diff_caches.diffs.contains(&key)
-                    && fh.diff.requested.as_ref() != Some(&key)
-                {
-                    fh.diff.requested = Some(key.clone());
-                    effects.push(Effect::RequestFileDiff {
-                        slot: RequestSlotId::FileHistoryDiff,
-                        key,
-                    });
-                }
-            } else {
-                fh.diff.pending = Some((key, at));
-            }
+            effects.push(Effect::RequestFileDiff {
+                slot: RequestSlotId::FileHistoryDiff,
+                key,
+            });
         }
         if let Some(ann) = self.modal_stack.annotate_mut()
             && ann
@@ -529,21 +597,12 @@ impl AppState {
             ann.pending_g = None;
         }
         if let Some(ann) = self.modal_stack.annotate_mut()
-            && let Some((key, at)) = ann.diff.pending.take()
+            && let Some(key) = ann.diff.flush_due(&self.diff_caches, now)
         {
-            if at <= now {
-                if !self.diff_caches.diffs.contains(&key)
-                    && ann.diff.requested.as_ref() != Some(&key)
-                {
-                    ann.diff.requested = Some(key.clone());
-                    effects.push(Effect::RequestFileDiff {
-                        slot: RequestSlotId::AnnotateDiff,
-                        key,
-                    });
-                }
-            } else {
-                ann.diff.pending = Some((key, at));
-            }
+            effects.push(Effect::RequestFileDiff {
+                slot: RequestSlotId::AnnotateDiff,
+                key,
+            });
         }
         if let Some(pd) = self.modal_stack.push_dialog_mut()
             && let Some((key, at)) = pd.details_pending.take()
@@ -563,21 +622,12 @@ impl AppState {
             }
         }
         if let Some(pd) = self.modal_stack.push_dialog_mut()
-            && let Some((key, at)) = pd.diff.pending.take()
+            && let Some(key) = pd.diff.flush_due(&self.diff_caches, now)
         {
-            if at <= now {
-                if !self.diff_caches.diffs.contains(&key)
-                    && pd.diff.requested.as_ref() != Some(&key)
-                {
-                    pd.diff.requested = Some(key.clone());
-                    effects.push(Effect::RequestFileDiff {
-                        slot: RequestSlotId::PushFileDiff,
-                        key,
-                    });
-                }
-            } else {
-                pd.diff.pending = Some((key, at));
-            }
+            effects.push(Effect::RequestFileDiff {
+                slot: RequestSlotId::PushFileDiff,
+                key,
+            });
         }
     }
 
@@ -596,9 +646,11 @@ impl AppState {
         }
         if let Some((epoch, cancel)) = self.file_syntax.begin_cancelable(diff.key.clone()) {
             effects.push(Effect::RequestSyntaxHighlight(SyntaxJob {
-                key: SyntaxJobKey::File(diff.key.clone()),
                 epoch,
-                target: SyntaxTarget::File(diff),
+                target: SyntaxTarget::File {
+                    key: SyntaxJobKey::File(diff.key.clone()),
+                    diff,
+                },
                 cancel,
             }));
         }
@@ -617,7 +669,6 @@ impl AppState {
         }
         if let Some((epoch, cancel)) = self.blame_syntax.begin_cancelable(bundle.key.clone()) {
             effects.push(Effect::RequestSyntaxHighlight(SyntaxJob {
-                key: SyntaxJobKey::Blame(bundle.key.clone()),
                 epoch,
                 target: SyntaxTarget::Blame(bundle),
                 cancel,
@@ -642,14 +693,13 @@ impl AppState {
         }
         let slot_key = (oid, diff.key.path.clone(), range);
         if let Some((epoch, cancel)) = self.range_syntax.begin_cancelable(slot_key) {
+            let path = diff.key.path.clone();
             effects.push(Effect::RequestSyntaxHighlight(SyntaxJob {
-                key: SyntaxJobKey::RangePatch {
-                    oid,
-                    path: diff.key.path.clone(),
-                    range,
-                },
                 epoch,
-                target: SyntaxTarget::File(diff),
+                target: SyntaxTarget::File {
+                    key: SyntaxJobKey::RangePatch { oid, path, range },
+                    diff,
+                },
                 cancel,
             }));
         }

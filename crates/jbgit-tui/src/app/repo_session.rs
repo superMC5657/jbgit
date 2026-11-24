@@ -48,6 +48,7 @@ impl AppState {
                 self.push_modal(ModalLayer::RepoSwitcher(Box::new(RepoSwitcherState {
                     query: String::new(),
                     selected: 0,
+                    scroll: crate::app::ScrollViewport::new(),
                     items,
                 })));
             }
@@ -56,6 +57,9 @@ impl AppState {
                     rs.query.clone_from(query);
                     let len = rs.visible().len();
                     rs.selected = (*selected).min(len.saturating_sub(1));
+                    if let Some(vh) = rs.scroll.viewport_height() {
+                        rs.scroll.ensure_visible(rs.selected, len, vh);
+                    }
                 }
             }
             Action::ForgetRecentRepo(path) => {
@@ -74,6 +78,9 @@ impl AppState {
                     rs.items = items;
                     let len = rs.visible().len();
                     rs.selected = rs.selected.min(len.saturating_sub(1));
+                    if let Some(vh) = rs.scroll.viewport_height() {
+                        rs.scroll.ensure_visible(rs.selected, len, vh);
+                    }
                 }
             }
             Action::SwitchRepository(path) => self.request_repo_switch(path, false),
@@ -98,7 +105,10 @@ impl AppState {
                 crate::worktrees_view::apply_selection(self, Some(*idx), 0);
             }
             Action::WorktreesOpenSelected => {
-                for a in crate::worktrees_view::worktree_command(self, 'o') {
+                for a in crate::worktrees_view::worktree_command(
+                    self,
+                    crate::worktrees_view::WorktreeCommand::Open,
+                ) {
                     effects.extend(self.dispatch(a));
                 }
             }

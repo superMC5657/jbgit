@@ -15,7 +15,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph};
 use unicode_width::UnicodeWidthStr;
 
-use crate::app::{Action, AppState, ModalLayer, RenderContext};
+use crate::app::{Action, AppState, ModalLayer, RenderContext, ScrollPane, ScrollViewport};
 use crate::dialogs::{
     ChoiceDialog, ChoiceOption, Dialog, InputDialog, InputIntent, InputValidation,
     WorktreeDialogCtx,
@@ -29,6 +29,7 @@ use crate::views::truncate_to_width;
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct WorktreesState {
     pub selected: usize,
+    pub scroll: ScrollViewport,
 }
 
 impl WorktreesState {
@@ -37,7 +38,10 @@ impl WorktreesState {
         let selected = snap
             .and_then(|s| s.worktrees.iter().position(|w| w.is_at(&s.workdir)))
             .unwrap_or(0);
-        Self { selected }
+        Self {
+            selected,
+            scroll: ScrollViewport::new(),
+        }
     }
 }
 
@@ -290,16 +294,26 @@ fn open(d: Dialog) -> Vec<Action> {
     vec![Action::OpenDialog(Box::new(d))]
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorktreeCommand {
+    New,
+    Prune,
+    Open,
+    ToggleLock,
+    Remove,
+    CopyPath,
+}
+
 /// Actions for a command on the selected working tree (also used by
 /// mouse double-click and the footer).
-pub fn worktree_command(state: &AppState, cmd: char) -> Vec<Action> {
+pub fn worktree_command(state: &AppState, cmd: WorktreeCommand) -> Vec<Action> {
     let Some(ws) = top_state(state) else {
         return Vec::new();
     };
     let i18n = &state.i18n;
     match cmd {
-        'n' => return open(new_worktree_dialog(state, None)),
-        'p' => return open(prune_confirm(state)),
+        WorktreeCommand::New => return open(new_worktree_dialog(state, None)),
+        WorktreeCommand::Prune => return open(prune_confirm(state)),
         _ => {}
     }
     let Some(wt) = selected_worktree(state, &ws) else {
@@ -309,7 +323,8 @@ pub fn worktree_command(state: &AppState, cmd: char) -> Vec<Action> {
     };
     let name = wt.name();
     match cmd {
-        'o' => {
+        WorktreeCommand::New | WorktreeCommand::Prune => unreachable!(),
+        WorktreeCommand::Open => {
             if is_current(state, wt) {
                 vec![Action::Notice(
                     i18n.t_fmt("toast.worktree_already_open", &[("name", &name)]),
@@ -322,7 +337,7 @@ pub fn worktree_command(state: &AppState, cmd: char) -> Vec<Action> {
                 vec![Action::PopModal, Action::SwitchRepository(wt.path.clone())]
             }
         }
-        'l' => {
+        WorktreeCommand::ToggleLock => {
             if wt.is_main {
                 vec![Action::Notice(i18n.t("toast.worktree_main_lock").into())]
             } else if wt.is_locked() {
@@ -341,7 +356,7 @@ pub fn worktree_command(state: &AppState, cmd: char) -> Vec<Action> {
                 )))
             }
         }
-        'd' => {
+        WorktreeCommand::Remove => {
             if wt.is_main || is_current(state, wt) {
                 vec![Action::Notice(
                     i18n.t_fmt("toast.worktree_cannot_remove", &[("name", &name)]),
@@ -355,8 +370,7 @@ pub fn worktree_command(state: &AppState, cmd: char) -> Vec<Action> {
                 open(remove_confirm(wt, i18n))
             }
         }
-        'y' => vec![Action::CopyText(wt.path.display().to_string())],
-        _ => Vec::new(),
+        WorktreeCommand::CopyPath => vec![Action::CopyText(wt.path.display().to_string())],
     }
 }
 
@@ -374,12 +388,12 @@ pub fn route_worktrees_key(key: &KeyEvent, state: &AppState) -> Vec<Action> {
         KeyCode::Down | KeyCode::Char('j') => vec![Action::WorktreesMove(1)],
         KeyCode::Home | KeyCode::Char('g') => vec![Action::WorktreesSelect(0)],
         KeyCode::End | KeyCode::Char('G') => vec![Action::WorktreesSelect(usize::MAX)],
-        KeyCode::Enter | KeyCode::Char('o') => worktree_command(state, 'o'),
-        KeyCode::Char('n' | 'a') | KeyCode::Insert => worktree_command(state, 'n'),
-        KeyCode::Char('l') => worktree_command(state, 'l'),
-        KeyCode::Char('d') | KeyCode::Delete => worktree_command(state, 'd'),
-        KeyCode::Char('p') => worktree_command(state, 'p'),
-        KeyCode::Char('y') => worktree_command(state, 'y'),
+        KeyCode::Enter | KeyCode::Char('o') => worktree_command(state, WorktreeCommand::Open),
+        KeyCode::Char('n' | 'a') | KeyCode::Insert => worktree_command(state, WorktreeCommand::New),
+        KeyCode::Char('l') => worktree_command(state, WorktreeCommand::ToggleLock),
+        KeyCode::Char('d') | KeyCode::Delete => worktree_command(state, WorktreeCommand::Remove),
+        KeyCode::Char('p') => worktree_command(state, WorktreeCommand::Prune),
+        KeyCode::Char('y') => worktree_command(state, WorktreeCommand::CopyPath),
         _ => Vec::new(),
     }
 }
@@ -393,6 +407,9 @@ pub fn apply_selection(state: &mut AppState, select: Option<usize>, delta: isize
             Some(idx) => idx.min(len.saturating_sub(1)),
             None => (cur as isize + delta).clamp(0, len.saturating_sub(1) as isize) as usize,
         };
+        if let Some(vh) = ws.scroll.viewport_height() {
+            ws.scroll.ensure_visible(ws.selected, len, vh);
+        }
     }
 }
 
@@ -446,6 +463,7 @@ pub fn render_worktrees_modal(
     let list_h = inner.height.saturating_sub(1);
 
     if list.is_empty() {
+        ctx.record_scroll_bound(ScrollPane::Worktrees, (list_h / 2).max(1) as usize, 0);
         frame.render_widget(
             Paragraph::new(Span::styled(
                 format!(" {}", ctx.t("view.worktrees.empty")),
@@ -456,7 +474,14 @@ pub fn render_worktrees_modal(
     } else {
         let selected = ws.selected.min(list.len() - 1);
         let per_page = (list_h / 2).max(1) as usize;
-        let first = selected.saturating_sub(per_page.saturating_sub(1));
+        let mut vp = ws.scroll;
+        vp.ensure_visible(selected, list.len(), per_page);
+        let first = vp.offset();
+        ctx.record_scroll_bound(
+            ScrollPane::Worktrees,
+            per_page,
+            list.len().saturating_sub(per_page),
+        );
         let name_w = list
             .iter()
             .map(|wt| wt.name().width())

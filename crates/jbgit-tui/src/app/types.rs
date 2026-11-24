@@ -45,8 +45,16 @@ pub enum ScrollPane {
     FileHistoryDiff,
     Annotate,
     AnnotateDiff,
+    PushCommits,
+    PushFiles,
     PushDiff,
     ConflictMerge,
+    TreeBrowserList,
+    TreeBrowserPreview,
+    ApplyPatch,
+    Worktrees,
+    RepoSwitcher,
+    Remotes,
 }
 
 pub struct RenderContext<'a> {
@@ -398,19 +406,19 @@ pub enum EditorMoveKind {
 pub enum SyntaxJobKey {
     File(FileDiffKey),
     Stage(StageDiffKey),
-    Blame(BlameKey),
     RangePatch {
         oid: Oid,
         path: String,
         range: (u32, u32),
     },
-    /// Tree Browser file preview.
-    TreeBlob(TreeBlobKey),
 }
 
 #[derive(Debug, Clone)]
 pub enum SyntaxTarget {
-    File(Arc<FileDiff>),
+    File {
+        key: SyntaxJobKey,
+        diff: Arc<FileDiff>,
+    },
     Stage(Arc<ThreeDocStageDiff>),
     Blame(Arc<BlameBundle>),
     TreeBlob(Arc<TreeBlob>),
@@ -418,7 +426,6 @@ pub enum SyntaxTarget {
 
 #[derive(Debug, Clone)]
 pub struct SyntaxJob {
-    pub key: SyntaxJobKey,
     pub epoch: u64,
     pub target: SyntaxTarget,
     pub cancel: Arc<AtomicBool>,
@@ -426,19 +433,19 @@ pub struct SyntaxJob {
 
 impl SyntaxJob {
     pub fn run(self) -> Option<UiAsyncEvent> {
-        match &self.target {
-            SyntaxTarget::File(diff) => {
-                let highlighted = HighlightedDiff::build_cancellable_file(diff, &self.cancel)?;
+        match self.target {
+            SyntaxTarget::File { key, diff } => {
+                let highlighted = HighlightedDiff::build_cancellable_file(&diff, &self.cancel)?;
                 Some(UiAsyncEvent::SyntaxHighlighted {
-                    key: self.key,
+                    key,
                     epoch: self.epoch,
                     highlighted: Arc::new(highlighted),
                 })
             }
             SyntaxTarget::Stage(diff) => {
-                let highlighted = HighlightedDiff::build_cancellable_stage(diff, &self.cancel)?;
+                let highlighted = HighlightedDiff::build_cancellable_stage(&diff, &self.cancel)?;
                 Some(UiAsyncEvent::SyntaxHighlighted {
-                    key: self.key,
+                    key: SyntaxJobKey::Stage(diff.key.clone()),
                     epoch: self.epoch,
                     highlighted: Arc::new(highlighted),
                 })
@@ -450,11 +457,8 @@ impl SyntaxJob {
                     bundle.lines.len(),
                     &self.cancel,
                 )?;
-                let SyntaxJobKey::Blame(key) = self.key else {
-                    return None;
-                };
                 Some(UiAsyncEvent::BlameSyntaxHighlighted {
-                    key,
+                    key: bundle.key.clone(),
                     epoch: self.epoch,
                     highlighted: Arc::new(highlighted),
                 })

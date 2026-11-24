@@ -15,7 +15,7 @@ use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph};
 use serde::{Deserialize, Serialize};
 use unicode_width::UnicodeWidthStr;
 
-use crate::app::{Action, AppState, ModalLayer, RenderContext};
+use crate::app::{Action, AppState, ModalLayer, RenderContext, ScrollPane, ScrollViewport};
 use crate::dialogs::{Dialog, InputDialog, InputIntent, InputValidation};
 use crate::hit_test::HitTarget;
 use crate::i18n::I18n;
@@ -165,6 +165,7 @@ pub struct SwitcherItem {
 pub struct RepoSwitcherState {
     pub query: String,
     pub selected: usize,
+    pub scroll: ScrollViewport,
     pub items: Vec<SwitcherItem>,
 }
 
@@ -409,6 +410,7 @@ pub fn render_repo_switcher_modal(
     let list_top = inner.y + 1;
     let list_h = inner.height.saturating_sub(2) as usize;
     if vis.is_empty() {
+        ctx.record_scroll_bound(ScrollPane::RepoSwitcher, list_h, 0);
         frame.render_widget(
             Paragraph::new(Span::styled(
                 format!(" {}", ctx.t("view.repo_switcher.empty")),
@@ -418,7 +420,14 @@ pub fn render_repo_switcher_modal(
         );
     } else {
         let sel = rs.selected.min(vis.len() - 1);
-        let first = sel.saturating_sub(list_h.saturating_sub(1));
+        let mut vp = rs.scroll;
+        vp.ensure_visible(sel, vis.len(), list_h);
+        let first = vp.offset();
+        ctx.record_scroll_bound(
+            ScrollPane::RepoSwitcher,
+            list_h,
+            vis.len().saturating_sub(list_h),
+        );
         let tags = [
             ctx.t("view.repo_switcher.tag_recent").to_string(),
             ctx.t("view.repo_switcher.tag_worktree").to_string(),
@@ -539,6 +548,7 @@ mod tests {
         let mut rs = RepoSwitcherState {
             query: String::new(),
             selected: 0,
+            scroll: ScrollViewport::new(),
             items: vec![
                 item("alpha", "/src/alpha"),
                 item("beta", "/src/beta"),

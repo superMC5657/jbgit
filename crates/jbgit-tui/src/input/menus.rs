@@ -273,7 +273,10 @@ pub fn route_overlay_and_stash_click(
         HitTarget::RemotesRow(idx) => {
             let mut out = vec![Action::RemotesSelect(*idx)];
             if is_double {
-                let probe = crate::remotes_view::RemotesState { selected: *idx };
+                let probe = crate::remotes_view::RemotesState {
+                    selected: *idx,
+                    ..Default::default()
+                };
                 if let Some(r) = crate::remotes_view::selected_remote(state, &probe) {
                     out.push(Action::OpenDialog(Box::new(
                         crate::dialogs::set_remote_url_dialog(

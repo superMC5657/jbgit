@@ -8,6 +8,7 @@ use jbgit_core::{
     matches_protected_branch_patterns, natural_cmp, validate_ref_name_typed,
 };
 
+use crate::app::ScrollViewport;
 use crate::diff_session::{DiffCacheStore, DiffSession};
 use crate::i18n::I18n;
 
@@ -38,9 +39,9 @@ pub struct PushDialogState {
     pub error: Option<String>,
     pub outgoing: Option<Arc<OutgoingBundle>>,
     pub selected_commit: usize,
-    pub commit_scroll: usize,
+    pub commit_scroll: ScrollViewport,
     pub selected_file: usize,
-    pub file_scroll: usize,
+    pub file_scroll: ScrollViewport,
     pub show_diff: bool,
     pub diff: DiffSession,
     pub details_requested: Option<DetailsKey>,
@@ -76,9 +77,9 @@ impl PushDialogState {
             error: None,
             outgoing: None,
             selected_commit: 0,
-            commit_scroll: 0,
+            commit_scroll: ScrollViewport::new(),
             selected_file: 0,
-            file_scroll: 0,
+            file_scroll: ScrollViewport::new(),
             show_diff: false,
             diff: DiffSession::new(diff_context),
             details_requested: None,
@@ -135,7 +136,7 @@ impl PushDialogState {
             if r.kind != jbgit_core::RefKind::RemoteBranch {
                 continue;
             }
-            let Some((rm, short)) = r.name.split_once('/') else {
+            let Some((rm, short)) = snap.split_tracking(&r.name) else {
                 continue;
             };
             if rm == active_remote {

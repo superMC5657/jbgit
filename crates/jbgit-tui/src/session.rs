@@ -17,8 +17,8 @@ use ratatui::Frame;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
 use crate::app::{
-    Action, AppState, ContainingBranchesJob, Effect, SyntaxJob, SyntaxJobKey, UiAsyncEvent,
-    execute_effects_with_host,
+    Action, AppState, ContainingBranchesJob, Effect, SyntaxJob, SyntaxJobKey, SyntaxTarget,
+    UiAsyncEvent, execute_effects_with_host,
 };
 use crate::external_editor::{effects_need_terminal_handoff, handle_external_editor_effects};
 use crate::graph::GraphicsCapabilities;
@@ -55,12 +55,15 @@ pub fn coalesce_effects(effects: Vec<Effect>) -> Vec<Effect> {
             Effect::RequestFileDiff { slot, .. } => last_file_diff[slot.index()] = Some(i),
             Effect::RequestStageFileDiff(_) => last_stage_diff = Some(i),
             Effect::RequestBlame(_) => last_blame = Some(i),
-            Effect::RequestSyntaxHighlight(job) => match job.key {
-                SyntaxJobKey::File(_) => last_file_syntax = Some(i),
-                SyntaxJobKey::Stage(_) => last_stage_syntax = Some(i),
-                SyntaxJobKey::Blame(_) => last_blame_syntax = Some(i),
-                SyntaxJobKey::RangePatch { .. } => last_range_syntax = Some(i),
-                SyntaxJobKey::TreeBlob(_) => last_tree_syntax = Some(i),
+            Effect::RequestSyntaxHighlight(job) => match &job.target {
+                SyntaxTarget::File {
+                    key: SyntaxJobKey::RangePatch { .. },
+                    ..
+                } => last_range_syntax = Some(i),
+                SyntaxTarget::File { .. } => last_file_syntax = Some(i),
+                SyntaxTarget::Stage(_) => last_stage_syntax = Some(i),
+                SyntaxTarget::Blame(_) => last_blame_syntax = Some(i),
+                SyntaxTarget::TreeBlob(_) => last_tree_syntax = Some(i),
             },
             Effect::ComputeContainingBranches(_) => last_containing = Some(i),
             Effect::RebuildLogGraph(_) => last_rebuild_graph = Some(i),
@@ -76,12 +79,15 @@ pub fn coalesce_effects(effects: Vec<Effect>) -> Vec<Effect> {
             Effect::RequestFileDiff { slot, .. } => last_file_diff[slot.index()] == Some(i),
             Effect::RequestStageFileDiff(_) => last_stage_diff == Some(i),
             Effect::RequestBlame(_) => last_blame == Some(i),
-            Effect::RequestSyntaxHighlight(job) => match job.key {
-                SyntaxJobKey::File(_) => last_file_syntax == Some(i),
-                SyntaxJobKey::Stage(_) => last_stage_syntax == Some(i),
-                SyntaxJobKey::Blame(_) => last_blame_syntax == Some(i),
-                SyntaxJobKey::RangePatch { .. } => last_range_syntax == Some(i),
-                SyntaxJobKey::TreeBlob(_) => last_tree_syntax == Some(i),
+            Effect::RequestSyntaxHighlight(job) => match &job.target {
+                SyntaxTarget::File {
+                    key: SyntaxJobKey::RangePatch { .. },
+                    ..
+                } => last_range_syntax == Some(i),
+                SyntaxTarget::File { .. } => last_file_syntax == Some(i),
+                SyntaxTarget::Stage(_) => last_stage_syntax == Some(i),
+                SyntaxTarget::Blame(_) => last_blame_syntax == Some(i),
+                SyntaxTarget::TreeBlob(_) => last_tree_syntax == Some(i),
             },
             Effect::ComputeContainingBranches(_) => last_containing == Some(i),
             Effect::RebuildLogGraph(_) => last_rebuild_graph == Some(i),
@@ -642,6 +648,7 @@ pub struct RepoSession {
     pub handle: Option<EngineHandle>,
     pub events: Option<UnboundedReceiver<EngineEvent>>,
     pub generation: u64,
+    askpass: Option<jbgit_engine::askpass::AskpassServer>,
 }
 
 /// How long an unbind waits for in-flight write operations.
@@ -654,11 +661,18 @@ impl RepoSession {
             handle: None,
             events: None,
             generation: 0,
+            askpass: None,
         }
     }
 
     pub fn backend(&self) -> Option<&dyn EngineBackend> {
         self.handle.as_ref().map(|h| h as &dyn EngineBackend)
+    }
+
+    pub fn askpass_env(&self) -> Option<jbgit_engine::askpass::AskpassEnv> {
+        self.askpass
+            .as_ref()
+            .and_then(|s| s.env_for_current_exe().ok())
     }
 
     /// Discovers the repository containing `target`.
@@ -670,12 +684,15 @@ impl RepoSession {
     /// (per-repository config layer, detected git version).
     pub fn bind_location(
         loc: RepoLocation,
-        askpass: Option<jbgit_engine::askpass::AskpassEnv>,
+        askpass: Option<jbgit_engine::askpass::AskpassServer>,
     ) -> (Self, AppState) {
         let workdir = loc.workdir.clone();
         let config = crate::config::AppConfig::load(Some(&workdir));
         let scan_config = config.jbgit.performance.to_engine_config();
-        match EngineSupervisor::start_with_askpass(loc, true, scan_config, askpass) {
+        let askpass_env = askpass
+            .as_ref()
+            .and_then(|s| s.env_for_current_exe().ok());
+        match EngineSupervisor::start_with_askpass(loc, true, scan_config, askpass_env) {
             Ok((handle, rx)) => {
                 let mut state = AppState::new_with_config(workdir, None, config);
                 state.git_version = handle
@@ -685,10 +702,12 @@ impl RepoSession {
                     handle: Some(handle),
                     events: Some(rx),
                     generation: 0,
+                    askpass,
                 };
                 (repo, state)
             }
             Err(e) => {
+                drop(askpass);
                 let cli_i18n = crate::i18n::I18n::load_for_cli();
                 let err = cli_i18n.t_fmt("cli.engine_err", &[("err", &e.to_string())]);
                 (
@@ -699,15 +718,18 @@ impl RepoSession {
         }
     }
 
-    /// Stops the engine: advances its request slots, stops the watcher and
-    /// the supervisor, and waits up to [`UNBIND_WRITE_TIMEOUT`] for in-flight
-    /// write operations. Returns `false` when writes were still running.
+    /// Stops the engine and its askpass bridge: advances request slots, stops
+    /// the watcher and the supervisor, waits up to [`UNBIND_WRITE_TIMEOUT`] for
+    /// in-flight write operations, then closes and removes the askpass channel.
+    /// Returns `false` when writes were still running.
     pub async fn unbind(self) -> bool {
         drop(self.events);
-        match self.handle {
+        let finished = match self.handle {
             Some(handle) => handle.shutdown(UNBIND_WRITE_TIMEOUT).await,
             None => true,
-        }
+        };
+        drop(self.askpass);
+        finished
     }
 }
 
@@ -715,15 +737,18 @@ impl RepoSession {
 /// [`EngineSupervisor`], and builds a production [`TuiSession`] whose recent
 /// repositories list is the user-level `recent-repos.toml`.
 ///
-/// `askpass` is the credential-bridge environment of this session's
-/// [`jbgit_engine::askpass::AskpassServer`] (network operations only).
+/// `askpass` is the credential-bridge server bound to this [`RepoSession`]
+/// (network operations only; torn down on [`RepoSession::unbind`]).
 pub fn init_engine_and_session(
     target_path: PathBuf,
-    askpass: Option<jbgit_engine::askpass::AskpassEnv>,
+    askpass: Option<jbgit_engine::askpass::AskpassServer>,
 ) -> (RepoSession, TuiSession) {
     let (repo, mut state) = match RepoSession::discover(&target_path) {
         Ok(loc) => RepoSession::bind_location(loc, askpass),
-        Err(e) => (RepoSession::detached(), AppState::new(target_path, Some(e))),
+        Err(e) => {
+            drop(askpass);
+            (RepoSession::detached(), AppState::new(target_path, Some(e)))
+        }
     };
     state.async_graph_enabled = true;
     state.recent_repos =

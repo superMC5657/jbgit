@@ -47,7 +47,7 @@ async fn clipboard_patch_is_checked_and_applied_from_stdin() {
     let crlf = String::from_utf8(patch).unwrap().replace('\n', "\r\n");
     fs::write(&clip, crlf).unwrap();
     // SAFETY: this binary runs a single test; nothing reads the env concurrently.
-    unsafe { std::env::set_var(jbgit_engine::clipboard::CLIPBOARD_FILE_ENV, &clip) };
+    unsafe { std::env::set_var("JBGIT_CLIPBOARD_FILE", &clip) };
 
     let loc = RepoLocation::discover(dir).unwrap();
     let (handle, mut rx) = EngineSupervisor::start(loc, false).unwrap();

@@ -738,27 +738,23 @@ fn route_annotate_key(key: &KeyEvent, state: &AppState) -> Vec<Action> {
         }
     }
 
-    let action = match key.code {
-        KeyCode::Esc => Some(Action::AnnotateEscape),
-        KeyCode::Tab | KeyCode::BackTab => Some(Action::AnnotateToggleFocus),
-        KeyCode::Enter => Some(Action::AnnotateJumpToLog),
-        KeyCode::Char('g') if !shift => {
-            return vec![Action::AnnotateSetPendingG(Some(state.now()))];
-        }
-        KeyCode::Char(':') => Some(Action::AnnotateGotoLineStart),
-        KeyCode::Char('v' | 'V') => Some(Action::AnnotateToggleVisual),
-        KeyCode::Char('H') => Some(Action::AnnotateShowSelectionHistory),
-        KeyCode::Char('p') => Some(Action::AnnotatePreviousRev),
-        KeyCode::Char('P') | KeyCode::Backspace => Some(Action::AnnotateNavBack),
-        KeyCode::Char('w') => Some(Action::AnnotateToggleWhitespace),
-        KeyCode::Char('m') => Some(Action::AnnotateToggleMoves),
-        KeyCode::Char('d') => Some(Action::AnnotateToggleDiff),
-        KeyCode::Char('y') => Some(Action::AnnotateCopyHash),
-        KeyCode::Char('S') => Some(Action::DiffToggleSideBySide(DiffScope::Annotate)),
-        KeyCode::Char('c') => Some(Action::DiffCycleContext(DiffScope::Annotate)),
-        KeyCode::Char('[') => Some(Action::DiffJumpHunk(DiffScope::Annotate, -1)),
-        KeyCode::Char(']') => Some(Action::DiffJumpHunk(DiffScope::Annotate, 1)),
-        KeyCode::F(10) if shift => {
+    let action = if let Some(cmd) = crate::keymap::catalog::AnnotateCommand::from_key(key.code) {
+        Some(cmd.action())
+    } else {
+        match key.code {
+            KeyCode::Esc => Some(Action::AnnotateEscape),
+            KeyCode::Tab | KeyCode::BackTab => Some(Action::AnnotateToggleFocus),
+            KeyCode::Char('g') if !shift => {
+                return vec![Action::AnnotateSetPendingG(Some(state.now()))];
+            }
+            KeyCode::Char(':') => Some(Action::AnnotateGotoLineStart),
+            KeyCode::Char('v' | 'V') => Some(Action::AnnotateToggleVisual),
+            KeyCode::Char('P') | KeyCode::Backspace => Some(Action::AnnotateNavBack),
+            KeyCode::Char('S') => Some(Action::DiffToggleSideBySide(DiffScope::Annotate)),
+            KeyCode::Char('c') => Some(Action::DiffCycleContext(DiffScope::Annotate)),
+            KeyCode::Char('[') => Some(Action::DiffJumpHunk(DiffScope::Annotate, -1)),
+            KeyCode::Char(']') => Some(Action::DiffJumpHunk(DiffScope::Annotate, 1)),
+            KeyCode::F(10) if shift => {
             let line_idx = ann.cursor;
             let anchor = state
                 .hit_registry
@@ -828,7 +824,8 @@ fn route_annotate_key(key: &KeyEvent, state: &AppState) -> Vec<Action> {
             line_idx: usize::MAX,
             extend: ann.visual_anchor.is_some(),
         }),
-        _ => None,
+            _ => None,
+        }
     };
     if let Some(a) = action {
         prefix.push(a);
