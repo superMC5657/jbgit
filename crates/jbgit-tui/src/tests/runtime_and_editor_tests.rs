@@ -996,9 +996,15 @@ fn stage_review_fixes_amend_diff_gutter_click_draft_persistence_and_push_confirm
     assert_eq!(ts.state().stage_workbench.diff_context(), DiffContext::Three);
 
     let _ = ts.take_requests();
+    let mut snap = super::snapshot();
+    snap.remotes = super::remote_infos(&["origin"]);
+    ts.deliver_engine_event(EngineEvent::RepoSnapshotLoaded {
+        snapshot: Arc::new(snap),
+        epoch: 10,
+    });
     ts.deliver_engine_event(EngineEvent::CommitCompleted(CommitOutcome {
         success: true,
-        commit_oid: None,
+        commit_oid: Some(jbgit_core::Oid::from_bytes([12u8; 20])),
         short_sha: Some("abc1234".into()),
         summary: "Committed abc1234".into(),
         error_output: None,
@@ -1006,18 +1012,17 @@ fn stage_review_fixes_amend_diff_gutter_click_draft_persistence_and_push_confirm
         preserved_message: None,
     }));
     assert!(ts.take_git_ops().is_empty());
-    assert!(matches!(
-        ts.state().modal_stack.last(),
-        Some(ModalLayer::Dialog(d))
-            if matches!(d.as_ref(), crate::dialogs::Dialog::Choice(c) if c.title == ts.state().i18n.t("dialog.push.confirm_title"))
-    ));
-    // Confirming Push and receiving PushRejected must open the --force-with-lease dialog.
-    ts.dispatch(Action::DialogConfirm);
+    assert!(
+        matches!(ts.state().modal_stack.last(), Some(ModalLayer::PushDialog(_))),
+        "Commit & Push must flow into full PushDialog"
+    );
+    // Confirming PushDialog and receiving PushRejected must open the Push Rejected dialog.
+    ts.dispatch(Action::PushConfirm);
     let push_op = ts
         .take_git_ops()
         .into_iter()
         .find(|op| matches!(op, jbgit_core::GitOp::Push { .. }))
-        .expect("confirming Commit & Push must emit typed GitOp::Push");
+        .expect("confirming Commit & Push PushDialog must emit typed GitOp::Push");
     let rejected = jbgit_core::GitOpOutcome::failed(push_op, jbgit_core::GitFailure::PushRejected);
     ts.deliver_engine_event(EngineEvent::GitOpFinished(rejected));
     assert!(matches!(
@@ -2780,4 +2785,229 @@ fn conflict_queue_three_way_auto_merge_inline_edit_auto_advance_and_continue_pro
         }
     )));
     assert!(ts.state().modal_stack.conflict_queue().is_none());
+}
+
+#[test]
+fn commit_polish_template_merge_msg_reformat_author_identity_allow_empty_and_undo_guard() {
+    let mut snap = super::snapshot();
+    snap.user_name = None;
+    snap.user_email = None;
+    let mut ts = TestSession::with_snapshot(snap);
+    ts.deliver_engine_event(EngineEvent::StageStatusLoaded {
+        status: Arc::new(StageStatusSnapshot::default()),
+        epoch: 1,
+    });
+    ts.dispatch(Action::SwitchTab(WorkspaceTab::Commit));
+
+    // 1. commit.template loads into empty editor; MERGE_MSG supersedes template.
+    ts.deliver_engine_event(EngineEvent::CommitPrecheckLoaded {
+        info: jbgit_engine::CommitPrecheckInfo {
+            comment_char: '#',
+            commit_template: Some("# Template hint".into()),
+            ..Default::default()
+        },
+    });
+    assert_eq!(ts.state().stage_workbench.editor().text(), "# Template hint");
+
+    // Submitting comment-only template must be rejected as empty commit message!
+    ts.dispatch(Action::SubmitCommit { and_push: false });
+    assert!(ts.state().stage_workbench.empty_message_error());
+
+    ts.deliver_engine_event(EngineEvent::CommitPrecheckLoaded {
+        info: jbgit_engine::CommitPrecheckInfo {
+            comment_char: '#',
+            commit_template: Some("# Template hint\n".into()),
+            prepared_message: Some("Merge branch 'feat' into main\n# Conflicts:\n#\ta.txt".into()),
+            ..Default::default()
+        },
+    });
+    assert!(
+        ts.state()
+            .stage_workbench
+            .editor()
+            .text()
+            .starts_with("Merge branch 'feat' into main")
+    );
+
+    // 2. Body > 72 col highlight + Reformat (`Alt+Q`) + undo.
+    let long_msg = "feat: subject line\n\nThis is a very long body paragraph that definitely exceeds seventy two columns and should wrap nicely when reformatted.";
+    ts.state_mut().stage_workbench.apply_external_message(
+        long_msg,
+        std::time::Instant::now(),
+    );
+    ts.dispatch(Action::CommitEditorReformat);
+    let formatted = ts.state().stage_workbench.editor().text();
+    let lines: Vec<&str> = formatted.lines().collect();
+    assert_eq!(lines[0], "feat: subject line");
+    assert!(lines.len() >= 4, "expected wrapped lines: {formatted}");
+    assert!(lines[2].len() <= 72 && lines[3].len() <= 72, "{formatted}");
+    ts.dispatch(Action::CommitEditorUndo);
+    assert_eq!(ts.state().stage_workbench.editor().text(), long_msg);
+
+    // 3. Author autocomplete from recent repo commits via Tab.
+    ts.dispatch(Action::CommitFocusAuthorInput);
+    ts.type_str("ali");
+    ts.send_key(KeyCode::Tab, KeyModifiers::NONE);
+    assert_eq!(
+        ts.state().stage_workbench.author_input(),
+        "Alice <alice@x.io>"
+    );
+    ts.send_key(KeyCode::Enter, KeyModifiers::NONE);
+    assert!(!ts.state().stage_workbench.editing_author());
+
+    // 4a. Missing identity with empty staging & no tracked unstaged rejects cleanly
+    //     with `toast.no_staged_to_commit` instead of opening a doomed IdentityDialog.
+    ts.dispatch(Action::SubmitCommit { and_push: false });
+    assert!(
+        ts.state().modal_stack.last().is_none(),
+        "must not open IdentityDialog when nothing can be committed"
+    );
+    assert_eq!(
+        ts.state().status_notice.as_deref(),
+        Some(ts.state().i18n.t("toast.no_staged_to_commit"))
+    );
+
+    // 4b. Missing identity with tracked unstaged changes asks `nothing_staged` confirmation
+    //     FIRST, then confirming opens IdentityDialog with `stage_all_tracked: true`.
+    ts.deliver_engine_event(EngineEvent::StageStatusLoaded {
+        status: Arc::new(StageStatusSnapshot {
+            unstaged: vec![jbgit_core::StageEntry {
+                path: "tracked.rs".into(),
+                old_path: None,
+                kind: jbgit_core::FileStatusKind::Modified,
+            }],
+            ..Default::default()
+        }),
+        epoch: 2,
+    });
+    ts.dispatch(Action::SubmitCommit { and_push: false });
+    assert!(
+        matches!(
+            ts.state().modal_stack.last(),
+            Some(ModalLayer::Dialog(d))
+                if matches!(d.as_ref(), crate::dialogs::Dialog::Choice(c)
+                    if c.title == ts.state().i18n.t("dialog.nothing_staged.title"))
+        ),
+        "must confirm staging all tracked files before asking for identity"
+    );
+    ts.dispatch(Action::DialogConfirm);
+    match ts.state().modal_stack.last() {
+        Some(ModalLayer::Dialog(d)) => match d.as_ref() {
+            crate::dialogs::Dialog::Identity(id) => {
+                assert!(
+                    id.pending_commit
+                        .as_ref()
+                        .is_some_and(|r| r.stage_all_tracked)
+                );
+            }
+            other => panic!("expected IdentityDialog after confirming stage-all, got {other:?}"),
+        },
+        other => panic!("expected Dialog, got {other:?}"),
+    }
+    ts.send_key(KeyCode::Esc, KeyModifiers::NONE);
+
+    // 4c. Failed `SetIdentity` clears `pending_commit_after_identity` so a stale commit
+    //     cannot fire on a later unrelated SetIdentity.
+    ts.deliver_engine_event(EngineEvent::StageStatusLoaded {
+        status: Arc::new(StageStatusSnapshot::default()),
+        epoch: 3,
+    });
+    ts.dispatch(Action::CommitToggleAllowEmpty);
+    assert!(ts.state().stage_workbench.allow_empty());
+    let _ = ts.take_requests();
+    ts.dispatch(Action::SubmitCommit { and_push: false });
+    assert!(matches!(
+        ts.state().modal_stack.last(),
+        Some(ModalLayer::Dialog(d)) if matches!(d.as_ref(), crate::dialogs::Dialog::Identity(_))
+    ));
+    let id_screen = super::screen_text(&ts.render(100, 28));
+    assert!(id_screen.contains("Configure Git Identity"), "{id_screen}");
+    ts.type_str("Dev User");
+    ts.send_key(KeyCode::Tab, KeyModifiers::NONE);
+    ts.type_str("dev@example.com");
+    ts.send_key(KeyCode::Enter, KeyModifiers::NONE);
+    let set_id_op = jbgit_core::GitOp::SetIdentity {
+        name: "Dev User".into(),
+        email: "dev@example.com".into(),
+        global: false,
+    };
+    assert_eq!(ts.take_git_ops(), vec![set_id_op.clone()]);
+    ts.deliver_engine_event(EngineEvent::GitOpFinished(
+        jbgit_core::GitOpOutcome::failed(
+            set_id_op.clone(),
+            jbgit_core::GitFailure::Other("permission denied".into()),
+        ),
+    ));
+    assert!(
+        ts.state().pending_commit_after_identity.is_none(),
+        "failed SetIdentity must clear pending_commit_after_identity"
+    );
+
+    // 4d. Successful `SetIdentity` after resubmitting resumes `ExecuteCommit` with allow_empty: true!
+    ts.dispatch(Action::SubmitCommit { and_push: false });
+    ts.type_str("Dev User");
+    ts.send_key(KeyCode::Tab, KeyModifiers::NONE);
+    ts.type_str("dev@example.com");
+    ts.send_key(KeyCode::Enter, KeyModifiers::NONE);
+    assert_eq!(ts.take_git_ops(), vec![set_id_op.clone()]);
+    let _ = ts.take_requests();
+    ts.deliver_engine_event(EngineEvent::GitOpFinished(jbgit_core::GitOpOutcome::ok(
+        set_id_op,
+    )));
+    let reqs = ts.take_requests();
+    assert!(
+        reqs.iter().any(|(r, _)| matches!(
+            r,
+            TaskRequest::ExecuteCommit { request, .. } if request.allow_empty
+        )),
+        "expected resumed ExecuteCommit with allow_empty=true, got {reqs:?}"
+    );
+
+    // 5. UndoLastCommit on a merge HEAD or already-pushed HEAD triggers danger confirmation.
+    let mut pushed_merge_snap = super::snapshot();
+    let head_oid = pushed_merge_snap.head_oid.unwrap();
+    // Make HEAD a merge commit AND make origin/main point to HEAD (already pushed).
+    if let Some(c) = pushed_merge_snap.commits.iter_mut().find(|c| c.oid == head_oid) {
+        c.parents = vec![Oid::from_bytes([11u8; 20]), Oid::from_bytes([10u8; 20])];
+    }
+    if let Some(r) = pushed_merge_snap
+        .refs
+        .iter_mut()
+        .find(|r| r.kind == jbgit_core::RefKind::RemoteBranch && r.name == "origin/main")
+    {
+        r.target_oid = head_oid;
+    }
+    ts.deliver_engine_event(EngineEvent::RepoSnapshotLoaded {
+        snapshot: Arc::new(pushed_merge_snap),
+        epoch: 20,
+    });
+    let _ = ts.take_requests();
+    ts.dispatch(Action::UndoLastCommit);
+    assert!(
+        ts.take_requests()
+            .iter()
+            .all(|(r, _)| !matches!(r, TaskRequest::UndoLastCommit)),
+        "must not immediately undo pushed merge commit without confirmation"
+    );
+    match ts.state().modal_stack.last() {
+        Some(ModalLayer::Dialog(d)) => match d.as_ref() {
+            crate::dialogs::Dialog::Choice(c) => {
+                assert_eq!(c.title, "Undo Last Commit?");
+                assert!(c.danger);
+                assert!(c.body.iter().any(|l| l.contains("merge commit") && l.contains("origin/main")));
+            }
+            other => panic!("expected ChoiceDialog, got {other:?}"),
+        },
+        other => panic!("expected Dialog, got {other:?}"),
+    }
+    // Confirming the dialog executes UndoLastCommit.
+    ts.dispatch(Action::DialogSelectOption {
+        idx: 0,
+        confirm: true,
+    });
+    assert!(
+        ts.take_requests()
+            .iter()
+            .any(|(r, _)| matches!(r, TaskRequest::UndoLastCommit))
+    );
 }

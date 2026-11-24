@@ -180,6 +180,8 @@ impl AppState {
                 self.log.details.reset_containing();
                 self.repo_snapshot = Some(snapshot);
                 self.apply_pending_remote_selection();
+                self.sync_open_push_dialog_remotes(&mut effects);
+                effects.push(Effect::RequestCommitPrecheck);
             }
             EngineEvent::RefAheadBehindBackfilled { epoch, updates } => {
                 if self
@@ -469,6 +471,7 @@ impl AppState {
                 {
                     pd.loading = false;
                     pd.error = None;
+                    pd.expected_remote_oid = bundle.remote_oid;
                     pd.outgoing = Some(bundle);
                     pd.selected_commit = 0;
                     pd.commit_scroll.reset();
@@ -507,11 +510,22 @@ impl AppState {
                     );
                 }
             }
+            EngineEvent::CommitCompleted(outcome) => {
+                if outcome.success && outcome.and_push {
+                    let (branch, up_to) = match self.repo_snapshot.as_deref() {
+                        Some(s) if s.head_branch.is_some() => {
+                            (s.head_branch.clone().unwrap_or_else(|| "HEAD".into()), None)
+                        }
+                        Some(s) => ("HEAD".to_string(), outcome.commit_oid.or(s.head_oid)),
+                        None => ("HEAD".to_string(), outcome.commit_oid),
+                    };
+                    self.prompt_push(&branch, up_to, &mut effects);
+                }
+            }
             EngineEvent::StageStatusLoaded { .. }
             | EngineEvent::StageFileDiffLoaded { .. }
             | EngineEvent::AmendPreviewLoaded { .. }
             | EngineEvent::CommitPrecheckLoaded { .. }
-            | EngineEvent::CommitCompleted(_)
             | EngineEvent::UndoCommitCompleted { .. } => {
                 unreachable!("handled by apply_stage_engine_event")
             }

@@ -108,7 +108,7 @@ impl ThreeDocStageDiff {
     }
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CommitPrecheckInfo {
     pub has_commit_hooks: bool,
     pub gpg_sign: bool,
@@ -118,6 +118,28 @@ pub struct CommitPrecheckInfo {
     pub user_name: Option<String>,
     pub user_email: Option<String>,
     pub has_remote: bool,
+    /// Effective `core.commentChar` (defaults to `'#'`).
+    pub comment_char: char,
+    /// Loaded content of `commit.template` if configured and readable.
+    pub commit_template: Option<String>,
+    /// Auto-prepared message from `<git_dir>/MERGE_MSG` or `<git_dir>/SQUASH_MSG`.
+    pub prepared_message: Option<String>,
+}
+
+impl Default for CommitPrecheckInfo {
+    fn default() -> Self {
+        Self {
+            has_commit_hooks: false,
+            gpg_sign: false,
+            has_sequencer_state: false,
+            user_name: None,
+            user_email: None,
+            has_remote: false,
+            comment_char: '#',
+            commit_template: None,
+            prepared_message: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -126,6 +148,7 @@ pub struct CommitRequest {
     pub amend: bool,
     pub signoff: bool,
     pub run_hooks: bool,
+    pub allow_empty: bool,
     pub author_override: Option<String>,
     pub stage_all_tracked: bool,
     pub and_push: bool,
@@ -820,20 +843,23 @@ pub(crate) fn apply_stage_buffer_sync(
             entry.mode = GIT_MODE_REGULAR;
         }
 
+        // Synthetic index content written by line/hunk staging never matches the
+        // worktree file's cached stat metadata — zero out stat fields so native
+        // `git diff` does not skip comparing index vs worktree when sizes coincide.
+        entry.ctime = IndexTime::new(0, 0);
+        entry.mtime = IndexTime::new(0, 0);
+        entry.dev = 0;
+        entry.ino = 0;
+        entry.uid = 0;
+        entry.gid = 0;
+        entry.file_size = 0;
+
         if path_needs_git_clean_filter(repo, path, new_staged_bytes)
             && let Ok(filtered_oid) = hash_object_with_filters(location, path, new_staged_bytes)
         {
             entry.id = filtered_oid;
-            entry.ctime = IndexTime::new(0, 0);
-            entry.mtime = IndexTime::new(0, 0);
-            entry.dev = 0;
-            entry.ino = 0;
-            entry.uid = 0;
-            entry.gid = 0;
-            entry.file_size = 0;
             index.add(&entry)?;
         } else {
-            entry.file_size = new_staged_bytes.len() as u32;
             index.add_frombuffer(&entry, new_staged_bytes)?;
         }
         index.write()?;
@@ -1204,28 +1230,68 @@ pub(crate) fn is_commit_sequencer_active(repo: &Repository, git_dir: &Path) -> b
         || git_dir.join("rebase-apply").is_dir()
 }
 
+fn expand_git_config_path(raw: &str, workdir: &Path) -> std::path::PathBuf {
+    let trimmed = raw.trim();
+    if let Some(rest) = trimmed
+        .strip_prefix("~/")
+        .or_else(|| trimmed.strip_prefix("~\\"))
+        && let Some(home) = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE"))
+    {
+        return std::path::PathBuf::from(home).join(rest);
+    }
+    let pb = std::path::PathBuf::from(trimmed);
+    if pb.is_absolute() {
+        pb
+    } else {
+        workdir.join(pb)
+    }
+}
+
+fn read_small_text_file(path: &Path) -> Option<String> {
+    const MAX_TEMPLATE_BYTES: u64 = 128 * 1024;
+    let meta = fs::metadata(path).ok()?;
+    if !meta.is_file() || meta.len() > MAX_TEMPLATE_BYTES {
+        return None;
+    }
+    let raw = fs::read_to_string(path).ok()?;
+    let normalized = raw.replace("\r\n", "\n").replace('\r', "\n");
+    let trimmed = normalized.trim_end_matches('\n').to_string();
+    (!trimmed.is_empty()).then_some(trimmed)
+}
+
 pub fn probe_commit_precheck_sync(location: &RepoLocation) -> CommitPrecheckInfo {
     with_thread_repo(&location.git_dir, |repo| {
         let cfg = repo.config().ok();
-        let user_name = cfg.as_ref().and_then(|c| c.get_string("user.name").ok());
-        let user_email = cfg.as_ref().and_then(|c| c.get_string("user.email").ok());
+        let user_name = cfg
+            .as_ref()
+            .and_then(|c| c.get_string("user.name").ok())
+            .filter(|s| !s.trim().is_empty());
+        let user_email = cfg
+            .as_ref()
+            .and_then(|c| c.get_string("user.email").ok())
+            .filter(|s| !s.trim().is_empty());
         let gpg_sign = cfg
             .as_ref()
             .and_then(|c| c.get_bool("commit.gpgsign").ok())
             .unwrap_or(false);
+        let comment_char = jbgit_core::parse_comment_char(
+            cfg.as_ref()
+                .and_then(|c| c.get_string("core.commentChar").ok())
+                .as_deref(),
+        );
+        let commit_template = cfg
+            .as_ref()
+            .and_then(|c| c.get_string("commit.template").ok())
+            .filter(|s| !s.trim().is_empty())
+            .and_then(|p| read_small_text_file(&expand_git_config_path(&p, &location.workdir)));
+        let prepared_message = read_small_text_file(&location.git_dir.join("MERGE_MSG"))
+            .or_else(|| read_small_text_file(&location.git_dir.join("SQUASH_MSG")));
         let has_sequencer_state = is_commit_sequencer_active(repo, &location.git_dir);
 
         let hooks_dir = cfg
             .as_ref()
             .and_then(|c| c.get_string("core.hooksPath").ok())
-            .map(|p| {
-                let pb = std::path::PathBuf::from(p);
-                if pb.is_absolute() {
-                    pb
-                } else {
-                    location.workdir.join(pb)
-                }
-            })
+            .map(|p| expand_git_config_path(&p, &location.workdir))
             .unwrap_or_else(|| location.common_dir.join("hooks"));
 
         let has_hook = |name: &str| -> bool {
@@ -1263,6 +1329,9 @@ pub fn probe_commit_precheck_sync(location: &RepoLocation) -> CommitPrecheckInfo
             user_name,
             user_email,
             has_remote,
+            comment_char,
+            commit_template,
+            prepared_message,
         })
     })
     .unwrap_or_default()
@@ -1383,7 +1452,18 @@ pub(crate) fn execute_commit_git2_sync(
             _ => committer.clone(),
         };
 
-        let mut msg = req.message.clone();
+        let comment_char = jbgit_core::parse_comment_char(
+            repo.config()
+                .ok()
+                .and_then(|c| c.get_string("core.commentChar").ok())
+                .as_deref(),
+        );
+        let mut msg = jbgit_core::strip_commit_comments(&req.message, comment_char);
+        if msg.trim().is_empty() {
+            return Err(EngineError::Other(
+                "Aborting commit due to empty commit message.".to_string(),
+            ));
+        }
         if req.signoff {
             let name = committer.name().unwrap_or("Unknown");
             let email = committer.email().unwrap_or("");
@@ -1411,6 +1491,15 @@ pub(crate) fn execute_commit_git2_sync(
                 Ok(h) => vec![h.peel_to_commit()?],
                 Err(_) => Vec::new(), // Unborn HEAD root commit
             };
+            if !req.allow_empty
+                && let Some(parent) = parent_commits.first()
+                && parent.tree_id() == tree_oid
+            {
+                return Err(EngineError::Other(
+                    "Nothing to commit (index matches HEAD). Enable --allow-empty to create an empty commit."
+                        .to_string(),
+                ));
+            }
             let parent_refs: Vec<&Commit<'_>> = parent_commits.iter().collect();
             repo.commit(
                 Some("HEAD"),
@@ -1440,9 +1529,14 @@ pub(crate) fn execute_commit_git2_sync(
     })
 }
 
-/// Builds CLI arguments for `git commit --file=-` when hooks or GPG signing are active.
+/// Builds CLI arguments for `git commit --file=- --cleanup=strip` when hooks,
+/// GPG signing, or sequencer state are active.
 pub(crate) fn build_commit_cli_args(req: &CommitRequest) -> (Vec<String>, Vec<u8>) {
-    let mut args = vec!["commit".to_string(), "--file=-".to_string()];
+    let mut args = vec![
+        "commit".to_string(),
+        "--file=-".to_string(),
+        "--cleanup=strip".to_string(),
+    ];
     if req.amend {
         args.push("--amend".to_string());
     }
@@ -1451,6 +1545,9 @@ pub(crate) fn build_commit_cli_args(req: &CommitRequest) -> (Vec<String>, Vec<u8
     }
     if !req.run_hooks {
         args.push("--no-verify".to_string());
+    }
+    if req.allow_empty {
+        args.push("--allow-empty".to_string());
     }
     if let Some(author) = &req.author_override
         && !author.trim().is_empty()

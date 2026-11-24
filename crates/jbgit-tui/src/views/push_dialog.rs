@@ -174,36 +174,54 @@ fn render_target_pane(
     let w = inner.width as usize;
     let mut y = inner.y;
 
-    // Row 0: source branch -> remote
-    let remote_lbl = if pd.remote().is_empty() {
-        "—"
-    } else {
-        pd.remote()
-    };
+    // Row 0: source branch -> remote (or inline [+ Define Remote…])
+    let has_remote = !pd.remotes.is_empty();
     let remote_badge = if pd.outgoing.as_deref().is_some_and(|b| b.remote_exists) {
         String::new()
     } else {
         ctx.t("dialog.push_full.new_remote_badge").to_string()
     };
+    let remote_span = if has_remote {
+        Span::styled(
+            format!("[{} ▾]", pd.remote()),
+            Style::default()
+                .fg(ctx.theme.fg_accent_link)
+                .add_modifier(Modifier::BOLD),
+        )
+    } else {
+        Span::styled(
+            ctx.t("dialog.push_full.define_remote_btn").to_string(),
+            Style::default()
+                .fg(ctx.theme.fg_bright)
+                .bg(ctx.theme.border_focused)
+                .add_modifier(Modifier::BOLD),
+        )
+    };
     let src_line = Line::from(vec![
         Span::styled(
             truncate_to_width(&pd.branch, (w / 2).max(4)),
             Style::default()
-                .fg(ctx.theme.ref_local.icon)
+                .fg(if pd.is_detached() {
+                    ctx.theme.ref_detached.icon
+                } else {
+                    ctx.theme.ref_local.icon
+                })
                 .add_modifier(Modifier::BOLD),
         ),
         Span::styled(" → ", Style::default().fg(ctx.theme.fg_muted)),
-        Span::styled(
-            format!("[{remote_lbl} ▾]"),
-            Style::default()
-                .fg(ctx.theme.fg_accent_link)
-                .add_modifier(Modifier::BOLD),
-        ),
+        remote_span,
     ]);
     let row0 = Rect::new(inner.x, y, inner.width, 1);
     frame.render_widget(Paragraph::new(src_line), row0);
-    ctx.hit_registry
-        .register(row0, z + 1, HitTarget::PushRemotePicker);
+    ctx.hit_registry.register(
+        row0,
+        z + 1,
+        if has_remote {
+            HitTarget::PushRemotePicker
+        } else {
+            HitTarget::PushDefineRemote
+        },
+    );
     y += 1;
     if y >= inner.bottom() {
         return;
@@ -226,14 +244,23 @@ fn render_target_pane(
             row1,
         );
     } else {
+        let shown_target = if pd.remote_branch.trim().is_empty() {
+            ctx.t("dialog.push_full.target_placeholder")
+        } else {
+            pd.remote_branch.as_str()
+        };
         let target_text = format!(
             " : {} ✎{remote_badge}",
-            truncate_to_width(&pd.remote_branch, w.saturating_sub(10))
+            truncate_to_width(shown_target, w.saturating_sub(10))
         );
         frame.render_widget(
             Paragraph::new(Span::styled(
                 target_text,
-                Style::default().fg(ctx.theme.fg_bright),
+                Style::default().fg(if pd.remote_branch.trim().is_empty() {
+                    ctx.theme.fg_muted
+                } else {
+                    ctx.theme.fg_bright
+                }),
             )),
             row1,
         );
@@ -674,11 +701,19 @@ fn render_bottom_bar(
         PushForce::WithLease => ctx.t("dialog.push_full.force_with_lease"),
         PushForce::Force => ctx.t("dialog.push_full.force_yes"),
     };
-    let upstream_check = if pd.set_upstream { "[x]" } else { "[ ]" };
+    let upstream_check = if pd.is_detached() {
+        "[-]"
+    } else if pd.set_upstream {
+        "[x]"
+    } else {
+        "[ ]"
+    };
+    let no_verify_check = if pd.no_verify { "[x]" } else { "[ ]" };
     let pills = [
         (
             format!(" [t] {}: {tags_lbl} ", ctx.t("dialog.push_full.opt_tags")),
             pd.tags != PushTagMode::None,
+            false,
             false,
             HitTarget::PushOption(PushOptionKind::Tags),
         ),
@@ -686,6 +721,7 @@ fn render_bottom_bar(
             format!(" [f] {}: {force_lbl} ", ctx.t("dialog.push_full.opt_force")),
             pd.force.is_force(),
             pd.force.is_force(),
+            false,
             HitTarget::PushOption(PushOptionKind::Force),
         ),
         (
@@ -693,18 +729,34 @@ fn render_bottom_bar(
                 " [u] {upstream_check} {} ",
                 ctx.t("dialog.push_full.opt_upstream")
             ),
-            pd.set_upstream,
+            !pd.is_detached() && pd.set_upstream,
             false,
+            pd.is_detached(),
             HitTarget::PushOption(PushOptionKind::SetUpstream),
+        ),
+        (
+            format!(
+                " [n] {no_verify_check} {} ",
+                ctx.t("dialog.push_full.opt_no_verify")
+            ),
+            pd.no_verify,
+            false,
+            false,
+            HitTarget::PushOption(PushOptionKind::NoVerify),
         ),
     ];
     let mut cx = area.x;
-    for (text, active, danger, target) in pills {
+    for (text, active, danger, disabled, target) in pills {
         let w = text.width() as u16;
         if cx + w > area.right() {
             break;
         }
-        let style = if danger {
+        let style = if disabled {
+            Style::default()
+                .fg(ctx.theme.fg_muted)
+                .bg(ctx.theme.bg_panel)
+                .add_modifier(Modifier::DIM)
+        } else if danger {
             Style::default()
                 .fg(ctx.theme.status_conflicted)
                 .bg(ctx.theme.bg_panel)

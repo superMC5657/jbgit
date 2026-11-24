@@ -43,6 +43,7 @@ pub(crate) fn load_outgoing_sync(
                         commits: Vec::new(),
                         files_changed: 0,
                         remote_exists: false,
+                        remote_oid: None,
                         truncated: false,
                     });
                 }
@@ -147,6 +148,7 @@ pub(crate) fn load_outgoing_sync(
             commits,
             files_changed,
             remote_exists,
+            remote_oid: remote_oid.map(to_core_oid),
             truncated,
         })
     })

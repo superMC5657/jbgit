@@ -211,6 +211,7 @@ fn update_info_view_filters_log_to_updated_range_and_chip_clears_it() {
         mode: Some(UpdateMode::Merge),
         save_changes: true,
         update_other_branches: true,
+        update_submodules: false,
     });
     out.update_info = Some(info);
     ts.deliver_engine_event(EngineEvent::GitOpFinished(out));
@@ -276,6 +277,7 @@ fn update_info_view_filters_log_to_updated_range_and_chip_clears_it() {
         mode: None,
         save_changes: true,
         update_other_branches: true,
+        update_submodules: false,
     });
     empty.update_info = Some(UpdateInfo::default());
     ts.deliver_engine_event(EngineEvent::GitOpFinished(empty));
@@ -312,6 +314,7 @@ fn update_project_entry_points_and_stash_restore_after_conflicts() {
             mode: Some(UpdateMode::Rebase),
             save_changes: true,
             update_other_branches: true,
+            update_submodules: false,
         }]
     );
 
@@ -339,6 +342,7 @@ fn update_project_entry_points_and_stash_restore_after_conflicts() {
         mode: None,
         save_changes: true,
         update_other_branches: true,
+        update_submodules: false,
     };
     let mut failed = GitOpOutcome::failed(op, GitFailure::Conflicts);
     failed.stash_kept = true;
@@ -400,6 +404,7 @@ fn alt_u_runs_update_project_in_every_preset_and_jetbrains_ctrl_t_stays_pull() {
                 mode: None,
                 save_changes: true,
                 update_other_branches: true,
+                update_submodules: false,
             }],
             "{preset:?}"
         );
@@ -411,4 +416,85 @@ fn alt_u_runs_update_project_in_every_preset_and_jetbrains_ctrl_t_stays_pull() {
             );
         }
     }
+}
+
+#[test]
+fn update_project_upstream_picker_and_submodules_checkbox() {
+    // 1. Missing upstream opens Select Tracking Branch picker -> SetUpstream + UpdateProject.
+    let mut no_up = snapshot();
+    no_up.refs[0].upstream = None;
+    let mut ts = TestSession::with_snapshot(no_up);
+    ts.dispatch(Action::PromptUpdateProject);
+    match ts.state().modal_stack.last() {
+        Some(ModalLayer::Dialog(d)) => match d.as_ref() {
+            Dialog::Choice(c) => {
+                assert_eq!(c.title, "Select Tracking Branch");
+                assert!(c.checkbox.is_none(), "no submodules -> no checkbox");
+                assert_eq!(c.options[0].label, "origin/main");
+            }
+            other => panic!("expected ChoiceDialog, got {other:?}"),
+        },
+        other => panic!("expected Dialog, got {other:?}"),
+    }
+    ts.send_key(KeyCode::Enter, KeyModifiers::NONE);
+    assert_eq!(
+        ts.take_git_ops(),
+        vec![GitOp::Sequence(vec![
+            GitOp::SetUpstream {
+                branch: "main".into(),
+                upstream: "origin/main".into(),
+            },
+            GitOp::UpdateProject {
+                mode: None,
+                save_changes: true,
+                update_other_branches: true,
+                update_submodules: false,
+            },
+        ])]
+    );
+
+    // 2. Gone upstream (`origin/deleted` absent from refs) also triggers picker.
+    let mut gone_up = snapshot();
+    gone_up.refs[0].upstream = Some("origin/deleted".into());
+    let mut ts_gone = TestSession::with_snapshot(gone_up);
+    ts_gone.dispatch(Action::PromptUpdateProject);
+    match ts_gone.state().modal_stack.last() {
+        Some(ModalLayer::Dialog(d)) => match d.as_ref() {
+            Dialog::Choice(c) => {
+                assert_eq!(c.title, "Select Tracking Branch");
+                assert!(c.body.iter().any(|l| l.contains("gone")), "{:?}", c.body);
+            }
+            other => panic!("expected ChoiceDialog, got {other:?}"),
+        },
+        other => panic!("expected Dialog, got {other:?}"),
+    }
+
+    // 3. When repo has submodules, Update Project shows Update Submodules checkbox
+    //    and checking it + selecting Rebase emits `update_submodules: true`.
+    let mut sub_snap = snapshot();
+    sub_snap.submodules = vec!["libs/core".into()];
+    let mut ts_sub = TestSession::with_snapshot(sub_snap);
+    ts_sub.dispatch(Action::PromptUpdateProject);
+    match ts_sub.state().modal_stack.last() {
+        Some(ModalLayer::Dialog(d)) => match d.as_ref() {
+            Dialog::Choice(c) => {
+                assert_eq!(c.title, "Update Project");
+                assert!(c.checkbox.is_some(), "submodules present -> checkbox visible");
+            }
+            other => panic!("expected ChoiceDialog, got {other:?}"),
+        },
+        other => panic!("expected Dialog, got {other:?}"),
+    }
+    ts_sub.dispatch(Action::DialogToggleCheckbox);
+    key(&mut ts_sub, 'r');
+    ts_sub.send_key(KeyCode::Enter, KeyModifiers::NONE);
+    assert_eq!(
+        ts_sub.take_git_ops(),
+        vec![GitOp::UpdateProject {
+            mode: Some(UpdateMode::Rebase),
+            save_changes: true,
+            update_other_branches: true,
+            update_submodules: true,
+        }]
+    );
 }

@@ -121,7 +121,7 @@ impl AppState {
         effects.push(Effect::GitOp(op));
     }
 
-    fn push_dialog(&mut self, d: Dialog) {
+    pub(super) fn push_dialog(&mut self, d: Dialog) {
         self.push_modal(ModalLayer::Dialog(Box::new(d)));
     }
 
@@ -593,9 +593,40 @@ impl AppState {
                 crate::remotes_view::apply_selection(self, Some(*idx), 0);
             }
             Action::UncommitHead => {
-                self.set_focus(WorkspaceTab::Commit, PaneId::CommitMessageEditor);
-                self.status_notice = Some(self.i18n.t("toast.uncommitting_head").into());
-                effects.push(Effect::UndoLastCommit);
+                if let Some(warning) =
+                    crate::stage_view::undo_head_warning_message(self.snapshot(), &self.i18n)
+                {
+                    let body: Vec<String> = warning.lines().map(ToString::to_string).collect();
+                    let i18n = self.i18n.clone();
+                    self.push_dialog(Dialog::Choice(ChoiceDialog::confirm(
+                        i18n.t("dialog.undo_commit.title"),
+                        body,
+                        i18n.t("dialog.undo_commit.confirm_btn"),
+                        i18n.cancel(),
+                        vec![
+                            Action::SwitchTab(WorkspaceTab::Commit),
+                            Action::FocusPane(PaneId::CommitMessageEditor),
+                            Action::UndoLastCommitConfirmed,
+                        ],
+                    )));
+                } else {
+                    self.set_focus(WorkspaceTab::Commit, PaneId::CommitMessageEditor);
+                    self.status_notice = Some(self.i18n.t("toast.uncommitting_head").into());
+                    effects.push(Effect::UndoLastCommit);
+                }
+            }
+            Action::SaveGitIdentityAndCommit {
+                name,
+                email,
+                global,
+                pending_commit,
+            } => {
+                self.pending_commit_after_identity = pending_commit.clone();
+                effects.extend(self.dispatch(Action::RunGitOp(GitOp::SetIdentity {
+                    name: name.clone(),
+                    email: email.clone(),
+                    global: *global,
+                })));
             }
             Action::OngoingResolve => {
                 self.set_focus(WorkspaceTab::Commit, PaneId::CommitChangesTree);
@@ -1157,11 +1188,12 @@ impl AppState {
         self.push_dialog(Dialog::Choice(dlg));
     }
 
-    fn prompt_push(&mut self, branch: &str, up_to: Option<Oid>, effects: &mut Vec<Effect>) {
+    pub(crate) fn prompt_push(&mut self, branch: &str, up_to: Option<Oid>, effects: &mut Vec<Effect>) {
         let Some(snap) = self.repo_snapshot.clone() else {
             return;
         };
-        let local = snap.local_branch(branch);
+        let is_detached = branch == "HEAD";
+        let local = (!is_detached).then(|| snap.local_branch(branch)).flatten();
         let upstream = local.and_then(|l| l.upstream.clone());
         let remotes = snap.available_remotes();
         let split_up = upstream.as_deref().and_then(|u| snap.split_tracking(u));
@@ -1172,10 +1204,24 @@ impl AppState {
             .as_deref()
             .and_then(|p| remotes.iter().position(|r| r == p))
             .unwrap_or(0);
-        let remote_branch = split_up
-            .map(|(_, rb)| rb.to_string())
-            .unwrap_or_else(|| branch.to_string());
-        let set_upstream = upstream.is_none();
+        let selected_remote = remotes.get(remote_idx).map(String::as_str).unwrap_or("");
+        let refspec_target = (!is_detached)
+            .then(|| snap.remote(selected_remote))
+            .flatten()
+            .and_then(|r| jbgit_core::resolve_push_refspec_target(branch, &r.push_refspecs));
+        let remote_branch = if is_detached {
+            String::new()
+        } else {
+            split_up
+                .map(|(_, rb)| rb.to_string())
+                .or(refspec_target)
+                .unwrap_or_else(|| branch.to_string())
+        };
+        let set_upstream = !is_detached && upstream.is_none();
+        let expected_remote_oid = (!selected_remote.is_empty() && !remote_branch.is_empty())
+            .then(|| snap.remote_branch(selected_remote, &remote_branch))
+            .flatten()
+            .map(|r| r.target_oid);
         let mut pd = PushDialogState::new(
             branch.to_string(),
             remotes,
@@ -1187,6 +1233,10 @@ impl AppState {
         );
         pd.diff.whitespace = self.config.jbgit.diff.whitespace.to_core();
         pd.diff.soft_wrap = self.config.jbgit.diff.soft_wrap;
+        pd.expected_remote_oid = expected_remote_oid;
+        if is_detached && pd.remote_branch.is_empty() {
+            pd.focus = crate::log_view::PushDialogFocus::Target;
+        }
         let has_remote = !pd.remote().is_empty();
         if !has_remote {
             pd.loading = false;
@@ -1195,6 +1245,54 @@ impl AppState {
         self.blur_active_pane(false);
         self.modal_stack.open_push_dialog(pd);
         if has_remote {
+            effects.push(Effect::RequestOutgoing(key));
+        }
+    }
+
+    /// Refreshes an open PushDialog's remote list after adding/renaming a remote
+    /// (e.g. via inline `[+ Define Remote…]`).
+    pub(crate) fn sync_open_push_dialog_remotes(&mut self, effects: &mut Vec<Effect>) {
+        let Some(snap) = self.repo_snapshot.clone() else {
+            return;
+        };
+        let avail = snap.available_remotes();
+        let mut reload_key = None;
+        for layer in self.modal_stack.iter_mut() {
+            if let ModalLayer::PushDialog(pd) = layer {
+                let was_empty = pd.remotes.is_empty();
+                let prev_remote = pd.remote().to_string();
+                if pd.remotes != avail {
+                    pd.remotes = avail.clone();
+                    pd.remote_idx = avail
+                        .iter()
+                        .position(|r| r == &prev_remote)
+                        .or_else(|| {
+                            snap.default_remote()
+                                .and_then(|d| avail.iter().position(|r| r == &d))
+                        })
+                        .unwrap_or(0);
+                    if was_empty && !pd.remote().is_empty() {
+                        if !pd.is_detached()
+                            && let Some(mapped) = snap.remote(pd.remote()).and_then(|r| {
+                                jbgit_core::resolve_push_refspec_target(
+                                    &pd.branch,
+                                    &r.push_refspecs,
+                                )
+                            })
+                        {
+                            pd.remote_branch = mapped;
+                        }
+                        pd.expected_remote_oid = snap
+                            .remote_branch(pd.remote(), &pd.remote_branch)
+                            .map(|r| r.target_oid);
+                        pd.loading = true;
+                        pd.outgoing = None;
+                        reload_key = Some(pd.outgoing_key());
+                    }
+                }
+            }
+        }
+        if let Some(key) = reload_key {
             effects.push(Effect::RequestOutgoing(key));
         }
     }
@@ -1236,12 +1334,28 @@ impl AppState {
         self.config.jbgit.update.mode.to_update_mode()
     }
 
-    pub(crate) fn update_project_op(&self, mode: Option<UpdateMode>) -> GitOp {
+    pub(crate) fn update_project_op(
+        &self,
+        mode: Option<UpdateMode>,
+        update_submodules: bool,
+    ) -> GitOp {
         GitOp::UpdateProject {
             mode,
             save_changes: self.config.jbgit.update.save_changes,
             update_other_branches: self.config.jbgit.update.update_other_branches,
+            update_submodules,
         }
+    }
+
+    /// True when the checked-out branch has no upstream or its upstream ref is `[gone]`.
+    pub(crate) fn needs_upstream_picker_for_update(&self) -> bool {
+        let Some(snap) = self.snapshot() else {
+            return false;
+        };
+        let Some(head_ref) = snap.head_ref() else {
+            return false;
+        };
+        head_ref.upstream.is_none() || snap.is_upstream_gone(head_ref)
     }
 
     /// Reason Update Project cannot start (ongoing operation / detached HEAD).
@@ -1261,6 +1375,86 @@ impl AppState {
             return;
         }
         let i18n = self.i18n.clone();
+        let has_submodules = self.snapshot().is_some_and(|s| !s.submodules.is_empty());
+
+        // If current branch has no upstream or its upstream ref is [gone], let
+        // the user pick a tracking branch first, then run Update Project.
+        if self.needs_upstream_picker_for_update()
+            && let Some(snap) = self.repo_snapshot.clone()
+            && let Some(branch) = snap.head_branch.clone()
+        {
+            let mut remote_branches: Vec<String> = snap
+                .refs
+                .iter()
+                .filter(|r| r.kind == RefKind::RemoteBranch)
+                .map(|r| r.name.clone())
+                .collect();
+            let preferred = snap
+                .default_remote()
+                .map(|r| format!("{r}/{branch}"));
+            remote_branches.sort_by(|a, b| match (
+                preferred.as_deref() == Some(a.as_str()),
+                preferred.as_deref() == Some(b.as_str()),
+            ) {
+                (true, false) => std::cmp::Ordering::Less,
+                (false, true) => std::cmp::Ordering::Greater,
+                _ => jbgit_core::natural_cmp(a, b),
+            });
+            if remote_branches.is_empty() {
+                self.status_notice = Some(
+                    i18n.t_fmt("toast.update_no_upstream_candidates", &[("branch", &branch)]),
+                );
+                return;
+            }
+            let mode = self.configured_update_mode();
+            let options = remote_branches
+                .iter()
+                .take(12)
+                .map(|up| {
+                    let base_op = GitOp::Sequence(vec![
+                        GitOp::SetUpstream {
+                            branch: branch.clone(),
+                            upstream: up.clone(),
+                        },
+                        self.update_project_op(mode, false),
+                    ]);
+                    let sub_op = GitOp::Sequence(vec![
+                        GitOp::SetUpstream {
+                            branch: branch.clone(),
+                            upstream: up.clone(),
+                        },
+                        self.update_project_op(mode, true),
+                    ]);
+                    ChoiceOption::new(up.clone(), None, vec![Action::RunGitOp(base_op)])
+                        .detail(i18n.t_fmt("dialog.update_project.track_detail", &[("branch", &branch), ("upstream", up)]))
+                        .when_checked(vec![Action::RunGitOp(sub_op)])
+                })
+                .collect();
+            let is_gone = snap.head_ref().is_some_and(|r| snap.is_upstream_gone(r));
+            let body_key = if is_gone {
+                "dialog.update_project.upstream_gone_body"
+            } else {
+                "dialog.update_project.no_upstream_body"
+            };
+            let mut dlg = ChoiceDialog::radio(
+                i18n.t("dialog.update_project.select_upstream_title"),
+                vec![i18n.t_fmt(body_key, &[("branch", &branch)])],
+                options,
+                0,
+                i18n.t("dialog.update_project.set_and_update_btn"),
+            );
+            if has_submodules {
+                dlg.checkbox = Some(crate::dialogs::ChoiceCheckbox {
+                    label: i18n.t("dialog.update_project.update_submodules").to_string(),
+                    checked: false,
+                    checked_actions: Vec::new(),
+                });
+            }
+            self.blur_active_pane(false);
+            self.push_dialog(Dialog::Choice(dlg));
+            return;
+        }
+
         let modes: [(Option<UpdateMode>, &str, &str, char); 3] = [
             (
                 None,
@@ -1289,23 +1483,32 @@ impl AppState {
                 ChoiceOption::new(
                     i18n.t(label),
                     Some(*mn),
-                    vec![Action::RunGitOp(self.update_project_op(*mode))],
+                    vec![Action::RunGitOp(self.update_project_op(*mode, false))],
                 )
                 .detail(i18n.t(desc))
+                .when_checked(vec![Action::RunGitOp(self.update_project_op(*mode, true))])
             })
             .collect();
         let mut body = vec![i18n.t("dialog.update_project.body").to_string()];
         if !self.config.jbgit.update.update_other_branches {
             body.push(i18n.t("dialog.update_project.current_only").to_string());
         }
-        self.blur_active_pane(false);
-        self.push_dialog(Dialog::Choice(ChoiceDialog::radio(
+        let mut dlg = ChoiceDialog::radio(
             i18n.t("dialog.update_project.title"),
             body,
             options,
             selected,
             i18n.t("dialog.update_project.confirm_btn"),
-        )));
+        );
+        if has_submodules {
+            dlg.checkbox = Some(crate::dialogs::ChoiceCheckbox {
+                label: i18n.t("dialog.update_project.update_submodules").to_string(),
+                checked: false,
+                checked_actions: Vec::new(),
+            });
+        }
+        self.blur_active_pane(false);
+        self.push_dialog(Dialog::Choice(dlg));
     }
 
     pub(crate) fn prompt_unshallow(&mut self) {
@@ -1563,6 +1766,15 @@ impl AppState {
                 GitOp::UpdateProject { .. } => {
                     self.notify_update_info(outcome.update_info.as_ref());
                 }
+                GitOp::SetIdentity { name, email, .. } => {
+                    self.stage_workbench
+                        .set_identity_in_precheck(name.clone(), email.clone());
+                    effects.push(Effect::RequestCommitPrecheck);
+                    self.status_notice = Some(self.i18n.t("toast.identity_saved").to_string());
+                    if let Some(pending) = self.pending_commit_after_identity.take() {
+                        effects.extend(self.dispatch(Action::ExecuteCommitConfirmed(pending)));
+                    }
+                }
                 GitOp::AddRemote { name, .. } => {
                     let text = self.i18n.t_fmt("toast.remote_added", &[("name", name)]);
                     self.status_notice = Some(text.clone());
@@ -1615,6 +1827,9 @@ impl AppState {
         }
 
         let label = op_label;
+        if matches!(op, GitOp::SetIdentity { .. }) {
+            self.pending_commit_after_identity = None;
+        }
         if let Some(f) = &outcome.failure
             && self.on_worktree_failure(&op, f)
         {
@@ -1779,6 +1994,8 @@ impl AppState {
                     force,
                     tags,
                     up_to,
+                    no_verify,
+                    expected_remote_oid,
                 } = &op
                 {
                     let target_branch = if remote_branch.is_empty() {
@@ -1797,35 +2014,50 @@ impl AppState {
                     );
                     let branch_tip = self
                         .snapshot()
-                        .and_then(|s| s.local_branch(branch))
-                        .map(|b| b.target_oid);
+                        .and_then(|s| s.local_branch(branch).map(|b| b.target_oid).or(s.head_oid));
+                    let remote_tip = self
+                        .snapshot()
+                        .and_then(|s| s.remote_branch(remote, target_branch))
+                        .map(|r| r.target_oid);
+                    let rebase_has_merges = match (self.snapshot(), remote_tip, branch_tip) {
+                        (Some(snap), Some(base), Some(tip)) => {
+                            snap.has_merge_commits_in_range(base, tip)
+                        }
+                        _ => false,
+                    };
                     let partial_up_to = up_to.filter(|oid| branch_tip != Some(*oid));
+                    let smart_merge = GitOp::Smart(Box::new(GitOp::Sequence(vec![
+                        GitOp::Fetch,
+                        GitOp::Merge {
+                            rev: target_ref.clone(),
+                            options: MergeOptions::default(),
+                        },
+                    ])));
+                    let smart_rebase = GitOp::Smart(Box::new(GitOp::Sequence(vec![
+                        GitOp::Fetch,
+                        GitOp::Rebase {
+                            onto: target_ref.clone(),
+                            branch: (!is_current).then(|| branch.clone()),
+                        },
+                    ])));
                     let mut options = Vec::new();
                     if partial_up_to.is_some() {
                         if is_current {
                             options.push(ChoiceOption::new(
                                 i18n.t("dialog.push.merge_only_btn"),
                                 Some('m'),
-                                vec![Action::RunGitOp(GitOp::Sequence(vec![
-                                    GitOp::Fetch,
-                                    GitOp::Merge {
-                                        rev: target_ref.clone(),
-                                        options: MergeOptions::default(),
-                                    },
-                                ]))],
+                                vec![Action::RunGitOp(smart_merge)],
                             ));
                         }
-                        options.push(ChoiceOption::new(
+                        let mut rebase_opt = ChoiceOption::new(
                             i18n.t("dialog.push.rebase_only_btn"),
                             Some('r'),
-                            vec![Action::RunGitOp(GitOp::Sequence(vec![
-                                GitOp::Fetch,
-                                GitOp::Rebase {
-                                    onto: target_ref.clone(),
-                                    branch: (!is_current).then(|| branch.clone()),
-                                },
-                            ]))],
-                        ));
+                            vec![Action::RunGitOp(smart_rebase)],
+                        );
+                        if rebase_has_merges {
+                            rebase_opt = rebase_opt.danger();
+                        }
+                        options.push(rebase_opt);
                     } else {
                         let retry_push = GitOp::Push {
                             branch: branch.clone(),
@@ -1835,33 +2067,31 @@ impl AppState {
                             force: *force,
                             tags: *tags,
                             up_to: None,
+                            no_verify: *no_verify,
+                            expected_remote_oid: None,
                         };
                         if is_current {
                             options.push(ChoiceOption::new(
                                 i18n.t("dialog.push.merge_retry_btn"),
                                 Some('m'),
                                 vec![Action::RunGitOp(GitOp::Sequence(vec![
-                                    GitOp::Fetch,
-                                    GitOp::Merge {
-                                        rev: target_ref.clone(),
-                                        options: MergeOptions::default(),
-                                    },
+                                    smart_merge,
                                     retry_push.clone(),
                                 ]))],
                             ));
                         }
-                        options.push(ChoiceOption::new(
+                        let mut rebase_opt = ChoiceOption::new(
                             i18n.t("dialog.push.rebase_retry_btn"),
                             Some('r'),
                             vec![Action::RunGitOp(GitOp::Sequence(vec![
-                                GitOp::Fetch,
-                                GitOp::Rebase {
-                                    onto: target_ref.clone(),
-                                    branch: (!is_current).then(|| branch.clone()),
-                                },
+                                smart_rebase,
                                 retry_push,
                             ]))],
-                        ));
+                        );
+                        if rebase_has_merges {
+                            rebase_opt = rebase_opt.danger();
+                        }
+                        options.push(rebase_opt);
                     }
                     if !force.is_force() && !is_protected {
                         options.push(
@@ -1876,6 +2106,8 @@ impl AppState {
                                     force: PushForce::WithLease,
                                     tags: *tags,
                                     up_to: *up_to,
+                                    no_verify: *no_verify,
+                                    expected_remote_oid: *expected_remote_oid,
                                 })],
                             )
                             .danger(),
@@ -1886,6 +2118,9 @@ impl AppState {
                         "dialog.push.rejected_body",
                         &[("remote", remote), ("branch", target_branch)],
                     )];
+                    if rebase_has_merges {
+                        body.push(i18n.t("dialog.push.rebase_merge_warning").to_string());
+                    }
                     if let Some(oid) = partial_up_to {
                         body.push(i18n.t_fmt(
                             "dialog.push.rejected_up_to_note",

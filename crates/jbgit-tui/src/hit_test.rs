@@ -74,9 +74,12 @@ pub enum CommitOptionKind {
     Amend,
     Signoff,
     RunHooks,
+    AllowEmpty,
     AuthorToggle,
     AuthorInput,
+    AuthorSuggestion,
     History,
+    Reformat,
     ExternalEditor,
 }
 
@@ -162,6 +165,7 @@ pub enum PushOptionKind {
     Tags,
     Force,
     SetUpstream,
+    NoVerify,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -354,6 +358,7 @@ pub enum HitTarget {
     AnnotateDiffArea,
     PushTargetBranch,
     PushRemotePicker,
+    PushDefineRemote,
     PushRemoteOption(usize),
     PushCompletionItem(usize),
     PushCommitRow(usize),

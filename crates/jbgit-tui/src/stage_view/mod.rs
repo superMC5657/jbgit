@@ -6,6 +6,7 @@ mod workbench;
 
 pub use commit_editor::CommitMessageEditor;
 pub use workbench::{CommitContext, CommitWorkbench};
+pub(crate) use workbench::undo_head_warning_message;
 
 #[cfg(test)]
 mod tests {

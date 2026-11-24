@@ -456,7 +456,7 @@ fn collect_remotes(repo: &Repository) -> Vec<RemoteInfo> {
         .flatten()
         .filter(|s| !s.is_empty())
         .map(|name| {
-            let (fetch_url, push_url) = match repo.find_remote(name) {
+            let (fetch_url, push_url, push_refspecs) = match repo.find_remote(name) {
                 Ok(r) => (
                     r.url().ok().filter(|u| !u.is_empty()).map(ToString::to_string),
                     r.pushurl()
@@ -464,13 +464,24 @@ fn collect_remotes(repo: &Repository) -> Vec<RemoteInfo> {
                         .flatten()
                         .filter(|u| !u.is_empty())
                         .map(ToString::to_string),
+                    r.push_refspecs()
+                        .ok()
+                        .map(|arr| {
+                            arr.iter()
+                                .flatten()
+                                .flatten()
+                                .map(ToString::to_string)
+                                .collect()
+                        })
+                        .unwrap_or_default(),
                 ),
-                Err(_) => (None, None),
+                Err(_) => (None, None, Vec::new()),
             };
             RemoteInfo {
                 name: name.to_string(),
                 fetch_url,
                 push_url,
+                push_refspecs,
             }
         })
         .collect();

@@ -564,15 +564,29 @@ pub enum GitOp {
         force: PushForce,
         tags: PushTagMode,
         up_to: Option<Oid>,
+        no_verify: bool,
+        expected_remote_oid: Option<Oid>,
     },
     Sequence(Vec<GitOp>),
     /// Update Project: save changes → `fetch --all --prune` → merge / rebase the
     /// current branch onto its upstream → fast-forward other tracked branches →
-    /// restore changes. `mode: None` follows `pull.rebase`.
+    /// optional submodule update → restore changes. `mode: None` follows `pull.rebase`.
     UpdateProject {
         mode: Option<UpdateMode>,
         save_changes: bool,
         update_other_branches: bool,
+        update_submodules: bool,
+    },
+    /// `git config [--global] user.name <name>` and `user.email <email>`.
+    SetIdentity {
+        name: String,
+        email: String,
+        global: bool,
+    },
+    /// `git branch --set-upstream-to=<upstream> <branch>`.
+    SetUpstream {
+        branch: String,
+        upstream: String,
     },
     UpdateBranch {
         branch: String,
@@ -745,6 +759,10 @@ impl GitOp {
                 .collect::<Vec<_>>()
                 .join(" → "),
             Self::UpdateProject { .. } => "Update Project".to_string(),
+            Self::SetIdentity { .. } => "Configure Git identity".to_string(),
+            Self::SetUpstream { branch, upstream } => {
+                format!("Set upstream of '{branch}' → '{upstream}'")
+            }
             Self::UpdateBranch { branch, .. } => format!("Update '{branch}'"),
             Self::RewordHead { .. } => "Reword HEAD".to_string(),
             Self::RewriteHistory { todo, .. } => format!("Rewrite {} commit(s)", todo.len()),
@@ -874,6 +892,7 @@ impl GitOp {
             | Self::PruneWorktrees
             | Self::Fetch
             | Self::Push { .. }
+            | Self::SetUpstream { .. }
             | Self::UpdateBranch { .. } => RefreshScope::RefsAndGraph,
             Self::Sequence(ops) => ops
                 .iter()

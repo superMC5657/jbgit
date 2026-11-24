@@ -23,22 +23,26 @@ pub(crate) fn route_commit_priority_key(
     let shift = key.modifiers.contains(KeyModifiers::SHIFT);
 
     if state.focused_pane == PaneId::CommitMessageEditor {
+        if state.stage_workbench.editing_author() {
+            return Some(match key.code {
+                KeyCode::Esc | KeyCode::Enter => vec![Action::CommitAuthorDone],
+                KeyCode::Tab => vec![Action::CommitAuthorAcceptCompletion],
+                KeyCode::Up => vec![Action::CommitAuthorCycleCompletion(-1)],
+                KeyCode::Down => vec![Action::CommitAuthorCycleCompletion(1)],
+                KeyCode::Backspace => vec![Action::CommitAuthorBackspace],
+                KeyCode::Char(c) if !ctrl && !alt => vec![Action::CommitAuthorChar(c)],
+                _ => Vec::new(),
+            });
+        }
         if let Some(actions) = crate::keymap::route_editor_dynamic_key(key, state) {
             return Some(actions);
         }
         if key.code == KeyCode::Char('e') && ctrl && !alt {
             return Some(vec![Action::OpenExternalEditorMessage]);
         }
-        if state.stage_workbench.editing_author() {
-            return Some(match key.code {
-                KeyCode::Esc | KeyCode::Enter => vec![Action::CommitAuthorDone],
-                KeyCode::Backspace => vec![Action::CommitAuthorBackspace],
-                KeyCode::Char(c) if !ctrl && !alt => vec![Action::CommitAuthorChar(c)],
-                _ => Vec::new(),
-            });
-        }
         return Some(match key.code {
             KeyCode::Esc => vec![Action::FocusPane(PaneId::CommitChangesTree)],
+            KeyCode::Char('q') if alt && !ctrl => vec![Action::CommitEditorReformat],
             KeyCode::Enter => vec![Action::CommitEditorNewline],
             KeyCode::Backspace if alt => vec![Action::CommitEditorDeleteWord],
             KeyCode::Backspace => vec![Action::CommitEditorBackspace],
@@ -259,12 +263,15 @@ pub(crate) fn route_stage_left_click(
             CommitOptionKind::Amend => vec![Action::CommitToggleAmend],
             CommitOptionKind::Signoff => vec![Action::CommitToggleSignoff],
             CommitOptionKind::RunHooks => vec![Action::CommitToggleRunHooks],
+            CommitOptionKind::AllowEmpty => vec![Action::CommitToggleAllowEmpty],
             CommitOptionKind::AuthorToggle => vec![Action::CommitToggleAuthorInput],
             CommitOptionKind::AuthorInput => vec![Action::CommitFocusAuthorInput],
+            CommitOptionKind::AuthorSuggestion => vec![Action::CommitAuthorAcceptCompletion],
             CommitOptionKind::History => vec![Action::OpenPopup {
                 kind: PopupKind::CommitHistory,
                 initial_query: String::new(),
             }],
+            CommitOptionKind::Reformat => vec![Action::CommitEditorReformat],
             CommitOptionKind::ExternalEditor => vec![Action::OpenExternalEditorMessage],
         }),
         HitTarget::CommitButton { and_push } => Ok(vec![Action::SubmitCommit { and_push }]),

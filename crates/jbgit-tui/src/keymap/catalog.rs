@@ -631,24 +631,34 @@ pub fn execute_action(run: &KeyAction, state: &AppState) -> Option<Vec<Action>> 
         }),
         KeyAction::UpdateProject => Some(match state.update_project_blocker() {
             Some(msg) => vec![Action::Notice(msg)],
+            None if state.needs_upstream_picker_for_update() => {
+                vec![Action::PromptUpdateProject]
+            }
             None => vec![Action::RunGitOp(
-                state.update_project_op(state.configured_update_mode()),
+                state.update_project_op(state.configured_update_mode(), false),
             )],
         }),
         KeyAction::GitPush => {
-            let Some(branch) = state
-                .repo_snapshot
-                .as_ref()
-                .and_then(|s| s.head_branch.clone())
-            else {
+            let Some(snap) = state.repo_snapshot.as_ref() else {
                 return Some(vec![Action::Notice(
-                    state.i18n.t("menu.log.detached_no_branch").to_string(),
+                    state.i18n.t("toast.repo_not_loaded").to_string(),
                 )]);
             };
-            Some(vec![Action::PromptPush {
-                branch,
-                up_to: None,
-            }])
+            if let Some(branch) = snap.head_branch.clone() {
+                Some(vec![Action::PromptPush {
+                    branch,
+                    up_to: None,
+                }])
+            } else if let Some(head_oid) = snap.head_oid {
+                Some(vec![Action::PromptPush {
+                    branch: "HEAD".to_string(),
+                    up_to: Some(head_oid),
+                }])
+            } else {
+                Some(vec![Action::Notice(
+                    state.i18n.t("menu.log.detached_no_branch").to_string(),
+                )])
+            }
         }
         KeyAction::Palette => Some(vec![Action::OpenPopup {
             kind: PopupKind::PalettePreview,

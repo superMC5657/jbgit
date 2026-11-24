@@ -499,6 +499,34 @@ fn render_commit_panel(
             HitTarget::CommitOption(CommitOptionKind::AuthorInput),
         );
         y += 1;
+
+        if sw.editing_author()
+            && y < bottom
+            && let Some((suggestion, idx, total)) =
+                sw.active_author_suggestion(state.repo_snapshot.as_deref())
+        {
+            let sug_rect = Rect::new(area.x, y, area.width, 1);
+            let counter = format!(" ({}/{total} Tab/↑↓)", idx + 1);
+            let avail = area.width.saturating_sub(counter.width() as u16 + 4) as usize;
+            let sug_line = Line::from(vec![
+                Span::styled("   ↳ ", Style::default().fg(ctx.theme.fg_accent_link)),
+                Span::styled(
+                    truncate_to_width(&suggestion, avail),
+                    Style::default().fg(ctx.theme.fg_bright),
+                ),
+                Span::styled(counter, Style::default().fg(ctx.theme.fg_muted)),
+            ]);
+            frame.render_widget(
+                Paragraph::new(sug_line).style(Style::default().bg(ctx.theme.bg_panel)),
+                sug_rect,
+            );
+            ctx.hit_registry.register(
+                sug_rect,
+                3,
+                HitTarget::CommitOption(CommitOptionKind::AuthorSuggestion),
+            );
+            y += 1;
+        }
     }
 
     // Reserve bottom rows for Action buttons (and optional Undo Commit / Progress banner)
@@ -604,6 +632,12 @@ fn render_commit_options_row(
             has_hooks && sw.run_hooks(),
             !has_hooks,
             CommitOptionKind::RunHooks,
+        ),
+        (
+            format!(" [{}] {} ", chk(sw.allow_empty()), ctx.t("view.commit.allow_empty")),
+            sw.allow_empty(),
+            false,
+            CommitOptionKind::AllowEmpty,
         ),
         (
             format!(" {} ", ctx.t("view.commit.author")),
@@ -715,15 +749,47 @@ fn render_commit_message_editor(
                 ctx.theme.fg_muted
             }),
         ));
-        let right = vec![Span::styled(
-            format!("{subj_len}/50 "),
+        let comment_char = sw.precheck().comment_char;
+        let has_overlong_body = ed.lines.iter().skip(1).any(|l| {
+            !l.starts_with(comment_char) && l.width() > jbgit_core::COMMIT_BODY_MAX_WIDTH
+        });
+        let reformat_btn = state.i18n.t("view.commit.reformat_btn").to_string();
+        let subj_counter = format!("{subj_len}/50 ");
+        let mut right = Vec::new();
+        if has_overlong_body {
+            right.push(Span::styled(
+                format!("{reformat_btn} "),
+                Style::default()
+                    .fg(ctx.theme.ref_head.icon)
+                    .add_modifier(Modifier::BOLD),
+            ));
+        } else if ed.lines.len() > 1 {
+            right.push(Span::styled(
+                format!("{reformat_btn} "),
+                Style::default().fg(ctx.theme.fg_muted),
+            ));
+        }
+        right.push(Span::styled(
+            subj_counter.clone(),
             Style::default().fg(len_color),
-        )];
+        ));
         let spans = fit_left_right_spans(left, right, area.width as usize, 0);
         frame.render_widget(
             Paragraph::new(Line::from(spans)).style(Style::default().bg(ctx.theme.bg_panel)),
             Rect::new(area.x, area.y, area.width, 1),
         );
+        if ed.lines.len() > 1 {
+            let btn_w = reformat_btn.width() as u16;
+            let counter_w = subj_counter.width() as u16;
+            if area.width > btn_w + counter_w + 1 {
+                let bx = area.right().saturating_sub(counter_w + btn_w + 1);
+                ctx.hit_registry.register(
+                    Rect::new(bx, area.y, btn_w, 1),
+                    4,
+                    HitTarget::CommitOption(CommitOptionKind::Reformat),
+                );
+            }
+        }
     }
 
     if text_area.height == 0 || text_area.width <= 2 {
@@ -761,7 +827,21 @@ fn render_commit_message_editor(
             continue;
         };
 
-        let text_fg = if wl.logical_line == 0 {
+        let comment_char = sw.precheck().comment_char;
+        let logical_line_text = ed
+            .lines
+            .get(wl.logical_line)
+            .map(String::as_str)
+            .unwrap_or("");
+        let is_comment = logical_line_text.starts_with(comment_char);
+        let is_overlong_body = wl.logical_line >= 1
+            && !is_comment
+            && logical_line_text.width() > jbgit_core::COMMIT_BODY_MAX_WIDTH;
+        let text_fg = if is_comment {
+            ctx.theme.fg_muted
+        } else if is_overlong_body {
+            ctx.theme.ref_head.icon
+        } else if wl.logical_line == 0 {
             ctx.theme.fg_bright
         } else {
             ctx.theme.fg_primary

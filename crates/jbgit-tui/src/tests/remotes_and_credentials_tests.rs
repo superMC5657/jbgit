@@ -19,11 +19,13 @@ fn remotes_snapshot() -> RepoSnapshot {
             name: "origin".into(),
             fetch_url: Some("https://u:secret@example.com/o.git".into()),
             push_url: None,
+            push_refspecs: Vec::new(),
         },
         RemoteInfo {
             name: "fork".into(),
             fetch_url: Some("https://example.com/f.git".into()),
             push_url: Some("ssh://git@example.com/f.git".into()),
+            push_refspecs: Vec::new(),
         },
     ];
     snap.refs.push(remote("fork/main", 3));

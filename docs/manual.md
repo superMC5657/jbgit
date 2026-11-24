@@ -60,7 +60,7 @@ jbgit 默认采用**零冲突统一键位（`preset = "default"`）**，并通�
 | `<Tab>` / `<Shift-Tab>` | 在当前视图各面板之间循环切换焦点 |
 | `b` / `g b` / `` <Ctrl-`> `` / `<Ctrl-~>` / `<Alt-b>`*(非 Log 页)* | 呼出全局分支速查浮窗（`<Esc>` 关闭） |
 | `f` / `p` / `P` | 远程同步：**Fetch (`f`)** / **Pull (`p`)** / **Push… (`P`)** |
-| `<Alt-u>` | **Update Project**（三套预设一致）：贮藏本地改动 → `fetch --all --prune` → 当前分支按 `[update].mode` 合并或变基 upstream → 其他跟踪分支仅快进 → 恢复改动；完成通知 `<Alt-z>`「查看」打开只读 Range 筛选的 Log。头部分支胶囊中的 `↓N` 计数可点击打开模式选择 |
+| `<Alt-u>` | **Update Project**（三套预设一致）：贮藏本地改动 → `fetch --all --prune` → 当前分支按 `[update].mode` 合并或变基 upstream → 其他跟踪分支仅快进 → 可选同步更新已初始化子模块 → 恢复改动；若当前分支无上游或上游已删除 (`[gone]`) 会自动弹出跟踪分支选择器；完成通知 `<Alt-z>`「查看」打开只读 Range 筛选的 Log。头部分支胶囊中的 `↓N` 计数可点击打开模式选择（含子模块时提供 `Update Submodules` 复选框） |
 | `<Alt-r>` | **Configure Remotes…**：远端列表（添加 / 重命名 / 编辑 URL / 删除 / 获取），详见[四、远端与凭据](#四远端与凭据-remotes--credentials) |
 | `<Alt-o>` / 点击头部仓库名 | **切换仓库**：最近仓库 / 当前仓库的 linked worktree / 已初始化子模块，模糊过滤，`<Ctrl-o>` 输入任意路径；详见[五、切换仓库与 Worktree](#五切换仓库与-worktree-repositories--working-trees) |
 | `<Alt-w>` | **Working Trees…**：Worktree 列表（打开 / 新建 / 锁定 / 删除 / 清理；需 git ≥ 2.17） |
@@ -138,9 +138,11 @@ jbgit 默认采用**零冲突统一键位（`preset = "default"`）**，并通�
 | `<Ctrl-a>` | 全选变更文件 |
 | `d` / `<Del>` / `<Ctrl-Alt-z>` | 放弃选中文件或代码块的本地修改 (Discard Changes) |
 | `v` / `e` / `H` / `<Alt-g>` | 按目录树分组 (`v`) / 外部编辑器 (`e`) / 文件历史 (`H`) / Git Blame 逐行追溯 (`<Alt-g>`) |
-| `<Ctrl-e>` / `<Ctrl-z>` / `<Ctrl-y>` / `<Ctrl-w>` | *(提交说明编辑器内)* 外部编辑器编辑说明 / 撤销 / 重做（亦支持 `<Ctrl-Shift-z>`）/ 删词（亦支持 `<Alt-Backspace>`） |
+| `<Ctrl-e>` / `<Alt-q>` / `<Ctrl-z>` / `<Ctrl-y>` / `<Ctrl-w>` | *(提交说明编辑器内)* 外部编辑器编辑说明 / 72 列正文自动重排 (`Reformat`，保留标题行、列表、代码块、Trailers 与注释行) / 撤销 / 重做（亦支持 `<Ctrl-Shift-z>`）/ 删词（亦支持 `<Alt-Backspace>`） |
 
 > 提示：
+> - **模板、合并消息与注释剥离**：支持自动载入 `commit.template` 以及 Merge/Squash/冲突恢复时的 `.git/MERGE_MSG` / `.git/SQUASH_MSG`；提交时无论 CLI (`--cleanup=strip`) 还是 `git2` 路径均按 `core.commentChar` 剥离注释行；正文超过 72 列的行会在编辑器内高亮提示，可按 `<Alt-q>` 或点击 `[72↺]` 一键重排。
+> - **提交选项与护栏**：选项栏支持 `Amend`、`Sign-off`、`Hooks`、`Empty`（`--allow-empty`）与 `Author`（输入时支持按最近提交者 `Tab`/`↑`/`↓` 自动补全）；未配置 `user.name`/`user.email` 时自动弹出「配置 Git 身份信息」对话框（支持本地/全局）并在保存后自动继续提交；`Undo Last Commit` / `Uncommit` 遇到合并提交或已推送至上游的 HEAD 时会弹出二次危险确认；`Commit & Push…` 提交成功后直接进入完整 Push 对话框。
 > - 当仓库（含 linked worktree 共享的 `common_dir/hooks`）未配置提交类 Git Hooks 时，Commit 面板的 `Hooks` 复选框会置灰显示为 `Hooks (none)`；处于 Merge / Cherry-Pick / Revert / Rebase 状态时，提交会自动走原生 `git commit` CLI 以保留多父提交并清理 sequencer 状态文件。
 > - 符号链接（含悬空链接）与类型变更在变更树中支持整文件暂存/取消暂存，行级局部暂存自动禁用。
 
@@ -267,16 +269,16 @@ jbgit 默认采用**零冲突统一键位（`preset = "default"`）**，并通�
 - `--squash` / `--no-commit` 完成后自动切到 `[1 Commit]` 并以 `.git/SQUASH_MSG` / `MERGE_MSG` 预填提交说明。
 - `--ff-only` 因分叉失败时弹出「普通合并 / 变基到 '<rev>' / 取消」。
 
-**完整 Push 推送浮窗**（全局按 `P`，或在分支/提交菜单选择 `Push…` / `Push up to Here` 打开；包含 `Target | Outgoing Commits | Changed Files / Diff` 三栏预览）：
+**完整 Push 推送浮窗**（全局按 `P`（含游离 HEAD 推送），或在分支/提交菜单选择 `Push…` / `Push up to Here` / Commit 面板 `Commit & Push…` 打开；包含 `Target | Outgoing Commits | Changed Files / Diff` 三栏预览）：
 
 | 快捷键 | 功能描述 |
 | :--- | :--- |
 | `<Tab>` / `<Shift-Tab>` | 在 `Target` / `Outgoing Commits` / `Changed Files` 三栏之间循环切换焦点 |
-| `e` / `r` | 内联编辑目标分支名（支持 `<Tab>` 补全远端分支、`↑`/`↓` 选候选、`<Ctrl-u>` 清空、`<Enter>` 确认并刷新待推提交） / 切换远端仓库 (`r`) |
+| `e` / `r` | 内联编辑目标分支名（支持 `<Tab>` 补全远端分支、`↑`/`↓` 选候选、`<Ctrl-u>` 清空、`<Enter>` 确认并刷新待推提交，默认遵循 `remote.<name>.push` refspec） / 切换远端仓库 (`r`；无远端时可直接点击 `[+ 添加远端…]` 或按 `r`/`a` 内联定义远端) |
 | `j` / `k` / `<PageUp>` / `<PageDown>` / `g g` / `G` | 浏览待推提交列表、右侧变更文件树或文件差异 |
 | `d` / `<Enter>` *(Files 栏)* | 打开或关闭当前选中变更文件的 Diff 预览（Diff 内支持 `S` 并排对比、`c` 上下文行数、`[`/`]` Hunk 跳转） |
-| `t` / `f` / `u` | 循环切换 Tag 模式 (`None` / `Current branch (--follow-tags)` / `All (--tags)`) / 强推模式 (`No` / `With lease` / `Force`，受 `[push].protected_branches` 保护拦截) / 勾选 `Set upstream` |
-| `<Enter>` / `<Ctrl-Enter>` / `<Esc>` | 执行推送（若因非快进被拒绝，弹窗提供 `Merge & Retry` / `Rebase & Retry` 串行拉取合入并重试） / 取消关闭 |
+| `t` / `f` / `u` / `n` | 循环切换 Tag 模式 (`None` / `Current branch (--follow-tags)` / `All (--tags)`) / 强推模式 (`No` / `With lease`（精确绑定 `--force-with-lease=<ref>:<oid>`）/ `Force`，受 `[push].protected_branches` 保护拦截) / 勾选 `Set upstream`（游离 HEAD 自动禁用） / 勾选 `Skip hooks` (`--no-verify`) |
+| `<Enter>` / `<Ctrl-Enter>` / `<Esc>` | 执行推送（若因非快进被拒绝，弹窗提供带 Smart 自动贮藏/恢复的 `Merge & Retry` / `Rebase & Retry`，若待变基区间包含合并提交还会显式警示） / 取消关闭 |
 
 ---
 

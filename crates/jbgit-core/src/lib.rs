@@ -1,4 +1,5 @@
 pub mod branch_tree;
+pub mod commit_msg;
 pub mod conflict;
 pub mod console;
 pub mod details;
@@ -22,6 +23,10 @@ pub use branch_tree::{
     BranchCategory, BranchNodeKind, BranchTreeExpansion, BranchTreeNode, BranchTreeOptions,
     BranchTreeRow, BranchesPanelSettings, BranchesTreeModel, FavoriteBranches, fuzzy_match,
     natural_cmp,
+};
+pub use commit_msg::{
+    COMMIT_BODY_MAX_WIDTH, parse_comment_char, reformat_commit_message,
+    resolve_push_refspec_target, strip_commit_comments,
 };
 pub use conflict::{
     ConflictBlock, ConflictChoice, ConflictDocument, ConflictPaneRow, ConflictParseOptions,

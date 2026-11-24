@@ -75,6 +75,8 @@ pub struct AppState {
     pub(crate) git_ops_running: usize,
     /// Outgoing commit count visible when the user confirmed the last Push dialog.
     pub(crate) last_push_expected_commits: Option<usize>,
+    /// Commit queued while configuring missing `user.name` / `user.email`.
+    pub(crate) pending_commit_after_identity: Option<jbgit_engine::CommitRequest>,
     /// Update Project stopped on conflicts with local changes still stashed:
     /// pop them once the ongoing operation is continued / aborted.
     pub(crate) pending_update_stash: bool,
@@ -204,6 +206,7 @@ impl AppState {
             menu_hover: None,
             git_ops_running: 0,
             last_push_expected_commits: None,
+            pending_commit_after_identity: None,
             pending_update_stash: false,
             credentials: crate::app::CredentialQueue::default(),
             pending_remote_selection: None,

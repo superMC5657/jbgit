@@ -922,6 +922,7 @@ async fn commit_unborn_amend_undo_and_hooks_workflow() {
             amend: false,
             signoff: true,
             run_hooks: true,
+            allow_empty: false,
             author_override: None,
             stage_all_tracked: false,
             and_push: false,
@@ -948,6 +949,7 @@ async fn commit_unborn_amend_undo_and_hooks_workflow() {
             amend: true,
             signoff: true,
             run_hooks: true,
+            allow_empty: false,
             author_override: None,
             stage_all_tracked: false,
             and_push: false,
@@ -968,6 +970,7 @@ async fn commit_unborn_amend_undo_and_hooks_workflow() {
             amend: false,
             signoff: false,
             run_hooks: true,
+            allow_empty: false,
             author_override: None,
             stage_all_tracked: false,
             and_push: false,
@@ -1010,6 +1013,7 @@ async fn commit_unborn_amend_undo_and_hooks_workflow() {
                 amend: false,
                 signoff: false,
                 run_hooks: true,
+                allow_empty: false,
                 author_override: None,
                 stage_all_tracked: false,
                 and_push: false,
@@ -1036,6 +1040,7 @@ async fn commit_unborn_amend_undo_and_hooks_workflow() {
                 amend: false,
                 signoff: false,
                 run_hooks: false,
+                allow_empty: false,
                 author_override: None,
                 stage_all_tracked: false,
                 and_push: false,
@@ -2420,6 +2425,8 @@ async fn outgoing_commits_and_push_rejected_sequence_retry() {
         force: PushForce::None,
         tags: PushTagMode::None,
         up_to: None,
+        no_verify: false,
+        expected_remote_oid: None,
     };
     let rejected = run_git_op(&handle, &mut rx, push_main.clone()).await;
     assert!(!rejected.success);
@@ -2461,6 +2468,8 @@ async fn outgoing_commits_and_push_rejected_sequence_retry() {
             force: PushForce::None,
             tags: PushTagMode::Follow,
             up_to: None,
+            no_verify: false,
+            expected_remote_oid: None,
         },
     )
     .await;
@@ -3451,6 +3460,7 @@ async fn sequential_stage_and_unstage_never_clobber_other_files_across_workers()
             amend: false,
             signoff: false,
             run_hooks: false,
+            allow_empty: false,
             author_override: None,
             stage_all_tracked: false,
             and_push: false,
@@ -3568,6 +3578,7 @@ async fn merge_no_commit_without_hooks_preserves_two_parents_and_cleans_merge_he
             amend: false,
             signoff: false,
             run_hooks: true,
+            allow_empty: false,
             author_override: None,
             stage_all_tracked: false,
             and_push: false,
@@ -3657,6 +3668,7 @@ async fn linked_worktree_detects_common_dir_pre_commit_hook_and_blocks_commit() 
             amend: false,
             signoff: false,
             run_hooks: true,
+            allow_empty: false,
             author_override: None,
             stage_all_tracked: false,
             and_push: false,
@@ -4245,4 +4257,292 @@ async fn diff_whitespace_modes_and_binary_metadata_work_for_commit_and_stage() {
     assert!(stage_bin_info.old_oid.is_some());
     assert!(stage_bin_info.new_oid.is_some());
     assert_ne!(stage_bin_info.old_oid, stage_bin_info.new_oid);
+}
+
+#[tokio::test]
+async fn commit_template_merge_msg_comment_char_cleanup_and_allow_empty() {
+    let tmp = TempDir::new().unwrap();
+    let dir = tmp.path();
+    git(dir, &["init", "-b", "main"]);
+    git(dir, &["config", "user.name", "Tester"]);
+    git(dir, &["config", "user.email", "tester@example.com"]);
+    git(dir, &["config", "commit.gpgsign", "false"]);
+    git(dir, &["config", "core.commentChar", ";"]);
+
+    fs::write(
+        dir.join(".gitmessage"),
+        "; Template header comment\nfeat: template subject\n\n; explain why\n",
+    )
+    .unwrap();
+    git(dir, &["config", "commit.template", ".gitmessage"]);
+
+    fs::write(dir.join("base.txt"), "base\n").unwrap();
+    git(dir, &["add", "base.txt"]);
+
+    let loc = RepoLocation::discover(dir).unwrap();
+    let precheck = probe_commit_precheck_sync(&loc);
+    assert_eq!(precheck.comment_char, ';');
+    assert_eq!(
+        precheck.commit_template.as_deref(),
+        Some("; Template header comment\nfeat: template subject\n\n; explain why")
+    );
+    assert!(precheck.prepared_message.is_none());
+
+    let (handle, mut rx) = EngineSupervisor::start(loc.clone(), false).unwrap();
+
+    // 1. Fast git2 commit strips custom `;` comment lines while preserving `#` content.
+    let res1 = exec_commit(
+        &handle,
+        &mut rx,
+        1,
+        CommitRequest {
+            message: "; ignore me\nfeat: first commit\n\n# markdown heading kept\n; trailing".into(),
+            amend: false,
+            signoff: false,
+            run_hooks: true,
+            allow_empty: false,
+            author_override: None,
+            stage_all_tracked: false,
+            and_push: false,
+        },
+    )
+    .await;
+    assert!(res1.success, "commit failed: {res1:?}");
+    let head_msg = String::from_utf8_lossy(&git_output(dir, &["log", "-1", "--pretty=%B"]).stdout)
+        .trim()
+        .to_string();
+    assert_eq!(head_msg, "feat: first commit\n\n# markdown heading kept");
+
+    // 2. `--allow-empty` creates a commit with unchanged tree.
+    let before_empty = rev(dir, "HEAD");
+    let res2 = exec_commit(
+        &handle,
+        &mut rx,
+        2,
+        CommitRequest {
+            message: "chore: empty trigger\n; comment stripped".into(),
+            amend: false,
+            signoff: false,
+            run_hooks: true,
+            allow_empty: true,
+            author_override: None,
+            stage_all_tracked: false,
+            and_push: false,
+        },
+    )
+    .await;
+    assert!(res2.success, "allow-empty commit failed: {res2:?}");
+    assert_ne!(rev(dir, "HEAD"), before_empty);
+    let empty_msg = String::from_utf8_lossy(&git_output(dir, &["log", "-1", "--pretty=%B"]).stdout)
+        .trim()
+        .to_string();
+    assert_eq!(empty_msg, "chore: empty trigger");
+
+    // 3. `git merge --no-commit --no-ff` populates `.git/MERGE_MSG` in precheck,
+    //    and CLI commit path applies `--cleanup=strip`.
+    git(dir, &["checkout", "-b", "topic"]);
+    fs::write(dir.join("topic.txt"), "topic\n").unwrap();
+    git(dir, &["add", "topic.txt"]);
+    git(dir, &["commit", "-m", "topic work"]);
+    git(dir, &["checkout", "main"]);
+    fs::write(dir.join("main.txt"), "main\n").unwrap();
+    git(dir, &["add", "main.txt"]);
+    git(dir, &["commit", "-m", "main work"]);
+    git(dir, &["merge", "--no-commit", "--no-ff", "topic"]);
+
+    let precheck_merge = probe_commit_precheck_sync(&loc);
+    assert!(
+        precheck_merge
+            .prepared_message
+            .as_deref()
+            .is_some_and(|m| m.contains("Merge branch 'topic'")),
+        "expected MERGE_MSG in precheck: {precheck_merge:?}"
+    );
+    let merge_msg = format!(
+        "{}\n; cli comment to strip",
+        precheck_merge.prepared_message.unwrap()
+    );
+    let res3 = exec_commit(
+        &handle,
+        &mut rx,
+        3,
+        CommitRequest {
+            message: merge_msg,
+            amend: false,
+            signoff: false,
+            run_hooks: true,
+            allow_empty: false,
+            author_override: None,
+            stage_all_tracked: false,
+            and_push: false,
+        },
+    )
+    .await;
+    assert!(res3.success, "merge commit failed: {res3:?}");
+    let merged_msg = String::from_utf8_lossy(&git_output(dir, &["log", "-1", "--pretty=%B"]).stdout)
+        .trim()
+        .to_string();
+    assert!(merged_msg.contains("Merge branch 'topic'"), "{merged_msg}");
+    assert!(!merged_msg.contains("cli comment to strip"), "{merged_msg}");
+}
+
+#[tokio::test]
+async fn set_identity_op_configures_repo_and_allows_commit() {
+    let tmp = TempDir::new().unwrap();
+    let dir = tmp.path();
+    git(dir, &["init", "-b", "main"]);
+    git(dir, &["config", "commit.gpgsign", "false"]);
+    fs::write(dir.join("a.txt"), "hello\n").unwrap();
+    git(dir, &["add", "a.txt"]);
+
+    let loc = RepoLocation::discover(dir).unwrap();
+    let (handle, mut rx) = EngineSupervisor::start(loc.clone(), false).unwrap();
+
+    let id_out = run_git_op(
+        &handle,
+        &mut rx,
+        jbgit_core::GitOp::SetIdentity {
+            name: "Spec13 Identity".into(),
+            email: "spec13@example.com".into(),
+            global: false,
+        },
+    )
+    .await;
+    assert!(id_out.success, "{id_out:?}");
+
+    let precheck = probe_commit_precheck_sync(&loc);
+    assert_eq!(precheck.user_name.as_deref(), Some("Spec13 Identity"));
+    assert_eq!(precheck.user_email.as_deref(), Some("spec13@example.com"));
+
+    let res = exec_commit(
+        &handle,
+        &mut rx,
+        1,
+        CommitRequest {
+            message: "feat: committed after SetIdentity".into(),
+            amend: false,
+            signoff: false,
+            run_hooks: true,
+            allow_empty: false,
+            author_override: None,
+            stage_all_tracked: false,
+            and_push: false,
+        },
+    )
+    .await;
+    assert!(res.success, "{res:?}");
+    let author = String::from_utf8_lossy(&git_output(dir, &["log", "-1", "--pretty=%an <%ae>"]).stdout)
+        .trim()
+        .to_string();
+    assert_eq!(author, "Spec13 Identity <spec13@example.com>");
+}
+
+#[tokio::test]
+async fn dirty_worktree_push_rejected_smart_rebase_retry_preserves_changes() {
+    use jbgit_core::{GitFailure, GitOp, PushForce, PushTagMode};
+
+    let bare_dir = TempDir::new().unwrap();
+    git(bare_dir.path(), &["init", "--bare", "-b", "main"]);
+
+    let clone_a = TempDir::new().unwrap();
+    let dir_a = clone_a.path();
+    git(dir_a, &["init", "-b", "main"]);
+    git(dir_a, &["config", "user.name", "Alice"]);
+    git(dir_a, &["config", "user.email", "alice@example.com"]);
+    git(
+        dir_a,
+        &["remote", "add", "origin", bare_dir.path().to_str().unwrap()],
+    );
+    git(
+        dir_a,
+        &["config", "remote.origin.push", "refs/heads/feat/*:refs/heads/team/*"],
+    );
+
+    fs::write(dir_a.join("base.txt"), "base\n").unwrap();
+    git(dir_a, &["add", "."]);
+    git(dir_a, &["commit", "-m", "base"]);
+    git(dir_a, &["push", "-u", "origin", "main"]);
+
+    // Clone B pushes a new commit so A's next push will be rejected.
+    let clone_b = TempDir::new().unwrap();
+    let dir_b = clone_b.path();
+    git(dir_b, &["clone", bare_dir.path().to_str().unwrap(), "."]);
+    git(dir_b, &["config", "user.name", "Bob"]);
+    git(dir_b, &["config", "user.email", "bob@example.com"]);
+    fs::write(dir_b.join("remote.txt"), "from bob\n").unwrap();
+    git(dir_b, &["add", "."]);
+    git(dir_b, &["commit", "-m", "bob remote commit"]);
+    git(dir_b, &["push", "origin", "main"]);
+
+    // Clone A commits local work AND leaves dirty tracked + untracked changes in worktree.
+    fs::write(dir_a.join("local.txt"), "from alice\n").unwrap();
+    git(dir_a, &["add", "."]);
+    git(dir_a, &["commit", "-m", "alice local commit"]);
+    fs::write(dir_a.join("base.txt"), "dirty tracked edit\n").unwrap();
+    fs::write(dir_a.join("scratch.txt"), "dirty untracked file\n").unwrap();
+
+    let loc = RepoLocation::discover(dir_a).unwrap();
+    let (handle, mut rx) = EngineSupervisor::start(loc, false).unwrap();
+
+    // Verify snapshot exposes `remote.origin.push` refspecs and outgoing exposes `remote_oid`.
+    let snap = fetch_snapshot(&handle, &mut rx).await;
+    assert_eq!(
+        snap.remote("origin").unwrap().push_refspecs,
+        vec!["refs/heads/feat/*:refs/heads/team/*".to_string()]
+    );
+    let _ = handle.request_outgoing(jbgit_core::OutgoingKey {
+        branch: "main".into(),
+        remote: "origin".into(),
+        remote_branch: "main".into(),
+        up_to: None,
+    });
+    let outgoing = recv_matching(&mut rx, |ev| match ev {
+        EngineEvent::OutgoingLoaded { bundle, .. } => Some(bundle),
+        _ => None,
+    })
+    .await;
+    assert_eq!(outgoing.remote_oid, Some(rev(dir_a, "refs/remotes/origin/main")));
+
+    let push_main = GitOp::Push {
+        branch: "main".into(),
+        remote: "origin".into(),
+        remote_branch: "main".into(),
+        set_upstream: false,
+        force: PushForce::None,
+        tags: PushTagMode::None,
+        up_to: None,
+        no_verify: false,
+        expected_remote_oid: None,
+    };
+    let rejected = run_git_op(&handle, &mut rx, push_main.clone()).await;
+    assert!(!rejected.success);
+    assert_eq!(rejected.failure, Some(GitFailure::PushRejected));
+
+    // Smart-wrapped Rebase & Retry succeeds even with dirty tracked + untracked worktree!
+    let retry = run_git_op(
+        &handle,
+        &mut rx,
+        GitOp::Sequence(vec![
+            GitOp::Smart(Box::new(GitOp::Sequence(vec![
+                GitOp::Fetch,
+                GitOp::Rebase {
+                    onto: "origin/main".into(),
+                    branch: None,
+                },
+            ]))),
+            push_main,
+        ]),
+    )
+    .await;
+    assert!(retry.success, "smart rebase & retry must succeed: {retry:?}");
+    assert_eq!(rev(bare_dir.path(), "refs/heads/main"), rev(dir_a, "HEAD"));
+    assert!(dir_a.join("remote.txt").exists());
+    assert_eq!(
+        fs::read_to_string(dir_a.join("base.txt")).unwrap(),
+        "dirty tracked edit\n"
+    );
+    assert_eq!(
+        fs::read_to_string(dir_a.join("scratch.txt")).unwrap(),
+        "dirty untracked file\n"
+    );
 }

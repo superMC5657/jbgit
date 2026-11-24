@@ -792,6 +792,7 @@ async fn update_project_fetches_merges_and_preserves_local_changes() {
             mode: Some(UpdateMode::Merge),
             save_changes: true,
             update_other_branches: true,
+            update_submodules: false,
         },
     )
     .await;
@@ -817,6 +818,7 @@ async fn update_project_fetches_merges_and_preserves_local_changes() {
             mode: None,
             save_changes: true,
             update_other_branches: true,
+            update_submodules: false,
         },
     )
     .await;
@@ -852,6 +854,7 @@ async fn update_project_fast_forwards_tracked_branches_and_skips_diverged() {
             mode: Some(UpdateMode::Rebase),
             save_changes: true,
             update_other_branches: true,
+            update_submodules: false,
         },
     )
     .await;
@@ -883,6 +886,7 @@ async fn update_project_stops_on_conflict_and_keeps_stash() {
             mode: Some(UpdateMode::Merge),
             save_changes: true,
             update_other_branches: false,
+            update_submodules: false,
         },
     )
     .await;

@@ -300,29 +300,73 @@ pub(crate) fn compile_simple_steps(op: &GitOp) -> Option<Vec<CompiledStep>> {
             force,
             tags,
             up_to,
+            no_verify,
+            expected_remote_oid,
         } => {
             let mut args = vec!["push".to_string(), "--porcelain".to_string()];
-            if *set_upstream {
+            let is_detached = branch == "HEAD";
+            if *set_upstream && !is_detached {
                 args.push("--set-upstream".to_string());
             }
-            if let Some(flag) = force.flag() {
-                args.push(flag.to_string());
+            if *no_verify {
+                args.push("--no-verify".to_string());
             }
-            if let Some(flag) = tags.flag() {
-                args.push(flag.to_string());
-            }
-            args.push(remote.clone());
             let target_branch = if remote_branch.is_empty() {
                 branch.as_str()
             } else {
                 remote_branch.as_str()
             };
+            let dest_ref = if target_branch.starts_with("refs/") {
+                target_branch.to_string()
+            } else {
+                format!("refs/heads/{target_branch}")
+            };
+            match force {
+                jbgit_core::PushForce::WithLease => {
+                    if let Some(oid) = expected_remote_oid {
+                        args.push(format!("--force-with-lease={dest_ref}:{oid}"));
+                    } else {
+                        args.push("--force-with-lease".to_string());
+                    }
+                }
+                jbgit_core::PushForce::Force => {
+                    args.push("--force".to_string());
+                }
+                jbgit_core::PushForce::None => {}
+            }
+            if let Some(flag) = tags.flag() {
+                args.push(flag.to_string());
+            }
+            args.push(remote.clone());
             match up_to {
-                Some(oid) => args.push(format!("{oid}:refs/heads/{target_branch}")),
-                None => args.push(format!("refs/heads/{branch}:refs/heads/{target_branch}")),
+                Some(oid) => args.push(format!("{oid}:{dest_ref}")),
+                None if is_detached => args.push(format!("HEAD:{dest_ref}")),
+                None => args.push(format!("refs/heads/{branch}:{dest_ref}")),
             }
             vec![CompiledStep::new(args)]
         }
+        GitOp::SetIdentity {
+            name,
+            email,
+            global,
+        } => {
+            let mut name_args = vec!["config".to_string()];
+            let mut email_args = vec!["config".to_string()];
+            if *global {
+                name_args.push("--global".to_string());
+                email_args.push("--global".to_string());
+            }
+            name_args.push("user.name".to_string());
+            name_args.push(name.clone());
+            email_args.push("user.email".to_string());
+            email_args.push(email.clone());
+            vec![CompiledStep::new(name_args), CompiledStep::new(email_args)]
+        }
+        GitOp::SetUpstream { branch, upstream } => vec![CompiledStep::new(vec![
+            "branch".to_string(),
+            format!("--set-upstream-to={upstream}"),
+            branch.clone(),
+        ])],
         GitOp::UpdateBranch {
             branch,
             remote,
@@ -999,9 +1043,16 @@ impl<R: GitCliRunner> Runner<'_, R> {
                 mode,
                 save_changes,
                 update_other_branches,
+                update_submodules,
             } => {
-                self.run_update_project(op, mode, save_changes, update_other_branches)
-                    .await
+                self.run_update_project(
+                    op,
+                    mode,
+                    save_changes,
+                    update_other_branches,
+                    update_submodules,
+                )
+                .await
             }
             GitOp::Smart(inner) => Box::pin(self.run_smart(*inner)).await,
             _ => GitOpRunResult {
@@ -1209,13 +1260,14 @@ impl<R: GitCliRunner> Runner<'_, R> {
     }
 
     /// `GitUpdateProcess`: save → fetch → merge/rebase current → fast-forward
-    /// other tracked branches → restore → [`UpdateInfo`].
+    /// other tracked branches → optional submodule update → restore → [`UpdateInfo`].
     async fn run_update_project(
         &self,
         op: GitOp,
         mode: Option<UpdateMode>,
         save_changes: bool,
         update_other_branches: bool,
+        update_submodules: bool,
     ) -> GitOpRunResult {
         let fail = |op: GitOp, res: Option<StepResult>, failure: GitFailure| {
             let mut out = GitOpOutcome::failed(op, failure);
@@ -1431,11 +1483,28 @@ impl<R: GitCliRunner> Runner<'_, R> {
         }
         let info = self.collect_update_info(ranges, skipped).await;
 
+        // 5b. Update initialized submodules when requested.
+        let mut submodule_err: Option<(GitFailure, Option<IndexLockConflict>)> = None;
+        if update_submodules {
+            let sub = self
+                .step(&CompiledStep::new(["submodule", "update", "--recursive"]), false)
+                .await;
+            stderr.extend(sub.stderr.iter().cloned());
+            if !sub.ok() {
+                submodule_err = Some((classify_failure(&sub.all_lines()), sub.index_lock));
+            }
+        }
+
         // 6. Restore local changes.
         let mut outcome = GitOpOutcome::ok(op);
         outcome.update_info = Some(info);
         let mut index_lock = None;
-        if stashed {
+        if let Some((failure, lock)) = submodule_err {
+            outcome.success = false;
+            outcome.failure = Some(failure);
+            outcome.stash_kept = stashed;
+            index_lock = lock;
+        } else if stashed {
             let pop = self.stash_restore().await;
             stderr.extend(pop.stderr.iter().cloned());
             if !pop.ok() {
@@ -1843,6 +1912,8 @@ mod tests {
             force: PushForce::None,
             tags: PushTagMode::None,
             up_to: Some(oid(7)),
+            no_verify: false,
+            expected_remote_oid: None,
         };
         assert_eq!(
             compile_simple_steps(&push).unwrap()[0].args,
@@ -1863,6 +1934,8 @@ mod tests {
             force: PushForce::WithLease,
             tags: PushTagMode::Follow,
             up_to: None,
+            no_verify: false,
+            expected_remote_oid: None,
         };
         assert_eq!(
             compile_simple_steps(&push_custom).unwrap()[0].args,
@@ -1876,6 +1949,50 @@ mod tests {
             ]
         );
 
+        let push_lease_pinned = GitOp::Push {
+            branch: "local-feat".into(),
+            remote: "origin".into(),
+            remote_branch: "feat".into(),
+            set_upstream: false,
+            force: PushForce::WithLease,
+            tags: PushTagMode::None,
+            up_to: None,
+            no_verify: true,
+            expected_remote_oid: Some(oid(5)),
+        };
+        assert_eq!(
+            compile_simple_steps(&push_lease_pinned).unwrap()[0].args,
+            vec![
+                "push".to_string(),
+                "--porcelain".into(),
+                "--no-verify".into(),
+                format!("--force-with-lease=refs/heads/feat:{}", oid(5)),
+                "origin".into(),
+                "refs/heads/local-feat:refs/heads/feat".into(),
+            ]
+        );
+
+        let push_detached = GitOp::Push {
+            branch: "HEAD".into(),
+            remote: "origin".into(),
+            remote_branch: "rescue".into(),
+            set_upstream: true, // Ignored for detached HEAD
+            force: PushForce::None,
+            tags: PushTagMode::None,
+            up_to: Some(oid(8)),
+            no_verify: false,
+            expected_remote_oid: None,
+        };
+        assert_eq!(
+            compile_simple_steps(&push_detached).unwrap()[0].args,
+            vec![
+                "push".to_string(),
+                "--porcelain".into(),
+                "origin".into(),
+                format!("{}:refs/heads/rescue", oid(8)),
+            ]
+        );
+
         let push_force_all = GitOp::Push {
             branch: "dev".into(),
             remote: "origin".into(),
@@ -1884,6 +2001,8 @@ mod tests {
             force: PushForce::Force,
             tags: PushTagMode::All,
             up_to: None,
+            no_verify: false,
+            expected_remote_oid: None,
         };
         assert_eq!(
             compile_simple_steps(&push_force_all).unwrap()[0].args,
@@ -1895,6 +2014,31 @@ mod tests {
                 "origin",
                 "refs/heads/dev:refs/heads/dev",
             ]
+        );
+
+        let set_id = GitOp::SetIdentity {
+            name: "Alice".into(),
+            email: "alice@example.com".into(),
+            global: true,
+        };
+        let id_steps = compile_simple_steps(&set_id).unwrap();
+        assert_eq!(id_steps.len(), 2);
+        assert_eq!(
+            id_steps[0].args,
+            vec!["config", "--global", "user.name", "Alice"]
+        );
+        assert_eq!(
+            id_steps[1].args,
+            vec!["config", "--global", "user.email", "alice@example.com"]
+        );
+
+        let set_up = GitOp::SetUpstream {
+            branch: "feat".into(),
+            upstream: "origin/feat".into(),
+        };
+        assert_eq!(
+            compile_simple_steps(&set_up).unwrap()[0].args,
+            vec!["branch", "--set-upstream-to=origin/feat", "feat"]
         );
 
         let tag_light = GitOp::CreateTag {
@@ -2041,6 +2185,8 @@ mod tests {
                 force: PushForce::None,
                 tags: PushTagMode::None,
                 up_to: None,
+                no_verify: false,
+                expected_remote_oid: None,
             },
             None,
             |_| {},
@@ -2121,6 +2267,8 @@ mod tests {
                 force: PushForce::None,
                 tags: PushTagMode::None,
                 up_to: None,
+                no_verify: false,
+                expected_remote_oid: None,
             },
         ]);
         let res = run_git_op(&runner, &dummy_loc(), &ids, seq, None, |_| {}).await;
@@ -2212,6 +2360,7 @@ mod tests {
                 mode: None,
                 save_changes: true,
                 update_other_branches: true,
+                update_submodules: false,
             })
             .is_none()
         );
@@ -2259,6 +2408,7 @@ mod tests {
             mode: Some(jbgit_core::UpdateMode::Merge),
             save_changes: true,
             update_other_branches: true,
+            update_submodules: false,
         };
         let res = run_git_op(&detached, &dummy_loc(), &ids, op.clone(), None, |_| {}).await;
         assert!(!res.outcome.success);

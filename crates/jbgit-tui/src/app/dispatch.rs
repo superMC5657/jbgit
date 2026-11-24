@@ -149,6 +149,19 @@ impl AppState {
                                 m.push_message(&norm);
                             }
                         }
+                        crate::dialogs::Dialog::Identity(id) => {
+                            let clean: String =
+                                text.chars().filter(|c| *c != '\n' && *c != '\r').collect();
+                            if !clean.is_empty() {
+                                match id.focused {
+                                    crate::dialogs::IdentityField::Name => id.name.push_str(&clean),
+                                    crate::dialogs::IdentityField::Email => {
+                                        id.email.push_str(&clean)
+                                    }
+                                    crate::dialogs::IdentityField::Global => {}
+                                }
+                            }
+                        }
                         _ => {}
                     },
                     ModalLayer::BranchesPopup { .. }
@@ -249,6 +262,12 @@ impl AppState {
                                 m.toggle(row, true);
                             }
                         }
+                        crate::dialogs::Dialog::Identity(id) => {
+                            id.focused = match idx {
+                                0 => crate::dialogs::IdentityField::Name,
+                                _ => crate::dialogs::IdentityField::Email,
+                            };
+                        }
                         _ => {}
                     }
                 }
@@ -268,6 +287,10 @@ impl AppState {
                             if let Some(cb) = c.checkbox.as_mut() {
                                 cb.checked = !cb.checked;
                             }
+                        }
+                        crate::dialogs::Dialog::Identity(id) => {
+                            id.global = !id.global;
+                            id.focused = crate::dialogs::IdentityField::Global;
                         }
                         _ => {}
                     }
@@ -1590,6 +1613,11 @@ impl AppState {
                         pd.completion_selected = 0;
                         if next_branch != pd.remote_branch {
                             pd.remote_branch = next_branch;
+                            pd.expected_remote_oid = self
+                                .repo_snapshot
+                                .as_deref()
+                                .and_then(|s| s.remote_branch(pd.remote(), &pd.remote_branch))
+                                .map(|r| r.target_oid);
                             pd.loading = true;
                             pd.error = None;
                             pd.outgoing = None;
@@ -1647,7 +1675,34 @@ impl AppState {
                     let next =
                         (pd.remote_idx as isize + *delta).rem_euclid(len as isize) as usize;
                     if next != pd.remote_idx {
+                        let prev_remote = pd.remote().to_string();
                         pd.remote_idx = next;
+                        let new_remote = pd.remote().to_string();
+                        if let Some(snap) = self.repo_snapshot.as_deref() {
+                            let prev_default = snap
+                                .remote(&prev_remote)
+                                .and_then(|r| {
+                                    jbgit_core::resolve_push_refspec_target(
+                                        &pd.branch,
+                                        &r.push_refspecs,
+                                    )
+                                })
+                                .unwrap_or_else(|| pd.branch.clone());
+                            if !pd.is_detached() && pd.remote_branch == prev_default {
+                                pd.remote_branch = snap
+                                    .remote(&new_remote)
+                                    .and_then(|r| {
+                                        jbgit_core::resolve_push_refspec_target(
+                                            &pd.branch,
+                                            &r.push_refspecs,
+                                        )
+                                    })
+                                    .unwrap_or_else(|| pd.branch.clone());
+                            }
+                            pd.expected_remote_oid = snap
+                                .remote_branch(&new_remote, &pd.remote_branch)
+                                .map(|r| r.target_oid);
+                        }
                         pd.loading = true;
                         pd.error = None;
                         pd.outgoing = None;
@@ -1678,7 +1733,34 @@ impl AppState {
                     if len > 0 {
                         let next = (*idx).min(len - 1);
                         if next != pd.remote_idx {
+                            let prev_remote = pd.remote().to_string();
                             pd.remote_idx = next;
+                            let new_remote = pd.remote().to_string();
+                            if let Some(snap) = self.repo_snapshot.as_deref() {
+                                let prev_default = snap
+                                    .remote(&prev_remote)
+                                    .and_then(|r| {
+                                        jbgit_core::resolve_push_refspec_target(
+                                            &pd.branch,
+                                            &r.push_refspecs,
+                                        )
+                                    })
+                                    .unwrap_or_else(|| pd.branch.clone());
+                                if !pd.is_detached() && pd.remote_branch == prev_default {
+                                    pd.remote_branch = snap
+                                        .remote(&new_remote)
+                                        .and_then(|r| {
+                                            jbgit_core::resolve_push_refspec_target(
+                                                &pd.branch,
+                                                &r.push_refspecs,
+                                            )
+                                        })
+                                        .unwrap_or_else(|| pd.branch.clone());
+                                }
+                                pd.expected_remote_oid = snap
+                                    .remote_branch(&new_remote, &pd.remote_branch)
+                                    .map(|r| r.target_oid);
+                            }
                             pd.loading = true;
                             pd.error = None;
                             pd.outgoing = None;
@@ -1717,8 +1799,22 @@ impl AppState {
             }
             Action::PushToggleSetUpstream => {
                 if let Some(pd) = self.modal_stack.push_dialog_mut() {
-                    pd.set_upstream = !pd.set_upstream;
+                    if pd.is_detached() {
+                        self.status_notice =
+                            Some(self.i18n.t("dialog.push_full.detached_no_upstream").to_string());
+                    } else {
+                        pd.set_upstream = !pd.set_upstream;
+                    }
                 }
+            }
+            Action::PushToggleNoVerify => {
+                if let Some(pd) = self.modal_stack.push_dialog_mut() {
+                    pd.no_verify = !pd.no_verify;
+                }
+            }
+            Action::PushDefineRemote => {
+                let dlg = crate::dialogs::add_remote_dialog(self.snapshot(), &self.i18n);
+                self.push_dialog(dlg);
             }
             Action::PushConfirm => {
                 let check = self.modal_stack.push_dialog().map(|pd| {

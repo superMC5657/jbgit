@@ -347,6 +347,8 @@ mod tests {
             force: PushForce::WithLease,
             tags: PushTagMode::Follow,
             up_to: None,
+            no_verify: true,
+            expected_remote_oid: Some(oid(9)),
         };
         assert_eq!(push.label(), "Push 'feat' → 'upstream/feat-v2'");
         assert_eq!(push.refresh_scope(), RefreshScope::RefsAndGraph);
@@ -544,11 +546,29 @@ mod tests {
             mode: Some(UpdateMode::Rebase),
             save_changes: true,
             update_other_branches: true,
+            update_submodules: true,
         };
         assert_eq!(update.label(), "Update Project");
         assert!(!update.supports_smart());
         assert!(!update.is_read_only());
         assert_eq!(update.refresh_scope(), RefreshScope::All);
+
+        let set_id = GitOp::SetIdentity {
+            name: "Alice".into(),
+            email: "alice@example.com".into(),
+            global: false,
+        };
+        assert_eq!(set_id.label(), "Configure Git identity");
+        assert!(!set_id.is_network());
+        assert_eq!(set_id.refresh_scope(), RefreshScope::All);
+
+        let set_up = GitOp::SetUpstream {
+            branch: "feat".into(),
+            upstream: "origin/feat".into(),
+        };
+        assert_eq!(set_up.label(), "Set upstream of 'feat' → 'origin/feat'");
+        assert!(!set_up.is_network());
+        assert_eq!(set_up.refresh_scope(), RefreshScope::RefsAndGraph);
 
         assert_eq!(UpdateMode::from_pull_rebase(None), UpdateMode::Merge);
         assert_eq!(UpdateMode::from_pull_rebase(Some("false")), UpdateMode::Merge);

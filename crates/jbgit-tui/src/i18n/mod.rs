@@ -391,6 +391,11 @@ impl I18n {
                 &[("rev", rev)],
             ),
             GitOp::UpdateProject { .. } => self.t("git_op.update_project").to_string(),
+            GitOp::SetIdentity { .. } => self.t("git_op.set_identity").to_string(),
+            GitOp::SetUpstream { branch, upstream } => self.t_fmt(
+                "git_op.set_upstream",
+                &[("branch", branch), ("upstream", upstream)],
+            ),
             GitOp::AddRemote { name, .. } => self.t_fmt("git_op.add_remote", &[("name", name)]),
             GitOp::RenameRemote { old, new } => {
                 self.t_fmt("git_op.rename_remote", &[("old", old), ("new", new)])

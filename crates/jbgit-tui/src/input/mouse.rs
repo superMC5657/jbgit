@@ -555,6 +555,7 @@ fn route_mouse_left_down(
         },
         HitTarget::PushTargetBranch => vec![Action::PushStartEditTarget],
         HitTarget::PushRemotePicker => vec![Action::PushToggleRemotePicker],
+        HitTarget::PushDefineRemote => vec![Action::PushDefineRemote],
         HitTarget::PushRemoteOption(idx) => vec![Action::PushSelectRemote(idx)],
         HitTarget::PushCompletionItem(idx) => {
             vec![Action::PushEditTargetAcceptCompletion(Some(idx))]
@@ -584,6 +585,7 @@ fn route_mouse_left_down(
             PushOptionKind::Tags => vec![Action::PushCycleTags],
             PushOptionKind::Force => vec![Action::PushCycleForce],
             PushOptionKind::SetUpstream => vec![Action::PushToggleSetUpstream],
+            PushOptionKind::NoVerify => vec![Action::PushToggleNoVerify],
         },
         HitTarget::PushActionButton(btn) => match btn {
             PushActionButtonKind::Confirm => vec![Action::PushConfirm],
@@ -638,6 +640,7 @@ fn route_mouse_right_down(col: u16, row: u16, state: &AppState) -> Vec<Action> {
             | HitTarget::AnnotateToolbar(_)
             | HitTarget::PushTargetBranch
             | HitTarget::PushRemotePicker
+            | HitTarget::PushDefineRemote
             | HitTarget::PushRemoteOption(_)
             | HitTarget::PushCompletionItem(_)
             | HitTarget::PushCommitRow(_)

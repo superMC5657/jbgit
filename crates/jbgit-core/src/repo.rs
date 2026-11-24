@@ -117,6 +117,8 @@ pub struct RemoteInfo {
     pub fetch_url: Option<String>,
     /// `remote.<name>.pushurl` (`None` = pushes go to `fetch_url`).
     pub push_url: Option<String>,
+    /// Configured `remote.<name>.push` refspecs (empty when default).
+    pub push_refspecs: Vec<String>,
 }
 
 impl RemoteInfo {
@@ -142,6 +144,7 @@ impl std::fmt::Debug for RemoteInfo {
             .field("name", &self.name)
             .field("fetch_url", &self.fetch_url.as_deref().map(redact_url))
             .field("push_url", &self.push_url.as_deref().map(redact_url))
+            .field("push_refspecs", &self.push_refspecs)
             .finish()
     }
 }
@@ -452,6 +455,39 @@ impl RepoSnapshot {
         a.difference(&b).count()
     }
 
+    /// True if any commit reachable from `tip` but not from `base` (`base..tip`)
+    /// is a merge commit (`parents.len() > 1`). Used to warn before rebasing a
+    /// branch containing merge commits onto a diverged remote.
+    pub fn has_merge_commits_in_range(&self, base: Oid, tip: Oid) -> bool {
+        let idx: HashMap<Oid, &CommitSummary> =
+            self.commits.iter().map(|c| (c.oid, c)).collect();
+        let excluded = self.reachable_from(base);
+        let tip_reachable = self.reachable_from(tip);
+        tip_reachable
+            .difference(&excluded)
+            .any(|oid| idx.get(oid).is_some_and(|c| c.parents.len() > 1))
+    }
+
+    /// True if `branch` has an upstream name whose remote-tracking ref is no
+    /// longer present in [`Self::refs`].
+    pub fn is_upstream_gone(&self, branch: &RefInfo) -> bool {
+        let Some(up) = branch.upstream.as_deref() else {
+            return false;
+        };
+        !self
+            .refs
+            .iter()
+            .any(|r| r.kind == RefKind::RemoteBranch && r.name == up)
+    }
+
+    /// Remote-tracking ref matching `<remote>/<remote_branch>`.
+    pub fn remote_branch(&self, remote: &str, remote_branch: &str) -> Option<&RefInfo> {
+        let full = format!("{remote}/{remote_branch}");
+        self.refs
+            .iter()
+            .find(|r| r.kind == RefKind::RemoteBranch && r.name == full)
+    }
+
     /// Typed error version of [`Self::plan_rewrite`] for localized UI messages.
     pub fn plan_rewrite_typed(&self, oldest: Oid) -> Result<RewritePlan, RewritePlanError> {
         let head = self.head_oid.ok_or(RewritePlanError::NoCommits)?;
@@ -642,6 +678,7 @@ mod tests {
             name: name.into(),
             fetch_url: Some(format!("https://example.com/{name}.git")),
             push_url: None,
+            push_refspecs: Vec::new(),
         }
     }
 
@@ -678,6 +715,7 @@ mod tests {
             name: "o".into(),
             fetch_url: Some("https://u:secret@h/x.git".into()),
             push_url: Some("https://u:other@h/y.git".into()),
+            push_refspecs: Vec::new(),
         };
         let dbg = format!("{info:?}");
         assert!(!dbg.contains("secret") && !dbg.contains("other"), "{dbg}");
@@ -740,5 +778,29 @@ mod tests {
             snap.available_remotes(),
             vec!["origin", "fork", "upstream", "zebra"]
         );
+    }
+
+    #[test]
+    fn detects_merge_commits_in_rebase_range() {
+        let oid = |n: u8| Oid::from_bytes([n; 20]);
+        let c = |n: u8, parents: &[u8]| CommitSummary {
+            oid: oid(n),
+            parents: parents.iter().map(|&p| oid(p)).collect(),
+            ..Default::default()
+        };
+        // Graph: 1 <- 2 <- 4 (merge of 2 and 3), 1 <- 3, 1 <- 5 (remote)
+        let snap = RepoSnapshot {
+            commits: vec![
+                c(5, &[1]),
+                c(4, &[2, 3]),
+                c(3, &[1]),
+                c(2, &[1]),
+                c(1, &[]),
+            ],
+            ..Default::default()
+        };
+        assert!(snap.has_merge_commits_in_range(oid(5), oid(4)));
+        assert!(!snap.has_merge_commits_in_range(oid(5), oid(2)));
+        assert!(!snap.has_merge_commits_in_range(oid(4), oid(4)));
     }
 }

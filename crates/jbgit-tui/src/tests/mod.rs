@@ -53,6 +53,7 @@ pub(super) fn remote_infos(names: &[&str]) -> Vec<jbgit_core::RemoteInfo> {
             name: (*n).to_string(),
             fetch_url: Some(format!("https://example.com/{n}.git")),
             push_url: None,
+            push_refspecs: Vec::new(),
         })
         .collect()
 }

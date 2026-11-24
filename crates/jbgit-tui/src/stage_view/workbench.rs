@@ -4,10 +4,12 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use jbgit_core::{
-    AmendCommitPreview, DiffContext, DiffLineKind, GitOp, LineSelection, LruCache, PaneId,
-    RefreshScope, RepoSnapshot, RequestSlot, RequestSlotId, StageNodeKind, StageStatusSnapshot,
-    StageTarget, StageTreeOptions, StageTreeRow, StageTreeRowKind, StagedRange, WhitespaceMode,
-    build_stage_tree_rows, collect_targets_under_row, next_anchor_after_mutation,
+    AmendCommitPreview, COMMIT_BODY_MAX_WIDTH, DiffContext, DiffLineKind, GitOp, LineSelection,
+    LruCache, PaneId, RefKind, RefreshScope, RepoSnapshot, RequestSlot, RequestSlotId,
+    StageNodeKind, StageStatusSnapshot, StageTarget, StageTreeOptions, StageTreeRow,
+    StageTreeRowKind, StagedRange, WhitespaceMode, build_stage_tree_rows,
+    collect_targets_under_row, next_anchor_after_mutation, reformat_commit_message,
+    strip_commit_comments,
 };
 use jbgit_engine::{
     CommitPrecheckInfo, CommitRequest, EngineEvent, StageDiffKey, StageDiffSide, ThreeDocStageDiff,
@@ -18,7 +20,7 @@ use crate::app::{
     Action, DiffScope, EditorMoveKind, Effect, ModalLayer, ScrollViewport, SyntaxJob, SyntaxTarget,
     apply_scroll_delta,
 };
-use crate::dialogs::{ChoiceDialog, Dialog};
+use crate::dialogs::{ChoiceDialog, Dialog, IdentityDialog};
 use crate::diff_session::{
     DIFF_HORIZ_SCROLL_MAX, DiffRow, DiffSearchState, build_stage_diff_rows, diff_row_visual_height,
 };
@@ -154,10 +156,15 @@ pub struct CommitWorkbench {
     amend_preview: Option<AmendCommitPreview>,
     signoff: bool,
     run_hooks: bool,
+    allow_empty: bool,
     show_author_input: bool,
     author_input: String,
     editing_author: bool,
+    author_completion_idx: usize,
     precheck: CommitPrecheckInfo,
+    precheck_loaded: bool,
+    last_loaded_prepared_msg: Option<String>,
+    template_applied: bool,
     commit_in_progress: bool,
     empty_message_error: bool,
     commit_history: Vec<String>,
@@ -212,10 +219,15 @@ impl Default for CommitWorkbench {
             amend_preview: None,
             signoff: false,
             run_hooks: true,
+            allow_empty: false,
             show_author_input: false,
             author_input: String::new(),
             editing_author: false,
+            author_completion_idx: 0,
             precheck: CommitPrecheckInfo::default(),
+            precheck_loaded: false,
+            last_loaded_prepared_msg: None,
+            template_applied: false,
             commit_in_progress: false,
             empty_message_error: false,
             commit_history: Vec::new(),
@@ -385,6 +397,10 @@ impl CommitWorkbench {
         self.run_hooks
     }
 
+    pub fn allow_empty(&self) -> bool {
+        self.allow_empty
+    }
+
     pub fn show_author_input(&self) -> bool {
         self.show_author_input
     }
@@ -397,8 +413,68 @@ impl CommitWorkbench {
         self.editing_author
     }
 
+    pub fn author_completion_idx(&self) -> usize {
+        self.author_completion_idx
+    }
+
+    /// Unique `Name <email>` author suggestions from recent commits + git config,
+    /// filtered case-insensitively by the current author input.
+    pub fn author_candidates(&self, snap: Option<&RepoSnapshot>) -> Vec<String> {
+        let mut all = Vec::new();
+        let mut push_unique = |name: &str, email: &str| -> bool {
+            let n = name.trim();
+            let e = email.trim();
+            if n.is_empty() || e.is_empty() {
+                return all.len() >= 32;
+            }
+            let formatted = format!("{n} <{e}>");
+            if !all.iter().any(|s| s == &formatted) {
+                all.push(formatted);
+            }
+            all.len() >= 32
+        };
+        if let (Some(n), Some(e)) = (
+            self.precheck.user_name.as_deref(),
+            self.precheck.user_email.as_deref(),
+        ) {
+            push_unique(n, e);
+        }
+        if let Some(snap) = snap {
+            if let (Some(n), Some(e)) = (snap.user_name.as_deref(), snap.user_email.as_deref()) {
+                push_unique(n, e);
+            }
+            for c in snap.commits.iter().take(200) {
+                if push_unique(&c.author_name, &c.author_email) {
+                    break;
+                }
+            }
+        }
+        let query = self.author_input.trim().to_ascii_lowercase();
+        if query.is_empty() {
+            return all;
+        }
+        all.into_iter()
+            .filter(|cand| cand.to_ascii_lowercase().contains(&query))
+            .collect()
+    }
+
+    pub fn active_author_suggestion(&self, snap: Option<&RepoSnapshot>) -> Option<(String, usize, usize)> {
+        let cands = self.author_candidates(snap);
+        if cands.is_empty() {
+            return None;
+        }
+        let idx = self.author_completion_idx.min(cands.len() - 1);
+        Some((cands[idx].clone(), idx, cands.len()))
+    }
+
     pub fn precheck(&self) -> &CommitPrecheckInfo {
         &self.precheck
+    }
+
+    pub fn set_identity_in_precheck(&mut self, name: String, email: String) {
+        self.precheck.user_name = Some(name);
+        self.precheck.user_email = Some(email);
+        self.precheck_loaded = true;
     }
 
     pub fn commit_in_progress(&self) -> bool {
@@ -1561,7 +1637,32 @@ impl CommitWorkbench {
                 None
             }
             EngineEvent::CommitPrecheckLoaded { info } => {
+                let prev_template = self.precheck.commit_template.clone();
                 self.precheck = info;
+                self.precheck_loaded = true;
+                if !self.amend {
+                    if let Some(prepared) = self.precheck.prepared_message.clone() {
+                        let editor_matches_prev_template = prev_template
+                            .as_deref()
+                            .is_some_and(|tpl| self.editor.text() == tpl);
+                        if self.last_loaded_prepared_msg.as_ref() != Some(&prepared)
+                            && (self.editor.is_empty() || editor_matches_prev_template)
+                        {
+                            self.editor.set_text(&prepared);
+                            self.empty_message_error = false;
+                            self.last_loaded_prepared_msg = Some(prepared);
+                        }
+                    } else {
+                        self.last_loaded_prepared_msg = None;
+                        if let Some(tpl) = self.precheck.commit_template.clone()
+                            && self.editor.is_empty()
+                            && !self.template_applied
+                        {
+                            self.editor.set_text(&tpl);
+                            self.template_applied = true;
+                        }
+                    }
+                }
                 None
             }
             EngineEvent::CommitCompleted(outcome) => {
@@ -1574,6 +1675,9 @@ impl CommitWorkbench {
                     self.push_history(&committed_msg);
                     self.editor.clear();
                     self.set_amend_flag(false);
+                    self.allow_empty = false;
+                    self.last_loaded_prepared_msg = None;
+                    self.template_applied = false;
                     self.amend_awaiting_message = false;
                     self.saved_draft = None;
                     self.set_amend_preview(None);
@@ -1592,53 +1696,8 @@ impl CommitWorkbench {
                     });
                     *ctx.status_notice = Some(localized_summary);
                     if outcome.and_push {
-                        let branch = ctx
-                            .snap
-                            .and_then(|s| s.head_branch.as_deref())
-                            .unwrap_or("HEAD")
-                            .to_string();
-                        let upstream = ctx
-                            .snap
-                            .and_then(|s| s.local_branch(&branch))
-                            .and_then(|l| l.upstream.clone());
-                        let remote = upstream
-                            .as_ref()
-                            .and_then(|u| u.split_once('/').map(|(r, _)| r.to_string()))
-                            .unwrap_or_else(|| ctx.default_remote.to_string());
-                        let remote_branch = upstream
-                            .as_ref()
-                            .and_then(|u| u.split_once('/').map(|(_, rb)| rb.to_string()))
-                            .unwrap_or_else(|| branch.clone());
-                        let set_upstream = upstream.is_none();
-                        let sha = outcome.short_sha.as_deref().unwrap_or("commit");
-                        let body: Vec<String> = ctx
-                            .i18n
-                            .t_fmt(
-                                "dialog.push.confirm_body",
-                                &[("sha", sha), ("branch", &branch)],
-                            )
-                            .lines()
-                            .map(ToString::to_string)
-                            .collect();
-                        ctx.modals.push(ModalLayer::Dialog(Box::new(Dialog::Choice(
-                            ChoiceDialog::confirm_with_default(
-                                ctx.i18n.t("dialog.push.confirm_title"),
-                                body,
-                                ctx.i18n.t("dialog.push.push_btn"),
-                                ctx.i18n.cancel(),
-                                false,
-                                true,
-                                vec![Action::RunGitOp(GitOp::Push {
-                                    branch,
-                                    remote,
-                                    remote_branch,
-                                    set_upstream,
-                                    force: jbgit_core::PushForce::None,
-                                    tags: jbgit_core::PushTagMode::None,
-                                    up_to: None,
-                                })],
-                            ),
-                        ))));
+                        // Forward `CommitCompleted` to `AppState` so it opens the full PushDialog.
+                        return Some(EngineEvent::CommitCompleted(outcome));
                     }
                 } else {
                     if let Some(msg) = outcome.preserved_message
@@ -2312,6 +2371,20 @@ impl CommitWorkbench {
                     self.mark_draft_dirty(ctx.now);
                 }
             }
+            Action::CommitEditorReformat => {
+                let current = self.editor.text();
+                let formatted = reformat_commit_message(
+                    &current,
+                    COMMIT_BODY_MAX_WIDTH,
+                    self.precheck.comment_char,
+                );
+                if formatted != current {
+                    self.editor.set_text(&formatted);
+                    self.mark_draft_dirty(ctx.now);
+                    *ctx.status_notice =
+                        Some(ctx.i18n.t("toast.commit_msg_reformatted").to_string());
+                }
+            }
             Action::CommitToggleAmend => {
                 let next = !self.amend;
                 self.set_amend_flag(next);
@@ -2347,20 +2420,40 @@ impl CommitWorkbench {
                     self.run_hooks = !self.run_hooks;
                 }
             }
+            Action::CommitToggleAllowEmpty => {
+                self.allow_empty = !self.allow_empty;
+            }
             Action::CommitToggleAuthorInput => {
                 self.show_author_input = !self.show_author_input;
                 self.editing_author = self.show_author_input;
+                self.author_completion_idx = 0;
             }
             Action::CommitFocusAuthorInput => {
                 *ctx.focused_pane = PaneId::CommitMessageEditor;
                 self.show_author_input = true;
                 self.editing_author = true;
+                self.author_completion_idx = 0;
             }
             Action::CommitAuthorChar(ch) => {
                 self.author_input.push(*ch);
+                self.author_completion_idx = 0;
             }
             Action::CommitAuthorBackspace => {
                 self.author_input.pop();
+                self.author_completion_idx = 0;
+            }
+            Action::CommitAuthorCycleCompletion(delta) => {
+                let len = self.author_candidates(ctx.snap).len();
+                if len > 0 {
+                    let next = (self.author_completion_idx as isize + *delta).rem_euclid(len as isize);
+                    self.author_completion_idx = next as usize;
+                }
+            }
+            Action::CommitAuthorAcceptCompletion => {
+                if let Some((cand, _, _)) = self.active_author_suggestion(ctx.snap) {
+                    self.author_input = cand;
+                    self.author_completion_idx = 0;
+                }
             }
             Action::CommitAuthorDone => {
                 self.editing_author = false;
@@ -2381,7 +2474,26 @@ impl CommitWorkbench {
             Action::SubmitCommit { and_push } => {
                 self.handle_submit_commit(*and_push, false, ctx);
             }
+            Action::SubmitCommitStageAllTracked { and_push } => {
+                self.handle_submit_commit(*and_push, true, ctx);
+            }
             Action::UndoLastCommit => {
+                if let Some(warning) = undo_head_warning_message(ctx.snap, ctx.i18n) {
+                    let body: Vec<String> = warning.lines().map(ToString::to_string).collect();
+                    ctx.modals.push(ModalLayer::Dialog(Box::new(Dialog::Choice(
+                        ChoiceDialog::confirm(
+                            ctx.i18n.t("dialog.undo_commit.title"),
+                            body,
+                            ctx.i18n.t("dialog.undo_commit.confirm_btn"),
+                            ctx.i18n.cancel(),
+                            vec![Action::UndoLastCommitConfirmed],
+                        ),
+                    ))));
+                } else {
+                    ctx.effects.push(Effect::UndoLastCommit);
+                }
+            }
+            Action::UndoLastCommitConfirmed => {
                 ctx.effects.push(Effect::UndoLastCommit);
             }
             Action::OpenExternalEditorMessage => {
@@ -2419,7 +2531,8 @@ impl CommitWorkbench {
         }
 
         let msg = self.editor.text();
-        if msg.trim().is_empty() {
+        let cleaned_msg = strip_commit_comments(&msg, self.precheck.comment_char);
+        if cleaned_msg.trim().is_empty() {
             self.empty_message_error = true;
             *ctx.focused_pane = PaneId::CommitMessageEditor;
             *ctx.status_notice = Some(ctx.i18n.t("common.commit_msg_empty").to_string());
@@ -2440,17 +2553,10 @@ impl CommitWorkbench {
         let in_merge = ctx
             .snap
             .is_some_and(|s| s.state == jbgit_core::RepositoryState::Merge);
-        if staged_empty && !self.amend && !in_merge && !force_stage_all_tracked {
+
+        if staged_empty && !self.amend && !in_merge && !self.allow_empty && !force_stage_all_tracked
+        {
             if has_tracked_unstaged {
-                let req = CommitRequest {
-                    message: msg,
-                    amend: false,
-                    signoff: self.signoff,
-                    run_hooks: self.run_hooks,
-                    author_override,
-                    stage_all_tracked: true,
-                    and_push,
-                };
                 let body: Vec<String> = ctx
                     .i18n
                     .t("dialog.nothing_staged.body")
@@ -2465,13 +2571,53 @@ impl CommitWorkbench {
                         ctx.i18n.cancel(),
                         false,
                         true,
-                        vec![Action::ExecuteCommitConfirmed(req)],
+                        vec![Action::SubmitCommitStageAllTracked { and_push }],
                     ),
                 ))));
             } else {
                 *ctx.status_notice = Some(ctx.i18n.t("toast.no_staged_to_commit").to_string());
             }
             return;
+        }
+
+        // Guard missing user.name / user.email with inline Configure Git Identity dialog.
+        if self.precheck_loaded || ctx.snap.is_some() {
+            let eff_name = self
+                .precheck
+                .user_name
+                .clone()
+                .filter(|s| !s.trim().is_empty())
+                .or_else(|| {
+                    ctx.snap
+                        .and_then(|s| s.user_name.clone())
+                        .filter(|s| !s.trim().is_empty())
+                });
+            let eff_email = self
+                .precheck
+                .user_email
+                .clone()
+                .filter(|s| !s.trim().is_empty())
+                .or_else(|| {
+                    ctx.snap
+                        .and_then(|s| s.user_email.clone())
+                        .filter(|s| !s.trim().is_empty())
+                });
+            if eff_name.is_none() || eff_email.is_none() {
+                let pending = CommitRequest {
+                    message: msg,
+                    amend: self.amend,
+                    signoff: self.signoff,
+                    run_hooks: self.run_hooks,
+                    allow_empty: self.allow_empty,
+                    author_override,
+                    stage_all_tracked: force_stage_all_tracked,
+                    and_push,
+                };
+                ctx.modals.push(ModalLayer::Dialog(Box::new(Dialog::Identity(
+                    IdentityDialog::new(eff_name, eff_email, Some(pending)),
+                ))));
+                return;
+            }
         }
 
         self.commit_in_progress = true;
@@ -2481,10 +2627,47 @@ impl CommitWorkbench {
             amend: self.amend,
             signoff: self.signoff,
             run_hooks: self.run_hooks,
+            allow_empty: self.allow_empty,
             author_override,
             stage_all_tracked: force_stage_all_tracked,
             and_push,
         };
         ctx.effects.push(Effect::ExecuteCommit(req));
+    }
+}
+
+/// Returns a localized confirmation warning when `HEAD` is a merge commit or is
+/// already reachable from its configured upstream tracking branch.
+pub(crate) fn undo_head_warning_message(
+    snap: Option<&RepoSnapshot>,
+    i18n: &I18n,
+) -> Option<String> {
+    let snap = snap?;
+    let head_oid = snap.head_oid?;
+    let is_merge = snap
+        .commit(&head_oid)
+        .is_some_and(|c| c.parents.len() > 1);
+    let pushed_upstream = snap
+        .head_ref()
+        .and_then(|r| r.upstream.as_deref())
+        .and_then(|up| {
+            snap.refs
+                .iter()
+                .find(|r| r.kind == RefKind::RemoteBranch && r.name == up)
+        })
+        .filter(|up_ref| snap.reaches(up_ref.target_oid, head_oid))
+        .map(|up_ref| up_ref.name.as_str());
+
+    match (is_merge, pushed_upstream) {
+        (true, Some(up)) => Some(i18n.t_fmt(
+            "dialog.undo_commit.warn_merge_and_pushed",
+            &[("upstream", up)],
+        )),
+        (true, None) => Some(i18n.t("dialog.undo_commit.warn_merge").to_string()),
+        (false, Some(up)) => Some(i18n.t_fmt(
+            "dialog.undo_commit.warn_pushed",
+            &[("upstream", up)],
+        )),
+        (false, None) => None,
     }
 }

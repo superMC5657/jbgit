@@ -11,8 +11,8 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::app::RenderContext;
 use crate::dialogs::{
-    ChoiceDialog, CredentialDialog, Dialog, InputDialog, MergeDialog, MergeDialogRow, MessageDialog,
-    RebaseTodoDialog,
+    ChoiceDialog, CredentialDialog, Dialog, IdentityDialog, IdentityField, InputDialog,
+    MergeDialog, MergeDialogRow, MessageDialog, RebaseTodoDialog,
 };
 use crate::hit_test::{DialogButtonKind, HitTarget};
 use crate::views::overlays::{draw_shadow, mnemonic_spans};
@@ -142,7 +142,133 @@ pub fn render_dialog(
         Dialog::RebaseTodo(d) => render_rebase(frame, screen, ctx, d, z),
         Dialog::Merge(d) => render_merge(frame, screen, ctx, d, z),
         Dialog::Credential(d) => render_credential(frame, screen, ctx, d, z),
+        Dialog::Identity(d) => render_identity(frame, screen, ctx, d, z),
     }
+}
+
+fn render_identity(
+    frame: &mut Frame<'_>,
+    screen: Rect,
+    ctx: &mut RenderContext<'_>,
+    d: &IdentityDialog,
+    z: u8,
+) {
+    let rect = centered(screen, 68, 12);
+    let title = ctx.t("dialog.identity.title").to_string();
+    let inner = frame_block(frame, screen, ctx, rect, &title, false, z);
+    let w = inner.width as usize;
+    let err = ctx.i18n.and_then(|i| d.error(i));
+
+    let name_cur = if d.focused == IdentityField::Name { "▏" } else { "" };
+    let email_cur = if d.focused == IdentityField::Email { "▏" } else { "" };
+    let field_style = |active: bool| {
+        if active {
+            Style::default()
+                .fg(ctx.theme.fg_bright)
+                .bg(ctx.theme.bg_panel)
+                .add_modifier(Modifier::UNDERLINED)
+        } else {
+            Style::default()
+                .fg(ctx.theme.fg_primary)
+                .bg(ctx.theme.bg_panel)
+        }
+    };
+
+    let lines = vec![
+        Line::from(Span::styled(
+            format!(" {}", truncate_to_width(ctx.t("dialog.identity.subtitle"), w.saturating_sub(2))),
+            Style::default().fg(ctx.theme.fg_muted),
+        )),
+        Line::from(Span::styled(
+            format!(" {}", ctx.t("dialog.identity.name_label")),
+            Style::default().fg(ctx.theme.fg_primary),
+        )),
+        Line::from(Span::styled(
+            format!(
+                " {}{name_cur}{}",
+                truncate_to_width(&d.name, w.saturating_sub(4)),
+                " ".repeat(w.saturating_sub(d.name.width() + 3))
+            ),
+            field_style(d.focused == IdentityField::Name),
+        )),
+        Line::from(Span::styled(
+            format!(" {}", ctx.t("dialog.identity.email_label")),
+            Style::default().fg(ctx.theme.fg_primary),
+        )),
+        Line::from(Span::styled(
+            format!(
+                " {}{email_cur}{}",
+                truncate_to_width(&d.email, w.saturating_sub(4)),
+                " ".repeat(w.saturating_sub(d.email.width() + 3))
+            ),
+            field_style(d.focused == IdentityField::Email),
+        )),
+        Line::from(Span::styled(
+            format!(
+                " [{}] {}   (Space)",
+                if d.global { "x" } else { " " },
+                truncate_to_width(ctx.t("dialog.identity.global_checkbox"), w.saturating_sub(15))
+            ),
+            Style::default()
+                .fg(if d.focused == IdentityField::Global {
+                    ctx.theme.fg_bright
+                } else {
+                    ctx.theme.fg_primary
+                })
+                .bg(if d.focused == IdentityField::Global {
+                    ctx.theme.bg_selection_focused
+                } else {
+                    ctx.theme.bg_elevated
+                }),
+        )),
+        match &err {
+            Some(e) => Line::from(Span::styled(
+                format!(" ✕ {}", truncate_to_width(e, w.saturating_sub(4))),
+                Style::default().fg(ctx.theme.status_conflicted),
+            )),
+            None => Line::from(Span::styled(
+                format!(" ✓ {}", ctx.t("dialog.identity.hint")),
+                Style::default().fg(ctx.theme.status_added),
+            )),
+        },
+    ];
+    frame.render_widget(Paragraph::new(lines), inner);
+    ctx.hit_registry
+        .register(Rect::new(inner.x, inner.y + 2, inner.width, 1), z + 2, HitTarget::DialogOption(0));
+    ctx.hit_registry
+        .register(Rect::new(inner.x, inner.y + 4, inner.width, 1), z + 2, HitTarget::DialogOption(1));
+    ctx.hit_registry
+        .register(Rect::new(inner.x, inner.y + 5, inner.width, 1), z + 2, HitTarget::DialogCheckbox);
+
+    let confirm_label = if d.pending_commit.is_some() {
+        ctx.t("dialog.identity.save_and_commit_btn").into()
+    } else {
+        ctx.ok().into()
+    };
+    render_buttons(
+        frame,
+        ctx,
+        inner.x + 1,
+        inner.bottom().saturating_sub(1),
+        inner.right(),
+        &[
+            DialogButtonSpec {
+                label: confirm_label,
+                selected: true,
+                enabled: err.is_none(),
+                danger: false,
+                target: HitTarget::DialogButton(DialogButtonKind::Confirm),
+            },
+            DialogButtonSpec {
+                label: ctx.cancel().into(),
+                selected: false,
+                enabled: true,
+                danger: false,
+                target: HitTarget::DialogButton(DialogButtonKind::Cancel),
+            },
+        ],
+        z,
+    );
 }
 
 fn render_credential(

@@ -330,6 +330,7 @@ fn push_dialog_preview_target_completion_up_to_protected_branches_and_retry() {
         commits: commits_list[..3].to_vec(), // c12, c11, c10
         files_changed: 4,
         remote_exists: true,
+        remote_oid: Some(oid(10)),
         truncated: false,
     });
     ts.deliver_engine_event(EngineEvent::OutgoingLoaded {
@@ -440,6 +441,8 @@ fn push_dialog_preview_target_completion_up_to_protected_branches_and_retry() {
             force: PushForce::WithLease,
             tags: PushTagMode::Follow,
             up_to: None,
+            no_verify: false,
+            expected_remote_oid: None,
         }]
     );
 
@@ -467,6 +470,7 @@ fn push_dialog_preview_target_completion_up_to_protected_branches_and_retry() {
             commits: commits_list[2..3].to_vec(),
             files_changed: 1,
             remote_exists: true,
+            remote_oid: Some(oid(10)),
             truncated: false,
         }),
         epoch: up_to_epoch,
@@ -501,6 +505,7 @@ fn push_dialog_preview_target_completion_up_to_protected_branches_and_retry() {
             commits: commits_list[..3].to_vec(), // c12, c11, c10
             files_changed: 2,
             remote_exists: true,
+            remote_oid: Some(oid(10)),
             truncated: false,
         }));
         let truncated = trunc_pd.visible_commits();
@@ -518,6 +523,8 @@ fn push_dialog_preview_target_completion_up_to_protected_branches_and_retry() {
             force: PushForce::None,
             tags: PushTagMode::None,
             up_to: Some(oid(10)),
+            no_verify: false,
+            expected_remote_oid: None,
         }]
     );
 
@@ -530,6 +537,8 @@ fn push_dialog_preview_target_completion_up_to_protected_branches_and_retry() {
         force: PushForce::None,
         tags: PushTagMode::None,
         up_to: None,
+        no_verify: false,
+        expected_remote_oid: None,
     };
     ts.deliver_engine_event(EngineEvent::GitOpFinished(GitOpOutcome::failed(
         push_main.clone(),
@@ -551,11 +560,13 @@ fn push_dialog_preview_target_completion_up_to_protected_branches_and_retry() {
     assert_eq!(
         ts.take_git_ops(),
         vec![GitOp::Sequence(vec![
-            GitOp::Fetch,
-            GitOp::Rebase {
-                onto: "origin/main".into(),
-                branch: None,
-            },
+            GitOp::Smart(Box::new(GitOp::Sequence(vec![
+                GitOp::Fetch,
+                GitOp::Rebase {
+                    onto: "origin/main".into(),
+                    branch: None,
+                },
+            ]))),
             push_main.clone(),
         ])]
     );
@@ -570,6 +581,8 @@ fn push_dialog_preview_target_completion_up_to_protected_branches_and_retry() {
             force: PushForce::None,
             tags: PushTagMode::None,
             up_to: None,
+            no_verify: false,
+            expected_remote_oid: None,
         },
         GitFailure::PushRejected,
     )));
@@ -683,6 +696,8 @@ fn prompt_push_empty_remotes_slash_remote_and_push_rejected_up_to() {
             force: PushForce::None,
             tags: PushTagMode::None,
             up_to: Some(oid(10)), // older than main tip oid(12)
+            no_verify: false,
+            expected_remote_oid: None,
         },
         GitFailure::PushRejected,
     )));
@@ -702,16 +717,16 @@ fn prompt_push_empty_remotes_slash_remote_and_push_rejected_up_to() {
     ts_rej.send_key(KeyCode::Char('r'), KeyModifiers::NONE);
     assert_eq!(
         ts_rej.take_git_ops(),
-        vec![GitOp::Sequence(vec![
+        vec![GitOp::Smart(Box::new(GitOp::Sequence(vec![
             GitOp::Fetch,
             GitOp::Rebase {
                 onto: "origin/main".into(),
                 branch: None,
             },
-        ])]
+        ])))]
     );
 
-    // 4. PushRejected when up_to == branch tip: retries with up_to: None after rebase.
+    // 4. PushRejected when up_to == branch tip: retries with up_to: None after smart rebase.
     ts_rej.deliver_engine_event(EngineEvent::GitOpFinished(GitOpOutcome::failed(
         GitOp::Push {
             branch: "main".into(),
@@ -721,6 +736,8 @@ fn prompt_push_empty_remotes_slash_remote_and_push_rejected_up_to() {
             force: PushForce::None,
             tags: PushTagMode::None,
             up_to: Some(oid(12)),
+            no_verify: false,
+            expected_remote_oid: None,
         },
         GitFailure::PushRejected,
     )));
@@ -728,11 +745,13 @@ fn prompt_push_empty_remotes_slash_remote_and_push_rejected_up_to() {
     assert_eq!(
         ts_rej.take_git_ops(),
         vec![GitOp::Sequence(vec![
-            GitOp::Fetch,
-            GitOp::Rebase {
-                onto: "origin/main".into(),
-                branch: None,
-            },
+            GitOp::Smart(Box::new(GitOp::Sequence(vec![
+                GitOp::Fetch,
+                GitOp::Rebase {
+                    onto: "origin/main".into(),
+                    branch: None,
+                },
+            ]))),
             GitOp::Push {
                 branch: "main".into(),
                 remote: "origin".into(),
@@ -741,6 +760,8 @@ fn prompt_push_empty_remotes_slash_remote_and_push_rejected_up_to() {
                 force: PushForce::None,
                 tags: PushTagMode::None,
                 up_to: None,
+                no_verify: false,
+                expected_remote_oid: None,
             },
         ])]
     );
@@ -769,6 +790,188 @@ fn delete_remote_tag_dialog_uses_tag_copy_not_branch_in_zh_cn() {
                 assert!(body.contains("标签"), "expected 标签 in body: {body}");
                 assert!(body.contains("v1.0"), "expected v1.0 in body: {body}");
                 assert!(!body.contains("分支"), "must not mention 分支: {body}");
+            }
+            other => panic!("expected ChoiceDialog, got {other:?}"),
+        },
+        other => panic!("expected Dialog, got {other:?}"),
+    }
+}
+
+#[test]
+fn detached_head_push_no_verify_pinned_lease_inline_define_remote_and_push_refspec() {
+    // 1. Detached HEAD unlocks PushDialog via `KeyAction::GitPush` (`P`).
+    let mut detached_snap = snapshot();
+    detached_snap.head_branch = None;
+    detached_snap.head_oid = Some(oid(12));
+    detached_snap.remotes = super::remote_infos(&["origin"]);
+    let mut ts = TestSession::with_snapshot(detached_snap);
+    let _ = ts.take_requests();
+
+    ts.send_key(KeyCode::Char('P'), KeyModifiers::SHIFT);
+    let pd = ts
+        .state()
+        .modal_stack
+        .push_dialog()
+        .expect("detached HEAD must open PushDialog");
+    assert_eq!(pd.branch, "HEAD");
+    assert_eq!(pd.up_to, Some(oid(12)));
+    assert!(!pd.set_upstream);
+    assert!(pd.remote_branch.is_empty());
+
+    // Confirming with empty target branch is rejected for detached HEAD.
+    ts.dispatch(Action::PushConfirm);
+    assert!(ts.state().modal_stack.push_dialog().is_some());
+    assert!(ts.take_git_ops().is_empty());
+
+    // Set target branch, toggle `--no-verify` (`n`) and `--force-with-lease` (`f`),
+    // deliver OutgoingLoaded with `remote_oid`, and confirm!
+    ts.send_key(KeyCode::Char('e'), KeyModifiers::NONE);
+    ts.type_str("rescue/detached");
+    ts.send_key(KeyCode::Enter, KeyModifiers::NONE);
+    let out_epoch = ts
+        .take_requests()
+        .into_iter()
+        .find_map(|(req, ep)| match req {
+            TaskRequest::LoadOutgoing { .. } => ep,
+            _ => None,
+        })
+        .expect("LoadOutgoing epoch");
+    ts.deliver_engine_event(EngineEvent::OutgoingLoaded {
+        bundle: Arc::new(OutgoingBundle {
+            key: OutgoingKey {
+                branch: "HEAD".into(),
+                remote: "origin".into(),
+                remote_branch: "rescue/detached".into(),
+                up_to: Some(oid(12)),
+            },
+            commits: vec![make_commit(12, vec![oid(11)], "detached work")],
+            files_changed: 1,
+            remote_exists: true,
+            remote_oid: Some(oid(9)),
+            truncated: false,
+        }),
+        epoch: out_epoch,
+    });
+    ts.send_key(KeyCode::Char('n'), KeyModifiers::NONE);
+    ts.send_key(KeyCode::Char('f'), KeyModifiers::NONE);
+    // `u` is ignored on detached HEAD.
+    ts.send_key(KeyCode::Char('u'), KeyModifiers::NONE);
+    ts.dispatch(Action::PushConfirm);
+    assert_eq!(
+        ts.take_git_ops(),
+        vec![GitOp::Push {
+            branch: "HEAD".into(),
+            remote: "origin".into(),
+            remote_branch: "rescue/detached".into(),
+            set_upstream: false,
+            force: PushForce::WithLease,
+            tags: PushTagMode::None,
+            up_to: Some(oid(12)),
+            no_verify: true,
+            expected_remote_oid: Some(oid(9)),
+        }]
+    );
+
+    // 2. Empty remotes renders inline `[+ Define Remote…]` and refreshes PushDialog once added.
+    let mut no_remote_snap = snapshot();
+    no_remote_snap.remotes.clear();
+    no_remote_snap.refs.retain(|r| r.kind != RefKind::RemoteBranch);
+    for r in &mut no_remote_snap.refs {
+        r.upstream = None;
+    }
+    let mut ts_empty = TestSession::with_snapshot(no_remote_snap.clone());
+    ts_empty.dispatch(Action::PromptPush {
+        branch: "main".into(),
+        up_to: None,
+    });
+    let text = screen_text(&ts_empty.render(120, 32));
+    assert!(text.contains("[+ Define Remote…]"), "{text}");
+    let (dx, dy) = ts_empty
+        .hit_center_of(|t| matches!(t, crate::hit_test::HitTarget::PushDefineRemote))
+        .expect("inline Define Remote button hit target");
+    ts_empty.send_mouse_event(super::left_click(dx, dy, KeyModifiers::NONE));
+    assert!(matches!(
+        ts_empty.state().modal_stack.last(),
+        Some(ModalLayer::Dialog(d)) if matches!(d.as_ref(), Dialog::Input(_))
+    ));
+    // Dismiss AddRemote dialog and simulate snapshot refresh with `origin` + push refspec.
+    ts_empty.send_key(KeyCode::Esc, KeyModifiers::NONE);
+    let _ = ts_empty.take_requests();
+    let mut with_remote = no_remote_snap;
+    with_remote.remotes = vec![jbgit_core::RemoteInfo {
+        name: "origin".into(),
+        fetch_url: Some("https://example.com/repo.git".into()),
+        push_url: None,
+        push_refspecs: vec!["refs/heads/main:refs/heads/trunk".into()],
+    }];
+    ts_empty.deliver_engine_event(EngineEvent::RepoSnapshotLoaded {
+        snapshot: Arc::new(with_remote),
+        epoch: 99,
+    });
+    let refreshed_pd = ts_empty.state().modal_stack.push_dialog().unwrap();
+    assert_eq!(refreshed_pd.remote(), "origin");
+    assert_eq!(refreshed_pd.remote_branch, "trunk");
+    assert!(ts_empty.take_requests().iter().any(|(req, _)| matches!(
+        req,
+        TaskRequest::LoadOutgoing { key } if key.remote == "origin" && key.remote_branch == "trunk"
+    )));
+}
+
+#[test]
+fn push_rejected_warns_when_rebase_range_contains_merge_commits() {
+    // Build a snapshot where `main` (oid 4) is a merge commit ahead of `origin/main` (oid 5).
+    let commit_with_oid = |n: u8, parents: Vec<jbgit_core::Oid>, subject: &str| {
+        let mut c = make_commit(n, parents, subject);
+        c.oid = oid(n);
+        c
+    };
+    let mut head = local("main", 4);
+    head.is_head = true;
+    head.upstream = Some("origin/main".into());
+    let snap = RepoSnapshot {
+        repo_name: "merge-warn".into(),
+        head_branch: Some("main".into()),
+        head_oid: Some(oid(4)),
+        refs: vec![head, remote("origin/main", 5)],
+        commits: vec![
+            commit_with_oid(5, vec![oid(1)], "remote"),
+            commit_with_oid(4, vec![oid(2), oid(3)], "Merge topic into main"),
+            commit_with_oid(3, vec![oid(1)], "topic"),
+            commit_with_oid(2, vec![oid(1)], "local"),
+            commit_with_oid(1, vec![], "base"),
+        ],
+        remotes: super::remote_infos(&["origin"]),
+        ..Default::default()
+    };
+    let mut ts = TestSession::with_snapshot(snap);
+    ts.deliver_engine_event(EngineEvent::GitOpFinished(GitOpOutcome::failed(
+        GitOp::Push {
+            branch: "main".into(),
+            remote: "origin".into(),
+            remote_branch: "main".into(),
+            set_upstream: false,
+            force: PushForce::None,
+            tags: PushTagMode::None,
+            up_to: None,
+            no_verify: false,
+            expected_remote_oid: None,
+        },
+        GitFailure::PushRejected,
+    )));
+    match ts.state().modal_stack.last() {
+        Some(ModalLayer::Dialog(d)) => match d.as_ref() {
+            Dialog::Choice(c) => {
+                assert!(
+                    c.body.iter().any(|l| l.contains("merge commit")),
+                    "expected rebase-over-merge warning in body: {:?}",
+                    c.body
+                );
+                let rebase_opt = c
+                    .options
+                    .iter()
+                    .find(|o| o.label == "Rebase & Retry")
+                    .expect("Rebase & Retry option");
+                assert!(rebase_opt.danger, "Rebase & Retry should be marked danger when merge commits exist");
             }
             other => panic!("expected ChoiceDialog, got {other:?}"),
         },

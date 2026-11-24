@@ -247,6 +247,19 @@ pub fn log_commit_menu_items(state: &AppState) -> Vec<ContextMenuItem> {
             state.is_ancestor_of_head(primary.oid),
             i18n.t("menu.log.push_not_in_head"),
         ),
+        None if snap.head_oid.is_some() => run(
+            push_up_lbl,
+            None,
+            None,
+            vec![Action::PromptPush {
+                branch: "HEAD".to_string(),
+                up_to: Some(primary.oid),
+            }],
+        )
+        .enabled_if(
+            state.is_ancestor_of_head(primary.oid),
+            i18n.t("menu.log.push_not_in_head"),
+        ),
         None => run(push_up_lbl, None, None, Vec::new())
             .enabled_if(false, i18n.t("menu.log.detached_no_branch")),
     };

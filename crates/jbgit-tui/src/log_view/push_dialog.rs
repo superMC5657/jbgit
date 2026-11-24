@@ -34,6 +34,8 @@ pub struct PushDialogState {
     pub tags: PushTagMode,
     pub force: PushForce,
     pub set_upstream: bool,
+    pub no_verify: bool,
+    pub expected_remote_oid: Option<Oid>,
     pub focus: PushDialogFocus,
     pub loading: bool,
     pub error: Option<String>,
@@ -72,6 +74,8 @@ impl PushDialogState {
             tags: PushTagMode::None,
             force: PushForce::None,
             set_upstream,
+            no_verify: false,
+            expected_remote_oid: None,
             focus: PushDialogFocus::Commits,
             loading: true,
             error: None,
@@ -85,6 +89,10 @@ impl PushDialogState {
             details_requested: None,
             details_pending: None,
         }
+    }
+
+    pub fn is_detached(&self) -> bool {
+        self.branch == "HEAD"
     }
 
     pub fn remote(&self) -> &str {
@@ -179,15 +187,22 @@ impl PushDialogState {
         } else {
             self.remote_branch.trim()
         };
-        validate_ref_name_typed(candidate, &[])
+        let to_validate = candidate.strip_prefix("refs/").unwrap_or(candidate);
+        validate_ref_name_typed(to_validate, &[])
             .err()
             .map(|err| match err {
-                jbgit_core::RefNameError::Empty => i18n.t_fmt(
-                    "validation.empty",
-                    &[("what", i18n.t("validation.what.branch"))],
-                ),
+                jbgit_core::RefNameError::Empty => {
+                    if self.is_detached() {
+                        i18n.t("dialog.push_full.detached_target_required").to_string()
+                    } else {
+                        i18n.t_fmt(
+                            "validation.empty",
+                            &[("what", i18n.t("validation.what.branch"))],
+                        )
+                    }
+                }
                 _ => i18n
-                    .validate_ref_name(candidate, &[], "Branch")
+                    .validate_ref_name(to_validate, &[], "Branch")
                     .err()
                     .unwrap_or_default(),
             })
@@ -218,14 +233,19 @@ impl PushDialogState {
     }
 
     pub fn build_push_op(&self) -> GitOp {
+        let expected_remote_oid = (self.force == PushForce::WithLease)
+            .then_some(self.expected_remote_oid)
+            .flatten();
         GitOp::Push {
             branch: self.branch.clone(),
             remote: self.remote().to_string(),
             remote_branch: self.remote_branch.trim().to_string(),
-            set_upstream: self.set_upstream,
+            set_upstream: self.set_upstream && !self.is_detached(),
             force: self.force,
             tags: self.tags,
             up_to: self.up_to,
+            no_verify: self.no_verify,
+            expected_remote_oid,
         }
     }
 

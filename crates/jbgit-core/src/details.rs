@@ -349,6 +349,8 @@ pub struct OutgoingBundle {
     pub commits: Vec<CommitSummary>,
     pub files_changed: usize,
     pub remote_exists: bool,
+    /// Last-known OID of `refs/remotes/<remote>/<remote_branch>` when it exists.
+    pub remote_oid: Option<Oid>,
     pub truncated: bool,
 }
 

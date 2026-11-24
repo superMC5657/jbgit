@@ -525,6 +525,8 @@ pub struct ChoiceOption {
     pub mnemonic: Option<char>,
     pub danger: bool,
     pub actions: Vec<Action>,
+    /// Optional alternate actions emitted when the dialog's checkbox is checked.
+    pub checked_actions: Option<Vec<Action>>,
 }
 
 impl ChoiceOption {
@@ -535,6 +537,7 @@ impl ChoiceOption {
             mnemonic,
             danger: false,
             actions,
+            checked_actions: None,
         }
     }
 
@@ -545,6 +548,11 @@ impl ChoiceOption {
 
     pub fn danger(mut self) -> Self {
         self.danger = true;
+        self
+    }
+
+    pub fn when_checked(mut self, actions: Vec<Action>) -> Self {
+        self.checked_actions = Some(actions);
         self
     }
 }
@@ -963,6 +971,87 @@ impl MergeDialog {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IdentityField {
+    Name,
+    Email,
+    Global,
+}
+
+impl IdentityField {
+    pub fn next(self) -> Self {
+        match self {
+            Self::Name => Self::Email,
+            Self::Email => Self::Global,
+            Self::Global => Self::Name,
+        }
+    }
+
+    pub fn prev(self) -> Self {
+        match self {
+            Self::Name => Self::Global,
+            Self::Email => Self::Name,
+            Self::Global => Self::Email,
+        }
+    }
+}
+
+/// Modal prompting for missing `user.name` and `user.email` before committing.
+#[derive(Debug, Clone)]
+pub struct IdentityDialog {
+    pub name: String,
+    pub email: String,
+    pub global: bool,
+    pub focused: IdentityField,
+    pub pending_commit: Option<jbgit_engine::CommitRequest>,
+}
+
+impl IdentityDialog {
+    pub fn new(
+        name: Option<String>,
+        email: Option<String>,
+        pending_commit: Option<jbgit_engine::CommitRequest>,
+    ) -> Self {
+        let name_val = name.unwrap_or_default();
+        let email_val = email.unwrap_or_default();
+        let focused = if name_val.trim().is_empty() {
+            IdentityField::Name
+        } else {
+            IdentityField::Email
+        };
+        Self {
+            name: name_val,
+            email: email_val,
+            global: false,
+            focused,
+            pending_commit,
+        }
+    }
+
+    pub fn error(&self, i18n: &I18n) -> Option<String> {
+        if self.name.trim().is_empty() {
+            Some(i18n.t("dialog.identity.err_name_empty").to_string())
+        } else if self.email.trim().is_empty() {
+            Some(i18n.t("dialog.identity.err_email_empty").to_string())
+        } else {
+            None
+        }
+    }
+
+    pub fn can_confirm(&self, i18n: &I18n) -> bool {
+        self.error(i18n).is_none()
+    }
+
+    pub fn confirm_actions(&self) -> Vec<Action> {
+        vec![Action::SaveGitIdentityAndCommit {
+            name: self.name.trim().to_string(),
+            email: self.email.trim().to_string(),
+            global: self.global,
+            pending_commit: self.pending_commit.clone(),
+        }]
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum Dialog {
     Input(InputDialog),
@@ -971,6 +1060,7 @@ pub enum Dialog {
     RebaseTodo(RebaseTodoDialog),
     Merge(MergeDialog),
     Credential(CredentialDialog),
+    Identity(IdentityDialog),
 }
 
 impl Dialog {
@@ -979,13 +1069,18 @@ impl Dialog {
         match self {
             Self::Input(d) => d.can_confirm(i18n).then(|| d.confirm_actions(i18n)),
             Self::Choice(d) => {
-                if d.selected == 0
-                    && let Some(cb) = &d.checkbox
+                let opt = d.options.get(d.selected)?;
+                if let Some(cb) = &d.checkbox
                     && cb.checked
                 {
-                    return Some(cb.checked_actions.clone());
+                    if let Some(alt) = &opt.checked_actions {
+                        return Some(alt.clone());
+                    }
+                    if d.selected == 0 && !cb.checked_actions.is_empty() {
+                        return Some(cb.checked_actions.clone());
+                    }
                 }
-                d.options.get(d.selected).map(|o| o.actions.clone())
+                Some(opt.actions.clone())
             }
             Self::Message(d) => Some(d.confirm_actions(i18n)),
             Self::RebaseTodo(d) => d.error(i18n).is_none().then(|| d.confirm_actions()),
@@ -993,6 +1088,7 @@ impl Dialog {
             // Answered by `AppState::answer_credential` (the secret never
             // travels inside an `Action`).
             Self::Credential(_) => Some(Vec::new()),
+            Self::Identity(d) => d.can_confirm(i18n).then(|| d.confirm_actions()),
         }
     }
 }
@@ -1030,6 +1126,57 @@ pub fn route_dialog_key(dialog: &mut Dialog, key: &KeyEvent, i18n: &I18n) -> Dia
             }
             KeyCode::Char(c) if plain && !c.is_control() => {
                 d.value.push(c);
+                DialogKey::Redraw
+            }
+            _ => DialogKey::None,
+        },
+        Dialog::Identity(d) => match key.code {
+            KeyCode::Enter => {
+                if d.focused == IdentityField::Name && !d.name.trim().is_empty() && d.email.trim().is_empty() {
+                    d.focused = IdentityField::Email;
+                    DialogKey::Redraw
+                } else {
+                    DialogKey::Confirm
+                }
+            }
+            KeyCode::Tab | KeyCode::Down => {
+                d.focused = d.focused.next();
+                DialogKey::Redraw
+            }
+            KeyCode::BackTab | KeyCode::Up => {
+                d.focused = d.focused.prev();
+                DialogKey::Redraw
+            }
+            KeyCode::Char(' ') if d.focused == IdentityField::Global => {
+                d.global = !d.global;
+                DialogKey::Redraw
+            }
+            KeyCode::Backspace => {
+                match d.focused {
+                    IdentityField::Name => {
+                        d.name.pop();
+                    }
+                    IdentityField::Email => {
+                        d.email.pop();
+                    }
+                    IdentityField::Global => {}
+                }
+                DialogKey::Redraw
+            }
+            KeyCode::Char('u') if ctrl => {
+                match d.focused {
+                    IdentityField::Name => d.name.clear(),
+                    IdentityField::Email => d.email.clear(),
+                    IdentityField::Global => {}
+                }
+                DialogKey::Redraw
+            }
+            KeyCode::Char(c) if plain && !c.is_control() => {
+                match d.focused {
+                    IdentityField::Name => d.name.push(c),
+                    IdentityField::Email => d.email.push(c),
+                    IdentityField::Global => {}
+                }
                 DialogKey::Redraw
             }
             _ => DialogKey::None,
