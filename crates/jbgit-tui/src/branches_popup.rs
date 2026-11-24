@@ -48,6 +48,7 @@ pub enum PopupRow {
     RebaseDialog,
     NewBranch,
     CheckoutRevision,
+    CleanupBranches,
     ConfigureRemotes,
     Worktrees,
     Unshallow,
@@ -122,6 +123,7 @@ pub fn build_popup_rows(state: &AppState, query: &str) -> Vec<PopupRow> {
         rows.push(PopupRow::RebaseDialog);
         rows.push(PopupRow::NewBranch);
         rows.push(PopupRow::CheckoutRevision);
+        rows.push(PopupRow::CleanupBranches);
         rows.push(PopupRow::ConfigureRemotes);
         if crate::worktrees_view::worktrees_supported(state) {
             rows.push(PopupRow::Worktrees);
@@ -323,6 +325,7 @@ pub fn activate_row(state: &AppState, query: &str, idx: usize) -> Vec<Action> {
         PopupRow::UpdateProject => vec![Action::PopModal, Action::PromptUpdateProject],
         PopupRow::PullDialog => vec![Action::PopModal, Action::PromptPull],
         PopupRow::RebaseDialog => vec![Action::PopModal, Action::PromptRebase { onto: None }],
+        PopupRow::CleanupBranches => vec![Action::PopModal, Action::OpenBranchCleanup],
         PopupRow::ConfigureRemotes => vec![Action::PopModal, Action::OpenRemotes],
         PopupRow::Worktrees => vec![Action::PopModal, Action::OpenWorktrees],
         PopupRow::Unshallow => vec![Action::PopModal, Action::PromptUnshallow],
@@ -674,6 +677,13 @@ pub fn render_branches_popup(
             PopupRow::CheckoutRevision => (
                 vec![Span::styled(
                     state.i18n.t("view.branches_popup.checkout_rev_btn").to_string(),
+                    Style::default().fg(fg),
+                )],
+                Vec::new(),
+            ),
+            PopupRow::CleanupBranches => (
+                vec![Span::styled(
+                    state.i18n.t("view.branches_popup.cleanup_branches_btn").to_string(),
                     Style::default().fg(fg),
                 )],
                 Vec::new(),

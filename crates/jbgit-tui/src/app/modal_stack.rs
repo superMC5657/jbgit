@@ -70,6 +70,8 @@ pub enum ModalLayer {
     PushDialog(Box<PushDialogState>),
     /// Layer 2: `Configure Remotes…` list (add / rename / edit URL / remove / fetch).
     Remotes(crate::remotes_view::RemotesState),
+    /// Layer 2: `Cleanup Branches…` batch merged/gone branch deleter.
+    BranchCleanup(Box<crate::branch_cleanup::BranchCleanupState>),
     /// Layer 2: repository switcher (recent repositories, worktrees, submodules).
     RepoSwitcher(Box<crate::repo_switcher::RepoSwitcherState>),
     /// Layer 2: startup welcome modal for non-Git directories (`Init` / `Clone…` / `Open Recent`).
@@ -204,6 +206,7 @@ impl ModalLayer {
             | Self::Annotate(_)
             | Self::PushDialog(_)
             | Self::Remotes(_)
+            | Self::BranchCleanup(_)
             | Self::RepoSwitcher(_)
             | Self::Welcome(_)
             | Self::CloneRepo(_)
@@ -401,6 +404,13 @@ impl ModalStack {
     pub fn apply_patch_mut(&mut self) -> Option<&mut crate::patch_view::ApplyPatchState> {
         self.layers.iter_mut().rev().find_map(|l| match l {
             ModalLayer::ApplyPatch(s) => Some(s.as_mut()),
+            _ => None,
+        })
+    }
+
+    pub fn branch_cleanup_mut(&mut self) -> Option<&mut crate::branch_cleanup::BranchCleanupState> {
+        self.layers.iter_mut().rev().find_map(|l| match l {
+            ModalLayer::BranchCleanup(bc) => Some(bc.as_mut()),
             _ => None,
         })
     }

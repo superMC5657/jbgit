@@ -23,8 +23,8 @@ pub use rebase::{
 };
 pub use refs::{
     RefNameError, fuzzy_filter_paths, fuzzy_indices, is_protected_branch,
-    matches_protected_branch_patterns, parse_recent_checkouts, validate_ref_name,
-    validate_ref_name_typed,
+    matches_protected_branch_patterns, parse_recent_checkouts, sanitize_branch_name,
+    sanitize_branch_name_on_typing, validate_ref_name, validate_ref_name_typed,
 };
 
 #[cfg(test)]
@@ -882,5 +882,63 @@ mod tests {
         assert!(plan_squash_todo(&plan, &[oid(2), oid(99)]).is_none());
         // Single commit returns None.
         assert!(plan_squash_todo(&plan, &[oid(2)]).is_none());
+    }
+
+    #[test]
+    fn branch_name_sanitizer_empty_cherry_pick_and_issue_06_ops() {
+        // Real-time space -> `_` and invalid char stripping (GitRefNameValidator).
+        assert_eq!(sanitize_branch_name_on_typing("feat my branch", "_"), "feat_my_branch");
+        assert_eq!(sanitize_branch_name_on_typing("--..//a..b~^:?*\"[\\@{c", "_"), "a.bc");
+        assert_eq!(sanitize_branch_name_on_typing("a//b/.c/d./e", "_"), "a/b/c/d/e");
+        assert_eq!(sanitize_branch_name("feat/foo.lock.", "_"), "feat/foo");
+        assert_eq!(sanitize_branch_name("my   topic / sub/", "_"), "my_topic_/_sub");
+
+        // EmptyCherryPick stderr classification.
+        let empty_lines = vec![
+            "The previous cherry-pick is now empty, possibly due to conflict resolution.".to_string(),
+            "If you wish to commit it anyway, use:".to_string(),
+            "    git commit --allow-empty".to_string(),
+            "Otherwise, please use 'git cherry-pick --skip'".to_string(),
+        ];
+        assert_eq!(classify_failure(&empty_lines), GitFailure::EmptyCherryPick);
+
+        // New / extended GitOp labels & refresh scopes.
+        let unset = GitOp::UnsetUpstream {
+            branch: "feat".into(),
+        };
+        assert_eq!(unset.label(), "Unset upstream of 'feat'");
+        assert_eq!(unset.refresh_scope(), RefreshScope::RefsAndGraph);
+        assert_eq!(
+            GitOp::CherryPick {
+                oids: vec![oid(1)],
+                no_commit: true,
+                record_origin: false,
+                mainline: Some(1),
+            }
+            .label(),
+            "Cherry-pick (-n) 1 commit(s)"
+        );
+        assert_eq!(
+            GitOp::Revert {
+                oids: vec![oid(1), oid(2)],
+                no_commit: true,
+                mainline: Some(2),
+            }
+            .label(),
+            "Revert (-n) 2 commit(s)"
+        );
+        assert_eq!(
+            GitOp::CherryPickAllowEmpty.label(),
+            "Cherry-pick (allow empty)"
+        );
+        assert_eq!(
+            GitOp::StashApply {
+                index: 0,
+                pop: false,
+                reinstate_index: true,
+            }
+            .label(),
+            "Apply stash@{0} (--index)"
+        );
     }
 }

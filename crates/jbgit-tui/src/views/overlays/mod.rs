@@ -100,6 +100,9 @@ fn render_modal_layer(
         ModalLayer::Remotes(rs) => {
             crate::remotes_view::render_remotes_modal(frame, screen, state, rs, ctx, z);
         }
+        ModalLayer::BranchCleanup(bc) => {
+            crate::branch_cleanup::render_branch_cleanup(frame, screen, bc, ctx, z);
+        }
         ModalLayer::RepoSwitcher(rs) => {
             crate::repo_switcher::render_repo_switcher_modal(frame, screen, state, rs, ctx, z);
         }

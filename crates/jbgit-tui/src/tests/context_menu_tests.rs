@@ -316,7 +316,8 @@ fn stash_tab_lists_stashes_and_keys_run_operations() {
         ts.take_git_ops(),
         vec![GitOp::StashApply {
             index: 1,
-            pop: false
+            pop: false,
+            reinstate_index: false,
         }]
     );
     ts.send_key(KeyCode::Char('o'), KeyModifiers::NONE);
@@ -324,7 +325,8 @@ fn stash_tab_lists_stashes_and_keys_run_operations() {
         ts.take_git_ops(),
         vec![GitOp::StashApply {
             index: 1,
-            pop: true
+            pop: true,
+            reinstate_index: false,
         }]
     );
 

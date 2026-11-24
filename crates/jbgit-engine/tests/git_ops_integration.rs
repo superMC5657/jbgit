@@ -368,6 +368,7 @@ async fn remote_checkout_tracks_and_branch_delete_can_be_restored() {
             name: "feature-new".into(),
             start: "origin/feature-new".into(),
             track: true,
+            force: false,
         },
     )
     .await;
@@ -452,6 +453,7 @@ async fn reset_modes_stash_workflow_and_cherry_pick() {
         GitOp::StashPush {
             message: Some("wip parser".into()),
             include_untracked: true,
+            keep_index: false,
             paths: Vec::new(),
         },
     )
@@ -492,7 +494,16 @@ async fn reset_modes_stash_workflow_and_cherry_pick() {
     commit_file(d, "z.txt", "z\n", "zed");
     git(d, &["checkout", "main"]);
     let zed = rev(d, "pick-target");
-    let out = run(d, GitOp::CherryPick { oids: vec![zed] }).await;
+    let out = run(
+        d,
+        GitOp::CherryPick {
+            oids: vec![zed],
+            no_commit: false,
+            record_origin: false,
+            mainline: None,
+        },
+    )
+    .await;
     assert!(out.success, "{out:?}");
     assert_eq!(subjects(d)[0], "zed");
     assert!(
@@ -1655,4 +1666,234 @@ async fn fixup_and_squash_commits_fold_via_autosquash_rebase_and_non_contiguous_
     assert!(rewrite.success, "non-contiguous squash failed: {rewrite:?}");
     assert_eq!(subjects(d), vec!["c3", "c2+c4 squashed", "c1"]);
     assert!(d.join("b.txt").exists() && d.join("c.txt").exists() && d.join("d.txt").exists());
+}
+
+#[tokio::test]
+async fn set_unset_upstream_and_cleanup_merged_and_gone_branches() {
+    let bare = TempDir::new().unwrap();
+    git(bare.path(), &["init", "--bare"]);
+    let tmp = init_repo();
+    let d = tmp.path();
+    commit_file(d, "base.txt", "base\n", "base");
+    git(d, &["remote", "add", "origin", bare.path().to_str().unwrap()]);
+    git(d, &["push", "-u", "origin", "main"]);
+
+    // Create two feature branches, push them, merge one into main, delete remote of both.
+    git(d, &["checkout", "-b", "feat/merged"]);
+    commit_file(d, "m.txt", "merged\n", "merged work");
+    git(d, &["push", "-u", "origin", "feat/merged"]);
+    let merged_tip = rev(d, "HEAD");
+
+    git(d, &["checkout", "main"]);
+    git(d, &["merge", "--no-ff", "-m", "merge feat/merged", "feat/merged"]);
+
+    git(d, &["checkout", "-b", "feat/unmerged-gone"]);
+    commit_file(d, "u.txt", "unmerged\n", "unmerged work");
+    git(d, &["push", "-u", "origin", "feat/unmerged-gone"]);
+
+    git(d, &["checkout", "main"]);
+    git(d, &["push", "origin", "--delete", "feat/merged"]);
+    git(d, &["push", "origin", "--delete", "feat/unmerged-gone"]);
+    git(d, &["fetch", "--prune", "origin"]);
+
+    // Test SetUpstream & UnsetUpstream on a local branch.
+    git(d, &["branch", "local-track", "main"]);
+    let set_up = run(
+        d,
+        GitOp::SetUpstream {
+            branch: "local-track".into(),
+            upstream: "origin/main".into(),
+        },
+    )
+    .await;
+    assert!(set_up.success, "{set_up:?}");
+    assert_eq!(
+        snapshot(d)
+            .await
+            .local_branch("local-track")
+            .unwrap()
+            .upstream
+            .as_deref(),
+        Some("origin/main")
+    );
+    let unset_up = run(
+        d,
+        GitOp::UnsetUpstream {
+            branch: "local-track".into(),
+        },
+    )
+    .await;
+    assert!(unset_up.success, "{unset_up:?}");
+    assert!(
+        snapshot(d)
+            .await
+            .local_branch("local-track")
+            .unwrap()
+            .upstream
+            .is_none()
+    );
+
+    // Cleanup scan identifies merged (`feat/merged` + `local-track`) and `[gone]` (`feat/merged` + `feat/unmerged-gone`).
+    let snap = snapshot(d).await;
+    let cands = snap.scan_cleanup_branches("HEAD", &[]);
+    let merged_c = cands.iter().find(|c| c.name == "feat/merged").expect("feat/merged");
+    assert!(merged_c.merged_into_base && merged_c.upstream_gone);
+    let gone_c = cands
+        .iter()
+        .find(|c| c.name == "feat/unmerged-gone")
+        .expect("feat/unmerged-gone");
+    assert!(!gone_c.merged_into_base && gone_c.upstream_gone);
+    assert!(cands.iter().all(|c| c.name != "main"));
+
+    // Batch Sequence delete + Undo Restore.
+    let del = run(
+        d,
+        GitOp::Sequence(vec![GitOp::DeleteBranch {
+            name: "feat/merged".into(),
+            force: false,
+            tip: merged_tip,
+        }]),
+    )
+    .await;
+    assert!(del.success, "{del:?}");
+    assert!(snapshot(d).await.local_branch("feat/merged").is_none());
+
+    let restore = run(
+        d,
+        GitOp::Sequence(vec![GitOp::RestoreBranch {
+            name: "feat/merged".into(),
+            oid: merged_tip,
+        }]),
+    )
+    .await;
+    assert!(restore.success, "{restore:?}");
+    assert_eq!(
+        snapshot(d).await.local_branch("feat/merged").unwrap().target_oid,
+        merged_tip
+    );
+}
+
+#[tokio::test]
+async fn cherry_pick_no_commit_revert_no_commit_and_empty_cherry_pick_recovery() {
+    let tmp = init_repo();
+    let d = tmp.path();
+    commit_file(d, "a.txt", "v1\n", "init");
+    git(d, &["checkout", "-b", "side"]);
+    commit_file(d, "b.txt", "side-b\n", "add b");
+    let add_b = rev(d, "HEAD");
+    git(d, &["checkout", "main"]);
+    let head_before = rev(d, "HEAD");
+
+    // 1. Cherry-pick with `-n` applies changes without creating a new commit.
+    let cp_n = run(
+        d,
+        GitOp::CherryPick {
+            oids: vec![add_b],
+            no_commit: true,
+            record_origin: false,
+            mainline: None,
+        },
+    )
+    .await;
+    assert!(cp_n.success, "{cp_n:?}");
+    assert_eq!(rev(d, "HEAD"), head_before, "cherry-pick -n must not move HEAD");
+    assert_eq!(fs::read_to_string(d.join("b.txt")).unwrap(), "side-b\n");
+    let st = git(d, &["status", "--porcelain"]);
+    assert!(st.contains("A  b.txt"), "{st}");
+
+    // Commit it, then cherry-pick the SAME commit again -> EmptyCherryPick!
+    git(d, &["commit", "-m", "manual b"]);
+    let cp_empty = run(
+        d,
+        GitOp::CherryPick {
+            oids: vec![add_b],
+            no_commit: false,
+            record_origin: false,
+            mainline: None,
+        },
+    )
+    .await;
+    assert!(!cp_empty.success);
+    assert_eq!(cp_empty.failure, Some(GitFailure::EmptyCherryPick), "{cp_empty:?}");
+
+    // Recover with AllowEmpty -> creates empty commit preserving subject "add b".
+    let allow = run(d, GitOp::CherryPickAllowEmpty).await;
+    assert!(allow.success, "{allow:?}");
+    assert_eq!(subjects(d)[0], "add b");
+
+    // 2. Revert `-n` on a normal commit stages the inverse without creating a commit.
+    let before_rev = rev(d, "HEAD");
+    let prev_commit = rev(d, "HEAD~1");
+    let rv_n = run(
+        d,
+        GitOp::Revert {
+            oids: vec![prev_commit],
+            no_commit: true,
+            mainline: None,
+        },
+    )
+    .await;
+    assert!(rv_n.success, "{rv_n:?}");
+    assert_eq!(rev(d, "HEAD"), before_rev, "revert -n must not move HEAD");
+    assert!(!d.join("b.txt").exists());
+}
+
+#[tokio::test]
+async fn stash_push_keep_index_apply_reinstate_index_and_checkout_single_file() {
+    let tmp = init_repo();
+    let d = tmp.path();
+    commit_file(d, "staged.txt", "base-s\n", "base s");
+    commit_file(d, "work.txt", "base-w\n", "base w");
+
+    // Stage change to staged.txt, leave unstaged change in work.txt.
+    fs::write(d.join("staged.txt"), "staged-v2\n").unwrap();
+    git(d, &["add", "staged.txt"]);
+    fs::write(d.join("work.txt"), "work-v2\n").unwrap();
+
+    // `git stash push --keep-index` keeps staged.txt staged while cleaning work.txt!
+    let push = run(
+        d,
+        GitOp::StashPush {
+            message: Some("keep-idx".into()),
+            include_untracked: false,
+            keep_index: true,
+            paths: Vec::new(),
+        },
+    )
+    .await;
+    assert!(push.success, "{push:?}");
+    let st_after_push = git(d, &["status", "--porcelain"]);
+    assert!(st_after_push.contains("M  staged.txt"), "{st_after_push}");
+    assert!(!st_after_push.contains("work.txt"), "{st_after_push}");
+    assert_eq!(fs::read_to_string(d.join("work.txt")).unwrap(), "base-w\n");
+
+    // Reset clean, then apply stash with `--index` -> staged.txt is reinstated in index!
+    git(d, &["reset", "--hard", "HEAD"]);
+    let apply_idx = run(
+        d,
+        GitOp::StashApply {
+            index: 0,
+            pop: false,
+            reinstate_index: true,
+        },
+    )
+    .await;
+    assert!(apply_idx.success, "{apply_idx:?}");
+    let st_after_apply = git(d, &["status", "--porcelain"]);
+    assert!(st_after_apply.contains("M  staged.txt"), "{st_after_apply}");
+    assert!(st_after_apply.contains(" M work.txt"), "{st_after_apply}");
+
+    // Reset clean, then Apply Single File (`git checkout stash@{0} -- work.txt`) touches ONLY work.txt.
+    git(d, &["reset", "--hard", "HEAD"]);
+    let single = run(
+        d,
+        GitOp::CheckoutPaths {
+            rev: "stash@{0}".into(),
+            paths: vec!["work.txt".into()],
+        },
+    )
+    .await;
+    assert!(single.success, "{single:?}");
+    assert_eq!(fs::read_to_string(d.join("work.txt")).unwrap(), "work-v2\n");
+    assert_eq!(fs::read_to_string(d.join("staged.txt")).unwrap(), "base-s\n");
 }

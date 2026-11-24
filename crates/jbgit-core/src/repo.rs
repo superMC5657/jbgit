@@ -3,6 +3,48 @@ use std::path::PathBuf;
 
 use crate::{Oid, RewritePlan, TodoEntry, is_protected_branch, natural_cmp};
 
+/// Direction mode of the two-branch symmetric comparison view (`GitCompareBranchesUi`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub enum BranchCompareDirection {
+    /// `left..right`: commits present in `right` but not in `left`.
+    OnlyRight,
+    /// `right..left`: commits present in `left` but not in `right`.
+    OnlyLeft,
+    /// `left...right`: symmetric difference (commits exclusive to either branch).
+    #[default]
+    Symmetric,
+}
+
+impl BranchCompareDirection {
+    pub const fn cycle(self) -> Self {
+        match self {
+            Self::OnlyRight => Self::OnlyLeft,
+            Self::OnlyLeft => Self::Symmetric,
+            Self::Symmetric => Self::OnlyRight,
+        }
+    }
+
+    pub fn range_label(self, left: &str, right: &str) -> String {
+        match self {
+            Self::OnlyRight => format!("{left}..{right}"),
+            Self::OnlyLeft => format!("{right}..{left}"),
+            Self::Symmetric => format!("{left}...{right}"),
+        }
+    }
+}
+
+/// One candidate local branch returned by [`RepoSnapshot::scan_cleanup_branches`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CleanupBranchCandidate {
+    pub name: String,
+    pub tip: Oid,
+    pub last_commit_time: i64,
+    pub upstream: Option<String>,
+    pub upstream_gone: bool,
+    pub merged_into_base: bool,
+    pub merged_into_head: bool,
+}
+
 /// Typed reason a commit range cannot be rewritten by interactive rebase.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RewritePlanError {
@@ -455,6 +497,110 @@ impl RepoSnapshot {
         a.difference(&b).count()
     }
 
+    /// Commits reachable from `from` but not from `exclude` (`exclude..from`),
+    /// preserving newest-first snapshot order and capped at `limit`.
+    pub fn exclusive_commits(&self, from: Oid, exclude: Oid, limit: usize) -> Vec<&CommitSummary> {
+        let a = self.reachable_from(from);
+        let b = self.reachable_from(exclude);
+        self.commits
+            .iter()
+            .filter(|c| a.contains(&c.oid) && !b.contains(&c.oid))
+            .take(limit)
+            .collect()
+    }
+
+    /// Commit OIDs reachable from `from` but not from `exclude` (`exclude..from`).
+    pub fn exclusive_oids(&self, from: Oid, exclude: Oid) -> Vec<Oid> {
+        let a = self.reachable_from(from);
+        let b = self.reachable_from(exclude);
+        self.commits
+            .iter()
+            .filter(|c| a.contains(&c.oid) && !b.contains(&c.oid))
+            .map(|c| c.oid)
+            .collect()
+    }
+
+    /// Commit OIDs matching `dir` between `left` and `right` branch tips.
+    pub fn compare_branch_oids(
+        &self,
+        left: Oid,
+        right: Oid,
+        dir: BranchCompareDirection,
+    ) -> Vec<Oid> {
+        let left_reach = self.reachable_from(left);
+        let right_reach = self.reachable_from(right);
+        self.commits
+            .iter()
+            .filter(|c| match dir {
+                BranchCompareDirection::OnlyRight => {
+                    right_reach.contains(&c.oid) && !left_reach.contains(&c.oid)
+                }
+                BranchCompareDirection::OnlyLeft => {
+                    left_reach.contains(&c.oid) && !right_reach.contains(&c.oid)
+                }
+                BranchCompareDirection::Symmetric => {
+                    left_reach.contains(&c.oid) ^ right_reach.contains(&c.oid)
+                }
+            })
+            .map(|c| c.oid)
+            .collect()
+    }
+
+    /// Scans non-current, non-protected, non-worktree local branches that are
+    /// merged into `base_ref` (or whose remote upstream is `[gone]`).
+    pub fn scan_cleanup_branches(
+        &self,
+        base_ref: &str,
+        extra_protected: &[String],
+    ) -> Vec<CleanupBranchCandidate> {
+        let base_oid = self.resolve_revision(base_ref).or(self.head_oid);
+        let commit_time: HashMap<Oid, i64> = self
+            .commits
+            .iter()
+            .map(|c| (c.oid, c.timestamp))
+            .collect();
+        let mut out = Vec::new();
+        for r in &self.refs {
+            if r.kind != RefKind::LocalBranch {
+                continue;
+            }
+            if r.is_head || r.name == base_ref {
+                continue;
+            }
+            if is_protected_branch(&r.name)
+                || crate::matches_protected_branch_patterns(&r.name, extra_protected)
+            {
+                continue;
+            }
+            if self.worktree_of_branch(&r.name).is_some() {
+                continue;
+            }
+            let merged_into_base = base_oid.is_some_and(|b| self.reaches(b, r.target_oid));
+            let merged_into_head = self.head_oid.is_some_and(|h| self.reaches(h, r.target_oid));
+            let upstream_gone = self.is_upstream_gone(r);
+            if !merged_into_base && !upstream_gone {
+                continue;
+            }
+            out.push(CleanupBranchCandidate {
+                name: r.name.clone(),
+                tip: r.target_oid,
+                last_commit_time: commit_time.get(&r.target_oid).copied().unwrap_or(0),
+                upstream: r.upstream.clone(),
+                upstream_gone,
+                merged_into_base,
+                merged_into_head,
+            });
+        }
+        out.sort_by(|a, b| {
+            (b.merged_into_base && b.upstream_gone)
+                .cmp(&(a.merged_into_base && a.upstream_gone))
+                .then(b.merged_into_base.cmp(&a.merged_into_base))
+                .then(b.upstream_gone.cmp(&a.upstream_gone))
+                .then_with(|| crate::natural_cmp(&a.name, &b.name))
+        });
+        out
+    }
+
     /// True if any commit reachable from `tip` but not from `base` (`base..tip`)
     /// is a merge commit (`parents.len() > 1`). Used to warn before rebasing a
     /// branch containing merge commits onto a diverged remote.
@@ -802,5 +948,91 @@ mod tests {
         assert!(snap.has_merge_commits_in_range(oid(5), oid(4)));
         assert!(!snap.has_merge_commits_in_range(oid(5), oid(2)));
         assert!(!snap.has_merge_commits_in_range(oid(4), oid(4)));
+    }
+
+    #[test]
+    fn cleanup_scan_exclusive_commits_and_symmetric_compare() {
+        let oid = |n: u8| Oid::from_bytes([n; 20]);
+        let c = |n: u8, parents: &[u8]| CommitSummary {
+            oid: oid(n),
+            parents: parents.iter().map(|&p| oid(p)).collect(),
+            subject: format!("c{n}"),
+            timestamp: i64::from(n) * 100,
+            ..Default::default()
+        };
+        let local = |name: &str, tip: u8, head: bool, up: Option<&str>| RefInfo {
+            name: name.into(),
+            full_name: format!("refs/heads/{name}"),
+            target_oid: oid(tip),
+            kind: RefKind::LocalBranch,
+            upstream: up.map(ToString::to_string),
+            ahead_behind: None,
+            is_head: head,
+        };
+        // Graph: 1 <- 2 <- 3 (main, HEAD), 1 <- 4 (unmerged_gone), 1 <- 5 (unmerged_live)
+        // merged_gone points to 2 with deleted upstream origin/merged_gone
+        // merged_plain points to 1 with no upstream
+        // release/1.0 points to 2 (protected!)
+        let snap = RepoSnapshot {
+            head_branch: Some("main".into()),
+            head_oid: Some(oid(3)),
+            commits: vec![
+                c(5, &[1]),
+                c(4, &[1]),
+                c(3, &[2]),
+                c(2, &[1]),
+                c(1, &[]),
+            ],
+            refs: vec![
+                local("main", 3, true, Some("origin/main")),
+                local("merged_gone", 2, false, Some("origin/merged_gone")),
+                local("merged_plain", 1, false, None),
+                local("unmerged_gone", 4, false, Some("origin/unmerged_gone")),
+                local("unmerged_live", 5, false, Some("origin/unmerged_live")),
+                local("release/1.0", 2, false, None),
+                RefInfo {
+                    name: "origin/main".into(),
+                    full_name: "refs/remotes/origin/main".into(),
+                    target_oid: oid(3),
+                    kind: RefKind::RemoteBranch,
+                    upstream: None,
+                    ahead_behind: None,
+                    is_head: false,
+                },
+                RefInfo {
+                    name: "origin/unmerged_live".into(),
+                    full_name: "refs/remotes/origin/unmerged_live".into(),
+                    target_oid: oid(5),
+                    kind: RefKind::RemoteBranch,
+                    upstream: None,
+                    ahead_behind: None,
+                    is_head: false,
+                },
+            ],
+            ..Default::default()
+        };
+
+        let candidates = snap.scan_cleanup_branches("HEAD", &[]);
+        let names: Vec<&str> = candidates.iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(names, vec!["merged_gone", "merged_plain", "unmerged_gone"]);
+        assert!(candidates[0].merged_into_base && candidates[0].upstream_gone);
+        assert!(candidates[1].merged_into_base && !candidates[1].upstream_gone);
+        assert!(!candidates[2].merged_into_base && candidates[2].upstream_gone);
+
+        // Exclusive commits & symmetric compare between main (3) and unmerged_live (5)
+        let exc = snap.exclusive_commits(oid(3), oid(5), 10);
+        assert_eq!(exc.iter().map(|c| c.oid).collect::<Vec<_>>(), vec![oid(3), oid(2)]);
+        assert_eq!(
+            snap.compare_branch_oids(oid(3), oid(5), BranchCompareDirection::OnlyRight),
+            vec![oid(5)]
+        );
+        assert_eq!(
+            snap.compare_branch_oids(oid(3), oid(5), BranchCompareDirection::OnlyLeft),
+            vec![oid(3), oid(2)]
+        );
+        assert_eq!(
+            snap.compare_branch_oids(oid(3), oid(5), BranchCompareDirection::Symmetric),
+            vec![oid(5), oid(3), oid(2)]
+        );
     }
 }

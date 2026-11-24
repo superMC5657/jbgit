@@ -1525,7 +1525,11 @@ pub fn branch_rename(state: &AppState, name: &str, kind: RefKind) -> CommandResu
             };
             let mut existing = local_names(state);
             existing.retain(|n| n != &target);
-            Ok(dialog(Dialog::Input(InputDialog::new(
+            let has_upstream = snap
+                .local_branch(&target)
+                .and_then(|b| b.upstream.as_ref())
+                .is_some();
+            let mut input = InputDialog::new(
                 i18n.t_fmt("dialog.rename_branch.title", &[("name", &target)]),
                 i18n.t("dialog.rename_branch.prompt"),
                 target.clone(),
@@ -1534,7 +1538,11 @@ pub fn branch_rename(state: &AppState, name: &str, kind: RefKind) -> CommandResu
                     existing,
                 },
                 InputIntent::RenameBranch { old: target },
-            ))))
+            );
+            if has_upstream {
+                input = input.with_checkbox(i18n.t("dialog.rename_branch.unset_upstream"), false);
+            }
+            Ok(dialog(Dialog::Input(input)))
         }
         RefKind::RemoteBranch | RefKind::Tag => Err(String::new()),
     }

@@ -151,6 +151,9 @@ fn route_modal_key(key: KeyEvent, state: &AppState) -> Vec<Action> {
         ModalLayer::Annotate(_) => route_annotate_key(&key, state),
         ModalLayer::PushDialog(_) => route_push_dialog_key(&key, state),
         ModalLayer::Remotes(_) => crate::remotes_view::route_remotes_key(&key, state),
+        ModalLayer::BranchCleanup(_) => {
+            crate::branch_cleanup::route_branch_cleanup_key(&key, state)
+        }
         ModalLayer::RepoSwitcher(_) => crate::repo_switcher::route_repo_switcher_key(&key, state),
         ModalLayer::Welcome(_) => crate::repo_lifecycle::route_welcome_key(&key, state),
         ModalLayer::CloneRepo(_) => crate::repo_lifecycle::route_clone_repo_key(&key, state),

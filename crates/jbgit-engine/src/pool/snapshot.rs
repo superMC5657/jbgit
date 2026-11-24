@@ -613,7 +613,11 @@ fn collect_refs(
                             }
                             up.name().ok().flatten().map(ToString::to_string)
                         }
-                        Err(_) => None,
+                        Err(_) => repo
+                            .branch_upstream_name(&full_name)
+                            .ok()
+                            .and_then(|buf| buf.as_str().ok().map(ToString::to_string))
+                            .map(|r| r.strip_prefix("refs/remotes/").unwrap_or(&r).to_string()),
                     };
                     (RefKind::LocalBranch, upstream_name, is_head)
                 }

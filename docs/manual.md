@@ -108,7 +108,8 @@ jbgit 默认采用**零冲突统一键位（`preset = "default"`）**，并通�
 | `<Space>` | 添加 / 取消收藏当前分支（置顶显示） |
 | `<Enter>` | 按选中分支过滤提交日志 |
 | `J` | 跳转至选中分支对应的提交记录 |
-| `c` / `n` / `<Ctrl-Alt-n>` / `<F2>` / `d` / `<Del>` | 检出 (`c`) / 新建分支 (`n`/`Ctrl+Alt+N`) / 重命名 (`F2`) / 删除分支或 Tag (`d`/`Del`) |
+| `c` / `n` / `<Ctrl-Alt-n>` / `<F2>` / `d` / `<Del>` | 检出 (`c`) / 新建分支 (`n`/`Ctrl+Alt+N`，支持实时空格→`_` 自动清洗、覆盖已有分支 `-B` 与 `--track` 追踪) / 重命名 (`F2`，可勾选同时取消上游追踪) / 删除分支或 Tag (`d`/`Del`，未合并分支确认框会列出未合并提交列表) |
+| **本地/远程分支右键菜单** | `Set Upstream…` / `Unset Upstream`（本地分支显式管理上游追踪）、`Compare with…`（任意双分支对称对比：顶部对比条支持一键切换 `A..B` / `B..A` / `A...B` 方向与查看 `git diff A..B` 树差异）、`Checkout and Rebase onto Current`（远程分支检出/重置本地分支并变基到当前分支）、`Cleanup Branches…`（扫描已合并及 `[gone]` 分支并支持批量删除与一键恢复） |
 | **Tag 节点右键菜单** | 检出（游离 HEAD）、从 Tag 新建分支、对比/合并、推送单个 Tag、删除本地 Tag（若远端存在同名 Tag 可勾选同时删除；删除后支持通知栏 `<Alt-z>` 一键恢复）、删除远端 Tag |
 | **Remote 分组 / `<remote>` 节点右键菜单** | `Fetch '<remote>'`（仅获取该远端，`git fetch --prune <remote>`） / `Configure Remotes…` |
 
@@ -121,6 +122,7 @@ jbgit 默认采用**零冲突统一键位（`preset = "default"`）**，并通�
 | `<Ctrl-Alt-n>` | 从当前 HEAD 新建分支（跟随 `new_branch` 修饰键配置） |
 | `<Alt-f>` / `<Esc>` | 执行远程 Fetch / 关闭浮窗 |
 | 顶部 `↓ Update Project…` | 选择 `Follow Git config` / `Merge` / `Rebase` 后执行 Update Project（仅在非游离 HEAD 时显示） |
+| 顶部 `🧹 Cleanup Branches…` | 打开已合并分支批量清理窗口（支持切换基准分支 `HEAD`/`main`、识别 `[gone]` 上游、多选勾选批量删除并在删除后一键恢复） |
 | 顶部 `⚙ Configure Remotes…` | 打开远端管理窗口（同 `<Alt-r>`） |
 | 顶部 `⎇ Working Trees…` | 打开 Worktree 管理窗口（同 `<Alt-w>`；git < 2.17 时不显示） |
 | 分支行右侧 `⎇ <worktree>` | 该分支已在其他 Worktree 检出：子菜单中 Checkout 置灰并说明原因，改为提供 `Open in Worktree '<name>'` |
@@ -171,9 +173,11 @@ jbgit 默认采用**零冲突统一键位（`preset = "default"`）**，并通�
 | 快捷键 | 功能描述 |
 | :--- | :--- |
 | `<Enter>` / `<Right>` / `<Esc>` | 安全切换焦点至右侧差异预览（不会误操作应用贮藏），`<Esc>` 返回贮藏列表 |
-| `a` / `o` | 应用选中贮藏 (`a`) / 应用并弹出 (`o`) |
-| `n` / `B` / `d` / `C` | 新建贮藏 (`n`) / 从贮藏创建分支 (`B`) / 删除 (`d`/`Del`) / 清空 (`C`) |
-| `v` / `e` / `E` / `<Left>` / `<Right>` | *(右侧变更树)* 按目录分组 (`v`) / 全展开 (`e`) / 全折叠 (`E`) / 单项折叠展开 |
+| `a` / `o` | 应用选中贮藏 (`a`) / 应用并弹出 (`o`)；右键菜单另提供 `--index` 还原暂存态（`Apply/Pop (Reinstate Index)`） |
+| `n` / `B` / `d` / `C` | 新建贮藏 (`n`，支持消息、`--include-untracked`、`--keep-index` 与仅选中文件；Stage 变更树右键 `Stash Changes…` 同理) / 从贮藏创建分支 (`B`) / 删除 (`d`/`Del`) / 清空 (`C`) |
+| `v` / `e` / `E` / `<Left>` / `<Right>` | *(右侧变更树)* 按目录分组 (`v`) / 全展开 (`e`) / 全折叠 (`E`) / 单项折叠展开；右键单文件支持 **Diff with Local** 与 **Apply Single File** (`git checkout stash@{n} -- <path>`) |
+
+> 提交日志右键菜单中，Cherry-Pick 与 Revert 均提供普通提交与 **Without Committing (`-n`)** 两个选项；选中合并提交时自动弹出主线父提交选择（`-m 1` / `-m 2`）；遇到空 Cherry-Pick 时自动弹出 **Skip / Allow Empty / Abort** 恢复弹窗。
 
 ### 控制台 (Console View)
 

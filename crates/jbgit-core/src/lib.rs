@@ -65,8 +65,9 @@ pub use git_ops::{
     RewritePlan, SkippedBranch, SquashTodoPlan, StashEntry, TodoAction, TodoEntry, UpdateInfo,
     UpdateMode, UpdatedRange, classify_failure, default_squash_messages, fuzzy_filter_paths,
     fuzzy_indices, infer_clone_dir_name, is_protected_branch, matches_protected_branch_patterns,
-    parse_push_porcelain, parse_recent_checkouts, plan_squash_todo, render_todo, short_rev,
-    validate_ref_name, validate_ref_name_typed,
+    parse_push_porcelain, parse_recent_checkouts, plan_squash_todo, render_todo,
+    sanitize_branch_name, sanitize_branch_name_on_typing, short_rev, validate_ref_name,
+    validate_ref_name_typed,
 };
 pub use key_token::{KeyToken, KeyTokenError, KeyTokenKind, parse_key_token};
 pub use lru::LruCache;
@@ -85,8 +86,8 @@ pub use refs::{
     group_refs_for_table, shorten_group_label, shorten_ref_name,
 };
 pub use repo::{
-    CommitSummary, RefInfo, RefKind, RefreshScope, RemoteInfo, RepoSnapshot, RepositoryState,
-    RewritePlanError, redact_url, redact_urls_in,
+    BranchCompareDirection, CleanupBranchCandidate, CommitSummary, RefInfo, RefKind, RefreshScope,
+    RemoteInfo, RepoSnapshot, RepositoryState, RewritePlanError, redact_url, redact_urls_in,
 };
 pub use stage::{
     AmendCommitPreview, FileStatusKind, StageEntry, StageNodeKind, StageStatusSnapshot,

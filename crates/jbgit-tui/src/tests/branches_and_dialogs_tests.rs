@@ -143,6 +143,7 @@ fn remote_checkout_tracks_new_branch_or_asks_when_diverged() {
             name: "feature-new".into(),
             start: "origin/feature-new".into(),
             track: true,
+            force: false,
         }]
     );
 
@@ -248,6 +249,8 @@ fn new_branch_dialog_validates_name_inline_and_blocks_confirm() {
         ts.state().modal_stack.last(),
         Some(ModalLayer::Dialog(_))
     ));
+    // Auto-sanitize is ON by default: disable via Alt+S to exercise raw invalid inputs.
+    ts.send_key(KeyCode::Char('s'), KeyModifiers::ALT);
 
     for (input, err) in [
         ("bad name", "cannot contain spaces"),
@@ -284,6 +287,7 @@ fn new_branch_dialog_validates_name_inline_and_blocks_confirm() {
             name: "feature/ok".into(),
             start: oid(12).to_string(),
             track: false,
+            force: false,
         }]
     );
     assert!(ts.state().modal_stack.is_empty());

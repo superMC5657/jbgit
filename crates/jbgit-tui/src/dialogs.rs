@@ -7,8 +7,9 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use jbgit_core::{
     DetailsKey, DetailsMode, FileDiffKey, GitOp, GitVersion, MergeOptions, Oid, PullOptions,
-    RebaseOptionError, RebaseOptions, RefKind, RepoSnapshot, ResetMode, StashEntry, TodoAction,
-    TodoEntry, WorktreeBranch, default_squash_messages,
+    RebaseOptionError, RebaseOptions, RefKind, RefNameError, RepoSnapshot, ResetMode, StashEntry,
+    TodoAction, TodoEntry, WorktreeBranch, default_squash_messages, sanitize_branch_name,
+    sanitize_branch_name_on_typing, validate_ref_name_typed,
 };
 use jbgit_engine::askpass::Secret;
 
@@ -278,17 +279,30 @@ impl InputDialog {
                     name: value,
                     start: start.clone(),
                     track: false,
+                    force: false,
                 }
             } else {
                 GitOp::CreateBranch {
                     name: value,
                     start: start.clone(),
+                    force: false,
+                    track: false,
                 }
             })],
-            InputIntent::RenameBranch { old } => vec![Action::RunGitOp(GitOp::RenameBranch {
-                old: old.clone(),
-                new: value,
-            })],
+            InputIntent::RenameBranch { old } => {
+                let rename = GitOp::RenameBranch {
+                    old: old.clone(),
+                    new: value.clone(),
+                };
+                if checked {
+                    vec![Action::RunGitOp(GitOp::Sequence(vec![
+                        rename,
+                        GitOp::UnsetUpstream { branch: value },
+                    ]))]
+                } else {
+                    vec![Action::RunGitOp(rename)]
+                }
+            }
             InputIntent::NewTag { target } => {
                 if checked {
                     vec![Action::OpenDialog(Box::new(Dialog::Message(
@@ -320,6 +334,7 @@ impl InputDialog {
             InputIntent::StashMessage => vec![Action::RunGitOp(GitOp::StashPush {
                 message: (!value.is_empty()).then_some(value),
                 include_untracked: checked,
+                keep_index: false,
                 paths: Vec::new(),
             })],
             InputIntent::RemoteCheckoutAs { start } => {
@@ -327,6 +342,7 @@ impl InputDialog {
                     name: value,
                     start: start.clone(),
                     track: true,
+                    force: false,
                 })]
             }
             InputIntent::AddRemoteName => vec![Action::OpenDialog(Box::new(Dialog::Input(
@@ -1768,9 +1784,224 @@ pub fn create_patch_dialog(
     })
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NewBranchField {
+    Name,
+    Checkout,
+    Overwrite,
+    Track,
+    AutoSanitize,
+}
+
+impl NewBranchField {
+    pub const ALL: [Self; 5] = [
+        Self::Name,
+        Self::Checkout,
+        Self::Overwrite,
+        Self::Track,
+        Self::AutoSanitize,
+    ];
+
+    pub const fn next(self) -> Self {
+        match self {
+            Self::Name => Self::Checkout,
+            Self::Checkout => Self::Overwrite,
+            Self::Overwrite => Self::Track,
+            Self::Track => Self::AutoSanitize,
+            Self::AutoSanitize => Self::Name,
+        }
+    }
+
+    pub const fn prev(self) -> Self {
+        match self {
+            Self::Name => Self::AutoSanitize,
+            Self::Checkout => Self::Name,
+            Self::Overwrite => Self::Checkout,
+            Self::Track => Self::Overwrite,
+            Self::AutoSanitize => Self::Track,
+        }
+    }
+}
+
+/// Enhanced `New Branch…` dialog (`GitNewBranchDialog`): real-time space→`_`
+/// sanitization (toggleable), Checkout branch, Overwrite existing (`-B`), and
+/// Set tracking (`--track`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NewBranchDialog {
+    pub title: String,
+    pub prompt: String,
+    pub start: String,
+    pub value: String,
+    pub existing: Vec<String>,
+    pub checkout: bool,
+    pub overwrite: bool,
+    pub track: bool,
+    pub auto_sanitize: bool,
+    pub focused: NewBranchField,
+}
+
+impl NewBranchDialog {
+    pub fn new(
+        title: impl Into<String>,
+        prompt: impl Into<String>,
+        start: impl Into<String>,
+        default: impl Into<String>,
+        existing: Vec<String>,
+        track: bool,
+    ) -> Self {
+        Self {
+            title: title.into(),
+            prompt: prompt.into(),
+            start: start.into(),
+            value: default.into(),
+            existing,
+            checkout: true,
+            overwrite: false,
+            track,
+            auto_sanitize: true,
+            focused: NewBranchField::Name,
+        }
+    }
+
+    pub fn push_str(&mut self, text: &str) {
+        self.value.push_str(text);
+        if self.auto_sanitize {
+            self.value = sanitize_branch_name_on_typing(&self.value, "_");
+        }
+    }
+
+    pub fn error(&self, i18n: &I18n) -> Option<String> {
+        let refs: Vec<&str> = self.existing.iter().map(String::as_str).collect();
+        match validate_ref_name_typed(&self.value, &refs) {
+            Ok(()) => None,
+            Err(RefNameError::AlreadyExists(_)) if self.overwrite => None,
+            Err(_) => i18n.validate_ref_name(&self.value, &refs, "Branch").err(),
+        }
+    }
+
+    pub fn can_confirm(&self, i18n: &I18n) -> bool {
+        self.error(i18n).is_none()
+    }
+
+    pub fn confirm_actions(&self) -> Vec<Action> {
+        let name = if self.auto_sanitize {
+            sanitize_branch_name(&self.value, "_")
+        } else {
+            self.value.trim().to_string()
+        };
+        let op = if self.checkout {
+            GitOp::CheckoutNewBranch {
+                name,
+                start: self.start.clone(),
+                track: self.track,
+                force: self.overwrite,
+            }
+        } else {
+            GitOp::CreateBranch {
+                name,
+                start: self.start.clone(),
+                force: self.overwrite,
+                track: self.track,
+            }
+        };
+        vec![Action::RunGitOp(op)]
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StashPushField {
+    Message,
+    IncludeUntracked,
+    KeepIndex,
+    OnlySelected,
+}
+
+/// Lightweight `Stash Changes…` dialog (`GitStashDialog`): optional message,
+/// `--include-untracked`, `--keep-index`, and selected-files vs all-changes toggle.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StashPushDialog {
+    pub message: String,
+    pub include_untracked: bool,
+    pub keep_index: bool,
+    pub selected_paths: Vec<String>,
+    pub only_selected: bool,
+    pub focused: StashPushField,
+}
+
+impl StashPushDialog {
+    pub fn new(
+        default_message: impl Into<String>,
+        include_untracked: bool,
+        selected_paths: Vec<String>,
+    ) -> Self {
+        let only_selected = !selected_paths.is_empty();
+        Self {
+            message: default_message.into(),
+            include_untracked,
+            keep_index: false,
+            selected_paths,
+            only_selected,
+            focused: StashPushField::Message,
+        }
+    }
+
+    pub fn rows(&self) -> Vec<StashPushField> {
+        let mut r = vec![
+            StashPushField::Message,
+            StashPushField::IncludeUntracked,
+            StashPushField::KeepIndex,
+        ];
+        if !self.selected_paths.is_empty() {
+            r.push(StashPushField::OnlySelected);
+        }
+        r
+    }
+
+    pub fn move_focus(&mut self, delta: isize) {
+        let rows = self.rows();
+        let cur = rows.iter().position(|f| *f == self.focused).unwrap_or(0) as isize;
+        let len = rows.len() as isize;
+        self.focused = rows[(cur + delta).rem_euclid(len) as usize];
+    }
+
+    pub fn preview_command(&self) -> String {
+        let mut parts = vec!["git stash push".to_string()];
+        if self.include_untracked {
+            parts.push("--include-untracked".into());
+        }
+        if self.keep_index {
+            parts.push("--keep-index".into());
+        }
+        let msg = self.message.trim();
+        if !msg.is_empty() {
+            parts.push(format!("-m \"{msg}\""));
+        }
+        if self.only_selected && !self.selected_paths.is_empty() {
+            parts.push(format!("-- ({} file(s))", self.selected_paths.len()));
+        }
+        parts.join(" ")
+    }
+
+    pub fn confirm_actions(&self) -> Vec<Action> {
+        let msg = self.message.trim();
+        vec![Action::RunGitOp(GitOp::StashPush {
+            message: (!msg.is_empty()).then(|| msg.to_string()),
+            include_untracked: self.include_untracked,
+            keep_index: self.keep_index,
+            paths: if self.only_selected {
+                self.selected_paths.clone()
+            } else {
+                Vec::new()
+            },
+        })]
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum Dialog {
     Input(InputDialog),
+    NewBranch(NewBranchDialog),
+    StashPush(StashPushDialog),
     Choice(ChoiceDialog),
     Message(MessageDialog),
     RebaseTodo(RebaseTodoDialog),
@@ -1787,6 +2018,8 @@ impl Dialog {
     pub fn confirm_actions(&self, i18n: &I18n) -> Option<Vec<Action>> {
         match self {
             Self::Input(d) => d.can_confirm(i18n).then(|| d.confirm_actions(i18n)),
+            Self::NewBranch(d) => d.can_confirm(i18n).then(|| d.confirm_actions()),
+            Self::StashPush(d) => Some(d.confirm_actions()),
             Self::Choice(d) => {
                 let opt = d.options.get(d.selected)?;
                 if let Some(cb) = &d.checkbox
@@ -1909,6 +2142,101 @@ pub fn route_dialog_key(dialog: &mut Dialog, key: &KeyEvent, i18n: &I18n) -> Dia
                     IdentityField::Email => d.email.push(c),
                     IdentityField::Global => {}
                 }
+                DialogKey::Redraw
+            }
+            _ => DialogKey::None,
+        },
+        Dialog::NewBranch(d) => match key.code {
+            KeyCode::Enter => DialogKey::Confirm,
+            KeyCode::Tab | KeyCode::Down => {
+                d.focused = d.focused.next();
+                DialogKey::Redraw
+            }
+            KeyCode::BackTab | KeyCode::Up => {
+                d.focused = d.focused.prev();
+                DialogKey::Redraw
+            }
+            KeyCode::Char('c') if alt => {
+                d.checkout = !d.checkout;
+                DialogKey::Redraw
+            }
+            KeyCode::Char('o') if alt => {
+                d.overwrite = !d.overwrite;
+                DialogKey::Redraw
+            }
+            KeyCode::Char('t') if alt => {
+                d.track = !d.track;
+                DialogKey::Redraw
+            }
+            KeyCode::Char('s') if alt => {
+                d.auto_sanitize = !d.auto_sanitize;
+                DialogKey::Redraw
+            }
+            KeyCode::Char(' ') if plain && d.focused != NewBranchField::Name => {
+                match d.focused {
+                    NewBranchField::Checkout => d.checkout = !d.checkout,
+                    NewBranchField::Overwrite => d.overwrite = !d.overwrite,
+                    NewBranchField::Track => d.track = !d.track,
+                    NewBranchField::AutoSanitize => d.auto_sanitize = !d.auto_sanitize,
+                    NewBranchField::Name => {}
+                }
+                DialogKey::Redraw
+            }
+            KeyCode::Backspace if d.focused == NewBranchField::Name => {
+                d.value.pop();
+                DialogKey::Redraw
+            }
+            KeyCode::Char('u') if ctrl && d.focused == NewBranchField::Name => {
+                d.value.clear();
+                DialogKey::Redraw
+            }
+            KeyCode::Char(c) if plain && !c.is_control() && d.focused == NewBranchField::Name => {
+                d.push_str(&c.to_string());
+                DialogKey::Redraw
+            }
+            _ => DialogKey::None,
+        },
+        Dialog::StashPush(d) => match key.code {
+            KeyCode::Enter => DialogKey::Confirm,
+            KeyCode::Tab | KeyCode::Down => {
+                d.move_focus(1);
+                DialogKey::Redraw
+            }
+            KeyCode::BackTab | KeyCode::Up => {
+                d.move_focus(-1);
+                DialogKey::Redraw
+            }
+            KeyCode::Char('u') if alt => {
+                d.include_untracked = !d.include_untracked;
+                DialogKey::Redraw
+            }
+            KeyCode::Char('k') if alt => {
+                d.keep_index = !d.keep_index;
+                DialogKey::Redraw
+            }
+            KeyCode::Char('s') if alt && !d.selected_paths.is_empty() => {
+                d.only_selected = !d.only_selected;
+                DialogKey::Redraw
+            }
+            KeyCode::Char(' ') if plain && d.focused != StashPushField::Message => {
+                match d.focused {
+                    StashPushField::IncludeUntracked => d.include_untracked = !d.include_untracked,
+                    StashPushField::KeepIndex => d.keep_index = !d.keep_index,
+                    StashPushField::OnlySelected => d.only_selected = !d.only_selected,
+                    StashPushField::Message => {}
+                }
+                DialogKey::Redraw
+            }
+            KeyCode::Backspace if d.focused == StashPushField::Message => {
+                d.message.pop();
+                DialogKey::Redraw
+            }
+            KeyCode::Char('u') if ctrl && d.focused == StashPushField::Message => {
+                d.message.clear();
+                DialogKey::Redraw
+            }
+            KeyCode::Char(c) if plain && !c.is_control() && d.focused == StashPushField::Message => {
+                d.message.push(c);
                 DialogKey::Redraw
             }
             _ => DialogKey::None,
@@ -2382,7 +2710,8 @@ pub fn route_dialog_key(dialog: &mut Dialog, key: &KeyEvent, i18n: &I18n) -> Dia
     }
 }
 
-/// `New Branch…` dialog with live validation against local branch names.
+/// `New Branch…` dialog with real-time space→`_` sanitization, overwrite (`-B`),
+/// and tracking (`--track`) options (`GitNewBranchDialog`).
 pub fn new_branch_dialog(
     start: &str,
     start_label: &str,
@@ -2390,21 +2719,25 @@ pub fn new_branch_dialog(
     default: &str,
     i18n: &I18n,
 ) -> Dialog {
-    Dialog::Input(
-        InputDialog::new(
-            i18n.t_fmt("dialog.new_branch.title_from", &[("start", start_label)]),
-            i18n.t("dialog.new_branch.name_prompt"),
-            default,
-            InputValidation::RefName {
-                what: "Branch",
-                existing,
-            },
-            InputIntent::NewBranch {
-                start: start.to_string(),
-            },
-        )
-        .with_checkbox(i18n.t("dialog.new_branch.checkout_checkbox"), true),
-    )
+    new_branch_dialog_with_track(start, start_label, existing, default, false, i18n)
+}
+
+pub fn new_branch_dialog_with_track(
+    start: &str,
+    start_label: &str,
+    existing: Vec<String>,
+    default: &str,
+    track: bool,
+    i18n: &I18n,
+) -> Dialog {
+    Dialog::NewBranch(NewBranchDialog::new(
+        i18n.t_fmt("dialog.new_branch.title_from", &[("start", start_label)]),
+        i18n.t("dialog.new_branch.name_prompt"),
+        start,
+        default,
+        existing,
+        track,
+    ))
 }
 
 pub fn new_branch_from_head_dialog(snap: Option<&RepoSnapshot>, i18n: &I18n) -> Dialog {

@@ -29,7 +29,7 @@ pub use presentation::{
 };
 pub use push_dialog::{PushDialogFocus, PushDialogState};
 pub use reflog::{ReflogFocus, ReflogState};
-pub use workbench::{LogDispatchCtx, LogReconcileCtx, LogWorkbench};
+pub use workbench::{BranchCompareState, LogDispatchCtx, LogReconcileCtx, LogWorkbench};
 
 #[cfg(test)]
 mod tests {

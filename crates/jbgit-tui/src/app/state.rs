@@ -447,6 +447,12 @@ impl AppState {
                     ap.preview_scroll.scroll_by(delta, fallback);
                 }
             }
+            ScrollPane::BranchCleanup => {
+                if let Some(bc) = self.modal_stack.branch_cleanup_mut() {
+                    let fallback = bc.rows.len().saturating_sub(1);
+                    bc.scroll.scroll_by(delta, fallback);
+                }
+            }
             ScrollPane::TreeBrowserList
             | ScrollPane::TreeBrowserSearch
             | ScrollPane::PushCommits
@@ -580,6 +586,11 @@ impl AppState {
                     if let Some(rs) = self.modal_stack.repo_switcher_mut() {
                         let total = rs.visible().len();
                         rs.scroll.ensure_visible(rs.selected, total, viewport_h);
+                    }
+                }
+                ScrollPane::BranchCleanup => {
+                    if let Some(bc) = self.modal_stack.branch_cleanup_mut() {
+                        bc.scroll.bind_bound(viewport_h, max_scroll);
                     }
                 }
                 ScrollPane::Remotes => {

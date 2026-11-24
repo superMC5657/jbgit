@@ -1,3 +1,4 @@
+mod branch_cleanup_and_options_tests;
 mod branches_and_dialogs_tests;
 mod context_menu_tests;
 mod diff_enhancements_tests;

@@ -448,13 +448,28 @@ impl I18n {
                     None => self.t_fmt("git_op.rebase_onto", &[("onto", target)]),
                 }
             }
-            GitOp::CherryPick { oids } => {
+            GitOp::CherryPick {
+                oids, no_commit, ..
+            } => {
                 let c = oids.len().to_string();
-                self.t_fmt("git_op.cherry_pick", &[("count", &c)])
+                let key = if *no_commit {
+                    "git_op.cherry_pick_no_commit"
+                } else {
+                    "git_op.cherry_pick"
+                };
+                self.t_fmt(key, &[("count", &c)])
             }
-            GitOp::Revert { oids } => {
+            GitOp::CherryPickAllowEmpty => self.t("git_op.cherry_pick_allow_empty").to_string(),
+            GitOp::Revert {
+                oids, no_commit, ..
+            } => {
                 let c = oids.len().to_string();
-                self.t_fmt("git_op.revert", &[("count", &c)])
+                let key = if *no_commit {
+                    "git_op.revert_no_commit"
+                } else {
+                    "git_op.revert"
+                };
+                self.t_fmt(key, &[("count", &c)])
             }
             GitOp::Reset { mode, target } => {
                 let mode_lbl = self.reset_mode_label(*mode);
@@ -516,16 +531,19 @@ impl I18n {
                 self.t_fmt(key, &[("kind", k)])
             }
             GitOp::StashPush { .. } => self.t("git_op.stash_push").to_string(),
-            GitOp::StashApply { index, pop } => {
+            GitOp::StashApply {
+                index,
+                pop,
+                reinstate_index,
+            } => {
                 let idx_s = index.to_string();
-                self.t_fmt(
-                    if *pop {
-                        "git_op.stash_pop"
-                    } else {
-                        "git_op.stash_apply"
-                    },
-                    &[("index", &idx_s)],
-                )
+                let key = match (*pop, *reinstate_index) {
+                    (true, true) => "git_op.stash_pop_index",
+                    (true, false) => "git_op.stash_pop",
+                    (false, true) => "git_op.stash_apply_index",
+                    (false, false) => "git_op.stash_apply",
+                };
+                self.t_fmt(key, &[("index", &idx_s)])
             }
             GitOp::StashDrop { index } => {
                 let idx_s = index.to_string();
@@ -578,6 +596,9 @@ impl I18n {
                 self.t("git_op.submodule_update_all").to_string()
             }
             GitOp::Unshallow { remote } => self.t_fmt("git_op.unshallow", &[("remote", remote)]),
+            GitOp::UnsetUpstream { branch } => {
+                self.t_fmt("git_op.unset_upstream", &[("branch", branch)])
+            }
             GitOp::Smart(inner) => {
                 let inner_lbl = self.git_op_label(inner);
                 self.t_fmt("git_op.smart", &[("label", &inner_lbl)])
@@ -866,10 +887,10 @@ custom_extra = "自定义内容"
             state.dispatch(a);
         }
         if let Some(crate::app::ModalLayer::Dialog(d)) = state.modal_stack.last() {
-            if let crate::dialogs::Dialog::Input(inp) = d.as_ref() {
-                assert_eq!(inp.value, "特性/中文分支");
+            if let crate::dialogs::Dialog::NewBranch(nb) = d.as_ref() {
+                assert_eq!(nb.value, "特性/中文分支");
             } else {
-                panic!("expected InputDialog");
+                panic!("expected NewBranchDialog");
             }
         }
         state.modal_stack.pop();

@@ -657,7 +657,8 @@ fn stash_braces_popup_interior_click_esc_button_and_new_branch_shortcut() {
     assert_eq!(
         zh.git_op_label(&GitOp::StashApply {
             index: 0,
-            pop: false
+            pop: false,
+            reinstate_index: false,
         }),
         "应用 stash@{0}"
     );
@@ -665,7 +666,8 @@ fn stash_braces_popup_interior_click_esc_button_and_new_branch_shortcut() {
     assert_eq!(
         en.git_op_label(&GitOp::StashApply {
             index: 2,
-            pop: true
+            pop: true,
+            reinstate_index: false,
         }),
         "Pop stash@{2}"
     );

@@ -362,7 +362,8 @@ fn update_project_entry_points_and_stash_restore_after_conflicts() {
         ts.take_git_ops(),
         vec![GitOp::StashApply {
             index: 0,
-            pop: true
+            pop: true,
+            reinstate_index: false,
         }]
     );
 }

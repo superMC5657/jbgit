@@ -830,6 +830,7 @@ pub enum GitOp {
         name: String,
         start: String,
         track: bool,
+        force: bool,
     },
     CheckoutResetBranch {
         name: String,
@@ -838,6 +839,8 @@ pub enum GitOp {
     CreateBranch {
         name: String,
         start: String,
+        force: bool,
+        track: bool,
     },
     RenameBranch {
         old: String,
@@ -933,9 +936,17 @@ pub enum GitOp {
     },
     CherryPick {
         oids: Vec<Oid>,
+        no_commit: bool,
+        record_origin: bool,
+        mainline: Option<u8>,
     },
+    /// Commit an empty cherry-pick using the prepared `CHERRY_PICK_HEAD` / `MERGE_MSG`
+    /// (`git commit --allow-empty --no-edit`), continuing any remaining sequencer steps.
+    CherryPickAllowEmpty,
     Revert {
         oids: Vec<Oid>,
+        no_commit: bool,
+        mainline: Option<u8>,
     },
     Reset {
         mode: ResetMode,
@@ -977,6 +988,10 @@ pub enum GitOp {
         branch: String,
         upstream: String,
     },
+    /// `git branch --unset-upstream <branch>`.
+    UnsetUpstream {
+        branch: String,
+    },
     UpdateBranch {
         branch: String,
         remote: String,
@@ -1004,11 +1019,13 @@ pub enum GitOp {
     StashPush {
         message: Option<String>,
         include_untracked: bool,
+        keep_index: bool,
         paths: Vec<String>,
     },
     StashApply {
         index: usize,
         pop: bool,
+        reinstate_index: bool,
     },
     StashDrop {
         index: usize,
@@ -1133,8 +1150,25 @@ impl GitOp {
                     None => format!("Rebase onto '{target}'"),
                 }
             }
-            Self::CherryPick { oids } => format!("Cherry-pick {} commit(s)", oids.len()),
-            Self::Revert { oids } => format!("Revert {} commit(s)", oids.len()),
+            Self::CherryPick {
+                oids, no_commit, ..
+            } => {
+                if *no_commit {
+                    format!("Cherry-pick (-n) {} commit(s)", oids.len())
+                } else {
+                    format!("Cherry-pick {} commit(s)", oids.len())
+                }
+            }
+            Self::CherryPickAllowEmpty => "Cherry-pick (allow empty)".to_string(),
+            Self::Revert {
+                oids, no_commit, ..
+            } => {
+                if *no_commit {
+                    format!("Revert (-n) {} commit(s)", oids.len())
+                } else {
+                    format!("Revert {} commit(s)", oids.len())
+                }
+            }
             Self::Reset { mode, target } => {
                 format!("Reset ({}) to {}", mode.label(), target.short())
             }
@@ -1169,6 +1203,7 @@ impl GitOp {
             Self::SetUpstream { branch, upstream } => {
                 format!("Set upstream of '{branch}' → '{upstream}'")
             }
+            Self::UnsetUpstream { branch } => format!("Unset upstream of '{branch}'"),
             Self::UpdateBranch { branch, .. } => format!("Update '{branch}'"),
             Self::RewordHead { .. } => "Reword HEAD".to_string(),
             Self::RewriteHistory { todo, .. } => format!("Rewrite {} commit(s)", todo.len()),
@@ -1180,8 +1215,17 @@ impl GitOp {
                 format!("{} {}", kind.title(), step.flag().trim_start_matches('-'))
             }
             Self::StashPush { .. } => "Stash".to_string(),
-            Self::StashApply { index, pop } => {
-                format!("{} stash@{{{index}}}", if *pop { "Pop" } else { "Apply" })
+            Self::StashApply {
+                index,
+                pop,
+                reinstate_index,
+            } => {
+                let verb = if *pop { "Pop" } else { "Apply" };
+                if *reinstate_index {
+                    format!("{verb} stash@{{{index}}} (--index)")
+                } else {
+                    format!("{verb} stash@{{{index}}}")
+                }
             }
             Self::StashDrop { index } => format!("Drop stash@{{{index}}}"),
             Self::StashClear => "Clear stashes".to_string(),
@@ -1308,6 +1352,7 @@ impl GitOp {
             | Self::Fetch
             | Self::Push { .. }
             | Self::SetUpstream { .. }
+            | Self::UnsetUpstream { .. }
             | Self::UpdateBranch { .. } => RefreshScope::RefsAndGraph,
             Self::Sequence(ops) => ops
                 .iter()

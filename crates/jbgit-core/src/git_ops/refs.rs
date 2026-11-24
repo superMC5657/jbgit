@@ -137,6 +137,97 @@ pub fn validate_ref_name(name: &str, existing: &[&str], what: &str) -> Result<()
     validate_ref_name_typed(name, existing).map_err(|err| err.format_en(what))
 }
 
+/// Real-time branch-name sanitization while typing (matches JetBrains
+/// `GitRefNameValidator.cleanUpBranchNameOnTyping`).
+///
+/// Replaces runs of spaces and control characters with `replacement` (typically
+/// `"_"`), and strips leading `.`/`-`/`/`, forbidden ref chars (`~ : ^ ? * " [ \`),
+/// `@{`, consecutive slashes (`//`), `..`, `./`, and `/.`.
+pub fn sanitize_branch_name_on_typing(input: &str, replacement: &str) -> String {
+    let mut cleaned = String::with_capacity(input.len());
+    let chars: Vec<char> = input.chars().collect();
+    let mut i = 0;
+    let mut pending_ws = false;
+    while i < chars.len() {
+        let ch = chars[i];
+        if ch.is_whitespace() || ch.is_control() {
+            pending_ws = true;
+            i += 1;
+            continue;
+        }
+        if pending_ws {
+            cleaned.push_str(replacement);
+            pending_ws = false;
+        }
+        if matches!(ch, '~' | '^' | ':' | '?' | '*' | '"' | '[' | '\\') {
+            i += 1;
+            continue;
+        }
+        if ch == '@' && chars.get(i + 1) == Some(&'{') {
+            i += 2;
+            continue;
+        }
+        cleaned.push(ch);
+        i += 1;
+    }
+    if pending_ws {
+        cleaned.push_str(replacement);
+    }
+
+    // Apply structural ref rules until stable (leading `.`/`-`/`/`, `//`, `..`, `./`, `/.`).
+    let mut out = cleaned;
+    loop {
+        let mut next = String::with_capacity(out.len());
+        let mut prev: Option<char> = None;
+        for ch in out.chars() {
+            if next.is_empty() && matches!(ch, '.' | '-' | '/') {
+                continue;
+            }
+            if ch == '/' && prev == Some('/') {
+                continue;
+            }
+            if ch == '.' && prev == Some('.') {
+                continue;
+            }
+            if ch == '.' && prev == Some('/') {
+                continue;
+            }
+            if ch == '/' && prev == Some('.') {
+                next.pop();
+                if next.is_empty() || next.ends_with('/') {
+                    prev = next.chars().last();
+                    continue;
+                }
+            }
+            next.push(ch);
+            prev = Some(ch);
+        }
+        if next == out {
+            return next;
+        }
+        out = next;
+    }
+}
+
+/// Final branch-name sanitization on confirm (matches
+/// `GitRefNameValidator.cleanUpBranchName`): applies
+/// [`sanitize_branch_name_on_typing`] and trims trailing `.`, `/`, and `.lock`.
+pub fn sanitize_branch_name(input: &str, replacement: &str) -> String {
+    let mut out = sanitize_branch_name_on_typing(input, replacement);
+    loop {
+        let before = out.len();
+        while out.ends_with('.') || out.ends_with('/') {
+            out.pop();
+        }
+        if let Some(stripped) = out.strip_suffix(".lock") {
+            out = stripped.to_string();
+        }
+        if out.len() == before {
+            return out;
+        }
+    }
+}
+
 /// Fuzzy (`nucleo`) match returning the score and the matched **char**
 /// indices of `haystack` for highlighting. `None` when it does not match.
 pub fn fuzzy_indices(haystack: &str, needle: &str) -> Option<(u32, Vec<u32>)> {

@@ -8,9 +8,9 @@ use std::time::Instant;
 
 use jbgit_core::graph::SortType;
 use jbgit_core::{
-    BranchFilter, BranchNodeKind, CherryPickedKey, CommitSummary, DetailsKey, DetailsMode,
-    DiffContext, Oid, PaneId, PathFilter, RefKind, RepoSnapshot, RequestSlot, RequestSlotId,
-    WhitespaceMode,
+    BranchCompareDirection, BranchFilter, BranchNodeKind, CherryPickedKey, CommitSummary,
+    DetailsKey, DetailsMode, DiffContext, Oid, PaneId, PathFilter, RangeFilter, RefKind,
+    RepoSnapshot, RequestSlot, RequestSlotId, WhitespaceMode,
 };
 
 use crate::app::{
@@ -53,6 +53,34 @@ pub struct LogReconcileCtx<'a> {
     pub effects: &'a mut Vec<Effect>,
 }
 
+/// Active two-branch symmetric comparison state (`Compare with…` / `Compare with Current`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BranchCompareState {
+    pub left: String,
+    pub right: String,
+    pub left_oid: Oid,
+    pub right_oid: Oid,
+    pub direction: BranchCompareDirection,
+    pub only_left: usize,
+    pub only_right: usize,
+    pub tree_diff: bool,
+}
+
+impl BranchCompareState {
+    pub fn range_label(&self) -> String {
+        self.direction.range_label(&self.left, &self.right)
+    }
+
+    pub fn diff_pair(&self) -> (Oid, Oid) {
+        match self.direction {
+            BranchCompareDirection::OnlyLeft => (self.right_oid, self.left_oid),
+            BranchCompareDirection::OnlyRight | BranchCompareDirection::Symmetric => {
+                (self.left_oid, self.right_oid)
+            }
+        }
+    }
+}
+
 pub struct LogWorkbench {
     pub(crate) graph: LogGraphState,
     pub(crate) branches: BranchesPaneState,
@@ -66,6 +94,7 @@ pub struct LogWorkbench {
     pub(crate) cherry_picked: Option<(CherryPickedKey, Arc<HashSet<Oid>>)>,
     /// Key of the currently in-flight `git cherry` request, if any.
     pub(crate) cherry_picked_requested: Option<CherryPickedKey>,
+    pub(crate) branch_compare: Option<BranchCompareState>,
 }
 
 impl LogWorkbench {
@@ -107,6 +136,7 @@ impl LogWorkbench {
             sig_requested: Vec::new(),
             cherry_picked: None,
             cherry_picked_requested: None,
+            branch_compare: None,
         }
     }
 
@@ -402,29 +432,131 @@ impl LogWorkbench {
             .head_branch
             .clone()
             .unwrap_or_else(|| "HEAD".to_string());
-        let (Some(a), Some(b)) = (snap_ref.resolve_revision(branch), snap_ref.head_oid) else {
-            *status_notice = Some(i18n.t_fmt("toast.cannot_compare_branch", &[("name", branch)]));
+        self.compare_branches(
+            &current,
+            branch,
+            snap,
+            branch_colors,
+            async_enabled,
+            i18n,
+            status_notice,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn compare_branches(
+        &mut self,
+        left: &str,
+        right: &str,
+        snap: Option<&Arc<RepoSnapshot>>,
+        branch_colors: &BranchColorManager,
+        async_enabled: bool,
+        i18n: &I18n,
+        status_notice: &mut Option<String>,
+    ) -> bool {
+        let Some(snap_ref) = snap else {
             return false;
         };
-        let only_a = snap_ref.count_exclusive(a, b);
-        let only_b = snap_ref.count_exclusive(b, a);
-        self.filter.spec.branch =
-            BranchFilter::from_names(vec![branch.to_string(), current.clone()]);
+        let (Some(left_oid), Some(right_oid)) = (
+            snap_ref.resolve_revision(left),
+            snap_ref.resolve_revision(right),
+        ) else {
+            *status_notice = Some(i18n.t_fmt("toast.cannot_compare_branch", &[("name", right)]));
+            return false;
+        };
+        let only_left = snap_ref.count_exclusive(left_oid, right_oid);
+        let only_right = snap_ref.count_exclusive(right_oid, left_oid);
+        let state = BranchCompareState {
+            left: left.to_string(),
+            right: right.to_string(),
+            left_oid,
+            right_oid,
+            direction: BranchCompareDirection::Symmetric,
+            only_left,
+            only_right,
+            tree_diff: false,
+        };
+        let oids = snap_ref.compare_branch_oids(left_oid, right_oid, state.direction);
+        let label = state.range_label();
+        self.branch_compare = Some(state);
+        self.filter.spec.branch = BranchFilter::default();
+        self.filter.spec.range = Some(RangeFilter::new(label, oids));
         self.graph.filter_generation = self.graph.filter_generation.wrapping_add(1);
         self.ensure_graph_cache(snap, branch_colors, async_enabled);
-        self.graph.jump_to_oid(snap, &a);
-        let oa = only_a.to_string();
-        let ob = only_b.to_string();
+        self.graph.jump_to_oid(snap, &right_oid);
+        let oa = only_right.to_string();
+        let ob = only_left.to_string();
         *status_notice = Some(i18n.t_fmt(
             "toast.compare_summary",
             &[
-                ("branch", branch),
-                ("current", &current),
+                ("branch", right),
+                ("current", left),
                 ("only_a", &oa),
                 ("only_b", &ob),
             ],
         ));
         true
+    }
+
+    pub fn cycle_branch_compare_direction(
+        &mut self,
+        snap: Option<&Arc<RepoSnapshot>>,
+        branch_colors: &BranchColorManager,
+        async_enabled: bool,
+        i18n: &I18n,
+        status_notice: &mut Option<String>,
+    ) -> bool {
+        let (Some(snap_ref), Some(bc)) = (snap, self.branch_compare.as_mut()) else {
+            return false;
+        };
+        bc.direction = bc.direction.cycle();
+        let oids = snap_ref.compare_branch_oids(bc.left_oid, bc.right_oid, bc.direction);
+        let label = bc.range_label();
+        let tree_diff = bc.tree_diff;
+        let (base, target) = bc.diff_pair();
+        self.filter.spec.range = Some(RangeFilter::new(label.clone(), oids));
+        if tree_diff {
+            self.details.compare_override = Some(DetailsKey::compare_versions(base, target));
+        }
+        self.graph.filter_generation = self.graph.filter_generation.wrapping_add(1);
+        self.ensure_graph_cache(snap, branch_colors, async_enabled);
+        *status_notice = Some(i18n.t_fmt("toast.compare_direction", &[("range", &label)]));
+        true
+    }
+
+    pub fn toggle_branch_compare_tree_diff(
+        &mut self,
+        i18n: &I18n,
+        status_notice: &mut Option<String>,
+    ) -> bool {
+        let Some(bc) = self.branch_compare.as_mut() else {
+            return false;
+        };
+        bc.tree_diff = !bc.tree_diff;
+        if bc.tree_diff {
+            let (base, target) = bc.diff_pair();
+            self.details.diff_preview = true;
+            self.details.pending_select_path = None;
+            self.details.compare_override = Some(DetailsKey::compare_versions(base, target));
+            let label = bc.range_label();
+            *status_notice = Some(i18n.t_fmt("toast.compare_tree_diff", &[("range", &label)]));
+        } else {
+            self.details.compare_override = None;
+        }
+        true
+    }
+
+    pub fn close_branch_compare(
+        &mut self,
+        snap: Option<&Arc<RepoSnapshot>>,
+        branch_colors: &BranchColorManager,
+        async_enabled: bool,
+    ) {
+        self.branch_compare = None;
+        self.filter.spec.range = None;
+        self.details.compare_override = None;
+        self.graph.filter_generation = self.graph.filter_generation.wrapping_add(1);
+        self.ensure_graph_cache(snap, branch_colors, async_enabled);
     }
 
     pub fn flush_pending(&mut self, ctx: &mut LogDispatchCtx<'_>) {
@@ -978,7 +1110,11 @@ impl LogWorkbench {
                 );
             }
             Action::ClearRangeFilter => {
-                if self.filter.spec.range.take().is_some() {
+                let had_cmp = self.branch_compare.take().is_some();
+                if had_cmp {
+                    self.details.compare_override = None;
+                }
+                if self.filter.spec.range.take().is_some() || had_cmp {
                     self.on_filter_changed(
                         ctx.snap,
                         ctx.branch_colors,

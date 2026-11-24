@@ -4,7 +4,7 @@ use jbgit_core::{
 
 use crate::app::{Action, AppState, ContextMenuItem};
 use crate::config::KeymapScope;
-use crate::dialogs::{ChoiceDialog, Dialog, new_branch_dialog};
+use crate::dialogs::{ChoiceDialog, Dialog, new_branch_dialog, new_branch_dialog_with_track};
 use crate::keymap::{KeyAction, catalog};
 
 use super::{dialog, ellipsize, local_names, op, run};
@@ -119,6 +119,12 @@ pub fn branch_menu_items(state: &AppState, name: &str, kind: RefKind) -> Vec<Con
                 )
                 .enabled_if(!is_current, i18n.t("menu.branch.compare_self")),
             );
+            items.push(run(
+                i18n.t("menu.branch.compare_with_other"),
+                None,
+                None,
+                vec![Action::PromptCompareWithBranch { left: name.clone() }],
+            ));
             items.push(run(
                 i18n.t_fmt("menu.branch.show_reflog", &[("name", &ellipsize(&name, 24))]),
                 None,
@@ -240,6 +246,35 @@ pub fn branch_menu_items(state: &AppState, name: &str, kind: RefKind) -> Vec<Con
                 )
                 .icon("↑"),
             );
+            let has_remote_branches = snap
+                .refs
+                .iter()
+                .any(|r| r.kind == RefKind::RemoteBranch);
+            items.push(
+                run(
+                    i18n.t("menu.branch.set_upstream"),
+                    None,
+                    None,
+                    vec![Action::PromptSetUpstream {
+                        branch: name.clone(),
+                    }],
+                )
+                .enabled_if(has_remote_branches, i18n.t("menu.branch.no_remote_branches")),
+            );
+            items.push(
+                run(
+                    i18n.t("menu.branch.unset_upstream"),
+                    None,
+                    None,
+                    op(GitOp::UnsetUpstream {
+                        branch: name.clone(),
+                    }),
+                )
+                .enabled_if(
+                    upstream.is_some(),
+                    i18n.t_fmt("menu.branch.no_upstream", &[("name", &name)]),
+                ),
+            );
             items.push(ContextMenuItem::separator());
             items.push(ContextMenuItem::from_command(
                 i18n.t("menu.branch.rename"),
@@ -281,9 +316,34 @@ pub fn branch_menu_items(state: &AppState, name: &str, kind: RefKind) -> Vec<Con
                     i18n.t_fmt("menu.branch.new_branch_from", &[("name", &ellipsize(name, 24))]),
                     Some('n'),
                     new_branch_sc.as_deref(),
-                    dialog(new_branch_dialog(name, name, local_names(state), short, i18n)),
+                    dialog(new_branch_dialog_with_track(
+                        name,
+                        name,
+                        local_names(state),
+                        short,
+                        true,
+                        i18n,
+                    )),
                 )
                 .icon("+"),
+            );
+            items.push(
+                run(
+                    i18n.t_fmt(
+                        "menu.branch.checkout_and_rebase",
+                        &[("cur", &ellipsize(&cur, 24))],
+                    ),
+                    Some('k'),
+                    None,
+                    vec![Action::CheckoutAndRebaseRemoteBranch {
+                        remote_ref: name.to_string(),
+                    }],
+                )
+                .enabled_if(
+                    !detached && current.as_deref() != Some(short),
+                    i18n.t("menu.branch.choose_other_branch"),
+                )
+                .require(no_ongoing.clone()),
             );
             items.push(ContextMenuItem::separator());
             items.push(run(
@@ -292,6 +352,14 @@ pub fn branch_menu_items(state: &AppState, name: &str, kind: RefKind) -> Vec<Con
                 None,
                 vec![Action::CompareWithCurrent {
                     branch: name.to_string(),
+                }],
+            ));
+            items.push(run(
+                i18n.t("menu.branch.compare_with_other"),
+                None,
+                None,
+                vec![Action::PromptCompareWithBranch {
+                    left: name.to_string(),
                 }],
             ));
             let diff_local = target_oid
@@ -383,6 +451,14 @@ pub fn branch_menu_items(state: &AppState, name: &str, kind: RefKind) -> Vec<Con
                 None,
                 vec![Action::CompareWithCurrent {
                     branch: name.to_string(),
+                }],
+            ));
+            items.push(run(
+                i18n.t("menu.branch.compare_with_other"),
+                None,
+                None,
+                vec![Action::PromptCompareWithBranch {
+                    left: name.to_string(),
                 }],
             ));
             items.push(

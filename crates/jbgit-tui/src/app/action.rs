@@ -352,10 +352,41 @@ pub enum Action {
     CheckoutRemoteBranch {
         remote_ref: String,
     },
+    /// `origin/x` → checkout/reset local branch and rebase onto current (`GitCheckoutAndRebaseRemoteBranchWorkflow`).
+    CheckoutAndRebaseRemoteBranch {
+        remote_ref: String,
+    },
     CheckoutRevisionExpr(String),
     CompareWithCurrent {
         branch: String,
     },
+    /// Prompt picker for `Compare with…` starting from `left`.
+    PromptCompareWithBranch {
+        left: String,
+    },
+    /// Symmetric comparison between any two branches `left` and `right`.
+    CompareBranches {
+        left: String,
+        right: String,
+    },
+    /// Cycle `A..B` → `B..A` → `A...B` on the active branch compare.
+    CycleBranchCompareDirection,
+    /// Toggle `git diff A..B` snapshot tree diff for the active branch compare.
+    ToggleBranchCompareTreeDiff,
+    /// Exit active branch compare mode.
+    CloseBranchCompare,
+    /// Prompt upstream remote branch picker for local `branch`.
+    PromptSetUpstream {
+        branch: String,
+    },
+    /// Open `ModalLayer::BranchCleanup` (`Cleanup Branches…`).
+    OpenBranchCleanup,
+    BranchCleanupMove(isize),
+    BranchCleanupSelect(usize),
+    BranchCleanupToggle,
+    BranchCleanupToggleAll,
+    BranchCleanupCycleBase,
+    BranchCleanupConfirm,
     CompareVersions {
         base: Oid,
         target: Oid,

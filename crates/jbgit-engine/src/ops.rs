@@ -108,8 +108,17 @@ pub(crate) fn compile_simple_steps(op: &GitOp) -> Option<Vec<CompiledStep>> {
         GitOp::ForceCheckout { target } => {
             vec![CompiledStep::new(["checkout", "-f", target.as_str()])]
         }
-        GitOp::CheckoutNewBranch { name, start, track } => {
-            let mut args = vec!["checkout".to_string(), "-b".to_string(), name.clone()];
+        GitOp::CheckoutNewBranch {
+            name,
+            start,
+            track,
+            force,
+        } => {
+            let mut args = vec![
+                "checkout".to_string(),
+                if *force { "-B" } else { "-b" }.to_string(),
+                name.clone(),
+            ];
             if *track {
                 args.push("--track".to_string());
             }
@@ -123,13 +132,21 @@ pub(crate) fn compile_simple_steps(op: &GitOp) -> Option<Vec<CompiledStep>> {
             "--track",
             start.as_str(),
         ])],
-        GitOp::CreateBranch { name, start } => {
-            vec![CompiledStep::new([
-                "branch",
-                "--",
-                name.as_str(),
-                start.as_str(),
-            ])]
+        GitOp::CreateBranch {
+            name,
+            start,
+            force,
+            track,
+        } => {
+            let mut args = vec!["branch".to_string()];
+            if *force {
+                args.push("-f".to_string());
+            }
+            if *track {
+                args.push("--track".to_string());
+            }
+            args.extend(["--".to_string(), name.clone(), start.clone()]);
+            vec![CompiledStep::new(args)]
         }
         GitOp::RenameBranch { old, new } => {
             vec![CompiledStep::new(["branch", "-m", old.as_str(), new.as_str()])]
@@ -265,13 +282,41 @@ pub(crate) fn compile_simple_steps(op: &GitOp) -> Option<Vec<CompiledStep>> {
         GitOp::PruneWorktrees => vec![CompiledStep::new(["worktree", "prune", "--verbose"])],
         GitOp::Merge { rev, options } => vec![compile_merge(rev, options)],
         GitOp::Rebase { options } => vec![compile_rebase(options)],
-        GitOp::CherryPick { oids } => {
+        GitOp::CherryPick {
+            oids,
+            no_commit,
+            record_origin,
+            mainline,
+        } => {
             let mut args = vec!["cherry-pick".to_string()];
+            if *no_commit {
+                args.push("-n".to_string());
+            }
+            if *record_origin && !*no_commit {
+                args.push("-x".to_string());
+            }
+            if let Some(parent) = mainline {
+                args.push("-m".to_string());
+                args.push(parent.to_string());
+            }
             args.extend(oids.iter().map(ToString::to_string));
             vec![no_edit(CompiledStep::new(args))]
         }
-        GitOp::Revert { oids } => {
-            let mut args = vec!["revert".to_string(), "--no-edit".to_string()];
+        GitOp::Revert {
+            oids,
+            no_commit,
+            mainline,
+        } => {
+            let mut args = vec!["revert".to_string()];
+            if *no_commit {
+                args.push("-n".to_string());
+            } else {
+                args.push("--no-edit".to_string());
+            }
+            if let Some(parent) = mainline {
+                args.push("-m".to_string());
+                args.push(parent.to_string());
+            }
             args.extend(oids.iter().map(ToString::to_string));
             vec![no_edit(CompiledStep::new(args))]
         }
@@ -357,6 +402,11 @@ pub(crate) fn compile_simple_steps(op: &GitOp) -> Option<Vec<CompiledStep>> {
             format!("--set-upstream-to={upstream}"),
             branch.clone(),
         ])],
+        GitOp::UnsetUpstream { branch } => vec![CompiledStep::new(vec![
+            "branch".to_string(),
+            "--unset-upstream".to_string(),
+            branch.clone(),
+        ])],
         GitOp::UpdateBranch {
             branch,
             remote,
@@ -413,11 +463,15 @@ pub(crate) fn compile_simple_steps(op: &GitOp) -> Option<Vec<CompiledStep>> {
         GitOp::StashPush {
             message,
             include_untracked,
+            keep_index,
             paths,
         } => {
             let mut args = vec!["stash".to_string(), "push".to_string()];
             if *include_untracked {
                 args.push("--include-untracked".to_string());
+            }
+            if *keep_index {
+                args.push("--keep-index".to_string());
             }
             if let Some(m) = message.as_ref().filter(|m| !m.trim().is_empty()) {
                 args.extend(["-m".to_string(), m.clone()]);
@@ -428,11 +482,21 @@ pub(crate) fn compile_simple_steps(op: &GitOp) -> Option<Vec<CompiledStep>> {
                 vec![CompiledStep::with_pathspecs(args, paths)]
             }
         }
-        GitOp::StashApply { index, pop } => vec![CompiledStep::new(vec![
-            "stash".to_string(),
-            if *pop { "pop" } else { "apply" }.to_string(),
-            format!("stash@{{{index}}}"),
-        ])],
+        GitOp::StashApply {
+            index,
+            pop,
+            reinstate_index,
+        } => {
+            let mut args = vec![
+                "stash".to_string(),
+                if *pop { "pop" } else { "apply" }.to_string(),
+            ];
+            if *reinstate_index {
+                args.push("--index".to_string());
+            }
+            args.push(format!("stash@{{{index}}}"));
+            vec![CompiledStep::new(args)]
+        }
         GitOp::StashDrop { index } => vec![CompiledStep::new(vec![
             "stash".to_string(),
             "drop".to_string(),
@@ -522,6 +586,7 @@ pub(crate) fn compile_simple_steps(op: &GitOp) -> Option<Vec<CompiledStep>> {
         | GitOp::DeleteFiles { .. }
         | GitOp::Sequence(_)
         | GitOp::UpdateProject { .. }
+        | GitOp::CherryPickAllowEmpty
         | GitOp::Smart(_) => return None,
     };
     Some(steps)
@@ -1106,6 +1171,23 @@ impl<R: GitCliRunner> Runner<'_, R> {
             return res;
         }
         match op.clone() {
+            GitOp::CherryPickAllowEmpty => {
+                let commit_step = CompiledStep::new([
+                    "commit",
+                    "--allow-empty",
+                    "--no-edit",
+                ])
+                .with_env("GIT_EDITOR", ":");
+                let res = self.run_steps(op.clone(), vec![commit_step]).await;
+                if res.outcome.success
+                    && self.loc.git_dir.join("sequencer").join("todo").exists()
+                {
+                    let cont = CompiledStep::new(["cherry-pick", "--continue"])
+                        .with_env("GIT_EDITOR", ":");
+                    return self.run_steps(op, vec![cont]).await;
+                }
+                res
+            }
             GitOp::AcceptSide { paths, ours } => self.run_accept_side(op, paths, ours).await,
             GitOp::ApplyPatch { source, options } => {
                 let (file, stdin) = match crate::details::resolve_patch_input(self.loc, &source) {
@@ -2284,6 +2366,7 @@ mod tests {
             GitOp::StashPush {
                 message: Some("wip".into()),
                 include_untracked: true,
+                keep_index: false,
                 paths: many.clone(),
             },
         ] {
@@ -2925,6 +3008,8 @@ mod tests {
             GitOp::CreateBranch {
                 name: "topic".into(),
                 start: "HEAD".into(),
+                force: false,
+                track: false,
             },
             Some(&askpass),
             |_| {},
@@ -3105,5 +3190,102 @@ mod tests {
             fixup_auto[1].args,
             vec!["rebase", "-i", "--autosquash", "--autostash", &oid(2).to_string()]
         );
+    }
+
+    #[test]
+    fn issue_06_ops_compile_upstream_cherry_pick_revert_and_stash_flags() {
+        let s = compile_simple_steps(&GitOp::SetUpstream {
+            branch: "feat".into(),
+            upstream: "origin/feat".into(),
+        })
+        .unwrap();
+        assert_eq!(s[0].args, vec!["branch", "--set-upstream-to=origin/feat", "feat"]);
+
+        let s = compile_simple_steps(&GitOp::UnsetUpstream {
+            branch: "feat".into(),
+        })
+        .unwrap();
+        assert_eq!(s[0].args, vec!["branch", "--unset-upstream", "feat"]);
+
+        let s = compile_simple_steps(&GitOp::CheckoutNewBranch {
+            name: "feat".into(),
+            start: "origin/feat".into(),
+            track: true,
+            force: true,
+        })
+        .unwrap();
+        assert_eq!(s[0].args, vec!["checkout", "-B", "feat", "--track", "origin/feat"]);
+
+        let s = compile_simple_steps(&GitOp::CreateBranch {
+            name: "feat".into(),
+            start: "origin/feat".into(),
+            force: true,
+            track: true,
+        })
+        .unwrap();
+        assert_eq!(s[0].args, vec!["branch", "-f", "--track", "--", "feat", "origin/feat"]);
+
+        let target = oid(7);
+        let s = compile_simple_steps(&GitOp::CherryPick {
+            oids: vec![target],
+            no_commit: true,
+            record_origin: true,
+            mainline: Some(1),
+        })
+        .unwrap();
+        assert_eq!(s[0].args, vec!["cherry-pick", "-n", "-m", "1", &target.to_string()]);
+
+        let s = compile_simple_steps(&GitOp::CherryPick {
+            oids: vec![target],
+            no_commit: false,
+            record_origin: true,
+            mainline: Some(2),
+        })
+        .unwrap();
+        assert_eq!(s[0].args, vec!["cherry-pick", "-x", "-m", "2", &target.to_string()]);
+
+        let s = compile_simple_steps(&GitOp::Revert {
+            oids: vec![target],
+            no_commit: true,
+            mainline: Some(1),
+        })
+        .unwrap();
+        assert_eq!(s[0].args, vec!["revert", "-n", "-m", "1", &target.to_string()]);
+
+        let s = compile_simple_steps(&GitOp::Revert {
+            oids: vec![target],
+            no_commit: false,
+            mainline: Some(2),
+        })
+        .unwrap();
+        assert_eq!(s[0].args, vec!["revert", "--no-edit", "-m", "2", &target.to_string()]);
+
+        let s = compile_simple_steps(&GitOp::StashPush {
+            message: Some("save".into()),
+            include_untracked: true,
+            keep_index: true,
+            paths: vec!["a.txt".into()],
+        })
+        .unwrap();
+        assert_eq!(
+            s[0].args,
+            vec!["stash", "push", "--include-untracked", "--keep-index", "-m", "save", "--", "a.txt"]
+        );
+
+        let s = compile_simple_steps(&GitOp::StashApply {
+            index: 1,
+            pop: false,
+            reinstate_index: true,
+        })
+        .unwrap();
+        assert_eq!(s[0].args, vec!["stash", "apply", "--index", "stash@{1}"]);
+
+        let s = compile_simple_steps(&GitOp::StashApply {
+            index: 0,
+            pop: true,
+            reinstate_index: true,
+        })
+        .unwrap();
+        assert_eq!(s[0].args, vec!["stash", "pop", "--index", "stash@{0}"]);
     }
 }

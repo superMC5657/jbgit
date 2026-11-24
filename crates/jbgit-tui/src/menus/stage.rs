@@ -179,11 +179,11 @@ pub fn stage_tree_menu_items(state: &AppState, idx: usize) -> Vec<ContextMenuIte
             i18n.t("menu.stage.stash_changes"),
             Some('k'),
             None,
-            op(GitOp::StashPush {
-                message: Some(i18n.t_fmt("menu.stage.stash_selected_msg", &[("count", &paths_count_s)])),
-                include_untracked: untracked,
-                paths: paths.clone(),
-            }),
+            dialog(Dialog::StashPush(crate::dialogs::StashPushDialog::new(
+                i18n.t_fmt("menu.stage.stash_selected_msg", &[("count", &paths_count_s)]),
+                untracked,
+                paths.clone(),
+            ))),
         )
         .enabled_if(has_paths, i18n.t("common.select_files"))
         .enabled_if(!is_submodule, i18n.t("menu.stage.submodule_readonly_reason"))

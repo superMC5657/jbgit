@@ -181,12 +181,17 @@ pub fn render_log_tab(
     if center_body.height > 0 {
         let bar = Rect::new(center_body.x, center_body.y, center_body.width, 1);
         render_filter_bar(frame, bar, state, ctx);
-        let table = Rect::new(
-            center_body.x,
-            center_body.y + 1,
-            center_body.width,
-            center_body.height - 1,
-        );
+        let mut table_y = center_body.y + 1;
+        let mut table_h = center_body.height - 1;
+        if let Some(bc) = &state.log.branch_compare
+            && table_h > 1
+        {
+            let cmp_bar = Rect::new(center_body.x, table_y, center_body.width, 1);
+            render_branch_compare_bar(frame, cmp_bar, bc, state, ctx);
+            table_y += 1;
+            table_h -= 1;
+        }
+        let table = Rect::new(center_body.x, table_y, center_body.width, table_h);
         render_commits_table(frame, table, state, ctx);
     }
 
@@ -228,6 +233,77 @@ pub fn render_log_tab(
     if let Some(diff_area) = bottom_diff_area {
         render_docked_diff(frame, diff_area, state, ctx);
     }
+}
+
+/// Compact 1-line bar shown while comparing two branches (`A..B` / `B..A` / `A...B` + Tree Diff).
+fn render_branch_compare_bar(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    bc: &crate::log_view::BranchCompareState,
+    state: &AppState,
+    ctx: &mut RenderContext<'_>,
+) {
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+    let range = bc.range_label();
+    let ol = bc.only_left.to_string();
+    let or = bc.only_right.to_string();
+    let label = state.i18n.t_fmt(
+        "view.log.compare_banner",
+        &[("range", &range), ("left_only", &ol), ("right_only", &or)],
+    );
+    let cycle_btn = state.i18n.t("view.log.compare_cycle_btn");
+    let diff_btn = if bc.tree_diff {
+        state.i18n.t("view.log.compare_tree_diff_on_btn")
+    } else {
+        state.i18n.t("view.log.compare_tree_diff_btn")
+    };
+    let close_btn = " ✕ ";
+    let btns_w = cycle_btn.width() + diff_btn.width() + close_btn.width() + 2;
+    let label_w = (area.width as usize).saturating_sub(btns_w + 1);
+    let mut x = area.x;
+    let mut spans = vec![Span::styled(
+        format!(" {} ", truncate_to_width(&label, label_w)),
+        Style::default()
+            .fg(ctx.theme.fg_bright)
+            .bg(ctx.theme.bg_elevated)
+            .add_modifier(Modifier::BOLD),
+    )];
+    x += spans[0].content.width() as u16;
+    let buttons = [
+        (cycle_btn, HitTarget::BranchCompareCycle, false),
+        (diff_btn, HitTarget::BranchCompareTreeDiff, bc.tree_diff),
+        (close_btn, HitTarget::BranchCompareClose, false),
+    ];
+    for (txt, target, active) in buttons {
+        let w = txt.width() as u16;
+        if x + w > area.right() {
+            break;
+        }
+        let st = if active {
+            Style::default()
+                .fg(ctx.theme.bg_canvas)
+                .bg(ctx.theme.fg_accent_link)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default()
+                .fg(ctx.theme.fg_accent_link)
+                .bg(ctx.theme.bg_panel)
+        };
+        spans.push(Span::styled(txt.to_string(), st));
+        ctx.hit_registry
+            .register(Rect::new(x, area.y, w, 1), 3, target);
+        x += w;
+        if x < area.right() {
+            spans.push(Span::styled(" ", Style::default().bg(ctx.theme.bg_elevated)));
+            x += 1;
+        }
+    }
+    frame.render_widget(
+        Paragraph::new(Line::from(spans)).style(Style::default().bg(ctx.theme.bg_elevated)),
+        area,
+    );
 }
 
 /// `VcsLogFilterBar`: text box with `[.*]` / `[Cc]`, four dimension chips and `⚙`.

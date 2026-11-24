@@ -1914,6 +1914,7 @@ impl CommitWorkbench {
                 ctx.effects.push(Effect::GitOp(GitOp::StashPush {
                     message: None,
                     include_untracked: false,
+                    keep_index: false,
                     paths: Vec::new(),
                 }));
             }

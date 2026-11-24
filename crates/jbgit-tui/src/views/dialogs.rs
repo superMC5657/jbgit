@@ -12,8 +12,9 @@ use unicode_width::UnicodeWidthStr;
 use crate::app::{AppState, RenderContext, ScrollPane};
 use crate::dialogs::{
     ChoiceDialog, CreatePatchDialog, CreatePatchRow, CredentialDialog, Dialog, IdentityDialog,
-    IdentityField, InputDialog, MergeDialog, MergeDialogRow, MessageDialog, PullDialog,
-    PullDialogRow, RebaseDialog, RebaseDialogRow, RebaseTodoDialog,
+    IdentityField, InputDialog, MergeDialog, MergeDialogRow, MessageDialog, NewBranchDialog,
+    NewBranchField, PullDialog, PullDialogRow, RebaseDialog, RebaseDialogRow, RebaseTodoDialog,
+    StashPushDialog, StashPushField,
 };
 use crate::hit_test::{DialogButtonKind, HitTarget};
 use crate::views::overlays::{draw_shadow, mnemonic_spans};
@@ -139,6 +140,8 @@ pub fn render_dialog(
     }
     match dialog {
         Dialog::Input(d) => render_input(frame, screen, ctx, d, z),
+        Dialog::NewBranch(d) => render_new_branch(frame, screen, ctx, d, z),
+        Dialog::StashPush(d) => render_stash_push(frame, screen, ctx, d, z),
         Dialog::Choice(d) => render_choice(frame, screen, ctx, d, z),
         Dialog::Message(d) => render_message(frame, screen, ctx, d, z),
         Dialog::RebaseTodo(d) => render_rebase(frame, screen, state, ctx, d, z),
@@ -149,6 +152,269 @@ pub fn render_dialog(
         Dialog::Credential(d) => render_credential(frame, screen, ctx, d, z),
         Dialog::Identity(d) => render_identity(frame, screen, ctx, d, z),
     }
+}
+
+fn render_new_branch(
+    frame: &mut Frame<'_>,
+    screen: Rect,
+    ctx: &mut RenderContext<'_>,
+    d: &NewBranchDialog,
+    z: u8,
+) {
+    let rect = centered(screen, 70, 14);
+    let inner = frame_block(frame, screen, ctx, rect, &d.title, false, z);
+    let w = inner.width as usize;
+    let err = ctx.i18n.and_then(|i| d.error(i));
+    let mut y = inner.y;
+
+    frame.render_widget(
+        Paragraph::new(Span::styled(
+            truncate_to_width(&d.prompt, w),
+            Style::default().fg(ctx.theme.fg_muted),
+        )),
+        Rect::new(inner.x, y, inner.width, 1),
+    );
+    y += 1;
+
+    let name_focused = d.focused == NewBranchField::Name;
+    let field_bg = if name_focused {
+        ctx.theme.bg_selection_focused
+    } else {
+        ctx.theme.bg_panel
+    };
+    let shown = if name_focused {
+        format!(" {}▌", d.value)
+    } else {
+        format!(" {}", d.value)
+    };
+    frame.render_widget(
+        Paragraph::new(Span::styled(
+            truncate_to_width(&shown, w),
+            Style::default().fg(ctx.theme.fg_bright).bg(field_bg),
+        ))
+        .style(Style::default().bg(field_bg)),
+        Rect::new(inner.x, y, inner.width, 1),
+    );
+    y += 1;
+
+    if let Some(msg) = &err {
+        frame.render_widget(
+            Paragraph::new(Span::styled(
+                truncate_to_width(msg, w),
+                Style::default().fg(ctx.theme.status_conflicted),
+            )),
+            Rect::new(inner.x, y, inner.width, 1),
+        );
+    }
+    y += 1;
+
+    let rows = [
+        (
+            NewBranchField::Checkout,
+            d.checkout,
+            ctx.t("dialog.new_branch.checkout_checkbox").to_string(),
+        ),
+        (
+            NewBranchField::Overwrite,
+            d.overwrite,
+            ctx.t("dialog.new_branch.overwrite_checkbox").to_string(),
+        ),
+        (
+            NewBranchField::Track,
+            d.track,
+            ctx.t("dialog.new_branch.track_checkbox").to_string(),
+        ),
+        (
+            NewBranchField::AutoSanitize,
+            d.auto_sanitize,
+            ctx.t("dialog.new_branch.sanitize_checkbox").to_string(),
+        ),
+    ];
+    for (idx, (field, on, label)) in rows.into_iter().enumerate() {
+        if y + 2 > inner.bottom() {
+            break;
+        }
+        let focused = d.focused == field;
+        let bg = if focused {
+            ctx.theme.bg_selection_focused
+        } else {
+            ctx.theme.bg_elevated
+        };
+        let r = Rect::new(inner.x, y, inner.width, 1);
+        frame.render_widget(
+            Paragraph::new(Line::from(vec![
+                Span::styled(
+                    if on { " [✓] " } else { " [ ] " },
+                    Style::default().fg(ctx.theme.fg_accent_link).bg(bg),
+                ),
+                Span::styled(
+                    truncate_to_width(&label, w.saturating_sub(6)),
+                    Style::default().fg(ctx.theme.fg_primary).bg(bg),
+                ),
+            ]))
+            .style(Style::default().bg(bg)),
+            r,
+        );
+        ctx.hit_registry
+            .register(r, z + 2, HitTarget::DialogOption(idx));
+        y += 1;
+    }
+
+    render_buttons(
+        frame,
+        ctx,
+        inner.x + 1,
+        inner.bottom().saturating_sub(1),
+        inner.right(),
+        &[
+            DialogButtonSpec {
+                label: ctx.ok().into(),
+                selected: true,
+                enabled: err.is_none(),
+                danger: d.overwrite,
+                target: HitTarget::DialogButton(DialogButtonKind::Confirm),
+            },
+            DialogButtonSpec {
+                label: ctx.cancel().into(),
+                selected: false,
+                enabled: true,
+                danger: false,
+                target: HitTarget::DialogButton(DialogButtonKind::Cancel),
+            },
+        ],
+        z,
+    );
+}
+
+fn render_stash_push(
+    frame: &mut Frame<'_>,
+    screen: Rect,
+    ctx: &mut RenderContext<'_>,
+    d: &StashPushDialog,
+    z: u8,
+) {
+    let h = if d.selected_paths.is_empty() { 13 } else { 14 };
+    let rect = centered(screen, 72, h);
+    let title = ctx.t("dialog.stash.new_title").to_string();
+    let inner = frame_block(frame, screen, ctx, rect, &title, false, z);
+    let w = inner.width as usize;
+    let mut y = inner.y;
+
+    frame.render_widget(
+        Paragraph::new(Span::styled(
+            truncate_to_width(ctx.t("dialog.stash.new_prompt"), w),
+            Style::default().fg(ctx.theme.fg_muted),
+        )),
+        Rect::new(inner.x, y, inner.width, 1),
+    );
+    y += 1;
+
+    let msg_focused = d.focused == StashPushField::Message;
+    let field_bg = if msg_focused {
+        ctx.theme.bg_selection_focused
+    } else {
+        ctx.theme.bg_panel
+    };
+    let shown = if msg_focused {
+        format!(" {}▌", d.message)
+    } else {
+        format!(" {}", d.message)
+    };
+    frame.render_widget(
+        Paragraph::new(Span::styled(
+            truncate_to_width(&shown, w),
+            Style::default().fg(ctx.theme.fg_bright).bg(field_bg),
+        ))
+        .style(Style::default().bg(field_bg)),
+        Rect::new(inner.x, y, inner.width, 1),
+    );
+    y += 2;
+
+    let mut checkboxes = vec![
+        (
+            StashPushField::IncludeUntracked,
+            d.include_untracked,
+            ctx.t("dialog.stash.include_untracked").to_string(),
+        ),
+        (
+            StashPushField::KeepIndex,
+            d.keep_index,
+            ctx.t("dialog.stash.keep_index").to_string(),
+        ),
+    ];
+    if !d.selected_paths.is_empty() {
+        let count_s = d.selected_paths.len().to_string();
+        let lbl = ctx.i18n.map_or_else(
+            || format!("Only selected files ({count_s})"),
+            |i| i.t_fmt("dialog.stash.only_selected", &[("count", &count_s)]),
+        );
+        checkboxes.push((StashPushField::OnlySelected, d.only_selected, lbl));
+    }
+    for (idx, (field, on, label)) in checkboxes.into_iter().enumerate() {
+        if y + 3 > inner.bottom() {
+            break;
+        }
+        let focused = d.focused == field;
+        let bg = if focused {
+            ctx.theme.bg_selection_focused
+        } else {
+            ctx.theme.bg_elevated
+        };
+        let r = Rect::new(inner.x, y, inner.width, 1);
+        frame.render_widget(
+            Paragraph::new(Line::from(vec![
+                Span::styled(
+                    if on { " [✓] " } else { " [ ] " },
+                    Style::default().fg(ctx.theme.fg_accent_link).bg(bg),
+                ),
+                Span::styled(
+                    truncate_to_width(&label, w.saturating_sub(6)),
+                    Style::default().fg(ctx.theme.fg_primary).bg(bg),
+                ),
+            ]))
+            .style(Style::default().bg(bg)),
+            r,
+        );
+        ctx.hit_registry
+            .register(r, z + 2, HitTarget::DialogOption(idx));
+        y += 1;
+    }
+
+    if y + 1 < inner.bottom() {
+        let preview = d.preview_command();
+        frame.render_widget(
+            Paragraph::new(Span::styled(
+                truncate_to_width(&preview, w),
+                Style::default().fg(ctx.theme.fg_muted),
+            )),
+            Rect::new(inner.x, inner.bottom().saturating_sub(2), inner.width, 1),
+        );
+    }
+
+    render_buttons(
+        frame,
+        ctx,
+        inner.x + 1,
+        inner.bottom().saturating_sub(1),
+        inner.right(),
+        &[
+            DialogButtonSpec {
+                label: ctx.t("dialog.stash.stash_btn").into(),
+                selected: true,
+                enabled: true,
+                danger: false,
+                target: HitTarget::DialogButton(DialogButtonKind::Confirm),
+            },
+            DialogButtonSpec {
+                label: ctx.cancel().into(),
+                selected: false,
+                enabled: true,
+                danger: false,
+                target: HitTarget::DialogButton(DialogButtonKind::Cancel),
+            },
+        ],
+        z,
+    );
 }
 
 fn render_identity(

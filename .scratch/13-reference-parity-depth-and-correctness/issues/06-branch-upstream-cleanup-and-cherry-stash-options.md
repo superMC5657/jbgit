@@ -1,6 +1,6 @@
 # 06: Upstream 管理、已合并分支清理、双分支对比与 Cherry-Pick/Stash 选项
 
-Status: ready-for-agent
+Status: resolved
 Spec: [../spec.md](../spec.md)
 Milestone: M10 — reference 深度对齐与正确性加固
 Priority: P1

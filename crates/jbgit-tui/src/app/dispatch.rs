@@ -203,6 +203,24 @@ impl AppState {
                                 inp.value.push_str(&clean);
                             }
                         }
+                        crate::dialogs::Dialog::NewBranch(nb)
+                            if nb.focused == crate::dialogs::NewBranchField::Name =>
+                        {
+                            let clean: String =
+                                text.chars().filter(|c| *c != '\n' && *c != '\r').collect();
+                            if !clean.is_empty() {
+                                nb.push_str(&clean);
+                            }
+                        }
+                        crate::dialogs::Dialog::StashPush(sp)
+                            if sp.focused == crate::dialogs::StashPushField::Message =>
+                        {
+                            let clean: String =
+                                text.chars().filter(|c| *c != '\n' && *c != '\r').collect();
+                            if !clean.is_empty() {
+                                sp.message.push_str(&clean);
+                            }
+                        }
                         crate::dialogs::Dialog::Message(msg) => {
                             let norm = text.replace("\r\n", "\n").replace('\r', "\n");
                             if !norm.is_empty() {
@@ -386,6 +404,40 @@ impl AppState {
                                 cp.toggle(row);
                             }
                         }
+                        crate::dialogs::Dialog::NewBranch(nb) => match idx {
+                            0 => {
+                                nb.focused = crate::dialogs::NewBranchField::Checkout;
+                                nb.checkout = !nb.checkout;
+                            }
+                            1 => {
+                                nb.focused = crate::dialogs::NewBranchField::Overwrite;
+                                nb.overwrite = !nb.overwrite;
+                            }
+                            2 => {
+                                nb.focused = crate::dialogs::NewBranchField::Track;
+                                nb.track = !nb.track;
+                            }
+                            3 => {
+                                nb.focused = crate::dialogs::NewBranchField::AutoSanitize;
+                                nb.auto_sanitize = !nb.auto_sanitize;
+                            }
+                            _ => {}
+                        },
+                        crate::dialogs::Dialog::StashPush(sp) => match idx {
+                            0 => {
+                                sp.focused = crate::dialogs::StashPushField::IncludeUntracked;
+                                sp.include_untracked = !sp.include_untracked;
+                            }
+                            1 => {
+                                sp.focused = crate::dialogs::StashPushField::KeepIndex;
+                                sp.keep_index = !sp.keep_index;
+                            }
+                            2 if !sp.selected_paths.is_empty() => {
+                                sp.focused = crate::dialogs::StashPushField::OnlySelected;
+                                sp.only_selected = !sp.only_selected;
+                            }
+                            _ => {}
+                        },
                         _ => {}
                     }
                 }
@@ -2189,6 +2241,9 @@ impl AppState {
                     self.modal_stack.close_reflog();
                     effects.extend(self.dispatch(Action::RunGitOp(jbgit_core::GitOp::CherryPick {
                         oids: vec![entry.oid],
+                        no_commit: false,
+                        record_origin: false,
+                        mainline: None,
                     })));
                 }
             }

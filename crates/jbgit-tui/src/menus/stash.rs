@@ -37,14 +37,22 @@ fn stash_spec<'a>(state: &'a AppState, btn: StashButton) -> StashActionSpec<'a> 
             mnemonic: 'a',
             shortcut: catalog::shortcut_for_action(state, &[KeymapScope::Stash], &KeyAction::StashApply),
             disabled_reason: no_stash,
-            actions: op(GitOp::StashApply { index, pop: false }),
+            actions: op(GitOp::StashApply {
+                index,
+                pop: false,
+                reinstate_index: false,
+            }),
         },
         StashButton::Pop => StashActionSpec {
             label: i18n.t("menu.stash.pop"),
             mnemonic: 'p',
             shortcut: catalog::shortcut_for_action(state, &[KeymapScope::Stash], &KeyAction::StashPop),
             disabled_reason: no_stash,
-            actions: op(GitOp::StashApply { index, pop: true }),
+            actions: op(GitOp::StashApply {
+                index,
+                pop: true,
+                reinstate_index: false,
+            }),
         },
         StashButton::Branch => StashActionSpec {
             label: i18n.t("menu.stash.branch_from_stash"),
@@ -67,16 +75,11 @@ fn stash_spec<'a>(state: &'a AppState, btn: StashButton) -> StashActionSpec<'a> 
             mnemonic: 'n',
             shortcut: catalog::shortcut_for_action(state, &[KeymapScope::Stash], &KeyAction::StashNew),
             disabled_reason: None,
-            actions: dialog(Dialog::Input(
-                InputDialog::new(
-                    i18n.t("dialog.stash.new_title"),
-                    i18n.t("dialog.stash.new_prompt"),
-                    "",
-                    InputValidation::None,
-                    InputIntent::StashMessage,
-                )
-                .with_checkbox(i18n.t("dialog.stash.include_untracked"), true),
-            )),
+            actions: dialog(Dialog::StashPush(crate::dialogs::StashPushDialog::new(
+                "",
+                true,
+                Vec::new(),
+            ))),
         },
         StashButton::Drop => {
             StashActionSpec {
@@ -135,9 +138,40 @@ pub fn stash_menu_items(state: &AppState) -> Vec<ContextMenuItem> {
             None => item,
         }
     };
+    let stashes = state
+        .repo_snapshot
+        .as_ref()
+        .map(|s| s.stashes.as_slice())
+        .unwrap_or(&[]);
+    let entry = state.stash.selected_entry(stashes);
+    let has = entry.is_some();
+    let index = entry.map_or(0, |e| e.index);
+    let i18n = &state.i18n;
     vec![
         to_item(StashButton::Apply),
+        run(
+            i18n.t("menu.stash.apply_index"),
+            None,
+            None,
+            op(GitOp::StashApply {
+                index,
+                pop: false,
+                reinstate_index: true,
+            }),
+        )
+        .enabled_if(has, i18n.t("menu.stash.no_stash_selected")),
         to_item(StashButton::Pop),
+        run(
+            i18n.t("menu.stash.pop_index"),
+            None,
+            None,
+            op(GitOp::StashApply {
+                index,
+                pop: true,
+                reinstate_index: true,
+            }),
+        )
+        .enabled_if(has, i18n.t("menu.stash.no_stash_selected")),
         to_item(StashButton::Branch),
         ContextMenuItem::separator(),
         to_item(StashButton::New),
@@ -145,4 +179,45 @@ pub fn stash_menu_items(state: &AppState) -> Vec<ContextMenuItem> {
         to_item(StashButton::Drop),
         to_item(StashButton::Clear),
     ]
+}
+
+/// Stash changes-tree / diff-preview file context menu (adds single-file
+/// `Diff with Local` and `Apply Single File` above the stash actions).
+pub fn stash_file_menu_items(state: &AppState) -> Vec<ContextMenuItem> {
+    let stashes = state
+        .repo_snapshot
+        .as_ref()
+        .map(|s| s.stashes.as_slice())
+        .unwrap_or(&[]);
+    let entry = state.stash.selected_entry(stashes);
+    let selected_file = state
+        .stash
+        .changes()
+        .selected_change(&state.diff_caches)
+        .map(|c| c.path.clone());
+    let i18n = &state.i18n;
+    let mut items = Vec::new();
+    if let (Some(stash), Some(path)) = (entry, selected_file) {
+        items.push(run(
+            i18n.t("menu.stash.diff_with_local"),
+            Some('l'),
+            None,
+            vec![Action::CompareFileWithLocal {
+                target: stash.oid,
+                path: path.clone(),
+            }],
+        ));
+        items.push(run(
+            i18n.t("menu.stash.apply_single_file"),
+            Some('f'),
+            None,
+            op(GitOp::CheckoutPaths {
+                rev: format!("stash@{{{}}}", stash.index),
+                paths: vec![path],
+            }),
+        ));
+        items.push(ContextMenuItem::separator());
+    }
+    items.extend(stash_menu_items(state));
+    items
 }

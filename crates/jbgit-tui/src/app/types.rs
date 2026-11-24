@@ -63,6 +63,7 @@ pub enum ScrollPane {
     RebaseDiff,
     CommitMessageModal,
     ReflogDiff,
+    BranchCleanup,
 }
 
 pub struct RenderContext<'a> {

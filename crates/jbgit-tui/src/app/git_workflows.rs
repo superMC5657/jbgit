@@ -244,6 +244,9 @@ impl AppState {
                 ));
             }
             Action::CheckoutRemoteBranch { remote_ref } => self.checkout_remote(remote_ref, effects),
+            Action::CheckoutAndRebaseRemoteBranch { remote_ref } => {
+                self.checkout_and_rebase_remote(remote_ref, effects);
+            }
             Action::CheckoutRevisionExpr(expr) => {
                 let is_local = self.snapshot().is_some_and(|s| s.local_branch(expr).is_some());
                 self.start_git_op(
@@ -255,6 +258,78 @@ impl AppState {
                 );
             }
             Action::CompareWithCurrent { branch } => self.compare_with_current(branch),
+            Action::PromptCompareWithBranch { left } => self.prompt_compare_with_branch(left),
+            Action::CompareBranches { left, right } => self.compare_branches(left, right),
+            Action::CycleBranchCompareDirection => {
+                let _ = self.log.cycle_branch_compare_direction(
+                    self.repo_snapshot.as_ref(),
+                    &self.branch_colors,
+                    self.async_graph_enabled,
+                    &self.i18n,
+                    &mut self.status_notice,
+                );
+            }
+            Action::ToggleBranchCompareTreeDiff => {
+                if self
+                    .log
+                    .toggle_branch_compare_tree_diff(&self.i18n, &mut self.status_notice)
+                    && self
+                        .log
+                        .branch_compare
+                        .as_ref()
+                        .is_some_and(|bc| bc.tree_diff)
+                {
+                    self.set_focus(WorkspaceTab::Log, PaneId::LogChangesTree);
+                }
+            }
+            Action::CloseBranchCompare => {
+                self.log.close_branch_compare(
+                    self.repo_snapshot.as_ref(),
+                    &self.branch_colors,
+                    self.async_graph_enabled,
+                );
+            }
+            Action::PromptSetUpstream { branch } => self.prompt_set_upstream(branch),
+            Action::OpenBranchCleanup => self.open_branch_cleanup(),
+            Action::BranchCleanupMove(delta) => {
+                if let Some(bc) = self.modal_stack.branch_cleanup_mut() {
+                    bc.move_by(*delta);
+                }
+            }
+            Action::BranchCleanupSelect(idx) => {
+                if let Some(bc) = self.modal_stack.branch_cleanup_mut() {
+                    bc.select(*idx);
+                }
+            }
+            Action::BranchCleanupToggle => {
+                if let Some(bc) = self.modal_stack.branch_cleanup_mut() {
+                    bc.toggle_current();
+                }
+            }
+            Action::BranchCleanupToggleAll => {
+                if let Some(bc) = self.modal_stack.branch_cleanup_mut() {
+                    bc.toggle_all();
+                }
+            }
+            Action::BranchCleanupCycleBase => {
+                let snap = self.repo_snapshot.clone();
+                let extra = self.config.jbgit.push.protected_branches.clone();
+                if let Some(snap) = snap.as_deref()
+                    && let Some(bc) = self.modal_stack.branch_cleanup_mut()
+                {
+                    bc.cycle_base(snap, &extra);
+                }
+            }
+            Action::BranchCleanupConfirm => {
+                let op = self
+                    .modal_stack
+                    .branch_cleanup_mut()
+                    .and_then(|bc| bc.delete_op());
+                if let Some(op) = op {
+                    self.modal_stack.pop();
+                    self.start_git_op(op, effects);
+                }
+            }
             Action::CompareVersions { base, target } => {
                 self.set_focus(WorkspaceTab::Log, PaneId::LogChangesTree);
                 self.log
@@ -1028,6 +1103,7 @@ impl AppState {
                 name: local_name,
                 start: remote_ref.to_string(),
                 track: true,
+                force: false,
             },
             Some(l) if l.target_oid == remote.target_oid => GitOp::Checkout {
                 target: local_name,
@@ -1114,6 +1190,231 @@ impl AppState {
         self.start_git_op(op, effects);
     }
 
+    /// `GitCheckoutAndRebaseRemoteBranchWorkflow`: creates/resets the matching
+    /// local branch from `remote_ref` and rebases it onto the current branch.
+    fn checkout_and_rebase_remote(&mut self, remote_ref: &str, effects: &mut Vec<Effect>) {
+        let Some(snap) = self.repo_snapshot.clone() else {
+            return;
+        };
+        let Some(current) = snap.head_branch.clone() else {
+            self.notify_error(self.i18n.t("menu.branch.choose_other_branch").to_string());
+            return;
+        };
+        let Some(remote) = snap
+            .refs
+            .iter()
+            .find(|r| r.kind == RefKind::RemoteBranch && r.name == remote_ref)
+        else {
+            self.status_notice = Some(
+                self.i18n
+                    .t_fmt("toast.remote_not_found", &[("name", remote_ref)]),
+            );
+            return;
+        };
+        let local_name = remote_ref
+            .split_once('/')
+            .map_or(remote_ref, |(_, short)| short)
+            .to_string();
+        if current == local_name {
+            self.notify_error(self.i18n.t_fmt(
+                "toast.checkout_rebase_same_current",
+                &[("name", &local_name)],
+            ));
+            return;
+        }
+        let create_and_rebase = |force: bool| {
+            GitOp::Sequence(vec![
+                GitOp::CreateBranch {
+                    name: local_name.clone(),
+                    start: remote_ref.to_string(),
+                    force,
+                    track: true,
+                },
+                GitOp::Rebase {
+                    options: RebaseOptions::onto(current.clone(), Some(local_name.clone())),
+                },
+            ])
+        };
+        match snap.local_branch(&local_name) {
+            None => self.start_git_op(create_and_rebase(false), effects),
+            Some(l) if l.target_oid == remote.target_oid => {
+                self.start_git_op(
+                    GitOp::Rebase {
+                        options: RebaseOptions::onto(current, Some(local_name)),
+                    },
+                    effects,
+                );
+            }
+            Some(l) => {
+                let ahead = snap.count_exclusive(l.target_oid, remote.target_oid);
+                if ahead == 0 {
+                    self.start_git_op(create_and_rebase(true), effects);
+                } else {
+                    let ahead_s = ahead.to_string();
+                    let i18n = self.i18n.clone();
+                    self.push_dialog(Dialog::Choice(ChoiceDialog::buttons(
+                        i18n.t_fmt(
+                            "dialog.checkout_rebase_remote.title",
+                            &[("remote_ref", remote_ref)],
+                        ),
+                        vec![i18n.t_fmt(
+                            "dialog.checkout_rebase_remote.body",
+                            &[
+                                ("local", &local_name),
+                                ("ahead", &ahead_s),
+                                ("remote_ref", remote_ref),
+                                ("cur", &current),
+                            ],
+                        )],
+                        vec![
+                            ChoiceOption::new(
+                                i18n.t_fmt(
+                                    "dialog.checkout_rebase_remote.keep_local_btn",
+                                    &[("local", &local_name)],
+                                ),
+                                Some('k'),
+                                vec![Action::RunGitOp(GitOp::Rebase {
+                                    options: RebaseOptions::onto(
+                                        current.clone(),
+                                        Some(local_name.clone()),
+                                    ),
+                                })],
+                            ),
+                            ChoiceOption::new(
+                                i18n.t_fmt(
+                                    "dialog.checkout_rebase_remote.reset_btn",
+                                    &[("remote_ref", remote_ref)],
+                                ),
+                                Some('r'),
+                                vec![Action::RunGitOp(create_and_rebase(true))],
+                            )
+                            .detail(i18n.t_fmt(
+                                "dialog.diverged_checkout.drops_commits",
+                                &[("ahead", &ahead_s)],
+                            ))
+                            .danger(),
+                            ChoiceOption::new(i18n.cancel(), Some('c'), Vec::new()),
+                        ],
+                    )));
+                }
+            }
+        }
+    }
+
+    fn compare_branches(&mut self, left: &str, right: &str) {
+        self.set_focus(WorkspaceTab::Log, PaneId::LogCommitTable);
+        let _ = self.log.compare_branches(
+            left,
+            right,
+            self.repo_snapshot.as_ref(),
+            &self.branch_colors,
+            self.async_graph_enabled,
+            &self.i18n,
+            &mut self.status_notice,
+        );
+    }
+
+    fn prompt_compare_with_branch(&mut self, left: &str) {
+        let Some(snap) = self.repo_snapshot.clone() else {
+            return;
+        };
+        let mut candidates: Vec<String> = snap
+            .refs
+            .iter()
+            .filter(|r| {
+                matches!(
+                    r.kind,
+                    RefKind::LocalBranch | RefKind::RemoteBranch | RefKind::Tag
+                ) && r.name != left
+            })
+            .map(|r| r.name.clone())
+            .collect();
+        candidates.sort();
+        candidates.dedup();
+        if candidates.is_empty() {
+            self.status_notice = Some(self.i18n.t("toast.no_other_branches_to_compare").into());
+            return;
+        }
+        let i18n = self.i18n.clone();
+        let mut opts: Vec<ChoiceOption> = candidates
+            .into_iter()
+            .take(24)
+            .map(|right| {
+                ChoiceOption::new(
+                    right.clone(),
+                    None,
+                    vec![Action::CompareBranches {
+                        left: left.to_string(),
+                        right,
+                    }],
+                )
+            })
+            .collect();
+        opts.push(ChoiceOption::new(i18n.cancel(), Some('c'), Vec::new()));
+        self.push_dialog(Dialog::Choice(ChoiceDialog::buttons(
+            i18n.t_fmt("dialog.compare_with.title", &[("branch", left)]),
+            vec![i18n.t_fmt("dialog.compare_with.prompt", &[("branch", left)])],
+            opts,
+        )));
+    }
+
+    fn prompt_set_upstream(&mut self, branch: &str) {
+        let Some(snap) = self.repo_snapshot.clone() else {
+            return;
+        };
+        let mut remotes: Vec<String> = snap
+            .refs
+            .iter()
+            .filter(|r| r.kind == RefKind::RemoteBranch)
+            .map(|r| r.name.clone())
+            .collect();
+        if remotes.is_empty() {
+            self.status_notice = Some(self.i18n.t("menu.branch.no_remote_branches").into());
+            return;
+        }
+        let preferred = format!("{}/{branch}", self.default_remote());
+        remotes.sort_by(|a, b| {
+            (b == &preferred)
+                .cmp(&(a == &preferred))
+                .then_with(|| jbgit_core::natural_cmp(a, b))
+        });
+        let i18n = self.i18n.clone();
+        let mut opts: Vec<ChoiceOption> = remotes
+            .into_iter()
+            .take(24)
+            .map(|upstream| {
+                ChoiceOption::new(
+                    upstream.clone(),
+                    None,
+                    vec![Action::RunGitOp(GitOp::SetUpstream {
+                        branch: branch.to_string(),
+                        upstream,
+                    })],
+                )
+            })
+            .collect();
+        opts.push(ChoiceOption::new(i18n.cancel(), Some('c'), Vec::new()));
+        self.push_dialog(Dialog::Choice(ChoiceDialog::buttons(
+            i18n.t_fmt("dialog.set_upstream.title", &[("branch", branch)]),
+            vec![i18n.t_fmt("dialog.set_upstream.prompt", &[("branch", branch)])],
+            opts,
+        )));
+    }
+
+    fn open_branch_cleanup(&mut self) {
+        let Some(snap) = self.repo_snapshot.clone() else {
+            return;
+        };
+        self.modal_stack
+            .retain(|l| !matches!(l, ModalLayer::ContextMenu { .. } | ModalLayer::BranchCleanup(_)));
+        self.blur_active_pane(false);
+        let bc = crate::branch_cleanup::BranchCleanupState::for_snapshot(
+            &snap,
+            &self.config.jbgit.push.protected_branches,
+        );
+        self.push_modal(ModalLayer::BranchCleanup(Box::new(bc)));
+    }
+
     fn compare_with_current(&mut self, branch: &str) {
         self.set_focus(WorkspaceTab::Log, PaneId::LogCommitTable);
         let _ = self.log.compare_with_current(
@@ -1172,8 +1473,24 @@ impl AppState {
         } else {
             "dialog.confirm_delete.prompt_unmerged_head"
         };
+        let exclude_oid = if unmerged_up.unwrap_or(0) > unmerged_head.unwrap_or(0) {
+            upstream_oid.or(snap.head_oid)
+        } else {
+            snap.head_oid.or(upstream_oid)
+        };
         let i18n = self.i18n.clone();
         let mut body = vec![i18n.t_fmt(prompt_key, &[("name", name), ("count", &count_s)])];
+        if let Some(ex) = exclude_oid {
+            const PREVIEW_LIMIT: usize = 8;
+            let commits = snap.exclusive_commits(tip, ex, PREVIEW_LIMIT);
+            for c in &commits {
+                body.push(format!("  • {} {}", c.oid.short(), c.subject));
+            }
+            if count > commits.len() && !commits.is_empty() {
+                let more = (count - commits.len()).to_string();
+                body.push(i18n.t_fmt("dialog.confirm_delete.and_more", &[("count", &more)]));
+            }
+        }
         body.push(i18n.t("dialog.confirm_delete.warn_unmerged").into());
         self.push_dialog(Dialog::Choice(ChoiceDialog::confirm(
             i18n.t("dialog.confirm_delete.title_unmerged"),
@@ -1779,7 +2096,14 @@ impl AppState {
                     .map(|e| e.index)
             })
             .unwrap_or(0);
-        self.start_git_op(GitOp::StashApply { index, pop: true }, effects);
+        self.start_git_op(
+            GitOp::StashApply {
+                index,
+                pop: true,
+                reinstate_index: false,
+            },
+            effects,
+        );
     }
 
     /// Reacts to a finished [`GitOp`]: notices, Smart Operation dialog,
@@ -1824,6 +2148,39 @@ impl AppState {
                     self.notify_deleted_tag(name, *tip);
                 }
                 GitOp::Sequence(ops) => {
+                    if !ops.is_empty()
+                        && ops
+                            .iter()
+                            .all(|o| matches!(o, GitOp::DeleteBranch { .. }))
+                    {
+                        let restore_ops: Vec<GitOp> = ops
+                            .iter()
+                            .filter_map(|o| match o {
+                                GitOp::DeleteBranch { name, tip, .. } => {
+                                    Some(GitOp::RestoreBranch {
+                                        name: name.clone(),
+                                        oid: *tip,
+                                    })
+                                }
+                                _ => None,
+                            })
+                            .collect();
+                        let count_s = restore_ops.len().to_string();
+                        self.notification = Some(Notification {
+                            text: self.i18n.t_fmt(
+                                "toast.deleted_branches_batch",
+                                &[("count", &count_s)],
+                            ),
+                            is_error: false,
+                            action: Some((
+                                self.i18n.t_fmt(
+                                    "toast.restore_branches_batch_btn",
+                                    &[("count", &count_s)],
+                                ),
+                                vec![Action::RunGitOp(GitOp::Sequence(restore_ops))],
+                            )),
+                        });
+                    }
                     if let Some(GitOp::DeleteTag { name, tip }) = ops.first() {
                         self.notify_deleted_tag(name, *tip);
                     }
@@ -2059,6 +2416,7 @@ impl AppState {
                         vec![Action::RunGitOp(GitOp::StashApply {
                             index: 0,
                             pop: true,
+                            reinstate_index: false,
                         })],
                     )),
                 });
@@ -2160,14 +2518,62 @@ impl AppState {
                     action: Some((i18n.t("toast.resolve_btn").into(), vec![Action::OngoingResolve])),
                 });
             }
+            Some(GitFailure::EmptyCherryPick) => {
+                self.push_dialog(Dialog::Choice(ChoiceDialog::buttons(
+                    i18n.t("dialog.empty_cherry_pick.title"),
+                    vec![i18n.t("dialog.empty_cherry_pick.body").to_string()],
+                    vec![
+                        ChoiceOption::new(
+                            i18n.t("dialog.empty_cherry_pick.skip_btn"),
+                            Some('s'),
+                            vec![Action::RunGitOp(GitOp::Ongoing {
+                                kind: OngoingKind::CherryPick,
+                                step: OngoingStep::Skip,
+                            })],
+                        ),
+                        ChoiceOption::new(
+                            i18n.t("dialog.empty_cherry_pick.allow_empty_btn"),
+                            Some('e'),
+                            vec![Action::RunGitOp(GitOp::CherryPickAllowEmpty)],
+                        ),
+                        ChoiceOption::new(
+                            i18n.t("dialog.empty_cherry_pick.abort_btn"),
+                            Some('a'),
+                            vec![Action::RunGitOp(GitOp::Ongoing {
+                                kind: OngoingKind::CherryPick,
+                                step: OngoingStep::Abort,
+                            })],
+                        ),
+                    ],
+                )));
+            }
             Some(GitFailure::NotFullyMerged) => {
                 if let GitOp::DeleteBranch { name, tip, .. } = &op {
+                    let mut body = vec![i18n.t_fmt(
+                        "dialog.confirm_delete.not_merged_prompt",
+                        &[("name", name)],
+                    )];
+                    if let Some(snap) = self.snapshot()
+                        && let Some(head) = snap.head_oid
+                    {
+                        const PREVIEW_LIMIT: usize = 8;
+                        let total = snap.count_exclusive(*tip, head);
+                        let commits = snap.exclusive_commits(*tip, head, PREVIEW_LIMIT);
+                        for c in &commits {
+                            body.push(format!("  • {} {}", c.oid.short(), c.subject));
+                        }
+                        if total > commits.len() && !commits.is_empty() {
+                            let more = (total - commits.len()).to_string();
+                            body.push(i18n.t_fmt(
+                                "dialog.confirm_delete.and_more",
+                                &[("count", &more)],
+                            ));
+                        }
+                    }
+                    body.push(i18n.t("dialog.confirm_delete.not_merged_warn").into());
                     self.push_dialog(Dialog::Choice(ChoiceDialog::confirm(
                         i18n.t("dialog.confirm_delete.title_unmerged"),
-                        vec![
-                            i18n.t_fmt("dialog.confirm_delete.not_merged_prompt", &[("name", name)]),
-                            i18n.t("dialog.confirm_delete.not_merged_warn").into(),
-                        ],
+                        body,
                         i18n.t("dialog.confirm_delete.force_delete_btn"),
                         i18n.cancel(),
                         vec![Action::RunGitOp(GitOp::DeleteBranch {

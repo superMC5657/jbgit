@@ -34,6 +34,8 @@ pub enum GitFailure {
     PatchDoesNotApply { detail: String },
     /// `git apply --3way` applied with conflicts in `paths`.
     PatchConflicts { paths: Vec<String> },
+    /// `git cherry-pick` produced an empty commit (`--skip` / `--allow-empty` / `--abort`).
+    EmptyCherryPick,
     /// Anything else (first meaningful stderr line).
     Other(String),
 }
@@ -108,6 +110,12 @@ pub fn classify_failure(lines: &[String]) -> GitFailure {
         return GitFailure::LocalChangesOverwritten {
             files: collect_files("would be overwritten by"),
         };
+    }
+    if joined.contains("The previous cherry-pick is now empty")
+        || joined.contains("cherry-pick --allow-empty")
+        || (joined.contains("cherry-pick --skip") && joined.contains("nothing to commit"))
+    {
+        return GitFailure::EmptyCherryPick;
     }
     if joined.contains("CONFLICT")
         || joined.contains("could not apply")

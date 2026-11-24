@@ -138,6 +138,13 @@ pub enum ConflictQueueButtonKind {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BranchCleanupButtonKind {
+    Delete,
+    CycleBase,
+    Close,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FileHistoryToolbarButton {
     FollowRenames,
     CompareLocal,
@@ -383,6 +390,11 @@ pub enum HitTarget {
     ConflictMergeButton(ConflictMergeButtonKind),
     ConflictQueueRow(usize),
     ConflictQueueButton(ConflictQueueButtonKind),
+    BranchCleanupRow(usize),
+    BranchCleanupButton(BranchCleanupButtonKind),
+    BranchCompareCycle,
+    BranchCompareTreeDiff,
+    BranchCompareClose,
     FileHistoryRow {
         idx: usize,
     },

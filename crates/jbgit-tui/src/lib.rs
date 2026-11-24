@@ -2,6 +2,7 @@
 //! terminal guard, and the deterministic [`session::TuiSession`] turn driver.
 
 pub(crate) mod app;
+mod branch_cleanup;
 mod branches_popup;
 pub mod config;
 mod console_workbench;

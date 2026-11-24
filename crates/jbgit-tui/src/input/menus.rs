@@ -571,6 +571,19 @@ pub fn route_overlay_and_stash_click(
             ConflictQueueButtonKind::Mergetool => vec![Action::ConflictQueueMergetool],
             ConflictQueueButtonKind::Close => vec![Action::PopModal],
         },
+        HitTarget::BranchCleanupRow(idx) => {
+            vec![Action::BranchCleanupSelect(*idx), Action::BranchCleanupToggle]
+        }
+        HitTarget::BranchCleanupButton(btn) => match btn {
+            crate::hit_test::BranchCleanupButtonKind::Delete => vec![Action::BranchCleanupConfirm],
+            crate::hit_test::BranchCleanupButtonKind::CycleBase => {
+                vec![Action::BranchCleanupCycleBase]
+            }
+            crate::hit_test::BranchCleanupButtonKind::Close => vec![Action::PopModal],
+        },
+        HitTarget::BranchCompareCycle => vec![Action::CycleBranchCompareDirection],
+        HitTarget::BranchCompareTreeDiff => vec![Action::ToggleBranchCompareTreeDiff],
+        HitTarget::BranchCompareClose => vec![Action::CloseBranchCompare],
         _ => return None,
     };
     Some(actions)
@@ -794,10 +807,11 @@ pub(crate) fn build_menu_items_for_target(
         | HitTarget::Pane(PaneId::CommitDiffPreview) => menus::stage_diff_menu_items(state),
         HitTarget::DiffHunkAction { hunk_idx, .. } => menus::stage_hunk_menu_items(state, *hunk_idx),
         HitTarget::DiffArea => menus::log_diff_menu_items(state),
-        HitTarget::StashRow(_)
-        | HitTarget::StashChangeRow(_)
-        | HitTarget::Pane(PaneId::StashList | PaneId::StashDiffPreview) => {
+        HitTarget::StashRow(_) | HitTarget::Pane(PaneId::StashList) => {
             menus::stash_menu_items(state)
+        }
+        HitTarget::StashChangeRow(_) | HitTarget::Pane(PaneId::StashDiffPreview) => {
+            menus::stash_file_menu_items(state)
         }
         HitTarget::OngoingBanner(_) => {
             let kind = state.ongoing_kind()?;
@@ -857,6 +871,12 @@ pub(crate) fn build_menu_items_for_target(
                 catalog::shortcut_for_action(state, &[KeymapScope::Branch], &KeyAction::ToggleFavorite);
             let refresh_sc =
                 catalog::shortcut_for_action(state, &[KeymapScope::Global], &KeyAction::Refresh);
+            items.push(ContextMenuItem::run(
+                i18n.t("menu.branch.cleanup_branches"),
+                None,
+                None,
+                vec![Action::OpenBranchCleanup],
+            ));
             items.push(ContextMenuItem::run(
                 if is_leaf {
                     i18n.t_fmt("menu.branch.show_only_branch", &[("name", &branch_name)])

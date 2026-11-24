@@ -124,6 +124,81 @@ pub fn log_commit_menu_items(state: &AppState) -> Vec<ContextMenuItem> {
 
     // ── Cherry-pick & revert ──
     let in_head: Vec<bool> = oids.iter().map(|o| state.is_ancestor_of_head(*o)).collect();
+    let mainline_dialog = |is_revert: bool, no_commit: bool| -> Vec<Action> {
+        if single && primary.parents.len() > 1 {
+            let mut opts: Vec<crate::dialogs::ChoiceOption> = primary
+                .parents
+                .iter()
+                .enumerate()
+                .map(|(i, p_oid)| {
+                    let parent_num = (i + 1) as u8;
+                    let p_num_s = parent_num.to_string();
+                    let p_short = p_oid.short();
+                    let p_subj = snap
+                        .commits
+                        .iter()
+                        .find(|c| c.oid == *p_oid)
+                        .map(|c| ellipsize(&c.subject, 44))
+                        .unwrap_or_default();
+                    let git_op = if is_revert {
+                        GitOp::Revert {
+                            oids: vec![primary.oid],
+                            no_commit,
+                            mainline: Some(parent_num),
+                        }
+                    } else {
+                        GitOp::CherryPick {
+                            oids: vec![primary.oid],
+                            no_commit,
+                            record_origin: false,
+                            mainline: Some(parent_num),
+                        }
+                    };
+                    crate::dialogs::ChoiceOption::new(
+                        i18n.t_fmt(
+                            "dialog.mainline.parent_option",
+                            &[("n", &p_num_s), ("short", &p_short), ("subject", &p_subj)],
+                        ),
+                        char::from_digit(u32::from(parent_num), 10),
+                        op(git_op),
+                    )
+                })
+                .collect();
+            opts.push(crate::dialogs::ChoiceOption::new(
+                i18n.cancel(),
+                Some('c'),
+                Vec::new(),
+            ));
+            let title_key = if is_revert {
+                "dialog.mainline.revert_title"
+            } else {
+                "dialog.mainline.cherry_pick_title"
+            };
+            dialog(Dialog::Choice(ChoiceDialog::buttons(
+                i18n.t(title_key),
+                vec![i18n.t_fmt(
+                    "dialog.mainline.prompt",
+                    &[("short", &short), ("subject", &ellipsize(&primary.subject, 48))],
+                )],
+                opts,
+            )))
+        } else if is_revert {
+            let mut newest_first = oids.clone();
+            newest_first.reverse();
+            op(GitOp::Revert {
+                oids: newest_first,
+                no_commit,
+                mainline: None,
+            })
+        } else {
+            op(GitOp::CherryPick {
+                oids: oids.clone(),
+                no_commit,
+                record_origin: false,
+                mainline: None,
+            })
+        }
+    };
     items.push(
         run(
             if single {
@@ -133,7 +208,7 @@ pub fn log_commit_menu_items(state: &AppState) -> Vec<ContextMenuItem> {
             },
             Some('p'),
             None,
-            op(GitOp::CherryPick { oids: oids.clone() }),
+            mainline_dialog(false, false),
         )
         .icon("🍒")
         .enabled_if(
@@ -143,8 +218,20 @@ pub fn log_commit_menu_items(state: &AppState) -> Vec<ContextMenuItem> {
         .enabled_if(head.is_some(), i18n.t("menu.log.no_current_branch"))
         .require(no_ongoing.clone()),
     );
-    let mut newest_first = oids.clone();
-    newest_first.reverse();
+    items.push(
+        run(
+            i18n.t("menu.log.cherry_pick_no_commit"),
+            None,
+            None,
+            mainline_dialog(false, true),
+        )
+        .enabled_if(
+            !in_head.iter().any(|b| *b),
+            i18n.t("menu.log.cherry_pick_in_head"),
+        )
+        .enabled_if(head.is_some(), i18n.t("menu.log.no_current_branch"))
+        .require(no_ongoing.clone()),
+    );
     items.push(
         run(
             if single {
@@ -154,7 +241,20 @@ pub fn log_commit_menu_items(state: &AppState) -> Vec<ContextMenuItem> {
             },
             Some('v'),
             None,
-            op(GitOp::Revert { oids: newest_first }),
+            mainline_dialog(true, false),
+        )
+        .enabled_if(
+            in_head.iter().all(|b| *b),
+            i18n.t("menu.log.revert_not_in_head"),
+        )
+        .require(no_ongoing.clone()),
+    );
+    items.push(
+        run(
+            i18n.t("menu.log.revert_no_commit"),
+            None,
+            None,
+            mainline_dialog(true, true),
         )
         .enabled_if(
             in_head.iter().all(|b| *b),
