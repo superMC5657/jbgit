@@ -166,6 +166,7 @@ key_bindings = [
     { on = [ "n" ], run = "diff_search_next", desc = "跳转至下一个差异搜索命中项" },
     { on = [ "N" ], run = "diff_search_prev", desc = "跳转至上一个差异搜索命中项" },
     { on = [ "m" ], run = "cycle_diff_dock", desc = "切换差异预览停靠位置" },
+    { on = [ "<A-m>" ], run = "choose_parent", desc = "选择 / 切换合并父提交" },
     { on = [ "z" ], run = "zoom_diff", desc = "切换全屏差异预览", show_hint = true },
     { on = [ "x" ], run = "switch_diff_side", desc = "切换未暂存 / 已暂存侧对比" },
     { on = [ "X" ], run = "swap_compare_direction", desc = "交换双提交对比方向 (Base ↔ Target)" },

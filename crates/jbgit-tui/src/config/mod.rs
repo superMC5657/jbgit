@@ -1707,4 +1707,23 @@ prepend_keymap = [
             BUILTIN_KEYMAP_VIM_TOML
         );
     }
+
+    #[test]
+    fn test_worktree_default_parent_deserializes_empty_as_none() {
+        let defaults = AppConfig::load_defaults();
+        assert_eq!(defaults.jbgit.worktree.default_parent, None);
+
+        let parsed_empty: JbgitConfig = toml::from_str("[worktree]\ndefault_parent = \"\"\n").unwrap();
+        assert_eq!(parsed_empty.worktree.default_parent, None);
+
+        let parsed_ws: JbgitConfig = toml::from_str("[worktree]\ndefault_parent = \"   \"\n").unwrap();
+        assert_eq!(parsed_ws.worktree.default_parent, None);
+
+        let parsed_set: JbgitConfig =
+            toml::from_str("[worktree]\ndefault_parent = \"/tmp/wt\"\n").unwrap();
+        assert_eq!(
+            parsed_set.worktree.default_parent.as_deref(),
+            Some("/tmp/wt")
+        );
+    }
 }

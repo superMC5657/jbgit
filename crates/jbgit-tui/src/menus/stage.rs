@@ -29,21 +29,59 @@ pub fn stage_tree_menu_items(state: &AppState, idx: usize) -> Vec<ContextMenuIte
     let mut paths: Vec<String> = targets.iter().map(|t| t.path.clone()).collect();
     paths.dedup();
     let entry = state.stage_entry_at(idx);
+    let mut staged_paths = Vec::new();
+    let mut unstaged_paths = Vec::new();
+    let mut untracked_paths = Vec::new();
+    if let Some(status) = state.stage_workbench.status() {
+        let untracked_set: std::collections::HashSet<&str> = status
+            .untracked
+            .iter()
+            .chain(
+                status
+                    .unstaged
+                    .iter()
+                    .filter(|e| e.kind == jbgit_core::FileStatusKind::Untracked),
+            )
+            .map(|e| e.path.as_str())
+            .collect();
+        for t in &targets {
+            match t.group_kind {
+                StageNodeKind::Staged => staged_paths.push(t.path.clone()),
+                StageNodeKind::Untracked => untracked_paths.push(t.path.clone()),
+                StageNodeKind::Unstaged => {
+                    if untracked_set.contains(t.path.as_str()) {
+                        untracked_paths.push(t.path.clone());
+                    } else {
+                        unstaged_paths.push(t.path.clone());
+                    }
+                }
+                _ => {}
+            }
+        }
+        staged_paths.sort();
+        staged_paths.dedup();
+        unstaged_paths.sort();
+        unstaged_paths.dedup();
+        untracked_paths.sort();
+        untracked_paths.dedup();
+    }
+    if untracked_paths.is_empty()
+        && let Some(e) = &entry
+        && (group == Some(StageNodeKind::Untracked)
+            || e.kind == jbgit_core::FileStatusKind::Untracked)
+    {
+        untracked_paths.push(e.path.clone());
+    }
     // Untracked files below the collapse threshold live in the Unstaged group.
-    let untracked = group == Some(StageNodeKind::Untracked)
+    let has_untracked = !untracked_paths.is_empty();
+    let entry_untracked = group == Some(StageNodeKind::Untracked)
         || entry
             .as_ref()
-            .is_some_and(|e| e.kind == jbgit_core::FileStatusKind::Untracked)
-        || targets
-            .iter()
-            .any(|t| t.group_kind == StageNodeKind::Untracked);
-    let ignored = group == Some(StageNodeKind::Ignored)
+            .is_some_and(|e| e.kind == jbgit_core::FileStatusKind::Untracked);
+    let entry_ignored = group == Some(StageNodeKind::Ignored)
         || entry
             .as_ref()
-            .is_some_and(|e| e.kind == jbgit_core::FileStatusKind::Ignored)
-        || targets
-            .iter()
-            .any(|t| t.group_kind == StageNodeKind::Ignored);
+            .is_some_and(|e| e.kind == jbgit_core::FileStatusKind::Ignored);
     let file_path = entry.map(|e| e.path);
     let submodule = row.and_then(|r| r.submodule());
     let is_submodule = submodule.is_some();
@@ -60,7 +98,7 @@ pub fn stage_tree_menu_items(state: &AppState, idx: usize) -> Vec<ContextMenuIte
         items.push(
             run(
                 i18n.t("menu.stage.open_submodule"),
-                Some('o'),
+                None,
                 None,
                 vec![Action::SwitchRepository(repo_target)],
             )
@@ -68,7 +106,7 @@ pub fn stage_tree_menu_items(state: &AppState, idx: usize) -> Vec<ContextMenuIte
         );
         items.push(run(
             i18n.t("menu.stage.update_submodule"),
-            Some('m'),
+            None,
             None,
             op(GitOp::SubmoduleUpdate {
                 path: Some(p.clone()),
@@ -82,7 +120,7 @@ pub fn stage_tree_menu_items(state: &AppState, idx: usize) -> Vec<ContextMenuIte
             items.push(
                 run(
                     i18n.t("menu.stage.resolve_conflicts"),
-                    Some('r'),
+                    Some('s'),
                     None,
                     vec![Action::OpenConflictResolver(p.clone())],
                 )
@@ -145,14 +183,14 @@ pub fn stage_tree_menu_items(state: &AppState, idx: usize) -> Vec<ContextMenuIte
                 .icon("↶"),
             );
         }
-        if untracked {
+        if has_untracked {
             items.push(
                 run(
                     i18n.t("menu.stage.intent_to_add"),
                     Some('n'),
                     None,
                     op(GitOp::IntentToAdd {
-                        paths: paths.clone(),
+                        paths: untracked_paths.clone(),
                     }),
                 )
                 .enabled_if(non_sub, sub_reason),
@@ -174,11 +212,11 @@ pub fn stage_tree_menu_items(state: &AppState, idx: usize) -> Vec<ContextMenuIte
     items.push(
         run(
             i18n.t("menu.stage.stash_changes"),
-            Some('k'),
+            Some('g'),
             None,
             dialog(Dialog::StashPush(crate::dialogs::StashPushDialog::new(
                 i18n.t_fmt("menu.stage.stash_selected_msg", &[("count", &paths_count_s)]),
-                untracked,
+                has_untracked,
                 paths.clone(),
             ))),
         )
@@ -190,8 +228,11 @@ pub fn stage_tree_menu_items(state: &AppState, idx: usize) -> Vec<ContextMenuIte
         ),
     );
     items.push(ContextMenuItem::separator());
-    let ignore_patterns =
-        jbgit_core::build_ignore_patterns(&paths, jbgit_core::IgnoreRuleKind::ExactPath, None);
+    let ignore_patterns = jbgit_core::build_ignore_patterns(
+        &untracked_paths,
+        jbgit_core::IgnoreRuleKind::ExactPath,
+        None,
+    );
     items.push(
         run(
             i18n.t("menu.stage.add_to_gitignore"),
@@ -203,7 +244,7 @@ pub fn stage_tree_menu_items(state: &AppState, idx: usize) -> Vec<ContextMenuIte
                 target_file: None,
             }),
         )
-        .enabled_if(untracked, i18n.t("menu.stage.only_untracked_ignore")),
+        .enabled_if(has_untracked, i18n.t("menu.stage.only_untracked_ignore")),
     );
     items.push(
         run(
@@ -216,9 +257,18 @@ pub fn stage_tree_menu_items(state: &AppState, idx: usize) -> Vec<ContextMenuIte
                 target_file: None,
             }),
         )
-        .enabled_if(untracked, i18n.t("menu.stage.only_untracked_ignore")),
+        .enabled_if(has_untracked, i18n.t("menu.stage.only_untracked_ignore")),
     );
-    items.push(build_flexible_ignore_submenu(state, &paths, untracked));
+    let ignore_submenu_paths = if has_untracked {
+        &untracked_paths
+    } else {
+        &paths
+    };
+    items.push(build_flexible_ignore_submenu(
+        state,
+        ignore_submenu_paths,
+        has_untracked,
+    ));
     items.push(
         run(
             i18n.t("menu.stage.show_diff"),
@@ -261,7 +311,10 @@ pub fn stage_tree_menu_items(state: &AppState, idx: usize) -> Vec<ContextMenuIte
             history_action,
         )
         .enabled_if(file_path.is_some(), i18n.t("menu.stage.select_file"))
-        .enabled_if(!untracked && !ignored, i18n.t("menu.stage.only_tracked_history")),
+        .enabled_if(
+            !entry_untracked && !entry_ignored,
+            i18n.t("menu.stage.only_tracked_history"),
+        ),
     );
     items.push(ContextMenuItem::from_command(
         i18n.t("menu.stage.annotate"),
@@ -269,42 +322,6 @@ pub fn stage_tree_menu_items(state: &AppState, idx: usize) -> Vec<ContextMenuIte
         ann_sc.as_deref(),
         catalog::annotate_stage_entry_at(state, idx),
     ));
-    let mut staged_paths = Vec::new();
-    let mut unstaged_paths = Vec::new();
-    let mut untracked_paths = Vec::new();
-    if let Some(status) = state.stage_workbench.status() {
-        let untracked_set: std::collections::HashSet<&str> = status
-            .untracked
-            .iter()
-            .chain(
-                status
-                    .unstaged
-                    .iter()
-                    .filter(|e| e.kind == jbgit_core::FileStatusKind::Untracked),
-            )
-            .map(|e| e.path.as_str())
-            .collect();
-        for t in &targets {
-            match t.group_kind {
-                StageNodeKind::Staged => staged_paths.push(t.path.clone()),
-                StageNodeKind::Untracked => untracked_paths.push(t.path.clone()),
-                StageNodeKind::Unstaged => {
-                    if untracked_set.contains(t.path.as_str()) {
-                        untracked_paths.push(t.path.clone());
-                    } else {
-                        unstaged_paths.push(t.path.clone());
-                    }
-                }
-                _ => {}
-            }
-        }
-        staged_paths.sort();
-        staged_paths.dedup();
-        unstaged_paths.sort();
-        unstaged_paths.dedup();
-        untracked_paths.sort();
-        untracked_paths.dedup();
-    }
     let stage_patch_source = PatchSource::StagePaths {
         staged: staged_paths,
         unstaged: unstaged_paths,
@@ -395,7 +412,7 @@ pub fn apply_patch_items(state: &AppState) -> Vec<ContextMenuItem> {
     vec![
         ContextMenuItem::from_command(
             i18n.t("menu.stage.apply_patch"),
-            Some('o'),
+            None,
             sc(&KeyAction::ApplyPatch).as_deref(),
             catalog::apply_patch_command(state, false),
         ),
@@ -425,9 +442,11 @@ fn stage_diff_common_items(
     let three_sc = catalog::shortcut_for_action(state, &[KeymapScope::Diff], &KeyAction::ThreeWayInspector);
     let edit_sc = catalog::shortcut_for_action(state, &[KeymapScope::Commit], &KeyAction::EditFile);
     let ann_sc = catalog::shortcut_for_action(state, &[KeymapScope::Commit], &KeyAction::Annotate);
+    let is_amend = side == Some(StageDiffSide::AmendCommit);
     let staged = side == Some(StageDiffSide::Staged);
     let paths: Vec<String> = path.iter().cloned().collect();
     let is_untracked = !staged
+        && !is_amend
         && path.as_deref().is_some_and(|p| {
             state.stage_workbench.status().is_some_and(|st| {
                 st.untracked.iter().any(|e| e.path == p)
@@ -437,7 +456,13 @@ fn stage_diff_common_items(
                         .any(|e| e.path == p && e.kind == jbgit_core::FileStatusKind::Untracked)
             })
         });
-    let diff_patch_source = if staged {
+    let diff_patch_source = if is_amend {
+        PatchSource::StagePaths {
+            staged: Vec::new(),
+            unstaged: Vec::new(),
+            untracked: Vec::new(),
+        }
+    } else if staged {
         PatchSource::StagePaths {
             staged: paths,
             unstaged: Vec::new(),
@@ -473,7 +498,8 @@ fn stage_diff_common_items(
                 false,
             )),
         )
-        .enabled_if(path.is_some(), i18n.t("menu.stage.no_file_selected")),
+        .enabled_if(path.is_some(), i18n.t("menu.stage.no_file_selected"))
+        .enabled_if(!is_amend, i18n.t("menu.stage.not_for_amend")),
         run(
             i18n.t("menu.stage.copy_patch"),
             Some('c'),
@@ -483,7 +509,8 @@ fn stage_diff_common_items(
                 reverse: false,
             }),
         )
-        .enabled_if(path.is_some(), i18n.t("menu.stage.no_file_selected")),
+        .enabled_if(path.is_some(), i18n.t("menu.stage.no_file_selected"))
+        .enabled_if(!is_amend, i18n.t("menu.stage.not_for_amend")),
         run(
             i18n.t("menu.stage.toggle_side_by_side"),
             Some('t'),

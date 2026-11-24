@@ -1,4 +1,4 @@
-use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use jbgit_core::{ChangeRowKind, PaneId, WorkspaceTab};
 
 use crate::app::{Action, AppState, ChangesHost, DiffScope, DragState, PopupKind};
@@ -125,6 +125,7 @@ fn route_mouse_scroll(col: u16, row: u16, delta: isize, state: &AppState) -> Vec
             HitTarget::DetailsArea
             | HitTarget::DetailsHash { .. }
             | HitTarget::DetailsParent { .. }
+            | HitTarget::DetailsCommitHash { .. }
             | HitTarget::Pane(PaneId::LogDetailsDiff) => {
                 return vec![if state.log.details.diff_visible() {
                     Action::DiffScroll(DiffScope::Log, delta)
@@ -144,7 +145,10 @@ fn route_mouse_scroll(col: u16, row: u16, delta: isize, state: &AppState) -> Vec
             HitTarget::StashRow(_) | HitTarget::Pane(PaneId::StashList) => {
                 return vec![Action::StashMove(delta / 3)];
             }
-            HitTarget::StashChangeRow(_) | HitTarget::Pane(PaneId::StashDiffPreview) => {
+            HitTarget::StashChangeRow(_) | HitTarget::StashChangesToolbar(_) => {
+                return vec![Action::ChangesMove(ChangesHost::Stash, delta / 3)];
+            }
+            HitTarget::Pane(PaneId::StashDiffPreview) => {
                 return vec![Action::DiffScroll(DiffScope::Stash, delta)];
             }
             HitTarget::FileHistoryRow { .. } | HitTarget::FileHistoryListArea => {
@@ -195,6 +199,26 @@ fn route_mouse_scroll(col: u16, row: u16, delta: isize, state: &AppState) -> Vec
             HitTarget::BranchCleanupRow(_) => {
                 return vec![Action::BranchCleanupMove(delta / 3)];
             }
+            HitTarget::BranchPopupRow(_) | HitTarget::BranchPopupStar(_) => {
+                let key = KeyEvent::new(
+                    if delta > 0 { KeyCode::Down } else { KeyCode::Up },
+                    KeyModifiers::NONE,
+                );
+                return crate::branches_popup::route_branches_popup_key(&key, state);
+            }
+            HitTarget::RepoSwitcherRow(_) => {
+                let key = KeyEvent::new(
+                    if delta > 0 { KeyCode::Down } else { KeyCode::Up },
+                    KeyModifiers::NONE,
+                );
+                return crate::repo_switcher::route_repo_switcher_key(&key, state);
+            }
+            HitTarget::WorktreesRow(_) => {
+                return vec![Action::WorktreesMove(delta / 3)];
+            }
+            HitTarget::RemotesRow(_) => {
+                return vec![Action::RemotesMove(delta / 3)];
+            }
             HitTarget::DialogBody => match state.modal_stack.last() {
                 Some(crate::app::ModalLayer::CommitMessage { .. }) => {
                     return vec![Action::ScrollCommitMessageModal(delta)];
@@ -208,10 +232,67 @@ fn route_mouse_scroll(col: u16, row: u16, delta: isize, state: &AppState) -> Vec
                 Some(crate::app::ModalLayer::BranchCleanup(_)) => {
                     return vec![Action::BranchCleanupMove(delta / 3)];
                 }
+                Some(crate::app::ModalLayer::ShortcutsHelp { query, selected }) => {
+                    let rows = crate::keymap::build_help_rows(state, query);
+                    let next = crate::keymap::step_help_selection(&rows, *selected, delta);
+                    return vec![Action::PopupSetState {
+                        query: query.clone(),
+                        selected: next,
+                    }];
+                }
+                Some(crate::app::ModalLayer::BranchesPopup { .. }) => {
+                    let key = KeyEvent::new(
+                        if delta > 0 { KeyCode::Down } else { KeyCode::Up },
+                        KeyModifiers::NONE,
+                    );
+                    return crate::branches_popup::route_branches_popup_key(&key, state);
+                }
+                Some(crate::app::ModalLayer::RepoSwitcher(_)) => {
+                    let key = KeyEvent::new(
+                        if delta > 0 { KeyCode::Down } else { KeyCode::Up },
+                        KeyModifiers::NONE,
+                    );
+                    return crate::repo_switcher::route_repo_switcher_key(&key, state);
+                }
+                Some(crate::app::ModalLayer::Worktrees(_)) => {
+                    return vec![Action::WorktreesMove(delta / 3)];
+                }
+                Some(crate::app::ModalLayer::Remotes(_)) => {
+                    return vec![Action::RemotesMove(delta / 3)];
+                }
+                Some(
+                    top @ (crate::app::ModalLayer::FilterEditor { .. }
+                    | crate::app::ModalLayer::CommitHistory { .. }
+                    | crate::app::ModalLayer::ChooseParent { .. }
+                    | crate::app::ModalLayer::ChooseChild { .. }),
+                ) => {
+                    if let Some(kind) = top.popup_kind() {
+                        let (query_ref, selected) = top.popup_query_and_selected().unwrap_or(("", 0));
+                        let max_idx =
+                            super::keyboard::popup_candidate_count(kind, query_ref, state)
+                                .saturating_sub(1);
+                        let step = delta / 3;
+                        let next = (selected.min(max_idx) as isize + step)
+                            .clamp(0, max_idx as isize) as usize;
+                        return vec![Action::PopupSetState {
+                            query: query_ref.to_string(),
+                            selected: next,
+                        }];
+                    }
+                }
                 Some(crate::app::ModalLayer::Dialog(d))
                     if matches!(d.as_ref(), crate::dialogs::Dialog::RebaseTodo(r) if r.show_diff) =>
                 {
                     return vec![Action::ScrollRebaseDiff(delta)];
+                }
+                Some(crate::app::ModalLayer::Dialog(d))
+                    if matches!(d.as_ref(), crate::dialogs::Dialog::RebaseTodo(r) if !r.show_diff) =>
+                {
+                    let key = KeyEvent::new(
+                        if delta > 0 { KeyCode::Down } else { KeyCode::Up },
+                        KeyModifiers::NONE,
+                    );
+                    return vec![Action::DialogKey(key)];
                 }
                 _ => {}
             },

@@ -514,7 +514,7 @@ pub fn log_commit_menu_items(state: &AppState) -> Vec<ContextMenuItem> {
         items.push(
             run(
                 new_wt_lbl,
-                Some('w'),
+                Some('e'),
                 None,
                 vec![Action::PromptNewWorktree {
                     at: Some(primary.oid),
@@ -683,7 +683,7 @@ pub fn log_commit_menu_items(state: &AppState) -> Vec<ContextMenuItem> {
     ));
     items.push(ContextMenuItem::from_command(
         i18n.t("menu.log.browse_revision"),
-        Some('b'),
+        None,
         catalog::shortcut_for_action(state, &[KeymapScope::Log], &KeyAction::BrowseRevision)
             .as_deref(),
         catalog::browse_revision_command(state),
@@ -723,7 +723,7 @@ pub fn log_commit_menu_items(state: &AppState) -> Vec<ContextMenuItem> {
     if expand.is_ok() {
         items.push(ContextMenuItem::from_command(
             i18n.t("menu.log.expand_linear_branch"),
-            Some('x'),
+            Some('l'),
             catalog::shortcut_for_action(
                 state,
                 &[KeymapScope::Log],
@@ -754,7 +754,7 @@ pub fn log_commit_menu_items(state: &AppState) -> Vec<ContextMenuItem> {
         items.push(
             run(
                 i18n.t("menu.log.load_more"),
-                Some('l'),
+                Some('m'),
                 None,
                 vec![Action::LoadMoreCommits],
             )
@@ -768,7 +768,7 @@ pub fn log_commit_menu_items(state: &AppState) -> Vec<ContextMenuItem> {
         items.push(
             run(
                 i18n.t("menu.log.unshallow"),
-                Some('u'),
+                Some('h'),
                 None,
                 vec![Action::PromptUnshallow],
             )
@@ -1312,7 +1312,7 @@ pub fn annotate_menu_items(state: &AppState) -> Vec<ContextMenuItem> {
         ContextMenuItem::separator(),
         cmd_item(
             i18n.t("menu.annotate.locate_log").into(),
-            Some('j'),
+            Some('l'),
             catalog::AnnotateCommand::LocateInLog,
         ),
         cmd_item(
@@ -1422,10 +1422,11 @@ pub fn file_history_menu_items(state: &AppState) -> Vec<ContextMenuItem> {
             Some('b'),
             Some("b"),
             vec![Action::FileHistoryAnnotate],
-        ),
+        )
+        .enabled_if(!is_deleted, i18n.t("menu.log_change.cannot_annotate_deleted")),
         run(
             i18n.t("menu.file_history.locate_log"),
-            Some('j'),
+            Some('o'),
             Some("Enter"),
             vec![Action::FileHistoryJumpToLog],
         ),

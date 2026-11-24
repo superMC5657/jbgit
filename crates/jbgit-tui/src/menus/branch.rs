@@ -51,13 +51,16 @@ pub fn branch_menu_items(state: &AppState, name: &str, kind: RefKind) -> Vec<Con
     let mut items = Vec::new();
     match kind {
         RefKind::LocalBranch | RefKind::Head => {
+            let is_detached_head = kind == RefKind::Head && detached;
             let name = if kind == RefKind::Head {
                 cur.clone()
             } else {
                 name.to_string()
             };
-            let info = snap.local_branch(&name);
-            let is_current = current.as_deref() == Some(name.as_str());
+            let info = (!is_detached_head)
+                .then(|| snap.local_branch(&name))
+                .flatten();
+            let is_current = kind == RefKind::Head || current.as_deref() == Some(name.as_str());
             let full = format!("refs/heads/{name}");
             items.push(
                 ContextMenuItem::from_command(
@@ -68,7 +71,7 @@ pub fn branch_menu_items(state: &AppState, name: &str, kind: RefKind) -> Vec<Con
                 )
                 .icon("⎇"),
             );
-            if let Some(wt) = snap.worktree_of_branch(&name) {
+            if !is_detached_head && let Some(wt) = snap.worktree_of_branch(&name) {
                 items.push(run(
                     i18n.t_fmt("menu.branch.open_in_worktree", &[("worktree", &ellipsize(&wt.name(), 24))]),
                     Some('t'),
@@ -95,7 +98,7 @@ pub fn branch_menu_items(state: &AppState, name: &str, kind: RefKind) -> Vec<Con
             items.push(
                 run(
                     i18n.t_fmt("menu.branch.checkout_and_rebase", &[("cur", &ellipsize(&cur, 24))]),
-                    Some('k'),
+                    Some('a'),
                     None,
                     op(GitOp::Rebase {
                         options: RebaseOptions::onto(cur.clone(), Some(name.clone())),
@@ -259,6 +262,7 @@ pub fn branch_menu_items(state: &AppState, name: &str, kind: RefKind) -> Vec<Con
                         branch: name.clone(),
                     }],
                 )
+                .enabled_if(!is_detached_head, i18n.t("menu.log.detached_no_branch"))
                 .enabled_if(has_remote_branches, i18n.t("menu.branch.no_remote_branches")),
             );
             items.push(
@@ -291,8 +295,10 @@ pub fn branch_menu_items(state: &AppState, name: &str, kind: RefKind) -> Vec<Con
                 )
                 .icon("✕"),
             );
-            items.push(ContextMenuItem::separator());
-            items.push(star_item(&full, &name));
+            if !is_detached_head {
+                items.push(ContextMenuItem::separator());
+                items.push(star_item(&full, &name));
+            }
         }
         RefKind::RemoteBranch => {
             let (_remote, short) = snap
@@ -335,7 +341,7 @@ pub fn branch_menu_items(state: &AppState, name: &str, kind: RefKind) -> Vec<Con
                         "menu.branch.checkout_and_rebase",
                         &[("cur", &ellipsize(&cur, 24))],
                     ),
-                    Some('k'),
+                    Some('a'),
                     None,
                     vec![Action::CheckoutAndRebaseRemoteBranch {
                         remote_ref: name.to_string(),
@@ -347,15 +353,17 @@ pub fn branch_menu_items(state: &AppState, name: &str, kind: RefKind) -> Vec<Con
                 )
                 .require(no_ongoing.clone()),
             );
-            items.push(
-                run(
-                    i18n.t_fmt("menu.branch.new_worktree_from", &[("name", &ellipsize(name, 24))]),
-                    Some('t'),
-                    None,
-                    vec![Action::PromptNewWorktreeFromBranch(name.to_string())],
-                )
-                .icon("⎇"),
-            );
+            if crate::worktrees_view::worktrees_supported(state) {
+                items.push(
+                    run(
+                        i18n.t_fmt("menu.branch.new_worktree_from", &[("name", &ellipsize(name, 24))]),
+                        Some('t'),
+                        None,
+                        vec![Action::PromptNewWorktreeFromBranch(name.to_string())],
+                    )
+                    .icon("⎇"),
+                );
+            }
             items.push(ContextMenuItem::separator());
             items.push(run(
                 i18n.t_fmt("menu.branch.compare_with", &[("cur", &ellipsize(&cur, 24))]),

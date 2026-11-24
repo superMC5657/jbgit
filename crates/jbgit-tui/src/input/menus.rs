@@ -714,14 +714,16 @@ pub(crate) fn preselect_actions_for_menu_target(
         }
         HitTarget::StageDiffLine { row_idx } => {
             let mut out = vec![Action::FocusPane(PaneId::CommitDiffPreview)];
-            let keep_visual = state
+            let preserve_visual = state
                 .stage_workbench
-                .visual_anchor_row()
-                .is_some_and(|a| (a.min(*row_idx)..=a.max(*row_idx)).contains(row_idx));
-            out.push(Action::StageDiffSelectLine {
-                row_idx: *row_idx,
-                extend: keep_visual,
-            });
+                .selected_visual_bounds()
+                .is_some_and(|(lo, hi)| (lo..=hi).contains(row_idx));
+            if !preserve_visual {
+                out.push(Action::StageDiffSelectLine {
+                    row_idx: *row_idx,
+                    extend: false,
+                });
+            }
             out
         }
         HitTarget::StageDiffGutter { row_idx, .. } => vec![
@@ -737,6 +739,13 @@ pub(crate) fn preselect_actions_for_menu_target(
             Action::FocusPane(PaneId::StashList),
             Action::StashSelect(*i),
         ],
+        HitTarget::StashChangeRow(i) => {
+            let mut out = vec![Action::FocusPane(PaneId::StashDiffPreview)];
+            if state.stash.changes().selected != *i {
+                out.push(Action::ChangesSelect(ChangesHost::Stash, *i));
+            }
+            out
+        }
         HitTarget::LogChangeRow { idx } => {
             let mut out = vec![Action::FocusPane(PaneId::LogChangesTree)];
             if state.log.details.changes.selected != *idx {
@@ -838,7 +847,7 @@ pub(crate) fn build_menu_items_for_target(
                 ));
                 items.push(ContextMenuItem::submenu(
                     state.i18n.t("menu.log.presentation"),
-                    Some('o'),
+                    Some('v'),
                     presentation_menu_items(state),
                 ));
             }
@@ -936,8 +945,6 @@ pub(crate) fn build_menu_items_for_target(
             let i18n = &state.i18n;
             let nav_sc =
                 catalog::shortcut_for_action(state, &[KeymapScope::Branch], &KeyAction::NavigateBranch);
-            let fav_sc =
-                catalog::shortcut_for_action(state, &[KeymapScope::Branch], &KeyAction::ToggleFavorite);
             let refresh_sc =
                 catalog::shortcut_for_action(state, &[KeymapScope::Global], &KeyAction::Refresh);
             items.push(ContextMenuItem::run(
@@ -952,30 +959,20 @@ pub(crate) fn build_menu_items_for_target(
                 } else {
                     i18n.t("menu.branch.show_only_branches").to_string()
                 },
-                Some('f'),
+                Some('s'),
                 Some("Enter"),
                 vec![Action::BranchesApplyFilter],
             ));
             if is_leaf {
                 items.push(ContextMenuItem::run(
                     i18n.t("menu.branch.navigate_to_tip"),
-                    Some('n'),
+                    Some('i'),
                     nav_sc.as_deref(),
                     vec![Action::BranchesNavigate],
                 ));
                 items.push(ContextMenuItem::run(
-                    if node.is_some_and(|n| n.is_favorite) {
-                        i18n.t("menu.branch.unmark_favorite")
-                    } else {
-                        i18n.t("menu.branch.mark_favorite")
-                    },
-                    Some('m'),
-                    fav_sc.as_deref(),
-                    vec![Action::BranchesToggleFavorite],
-                ));
-                items.push(ContextMenuItem::run(
                     i18n.t_fmt("menu.branch.log_branch", &[("name", &branch_name)]),
-                    Some('l'),
+                    None,
                     None,
                     vec![Action::RunCliProbe(vec![
                         "log".into(),
@@ -988,7 +985,7 @@ pub(crate) fn build_menu_items_for_target(
             }
             items.push(ContextMenuItem::submenu(
                 i18n.t("menu.branch.view_options"),
-                Some('o'),
+                Some('v'),
                 vec![
                     ContextMenuItem::run(
                         format!(
@@ -1024,7 +1021,7 @@ pub(crate) fn build_menu_items_for_target(
             ));
             items.push(ContextMenuItem::run(
                 i18n.t("menu.branch.refresh_repo"),
-                Some('r'),
+                Some('h'),
                 refresh_sc.as_deref(),
                 vec![Action::RefreshAll],
             ));
@@ -1193,7 +1190,7 @@ pub fn presentation_menu_items(state: &AppState) -> Vec<ContextMenuItem> {
         item(
             o.linear_bek,
             "presentation.linear_bek",
-            'k',
+            'n',
             None,
             PresentationToggle::LinearBek,
         ),
@@ -1304,7 +1301,7 @@ pub fn presentation_menu_items(state: &AppState) -> Vec<ContextMenuItem> {
                 "presentation.graph_renderer",
                 &[("mode", i18n.graph_renderer_label(state.log.graph_renderer.mode()))],
             ),
-            Some('r'),
+            None,
             GraphRendererMode::ALL
                 .into_iter()
                 .map(|mode| {

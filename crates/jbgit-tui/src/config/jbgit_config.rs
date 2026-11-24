@@ -430,7 +430,7 @@ where
 pub struct WorktreeSection {
     /// Directory new working trees are created in (`<dir>/<repo>-<branch>`);
     /// unset / empty = the main working tree's parent directory. `~/` expands.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_opt_non_empty")]
     pub default_parent: Option<String>,
     /// Optional shell/setup command offered to run after a new working tree is
     /// created (prompted for confirmation, never executed silently).

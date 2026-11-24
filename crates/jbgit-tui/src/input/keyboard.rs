@@ -123,6 +123,40 @@ pub(crate) fn route_key(key: KeyEvent, state: &AppState) -> Vec<Action> {
     prefix
 }
 
+pub(super) fn popup_candidate_count(kind: PopupKind, query: &str, state: &AppState) -> usize {
+    match kind {
+        PopupKind::FilterEditor(field) => {
+            let snap = state.repo_snapshot.as_deref();
+            let has_fav = !state
+                .log
+                .favorite_branch_names(state.repo_snapshot.as_ref())
+                .is_empty();
+            let hist = state.log.filter.history_for(field);
+            filter_suggestions_with_context(field, snap, query, has_fav, hist).len()
+        }
+        PopupKind::ChooseParent => state
+            .log
+            .graph
+            .parent_candidates(state.repo_snapshot.as_ref())
+            .len(),
+        PopupKind::ChooseChild => state
+            .log
+            .graph
+            .child_candidates(state.repo_snapshot.as_ref())
+            .len(),
+        PopupKind::CommitHistory => {
+            let q_low = query.to_ascii_lowercase();
+            state
+                .stage_workbench
+                .commit_history_candidates(state.repo_snapshot.as_deref())
+                .iter()
+                .filter(|m| q_low.is_empty() || m.to_ascii_lowercase().contains(&q_low))
+                .count()
+        }
+        _ => 0,
+    }
+}
+
 fn route_modal_key(key: KeyEvent, state: &AppState) -> Vec<Action> {
     let Some(top) = state.modal_stack.last() else {
         return Vec::new();
@@ -200,25 +234,38 @@ fn route_modal_key(key: KeyEvent, state: &AppState) -> Vec<Action> {
                         vec![Action::PopModal, Action::GoToRevision(query)]
                     }
                     PopupKind::ChooseParent => {
-                        vec![Action::PopModal, Action::GoToParent(selected)]
+                        let count = popup_candidate_count(kind, &query, state);
+                        if count == 0 {
+                            vec![Action::PopModal]
+                        } else {
+                            vec![Action::PopModal, Action::GoToParent(selected.min(count - 1))]
+                        }
                     }
                     PopupKind::ChooseChild => {
-                        vec![Action::PopModal, Action::GoToChildCandidate(selected)]
+                        let count = popup_candidate_count(kind, &query, state);
+                        if count == 0 {
+                            vec![Action::PopModal]
+                        } else {
+                            vec![
+                                Action::PopModal,
+                                Action::GoToChildCandidate(selected.min(count - 1)),
+                            ]
+                        }
                     }
                     PopupKind::CommitHistory => {
                         let q_low = query.to_ascii_lowercase();
                         let candidates = state
                             .stage_workbench
                             .commit_history_candidates(state.repo_snapshot.as_deref());
-                        let mapped = candidates
+                        let matching: Vec<usize> = candidates
                             .iter()
                             .enumerate()
                             .filter(|(_, m)| {
                                 q_low.is_empty() || m.to_ascii_lowercase().contains(&q_low)
                             })
-                            .nth(selected)
-                            .map(|(i, _)| i);
-                        if let Some(idx) = mapped {
+                            .map(|(i, _)| i)
+                            .collect();
+                        if let Some(&idx) = matching.get(selected.min(matching.len().saturating_sub(1))) {
                             vec![Action::PopModal, Action::CommitApplyHistory(idx)]
                         } else {
                             vec![Action::PopModal]
@@ -266,7 +313,9 @@ fn route_modal_key(key: KeyEvent, state: &AppState) -> Vec<Action> {
                         let hist = state.log.filter.history_for(field);
                         let suggestions =
                             filter_suggestions_with_context(field, snap, &query, has_fav, hist);
-                        if let Some(s) = suggestions.get(selected) {
+                        if let Some(s) =
+                            suggestions.get(selected.min(suggestions.len().saturating_sub(1)))
+                        {
                             return vec![Action::PopupSetState {
                                 query: complete_last_token(&query, s),
                                 selected: 0,
@@ -283,14 +332,20 @@ fn route_modal_key(key: KeyEvent, state: &AppState) -> Vec<Action> {
                         selected: 0,
                     }]
                 }
-                KeyCode::Up => vec![Action::PopupSetState {
-                    query,
-                    selected: selected.saturating_sub(1),
-                }],
-                KeyCode::Down => vec![Action::PopupSetState {
-                    query,
-                    selected: selected.saturating_add(1),
-                }],
+                KeyCode::Up => {
+                    let max_idx = popup_candidate_count(kind, &query, state).saturating_sub(1);
+                    vec![Action::PopupSetState {
+                        query,
+                        selected: selected.min(max_idx).saturating_sub(1),
+                    }]
+                }
+                KeyCode::Down => {
+                    let max_idx = popup_candidate_count(kind, &query, state).saturating_sub(1);
+                    vec![Action::PopupSetState {
+                        query,
+                        selected: selected.saturating_add(1).min(max_idx),
+                    }]
+                }
                 KeyCode::Char(ch)
                     if !key.modifiers.contains(KeyModifiers::CONTROL)
                         && !key.modifiers.contains(KeyModifiers::ALT) =>
@@ -545,9 +600,17 @@ fn route_shortcuts_help_key(key: &KeyEvent, state: &AppState) -> Vec<Action> {
             let mut out = vec![Action::PopModal];
             if let Some(r) = run_opt
                 && r != crate::keymap::KeyAction::Help
-                && let Some(actions) = crate::keymap::execute_action(&r, state)
             {
-                out.extend(actions);
+                if !crate::keymap::is_action_applicable(&r, state) {
+                    let desc = crate::keymap::localized_action_desc(state, &r, None);
+                    let pane = state.i18n.pane_title(state.focused_pane);
+                    out.push(Action::Notice(state.i18n.t_fmt(
+                        "help.action_not_applicable",
+                        &[("action", &desc), ("pane", pane)],
+                    )));
+                } else if let Some(actions) = crate::keymap::execute_action(&r, state) {
+                    out.extend(actions);
+                }
             }
             out
         }
@@ -1231,7 +1294,7 @@ fn route_push_dialog_key(key: &KeyEvent, state: &AppState) -> Vec<Action> {
             PushDialogFocus::Files => vec![Action::PushMoveFile(-10)],
             PushDialogFocus::Target => Vec::new(),
         },
-        KeyCode::Home => match pd.focus {
+        KeyCode::Home | KeyCode::Char('g') => match pd.focus {
             PushDialogFocus::Commits => vec![Action::PushSelectCommit(0)],
             PushDialogFocus::Files if diff_focused => vec![Action::DiffScroll(
                 DiffScope::Push,

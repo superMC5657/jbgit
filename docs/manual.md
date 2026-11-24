@@ -164,7 +164,7 @@ jbgit 默认采用**零冲突统一键位（`preset = "default"`）**，并通�
 | `W` | 切换软换行（Soft Wrap，按显示宽度与 CJK 字符边界自动折行并同步滚屏高度） |
 | `h` / `l` 或 `<Left>` / `<Right>` | 未开启软换行时按列水平滚动（`<Shift-Left>` / `<Shift-Right>` 大步进），标题栏显示 `Col +N` 指示；Tab 字符按真实 `tab_size` 列对齐展开 |
 | `/` · `n` / `N` · `<Esc>` | Diff 内联搜索：`/` 打开底部搜索栏（忽略大小写、实时统计 `[cur/total]` 并高亮命中片段），`Enter` 确认后用 `n` / `N` 跳转下一/上一命中并自动居中滚屏，`<Esc>` 优先关闭搜索 |
-| `m` / `z`（或 `<F4>` / `<Ctrl-Enter>`） | *(Log Diff)* 切换停靠位置 (`m`) / 全屏差异预览 (`z`/`F4`/`Esc`)；全屏下按 `P` 切换合并父提交；二进制文件自动展示 Old/New 字节体积变化与短 Blob OID 元数据卡片 |
+| `m` / `<Alt-m>` / `z`（或 `<F4>` / `<Ctrl-Enter>`） | *(Log Diff)* 切换停靠位置 (`m`) / 切换合并父提交 (`<Alt-m>`，全屏亦支持 `P`) / 全屏差异预览 (`z`/`F4`/`Esc`)；二进制文件自动展示 Old/New 字节体积变化与短 Blob OID 元数据卡片 |
 | `<Space>` / `v` / `d` | *(Commit Diff)* 暂存/取消 (`Space`/`s`/`u`) · 行级可视选择 (`v`) · 回滚选区 (`d`/`Del`，`<Ctrl-z>` 撤销) |
 | `x` / `i` / `c` / `<Esc>` | *(Commit Diff)* 切换未暂存与已暂存侧 (`x`) · 三方检视 (`i`) · 聚焦提交说明 (`c`) · 退出可视选择或返回变更树 (`Esc`) |
 
@@ -295,7 +295,7 @@ jbgit 默认采用**零冲突统一键位（`preset = "default"`）**，并通�
 | :--- | :--- |
 | `<Tab>` / `<Shift-Tab>` | 在 `Target` / `Outgoing Commits` / `Changed Files` 三栏之间循环切换焦点 |
 | `e` / `r` | 内联编辑目标分支名（支持 `<Tab>` 补全远端分支、`↑`/`↓` 选候选、`<Ctrl-u>` 清空、`<Enter>` 确认并刷新待推提交，默认遵循 `remote.<name>.push` refspec） / 切换远端仓库 (`r`；无远端时可直接点击 `[+ 添加远端…]` 或按 `r`/`a` 内联定义远端) |
-| `j` / `k` / `<PageUp>` / `<PageDown>` / `g g` / `G` | 浏览待推提交列表、右侧变更文件树或文件差异 |
+| `j` / `k` / `<PageUp>` / `<PageDown>` / `g` / `G`（或 `<Home>` / `<End>`） | 浏览待推提交列表、右侧变更文件树或文件差异 |
 | `d` / `<Enter>` *(Files 栏)* | 打开或关闭当前选中变更文件的 Diff 预览（Diff 内支持 `S` 并排对比、`c` 上下文行数、`[`/`]` Hunk 跳转） |
 | `t` / `f` / `u` / `n` | 循环切换 Tag 模式 (`None` / `Current branch (--follow-tags)` / `All (--tags)`) / 强推模式 (`No` / `With lease`（精确绑定 `--force-with-lease=<ref>:<oid>`）/ `Force`，受 `[push].protected_branches` 保护拦截) / 勾选 `Set upstream`（游离 HEAD 自动禁用） / 勾选 `Skip hooks` (`--no-verify`) |
 | `<Enter>` / `<Ctrl-Enter>` / `<Esc>` | 执行推送（若因非快进被拒绝，弹窗提供带 Smart 自动贮藏/恢复的 `Merge & Retry` / `Rebase & Retry`，若待变基区间包含合并提交还会显式警示） / 取消关闭 |
@@ -549,7 +549,7 @@ mode = "nerd_font"
 - **预设风格 (`preset`)**：
   - `"default"`：极简零冲突推荐预设（完整底表位于 `keymaps/default.toml`）。
   - `"jetbrains"`：贴近 IntelliJ IDEA 习惯（完整定义位于 `keymaps/jetbrains.toml`，自动开启 `tree_speed_search = true`，并补充 `<C-k>` 打开 Commit、`<C-S-k>` Push、`<C-t>` Pull、`<C-A-n>` 新建分支、`<A-m>` Amend 等映射）。注意 `<C-t>` 保持绑定 Pull 以不改变已有习惯；Update Project 在三套预设中统一为 `<A-u>`，如需 IDEA 的 `Ctrl+T = Update Project`，可在 `[global]` 中 `prepend_keymap = [{ on = "<C-t>", run = "update_project" }]`。
-  - `"vim"`：Vim / Lazygit 风格（完整定义位于 `keymaps/vim.toml`，Log 中 `<C-d>`/`<C-u>` 半页翻滚、`d` 对比提交/开关差异、`z c`/`z o`/`z M`/`z R` 折叠 / 展开线性分支，Diff 中 `s`/`u` 暂存/取消暂存，`c` 切换上下文行数）。
+  - `"vim"`：Vim / Lazygit 风格（完整定义位于 `keymaps/vim.toml`，Log 中 `<C-d>`/`<C-u>` 半页翻滚、`d` 对比提交/开关差异、`z c`/`z o`/`z M`/`z R` 折叠 / 展开线性分支，Diff 中 `s`/`u` 暂存/取消暂存）。
   - **直接修改或自定义预设**：可编辑配置目录下的 `keymaps/default.toml`、`keymaps/jetbrains.toml`、`keymaps/vim.toml` 覆写内置预设（非 default 预设在磁盘存在对应 TOML 时以磁盘文件为准），也可新建 `keymaps/<自定义名称>.toml` 并在 `keymap.toml` 中设置 `preset = "<自定义名称>"`（会在 `keymaps/default.toml` 之上叠加）。
 - **分支树直接打字搜索 (`tree_speed_search`)**：
   - `false`（默认）：在分支树面板按 `/` 或 `<Ctrl-f>` 进入搜索，单键 `j`/`k`/`c`/`q`/`r` 等保留导航与快捷操作。
@@ -603,7 +603,7 @@ prepend_keymap = [
 | `log` | `cursor_down`, `cursor_up`, `goto_top`, `goto_bottom`, `page_down_half`, `page_up_half`, `goto_revision`, `focus_filter`, `toggle_branches_pane`, `toggle_log_row_selection`, `compare_or_diff`, `swap_compare_direction`, `toggle_only_affected_changes`, `zoom_diff`, `copy_hash`, `copy_commit_message`, `copy_row_summary`, `checkout`, `new_branch`, `uncommit`, `reword`, `drop_commit`, `choose_parent`, `toggle_group`, `file_history`, `annotate`, `collapse_linear_branch`, `expand_linear_branch`, `collapse_all_linear_branches`, `expand_all_linear_branches`, `browse_revision`, `toggle_no_merges`, `toggle_linear_bek`, `log_speed_search`, `maximize_commit_message`, `open_reflog`, `log_load_more` |
 | `branch` | `branch_search`, `toggle_favorite`, `checkout`, `new_branch`, `rename_branch`, `delete_branch`, `navigate_branch`, `open_reflog` |
 | `commit` | `cursor_down`, `cursor_up`, `goto_top`, `goto_bottom`, `toggle_stage`, `stage_selection`, `unstage_selection`, `focus_commit_msg`, `commit`, `commit_and_push`, `toggle_amend`, `toggle_signoff`, `commit_history`, `select_all`, `discard_changes`, `toggle_group`, `edit_file`, `file_history`, `annotate`, `apply_patch`, `apply_patch_clipboard` |
-| `diff` | `cursor_down`, `cursor_up`, `goto_top`, `goto_bottom`, `prev_hunk`, `next_hunk`, `prev_file`, `next_file`, `toggle_side_by_side`, `cycle_diff_context`, `cycle_diff_whitespace`, `toggle_diff_soft_wrap`, `diff_scroll_left`, `diff_scroll_right`, `diff_search`, `diff_search_next`, `diff_search_prev`, `cycle_diff_dock`, `zoom_diff`, `swap_compare_direction`, `toggle_stage`, `stage_selection`, `unstage_selection`, `toggle_visual`, `rollback_selection`, `undo_rollback`, `switch_diff_side`, `three_way_inspector` |
+| `diff` | `cursor_down`, `cursor_up`, `goto_top`, `goto_bottom`, `prev_hunk`, `next_hunk`, `prev_file`, `next_file`, `toggle_side_by_side`, `cycle_diff_context`, `cycle_diff_whitespace`, `toggle_diff_soft_wrap`, `diff_scroll_left`, `diff_scroll_right`, `diff_search`, `diff_search_next`, `diff_search_prev`, `cycle_diff_dock`, `choose_parent`, `zoom_diff`, `swap_compare_direction`, `toggle_stage`, `stage_selection`, `unstage_selection`, `toggle_visual`, `rollback_selection`, `undo_rollback`, `switch_diff_side`, `three_way_inspector` |
 | `stash` | `cursor_down`, `cursor_up`, `goto_top`, `goto_bottom`, `stash_new`, `stash_apply`, `stash_pop`, `stash_drop`, `stash_branch`, `stash_clear`, `toggle_group` |
 | `console` | `cursor_down`, `cursor_up`, `goto_top`, `goto_bottom`, `page_down_half`, `page_up_half` |
 

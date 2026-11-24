@@ -45,8 +45,10 @@ impl I18n {
         };
 
         // Check user custom locales directory: <config_dir>/locales/<lang>.toml
-        if let Some(dir) = custom_locales_dir {
-            let custom_file = dir.join(format!("{resolved_lang}.toml"));
+        if let Some(dir) = custom_locales_dir
+            && let Some(filename) = crate::config::safe_preset_filename(&resolved_lang)
+        {
+            let custom_file = dir.join(filename);
             if custom_file.is_file()
                 && let Ok(content) = fs::read_to_string(&custom_file)
             {
@@ -947,5 +949,60 @@ custom_extra = "自定义内容"
                 "placeholder mismatch for key '{k}': en={en_ph:?}, zh={zh_ph:?}"
             );
         }
+    }
+
+    #[test]
+    fn test_every_keymap_action_has_help_entry_in_en_and_zh() {
+        let en = parse_and_flatten_toml(EMBEDDED_EN_US);
+        let zh = parse_and_flatten_toml(EMBEDDED_ZH_CN);
+        for action in crate::keymap::KeyAction::all_active() {
+            let key = format!("help.action.{}", action.as_str());
+            let en_val = en
+                .get(&key)
+                .unwrap_or_else(|| panic!("missing {key} in en-US.toml"));
+            let zh_val = zh
+                .get(&key)
+                .unwrap_or_else(|| panic!("missing {key} in zh-CN.toml"));
+            assert!(!en_val.trim().is_empty(), "empty {key} in en-US.toml");
+            assert!(!zh_val.trim().is_empty(), "empty {key} in zh-CN.toml");
+            assert_eq!(
+                crate::keymap::KeyAction::parse(action.as_str()),
+                action,
+                "KeyAction round-trip failed for {}",
+                action.as_str()
+            );
+        }
+    }
+
+    #[test]
+    fn test_whitespace_hints_reference_i_not_b() {
+        let en = I18n::load("en-US", None);
+        let zh = I18n::load("zh-CN", None);
+        for key in [
+            "view.commit.diff_hint_whitespace",
+            "toast.whitespace_line_staging_disabled",
+        ] {
+            let en_s = en.t(key);
+            let zh_s = zh.t(key);
+            assert!(en_s.contains("press I"), "{key} en-US: {en_s}");
+            assert!(!en_s.contains("press b"), "{key} en-US: {en_s}");
+            assert!(zh_s.contains("按 I"), "{key} zh-CN: {zh_s}");
+            assert!(!zh_s.contains("按 b"), "{key} zh-CN: {zh_s}");
+        }
+    }
+
+    #[test]
+    fn test_custom_locale_rejects_path_traversal() {
+        let dir = tempfile::tempdir().unwrap();
+        let locales_dir = dir.path().join("locales");
+        std::fs::create_dir_all(&locales_dir).unwrap();
+        // Place a rogue TOML outside `locales/` that `../secret` would reach without validation.
+        std::fs::write(
+            dir.path().join("secret.toml"),
+            "[common]\nok = \"PWNED\"\n",
+        )
+        .unwrap();
+        let i18n = I18n::load("../secret", Some(&locales_dir));
+        assert_ne!(i18n.t("common.ok"), "PWNED");
     }
 }

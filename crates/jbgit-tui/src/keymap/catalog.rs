@@ -326,6 +326,17 @@ fn is_diff_search_active(state: &AppState) -> bool {
     }
 }
 
+fn is_stash_changes_dir_selected(state: &AppState) -> bool {
+    state.active_tab == WorkspaceTab::Stash
+        && state.focused_pane == PaneId::StashDiffPreview
+        && state
+            .stash
+            .changes()
+            .change_rows(&state.diff_caches)
+            .get(state.stash.changes().selected)
+            .is_some_and(|r| matches!(r.kind, ChangeRowKind::Dir { .. }))
+}
+
 pub fn is_action_applicable(run: &KeyAction, state: &AppState) -> bool {
     if !run.is_active() {
         return false;
@@ -441,9 +452,10 @@ pub fn is_action_applicable(run: &KeyAction, state: &AppState) -> bool {
         | KeyAction::CycleDiffContext
         | KeyAction::CycleDiffWhitespace
         | KeyAction::ToggleDiffSoftWrap
-        | KeyAction::DiffScrollLeft
-        | KeyAction::DiffScrollRight
         | KeyAction::DiffSearch => is_diff_focused(state),
+        KeyAction::DiffScrollLeft | KeyAction::DiffScrollRight => {
+            is_diff_focused(state) && !is_stash_changes_dir_selected(state)
+        }
         KeyAction::DiffSearchNext | KeyAction::DiffSearchPrev => {
             is_diff_focused(state) && is_diff_search_active(state)
         }
@@ -890,7 +902,7 @@ pub fn execute_action(run: &KeyAction, state: &AppState) -> Option<Vec<Action>> 
             if state.focused_pane == PaneId::LogBranchesTree {
                 selected_branch_command(state, &KeyAction::Checkout)
             } else {
-                commit_checkout(state).ok()
+                Some(notice_on_err(commit_checkout(state)))
             }
         }
         KeyAction::NewBranch => {
@@ -1021,11 +1033,11 @@ pub fn execute_action(run: &KeyAction, state: &AppState) -> Option<Vec<Action>> 
             }
         }
         KeyAction::Annotate => annotate_selected_file(state),
-        KeyAction::Uncommit => commit_uncommit(state).ok(),
-        KeyAction::Reword => commit_reword(state).ok(),
+        KeyAction::Uncommit => Some(notice_on_err(commit_uncommit(state))),
+        KeyAction::Reword => Some(notice_on_err(commit_reword(state))),
         KeyAction::DropCommit => {
             let oids = state.selected_commits_oldest_first();
-            commit_drop(state, &oids).ok()
+            Some(notice_on_err(commit_drop(state, &oids)))
         }
 
         // ── Branch ──
@@ -1174,7 +1186,7 @@ pub fn commit_copy_message(state: &AppState) -> CommandResult {
     };
     let oids = state.selected_commits_oldest_first();
     if oids.is_empty() {
-        return Err(state.i18n.t("menu.log.need_single").to_string());
+        return Err(state.i18n.t("menu.log.drop_no_selection").to_string());
     }
     let bundle = state.log.details.current_bundle(&state.diff_caches);
     let mut parts = Vec::with_capacity(oids.len());
@@ -1202,7 +1214,7 @@ pub fn commit_copy_row_summary(state: &AppState) -> CommandResult {
     };
     let oids = state.selected_commits_oldest_first();
     if oids.is_empty() {
-        return Err(state.i18n.t("menu.log.need_single").to_string());
+        return Err(state.i18n.t("menu.log.drop_no_selection").to_string());
     }
     let mut lines = Vec::with_capacity(oids.len());
     for oid in oids.iter().rev() {
@@ -1276,7 +1288,11 @@ pub fn all_shortcuts_for_action(
 }
 
 fn notice_on_err(result: CommandResult) -> Vec<Action> {
-    result.unwrap_or_else(|msg| vec![Action::Notice(msg)])
+    match result {
+        Ok(actions) => actions,
+        Err(msg) if msg.is_empty() => Vec::new(),
+        Err(msg) => vec![Action::Notice(msg)],
+    }
 }
 
 /// `Apply Patch…` (path prompt) / `Apply Patch from Clipboard`.
@@ -1522,11 +1538,11 @@ pub fn branch_checkout(state: &AppState, name: &str, kind: RefKind) -> CommandRe
     let current = snap.head_branch.as_deref();
     match kind {
         RefKind::LocalBranch | RefKind::Head => {
-            let target = if kind == RefKind::Head {
-                current.unwrap_or("HEAD").to_string()
-            } else {
-                name.to_string()
-            };
+            if kind == RefKind::Head {
+                let target = current.unwrap_or("HEAD");
+                return Err(i18n.t_fmt("menu.branch.already_checked_out", &[("name", target)]));
+            }
+            let target = name.to_string();
             if current == Some(target.as_str()) {
                 return Err(i18n.t_fmt("menu.branch.already_checked_out", &[("name", &target)]));
             }
@@ -1560,7 +1576,10 @@ pub fn branch_rename(state: &AppState, name: &str, kind: RefKind) -> CommandResu
     match kind {
         RefKind::LocalBranch | RefKind::Head => {
             let target = if kind == RefKind::Head {
-                snap.head_branch.as_deref().unwrap_or("HEAD").to_string()
+                match snap.head_branch.as_deref() {
+                    Some(b) => b.to_string(),
+                    None => return Err(i18n.t("menu.log.detached_no_branch").to_string()),
+                }
             } else {
                 name.to_string()
             };
@@ -1597,11 +1616,10 @@ pub fn branch_delete(state: &AppState, name: &str, kind: RefKind) -> CommandResu
     };
     match kind {
         RefKind::LocalBranch | RefKind::Head => {
-            let target = if kind == RefKind::Head {
-                snap.head_branch.as_deref().unwrap_or("HEAD").to_string()
-            } else {
-                name.to_string()
-            };
+            if kind == RefKind::Head {
+                return Err(i18n.t("menu.branch.cannot_delete_current").to_string());
+            }
+            let target = name.to_string();
             if snap.head_branch.as_deref() == Some(target.as_str()) {
                 return Err(i18n.t("menu.branch.cannot_delete_current").to_string());
             }
@@ -1649,14 +1667,18 @@ pub fn selected_branch_command(state: &AppState, action: &KeyAction) -> Option<V
     let BranchNodeKind::Leaf(kind) = node.kind else {
         return None;
     };
-    let name = node.ref_name.as_deref()?;
+    let name = match node.ref_name.as_deref() {
+        Some(n) => n,
+        None if kind == RefKind::Head => "HEAD",
+        None => return None,
+    };
     let res = match action {
         KeyAction::Checkout => branch_checkout(state, name, kind),
         KeyAction::RenameBranch => branch_rename(state, name, kind),
         KeyAction::DeleteBranch => branch_delete(state, name, kind),
         _ => return None,
     };
-    res.ok()
+    Some(notice_on_err(res))
 }
 
 /// Resolves `Annotate with Git Blame` for the currently selected file in Log
@@ -1749,6 +1771,21 @@ pub fn annotate_stage_diff(state: &AppState, path: Option<&str>) -> CommandResul
     let Some(path) = path else {
         return Err(state.i18n.t("menu.stage.no_file_selected").into());
     };
+    let is_untracked_or_ignored = state
+        .stage_workbench
+        .current_diff_key()
+        .is_none_or(|k| k.side == StageDiffSide::Unstaged)
+        && state.stage_workbench.status().is_some_and(|st| {
+            st.untracked.iter().any(|e| e.path == path)
+                || st.ignored.iter().any(|e| e.path == path)
+                || st.unstaged.iter().any(|e| {
+                    e.path == path
+                        && matches!(e.kind, FileStatusKind::Untracked | FileStatusKind::Ignored)
+                })
+        });
+    if is_untracked_or_ignored {
+        return Err(state.i18n.t("menu.stage.only_tracked_history").into());
+    }
     Ok(vec![Action::OpenAnnotate {
         path: path.to_string(),
         rev: None,

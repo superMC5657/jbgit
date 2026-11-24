@@ -99,7 +99,10 @@ fn route_paste(text: &str, state: &AppState) -> Vec<Action> {
             .collect();
     }
 
-    if state.active_tab == WorkspaceTab::Log && state.focused_pane == PaneId::LogBranchesTree {
+    if state.active_tab == WorkspaceTab::Log
+        && state.focused_pane == PaneId::LogBranchesTree
+        && (state.log.branches.searching || state.config.keymap.tree_speed_search)
+    {
         return text
             .chars()
             .filter(|c| !c.is_control() && *c != ' ')

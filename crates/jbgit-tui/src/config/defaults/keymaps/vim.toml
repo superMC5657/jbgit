@@ -16,7 +16,6 @@ prepend_keymap = [
 
 [diff]
 prepend_keymap = [
-    { on = [ "c" ], run = "cycle_diff_context" },
     { on = [ "s" ], run = "stage_selection", show_hint = true },
     { on = [ "u" ], run = "unstage_selection", show_hint = true },
     { on = [ "<Space>" ], run = "toggle_stage", show_hint = false },

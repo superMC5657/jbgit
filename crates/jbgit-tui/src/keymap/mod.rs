@@ -399,6 +399,252 @@ impl KeyAction {
         !matches!(self, Self::Noop | Self::Unknown(_))
     }
 
+    #[cfg(test)]
+    pub(crate) fn all_active() -> Vec<Self> {
+        let all = vec![
+            Self::Quit,
+            Self::Help,
+            Self::ContextMenu,
+            Self::Refresh,
+            Self::TabCommit,
+            Self::TabLog,
+            Self::TabBranches,
+            Self::TabStash,
+            Self::TabConsole,
+            Self::FocusNext,
+            Self::FocusPrev,
+            Self::ToggleBranchesPopup,
+            Self::ToggleBranchesPane,
+            Self::GitFetch,
+            Self::GitPull,
+            Self::GitPullDialog,
+            Self::GitRebaseDialog,
+            Self::GitPush,
+            Self::UpdateProject,
+            Self::ConfigureRemotes,
+            Self::SwitchRepository,
+            Self::CloneRepository,
+            Self::Worktrees,
+            Self::ResolveConflicts,
+            Self::UpdateSubmodules,
+            Self::Unshallow,
+            Self::LogLoadMore,
+            Self::BisectGood,
+            Self::BisectBad,
+            Self::BisectSkip,
+            Self::BisectReset,
+            Self::CycleGpgSign,
+            Self::Palette,
+            Self::ToggleGlyphMode,
+            Self::CycleGraphRenderer,
+            Self::GitStatusProbe,
+            Self::GotoRevision,
+            Self::CursorDown,
+            Self::CursorUp,
+            Self::GotoTop,
+            Self::GotoBottom,
+            Self::PageDownHalf,
+            Self::PageUpHalf,
+            Self::CompareOrDiff,
+            Self::CompareVersions,
+            Self::SwapCompareDirection,
+            Self::ToggleLogRowSelection,
+            Self::ToggleOnlyAffectedChanges,
+            Self::ToggleNoMerges,
+            Self::ToggleLinearBek,
+            Self::LogSpeedSearch,
+            Self::MaximizeCommitMessage,
+            Self::OpenReflog,
+            Self::CopyHash,
+            Self::CopyCommitMessage,
+            Self::CopyRowSummary,
+            Self::Checkout,
+            Self::NewBranch,
+            Self::ChooseParent,
+            Self::FocusFilter,
+            Self::FileHistory,
+            Self::Annotate,
+            Self::Uncommit,
+            Self::Reword,
+            Self::DropCommit,
+            Self::BranchSearch,
+            Self::ToggleFavorite,
+            Self::RenameBranch,
+            Self::DeleteBranch,
+            Self::NavigateBranch,
+            Self::FocusCommitMsg,
+            Self::ToggleStage,
+            Self::StageSelection,
+            Self::UnstageSelection,
+            Self::Commit,
+            Self::CommitAndPush,
+            Self::ToggleAmend,
+            Self::ToggleSignoff,
+            Self::CommitHistory,
+            Self::SelectAll,
+            Self::DiscardChanges,
+            Self::ToggleGroup,
+            Self::EditFile,
+            Self::ToggleVisual,
+            Self::RollbackSelection,
+            Self::UndoRollback,
+            Self::SwitchDiffSide,
+            Self::ThreeWayInspector,
+            Self::PrevHunk,
+            Self::NextHunk,
+            Self::PrevFile,
+            Self::NextFile,
+            Self::ToggleSideBySide,
+            Self::CycleDiffContext,
+            Self::CycleDiffWhitespace,
+            Self::ToggleDiffSoftWrap,
+            Self::DiffScrollLeft,
+            Self::DiffScrollRight,
+            Self::DiffSearch,
+            Self::DiffSearchNext,
+            Self::DiffSearchPrev,
+            Self::CycleDiffDock,
+            Self::ZoomDiff,
+            Self::StashNew,
+            Self::StashApply,
+            Self::StashPop,
+            Self::StashDrop,
+            Self::StashBranch,
+            Self::StashClear,
+            Self::ApplyPatch,
+            Self::ApplyPatchClipboard,
+            Self::BrowseRevision,
+            Self::CollapseLinearBranch,
+            Self::ExpandLinearBranch,
+            Self::CollapseAllLinearBranches,
+            Self::ExpandAllLinearBranches,
+        ];
+        // Compile-time guard: adding a new KeyAction variant forces updating `all` above.
+        for a in &all {
+            match a {
+                Self::Noop
+                | Self::Unknown(_)
+                | Self::Quit
+                | Self::Help
+                | Self::ContextMenu
+                | Self::Refresh
+                | Self::TabCommit
+                | Self::TabLog
+                | Self::TabBranches
+                | Self::TabStash
+                | Self::TabConsole
+                | Self::FocusNext
+                | Self::FocusPrev
+                | Self::ToggleBranchesPopup
+                | Self::ToggleBranchesPane
+                | Self::GitFetch
+                | Self::GitPull
+                | Self::GitPullDialog
+                | Self::GitRebaseDialog
+                | Self::GitPush
+                | Self::UpdateProject
+                | Self::ConfigureRemotes
+                | Self::SwitchRepository
+                | Self::CloneRepository
+                | Self::Worktrees
+                | Self::ResolveConflicts
+                | Self::UpdateSubmodules
+                | Self::Unshallow
+                | Self::LogLoadMore
+                | Self::BisectGood
+                | Self::BisectBad
+                | Self::BisectSkip
+                | Self::BisectReset
+                | Self::CycleGpgSign
+                | Self::Palette
+                | Self::ToggleGlyphMode
+                | Self::CycleGraphRenderer
+                | Self::GitStatusProbe
+                | Self::GotoRevision
+                | Self::CursorDown
+                | Self::CursorUp
+                | Self::GotoTop
+                | Self::GotoBottom
+                | Self::PageDownHalf
+                | Self::PageUpHalf
+                | Self::CompareOrDiff
+                | Self::CompareVersions
+                | Self::SwapCompareDirection
+                | Self::ToggleLogRowSelection
+                | Self::ToggleOnlyAffectedChanges
+                | Self::ToggleNoMerges
+                | Self::ToggleLinearBek
+                | Self::LogSpeedSearch
+                | Self::MaximizeCommitMessage
+                | Self::OpenReflog
+                | Self::CopyHash
+                | Self::CopyCommitMessage
+                | Self::CopyRowSummary
+                | Self::Checkout
+                | Self::NewBranch
+                | Self::ChooseParent
+                | Self::FocusFilter
+                | Self::FileHistory
+                | Self::Annotate
+                | Self::Uncommit
+                | Self::Reword
+                | Self::DropCommit
+                | Self::BranchSearch
+                | Self::ToggleFavorite
+                | Self::RenameBranch
+                | Self::DeleteBranch
+                | Self::NavigateBranch
+                | Self::FocusCommitMsg
+                | Self::ToggleStage
+                | Self::StageSelection
+                | Self::UnstageSelection
+                | Self::Commit
+                | Self::CommitAndPush
+                | Self::ToggleAmend
+                | Self::ToggleSignoff
+                | Self::CommitHistory
+                | Self::SelectAll
+                | Self::DiscardChanges
+                | Self::ToggleGroup
+                | Self::EditFile
+                | Self::ToggleVisual
+                | Self::RollbackSelection
+                | Self::UndoRollback
+                | Self::SwitchDiffSide
+                | Self::ThreeWayInspector
+                | Self::PrevHunk
+                | Self::NextHunk
+                | Self::PrevFile
+                | Self::NextFile
+                | Self::ToggleSideBySide
+                | Self::CycleDiffContext
+                | Self::CycleDiffWhitespace
+                | Self::ToggleDiffSoftWrap
+                | Self::DiffScrollLeft
+                | Self::DiffScrollRight
+                | Self::DiffSearch
+                | Self::DiffSearchNext
+                | Self::DiffSearchPrev
+                | Self::CycleDiffDock
+                | Self::ZoomDiff
+                | Self::StashNew
+                | Self::StashApply
+                | Self::StashPop
+                | Self::StashDrop
+                | Self::StashBranch
+                | Self::StashClear
+                | Self::ApplyPatch
+                | Self::ApplyPatchClipboard
+                | Self::BrowseRevision
+                | Self::CollapseLinearBranch
+                | Self::ExpandLinearBranch
+                | Self::CollapseAllLinearBranches
+                | Self::ExpandAllLinearBranches => {}
+            }
+        }
+        all
+    }
+
     /// Returns the default i18n key for this action's footer pill label, if any.
     pub fn footer_pill_key(&self) -> Option<&'static str> {
         Some(match self {
@@ -1214,5 +1460,166 @@ prepend_keymap = [
             route_dynamic_key(&ev_j, &state).as_deref(),
             Some([Action::ScrollCommitStage(1)])
         ));
+    }
+
+    #[test]
+    fn presets_have_zero_unintended_keymap_shadowing_conflicts() {
+        use crate::config::{KeymapConfig, KeymapPreset};
+        use crate::keymap::actions::check_scopes;
+
+        let presets = [
+            KeymapPreset::Default,
+            KeymapPreset::Jetbrains,
+            KeymapPreset::Vim,
+        ];
+        let contexts: &[(WorkspaceTab, PaneId, bool, bool)] = &[
+            (WorkspaceTab::Log, PaneId::LogBranchesTree, false, false),
+            (WorkspaceTab::Log, PaneId::LogCommitTable, false, false),
+            (WorkspaceTab::Log, PaneId::LogChangesTree, false, false),
+            (WorkspaceTab::Log, PaneId::LogDetailsDiff, false, false),
+            (WorkspaceTab::Log, PaneId::LogDetailsDiff, true, false),
+            (WorkspaceTab::Log, PaneId::LogDetailsDiff, true, true),
+            (WorkspaceTab::Commit, PaneId::CommitChangesTree, false, false),
+            (WorkspaceTab::Commit, PaneId::CommitDiffPreview, false, false),
+            (WorkspaceTab::Stash, PaneId::StashList, false, false),
+            (WorkspaceTab::Stash, PaneId::StashDiffPreview, false, false),
+            (WorkspaceTab::Console, PaneId::ConsoleCommandList, false, false),
+            (WorkspaceTab::Console, PaneId::ConsoleOutputDetail, false, false),
+        ];
+
+        for preset in &presets {
+            for &(tab, pane, diff_preview, zoomed) in contexts {
+                let mut cfg = AppConfig::load_defaults();
+                cfg.keymap = KeymapConfig::for_preset(preset.clone());
+                let mut state = AppState::new_with_config(PathBuf::from("."), None, cfg);
+                state.active_tab = tab;
+                state.focused_pane = pane;
+                state.log.details.diff_preview = diff_preview;
+                state.log.details.diff.zoomed = zoomed;
+
+                let scopes = scopes_for_context(&state);
+                let mut applicable_actions: Vec<KeyAction> = Vec::new();
+                for &scope in &scopes {
+                    for b in state.config.keymap.bindings_for(scope) {
+                        if b.run.is_active()
+                            && is_action_applicable(&b.run, &state)
+                            && !applicable_actions.contains(&b.run)
+                        {
+                            applicable_actions.push(b.run.clone());
+                        }
+                    }
+                }
+
+                for action in &applicable_actions {
+                    // Explicit intentional shadowing: in `vim`, `LogBranchesTree` binds `d` to
+                    // `delete_branch` and `<C-d>` to `page_down_half` while `compare_or_diff` is a
+                    // commit-table/changes operation.
+                    if *preset == KeymapPreset::Vim
+                        && pane == PaneId::LogBranchesTree
+                        && *action == KeyAction::CompareOrDiff
+                    {
+                        continue;
+                    }
+                    let mut reachable = false;
+                    for &scope in &scopes {
+                        for b in state.config.keymap.bindings_for(scope) {
+                            if b.run != *action {
+                                continue;
+                            }
+                            let Some(seq) = b.parsed_seq() else {
+                                continue;
+                            };
+                            let events: Vec<KeyEvent> = seq
+                                .strokes
+                                .iter()
+                                .map(|st| {
+                                    let mut mods = KeyModifiers::NONE;
+                                    if st.ctrl {
+                                        mods |= KeyModifiers::CONTROL;
+                                    }
+                                    if st.alt {
+                                        mods |= KeyModifiers::ALT;
+                                    }
+                                    if st.shift {
+                                        mods |= KeyModifiers::SHIFT;
+                                    }
+                                    KeyEvent::new(st.code, mods)
+                                })
+                                .collect();
+                            if matches!(check_scopes(&events, &state), MatchResult::Exact(matched) if matched.run == *action)
+                            {
+                                reachable = true;
+                                break;
+                            }
+                        }
+                        if reachable {
+                            break;
+                        }
+                    }
+                    assert!(
+                        reachable,
+                        "action {action:?} is applicable but completely shadowed in preset={preset:?} tab={tab:?} pane={pane:?} diff_preview={diff_preview} zoomed={zoomed}"
+                    );
+                }
+            }
+
+            // Explicit regression assertions for P1-1 and P1-3 across all 3 presets.
+            let mut cfg = AppConfig::load_defaults();
+            cfg.keymap = KeymapConfig::for_preset(preset.clone());
+            let mut state = AppState::new_with_config(PathBuf::from("."), None, cfg);
+
+            // P1-1: CommitDiffPreview `c` resolves to FocusCommitMsg (not shadowed by CycleDiffContext).
+            state.active_tab = WorkspaceTab::Commit;
+            state.focused_pane = PaneId::CommitDiffPreview;
+            let c_key = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE);
+            assert!(
+                matches!(check_scopes(&[c_key], &state), MatchResult::Exact(b) if b.run == KeyAction::FocusCommitMsg),
+                "CommitDiffPreview 'c' must resolve to FocusCommitMsg in {preset:?}"
+            );
+
+            // P1-3: LogDetailsDiff (diff_preview) and zoomed diff `<A-m>` resolve to ChooseParent.
+            state.active_tab = WorkspaceTab::Log;
+            state.focused_pane = PaneId::LogDetailsDiff;
+            state.log.details.diff_preview = true;
+            let alt_m = KeyEvent::new(KeyCode::Char('m'), KeyModifiers::ALT);
+            assert!(
+                matches!(check_scopes(&[alt_m], &state), MatchResult::Exact(b) if b.run == KeyAction::ChooseParent),
+                "LogDetailsDiff Alt+M must resolve to ChooseParent in {preset:?}"
+            );
+            state.log.details.diff.zoomed = true;
+            assert!(
+                matches!(check_scopes(&[alt_m], &state), MatchResult::Exact(b) if b.run == KeyAction::ChooseParent),
+                "Zoomed diff Alt+M must resolve to ChooseParent in {preset:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn copy_message_and_summary_no_selection_avoid_literal_placeholder_and_errors_emit_notice() {
+        let mut state = AppState::new_with_config(PathBuf::from("."), None, AppConfig::default());
+        state.i18n = std::sync::Arc::new(crate::i18n::I18n::load("en-US", None));
+        let empty_snap = std::sync::Arc::new(jbgit_core::RepoSnapshot::default());
+        state.repo_snapshot = Some(empty_snap);
+        state.active_tab = WorkspaceTab::Log;
+        state.focused_pane = PaneId::LogCommitTable;
+
+        let msg_err = catalog::commit_copy_message(&state).unwrap_err();
+        assert!(!msg_err.contains("{what}"), "unformatted placeholder: {msg_err}");
+        let sum_err = catalog::commit_copy_row_summary(&state).unwrap_err();
+        assert!(!sum_err.contains("{what}"), "unformatted placeholder: {sum_err}");
+
+        // P2-2: Precondition errors from keyboard catalog actions must emit Action::Notice, not None.
+        for action in [
+            KeyAction::Checkout,
+            KeyAction::Uncommit,
+            KeyAction::Reword,
+            KeyAction::DropCommit,
+        ] {
+            let emitted = execute_action(&action, &state);
+            assert!(
+                matches!(emitted.as_deref(), Some([Action::Notice(m)]) if !m.is_empty()),
+                "expected Notice on precondition error for {action:?}, got {emitted:?}"
+            );
+        }
     }
 }

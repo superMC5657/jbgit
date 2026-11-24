@@ -28,5 +28,4 @@ prepend_keymap = [
 [diff]
 prepend_keymap = [
     { on = [ "<F4>" ], run = "zoom_diff" },
-    { on = [ "c" ], run = "cycle_diff_context" },
 ]
