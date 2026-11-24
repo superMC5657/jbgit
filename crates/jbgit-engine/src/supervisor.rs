@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 use std::path::PathBuf;
-use std::sync::atomic::AtomicU64;
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use jbgit_core::{
@@ -25,9 +25,9 @@ use crate::details::{
 };
 use crate::error::EngineError;
 use crate::pool::{
-    AheadBehindUpdate, Git2WorkerPool, StatusScanConfig, TaskPriority,
-    compute_ahead_behind_batch_sync, load_conflict_document_sync,
-    load_repo_snapshot_with_config_sync, load_stage_status_with_config_sync,
+    AheadBehindUpdate, Git2WorkerPool, SnapshotCommitCache, SnapshotLoadMode, StatusScanConfig,
+    TaskPriority, compute_ahead_behind_batch_sync, load_conflict_document_sync,
+    load_repo_snapshot_incremental_sync, load_stage_status_with_config_sync,
 };
 use crate::probe::RepoLocation;
 use crate::stage::{
@@ -39,8 +39,6 @@ use crate::stage::{
 };
 use crate::watcher::{MutationGuard, MutationPermit, RepoWatcher};
 
-const DEFAULT_MAX_COMMITS: usize = 50_000;
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BlameFailureKind {
     TooLarge { limit: usize },
@@ -51,6 +49,10 @@ pub enum BlameFailureKind {
 #[derive(Debug, Clone)]
 pub enum TaskRequest {
     LoadRepoSnapshot,
+    /// Explicit full repository reload bypassing the incremental commit cache.
+    LoadRepoSnapshotFull,
+    /// Progressive pagination: expands the commit limit by one page and reloads.
+    LoadMoreCommits,
     /// Commit metadata + (net) changed-file list for the selected commits.
     LoadCommitDetails {
         slot: RequestSlotId,
@@ -177,7 +179,9 @@ impl TaskRequest {
     /// Returns the consumer slot whose single-flight epoch governs this request, if any.
     pub const fn slot(&self) -> Option<RequestSlotId> {
         match self {
-            Self::LoadRepoSnapshot => Some(RequestSlotId::RepoSnapshot),
+            Self::LoadRepoSnapshot | Self::LoadRepoSnapshotFull | Self::LoadMoreCommits => {
+                Some(RequestSlotId::RepoSnapshot)
+            }
             Self::LoadCommitDetails { slot, .. } => Some(*slot),
             Self::LoadFileDiff { slot, .. } => Some(*slot),
             Self::LoadFileHistory { .. } => Some(RequestSlotId::FileHistoryList),
@@ -385,6 +389,16 @@ pub trait EngineBackend: Send + Sync {
             .expect("LoadRepoSnapshot always has a slot")
     }
 
+    fn request_repo_snapshot_full(&self) -> u64 {
+        self.dispatch(TaskRequest::LoadRepoSnapshotFull)
+            .expect("LoadRepoSnapshotFull always has a slot")
+    }
+
+    fn request_load_more_commits(&self) -> u64 {
+        self.dispatch(TaskRequest::LoadMoreCommits)
+            .expect("LoadMoreCommits always has a slot")
+    }
+
     fn request_stage_status(&self, include_ignored: bool) -> u64 {
         self.dispatch(TaskRequest::LoadStageStatus { include_ignored })
             .expect("LoadStageStatus always has a slot")
@@ -542,6 +556,7 @@ pub struct EngineHandle {
     location: RepoLocation,
     slots: SlotRegistry,
     git_info: Option<GitExecutableInfo>,
+    commit_page_size: usize,
     task_tx: UnboundedSender<ScheduledTask>,
     mutation_guard: Arc<MutationGuard>,
 }
@@ -553,6 +568,11 @@ impl EngineHandle {
 
     pub fn git_info(&self) -> Option<&GitExecutableInfo> {
         self.git_info.as_ref()
+    }
+
+    /// Configured commit page size (initial load and `LoadMoreCommits` increment).
+    pub fn commit_page_size(&self) -> usize {
+        self.commit_page_size
     }
 
     /// Whether a write operation (Git op, commit, stage mutation) is running.
@@ -621,6 +641,8 @@ struct SupervisorContext {
     event_tx: UnboundedSender<EngineEvent>,
     op_ids: Arc<AtomicU64>,
     sig_cache: Arc<Mutex<LruCache<Oid, CommitSignature>>>,
+    snapshot_cache: Arc<Mutex<Option<SnapshotCommitCache>>>,
+    commit_limit: Arc<AtomicUsize>,
     /// Credential bridge for network [`GitOp`]s (`None` = prompts fail fast).
     askpass: Option<Arc<AskpassEnv>>,
 }
@@ -705,6 +727,7 @@ impl EngineSupervisor {
             None
         };
 
+        let commit_page_size = scan_config.effective_commit_page_size();
         let ctx = SupervisorContext {
             location: location.clone(),
             scan_config,
@@ -715,6 +738,8 @@ impl EngineSupervisor {
             event_tx,
             op_ids: Arc::new(AtomicU64::new(1)),
             sig_cache: Arc::new(Mutex::new(LruCache::new(1024))),
+            snapshot_cache: Arc::new(Mutex::new(None)),
+            commit_limit: Arc::new(AtomicUsize::new(commit_page_size)),
             askpass: askpass.map(Arc::new),
         };
 
@@ -730,6 +755,7 @@ impl EngineSupervisor {
                 location,
                 slots,
                 git_info,
+                commit_page_size,
                 task_tx,
                 mutation_guard,
             },
@@ -742,7 +768,37 @@ fn handle_task_request(ctx: &SupervisorContext, task: ScheduledTask) {
     let ScheduledTask { req, token } = task;
     match req {
         TaskRequest::LoadRepoSnapshot => {
-            spawn_load_repo_snapshot(ctx, token.expect("RepoSnapshot token"));
+            let limit = ctx.commit_limit.load(Ordering::Relaxed);
+            spawn_load_repo_snapshot(
+                ctx,
+                token.expect("RepoSnapshot token"),
+                limit,
+                SnapshotLoadMode::Incremental,
+            );
+        }
+        TaskRequest::LoadRepoSnapshotFull => {
+            let limit = ctx.commit_limit.load(Ordering::Relaxed);
+            spawn_load_repo_snapshot(
+                ctx,
+                token.expect("RepoSnapshotFull token"),
+                limit,
+                SnapshotLoadMode::FullNoReuse,
+            );
+        }
+        TaskRequest::LoadMoreCommits => {
+            let page = ctx.scan_config.effective_commit_page_size();
+            let limit = ctx
+                .commit_limit
+                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |cur| {
+                    Some(cur.saturating_add(page))
+                })
+                .map_or(page, |prev| prev.saturating_add(page));
+            spawn_load_repo_snapshot(
+                ctx,
+                token.expect("LoadMoreCommits token"),
+                limit,
+                SnapshotLoadMode::Paginate,
+            );
         }
         TaskRequest::LoadCommitDetails { slot, key } => {
             spawn_load_commit_details(ctx, slot, key, token.expect("CommitDetails token"));
@@ -1220,29 +1276,48 @@ fn handle_task_request(ctx: &SupervisorContext, task: ScheduledTask) {
     }
 }
 
-fn spawn_load_repo_snapshot(ctx: &SupervisorContext, token: EpochToken) {
+fn spawn_load_repo_snapshot(
+    ctx: &SupervisorContext,
+    token: EpochToken,
+    max_commits: usize,
+    mode: SnapshotLoadMode,
+) {
     let pool = Arc::clone(&ctx.pool);
     let loc = ctx.location.clone();
     let scan_config = ctx.scan_config;
+    let snapshot_cache = Arc::clone(&ctx.snapshot_cache);
     let epoch = token.epoch();
     let tx = ctx.event_tx.clone();
     tokio::spawn(async move {
+        let prev_cache = if mode == SnapshotLoadMode::FullNoReuse {
+            None
+        } else {
+            snapshot_cache
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone()
+        };
         let loc_snap = loc.clone();
         let snap_res = pool
             .run_epoch(TaskPriority::Background, token.clone(), move |tok| {
-                let (snap, pending) = load_repo_snapshot_with_config_sync(
+                let (snap, pending, new_cache, _kind) = load_repo_snapshot_incremental_sync(
                     &loc_snap,
                     tok,
-                    DEFAULT_MAX_COMMITS,
+                    max_commits,
                     scan_config,
+                    prev_cache.as_ref(),
+                    mode,
                 )?;
-                Ok((Arc::new(snap), pending))
+                Ok((Arc::new(snap), pending, new_cache))
             })
             .await;
 
         match snap_res {
-            Ok((snapshot, pending)) => {
-                let _ = tx.send(EngineEvent::RepoSnapshotLoaded { snapshot, epoch });
+            Ok((snapshot, pending, new_cache)) => {
+                if !token.is_stale() {
+                    *snapshot_cache.lock().unwrap_or_else(|e| e.into_inner()) = Some(new_cache);
+                    let _ = tx.send(EngineEvent::RepoSnapshotLoaded { snapshot, epoch });
+                }
                 if !pending.is_empty() && !token.is_stale() {
                     let backfill_res = pool
                         .run_epoch(TaskPriority::Background, token, move |tok| {

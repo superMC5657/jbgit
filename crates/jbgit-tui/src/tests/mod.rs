@@ -7,6 +7,7 @@ mod file_history_and_changes_tests;
 mod footer_and_keymap_tests;
 mod graph_collapse_tests;
 mod log_highlighters_bek_reflog_tests;
+mod log_pagination_tests;
 mod log_selection_and_compare_tests;
 mod log_tests;
 mod merge_and_update_tests;
@@ -204,6 +205,8 @@ pub(super) fn make_snapshot(workdir: PathBuf, commits: Vec<CommitSummary>) -> Ar
         submodules: Vec::new(),
         has_lfs: false,
         is_shallow: false,
+        loaded_limit: 0,
+        has_more_commits: false,
     })
 }
 

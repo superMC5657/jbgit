@@ -1,8 +1,10 @@
+use std::collections::HashSet;
 use std::hint::black_box;
 
 use criterion::{Criterion, criterion_group, criterion_main};
-use jbgit_core::graph::{PermanentGraph, RawCommitNode};
+use jbgit_core::graph::{PermanentGraph, RawCommitNode, join_commits_indexed};
 use jbgit_core::{Oid, RefInfo, RefKind};
+use rustc_hash::FxHashMap;
 
 fn oid(n: u64) -> Oid {
     let mut bytes = [0u8; 20];
@@ -61,5 +63,39 @@ fn bench_permanent_graph_100k(c: &mut Criterion) {
     });
 }
 
-criterion_group!(benches, bench_permanent_graph_100k);
+fn bench_incremental_head_join_100k(c: &mut Criterion) {
+    let (commits, _, _) = build_100k_dag();
+    let oid_to_index: FxHashMap<Oid, usize> = commits
+        .iter()
+        .enumerate()
+        .map(|(i, c)| (c.oid, i))
+        .collect();
+    let prev_refs: HashSet<Oid> = [oid(0)].into_iter().collect();
+    let new_oid = oid(999_999);
+    let new_refs: HashSet<Oid> = [new_oid].into_iter().collect();
+    let first_block = vec![RawCommitNode {
+        oid: new_oid,
+        parents: vec![oid(0)],
+        timestamp: 200_000,
+    }];
+    c.bench_function("incremental_head_join_100k_single_commit", |b| {
+        b.iter(|| {
+            let res = join_commits_indexed(
+                black_box(&commits),
+                black_box(&oid_to_index),
+                black_box(&prev_refs),
+                black_box(&first_block),
+                black_box(&new_refs),
+            )
+            .expect("join succeeds");
+            black_box(res.commits.len())
+        });
+    });
+}
+
+criterion_group!(
+    benches,
+    bench_permanent_graph_100k,
+    bench_incremental_head_join_100k
+);
 criterion_main!(benches);

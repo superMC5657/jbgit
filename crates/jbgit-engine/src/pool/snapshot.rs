@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::path::Path;
 
 use git2::{BranchType, Repository, Sort};
@@ -7,6 +8,7 @@ use jbgit_core::{
     SpecialConflictInfo, SpecialConflictKind, WorktreeInfo, is_binary_bytes,
     is_reverse_conflict_state,
 };
+use rustc_hash::FxHashMap;
 
 use crate::error::EngineError;
 use crate::probe::{
@@ -20,6 +22,79 @@ use super::scan_config::{
 use super::worker_pool::with_thread_repo;
 
 const GITLINK_MODE: u32 = 0o160_000;
+/// Maximum number of new commits scanned by an incremental head revwalk before
+/// falling back to a full revwalk (guards against massive rewrites/fetches).
+pub const MAX_INCREMENTAL_NEW_COMMITS: usize = 2_000;
+
+/// Cached commit table + `oid -> index` lookup retained across snapshot refreshes
+/// for `VcsLogJoiner`-style incremental head joins and OID reuse during pagination.
+#[derive(Debug, Clone)]
+pub struct SnapshotCommitCache {
+    pub commits: Vec<CommitSummary>,
+    pub oid_to_index: FxHashMap<Oid, usize>,
+    pub tip_oids: HashSet<Oid>,
+    /// Requested pagination limit (`max_commits`) for this cached snapshot.
+    pub target_limit: usize,
+    pub has_more_commits: bool,
+    pub is_shallow: bool,
+    pub shallow_fingerprint: Option<Vec<u8>>,
+    pub load_commit_bodies: bool,
+}
+
+impl SnapshotCommitCache {
+    #[allow(clippy::too_many_arguments)]
+    fn build(
+        commits: Vec<CommitSummary>,
+        reuse_index: Option<FxHashMap<Oid, usize>>,
+        tip_oids: HashSet<Oid>,
+        target_limit: usize,
+        has_more_commits: bool,
+        is_shallow: bool,
+        shallow_fingerprint: Option<Vec<u8>>,
+        load_commit_bodies: bool,
+    ) -> Self {
+        let oid_to_index = reuse_index.unwrap_or_else(|| {
+            let mut map =
+                FxHashMap::with_capacity_and_hasher(commits.len(), Default::default());
+            for (idx, c) in commits.iter().enumerate() {
+                map.entry(c.oid).or_insert(idx);
+            }
+            map
+        });
+        Self {
+            commits,
+            oid_to_index,
+            tip_oids,
+            target_limit,
+            has_more_commits,
+            is_shallow,
+            shallow_fingerprint,
+            load_commit_bodies,
+        }
+    }
+}
+
+/// Strategy actually taken by [`load_repo_snapshot_incremental_sync`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SnapshotLoadKind {
+    Full,
+    IncrementalNoOp,
+    IncrementalJoined { added: usize, removed: usize },
+}
+
+/// Requested loading behavior for [`load_repo_snapshot_incremental_sync`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SnapshotLoadMode {
+    /// Attempt `VcsLogJoiner` incremental head refresh; fall back to full revwalk
+    /// (with cached OID reuse) when needed.
+    #[default]
+    Incremental,
+    /// Run a full revwalk up to `max_commits` while reusing cached `CommitSummary`
+    /// records for already-loaded OIDs (used by progressive pagination `LoadMore`).
+    Paginate,
+    /// Full revwalk from disk without reusing any cached commit data.
+    FullNoReuse,
+}
 
 fn resolve_rebase_onto_label(repo: &Repository, git_dir: &Path) -> Option<String> {
     let hex = ["rebase-merge", "rebase-apply"]
@@ -275,9 +350,42 @@ pub fn load_repo_snapshot_with_config_sync(
     max_commits: usize,
     scan_config: StatusScanConfig,
 ) -> Result<(RepoSnapshot, Vec<PendingAheadBehind>), EngineError> {
+    let (snap, pending, _, _) = load_repo_snapshot_incremental_sync(
+        location,
+        token,
+        max_commits,
+        scan_config,
+        None,
+        SnapshotLoadMode::FullNoReuse,
+    )?;
+    Ok((snap, pending))
+}
+
+/// Loads a [`RepoSnapshot`], preferring a `VcsLogJoiner`-style incremental head
+/// refresh against `previous` when `mode == SnapshotLoadMode::Incremental` and
+/// falling back safely to a full revwalk whenever history/boundary invariants
+/// require it.
+pub fn load_repo_snapshot_incremental_sync(
+    location: &RepoLocation,
+    token: &EpochToken,
+    max_commits: usize,
+    scan_config: StatusScanConfig,
+    previous: Option<&SnapshotCommitCache>,
+    mode: SnapshotLoadMode,
+) -> Result<
+    (
+        RepoSnapshot,
+        Vec<PendingAheadBehind>,
+        SnapshotCommitCache,
+        SnapshotLoadKind,
+    ),
+    EngineError,
+> {
     if token.is_stale() {
         return Err(EngineError::Cancelled);
     }
+
+    let max_commits = max_commits.max(1);
 
     with_thread_repo(&location.git_dir, |repo| {
         if token.is_stale() {
@@ -295,10 +403,42 @@ pub fn load_repo_snapshot_with_config_sync(
             return Err(EngineError::Cancelled);
         }
 
-        let commits = if probe.is_unborn_head {
-            Vec::new()
+        let shallow_fingerprint = probe
+            .is_shallow
+            .then(|| std::fs::read(location.common_dir.join("shallow")).ok())
+            .flatten();
+        let tip_oids = collect_tip_oids(probe.head_oid, &refs);
+
+        let (commits, has_more_commits, load_kind, reuse_index) = if probe.is_unborn_head {
+            (Vec::new(), false, SnapshotLoadKind::Full, None)
+        } else if mode == SnapshotLoadMode::Incremental
+            && let Some(prev) = previous
+            && let Some((commits, has_more, kind)) = try_incremental_commits_refresh(
+                repo,
+                token,
+                max_commits,
+                scan_config.load_commit_bodies,
+                probe.is_shallow,
+                &shallow_fingerprint,
+                &tip_oids,
+                prev,
+            )?
+        {
+            let idx = (kind == SnapshotLoadKind::IncrementalNoOp).then(|| prev.oid_to_index.clone());
+            (commits, has_more, kind, idx)
         } else {
-            collect_commits(repo, token, max_commits, scan_config.load_commit_bodies)?
+            let reuse = match mode {
+                SnapshotLoadMode::FullNoReuse => None,
+                SnapshotLoadMode::Incremental | SnapshotLoadMode::Paginate => previous,
+            };
+            let (commits, has_more) = collect_commits_with_reuse(
+                repo,
+                token,
+                max_commits,
+                scan_config.load_commit_bodies,
+                reuse,
+            )?;
+            (commits, has_more, SnapshotLoadKind::Full, None)
         };
 
         let (user_name, user_email) = match repo.config() {
@@ -344,6 +484,18 @@ pub fn load_repo_snapshot_with_config_sync(
         let worktrees = collect_worktrees(location, &probe);
         let submodules = collect_submodules(repo, location);
         let has_lfs = detect_has_lfs(repo, location);
+        let loaded_limit = max_commits.max(commits.len());
+
+        let cache = SnapshotCommitCache::build(
+            commits.clone(),
+            reuse_index,
+            tip_oids,
+            max_commits,
+            has_more_commits,
+            probe.is_shallow,
+            shallow_fingerprint,
+            scan_config.load_commit_bodies,
+        );
 
         Ok((
             RepoSnapshot {
@@ -367,10 +519,25 @@ pub fn load_repo_snapshot_with_config_sync(
                 submodules,
                 has_lfs,
                 is_shallow: probe.is_shallow,
+                loaded_limit,
+                has_more_commits,
             },
             pending_ahead_behind,
+            cache,
+            load_kind,
         ))
     })
+}
+
+fn collect_tip_oids(head_oid: Option<Oid>, refs: &[RefInfo]) -> HashSet<Oid> {
+    let mut tips = HashSet::with_capacity(refs.len() + usize::from(head_oid.is_some()));
+    if let Some(h) = head_oid {
+        tips.insert(h);
+    }
+    for r in refs {
+        tips.insert(r.target_oid);
+    }
+    tips
 }
 
 fn detect_has_lfs(repo: &Repository, location: &RepoLocation) -> bool {
@@ -686,12 +853,125 @@ fn collect_refs(
     Ok((out, deferred))
 }
 
-fn collect_commits(
+#[allow(clippy::too_many_arguments)]
+fn try_incremental_commits_refresh(
     repo: &Repository,
     token: &EpochToken,
     max_commits: usize,
     load_commit_bodies: bool,
-) -> Result<Vec<CommitSummary>, EngineError> {
+    is_shallow: bool,
+    shallow_fingerprint: &Option<Vec<u8>>,
+    new_tip_oids: &HashSet<Oid>,
+    prev: &SnapshotCommitCache,
+) -> Result<Option<(Vec<CommitSummary>, bool, SnapshotLoadKind)>, EngineError> {
+    if prev.commits.is_empty()
+        || max_commits != prev.target_limit
+        || load_commit_bodies != prev.load_commit_bodies
+        || is_shallow != prev.is_shallow
+        || *shallow_fingerprint != prev.shallow_fingerprint
+    {
+        return Ok(None);
+    }
+
+    if *new_tip_oids == prev.tip_oids {
+        return Ok(Some((
+            prev.commits.clone(),
+            prev.has_more_commits,
+            SnapshotLoadKind::IncrementalNoOp,
+        )));
+    }
+
+    // Verify every old tip still exists in the ODB so `revwalk.hide` is exact.
+    let mut hide_oids = Vec::with_capacity(prev.tip_oids.len());
+    for &old_oid in &prev.tip_oids {
+        let Ok(raw) = git2::Oid::from_bytes(old_oid.as_bytes()) else {
+            return Ok(None);
+        };
+        if repo.find_commit(raw).is_err() {
+            return Ok(None);
+        }
+        hide_oids.push(raw);
+    }
+
+    let mut unseen_new_tips = Vec::new();
+    for &tip in new_tip_oids {
+        if !prev.tip_oids.contains(&tip) && !prev.oid_to_index.contains_key(&tip) {
+            let Ok(raw) = git2::Oid::from_bytes(tip.as_bytes()) else {
+                return Ok(None);
+            };
+            unseen_new_tips.push(raw);
+        }
+    }
+
+    let first_block = if unseen_new_tips.is_empty() {
+        Vec::new()
+    } else {
+        let mut revwalk = repo.revwalk()?;
+        revwalk.set_sorting(Sort::TOPOLOGICAL | Sort::TIME)?;
+        for raw in unseen_new_tips {
+            if revwalk.push(raw).is_err() {
+                return Ok(None);
+            }
+        }
+        for raw in hide_oids {
+            if revwalk.hide(raw).is_err() {
+                return Ok(None);
+            }
+        }
+
+        let mut block = Vec::new();
+        for (idx, oid_res) in revwalk.enumerate() {
+            if idx % 256 == 0 && token.is_stale() {
+                return Err(EngineError::Cancelled);
+            }
+            let Ok(raw_oid) = oid_res else {
+                continue;
+            };
+            if block.len() >= MAX_INCREMENTAL_NEW_COMMITS {
+                return Ok(None);
+            }
+            let Ok(commit) = repo.find_commit(raw_oid) else {
+                continue;
+            };
+            block.push(commit_to_summary(&commit, load_commit_bodies));
+        }
+        block
+    };
+
+    let joined = match jbgit_core::graph::join_commits_indexed(
+        &prev.commits,
+        &prev.oid_to_index,
+        &prev.tip_oids,
+        &first_block,
+        new_tip_oids,
+    ) {
+        Ok(res) => res,
+        Err(_) => return Ok(None),
+    };
+
+    // When paginated and pruning shrank below the page target, fall back to a
+    // full revwalk so the page stays filled up to `max_commits`.
+    if prev.has_more_commits && joined.removed > 0 && joined.commits.len() < max_commits {
+        return Ok(None);
+    }
+
+    Ok(Some((
+        joined.commits,
+        prev.has_more_commits,
+        SnapshotLoadKind::IncrementalJoined {
+            added: joined.added,
+            removed: joined.removed,
+        },
+    )))
+}
+
+fn collect_commits_with_reuse(
+    repo: &Repository,
+    token: &EpochToken,
+    max_commits: usize,
+    load_commit_bodies: bool,
+    reuse: Option<&SnapshotCommitCache>,
+) -> Result<(Vec<CommitSummary>, bool), EngineError> {
     let mut revwalk = repo.revwalk()?;
     revwalk.set_sorting(Sort::TOPOLOGICAL | Sort::TIME)?;
 
@@ -700,24 +980,38 @@ fn collect_commits(
     let _ = revwalk.push_glob("refs/remotes/*");
     let _ = revwalk.push_glob("refs/tags/*");
 
-    let mut commits = Vec::with_capacity(max_commits.min(1024));
+    let reuse_cache = reuse.filter(|c| c.load_commit_bodies == load_commit_bodies);
+    let mut commits = Vec::with_capacity(max_commits.min(4096));
+    let mut has_more = false;
     for (idx, oid_res) in revwalk.enumerate() {
         if idx % 256 == 0 && token.is_stale() {
             return Err(EngineError::Cancelled);
         }
-        if idx >= max_commits {
-            break;
-        }
         let Ok(raw_oid) = oid_res else {
             continue;
         };
+        if commits.len() >= max_commits {
+            if repo.find_commit(raw_oid).is_ok() {
+                has_more = true;
+                break;
+            }
+            continue;
+        }
+        let core_oid = to_core_oid(raw_oid);
+        if let Some(cache) = reuse_cache
+            && let Some(&cached_idx) = cache.oid_to_index.get(&core_oid)
+            && let Some(cached) = cache.commits.get(cached_idx)
+        {
+            commits.push(cached.clone());
+            continue;
+        }
         let Ok(commit) = repo.find_commit(raw_oid) else {
             continue;
         };
         commits.push(commit_to_summary(&commit, load_commit_bodies));
     }
 
-    Ok(commits)
+    Ok((commits, has_more))
 }
 
 fn commit_to_summary(commit: &git2::Commit<'_>, load_body: bool) -> CommitSummary {

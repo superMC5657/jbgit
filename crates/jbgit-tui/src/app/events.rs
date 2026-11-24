@@ -219,6 +219,7 @@ impl AppState {
                     return effects;
                 }
                 self.loading_snapshot = false;
+                self.loading_more_commits = false;
                 let prev_head = self.repo_snapshot.as_ref().and_then(|s| s.head_oid);
                 let head_changed = prev_head.is_some() && prev_head != snapshot.head_oid;
                 if self.log.branches.settings_path.is_none()
@@ -775,6 +776,7 @@ impl AppState {
             }
             EngineEvent::Error(msg) => {
                 self.loading_snapshot = false;
+                self.loading_more_commits = false;
                 self.log.details.diff.requested = None;
                 self.stash.on_error();
                 self.stage_workbench.on_engine_error();

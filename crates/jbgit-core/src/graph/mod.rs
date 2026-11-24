@@ -1,5 +1,6 @@
 pub mod collapse;
 pub mod edges_in_row;
+pub mod joiner;
 pub mod linear_bek;
 pub mod permanent;
 pub mod print_elements;
@@ -13,6 +14,7 @@ pub use edges_in_row::{
     BLOCK_SIZE, CACHE_SIZE, EdgesInRowCache, EdgesInRowGenerator, WALK_SIZE,
 };
 pub use fixedbitset::FixedBitSet;
+pub use joiner::{JoinCommit, JoinError, JoinResult, join_commits, join_commits_indexed};
 pub use linear_bek::{
     FoldedBekMerge, LINEAR_BEK_MAGIC_SET_SIZE, LINEAR_BEK_MAX_BLOCK_SIZE, LinearBekState,
     apply_linear_bek,

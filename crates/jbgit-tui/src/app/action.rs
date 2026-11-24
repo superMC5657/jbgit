@@ -43,6 +43,8 @@ pub enum Action {
     ToggleCompactRefs,
     ToggleTagNames,
     RefreshAll,
+    /// Load the next page of Log commits beyond the current `loaded_limit`.
+    LoadMoreCommits,
     OpenPopup {
         kind: PopupKind,
         initial_query: String,

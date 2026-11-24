@@ -60,6 +60,12 @@ pub fn execute_effects_with_host(
                                 .note_dispatched(RequestSlotId::StageStatus, stage_e);
                         }
                     }
+                    Effect::LoadMoreCommits => {
+                        let repo_e = handle.request_load_more_commits();
+                        state
+                            .request_slots
+                            .note_dispatched(RequestSlotId::RepoSnapshot, repo_e);
+                    }
                     Effect::RequestCommitDetails { slot, key } => {
                         let epoch = handle.request_commit_details(slot, key);
                         state.request_slots.note_dispatched(slot, epoch);

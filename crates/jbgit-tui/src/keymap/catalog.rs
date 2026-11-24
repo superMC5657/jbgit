@@ -62,13 +62,14 @@ const COMMIT_EDITOR_ACTIONS: [KeyAction; 5] = [
     KeyAction::CommitHistory,
 ];
 
-const ADVANCED_TOOL_ACTIONS: [(&KeyAction, &str); 7] = [
+const ADVANCED_TOOL_ACTIONS: [(&KeyAction, &str); 8] = [
     (&KeyAction::CloneRepository, "—"),
     (&KeyAction::Palette, "—"),
     (&KeyAction::ToggleGlyphMode, "F12"),
     (&KeyAction::CycleGraphRenderer, "F8"),
     (&KeyAction::UpdateSubmodules, "—"),
     (&KeyAction::Unshallow, "—"),
+    (&KeyAction::LogLoadMore, "—"),
     (&KeyAction::GitStatusProbe, "Console: p"),
 ];
 
@@ -386,6 +387,14 @@ pub fn is_action_applicable(run: &KeyAction, state: &AppState) -> bool {
             .repo_snapshot
             .as_ref()
             .is_some_and(|s| s.is_shallow && s.default_remote().is_some()),
+        KeyAction::LogLoadMore => {
+            state.active_tab == WorkspaceTab::Log
+                && !state.loading_more_commits
+                && state
+                    .repo_snapshot
+                    .as_ref()
+                    .is_some_and(|s| s.has_more_commits)
+        }
         KeyAction::GitStatusProbe => {
             state.active_tab == WorkspaceTab::Console
                 && state.focused_pane == PaneId::ConsoleCommandList
@@ -630,6 +639,7 @@ pub fn execute_action(run: &KeyAction, state: &AppState) -> Option<Vec<Action>> 
             Some(vec![Action::RunGitOp(GitOp::SubmoduleUpdate { path: None })])
         }
         KeyAction::Unshallow => Some(vec![Action::PromptUnshallow]),
+        KeyAction::LogLoadMore => Some(vec![Action::LoadMoreCommits]),
         KeyAction::Worktrees => Some(if !crate::worktrees_view::worktrees_supported(state) {
             vec![crate::worktrees_view::unsupported_notice(state)]
         } else if state.repo_snapshot.is_some() {

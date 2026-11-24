@@ -379,6 +379,16 @@ fn route_pane_fallback_key(key: KeyEvent, state: &AppState) -> Vec<Action> {
             KeyCode::Right => vec![Action::GoToParentSmart],
             KeyCode::Left => vec![Action::GoToChild],
             KeyCode::Enter
+                if state.log.graph.is_cursor_on_load_more()
+                    || (state.log.graph.visible_count() == 0
+                        && state
+                            .repo_snapshot
+                            .as_ref()
+                            .is_some_and(|s| s.has_more_commits)) =>
+            {
+                vec![Action::LoadMoreCommits]
+            }
+            KeyCode::Enter
                 if state
                     .log
                     .graph

@@ -136,6 +136,19 @@ impl AppState {
             Action::ScrollCommitMessageModal(delta) => {
                 self.scroll_pane(ScrollPane::CommitMessageModal, delta);
             }
+            Action::LoadMoreCommits => {
+                let has_more = self
+                    .repo_snapshot
+                    .as_ref()
+                    .is_some_and(|s| s.has_more_commits);
+                if !has_more {
+                    self.status_notice = Some(self.i18n.t("toast.log_no_more_commits").to_string());
+                } else if !self.loading_more_commits {
+                    self.loading_more_commits = true;
+                    self.loading_snapshot = true;
+                    effects.push(Effect::LoadMoreCommits);
+                }
+            }
             Action::OpenPopup {
                 kind,
                 initial_query,

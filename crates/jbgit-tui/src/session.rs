@@ -728,6 +728,7 @@ impl RepoSession {
                 if let Some(err) = state.git_info_error.clone() {
                     state.status_notice = Some(err);
                 }
+                state.commit_page_size = handle.commit_page_size();
                 let repo = Self {
                     handle: Some(handle),
                     events: Some(rx),

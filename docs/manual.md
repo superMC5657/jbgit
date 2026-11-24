@@ -575,7 +575,7 @@ prepend_keymap = [
 | 作用域 | 可用 `run` 动作标识符 |
 | :--- | :--- |
 | `global` | `quit`, `help`, `context_menu`, `refresh`, `tab_commit`, `tab_log`, `tab_branches`, `tab_stash`, `tab_console`, `focus_next`, `focus_prev`, `toggle_branches_popup`, `toggle_branches_pane`, `git_fetch`, `git_pull`, `git_push`, `update_project`, `configure_remotes`, `switch_repository`, `clone_repository`, `worktrees`, `resolve_conflicts`, `update_submodules`, `unshallow`, `goto_revision`, `palette`, `toggle_glyph_mode`, `cycle_graph_renderer`, `git_status_probe`, `noop` |
-| `log` | `cursor_down`, `cursor_up`, `goto_top`, `goto_bottom`, `page_down_half`, `page_up_half`, `goto_revision`, `focus_filter`, `toggle_branches_pane`, `toggle_log_row_selection`, `compare_or_diff`, `swap_compare_direction`, `toggle_only_affected_changes`, `zoom_diff`, `copy_hash`, `copy_commit_message`, `copy_row_summary`, `checkout`, `new_branch`, `uncommit`, `reword`, `drop_commit`, `choose_parent`, `toggle_group`, `file_history`, `annotate`, `collapse_linear_branch`, `expand_linear_branch`, `collapse_all_linear_branches`, `expand_all_linear_branches`, `browse_revision`, `toggle_no_merges`, `toggle_linear_bek`, `log_speed_search`, `maximize_commit_message`, `open_reflog` |
+| `log` | `cursor_down`, `cursor_up`, `goto_top`, `goto_bottom`, `page_down_half`, `page_up_half`, `goto_revision`, `focus_filter`, `toggle_branches_pane`, `toggle_log_row_selection`, `compare_or_diff`, `swap_compare_direction`, `toggle_only_affected_changes`, `zoom_diff`, `copy_hash`, `copy_commit_message`, `copy_row_summary`, `checkout`, `new_branch`, `uncommit`, `reword`, `drop_commit`, `choose_parent`, `toggle_group`, `file_history`, `annotate`, `collapse_linear_branch`, `expand_linear_branch`, `collapse_all_linear_branches`, `expand_all_linear_branches`, `browse_revision`, `toggle_no_merges`, `toggle_linear_bek`, `log_speed_search`, `maximize_commit_message`, `open_reflog`, `log_load_more` |
 | `branch` | `branch_search`, `toggle_favorite`, `checkout`, `new_branch`, `rename_branch`, `delete_branch`, `navigate_branch`, `open_reflog` |
 | `commit` | `cursor_down`, `cursor_up`, `goto_top`, `goto_bottom`, `toggle_stage`, `stage_selection`, `unstage_selection`, `focus_commit_msg`, `commit`, `commit_and_push`, `toggle_amend`, `toggle_signoff`, `commit_history`, `select_all`, `discard_changes`, `toggle_group`, `edit_file`, `file_history`, `annotate`, `apply_patch`, `apply_patch_clipboard` |
 | `diff` | `cursor_down`, `cursor_up`, `goto_top`, `goto_bottom`, `prev_hunk`, `next_hunk`, `prev_file`, `next_file`, `toggle_side_by_side`, `cycle_diff_context`, `cycle_diff_whitespace`, `toggle_diff_soft_wrap`, `diff_scroll_left`, `diff_scroll_right`, `diff_search`, `diff_search_next`, `diff_search_prev`, `cycle_diff_dock`, `zoom_diff`, `swap_compare_direction`, `toggle_stage`, `stage_selection`, `unstage_selection`, `toggle_visual`, `rollback_selection`, `undo_rollback`, `switch_diff_side`, `three_way_inspector` |
@@ -780,6 +780,10 @@ jbgit 同一时间只绑定**一个活动仓库**（多根同步模型不做，�
 4. **浅克隆检测与完整拉取 (`Unshallow`)**
    - 当仓库为浅克隆（`Repository::is_shallow`）时，Log 副标题显示 `· shallow`，提交列表底部出现浅克隆边界标记与可点击的 `[Unshallow…]` 按钮；分支速查浮窗、Log 右键菜单与 `unshallow` 动作（命令面板）同样可发起确认。
    - 确认后执行 `git fetch --unshallow --progress <remote>`，控制台原地刷新 `\r` 进度输出。
+
+5. **增量 Log 头部刷新与超 50k 提交渐进分页 (`LogLoadMore`)**
+   - 常规提交、fetch 新增提交、分支快进、新建 tag、删除分支或小范围 reset/amend 触发 `RefsAndGraph` 刷新时，引擎对比新旧 ref tips，使用 `git2::Revwalk` 以旧 tips 为 `hide` 边界仅扫描新增差集，再通过 `VcsLogJoiner` 风格算法按拓扑序拼接到缓存的提交表头部并裁剪不可达孤立提交；若发生大规模历史改写、孤立分支或浅克隆加深/`unshallow`，则自动安全回退到全量加载。
+   - 大仓库默认首屏加载 50,000 条提交，当仓库存在更早历史（`has_more_commits == true`）时，Log 副标题显示 `50000+`，提交表底端渲染可鼠标点击或用方向键/`G` 移入后按 `Enter` 触发的 `[Load More (+50,000 commits)…]` 虚拟尾行（也可通过 Log 右键菜单或命令目录动作 `log_load_more` 触发）；后台异步分页加载完成后无损保留当前滚动位置与选中提交 `Oid`。
 
 ---
 

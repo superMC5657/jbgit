@@ -1318,7 +1318,7 @@ impl LogWorkbench {
                 self.graph.scroll_by(if *down { step } else { -step }, false);
             }
             Action::LogEdge { bottom } => {
-                let len = self.graph.visible_count();
+                let len = self.graph.navigable_row_count();
                 self.graph.jump_to(
                     ctx.snap,
                     if *bottom { len.saturating_sub(1) } else { 0 },

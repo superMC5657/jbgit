@@ -629,6 +629,9 @@ struct CapturedSelection {
     anchor_oid: Option<Oid>,
     selected_oids: Vec<Oid>,
     mark_mode: bool,
+    was_on_load_more: bool,
+    prev_visible_count: usize,
+    prev_scroll_offset: usize,
 }
 
 /// Log-tab graph projection cache, viewport scroll, multi-selection and
@@ -717,11 +720,24 @@ impl LogGraphState {
             return;
         };
         let len = cached.visible_count();
-        match captured.cursor_oid.and_then(|oid| cached.row_of_oid(&oid)) {
-            Some(row) => self.selected_idx = row,
-            None => {
-                self.selected_idx = 0;
-                self.scroll_offset = 0;
+        let nav_len = self.navigable_row_count();
+        if captured.was_on_load_more && len > 0 {
+            self.selected_idx = if len > captured.prev_visible_count {
+                captured.prev_visible_count.min(len - 1)
+            } else {
+                nav_len.saturating_sub(1)
+            };
+            self.scroll_offset = captured.prev_scroll_offset;
+        } else {
+            match captured.cursor_oid.and_then(|oid| cached.row_of_oid(&oid)) {
+                Some(row) => {
+                    self.selected_idx = row;
+                    self.scroll_offset = captured.prev_scroll_offset;
+                }
+                None => {
+                    self.selected_idx = 0;
+                    self.scroll_offset = 0;
+                }
             }
         }
         self.anchor = captured.anchor_oid.and_then(|oid| cached.row_of_oid(&oid));
@@ -753,7 +769,7 @@ impl LogGraphState {
         } else {
             self.mark_mode = captured.mark_mode;
         }
-        self.adjust_scroll(len, false);
+        self.adjust_scroll(nav_len, false);
     }
 
     fn capture_selection_oids(&self) -> CapturedSelection {
@@ -763,9 +779,14 @@ impl LogGraphState {
                 anchor_oid: None,
                 selected_oids: Vec::new(),
                 mark_mode: false,
+                was_on_load_more: false,
+                prev_visible_count: 0,
+                prev_scroll_offset: self.scroll_offset,
             };
         };
         let snap = &cached.snapshot;
+        let was_on_load_more = self.is_cursor_on_load_more();
+        let prev_visible_count = cached.visible_count();
         let cursor_oid = cached
             .commit_at_visible_row(snap, self.selected_idx)
             .map(|c| c.oid);
@@ -782,6 +803,9 @@ impl LogGraphState {
             anchor_oid,
             selected_oids,
             mark_mode: self.mark_mode,
+            was_on_load_more,
+            prev_visible_count,
+            prev_scroll_offset: self.scroll_offset,
         }
     }
 
@@ -970,6 +994,29 @@ impl LogGraphState {
             .map_or(0, CachedLogGraph::visible_count)
     }
 
+    /// True when the Log table renders a navigable virtual `[Load More]` tail row
+    /// immediately below the last visible commit row.
+    pub fn has_load_more_row(&self) -> bool {
+        self.cached
+            .as_ref()
+            .is_some_and(|c| c.snapshot.has_more_commits && c.visible_count() > 0)
+    }
+
+    /// True when `row` refers to the virtual `[Load More]` tail row.
+    pub fn is_load_more_row(&self, row: usize) -> bool {
+        self.has_load_more_row() && row == self.visible_count()
+    }
+
+    /// True when the Log table cursor currently sits on the virtual `[Load More]` row.
+    pub fn is_cursor_on_load_more(&self) -> bool {
+        self.is_load_more_row(self.selected_idx)
+    }
+
+    /// Total keyboard-navigable rows (real visible commits + optional virtual tail row).
+    pub fn navigable_row_count(&self) -> usize {
+        self.visible_count() + usize::from(self.has_load_more_row())
+    }
+
     pub fn commit_at<'a>(
         &self,
         repo_snapshot: Option<&'a Arc<RepoSnapshot>>,
@@ -1004,7 +1051,11 @@ impl LogGraphState {
             return Vec::new();
         }
         if self.selected_rows.is_empty() {
-            vec![self.selected_idx.min(len - 1)]
+            if self.is_cursor_on_load_more() {
+                Vec::new()
+            } else {
+                vec![self.selected_idx.min(len - 1)]
+            }
         } else {
             self.selected_rows
                 .iter()
@@ -1019,7 +1070,7 @@ impl LogGraphState {
         if len == 0 {
             0
         } else if self.selected_rows.is_empty() {
-            1
+            usize::from(!self.is_cursor_on_load_more())
         } else {
             self.selected_rows.iter().filter(|&&r| r < len).count()
         }
@@ -1040,7 +1091,7 @@ impl LogGraphState {
             return false;
         }
         if self.selected_rows.is_empty() {
-            row == self.selected_idx
+            !self.is_cursor_on_load_more() && row == self.selected_idx
         } else {
             self.selected_rows.contains(&row)
         }
@@ -1062,15 +1113,15 @@ impl LogGraphState {
     }
 
     pub fn select_row(&mut self, idx: usize) {
-        let len = self.visible_count();
-        if len == 0 {
+        let nav_len = self.navigable_row_count();
+        if nav_len == 0 {
             return;
         }
         self.selected_rows.clear();
         self.anchor = None;
         self.mark_mode = false;
-        self.selected_idx = idx.min(len - 1);
-        self.adjust_scroll(len, false);
+        self.selected_idx = idx.min(nav_len - 1);
+        self.adjust_scroll(nav_len, false);
     }
 
     /// Extends a contiguous range selection from `anchor` to `idx`, replacing prior selection.
@@ -1153,16 +1204,25 @@ impl LogGraphState {
     }
 
     pub fn scroll_by(&mut self, delta: isize, extend: bool) {
-        let len = self.visible_count();
-        if len == 0 {
+        if extend {
+            let len = self.visible_count();
+            if len == 0 {
+                return;
+            }
+            let cur = self.selected_idx.min(len - 1);
+            let next = (cur as isize + delta).clamp(0, (len - 1) as isize) as usize;
+            self.extend_selection_to(next);
             return;
         }
-        let next = (self.selected_idx as isize + delta).clamp(0, (len - 1) as isize) as usize;
-        if extend {
-            self.extend_selection_to(next);
-        } else if self.mark_mode {
-            self.selected_idx = next;
-            self.adjust_scroll(len, false);
+        let nav_len = self.navigable_row_count();
+        if nav_len == 0 {
+            return;
+        }
+        let next = (self.selected_idx as isize + delta).clamp(0, (nav_len - 1) as isize) as usize;
+        if self.mark_mode {
+            let len = self.visible_count();
+            self.selected_idx = next.min(len.saturating_sub(1));
+            self.adjust_scroll(nav_len, false);
         } else {
             self.select_row(next);
         }
@@ -1181,11 +1241,11 @@ impl LogGraphState {
 
     /// Navigation jump (records history, optional centering).
     pub fn jump_to(&mut self, repo_snapshot: Option<&Arc<RepoSnapshot>>, row: usize, center: bool) {
-        let len = self.visible_count();
-        if len == 0 {
+        let nav_len = self.navigable_row_count();
+        if nav_len == 0 {
             return;
         }
-        let target = row.min(len - 1);
+        let target = row.min(nav_len - 1);
         if target != self.selected_idx {
             self.push_history(repo_snapshot);
             self.forward_history.clear();
@@ -1194,7 +1254,7 @@ impl LogGraphState {
         self.anchor = None;
         self.mark_mode = false;
         self.selected_idx = target;
-        self.adjust_scroll(len, center);
+        self.adjust_scroll(nav_len, center);
     }
 
     /// Visible row of `oid`, first expanding a collapsed segment that hides it.
@@ -1477,20 +1537,19 @@ impl LogGraphState {
 
     pub fn adjust_scroll(&mut self, total: usize, center: bool) {
         let vh = self.last_viewport_h.max(1);
+        let total = total.max(self.navigable_row_count());
+        let mut vp = crate::app::ScrollViewport::new();
+        vp.set_offset(self.scroll_offset);
         if total == 0 {
             self.scroll_offset = 0;
             return;
         }
-        let max_off = total.saturating_sub(vh);
         if center {
-            self.scroll_offset = self.selected_idx.saturating_sub(vh / 2).min(max_off);
+            vp.bind_geometry(total, vh);
+            vp.set_offset(self.selected_idx.saturating_sub(vh / 2));
         } else {
-            if self.selected_idx < self.scroll_offset {
-                self.scroll_offset = self.selected_idx;
-            } else if self.selected_idx >= self.scroll_offset.saturating_add(vh) {
-                self.scroll_offset = self.selected_idx + 1 - vh;
-            }
-            self.scroll_offset = self.scroll_offset.min(max_off);
+            vp.ensure_visible(self.selected_idx, total, vh);
         }
+        self.scroll_offset = vp.offset();
     }
 }

@@ -62,6 +62,8 @@ pub struct AppState {
     pub(crate) tree_syntax: RequestSlot<jbgit_core::TreeBlobKey>,
     pub(crate) next_cli_id: u64,
     pub(crate) loading_snapshot: bool,
+    pub(crate) loading_more_commits: bool,
+    pub(crate) commit_page_size: usize,
     pub(crate) async_graph_enabled: bool,
     pub(crate) status_notice: Option<String>,
     pub(crate) spinner_frame: usize,
@@ -206,6 +208,8 @@ impl AppState {
             console: ConsoleWorkbench::new(),
             next_cli_id: 1,
             loading_snapshot: false,
+            loading_more_commits: false,
+            commit_page_size: jbgit_engine::DEFAULT_COMMIT_PAGE_SIZE,
             async_graph_enabled: false,
             status_notice: None,
             spinner_frame: 0,
@@ -629,6 +633,7 @@ impl AppState {
 
     pub fn has_active_tasks(&self) -> bool {
         self.loading_snapshot
+            || self.loading_more_commits
             || self.log.graph.rebuild_in_progress
             || self.stage_workbench.commit_in_progress()
             || self.git_ops_running > 0

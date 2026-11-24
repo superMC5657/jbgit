@@ -150,7 +150,11 @@ pub fn render_log_tab(
             } else {
                 let visible = state.log.graph.visible_count();
                 let sel_n = state.log.graph.selection_count();
-                let total_s = s.commits.len().to_string();
+                let total_s = if s.has_more_commits {
+                    format!("{}+", s.commits.len())
+                } else {
+                    s.commits.len().to_string()
+                };
                 let vis_s = visible.to_string();
                 let mut out = if visible == s.commits.len() {
                     state.i18n.t_fmt("view.log.commits_count", &[("count", &total_s)])
@@ -568,8 +572,18 @@ fn render_commits_table(
         };
         frame.render_widget(
             Paragraph::new(Span::styled(msg, Style::default().fg(ctx.theme.fg_muted))),
-            area,
+            Rect::new(area.x, area.y, area.width, 1),
         );
+        if snap.has_more_commits && area.height >= 2 {
+            render_load_more_row(
+                frame,
+                Rect::new(area.x, area.y.saturating_add(1), area.width, 1),
+                state,
+                ctx,
+                false,
+                ctx.focused_pane == PaneId::LogCommitTable,
+            );
+        }
         return;
     }
 
@@ -588,13 +602,19 @@ fn render_commits_table(
     );
     let visible_h = table_area.height as usize;
     let total = cached.visible_count();
-    let selected = state.log.graph.selected_idx.min(total.saturating_sub(1));
-    let commit_h = if snap.is_shallow && visible_h >= 2 && selected + 1 == total {
+    let has_load_more = snap.has_more_commits && total > 0;
+    let nav_total = total + usize::from(has_load_more);
+    let selected = state
+        .log
+        .graph
+        .selected_idx
+        .min(nav_total.saturating_sub(1));
+    let commit_h = if !has_load_more && snap.is_shallow && visible_h >= 2 && selected + 1 == total {
         visible_h - 1
     } else {
         visible_h
     };
-    let max_off = total.saturating_sub(commit_h);
+    let max_off = nav_total.saturating_sub(commit_h);
     let mut offset = state.log.graph.scroll_offset.min(max_off);
     if selected < offset {
         offset = selected;
@@ -603,7 +623,7 @@ fn render_commits_table(
     }
 
     let end = (offset + commit_h).min(total);
-    let rows_len = end - offset;
+    let rows_len = end.saturating_sub(offset);
 
     let focused = ctx.focused_pane == PaneId::LogCommitTable;
     let presentation = &state.log.presentation;
@@ -1000,7 +1020,18 @@ fn render_commits_table(
         }
     }
 
-    if snap.is_shallow && end == total && rows_len < visible_h {
+    if has_load_more && total >= offset && total < offset + visible_h {
+        let load_more_y = table_area.y.saturating_add((total - offset) as u16);
+        let is_cursor = state.log.graph.selected_idx == total;
+        render_load_more_row(
+            frame,
+            Rect::new(table_area.x, load_more_y, table_area.width, 1),
+            state,
+            ctx,
+            is_cursor,
+            focused,
+        );
+    } else if snap.is_shallow && end == total && rows_len < visible_h {
         let boundary_y = table_area.y.saturating_add(rows_len as u16);
         let label = state.i18n.t("view.log.shallow_boundary");
         let btn = format!(" {} ", state.i18n.t("view.log.unshallow_btn"));
@@ -1108,6 +1139,77 @@ fn hovered_expanded_segment(
         } => cached.expanded_segment_at_edge(*up_row, *down_row),
         _ => None,
     }
+}
+
+fn format_thousands(n: usize) -> String {
+    let digits = n.to_string();
+    let len = digits.len();
+    let mut out = String::with_capacity(len + len / 3);
+    for (idx, ch) in digits.chars().enumerate() {
+        if idx > 0 && (len - idx).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(ch);
+    }
+    out
+}
+
+fn render_load_more_row(
+    frame: &mut Frame<'_>,
+    row_rect: Rect,
+    state: &AppState,
+    ctx: &mut RenderContext<'_>,
+    is_cursor: bool,
+    focused: bool,
+) {
+    if row_rect.width == 0 || row_rect.height == 0 {
+        return;
+    }
+    let is_hovered = matches!(ctx.hover_target, Some(HitTarget::LogLoadMore));
+    let bg = row_background(is_cursor, focused, is_hovered, ctx.theme.bg_canvas, ctx.theme);
+    let count_s = format_thousands(state.commit_page_size.max(1));
+    let btn_label = if state.loading_more_commits {
+        state.i18n.t("view.log.loading_more_btn").to_string()
+    } else {
+        state
+            .i18n
+            .t_fmt("view.log.load_more_btn", &[("count", &count_s)])
+    };
+    let btn = format!("[{btn_label}]");
+    let line_w = row_rect.width as usize;
+    let display_btn = super::truncate_to_width(&btn, line_w);
+    let pill_fg = if is_cursor {
+        ctx.theme.fg_bright
+    } else {
+        ctx.theme.fg_accent_link
+    };
+    let muted = Style::default().fg(ctx.theme.fg_muted).bg(bg);
+    let btn_style = Style::default()
+        .fg(pill_fg)
+        .bg(bg)
+        .add_modifier(Modifier::BOLD);
+
+    let prefix = if line_w >= display_btn.width() + 8 {
+        "─── "
+    } else {
+        ""
+    };
+    let suffix = if line_w >= display_btn.width() + 8 {
+        " ───"
+    } else {
+        ""
+    };
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(prefix, muted),
+            Span::styled(display_btn, btn_style),
+            Span::styled(suffix, muted),
+        ]))
+        .style(Style::default().bg(bg)),
+        row_rect,
+    );
+    ctx.hit_registry
+        .register(row_rect, 2, HitTarget::LogLoadMore);
 }
 
 fn is_element_highlighted(

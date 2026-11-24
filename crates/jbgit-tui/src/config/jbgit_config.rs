@@ -300,6 +300,7 @@ impl PerformanceSection {
             worktree_renames: self.worktree_renames.to_engine(),
             recurse_untracked_dirs: self.recurse_untracked_dirs.to_engine(),
             load_commit_bodies: self.load_commit_bodies,
+            commit_page_size: jbgit_engine::DEFAULT_COMMIT_PAGE_SIZE,
         }
     }
 }

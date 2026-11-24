@@ -20,7 +20,9 @@ pub use details::{load_cherry_picked_sync, load_reflog_sync};
 pub use error::EngineError;
 pub use lifecycle::{CloneRequest, clone_repository_async, compile_clone_args, init_repository_sync};
 pub use pool::{
-    AheadBehindUpdate, LARGE_INDEX_ENTRIES, StatusScanConfig, StatusScanMode, StatusScanPolicy,
+    AheadBehindUpdate, DEFAULT_COMMIT_PAGE_SIZE, LARGE_INDEX_ENTRIES, MAX_INCREMENTAL_NEW_COMMITS,
+    SnapshotCommitCache, SnapshotLoadKind, SnapshotLoadMode, StatusScanConfig, StatusScanMode,
+    StatusScanPolicy, load_repo_snapshot_incremental_sync,
 };
 pub use probe::{RepoLocation, RepoProbeResult};
 pub use stage::{

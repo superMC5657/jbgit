@@ -4,14 +4,16 @@ mod stage_status;
 mod worker_pool;
 
 pub use scan_config::{
-    AheadBehindUpdate, LARGE_INDEX_ENTRIES, StatusScanConfig, StatusScanMode, StatusScanPolicy,
+    AheadBehindUpdate, DEFAULT_COMMIT_PAGE_SIZE, LARGE_INDEX_ENTRIES, StatusScanConfig,
+    StatusScanMode, StatusScanPolicy,
 };
 #[cfg(test)]
 pub(crate) use scan_config::AHEAD_BEHIND_BRANCH_LIMIT;
-pub(crate) use snapshot::{
-    compute_ahead_behind_batch_sync, load_conflict_document_sync,
-    load_repo_snapshot_with_config_sync,
+pub use snapshot::{
+    MAX_INCREMENTAL_NEW_COMMITS, SnapshotCommitCache, SnapshotLoadKind, SnapshotLoadMode,
+    load_repo_snapshot_incremental_sync, load_repo_snapshot_with_config_sync,
 };
+pub(crate) use snapshot::{compute_ahead_behind_batch_sync, load_conflict_document_sync};
 pub(crate) use stage_status::{delta_to_kind, load_stage_status_with_config_sync};
 pub(crate) use worker_pool::{Git2WorkerPool, TaskPriority, with_thread_repo};
 
@@ -107,6 +109,7 @@ mod tests {
             worktree_renames: StatusScanMode::Always,
             recurse_untracked_dirs: StatusScanMode::Auto,
             load_commit_bodies: false,
+            commit_page_size: DEFAULT_COMMIT_PAGE_SIZE,
         };
         let small = custom.policy(50);
         assert!(small.worktree_renames);

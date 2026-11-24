@@ -849,6 +849,8 @@ pub enum UiAsyncEvent {
 pub enum Effect {
     RefreshRepoAndStage,
     RefreshScope(RefreshScope),
+    /// Progressive Log pagination: load the next page of commits in the background.
+    LoadMoreCommits,
     RequestCommitDetails {
         slot: RequestSlotId,
         key: DetailsKey,

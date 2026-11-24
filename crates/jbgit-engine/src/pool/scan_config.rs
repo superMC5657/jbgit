@@ -1,5 +1,7 @@
 use jbgit_core::Oid;
 
+/// Default number of commits loaded per Log page (initial load and each `Load More` step).
+pub const DEFAULT_COMMIT_PAGE_SIZE: usize = 50_000;
 /// Index size above which worktree-side rename detection is skipped during the
 /// status scan. Pairing every deleted file with every untracked file is the
 /// dominant cost on large (especially Windows) worktrees; staged renames
@@ -38,6 +40,8 @@ pub struct StatusScanConfig {
     pub worktree_renames: StatusScanMode,
     pub recurse_untracked_dirs: StatusScanMode,
     pub load_commit_bodies: bool,
+    /// Commit pagination step (initial load limit and increment per `LoadMoreCommits`).
+    pub commit_page_size: usize,
 }
 
 impl Default for StatusScanConfig {
@@ -47,11 +51,22 @@ impl Default for StatusScanConfig {
             worktree_renames: StatusScanMode::Auto,
             recurse_untracked_dirs: StatusScanMode::Always,
             load_commit_bodies: true,
+            commit_page_size: DEFAULT_COMMIT_PAGE_SIZE,
         }
     }
 }
 
 impl StatusScanConfig {
+    /// Returns a positive commit page size (falling back to [`DEFAULT_COMMIT_PAGE_SIZE`]
+    /// if configured as `0`).
+    pub fn effective_commit_page_size(&self) -> usize {
+        if self.commit_page_size == 0 {
+            DEFAULT_COMMIT_PAGE_SIZE
+        } else {
+            self.commit_page_size
+        }
+    }
+
     pub fn policy(&self, index_entries: usize) -> StatusScanPolicy {
         StatusScanPolicy {
             worktree_renames: self

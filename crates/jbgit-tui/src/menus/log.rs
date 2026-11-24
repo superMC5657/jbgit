@@ -660,6 +660,20 @@ pub fn log_commit_menu_items(state: &AppState) -> Vec<ContextMenuItem> {
         Some('o'),
         crate::input::presentation_menu_items(state),
     ));
+    if snap.has_more_commits {
+        items.push(
+            run(
+                i18n.t("menu.log.load_more"),
+                Some('l'),
+                None,
+                vec![Action::LoadMoreCommits],
+            )
+            .enabled_if(
+                !state.loading_more_commits,
+                i18n.t("view.log.loading_more_btn"),
+            ),
+        );
+    }
     if snap.is_shallow {
         items.push(
             run(

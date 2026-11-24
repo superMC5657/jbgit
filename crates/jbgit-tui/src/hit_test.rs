@@ -303,6 +303,8 @@ pub enum HitTarget {
         commit_oid: Oid,
     },
     LogShallowUnshallow,
+    /// Virtual tail row at the bottom of the Log table when `has_more_commits == true`.
+    LogLoadMore,
     ChangesTreeNode {
         tree_id: TreeId,
         node_id: ChangeNodeId,

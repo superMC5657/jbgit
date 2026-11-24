@@ -1097,6 +1097,7 @@ dependencies = [
  "jbgit-core",
  "notify",
  "notify-debouncer-mini",
+ "rustc-hash",
  "tempfile",
  "thiserror 2.0.21",
  "tokio",

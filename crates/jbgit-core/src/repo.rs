@@ -307,6 +307,11 @@ pub struct RepoSnapshot {
     pub has_lfs: bool,
     /// True when the repository is a shallow clone (`Repository::is_shallow`).
     pub is_shallow: bool,
+    /// Commit pagination limit applied when loading this snapshot (`0` if unspecified).
+    pub loaded_limit: usize,
+    /// True when the revwalk hit [`Self::loaded_limit`] with additional commits still
+    /// remaining in the repository (distinct from [`Self::is_shallow`] and true history end).
+    pub has_more_commits: bool,
 }
 
 impl RepoSnapshot {
