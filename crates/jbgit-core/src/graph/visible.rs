@@ -332,24 +332,68 @@ fn build_visible_linear(
     if let (false, Some(c)) = (all_visible, collapse) {
         // Collapsed segments (either unfiltered or pure branch filter):
         // a hidden parent that belongs to a collapsed segment jumps straight to `seg.down`.
-        // Parents excluded by a branch range cutoff (not in `filter`) are simply omitted.
-        for &u in &visible_perms {
-            let edges_u = &mut perm_edges[u as usize];
-            for p in pg.loaded_down_nodes(u) {
-                let edge = match collapsed_segment(p as usize) {
-                    Some(idx) => {
-                        let seg = c.segments.get(idx).expect("segment index in range");
-                        Some((seg.down, GraphEdgeType::Collapsed))
+        // When a branch filter creates non-contiguous gaps (e.g. `main v2..feat` or
+        // `v1..v2 v3..v4`), compress hidden non-collapsed parents via bottom-up `nearest_down`
+        // dotted edges so ancestry links are preserved.
+        let has_filter_hidden_parent = filter.is_some()
+            && visible_perms.iter().any(|&u| {
+                pg.loaded_down_nodes(u)
+                    .any(|p| !is_vis_vec[p as usize] && collapsed_segment(p as usize).is_none())
+            });
+        let nearest_down = if has_filter_hidden_parent {
+            let mut nd: Vec<Vec<PermNodeId>> = vec![Vec::new(); total];
+            for node in (0..total).rev() {
+                if is_vis_vec[node] {
+                    nd[node].push(node as PermNodeId);
+                } else if let Some(idx) = collapsed_segment(node) {
+                    let seg = c.segments.get(idx).expect("segment index in range");
+                    nd[node].push(seg.down);
+                } else {
+                    let mut merged: Vec<PermNodeId> = Vec::new();
+                    for p in pg.loaded_down_nodes(node as PermNodeId) {
+                        merged.extend_from_slice(&nd[p as usize]);
                     }
-                    None if is_vis_vec[p as usize] => Some((p, GraphEdgeType::Normal)),
-                    None => None,
-                };
-                if let Some(edge) = edge
-                    && !edges_u.contains(&edge)
-                {
-                    edges_u.push(edge);
+                    merged.sort_unstable();
+                    merged.dedup();
+                    merged.truncate(32);
+                    nd[node] = merged;
                 }
             }
+            Some(nd)
+        } else {
+            None
+        };
+
+        for &u in &visible_perms {
+            let mut candidates: Vec<(PermNodeId, GraphEdgeType)> = Vec::new();
+            for p in pg.loaded_down_nodes(u) {
+                match collapsed_segment(p as usize) {
+                    Some(idx) => {
+                        let seg = c.segments.get(idx).expect("segment index in range");
+                        candidates.push((seg.down, GraphEdgeType::Collapsed));
+                    }
+                    None if is_vis_vec[p as usize] => {
+                        candidates.push((p, GraphEdgeType::Normal));
+                    }
+                    None => {
+                        if let Some(ref nd) = nearest_down {
+                            for &v in &nd[p as usize] {
+                                candidates.push((v, GraphEdgeType::Dotted));
+                            }
+                        }
+                    }
+                }
+            }
+            if candidates.len() > 1 {
+                let rank = |kind: GraphEdgeType| match kind {
+                    GraphEdgeType::Normal => 0u8,
+                    GraphEdgeType::Collapsed => 1u8,
+                    GraphEdgeType::Dotted => 2u8,
+                };
+                candidates.sort_by_key(|&(target, kind)| (target, rank(kind)));
+                candidates.dedup_by_key(|e| e.0);
+            }
+            perm_edges[u as usize] = candidates;
         }
     } else if all_visible {
         for (u, edges_u) in perm_edges.iter_mut().enumerate() {
@@ -359,7 +403,7 @@ fn build_visible_linear(
         }
     } else if options.first_parent_only && filter.is_none() {
         for &u in &visible_perms {
-            if let Some(p0) = pg.loaded_down_nodes(u).next()
+            if let Some(p0) = pg.down_nodes(u).first().and_then(|t| t.as_loaded())
                 && is_vis_vec[p0 as usize]
             {
                 perm_edges[u as usize].push((p0, GraphEdgeType::Normal));
@@ -373,13 +417,16 @@ fn build_visible_linear(
                 nearest_down[node].push(node as PermNodeId);
             } else {
                 let mut merged: Vec<PermNodeId> = Vec::new();
-                let mut parent_iter = pg.loaded_down_nodes(node as PermNodeId);
                 if options.first_parent_only {
-                    if let Some(p0) = parent_iter.next() {
+                    if let Some(p0) = pg
+                        .down_nodes(node as PermNodeId)
+                        .first()
+                        .and_then(|t| t.as_loaded())
+                    {
                         merged.extend_from_slice(&nearest_down[p0 as usize]);
                     }
                 } else {
-                    for p in parent_iter {
+                    for p in pg.loaded_down_nodes(node as PermNodeId) {
                         merged.extend_from_slice(&nearest_down[p as usize]);
                     }
                 }
@@ -392,7 +439,6 @@ fn build_visible_linear(
 
         for &u in &visible_perms {
             let mut candidates: Vec<(PermNodeId, GraphEdgeType)> = Vec::new();
-            let mut parent_iter = pg.loaded_down_nodes(u);
             let mut push_parent = |p: PermNodeId| {
                 if is_vis_vec[p as usize] {
                     candidates.push((p, GraphEdgeType::Normal));
@@ -403,11 +449,11 @@ fn build_visible_linear(
                 }
             };
             if options.first_parent_only {
-                if let Some(p0) = parent_iter.next() {
+                if let Some(p0) = pg.down_nodes(u).first().and_then(|t| t.as_loaded()) {
                     push_parent(p0);
                 }
             } else {
-                for p in parent_iter {
+                for p in pg.loaded_down_nodes(u) {
                     push_parent(p);
                 }
             }
@@ -470,11 +516,17 @@ fn build_visible_linear(
         down_edges_data.append(&mut row_edges);
         down_offsets.push(down_edges_data.len() as u32);
 
-        let unloaded = pg
-            .down_nodes(perm_id)
-            .iter()
-            .copied()
-            .find_map(|t| pg.unloaded_oid(t));
+        let unloaded = if options.first_parent_only {
+            pg.down_nodes(perm_id)
+                .first()
+                .copied()
+                .and_then(|t| pg.unloaded_oid(t))
+        } else {
+            pg.down_nodes(perm_id)
+                .iter()
+                .copied()
+                .find_map(|t| pg.unloaded_oid(t))
+        };
         unloaded_down.push(unloaded);
     }
 
@@ -529,7 +581,7 @@ fn compute_first_parent_mask(
         }
         let mut curr = head;
         while !mask.put(curr as usize) {
-            if let Some(p0) = pg.loaded_down_nodes(curr).next() {
+            if let Some(p0) = pg.down_nodes(curr).first().and_then(|t| t.as_loaded()) {
                 curr = p0;
             } else {
                 break;
@@ -982,5 +1034,174 @@ mod tests {
             .collect();
         assert_eq!(oids, vec![oid(0), oid(4)]);
         assert_eq!(vis.linear.down_edges(0)[0].edge_type, GraphEdgeType::Collapsed);
+    }
+
+    #[test]
+    fn first_parent_only_stops_at_unloaded_first_parent_without_following_second_parent() {
+        // Merge M (0) has parents [unloaded 99, loaded 1]; 1 -> 2.
+        let commits = vec![
+            raw(0, &[99, 1], 30),
+            raw(1, &[2], 20),
+            raw(2, &[], 10),
+        ];
+        let refs = vec![branch_ref("main", 0)];
+        let pg = PermanentGraph::build(&commits, &refs, Some(oid(0)));
+
+        let vis = VisibleGraph::build_projected(
+            &pg,
+            GraphViewOptions {
+                first_parent_only: true,
+                ..Default::default()
+            },
+            VisibleGraphBuildArgs::default(),
+        );
+        // Only M (0) should be visible; 1 and 2 must NOT be pulled in via second parent.
+        let oids: Vec<Oid> = (0..vis.linear.visible_count())
+            .map(|r| pg.linear.commit(vis.linear.perm_id(r)).oid)
+            .collect();
+        assert_eq!(oids, vec![oid(0)]);
+        assert!(vis.linear.down_edges(0).is_empty());
+        assert_eq!(vis.linear.unloaded_down[0], Some(oid(99)));
+
+        // Also test when first parent is loaded and second parent is unloaded:
+        // first_parent_only should follow first parent and NOT mark unloaded_down.
+        let commits2 = vec![raw(0, &[1, 99], 30), raw(1, &[], 10)];
+        let pg2 = PermanentGraph::build(&commits2, &refs, Some(oid(0)));
+        let vis2 = VisibleGraph::build_projected(
+            &pg2,
+            GraphViewOptions {
+                first_parent_only: true,
+                ..Default::default()
+            },
+            VisibleGraphBuildArgs::default(),
+        );
+        let oids2: Vec<Oid> = (0..vis2.linear.visible_count())
+            .map(|r| pg2.linear.commit(vis2.linear.perm_id(r)).oid)
+            .collect();
+        assert_eq!(oids2, vec![oid(0), oid(1)]);
+        assert_eq!(vis2.linear.unloaded_down[0], None);
+    }
+
+    #[test]
+    fn branch_only_non_contiguous_filter_with_collapse_keeps_dotted_ancestry_edges() {
+        use crate::graph::collapse::{CollapseState, LinearSegments};
+        // Chain: 6 -> 5 -> 4 -> 3 -> 2 -> 1 -> 0
+        // Filter keeps {6, 5} (range 4..6) and {1, 0} (ancestry of v1), hiding {4, 3, 2}.
+        // Collapse segment exists on the graph (e.g., [5,4,3,2,1] when unfiltered).
+        let commits = vec![
+            raw(6, &[5], 70),
+            raw(5, &[4], 60),
+            raw(4, &[3], 50),
+            raw(3, &[2], 40),
+            raw(2, &[1], 30),
+            raw(1, &[0], 20),
+            raw(0, &[], 10),
+        ];
+        let refs = vec![branch_ref("feat", 6)];
+        let pg = PermanentGraph::build(&commits, &refs, Some(oid(6)));
+        let pinned = LinearSegments::pinned_nodes(&pg.linear, [oid(6)], Some(oid(6)));
+        let segments = LinearSegments::compute(&pg.linear, &pinned);
+        assert!(!segments.is_empty());
+
+        let mut collapse = CollapseState::default();
+        collapse.collapse_all();
+
+        let mut mask = FixedBitSet::with_capacity(pg.linear.nodes_count as usize);
+        for id in [6u64, 5, 1, 0] {
+            mask.insert(pg.linear.node_of_oid(&oid(id)).unwrap() as usize);
+        }
+
+        let vis = VisibleGraph::build_projected(
+            &pg,
+            GraphViewOptions {
+                collapse: collapse.mode,
+                ..Default::default()
+            },
+            VisibleGraphBuildArgs {
+                filter: Some(&mask),
+                branch_only_filter: true,
+                collapse: Some(CollapseInput {
+                    segments: &segments,
+                    state: &collapse,
+                }),
+                ..Default::default()
+            },
+        );
+        // Row for commit 5 must connect to row for commit 1 via a Dotted edge (not be disconnected).
+        let row5 = vis
+            .linear
+            .visible_row(pg.linear.node_of_oid(&oid(5)).unwrap())
+            .unwrap();
+        let row1 = vis
+            .linear
+            .visible_row(pg.linear.node_of_oid(&oid(1)).unwrap())
+            .unwrap();
+        assert!(
+            vis.linear
+                .down_edges(row5)
+                .iter()
+                .any(|e| e.down == row1 && e.edge_type == GraphEdgeType::Dotted),
+            "expected dotted edge 5 -> 1, got {:?}",
+            vis.linear.down_edges(row5)
+        );
+    }
+
+    #[test]
+    fn linear_bek_preserves_collapsed_edges_without_orphaning_hidden_commits() {
+        use crate::graph::collapse::{CollapseState, LinearSegments};
+        // Merge 0 -> [1, 4]
+        // Right arm: 1 -> 5 (1 commit)
+        // Left arm: 4 -> 3 -> 2 -> 5 (3-node linear segment collapsible into 0 --Collapsed--> 5,
+        // or 4 -> 3 -> 2 -> 5 where 0 -> 4 and 4 --Collapsed--> 5)
+        // Make 0 -> [1, 2] where arm 2 -> 3 -> 4 -> 5 is collapsed between 0 and 5:
+        // 0 has parents [2, 1]; 2 -> 3 -> 4 -> 5 (middle nodes 2,3,4 form a collapsible segment 0 -> 5);
+        // 1 -> 5 (1 commit, timestamp between 0 and 5).
+        let commits = vec![
+            raw(0, &[2, 1], 100),
+            raw(1, &[5], 90),
+            raw(2, &[3], 80),
+            raw(3, &[4], 70),
+            raw(4, &[5], 60),
+            raw(5, &[], 10),
+        ];
+        let refs = vec![branch_ref("main", 0)];
+        let pg = PermanentGraph::build(&commits, &refs, Some(oid(0)));
+        let pinned = LinearSegments::pinned_nodes(&pg.linear, [oid(0)], Some(oid(0)));
+        let segments = LinearSegments::compute(&pg.linear, &pinned);
+        assert_eq!(segments.len(), 1);
+
+        let mut collapse = CollapseState::default();
+        collapse.collapse_all();
+        let bek_state = LinearBekState::default();
+
+        let vis = VisibleGraph::build_projected(
+            &pg,
+            GraphViewOptions {
+                sort_type: SortType::IntelliSort,
+                collapse: collapse.mode,
+                linear_bek: true,
+                ..Default::default()
+            },
+            VisibleGraphBuildArgs {
+                collapse: Some(CollapseInput {
+                    segments: &segments,
+                    state: &collapse,
+                }),
+                linear_bek: Some(&bek_state),
+                ..Default::default()
+            },
+        );
+        // The Collapsed edge 0 -> 5 must remain intact so hidden commits [2, 3, 4] are expandable.
+        let has_collapsed = (0..vis.linear.visible_count()).any(|r| {
+            vis.linear
+                .down_edges(r)
+                .iter()
+                .any(|e| e.edge_type == GraphEdgeType::Collapsed)
+        });
+        assert!(
+            has_collapsed,
+            "LinearBek must not delete or overwrite Collapsed edges: {:?}",
+            vis.linear.down_edges_data
+        );
     }
 }

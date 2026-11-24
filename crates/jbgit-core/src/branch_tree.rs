@@ -203,6 +203,12 @@ impl BranchesPanelSettings {
             if line.is_empty() || line.starts_with('#') {
                 continue;
             }
+            if let Some(rest) = line.strip_prefix("expanded:") {
+                if let Some((key, v)) = rest.rsplit_once('=') {
+                    s.expansion.overrides.insert(key.to_string(), v == "true");
+                }
+                continue;
+            }
             let Some((k, v)) = line.split_once('=') else {
                 continue;
             };
@@ -217,11 +223,7 @@ impl BranchesPanelSettings {
                 "fav-" => {
                     s.favorites.removed.insert(v.to_string());
                 }
-                _ => {
-                    if let Some(key) = k.strip_prefix("expanded:") {
-                        s.expansion.overrides.insert(key.to_string(), flag);
-                    }
-                }
+                _ => {}
             }
         }
         s
@@ -246,6 +248,7 @@ pub struct BranchesTreeModel {
 #[derive(Default)]
 struct Dir<'a> {
     dirs: Vec<(String, Dir<'a>)>,
+    dir_index: FxHashMap<String, usize>,
     leaves: Vec<(String, &'a RefInfo)>,
 }
 
@@ -255,12 +258,13 @@ impl<'a> Dir<'a> {
             [] => {}
             [leaf] => self.leaves.push(((*leaf).to_string(), r)),
             [head, rest @ ..] => {
-                let idx = match self.dirs.iter().position(|(n, _)| n == head) {
-                    Some(i) => i,
-                    None => {
-                        self.dirs.push(((*head).to_string(), Dir::default()));
-                        self.dirs.len() - 1
-                    }
+                let idx = if let Some(&i) = self.dir_index.get(*head) {
+                    i
+                } else {
+                    let i = self.dirs.len();
+                    self.dirs.push(((*head).to_string(), Dir::default()));
+                    self.dir_index.insert((*head).to_string(), i);
+                    i
                 };
                 self.dirs[idx].1.insert(rest, r);
             }
@@ -570,13 +574,14 @@ impl BranchesTreeModel {
     /// All leaf ref names at or under `id` (folders recurse into every child branch).
     pub fn collect_ref_names(&self, id: usize) -> Vec<String> {
         let mut out = Vec::new();
+        let mut seen: FxHashSet<&str> = FxHashSet::default();
         let mut stack = vec![id];
         while let Some(cur) = stack.pop() {
             let Some(node) = self.nodes.get(cur) else {
                 continue;
             };
             if let Some(name) = &node.ref_name
-                && !out.contains(name)
+                && seen.insert(name.as_str())
             {
                 out.push(name.clone());
             }
@@ -830,5 +835,25 @@ mod tests {
         assert_eq!(head.ahead_behind, Some((2, 1)));
         assert!(head.is_favorite);
         assert_eq!(model.collect_ref_names(model.roots[0]), vec!["HEAD"]);
+    }
+
+    #[test]
+    fn settings_roundtrips_expanded_keys_containing_equals() {
+        let mut settings = BranchesPanelSettings::default();
+        settings.expansion.set("local:feature/a=b", false);
+        settings
+            .expansion
+            .overrides
+            .insert("remote:org=1/v=2".to_string(), true);
+        let text = settings.serialize();
+        let parsed = BranchesPanelSettings::parse(&text);
+        assert_eq!(
+            parsed.expansion.overrides.get("local:feature/a=b"),
+            Some(&false)
+        );
+        assert_eq!(
+            parsed.expansion.overrides.get("remote:org=1/v=2"),
+            Some(&true)
+        );
     }
 }

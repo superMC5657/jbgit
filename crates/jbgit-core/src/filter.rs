@@ -4,7 +4,7 @@
 
 use std::collections::HashSet;
 
-use chrono::{Duration, Local, NaiveDate, TimeZone};
+use chrono::{Local, NaiveDate, TimeZone};
 use fixedbitset::FixedBitSet;
 use regex::{Regex, RegexBuilder};
 use thiserror::Error;
@@ -340,12 +340,24 @@ impl BranchFilter {
         }
 
         let exclude_reach = if !expanded.exclude.is_empty() && !expanded.ranges.is_empty() {
-            let excl_heads: Vec<_> = snapshot
+            let head_matches = |pattern: &str| -> bool {
+                glob_match(pattern, "HEAD")
+                    || snapshot.head_branch.as_deref().is_some_and(|b| {
+                        glob_match(pattern, b) || glob_match(pattern, &format!("refs/heads/{b}"))
+                    })
+            };
+            let mut excl_heads: Vec<_> = snapshot
                 .refs
                 .iter()
                 .filter(|r| expanded.exclude.iter().any(|p| Self::ref_matches(p, r)))
                 .filter_map(|r| graph.node_of_oid(&r.target_oid))
                 .collect();
+            if let Some(head) = snapshot.head_oid
+                && expanded.exclude.iter().any(|p| head_matches(p))
+                && let Some(node) = graph.node_of_oid(&head)
+            {
+                excl_heads.push(node);
+            }
             if excl_heads.is_empty() {
                 None
             } else {
@@ -546,19 +558,25 @@ impl DateFilter {
         match e.as_str() {
             "today" => return preset(start_of(today), None, "Today"),
             "yesterday" => {
-                let y = today - Duration::days(1);
+                let y = today.pred_opt()?;
                 return preset(start_of(y), start_of(today), "Yesterday");
             }
             "7d" | "week" | "last 7 days" => {
-                return preset(Some(now - 7 * 86_400), None, "Last 7 Days");
+                return preset(Some(now.checked_sub(7 * 86_400)?), None, "Last 7 Days");
             }
             "30d" | "month" | "last 30 days" => {
-                return preset(Some(now - 30 * 86_400), None, "Last 30 Days");
+                return preset(Some(now.checked_sub(30 * 86_400)?), None, "Last 30 Days");
             }
             _ => {}
         }
-        if let Some(n) = e.strip_suffix('d').and_then(|n| n.parse::<i64>().ok()) {
-            return preset(Some(now - n * 86_400), None, &format!("Last {n} Days"));
+        if let Some(n) = e
+            .strip_suffix('d')
+            .and_then(|n| n.parse::<u64>().ok())
+            .filter(|&n| n > 0)
+        {
+            let secs = n.checked_mul(86_400).and_then(|s| i64::try_from(s).ok())?;
+            let since = now.checked_sub(secs)?;
+            return preset(Some(since), None, &format!("Last {n} Days"));
         }
         let parse_day = |s: &str| NaiveDate::parse_from_str(s.trim(), "%Y-%m-%d").ok();
         if let Some((a, b)) = e.split_once("..") {
@@ -570,7 +588,7 @@ impl DateFilter {
             let until = if b.trim().is_empty() {
                 None
             } else {
-                Some(start_of(parse_day(b)? + Duration::days(1))?)
+                Some(start_of(parse_day(b)?.succ_opt()?)?)
             };
             return Some(Self {
                 since,
@@ -579,9 +597,10 @@ impl DateFilter {
             });
         }
         let day = parse_day(&e)?;
+        let next_day = day.succ_opt()?;
         preset(
             start_of(day),
-            start_of(day + Duration::days(1)),
+            start_of(next_day),
             &day.format("%Y-%m-%d").to_string(),
         )
     }
@@ -1322,5 +1341,33 @@ mod tests {
             ..Default::default()
         };
         assert!(matched(&range_with_excl).is_empty());
+
+        // Range exclusion `-HEAD` must work even on detached HEAD (not in `snapshot.refs`).
+        let detached_snap = RepoSnapshot {
+            head_oid: Some(oid(3)),
+            head_branch: None,
+            ..snap.clone()
+        };
+        let range_excl_head = BranchFilter::parse("feature/a..merged -HEAD");
+        let (bits, _) = range_excl_head.compute_mask_and_heads(&graph, &detached_snap, &[]);
+        // Commits reachable from merged (7) but not feature/a (5) are {2, 3, 7};
+        // subtracting detached HEAD at 3 removes {1, 2, 3}, leaving {7}.
+        assert!(bits.contains(graph.node_of_oid(&oid(7)).unwrap() as usize));
+        assert!(!bits.contains(graph.node_of_oid(&oid(3)).unwrap() as usize));
+        assert!(!bits.contains(graph.node_of_oid(&oid(2)).unwrap() as usize));
+        assert_eq!(bits.count_ones(..), 1);
+    }
+
+    #[test]
+    fn date_filter_parse_handles_overflow_negative_days_and_max_date_without_panicking() {
+        let now = 1_775_000_000i64;
+        assert_eq!(DateFilter::parse("+262142-12-31", now), None);
+        assert_eq!(DateFilter::parse("..+262142-12-31", now), None);
+        assert_eq!(DateFilter::parse("999999999999999d", now), None);
+        assert_eq!(DateFilter::parse("-7d", now), None);
+        assert_eq!(DateFilter::parse("0d", now), None);
+        let valid = DateFilter::parse("14d", now).unwrap();
+        assert_eq!(valid.since, Some(now - 14 * 86_400));
+        assert_eq!(valid.label, "Last 14 Days");
     }
 }

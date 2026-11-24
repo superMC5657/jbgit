@@ -423,15 +423,22 @@ impl RepoSnapshot {
         for remote in &self.remotes {
             push_unique(&remote.name);
         }
+        let local_branches: HashSet<&str> = self
+            .refs
+            .iter()
+            .filter(|r| r.kind == RefKind::LocalBranch)
+            .map(|r| r.name.as_str())
+            .collect();
         for r in &self.refs {
             if r.kind == RefKind::RemoteBranch
-                && let Some((rm, _)) = r.name.split_once('/')
+                && let Some(rm) = self.remote_of_tracking(&r.name)
             {
                 push_unique(rm);
             }
             if r.kind == RefKind::LocalBranch
                 && let Some(up) = r.upstream.as_deref()
-                && let Some((rm, _)) = up.split_once('/')
+                && !local_branches.contains(up)
+                && let Some(rm) = self.remote_of_tracking(up)
             {
                 push_unique(rm);
             }
@@ -695,10 +702,10 @@ impl RepoSnapshot {
         }
         if let Some(r) = self.refs.iter().find(|r| {
             r.kind == RefKind::RemoteBranch
-                && r.name
-                    .split_once('/')
+                && self
+                    .split_tracking(&r.name)
                     .is_some_and(|(_, b)| is_protected_branch(b))
-                && self.reaches(r.target_oid, oldest)
+                && Self::walk_ancestors_with_index(&idx, r.target_oid, Some(oldest)).1
         }) {
             return Err(RewritePlanError::ProtectedBranch(r.name.clone()));
         }
@@ -740,21 +747,28 @@ impl RepoSnapshot {
                 .map(|c| c.parents.as_slice())
         };
         while let Some(op) = ops.chars().next() {
+            if !matches!(op, '~' | '^') {
+                return None;
+            }
             ops = &ops[1..];
             let digits_len = ops.find(|c: char| !c.is_ascii_digit()).unwrap_or(ops.len());
-            let n: Option<usize> = ops[..digits_len].parse().ok();
+            let n: usize = if digits_len == 0 {
+                1
+            } else {
+                ops[..digits_len].parse().ok()?
+            };
             ops = &ops[digits_len..];
             match op {
                 '~' => {
-                    for _ in 0..n.unwrap_or(1) {
+                    for _ in 0..n {
                         cur = *parents_of(cur)?.first()?;
                     }
                 }
-                '^' => match n.unwrap_or(1) {
+                '^' => match n {
                     0 => {}
                     k => cur = *parents_of(cur)?.get(k - 1)?,
                 },
-                _ => return None,
+                _ => unreachable!(),
             }
         }
         Some(cur)
@@ -852,6 +866,63 @@ mod tests {
         assert_eq!(snap.resolve_revision("0303"), Some(oid(3)));
         assert_eq!(snap.resolve_revision("HEAD~9"), None);
         assert_eq!(snap.resolve_revision("nope"), None);
+        // Non-ASCII chars after ~ / ^ must not panic on UTF-8 byte boundary
+        assert_eq!(snap.resolve_revision("HEAD~中"), None);
+        assert_eq!(snap.resolve_revision("main^é"), None);
+        // Overflowing usize counts must return None instead of silently becoming 1
+        assert_eq!(
+            snap.resolve_revision("HEAD~999999999999999999999999999999"),
+            None
+        );
+        assert_eq!(
+            snap.resolve_revision("HEAD^999999999999999999999999999999"),
+            None
+        );
+    }
+
+    #[test]
+    fn slash_remote_protected_branch_guard_and_available_remotes() {
+        let oid = |n: u8| Oid::from_bytes([n; 20]);
+        let c = |n: u8, parents: &[u8]| CommitSummary {
+            oid: oid(n),
+            parents: parents.iter().map(|&p| oid(p)).collect(),
+            subject: format!("c{n}"),
+            ..Default::default()
+        };
+        let snap = RepoSnapshot {
+            head_oid: Some(oid(3)),
+            head_branch: Some("feat".into()),
+            remotes: vec![remote("my/fork")],
+            commits: vec![c(3, &[2]), c(2, &[1]), c(1, &[])],
+            refs: vec![
+                local("feat", Some("release/1.0"), true),
+                local("release/1.0", None, false),
+                RefInfo {
+                    name: "my/fork/main".into(),
+                    full_name: "refs/remotes/my/fork/main".into(),
+                    target_oid: oid(2),
+                    kind: RefKind::RemoteBranch,
+                    upstream: None,
+                    ahead_behind: None,
+                    is_head: false,
+                },
+            ],
+            ..Default::default()
+        };
+
+        // Must NOT emit bogus "my" or local-branch prefix "release"
+        assert_eq!(snap.available_remotes(), vec!["my/fork"]);
+
+        // Rewriting commit 2 must be blocked because my/fork/main is protected
+        let err = snap.plan_rewrite_typed(oid(2)).unwrap_err();
+        assert_eq!(
+            err,
+            RewritePlanError::ProtectedBranch("my/fork/main".to_string())
+        );
+
+        // Rewriting commit 3 (not reachable from my/fork/main) is allowed
+        let plan = snap.plan_rewrite_typed(oid(3)).unwrap();
+        assert_eq!(plan.entries.len(), 1);
     }
 
     fn remote(name: &str) -> RemoteInfo {

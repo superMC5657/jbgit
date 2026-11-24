@@ -53,12 +53,25 @@ impl WorktreeInfo {
 pub fn same_path(a: &Path, b: &Path) -> bool {
     let norm = |p: &Path| {
         let s = p.to_string_lossy().replace('\\', "/");
-        let s = s
-            .strip_prefix("//?/")
-            .unwrap_or(&s)
-            .trim_end_matches('/')
-            .to_string();
-        if cfg!(windows) { s.to_lowercase() } else { s }
+        let normalized = if let Some(rest) = s.strip_prefix("//?/") {
+            if let Some(unc_rest) = rest
+                .get(..4)
+                .filter(|prefix| prefix.eq_ignore_ascii_case("UNC/"))
+                .map(|_| &rest[4..])
+            {
+                format!("//{unc_rest}")
+            } else {
+                rest.to_string()
+            }
+        } else {
+            s
+        };
+        let trimmed = normalized.trim_end_matches('/');
+        if cfg!(windows) {
+            trimmed.to_lowercase()
+        } else {
+            trimmed.to_string()
+        }
     };
     norm(a) == norm(b)
 }
@@ -309,5 +322,26 @@ mod tests {
         assert_eq!(p, PathBuf::from("/src/jbgit-feature-login"));
         let p = default_worktree_path(Path::new("/src/jbgit"), Some(Path::new("/wt")), "abc1234");
         assert_eq!(p, PathBuf::from("/wt/jbgit-abc1234"));
+    }
+
+    #[test]
+    fn same_path_matches_windows_verbatim_unc_and_wsl_paths() {
+        assert!(same_path(
+            Path::new(r"\\?\UNC\wsl.localhost\Ubuntu\home\user\repo"),
+            Path::new("//wsl.localhost/Ubuntu/home/user/repo"),
+        ));
+        assert!(same_path(
+            Path::new(r"\\?\unc\server\share\proj\"),
+            Path::new(r"\\server\share\proj"),
+        ));
+        assert!(same_path(
+            Path::new(r"\\?\C:\Users\repo"),
+            Path::new("C:/Users/repo/"),
+        ));
+        // Non-ASCII right after \\?\ must not panic on UTF-8 boundary
+        assert!(same_path(
+            Path::new(r"\\?\中文\repo"),
+            Path::new("中文/repo"),
+        ));
     }
 }

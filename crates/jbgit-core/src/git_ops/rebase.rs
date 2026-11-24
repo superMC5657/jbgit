@@ -192,6 +192,7 @@ pub fn render_todo(
     mut message_file: impl FnMut(usize) -> String,
 ) -> String {
     let mut out = String::new();
+    let mut pending_fold_msg_idx: Option<usize> = None;
     for (idx, e) in entries.iter().enumerate() {
         if e.action == TodoAction::UpdateRef {
             out.push_str(&format!("update-ref {}\n", sanitize_subject(&e.subject)));
@@ -210,21 +211,37 @@ pub fn render_todo(
             sanitize_subject(&e.subject)
         ));
         let next_folds = next_commit_folds(entries, idx);
-        let needs_amend = match e.action {
-            TodoAction::Reword => e.message.is_some(),
-            TodoAction::Squash | TodoAction::Fixup => e.message.is_some() && !next_folds,
-            _ => false,
+        let amend_msg_idx = match e.action {
+            TodoAction::Pick | TodoAction::Edit => {
+                pending_fold_msg_idx = None;
+                None
+            }
+            TodoAction::Reword => {
+                pending_fold_msg_idx = None;
+                e.message.is_some().then_some(idx)
+            }
+            TodoAction::Squash | TodoAction::Fixup => {
+                if e.message.is_some() {
+                    pending_fold_msg_idx = Some(idx);
+                }
+                if !next_folds {
+                    pending_fold_msg_idx.take()
+                } else {
+                    None
+                }
+            }
+            TodoAction::Drop | TodoAction::UpdateRef => None,
         };
-        if needs_amend {
+        if let Some(msg_idx) = amend_msg_idx {
             if no_verify {
                 out.push_str(&format!(
                     "exec git commit --amend --only --allow-empty --no-verify -F {}\n",
-                    message_file(idx)
+                    message_file(msg_idx)
                 ));
             } else {
                 out.push_str(&format!(
                     "exec git commit --amend --only --allow-empty -F {}\n",
-                    message_file(idx)
+                    message_file(msg_idx)
                 ));
             }
         }
@@ -233,16 +250,19 @@ pub fn render_todo(
 }
 
 /// Computes the message each `Squash` group should end with when the user did
-/// not supply one.
+/// not supply one, preserving any explicit custom message set on an earlier
+/// folding entry in the same group.
 pub fn default_squash_messages(entries: &mut [TodoEntry], full_message: impl Fn(&Oid) -> String) {
     let mut group_start: Option<usize> = None;
     let mut acc: Vec<String> = Vec::new();
+    let mut explicit_msg: Option<String> = None;
     let len = entries.len();
     for idx in 0..len {
         let action = entries[idx].action;
         match action {
             TodoAction::Pick | TodoAction::Reword | TodoAction::Edit => {
                 group_start = Some(idx);
+                explicit_msg = None;
                 acc = vec![
                     entries[idx]
                         .message
@@ -253,21 +273,38 @@ pub fn default_squash_messages(entries: &mut [TodoEntry], full_message: impl Fn(
             TodoAction::Squash => {
                 if group_start.is_some() {
                     acc.push(full_message(&entries[idx].oid));
+                    if let Some(custom) = &entries[idx].message {
+                        explicit_msg = Some(custom.clone());
+                    }
                 }
             }
-            TodoAction::Fixup | TodoAction::Drop | TodoAction::UpdateRef => {}
+            TodoAction::Fixup => {
+                if group_start.is_some()
+                    && let Some(custom) = &entries[idx].message
+                {
+                    explicit_msg = Some(custom.clone());
+                }
+            }
+            TodoAction::Drop | TodoAction::UpdateRef => {}
         }
         let next_folds = next_commit_folds(entries, idx);
         if matches!(action, TodoAction::Squash | TodoAction::Fixup)
             && !next_folds
-            && entries[idx].message.is_none()
             && group_start.is_some()
         {
-            let has_squash = entries[group_start.unwrap_or(0)..=idx]
-                .iter()
-                .any(|e| e.action == TodoAction::Squash);
-            if has_squash {
-                entries[idx].message = Some(acc.join("\n\n"));
+            if entries[idx].message.is_none() {
+                if let Some(custom) = explicit_msg.take() {
+                    entries[idx].message = Some(custom);
+                } else {
+                    let has_squash = entries[group_start.unwrap_or(0)..=idx]
+                        .iter()
+                        .any(|e| e.action == TodoAction::Squash);
+                    if has_squash {
+                        entries[idx].message = Some(acc.join("\n\n"));
+                    }
+                }
+            } else {
+                explicit_msg = None;
             }
         }
     }

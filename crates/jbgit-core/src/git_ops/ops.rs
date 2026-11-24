@@ -1505,6 +1505,17 @@ pub enum IgnoreRuleKind {
     ParentDir,
 }
 
+fn escape_gitignore_literal(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for ch in s.chars() {
+        if matches!(ch, '\\' | '[' | ']' | '*' | '?') {
+            out.push('\\');
+        }
+        out.push(ch);
+    }
+    out
+}
+
 /// Generates deduplicated `.gitignore` rules for `paths` at the requested
 /// [`IgnoreRuleKind`]. When `base_dir` is `Some("sub")` (for `sub/.gitignore`),
 /// leading `sub/` prefixes are stripped before formatting rooted patterns.
@@ -1530,19 +1541,19 @@ pub fn build_ignore_patterns(
             norm.as_str()
         };
         let pattern = match kind {
-            IgnoreRuleKind::ExactPath => Some(format!("/{rel}")),
+            IgnoreRuleKind::ExactPath => Some(format!("/{}", escape_gitignore_literal(rel))),
             IgnoreRuleKind::Extension => {
                 let file_name = rel.rsplit('/').next().unwrap_or(rel);
                 file_name
                     .rsplit_once('.')
                     .filter(|(stem, ext)| !stem.is_empty() && !ext.is_empty())
-                    .map(|(_, ext)| format!("*.{ext}"))
+                    .map(|(_, ext)| format!("*.{}", escape_gitignore_literal(ext)))
             }
             IgnoreRuleKind::ParentDir => rel
                 .rsplit_once('/')
                 .map(|(dir, _)| dir.trim_matches('/'))
                 .filter(|dir| !dir.is_empty())
-                .map(|dir| format!("/{dir}/")),
+                .map(|dir| format!("/{}/", escape_gitignore_literal(dir))),
         };
         if let Some(pat) = pattern
             && !out.contains(&pat)
@@ -1551,6 +1562,74 @@ pub fn build_ignore_patterns(
         }
     }
     out
+}
+
+/// Single-segment gitignore glob matcher (`*` and `?` never cross `/`, supports `\` escapes).
+fn match_gitignore_segment(pattern: &str, text: &str) -> bool {
+    let p: Vec<char> = pattern.chars().collect();
+    let t: Vec<char> = text.chars().collect();
+    let (mut pi, mut ti) = (0usize, 0usize);
+    let mut star_pi: Option<usize> = None;
+    let mut star_ti = 0usize;
+    while ti < t.len() {
+        if pi < p.len() && p[pi] == '*' {
+            star_pi = Some(pi);
+            pi += 1;
+            star_ti = ti;
+        } else if pi < p.len() && p[pi] == '\\' && pi + 1 < p.len() {
+            if p[pi + 1] == t[ti] {
+                pi += 2;
+                ti += 1;
+            } else if let Some(sp) = star_pi {
+                star_ti += 1;
+                ti = star_ti;
+                pi = sp + 1;
+            } else {
+                return false;
+            }
+        } else if pi < p.len() && (p[pi] == '?' || p[pi] == t[ti]) {
+            pi += 1;
+            ti += 1;
+        } else if let Some(sp) = star_pi {
+            star_ti += 1;
+            ti = star_ti;
+            pi = sp + 1;
+        } else {
+            return false;
+        }
+    }
+    while pi < p.len() && p[pi] == '*' {
+        pi += 1;
+    }
+    pi == p.len()
+}
+
+/// Segment-aware gitignore path matcher: `**` matches 0+ path segments,
+/// while `*` and `?` match strictly within a single path segment.
+fn match_gitignore_segments(pat_segs: &[&str], path_segs: &[&str]) -> bool {
+    let (mut pi, mut si) = (0usize, 0usize);
+    let mut star_pi: Option<usize> = None;
+    let mut star_si = 0usize;
+    while si < path_segs.len() {
+        if pi < pat_segs.len() && pat_segs[pi] == "**" {
+            star_pi = Some(pi);
+            pi += 1;
+            star_si = si;
+        } else if pi < pat_segs.len() && match_gitignore_segment(pat_segs[pi], path_segs[si]) {
+            pi += 1;
+            si += 1;
+        } else if let Some(sp) = star_pi {
+            star_si += 1;
+            si = star_si;
+            pi = sp + 1;
+        } else {
+            return false;
+        }
+    }
+    while pi < pat_segs.len() && pat_segs[pi] == "**" {
+        pi += 1;
+    }
+    pi == pat_segs.len()
 }
 
 /// Evaluates gitignore-style `.worktreeinclude` rules against `candidates`
@@ -1562,9 +1641,7 @@ pub fn match_worktreeinclude_paths(patterns_text: &str, candidates: &[String]) -
         negated: bool,
         dir_only: bool,
         anchored: bool,
-        pattern: String,
-        prefix_slash: String,
-        glob_sub: String,
+        segments: Vec<String>,
     }
 
     let mut rules: Vec<Rule> = Vec::new();
@@ -1581,18 +1658,19 @@ pub fn match_worktreeinclude_paths(patterns_text: &str, candidates: &[String]) -
         let dir_only = rest.ends_with('/');
         let anchored = rest.starts_with('/') || rest.trim_end_matches('/').contains('/');
         let pat = rest.trim_matches('/').replace('\\', "/");
-        if pat.is_empty() {
+        let segments: Vec<String> = pat
+            .split('/')
+            .filter(|s| !s.is_empty())
+            .map(String::from)
+            .collect();
+        if segments.is_empty() {
             continue;
         }
-        let prefix_slash = format!("{pat}/");
-        let glob_sub = format!("{pat}/**");
         rules.push(Rule {
             negated,
             dir_only,
             anchored,
-            pattern: pat,
-            prefix_slash,
-            glob_sub,
+            segments,
         });
     }
 
@@ -1609,28 +1687,32 @@ pub fn match_worktreeinclude_paths(patterns_text: &str, candidates: &[String]) -
         if norm.is_empty() {
             continue;
         }
-        let basename = norm.rsplit('/').next().unwrap_or(&norm);
+        let cand_segs: Vec<&str> = norm.split('/').filter(|s| !s.is_empty()).collect();
+        if cand_segs.is_empty() {
+            continue;
+        }
         let mut include = false;
         for rule in &rules {
-            let hit = if rule.dir_only {
-                // Match any file inside a matching directory prefix.
-                if rule.anchored {
-                    norm.starts_with(&rule.prefix_slash)
-                        || crate::glob_match(&rule.glob_sub, &norm)
+            let pat_segs: Vec<&str> = rule.segments.iter().map(String::as_str).collect();
+            let hit = if rule.anchored {
+                let any_dir_prefix_matches = (1..cand_segs.len())
+                    .any(|k| match_gitignore_segments(&pat_segs, &cand_segs[..k]));
+                if rule.dir_only {
+                    any_dir_prefix_matches
                 } else {
-                    norm.rsplit('/')
-                        .skip(1)
-                        .any(|seg| crate::glob_match(&rule.pattern, seg))
+                    match_gitignore_segments(&pat_segs, &cand_segs) || any_dir_prefix_matches
                 }
-            } else if rule.anchored {
-                crate::glob_match(&rule.pattern, &norm) || norm.starts_with(&rule.prefix_slash)
             } else {
-                crate::glob_match(&rule.pattern, basename)
-                    || crate::glob_match(&rule.pattern, &norm)
-                    || norm
-                        .rsplit('/')
-                        .skip(1)
-                        .any(|seg| crate::glob_match(&rule.pattern, seg))
+                let pat = pat_segs[0];
+                if rule.dir_only {
+                    cand_segs[..cand_segs.len() - 1]
+                        .iter()
+                        .any(|seg| match_gitignore_segment(pat, seg))
+                } else {
+                    cand_segs
+                        .iter()
+                        .any(|seg| match_gitignore_segment(pat, seg))
+                }
             };
             if hit {
                 include = !rule.negated;
@@ -1737,5 +1819,59 @@ config/local/
         let restored = RebaseOptions::from_remembered(&saved);
         assert!(!restored.root, "one-shot --root must never be persisted");
         assert!(restored.autosquash);
+    }
+
+    #[test]
+    fn build_ignore_patterns_escapes_gitignore_glob_metacharacters() {
+        let paths = vec!["app/users/[id]/page.tsx".to_string(), "docs/what?.md".to_string()];
+        assert_eq!(
+            build_ignore_patterns(&paths, IgnoreRuleKind::ExactPath, None),
+            vec!["/app/users/\\[id\\]/page.tsx", "/docs/what\\?.md"]
+        );
+        assert_eq!(
+            build_ignore_patterns(&paths, IgnoreRuleKind::ParentDir, None),
+            vec!["/app/users/\\[id\\]/", "/docs/"]
+        );
+    }
+
+    #[test]
+    fn match_worktreeinclude_enforces_gitignore_star_vs_doublestar_semantics() {
+        let rules = r#"
+/*.env
+config/*.json
+**/config.local.json
+a/**/b
+apps/*/dist
+"#;
+        let candidates: Vec<String> = [
+            "root.env",
+            "packages/a/foo.env",
+            "config/a.json",
+            "config/sub/a.json",
+            "config.local.json",
+            "deep/nested/config.local.json",
+            "a/b",
+            "a/x/y/b",
+            "a/b/child.txt",
+            "apps/web/dist/bundle.js",
+            "apps/a/b/dist/bundle.js",
+        ]
+        .into_iter()
+        .map(String::from)
+        .collect();
+        let matched = match_worktreeinclude_paths(rules, &candidates);
+        assert_eq!(
+            matched,
+            vec![
+                "root.env",
+                "config/a.json",
+                "config.local.json",
+                "deep/nested/config.local.json",
+                "a/b",
+                "a/x/y/b",
+                "a/b/child.txt",
+                "apps/web/dist/bundle.js",
+            ]
+        );
     }
 }

@@ -785,19 +785,77 @@ impl StageLineTracker {
         self.find_range_binary(local_line, |r| &r.local_range)
     }
 
+    fn preferred_line_ending(base_doc: &SlicedDocument, other_doc: &SlicedDocument) -> LineEnding {
+        let detect = |doc: &SlicedDocument| -> Option<LineEnding> {
+            let mut crlf = 0usize;
+            let mut lf = 0usize;
+            for line in &doc.lines {
+                match line.ending {
+                    LineEnding::Crlf => crlf += 1,
+                    LineEnding::Lf => lf += 1,
+                    LineEnding::None => {}
+                }
+            }
+            if crlf == 0 && lf == 0 {
+                None
+            } else if crlf > lf {
+                Some(LineEnding::Crlf)
+            } else {
+                Some(LineEnding::Lf)
+            }
+        };
+        detect(base_doc)
+            .or_else(|| detect(other_doc))
+            .unwrap_or(LineEnding::Lf)
+    }
+
+    fn emit_line(
+        out: &mut Vec<u8>,
+        doc: &SlicedDocument,
+        idx: usize,
+        last_unterminated: &mut bool,
+        sep: LineEnding,
+    ) {
+        if *last_unterminated {
+            out.extend_from_slice(sep.as_bytes());
+        }
+        doc.write_line_into(idx, out);
+        *last_unterminated = doc.lines[idx].ending == LineEnding::None;
+    }
+
+    fn emit_range(
+        out: &mut Vec<u8>,
+        doc: &SlicedDocument,
+        range: Range<usize>,
+        last_unterminated: &mut bool,
+        sep: LineEnding,
+    ) {
+        if range.start >= range.end || range.start >= doc.lines.len() {
+            return;
+        }
+        if *last_unterminated {
+            out.extend_from_slice(sep.as_bytes());
+        }
+        let end = range.end.min(doc.lines.len());
+        doc.write_range_into(range.start..end, out);
+        *last_unterminated = doc.lines[end - 1].ending == LineEnding::None;
+    }
+
     fn extend_selected(
         out: &mut Vec<u8>,
         doc: &SlicedDocument,
         range: Range<usize>,
         selected: &FxHashSet<usize>,
         keep_selected: bool,
+        last_unterminated: &mut bool,
+        sep: LineEnding,
     ) {
         if range.is_empty() {
             return;
         }
         for idx in range {
             if selected.contains(&idx) == keep_selected {
-                doc.write_line_into(idx, out);
+                Self::emit_line(out, doc, idx, last_unterminated, sep);
             }
         }
     }
@@ -811,11 +869,19 @@ impl StageLineTracker {
         sel_after: &FxHashSet<usize>,
     ) -> Vec<u8> {
         let mut out = Vec::with_capacity(base_doc.bytes.len());
+        let sep = Self::preferred_line_ending(base_doc, other_doc);
+        let mut last_unterminated = false;
         let mut cursor = 0usize;
         for block in blocks {
             if base_is_before {
                 if block.start1 > cursor {
-                    base_doc.write_range_into(cursor..block.start1, &mut out);
+                    Self::emit_range(
+                        &mut out,
+                        base_doc,
+                        cursor..block.start1,
+                        &mut last_unterminated,
+                        sep,
+                    );
                 }
                 Self::extend_selected(
                     &mut out,
@@ -823,6 +889,8 @@ impl StageLineTracker {
                     block.start1..block.end1,
                     sel_before,
                     false,
+                    &mut last_unterminated,
+                    sep,
                 );
                 Self::extend_selected(
                     &mut out,
@@ -830,11 +898,19 @@ impl StageLineTracker {
                     block.start2..block.end2,
                     sel_after,
                     true,
+                    &mut last_unterminated,
+                    sep,
                 );
                 cursor = block.end1;
             } else {
                 if block.start2 > cursor {
-                    base_doc.write_range_into(cursor..block.start2, &mut out);
+                    Self::emit_range(
+                        &mut out,
+                        base_doc,
+                        cursor..block.start2,
+                        &mut last_unterminated,
+                        sep,
+                    );
                 }
                 Self::extend_selected(
                     &mut out,
@@ -842,6 +918,8 @@ impl StageLineTracker {
                     block.start1..block.end1,
                     sel_before,
                     true,
+                    &mut last_unterminated,
+                    sep,
                 );
                 Self::extend_selected(
                     &mut out,
@@ -849,12 +927,20 @@ impl StageLineTracker {
                     block.start2..block.end2,
                     sel_after,
                     false,
+                    &mut last_unterminated,
+                    sep,
                 );
                 cursor = block.end2;
             }
         }
         if cursor < base_doc.lines.len() {
-            base_doc.write_range_into(cursor..base_doc.lines.len(), &mut out);
+            Self::emit_range(
+                &mut out,
+                base_doc,
+                cursor..base_doc.lines.len(),
+                &mut last_unterminated,
+                sep,
+            );
         }
         out
     }
@@ -1388,5 +1474,45 @@ mod tests {
         assert!(tracker.unstaged_blocks.is_empty());
         let (stage_hunks, _) = tracker.build_interactive_hunks(false, DiffContext::Three, 1000);
         assert!(stage_hunks.is_empty());
+    }
+
+    #[test]
+    fn no_trailing_newline_partial_stage_rollback_unstage_and_ignore_whitespace() {
+        // Default whitespace: staged lacks trailing '\n', local appends "c\n".
+        let staged = b"a\nb";
+        let local = b"a\nb\nc\n";
+        let tracker = StageLineTracker::new(staged, staged, local);
+
+        // Staging only "+ c" must insert '\n' after unterminated "b", never "bc".
+        let stage_c = LineSelection::from_iters(false, [], [2]);
+        assert_eq!(tracker.stage_lines(&stage_c), b"a\nb\nc\n");
+
+        // Rolling back only "- b" must insert '\n' between restored "b" and existing "b\n".
+        let rollback_b = LineSelection::from_iters(false, [1], []);
+        assert_eq!(tracker.rollback_lines(&rollback_b), b"a\nb\nb\nc\n");
+
+        // Staging nothing preserves no-trailing-newline losslessly.
+        assert_eq!(tracker.stage_lines(&LineSelection::default()), b"a\nb");
+
+        // Unstaging when vcs lacks trailing '\n' must not concatenate lines.
+        let unstage_tracker = StageLineTracker::new(staged, local, local);
+        let unstage_b = LineSelection::from_iters(true, [1], []);
+        assert_eq!(unstage_tracker.unstage_lines(&unstage_b), b"a\nb\nb\nc\n");
+
+        // WhitespaceMode::IgnoreChange / IgnoreAll: staging the whole hunk must not concatenate.
+        for mode in [WhitespaceMode::IgnoreChange, WhitespaceMode::IgnoreAll] {
+            let ws_tracker = StageLineTracker::new_with_whitespace(staged, staged, local, mode);
+            let sel = LineSelection::from_iters(false, [], [2]);
+            assert_eq!(ws_tracker.stage_lines(&sel), b"a\nb\nc\n");
+        }
+
+        // CRLF-dominant document inserts "\r\n".
+        let crlf_staged = b"a\r\nb";
+        let crlf_local = b"a\r\nb\r\nc\r\n";
+        let crlf_tracker = StageLineTracker::new(crlf_staged, crlf_staged, crlf_local);
+        assert_eq!(
+            crlf_tracker.stage_lines(&LineSelection::from_iters(false, [], [2])),
+            b"a\r\nb\r\nc\r\n"
+        );
     }
 }

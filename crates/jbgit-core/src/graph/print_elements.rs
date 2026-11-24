@@ -399,8 +399,8 @@ impl<'a> PrintElementGenerator<'a> {
             || self
                 .visible
                 .bek_merges
-                .iter()
-                .any(|m| m.merge_row == row);
+                .binary_search_by(|m| row.cmp(&m.merge_row))
+                .is_ok();
 
         out.push(GraphPrintElement::Node {
             row,

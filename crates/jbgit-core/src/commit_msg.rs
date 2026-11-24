@@ -297,6 +297,17 @@ pub fn resolve_push_refspec_target(branch: &str, refspecs: &[String]) -> Option<
         format!("refs/heads/{branch}")
     };
 
+    // Negative refspecs (`^<pattern>`) exclude matching branches regardless of order.
+    for raw in refspecs {
+        let spec = raw.trim();
+        if let Some(neg) = spec.strip_prefix('^')
+            && !neg.is_empty()
+            && match_refspec_pattern(neg, &full_src, branch).is_some()
+        {
+            return None;
+        }
+    }
+
     for raw in refspecs {
         let spec = raw.trim().trim_start_matches('+');
         if spec.is_empty() || spec.starts_with('^') {
@@ -442,5 +453,20 @@ Signed-off-by: Very Long Developer Name With Long Domain <developer.name@very-lo
             Some("refs/for/main")
         );
         assert_eq!(resolve_push_refspec_target("other", &specs), None);
+    }
+
+    #[test]
+    fn push_refspec_target_honors_negative_refspecs() {
+        let specs = vec![
+            "refs/heads/*:refs/heads/*".to_string(),
+            "^refs/heads/wip/*".to_string(),
+            "^refs/heads/secret".to_string(),
+        ];
+        assert_eq!(resolve_push_refspec_target("wip/test", &specs), None);
+        assert_eq!(resolve_push_refspec_target("secret", &specs), None);
+        assert_eq!(
+            resolve_push_refspec_target("feat/ok", &specs).as_deref(),
+            Some("feat/ok")
+        );
     }
 }

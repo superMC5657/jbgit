@@ -125,8 +125,13 @@ fn join_commits_impl<C: JoinCommit>(
         new_refs,
     )?;
 
-    let (save_red_index, remove_commits) =
-        get_red_commits_and_saved_red_index(saved_log, previous_refs, first_block, new_refs)?;
+    let (save_red_index, remove_commits) = get_red_commits_and_saved_red_index(
+        saved_log,
+        oid_to_index,
+        previous_refs,
+        first_block,
+        new_refs,
+    )?;
 
     let unsafe_block_size = save_green_index.max(save_red_index);
     let added = new_commits.len();
@@ -242,6 +247,7 @@ fn get_first_untracked_index<C: JoinCommit>(
 
 fn get_red_commits_and_saved_red_index<C: JoinCommit>(
     saved_log: &[C],
+    oid_to_index: Option<&FxHashMap<Oid, usize>>,
     previous_refs: &HashSet<Oid>,
     first_block: &[C],
     new_refs: &HashSet<Oid>,
@@ -263,27 +269,35 @@ fn get_red_commits_and_saved_red_index<C: JoinCommit>(
         }
     }
 
-    if current_red.is_empty() {
-        // No previous ref disappeared; in immutable Git commit graphs no commit
-        // in `saved_log` can become unreachable unless a re-fetched commit
-        // dropped a parent (e.g. graft change), which we check below if needed.
-        if recent_parents.is_empty() {
-            return Ok((0, FxHashSet::default()));
-        }
-        // Check if any commit in `first_block` also existed in `saved_log` with
-        // different parents; otherwise nothing can be red.
-        let mut any_overlap = false;
-        for c in saved_log.iter().take(first_block.len().saturating_mul(2).max(16)) {
-            if let Some(&updated) = recent_parents.get(&c.oid())
-                && updated != c.parents()
-            {
-                any_overlap = true;
-                break;
+    // Track the deepest index in `saved_log` whose parent list changed in
+    // `first_block` (e.g., shallow/graft parent drop) so red-pruning never
+    // exits early before visiting that commit.
+    let mut last_changed_parent_idx: Option<usize> = None;
+    if !recent_parents.is_empty() {
+        if let Some(map) = oid_to_index {
+            for commit in first_block {
+                if let Some(&idx) = map.get(&commit.oid())
+                    && saved_log
+                        .get(idx)
+                        .is_some_and(|saved| saved.parents() != commit.parents())
+                {
+                    last_changed_parent_idx =
+                        Some(last_changed_parent_idx.map_or(idx, |m| m.max(idx)));
+                }
+            }
+        } else {
+            for (idx, c) in saved_log.iter().enumerate() {
+                if let Some(&updated) = recent_parents.get(&c.oid())
+                    && updated != c.parents()
+                {
+                    last_changed_parent_idx = Some(idx);
+                }
             }
         }
-        if !any_overlap {
-            return Ok((0, FxHashSet::default()));
-        }
+    }
+
+    if current_red.is_empty() && last_changed_parent_idx.is_none() {
+        return Ok((0, FxHashSet::default()));
     }
 
     let mut all_red: FxHashSet<Oid> = FxHashSet::default();
@@ -312,7 +326,9 @@ fn get_red_commits_and_saved_red_index<C: JoinCommit>(
             }
         }
 
-        if current_red.is_empty() {
+        if current_red.is_empty()
+            && last_changed_parent_idx.is_none_or(|max_idx| last_index >= max_idx)
+        {
             return Ok((last_index + 1, all_red));
         }
     }
@@ -714,5 +730,37 @@ mod tests {
             &refs(&[]),
         );
         assert_eq!(past_boundary.unwrap_err(), JoinError::IllegalState);
+    }
+
+    #[test]
+    fn graft_or_reshallow_parent_drop_past_index_zero_prunes_unreachable_ancestors() {
+        // Saved log: 3 -> 2 -> 1 (single ref at 3).
+        let saved = vec![
+            node(3, &[2], 300),
+            node(2, &[1], 200),
+            node(1, &[], 100),
+        ];
+        // Refs unchanged ({3}), but commit 2 (at saved_log[1], idx > 0) dropped parent 1.
+        let first_block = vec![node(3, &[2], 300), node(2, &[], 200)];
+        let res = join_commits_indexed(
+            &saved,
+            &index_map(&saved),
+            &refs(&[3]),
+            &first_block,
+            &refs(&[3]),
+        )
+        .unwrap();
+        assert_eq!(res.removed, 1);
+        assert_eq!(
+            res.commits.iter().map(|c| c.oid).collect::<Vec<_>>(),
+            vec![oid(3), oid(2)]
+        );
+        assert!(res.commits[1].parents.is_empty());
+
+        // Also verify the unindexed `join_commits` path.
+        let res_unindexed =
+            join_commits(&saved, &refs(&[3]), &first_block, &refs(&[3])).unwrap();
+        assert_eq!(res_unindexed.removed, 1);
+        assert_eq!(res_unindexed.commits, res.commits);
     }
 }

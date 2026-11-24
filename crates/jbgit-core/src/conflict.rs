@@ -670,96 +670,99 @@ impl ConflictDocument {
         let mut conflict_id = 0usize;
         let mut has_base = false;
 
-        while i < raw_lines.len() {
-            if let Some(rest) = raw_lines[i].strip_prefix("<<<<<<<") {
-                let top_label = rest.trim().to_string();
-                let start = i;
-                i += 1;
-                let mut top_lines = Vec::new();
-                let mut base_lines = Vec::new();
-                let mut bottom_lines = Vec::new();
-                let mut section = 0u8; // 0 = top, 1 = base, 2 = bottom
-                let mut closed = None;
-                let mut saw_base_marker = false;
-                while i < raw_lines.len() {
-                    if raw_lines[i].starts_with("|||||||") && section == 0 {
-                        section = 1;
-                        saw_base_marker = true;
-                    } else if raw_lines[i].starts_with("=======") && section < 2 {
-                        section = 2;
-                    } else if let Some(trest) = raw_lines[i].strip_prefix(">>>>>>>")
-                        && section == 2
-                    {
-                        closed = Some(trest.trim().to_string());
-                        i += 1;
-                        break;
-                    } else {
-                        match section {
-                            0 => top_lines.push(raw_lines[i].clone()),
-                            1 => base_lines.push(raw_lines[i].clone()),
-                            _ => bottom_lines.push(raw_lines[i].clone()),
-                        }
-                    }
+        if !options.side_presence.is_delete_conflict() {
+            while i < raw_lines.len() {
+                if let Some((marker_len, top_label_str)) = parse_open_marker(&raw_lines[i]) {
+                    let top_label = top_label_str.to_string();
+                    let start = i;
                     i += 1;
-                }
-                if let Some(bottom_label) = closed {
-                    if saw_base_marker {
-                        has_base = true;
-                    }
-                    if !common.is_empty() {
-                        segments.push(ConflictSegment::Common(std::mem::take(&mut common)));
-                    }
-                    let (ours_label, theirs_label, ours_lines, theirs_lines) =
-                        if options.is_reversed {
-                            let ours_lbl = if bottom_label.is_empty() {
-                                default_ours.to_string()
-                            } else {
-                                bottom_label
-                            };
-                            let theirs_lbl = if top_label.is_empty()
-                                || (top_label == "HEAD" && options.default_theirs_label.is_some())
-                            {
-                                default_theirs.to_string()
-                            } else {
-                                top_label
-                            };
-                            (ours_lbl, theirs_lbl, bottom_lines, top_lines)
+                    let mut top_lines = Vec::new();
+                    let mut base_lines = Vec::new();
+                    let mut bottom_lines = Vec::new();
+                    let mut section = 0u8; // 0 = top, 1 = base, 2 = bottom
+                    let mut closed = None;
+                    let mut saw_base_marker = false;
+                    while i < raw_lines.len() {
+                        if is_base_marker(&raw_lines[i], marker_len) && section == 0 {
+                            section = 1;
+                            saw_base_marker = true;
+                        } else if is_sep_marker(&raw_lines[i], marker_len) && section < 2 {
+                            section = 2;
+                        } else if let Some(trest) = parse_close_marker(&raw_lines[i], marker_len)
+                            && section == 2
+                        {
+                            closed = Some(trest.to_string());
+                            i += 1;
+                            break;
                         } else {
-                            let ours_lbl = if top_label.is_empty() {
-                                default_ours.to_string()
+                            match section {
+                                0 => top_lines.push(raw_lines[i].clone()),
+                                1 => base_lines.push(raw_lines[i].clone()),
+                                _ => bottom_lines.push(raw_lines[i].clone()),
+                            }
+                        }
+                        i += 1;
+                    }
+                    if let Some(bottom_label) = closed {
+                        if saw_base_marker {
+                            has_base = true;
+                        }
+                        if !common.is_empty() {
+                            segments.push(ConflictSegment::Common(std::mem::take(&mut common)));
+                        }
+                        let (ours_label, theirs_label, ours_lines, theirs_lines) =
+                            if options.is_reversed {
+                                let ours_lbl = if bottom_label.is_empty() {
+                                    default_ours.to_string()
+                                } else {
+                                    bottom_label
+                                };
+                                let theirs_lbl = if top_label.is_empty()
+                                    || (top_label == "HEAD"
+                                        && options.default_theirs_label.is_some())
+                                {
+                                    default_theirs.to_string()
+                                } else {
+                                    top_label
+                                };
+                                (ours_lbl, theirs_lbl, bottom_lines, top_lines)
                             } else {
-                                top_label
+                                let ours_lbl = if top_label.is_empty() {
+                                    default_ours.to_string()
+                                } else {
+                                    top_label
+                                };
+                                let theirs_lbl = if bottom_label.is_empty() {
+                                    default_theirs.to_string()
+                                } else {
+                                    bottom_label
+                                };
+                                (ours_lbl, theirs_lbl, top_lines, bottom_lines)
                             };
-                            let theirs_lbl = if bottom_label.is_empty() {
-                                default_theirs.to_string()
-                            } else {
-                                bottom_label
-                            };
-                            (ours_lbl, theirs_lbl, top_lines, bottom_lines)
-                        };
-                    segments.push(ConflictSegment::Conflict(ConflictBlock {
-                        id: conflict_id,
-                        kind: ThreeWayBlockKind::Conflict,
-                        ours_label,
-                        theirs_label,
-                        ours_lines,
-                        base_lines,
-                        theirs_lines,
-                        choice: ConflictChoice::Unresolved,
-                    }));
-                    conflict_id += 1;
-                    continue;
-                } else {
-                    // Malformed / unclosed marker: treat as normal text.
-                    common.extend(raw_lines[start..i].iter().cloned());
-                    continue;
+                        segments.push(ConflictSegment::Conflict(ConflictBlock {
+                            id: conflict_id,
+                            kind: ThreeWayBlockKind::Conflict,
+                            ours_label,
+                            theirs_label,
+                            ours_lines,
+                            base_lines,
+                            theirs_lines,
+                            choice: ConflictChoice::Unresolved,
+                        }));
+                        conflict_id += 1;
+                        continue;
+                    } else {
+                        // Malformed / unclosed marker: treat as normal text.
+                        common.extend(raw_lines[start..i].iter().cloned());
+                        continue;
+                    }
                 }
+                common.push(raw_lines[i].clone());
+                i += 1;
             }
-            common.push(raw_lines[i].clone());
-            i += 1;
-        }
-        if !common.is_empty() {
-            segments.push(ConflictSegment::Common(common));
+            if !common.is_empty() {
+                segments.push(ConflictSegment::Common(common));
+            }
         }
 
         // If no inline markers were found but index stages differ (or both
@@ -1104,6 +1107,45 @@ impl ConflictDocument {
             }
         }
         rows
+    }
+}
+
+fn parse_open_marker(line: &str) -> Option<(usize, &str)> {
+    let n = line.bytes().take_while(|&b| b == b'<').count();
+    if n < 7 {
+        return None;
+    }
+    let rest = &line[n..];
+    if rest.is_empty() || rest.starts_with(' ') || rest.starts_with('\t') {
+        Some((n, rest.trim()))
+    } else {
+        None
+    }
+}
+
+fn is_base_marker(line: &str, marker_len: usize) -> bool {
+    let n = line.bytes().take_while(|&b| b == b'|').count();
+    if n != marker_len {
+        return false;
+    }
+    let rest = &line[n..];
+    rest.is_empty() || rest.starts_with(' ') || rest.starts_with('\t')
+}
+
+fn is_sep_marker(line: &str, marker_len: usize) -> bool {
+    line.len() == marker_len && line.bytes().all(|b| b == b'=')
+}
+
+fn parse_close_marker(line: &str, marker_len: usize) -> Option<&str> {
+    let n = line.bytes().take_while(|&b| b == b'>').count();
+    if n != marker_len {
+        return None;
+    }
+    let rest = &line[n..];
+    if rest.is_empty() || rest.starts_with(' ') || rest.starts_with('\t') {
+        Some(rest.trim())
+    } else {
+        None
     }
 }
 
@@ -1488,5 +1530,57 @@ my replayed change
         del_doc.set_choice(0, ConflictChoice::Custom(vec!["revived".into()]));
         assert!(!del_doc.deletes_file());
         assert_eq!(del_doc.render_resolved(), "revived");
+    }
+
+    #[test]
+    fn delete_modify_with_literal_markers_synthesizes_whole_file_and_preserves_base() {
+        let surviving = "\
+intro
+<<<<<<< HEAD
+literal example
+=======
+other example
+>>>>>>> branch
+outro
+";
+        let base = "old base\n";
+        let mut doc = ConflictDocument::from_three_way(
+            "docs/conflict.md",
+            surviving,
+            Some(base),
+            Some(surviving),
+            None,
+            ConflictParseOptions {
+                side_presence: ConflictSidePresence::DeletedByTheirs,
+                ..Default::default()
+            },
+        );
+        assert_eq!(doc.conflict_count, 1);
+        assert!(doc.has_base);
+        let b = doc.block(0).unwrap();
+        assert_eq!(b.base_lines, vec!["old base"]);
+        assert_eq!(b.ours_lines.len(), 7);
+        assert!(b.theirs_lines.is_empty());
+
+        doc.set_choice(0, ConflictChoice::Ours);
+        assert_eq!(doc.render_resolved(), surviving);
+    }
+
+    #[test]
+    fn marker_fallback_does_not_split_ours_on_longer_equals_banner() {
+        let src = "\
+<<<<<<< HEAD
+Title
+===============
+body from ours
+=======
+body from theirs
+>>>>>>> feature
+";
+        let doc = ConflictDocument::parse("README.md", src, None, None);
+        assert_eq!(doc.conflict_count, 1);
+        let b = doc.block(0).unwrap();
+        assert_eq!(b.ours_lines, vec!["Title", "===============", "body from ours"]);
+        assert_eq!(b.theirs_lines, vec!["body from theirs"]);
     }
 }

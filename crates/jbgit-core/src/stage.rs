@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use rustc_hash::FxHashSet;
+use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::details::FileChange;
 
@@ -600,12 +600,17 @@ pub fn next_anchor_after_mutation(
         return old_selected.min(new_rows.len() - 1);
     };
     let group_kind = old_row.group_kind();
+    let mut new_pos: FxHashMap<&str, usize> =
+        FxHashMap::with_capacity_and_hasher(new_rows.len(), Default::default());
+    for (idx, row) in new_rows.iter().enumerate() {
+        new_pos.entry(row.key.as_str()).or_insert(idx);
+    }
 
     // 1. Prefer next file in the same group
     for cand in old_rows.iter().skip(old_selected + 1) {
         if cand.is_file()
             && cand.group_kind() == group_kind
-            && let Some(pos) = new_rows.iter().position(|r| r.key == cand.key)
+            && let Some(&pos) = new_pos.get(cand.key.as_str())
         {
             return pos;
         }
@@ -614,7 +619,7 @@ pub fn next_anchor_after_mutation(
     for cand in old_rows[..old_selected].iter().rev() {
         if cand.is_file()
             && cand.group_kind() == group_kind
-            && let Some(pos) = new_rows.iter().position(|r| r.key == cand.key)
+            && let Some(&pos) = new_pos.get(cand.key.as_str())
         {
             return pos;
         }
@@ -629,7 +634,7 @@ pub fn next_anchor_after_mutation(
     // 4. Fallback to next file in any group
     for cand in old_rows.iter().skip(old_selected + 1) {
         if cand.is_file()
-            && let Some(pos) = new_rows.iter().position(|r| r.key == cand.key)
+            && let Some(&pos) = new_pos.get(cand.key.as_str())
         {
             return pos;
         }

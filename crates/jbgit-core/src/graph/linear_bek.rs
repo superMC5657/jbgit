@@ -183,6 +183,26 @@ pub fn apply_linear_bek(
             continue;
         };
 
+        // Never delete or overwrite a `Collapsed` edge, otherwise hidden linear-segment
+        // commits would be orphaned with no collapsed edge remaining to expand them.
+        let touches_collapsed = down_adj[fragment.parent as usize]
+            .iter()
+            .any(|&(d, t)| d == fragment.left_child && t == GraphEdgeType::Collapsed)
+            || fragment.tail_edges.iter().any(|(&up, downs)| {
+                down_adj[up as usize]
+                    .iter()
+                    .any(|&(d, t)| downs.contains(&d) && t == GraphEdgeType::Collapsed)
+            })
+            || fragment.tails.iter().any(|&tail| {
+                tail < fragment.left_child
+                    && down_adj[tail as usize]
+                        .iter()
+                        .any(|&(d, t)| d == fragment.left_child && t == GraphEdgeType::Collapsed)
+            });
+        if touches_collapsed {
+            continue;
+        }
+
         // Apply fragment collapse to mutable `down_adj`.
         for (&up, downs) in &fragment.tail_edges {
             down_adj[up as usize].retain(|&(d, _)| !downs.contains(&d));

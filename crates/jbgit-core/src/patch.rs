@@ -500,13 +500,78 @@ pub fn parse_apply_conflicts(lines: &[String]) -> Vec<String> {
         .collect()
 }
 
-/// Strips git's C-style quoting from a path (`"a b.txt"` → `a b.txt`).
+/// Strips git's C-style quoting from a path (`"a b.txt"` → `a b.txt`,
+/// `"a/\346\265\213.txt"` → `a/测.txt`).
 fn unquote_path(raw: &str) -> String {
     let raw = raw.trim_end_matches(['\r', '\n']);
-    match raw.strip_prefix('"').and_then(|r| r.strip_suffix('"')) {
-        Some(inner) => inner.replace("\\\"", "\"").replace("\\\\", "\\"),
-        None => raw.to_string(),
+    let Some(inner) = raw.strip_prefix('"').and_then(|r| r.strip_suffix('"')) else {
+        return raw.to_string();
+    };
+    let bytes = inner.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'\\' && i + 1 < bytes.len() {
+            match bytes[i + 1] {
+                b'a' => {
+                    out.push(0x07);
+                    i += 2;
+                }
+                b'b' => {
+                    out.push(0x08);
+                    i += 2;
+                }
+                b'f' => {
+                    out.push(0x0c);
+                    i += 2;
+                }
+                b'n' => {
+                    out.push(b'\n');
+                    i += 2;
+                }
+                b'r' => {
+                    out.push(b'\r');
+                    i += 2;
+                }
+                b't' => {
+                    out.push(b'\t');
+                    i += 2;
+                }
+                b'v' => {
+                    out.push(0x0b);
+                    i += 2;
+                }
+                b'"' => {
+                    out.push(b'"');
+                    i += 2;
+                }
+                b'\\' => {
+                    out.push(b'\\');
+                    i += 2;
+                }
+                d0 @ b'0'..=b'3'
+                    if i + 3 < bytes.len()
+                        && matches!(bytes[i + 2], b'0'..=b'7')
+                        && matches!(bytes[i + 3], b'0'..=b'7') =>
+                {
+                    let val = ((d0 - b'0') << 6)
+                        | ((bytes[i + 2] - b'0') << 3)
+                        | (bytes[i + 3] - b'0');
+                    out.push(val);
+                    i += 4;
+                }
+                other => {
+                    out.push(b'\\');
+                    out.push(other);
+                    i += 2;
+                }
+            }
+        } else {
+            out.push(bytes[i]);
+            i += 1;
+        }
     }
+    String::from_utf8(out).unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned())
 }
 
 #[cfg(test)]
@@ -681,5 +746,29 @@ new file mode 100644
             ..check.clone()
         };
         assert!(!wt_check.needs_three_way_index_fallback());
+    }
+
+    #[test]
+    fn c_quoted_cjk_and_escaped_patch_paths_decode_cleanly() {
+        let patch = "\
+diff --git \"a/\\346\\265\\213\\350\\257\\225.txt\" \"b/\\346\\265\\213\\350\\257\\225.txt\"
+index 1111111..2222222 100644
+--- \"a/\\346\\265\\213\\350\\257\\225.txt\"
++++ \"b/\\346\\265\\213\\350\\257\\225.txt\"
+@@ -1 +1 @@
+-old
++new
+";
+        let (sections, has_idx) = parse_patch_sections(patch, 1, None);
+        assert!(has_idx);
+        assert_eq!(sections.len(), 1);
+        assert_eq!(sections[0].path, "测试.txt");
+
+        let conflicts = parse_apply_conflicts(&[
+            "U \"dir/\\346\\265\\213\\350\\257\\225.txt\"".to_string(),
+        ]);
+        assert_eq!(conflicts, vec!["dir/测试.txt"]);
+
+        assert_eq!(unquote_path("\"a\\tb\\nc\\\"d\\\\e\""), "a\tb\nc\"d\\e");
     }
 }

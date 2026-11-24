@@ -174,13 +174,18 @@ pub fn sanitize_branch_name_on_typing(input: &str, replacement: &str) -> String 
         cleaned.push_str(replacement);
     }
 
-    // Apply structural ref rules until stable (leading `.`/`-`/`/`, `//`, `..`, `./`, `/.`).
+    // Apply structural ref rules until stable (leading `.`/`-`/`/`, `//`, `..`, `./`, `/.`, `@{`).
     let mut out = cleaned;
     loop {
         let mut next = String::with_capacity(out.len());
         let mut prev: Option<char> = None;
         for ch in out.chars() {
             if next.is_empty() && matches!(ch, '.' | '-' | '/') {
+                continue;
+            }
+            if ch == '{' && prev == Some('@') {
+                next.pop();
+                prev = next.chars().last();
                 continue;
             }
             if ch == '/' && prev == Some('/') {
@@ -211,18 +216,36 @@ pub fn sanitize_branch_name_on_typing(input: &str, replacement: &str) -> String 
 
 /// Final branch-name sanitization on confirm (matches
 /// `GitRefNameValidator.cleanUpBranchName`): applies
-/// [`sanitize_branch_name_on_typing`] and trims trailing `.`, `/`, and `.lock`.
+/// [`sanitize_branch_name_on_typing`], strips trailing `.` and `.lock` from
+/// each path component, and clears standalone `"@"`.
 pub fn sanitize_branch_name(input: &str, replacement: &str) -> String {
     let mut out = sanitize_branch_name_on_typing(input, replacement);
     loop {
-        let before = out.len();
-        while out.ends_with('.') || out.ends_with('/') {
-            out.pop();
+        let before = out.clone();
+        let cleaned_components: Vec<String> = out
+            .split('/')
+            .filter_map(|comp| {
+                let mut c = comp.to_string();
+                loop {
+                    let len_before = c.len();
+                    while c.ends_with('.') {
+                        c.pop();
+                    }
+                    if let Some(stripped) = c.strip_suffix(".lock") {
+                        c = stripped.to_string();
+                    }
+                    if c.len() == len_before {
+                        break;
+                    }
+                }
+                (!c.is_empty()).then_some(c)
+            })
+            .collect();
+        out = sanitize_branch_name_on_typing(&cleaned_components.join("/"), replacement);
+        if out == "@" {
+            out.clear();
         }
-        if let Some(stripped) = out.strip_suffix(".lock") {
-            out = stripped.to_string();
-        }
-        if out.len() == before {
+        if out == before {
             return out;
         }
     }

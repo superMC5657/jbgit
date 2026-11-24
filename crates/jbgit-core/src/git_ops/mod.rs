@@ -978,4 +978,50 @@ mod tests {
             "Apply stash@{0} (--index)"
         );
     }
+
+    #[test]
+    fn custom_squash_message_is_preserved_when_followed_by_fixup_or_squash() {
+        let mut todo = vec![
+            TodoEntry::pick(oid(1), "a"),
+            TodoEntry {
+                action: TodoAction::Squash,
+                oid: oid(2),
+                subject: "b".into(),
+                message: Some("custom squash msg".into()),
+            },
+            TodoEntry {
+                action: TodoAction::Fixup,
+                oid: oid(3),
+                subject: "c".into(),
+                message: None,
+            },
+        ];
+        // Even before default_squash_messages, render_todo must carry the custom message to the end of the fold group.
+        let direct = render_todo(&todo, false, |i| format!("'/tmp/m{i}'"));
+        assert!(
+            direct.contains("exec git commit --amend --only --allow-empty -F '/tmp/m1'"),
+            "{direct}"
+        );
+
+        default_squash_messages(&mut todo, |o| format!("orig {}", o.short()));
+        assert_eq!(todo[2].message.as_deref(), Some("custom squash msg"));
+        let rendered = render_todo(&todo, false, |i| format!("'/tmp/m{i}'"));
+        assert!(
+            rendered.contains("exec git commit --amend --only --allow-empty -F '/tmp/m2'"),
+            "{rendered}"
+        );
+    }
+
+    #[test]
+    fn sanitize_branch_name_strips_component_lock_at_brace_and_standalone_at() {
+        assert_eq!(sanitize_branch_name("foo.lock/bar", "_"), "foo/bar");
+        assert!(validate_ref_name_typed(&sanitize_branch_name("foo.lock/bar", "_"), &[]).is_ok());
+
+        assert_eq!(sanitize_branch_name_on_typing("@~{", "_"), "");
+        assert_eq!(sanitize_branch_name("@~{", "_"), "");
+
+        assert_eq!(sanitize_branch_name("@@{", "_"), "");
+        assert_eq!(sanitize_branch_name("@", "_"), "");
+        assert_eq!(sanitize_branch_name("a.lock.lock/b.lock", "_"), "a/b");
+    }
 }
