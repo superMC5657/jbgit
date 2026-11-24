@@ -14,7 +14,56 @@ use super::{
 };
 
 impl AppState {
+    fn handle_mouse_move(&mut self, col: u16, row: u16) {
+        self.hover_pos = Some((col, row));
+        let next_target = self
+            .hit_registry
+            .hit_test(col, row)
+            .map(|r| r.target.clone());
+        let mut changed = false;
+        if let Some(crate::hit_test::HitTarget::MenuItem {
+            menu_depth,
+            item_idx,
+        }) = &next_target
+        {
+            let now = self.now();
+            if self.modal_stack.apply_menu_hover(
+                *menu_depth,
+                *item_idx,
+                now,
+                &mut self.menu_hover,
+            ) {
+                changed = true;
+            }
+        }
+        if let Some(crate::hit_test::HitTarget::BranchPopupRow(idx)) = &next_target
+            && let Some(ModalLayer::BranchesPopup { selected, .. }) = self.modal_stack.last_mut()
+            && *selected != *idx
+        {
+            *selected = *idx;
+            changed = true;
+        }
+        if next_target != self.hover_target {
+            let visual_change = self
+                .hover_target
+                .as_ref()
+                .is_some_and(|t| t.has_visual_hover())
+                || next_target
+                    .as_ref()
+                    .is_some_and(|t| t.has_visual_hover());
+            self.hover_target = next_target;
+            changed |= visual_change;
+        }
+        if changed {
+            self.needs_redraw = true;
+        }
+    }
+
     pub fn dispatch(&mut self, action: Action) -> Vec<Effect> {
+        if let Action::MouseMove { col, row } = action {
+            self.handle_mouse_move(col, row);
+            return Vec::new();
+        }
         let mut effects = Vec::new();
         self.needs_redraw = true;
         self.ensure_graph_cache();
@@ -71,6 +120,9 @@ impl AppState {
             }
             Action::RefreshAll => {
                 self.loading_snapshot = true;
+                self.clear_in_flight_requests();
+                self.diff_caches.clear_worktree_blames();
+                self.invalidate_worktree_diffs(&mut effects);
                 effects.push(Effect::RefreshRepoAndStage);
             }
             Action::GoToParentSmart => {
@@ -349,6 +401,15 @@ impl AppState {
                             }
                         }
                     }
+                    ModalLayer::FileHistory(fh) if fh.search_editing => {
+                        let chars: Vec<char> = text
+                            .chars()
+                            .filter(|c| *c != '\n' && *c != '\r' && !c.is_control())
+                            .collect();
+                        for ch in chars {
+                            effects.extend(self.dispatch(Action::FileHistorySearchChar(ch)));
+                        }
+                    }
                     ModalLayer::FileHistory(fh) if fh.diff.search.editing => {
                         let chars: Vec<char> = text
                             .chars()
@@ -600,51 +661,8 @@ impl AppState {
                     effects.extend(self.dispatch(a));
                 }
             }
-            Action::MouseMove { col, row } => {
-                self.hover_pos = Some((col, row));
-                let next_target = self
-                    .hit_registry
-                    .hit_test(col, row)
-                    .map(|r| r.target.clone());
-                let mut changed = false;
-                if let Some(crate::hit_test::HitTarget::MenuItem {
-                    menu_depth,
-                    item_idx,
-                }) = &next_target
-                {
-                    let now = self.now();
-                    if self.modal_stack.apply_menu_hover(
-                        *menu_depth,
-                        *item_idx,
-                        now,
-                        &mut self.menu_hover,
-                    ) {
-                        self.needs_redraw = true;
-                    }
-                    changed = true;
-                }
-                if let Some(crate::hit_test::HitTarget::BranchPopupRow(idx)) = &next_target
-                    && let Some(ModalLayer::BranchesPopup { selected, .. }) =
-                        self.modal_stack.last_mut()
-                    && *selected != *idx
-                {
-                    *selected = *idx;
-                    changed = true;
-                }
-                if next_target != self.hover_target {
-                    let visual_change = self
-                        .hover_target
-                        .as_ref()
-                        .is_some_and(|t| t.has_visual_hover())
-                        || next_target
-                            .as_ref()
-                            .is_some_and(|t| t.has_visual_hover());
-                    self.hover_target = next_target;
-                    changed |= visual_change;
-                }
-                if !changed {
-                    self.needs_redraw = false;
-                }
+            Action::MouseMove { .. } => {
+                unreachable!("fast-pathed before ensure_graph_cache");
             }
             Action::MouseRecordClick { col, row } => {
                 self.last_click = Some(super::ClickRecord {
@@ -716,6 +734,8 @@ impl AppState {
             }
             Action::DiscardTargetsConfirmed(targets) => {
                 self.stage_workbench.invalidate_paths(&targets);
+                self.stage_workbench
+                    .clear_rollback_undo_for_targets(&targets);
                 effects.push(Effect::DiscardTargets(targets));
             }
             Action::ExecuteCommitConfirmed(req) => {
@@ -746,12 +766,14 @@ impl AppState {
             Action::RetryCliCommand {
                 args,
                 stdin_payload,
+                env,
                 is_read_only,
                 refresh_after,
             } => {
                 effects.push(Effect::RunCli {
                     args,
                     stdin_payload,
+                    env,
                     is_read_only,
                     refresh_after,
                 });
@@ -767,6 +789,7 @@ impl AppState {
                 effects.push(Effect::RunCli {
                     args,
                     stdin_payload: None,
+                    env: Vec::new(),
                     is_read_only: true,
                     refresh_after: RefreshScope::None,
                 });
@@ -784,7 +807,7 @@ impl AppState {
                 effects.push(Effect::CopyToClipboard(text));
             }
             action @ Action::FilterLogByRange { .. } => {
-                self.active_tab = WorkspaceTab::Log;
+                self.set_focus(WorkspaceTab::Log, PaneId::LogCommitTable);
                 let now = self.now();
                 let mut lctx = LogDispatchCtx {
                     snap: snap.as_ref(),
@@ -801,7 +824,7 @@ impl AppState {
                 let _ = self.log.dispatch(&action, &mut lctx);
             }
             Action::FilterLogByPath(path) => {
-                self.active_tab = WorkspaceTab::Log;
+                self.set_focus(WorkspaceTab::Log, PaneId::LogCommitTable);
                 let now = self.now();
                 let mut lctx = LogDispatchCtx {
                     snap: snap.as_ref(),
@@ -818,7 +841,7 @@ impl AppState {
                 let _ = self.log.dispatch(&Action::FilterLogByPath(path), &mut lctx);
             }
             Action::ShowDirectoryHistory(path) => {
-                self.active_tab = WorkspaceTab::Log;
+                self.set_focus(WorkspaceTab::Log, PaneId::LogCommitTable);
                 let now = self.now();
                 let mut lctx = LogDispatchCtx {
                     snap: snap.as_ref(),
@@ -972,7 +995,7 @@ impl AppState {
                 self.close_annotate();
                 self.close_file_history();
             }
-            self.active_tab = WorkspaceTab::Log;
+            self.set_focus(WorkspaceTab::Log, PaneId::LogCommitTable);
             effects.extend(self.dispatch(Action::JumpToCommit(oid)));
         }
     }
@@ -991,7 +1014,7 @@ impl AppState {
                     self.close_annotate();
                     self.close_file_history();
                 }
-                self.active_tab = WorkspaceTab::Log;
+                self.set_focus(WorkspaceTab::Log, PaneId::LogCommitTable);
                 effects.extend(self.dispatch(Action::JumpToCommit(oid)));
             }
             Some(_) => {
@@ -2864,7 +2887,7 @@ impl AppState {
                     .and_then(|rf| rf.selected_entry().cloned())
                 {
                     self.modal_stack.close_reflog();
-                    self.active_tab = WorkspaceTab::Log;
+                    self.set_focus(WorkspaceTab::Log, PaneId::LogCommitTable);
                     effects.extend(self.dispatch(Action::JumpToCommit(entry.oid)));
                 }
             }

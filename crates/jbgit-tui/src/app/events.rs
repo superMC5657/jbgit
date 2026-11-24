@@ -11,7 +11,40 @@ use super::{Action, AppState, Effect, ModalLayer, SyntaxJobKey, UiAsyncEvent};
 impl AppState {
     pub fn apply_ui_async_event(&mut self, event: UiAsyncEvent) -> Vec<Effect> {
         let mut effects = Vec::new();
+        let event = match event {
+            UiAsyncEvent::TaskStamped { task_id, event } => match event.as_ref() {
+                UiAsyncEvent::InitRepoFinished(_) | UiAsyncEvent::InitRepoFailed(_) => {
+                    if self.active_init_task_id != Some(task_id) {
+                        return effects;
+                    }
+                    self.active_init_task_id = None;
+                    *event
+                }
+                UiAsyncEvent::CloneProgress(_) => {
+                    if self.active_clone_task_id != Some(task_id) {
+                        return effects;
+                    }
+                    *event
+                }
+                UiAsyncEvent::CloneFinished(_) => {
+                    if self.active_clone_task_id != Some(task_id) {
+                        return effects;
+                    }
+                    self.active_clone_task_id = None;
+                    *event
+                }
+                UiAsyncEvent::WorktreeSetupFinished { .. } => {
+                    if !self.active_worktree_setup_ids.remove(&task_id) {
+                        return effects;
+                    }
+                    *event
+                }
+                _ => *event,
+            },
+            other => other,
+        };
         match event {
+            UiAsyncEvent::TaskStamped { .. } => unreachable!("unwrapped above"),
             UiAsyncEvent::ContainingBranches { oid, token, names } => {
                 if self.log.details.resolve_containing_branches(oid, &token, names) {
                     self.needs_redraw = true;
@@ -237,6 +270,7 @@ impl AppState {
                     && self.stage_workbench.status().map(Arc::as_ptr) != prev_stage_ptr
                 {
                     self.diff_caches.clear_worktree_blames();
+                    self.invalidate_worktree_diffs(&mut effects);
                     self.check_conflict_resolver_staleness();
                 }
                 self.reconcile_all_requests(&mut effects);
@@ -253,6 +287,7 @@ impl AppState {
                 self.loading_snapshot = false;
                 self.loading_more_commits = false;
                 let prev_head = self.repo_snapshot.as_ref().and_then(|s| s.head_oid);
+                let prev_ongoing = self.ongoing_kind();
                 let head_changed = prev_head.is_some() && prev_head != snapshot.head_oid;
                 if self.log.branches.settings_path.is_none()
                     && !snapshot.common_dir.as_os_str().is_empty()
@@ -279,6 +314,12 @@ impl AppState {
                 self.repo_snapshot = Some(snapshot);
                 self.apply_pending_remote_selection();
                 self.sync_open_push_dialog_remotes(&mut effects);
+                if self.pending_update_stash
+                    && self.ongoing_kind().is_none()
+                    && (self.pending_update_stash_restore || prev_ongoing.is_some())
+                {
+                    self.restore_pending_update_stash(true, &mut effects);
+                }
                 if let Some(rf) = self.modal_stack.reflog_mut() {
                     rf.loading = true;
                     rf.error = None;
@@ -423,6 +464,7 @@ impl AppState {
                 if !self.request_slots.accept(slot, epoch) {
                     return effects;
                 }
+                let mut rebase_matched_request = false;
                 match slot {
                     RequestSlotId::LogFileDiff => {
                         if self.log.details.diff.requested.as_ref() == Some(&diff.key) {
@@ -460,6 +502,7 @@ impl AppState {
                             {
                                 if r.diff_requested.as_ref() == Some(&diff.key) {
                                     r.diff_requested = None;
+                                    rebase_matched_request = true;
                                 }
                                 break;
                             }
@@ -504,17 +547,33 @@ impl AppState {
                     .and_then(|rf| rf.desired_diff_key(&self.diff_caches))
                     .as_ref()
                     == Some(&diff.key);
-                let rebase_wants = self.modal_stack.iter().rev().any(|l| {
-                    matches!(
-                        l,
-                        ModalLayer::Dialog(d)
-                            if matches!(
-                                d.as_ref(),
-                                crate::dialogs::Dialog::RebaseTodo(r)
-                                    if r.diff_requested.as_ref() == Some(&diff.key)
-                            )
-                    )
-                });
+                let rebase_wants = rebase_matched_request
+                    || self.modal_stack.iter().rev().any(|l| {
+                        let ModalLayer::Dialog(d) = l else {
+                            return false;
+                        };
+                        let crate::dialogs::Dialog::RebaseTodo(r) = d.as_ref() else {
+                            return false;
+                        };
+                        if !r.show_diff {
+                            return false;
+                        }
+                        if r.diff_requested.as_ref() == Some(&diff.key) {
+                            return true;
+                        }
+                        let Some(det_key) = r.desired_details_key() else {
+                            return false;
+                        };
+                        if det_key != diff.key.details {
+                            return false;
+                        }
+                        self.diff_caches
+                            .peek_details(&det_key)
+                            .and_then(|b| b.changes.get(r.selected_file))
+                            .is_some_and(|c| {
+                                c.path == diff.key.path && c.old_path == diff.key.old_path
+                            })
+                    });
                 let is_wanted = log_wants
                     || stash_wants
                     || fh_wants
@@ -761,6 +820,7 @@ impl AppState {
                 message,
                 retry_args,
                 retry_stdin,
+                retry_env,
                 retry_is_read_only,
                 retry_refresh_after,
             } => {
@@ -785,6 +845,7 @@ impl AppState {
                         vec![Action::RetryCliCommand {
                             args: retry_args,
                             stdin_payload: retry_stdin,
+                            env: retry_env,
                             is_read_only: retry_is_read_only,
                             refresh_after: retry_refresh_after,
                         }],
@@ -839,35 +900,32 @@ impl AppState {
             EngineEvent::Error(msg) => {
                 self.loading_snapshot = false;
                 self.loading_more_commits = false;
-                self.log.details.diff.requested = None;
-                self.stash.on_error();
-                self.stage_workbench.on_engine_error();
+                // Keep `requested` keys intact on diff/details views so failing
+                // single-flight loads do not spin in an infinite hot retry loop
+                // on every subsequent reconcile; changing selection or pressing
+                // RefreshAll (`Ctrl+R`) resets them. Never unlock
+                // `commit_in_progress` here — commits only conclude via
+                // `CommitCompleted` or `CommitCrlfWarning`.
                 if let Some(fh) = self.modal_stack.file_history_mut() {
                     fh.loading = false;
-                    fh.diff.requested = None;
                     if fh.bundle.is_none() {
                         fh.error = Some(msg.clone());
                     }
                 }
                 if let Some(ann) = self.modal_stack.annotate_mut() {
                     ann.loading = false;
-                    ann.diff.requested = None;
                     if ann.bundle.is_none() && ann.error.is_none() {
                         ann.error = Some(AnnotateError::Message(msg.clone()));
                     }
                 }
                 if let Some(pd) = self.modal_stack.push_dialog_mut() {
                     pd.loading = false;
-                    pd.details_requested = None;
-                    pd.diff.requested = None;
                     if pd.outgoing.is_none() && pd.error.is_none() {
                         pd.error = Some(msg.clone());
                     }
                 }
                 if let Some(rf) = self.modal_stack.reflog_mut() {
                     rf.loading = false;
-                    rf.details_requested = None;
-                    rf.diff.requested = None;
                     if rf.bundle.is_none() && rf.error.is_none() {
                         rf.error = Some(msg.clone());
                     }
@@ -880,20 +938,91 @@ impl AppState {
                 if let Some(ap) = self.modal_stack.apply_patch_mut() {
                     ap.pending_check_due = None;
                 }
-                for layer in self.modal_stack.iter_mut() {
-                    if let ModalLayer::Dialog(d) = layer
-                        && let crate::dialogs::Dialog::RebaseTodo(r) = d.as_mut()
-                    {
-                        r.details_requested = None;
-                        r.diff_requested = None;
-                    }
-                }
                 self.status_notice = Some(self.i18n.t_fmt("toast.engine_error", &[("msg", &msg)]));
+                return effects;
             }
         }
 
         self.reconcile_all_requests(&mut effects);
         effects
+    }
+
+    /// Clears single-flight request de-duplication markers across views/modals
+    /// so an explicit refresh (`Ctrl+R`) can retry previously failed fetches.
+    pub(crate) fn clear_in_flight_requests(&mut self) {
+        self.log.details.diff.requested = None;
+        self.stash.on_error();
+        self.stage_workbench.clear_in_flight_diff_request();
+        if let Some(fh) = self.modal_stack.file_history_mut() {
+            fh.details_requested = None;
+            fh.diff.requested = None;
+        }
+        if let Some(ann) = self.modal_stack.annotate_mut() {
+            ann.details_requested = None;
+            ann.diff.requested = None;
+        }
+        if let Some(pd) = self.modal_stack.push_dialog_mut() {
+            pd.details_requested = None;
+            pd.diff.requested = None;
+        }
+        if let Some(rf) = self.modal_stack.reflog_mut() {
+            rf.details_requested = None;
+            rf.diff.requested = None;
+        }
+        for layer in self.modal_stack.iter_mut() {
+            if let ModalLayer::Dialog(d) = layer
+                && let crate::dialogs::Dialog::RebaseTodo(r) = d.as_mut()
+            {
+                r.details_requested = None;
+                r.diff_requested = None;
+            }
+        }
+    }
+
+    /// Evicts cached `CompareWithLocal` entries from `diff_caches` and
+    /// re-requests any actively viewed `CompareWithLocal` details/diffs.
+    pub(crate) fn invalidate_worktree_diffs(&mut self, effects: &mut Vec<Effect>) {
+        self.diff_caches.clear_worktree_diffs();
+        if self
+            .log
+            .details
+            .diff
+            .requested
+            .as_ref()
+            .is_some_and(|k| k.details.mode == jbgit_core::DetailsMode::CompareWithLocal)
+        {
+            self.log.details.diff.requested = None;
+        }
+        if let Some(key) = self
+            .log
+            .details
+            .changes
+            .current_key
+            .clone()
+            .filter(|k| k.mode == jbgit_core::DetailsMode::CompareWithLocal)
+        {
+            effects.push(Effect::RequestCommitDetails {
+                slot: RequestSlotId::LogCommitDetails,
+                key,
+            });
+        }
+        if let Some(fh) = self.modal_stack.file_history_mut() {
+            if fh
+                .diff
+                .requested
+                .as_ref()
+                .is_some_and(|k| k.details.mode == jbgit_core::DetailsMode::CompareWithLocal)
+            {
+                fh.diff.requested = None;
+            }
+            if fh
+                .details_requested
+                .as_ref()
+                .is_some_and(|k| k.mode == jbgit_core::DetailsMode::CompareWithLocal)
+            {
+                fh.details_requested = None;
+            }
+        }
     }
 
     fn check_conflict_resolver_staleness(&mut self) {

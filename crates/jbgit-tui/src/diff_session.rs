@@ -108,6 +108,17 @@ impl DiffCacheStore {
         self.blames.retain(|k, _| k.rev.is_some());
     }
 
+    /// Evicts cached `CompareWithLocal` commit details, file diffs, and syntax
+    /// entries after working-tree changes or an explicit refresh.
+    pub fn clear_worktree_diffs(&mut self) {
+        self.details
+            .retain(|k, _| !matches!(k.mode, jbgit_core::DetailsMode::CompareWithLocal));
+        self.diffs
+            .retain(|k, _| !matches!(k.details.mode, jbgit_core::DetailsMode::CompareWithLocal));
+        self.syntax
+            .retain(|k, _| !matches!(k.details.mode, jbgit_core::DetailsMode::CompareWithLocal));
+    }
+
     /// Looks up cached blob OIDs for `key` from `details` so the engine can
     /// take the `O(1)` blob-lookup fast path instead of re-diffing trees.
     pub fn known_oids_for(&self, key: &FileDiffKey) -> Option<(Option<Oid>, Option<Oid>)> {

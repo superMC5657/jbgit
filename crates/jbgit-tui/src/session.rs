@@ -165,6 +165,7 @@ pub struct ProdHost {
     /// spawned them ([`SessionInput::UiAsyncFrom`]).
     pub ui_async_tx: UnboundedSender<SessionInput>,
     pub cell_px_probe_deadline: Option<tokio::time::Instant>,
+    pub graphics_probe_deadline: Option<tokio::time::Instant>,
 }
 
 impl ProdHost {
@@ -173,6 +174,7 @@ impl ProdHost {
             term_guard,
             ui_async_tx,
             cell_px_probe_deadline: None,
+            graphics_probe_deadline: None,
         }
     }
 }
@@ -184,10 +186,31 @@ impl SessionHost for ProdHost {
 
     fn on_resize(&mut self, state: &mut AppState) {
         // Font zoom (Ctrl +/-) arrives as a resize: re-calibrate cell pixels.
-        let prev_cell_px = state.log.graph_renderer.capabilities().cell_px;
+        let prev_caps = state.log.graph_renderer.capabilities();
+        if std::env::var_os("TMUX").is_some() {
+            // Never spawn `tmux display-message` synchronously on the UI event
+            // loop: update cell pixels directly from `window_size()` and
+            // schedule a debounced background capability re-probe.
+            let fresh_cell_px = crossterm::terminal::window_size().ok().and_then(|w| {
+                CellPixelSize::from_window(w.columns, w.rows, w.width, w.height)
+            });
+            let mut caps = prev_caps;
+            if let Some(px) = fresh_cell_px {
+                caps.cell_px = Some(px);
+            }
+            if caps.needs_async_wezterm_probe() {
+                caps.cell_px = prev_caps.cell_px;
+                self.cell_px_probe_deadline =
+                    Some(tokio::time::Instant::now() + Duration::from_millis(100));
+            }
+            self.graphics_probe_deadline =
+                Some(tokio::time::Instant::now() + Duration::from_millis(100));
+            state.log.graph_renderer.set_capabilities(caps);
+            return;
+        }
         let mut caps = GraphicsCapabilities::detect();
         if caps.needs_async_wezterm_probe() {
-            caps.cell_px = prev_cell_px;
+            caps.cell_px = prev_caps.cell_px;
             self.cell_px_probe_deadline =
                 Some(tokio::time::Instant::now() + Duration::from_millis(100));
         }
@@ -582,12 +605,26 @@ impl TuiSession {
 
     /// Directory where the user requested `git init` from the Welcome modal.
     pub fn take_init_repo_request(&mut self) -> Option<PathBuf> {
-        self.state.pending_init_repo.take()
+        self.take_init_repo_task().map(|(_, dir)| dir)
+    }
+
+    /// Task-ID-stamped `git init` request for the production event loop.
+    pub fn take_init_repo_task(&mut self) -> Option<(u64, PathBuf)> {
+        let dir = self.state.pending_init_repo.take()?;
+        let id = self.state.active_init_task_id.unwrap_or(0);
+        Some((id, dir))
     }
 
     /// Validated `git clone` request submitted from the `Clone Repository…` modal.
     pub fn take_clone_repo_request(&mut self) -> Option<jbgit_engine::CloneRequest> {
-        self.state.pending_clone_repo.take()
+        self.take_clone_repo_task().map(|(_, req)| req)
+    }
+
+    /// Task-ID-stamped `git clone` request for the production event loop.
+    pub fn take_clone_repo_task(&mut self) -> Option<(u64, jbgit_engine::CloneRequest)> {
+        let req = self.state.pending_clone_repo.take()?;
+        let id = self.state.active_clone_task_id.unwrap_or(0);
+        Some((id, req))
     }
 
     /// True if the user cancelled an active `git clone` task.
@@ -597,7 +634,14 @@ impl TuiSession {
 
     /// Confirmed `[worktree] setup_command` `(worktree_path, command)` to run.
     pub fn take_worktree_setup_request(&mut self) -> Option<(PathBuf, String)> {
-        self.state.pending_worktree_setup.take()
+        self.take_worktree_setup_task().map(|(_, dir, cmd)| (dir, cmd))
+    }
+
+    /// Task-ID-stamped `[worktree] setup_command` request for the production event loop.
+    pub fn take_worktree_setup_task(&mut self) -> Option<(u64, PathBuf, String)> {
+        let (dir, cmd) = self.state.pending_worktree_setup.take()?;
+        let id = self.state.pending_worktree_setup_task_id.take().unwrap_or(0);
+        Some((id, dir, cmd))
     }
 
     /// Workdir of the bound repository.
@@ -630,7 +674,14 @@ impl TuiSession {
         self.state.stage_syntax.invalidate();
         self.state.blame_syntax.invalidate();
         self.state.range_syntax.invalidate();
+        self.state.tree_syntax.invalidate();
         self.shutdown()
+    }
+
+    /// Snapshot of the current recent-repositories list so a host can persist
+    /// a newly bound repository off the UI event loop before calling [`Self::rebind`].
+    pub fn recent_repos_clone(&self) -> crate::repo_switcher::RecentRepos {
+        self.state.recent_repos.clone()
     }
 
     /// Second half of a repository rebind: replaces the per-repository state
@@ -649,7 +700,9 @@ impl TuiSession {
             .set_capabilities(prev.log.graph_renderer.capabilities());
         next.async_graph_enabled = prev.async_graph_enabled;
         next.credentials = std::mem::take(&mut prev.credentials);
-        next.recent_repos = std::mem::take(&mut prev.recent_repos);
+        if !next.recent_repos_pre_recorded {
+            next.recent_repos = std::mem::take(&mut prev.recent_repos);
+        }
         if next.git_version.is_none() {
             next.git_version = prev.git_version;
         }
@@ -660,6 +713,7 @@ impl TuiSession {
         next.clock = Some(self.clock);
         next.needs_redraw = true;
         next.on_repository_bound(Some(writes_finished));
+        next.sync_credential_dialog();
         self.state = next;
     }
 }
@@ -717,6 +771,7 @@ impl RepoSession {
         askpass: Option<jbgit_engine::askpass::AskpassServer>,
     ) -> (Self, AppState) {
         let workdir = loc.workdir.clone();
+        let common_dir = loc.common_dir.clone();
         let config = crate::config::AppConfig::load(Some(&workdir));
         let scan_config = config.jbgit.performance.to_engine_config();
         let git_override = config.jbgit.git.executable.clone();
@@ -734,6 +789,7 @@ impl RepoSession {
             Ok((handle, rx)) => {
                 let configured = config.jbgit.git.configured_executable().map(str::to_string);
                 let mut state = AppState::new_with_config(workdir, None, config);
+                state.preload_remembered_options_from_dir(&common_dir);
                 populate_git_info(&mut state, configured.as_deref(), handle.git_info());
                 if let Some(err) = state.git_info_error.clone() {
                     state.status_notice = Some(err);
@@ -753,10 +809,35 @@ impl RepoSession {
                 let err = cli_i18n.t_fmt("cli.engine_err", &[("err", &e.to_string())]);
                 let configured = config.jbgit.git.configured_executable().map(str::to_string);
                 let mut state = AppState::new_with_config(workdir, Some(err), config);
+                state.preload_remembered_options_from_dir(&common_dir);
                 populate_git_info(&mut state, configured.as_deref(), None);
                 (Self::detached(), state)
             }
         }
+    }
+
+    /// Binds `loc` and persists it into `recent_repos` in one blocking step so
+    /// repository switches never perform config, git-version, or recent-repos
+    /// disk I/O on the UI event loop.
+    pub fn bind_location_with_recent(
+        loc: RepoLocation,
+        askpass: Option<jbgit_engine::askpass::AskpassServer>,
+        mut recent_repos: crate::repo_switcher::RecentRepos,
+    ) -> (Self, AppState) {
+        let (repo, mut state) = Self::bind_location(loc, askpass);
+        if state.repo_error.is_none()
+            && let Some(recent_target) =
+                crate::repo_switcher::standalone_recent_target(&state.repo_path_display)
+        {
+            let recent_name = recent_target.file_name().map_or_else(
+                || recent_target.display().to_string(),
+                |n| n.to_string_lossy().into(),
+            );
+            recent_repos.record(&recent_target, &recent_name);
+        }
+        state.recent_repos = recent_repos;
+        state.recent_repos_pre_recorded = true;
+        (repo, state)
     }
 
     /// Stops the engine and its askpass bridge: advances request slots, stops

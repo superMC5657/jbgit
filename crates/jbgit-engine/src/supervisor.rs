@@ -158,6 +158,7 @@ pub enum TaskRequest {
         id: u64,
         args: Vec<String>,
         stdin_payload: Option<Vec<u8>>,
+        env: Vec<(String, String)>,
         is_read_only: bool,
         refresh_after: RefreshScope,
     },
@@ -361,6 +362,7 @@ pub enum EngineEvent {
         message: String,
         retry_args: Vec<String>,
         retry_stdin: Option<Vec<u8>>,
+        retry_env: Vec<(String, String)>,
         retry_is_read_only: bool,
         retry_refresh_after: RefreshScope,
     },
@@ -1300,9 +1302,10 @@ fn handle_task_request(ctx: &SupervisorContext, task: ScheduledTask) {
             id,
             args,
             stdin_payload,
+            env,
             is_read_only,
             refresh_after,
-        } => spawn_run_git_cli(ctx, id, args, stdin_payload, is_read_only, refresh_after),
+        } => spawn_run_git_cli(ctx, id, args, stdin_payload, env, is_read_only, refresh_after),
     }
 }
 
@@ -1736,6 +1739,7 @@ fn spawn_execute_commit(ctx: &SupervisorContext, id: u64, mut request: CommitReq
                 message: conflict.message,
                 retry_args: conflict.retry_args,
                 retry_stdin: conflict.retry_stdin,
+                retry_env: conflict.retry_env,
                 retry_is_read_only: conflict.retry_is_read_only,
                 retry_refresh_after: RefreshScope::All,
             });
@@ -1825,6 +1829,7 @@ fn spawn_run_git_op(ctx: &SupervisorContext, op: GitOp) {
                 message: conflict.message,
                 retry_args: conflict.retry_args,
                 retry_stdin: conflict.retry_stdin,
+                retry_env: conflict.retry_env,
                 retry_is_read_only: conflict.retry_is_read_only,
                 retry_refresh_after: refresh,
             });
@@ -1842,6 +1847,7 @@ fn spawn_run_git_cli(
     id: u64,
     args: Vec<String>,
     stdin_payload: Option<Vec<u8>>,
+    env: Vec<(String, String)>,
     is_read_only: bool,
     refresh_after: RefreshScope,
 ) {
@@ -1872,7 +1878,7 @@ fn spawn_run_git_cli(
                     args: &args,
                     stdin_payload: stdin_payload.as_deref(),
                     is_read_only,
-                    env: &[],
+                    env: &env,
                 },
                 |ev| forward_cli_event(&tx, ev),
             )
@@ -1888,6 +1894,7 @@ fn spawn_run_git_cli(
                         message,
                         retry_args: args,
                         retry_stdin: stdin_payload,
+                        retry_env: env,
                         retry_is_read_only: is_read_only,
                         retry_refresh_after: refresh_after,
                     });
@@ -2017,6 +2024,7 @@ mod tests {
             id: 42,
             args: vec!["rev-parse".into(), "HEAD".into()],
             stdin_payload: None,
+            env: Vec::new(),
             is_read_only: true,
             refresh_after: RefreshScope::None,
         });

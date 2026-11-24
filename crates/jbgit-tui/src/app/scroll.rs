@@ -69,6 +69,7 @@ impl ScrollViewport {
 
     pub fn reset(&mut self) {
         self.offset = 0;
+        self.max_scroll = None;
     }
 
     /// Adjusts `offset` so `cursor_row` is visible within `viewport_h` (when > 0)

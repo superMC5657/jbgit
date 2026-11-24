@@ -61,6 +61,7 @@ pub const DRAFT_DEBOUNCE: Duration = Duration::from_millis(300);
 pub struct RollbackUndoEntry {
     pub path: String,
     pub prev_local_bytes: Vec<u8>,
+    pub post_rollback_bytes: Vec<u8>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -174,6 +175,8 @@ pub struct CommitWorkbench {
     empty_message_error: bool,
     commit_history: Vec<String>,
     history_path: Option<PathBuf>,
+    history_seq: u64,
+    history_io: Arc<DraftPersistence>,
     draft_path: Option<PathBuf>,
     draft_dirty: bool,
     draft_save_deadline: Option<Instant>,
@@ -240,6 +243,8 @@ impl Default for CommitWorkbench {
             empty_message_error: false,
             commit_history: Vec::new(),
             history_path: None,
+            history_seq: 0,
+            history_io: Arc::default(),
             draft_path: None,
             draft_dirty: false,
             draft_save_deadline: None,
@@ -910,15 +915,7 @@ impl CommitWorkbench {
         Some((path, self.draft_contents(), self.draft_seq))
     }
 
-    /// Fires the debounced draft write once its deadline has passed.
-    pub fn flush_draft_due(&mut self, now: Instant) {
-        if self.draft_save_deadline.is_none_or(|at| at > now) {
-            return;
-        }
-        let Some((path, contents, seq)) = self.take_draft_write() else {
-            self.draft_save_deadline = None;
-            return;
-        };
+    fn spawn_draft_write(&mut self, path: PathBuf, contents: Option<String>, seq: u64) {
         self.draft_jobs.retain(|job| !job.is_finished());
         let io = Arc::clone(&self.draft_io);
         let spawned = std::thread::Builder::new()
@@ -932,6 +929,34 @@ impl CommitWorkbench {
                     self.draft_io.write(path, contents.as_deref(), seq);
                 }
             }
+        }
+    }
+
+    /// Fires the debounced draft write once its deadline has passed.
+    pub fn flush_draft_due(&mut self, now: Instant) {
+        if self.draft_save_deadline.is_none_or(|at| at > now) {
+            return;
+        }
+        let Some((path, contents, seq)) = self.take_draft_write() else {
+            self.draft_save_deadline = None;
+            return;
+        };
+        self.spawn_draft_write(path, contents, seq);
+    }
+
+    /// Immediately schedules any pending draft write off the UI event loop
+    /// (synchronous under `#[cfg(test)]` for deterministic unit tests).
+    pub fn flush_draft_async(&mut self) {
+        let Some((path, contents, seq)) = self.take_draft_write() else {
+            return;
+        };
+        #[cfg(test)]
+        {
+            self.draft_io.write(&path, contents.as_deref(), seq);
+        }
+        #[cfg(not(test))]
+        {
+            self.spawn_draft_write(path, contents, seq);
         }
     }
 
@@ -970,9 +995,14 @@ impl CommitWorkbench {
         self.commit_history.retain(|m| m != &trimmed);
         self.commit_history.insert(0, trimmed);
         self.commit_history.truncate(MAX_COMMIT_HISTORY);
-        if let Some(path) = &self.history_path {
+        if let Some(path) = self.history_path.clone() {
             let serialized = self.commit_history.join("\n---\n");
-            let _ = std::fs::write(path, serialized);
+            self.history_seq += 1;
+            let seq = self.history_seq;
+            let io = Arc::clone(&self.history_io);
+            crate::app::spawn_background_io("jbgit-history-writer", move || {
+                io.write(&path, Some(&serialized), seq);
+            });
         }
     }
 
@@ -1381,14 +1411,32 @@ impl CommitWorkbench {
         self.pending_select_immediate = true;
     }
 
+    pub fn clear_rollback_undo(&mut self) {
+        self.rollback_undo_stack.clear();
+    }
+
+    pub fn clear_rollback_undo_for_path(&mut self, path: &str) {
+        self.rollback_undo_stack.retain(|e| e.path != path);
+    }
+
+    pub fn clear_rollback_undo_for_targets(&mut self, targets: &[StageTarget]) {
+        self.rollback_undo_stack.retain(|e| {
+            !targets.iter().any(|t| {
+                t.path == e.path
+                    || t.old_path.as_deref() == Some(e.path.as_str())
+                    || e.path.starts_with(&format!("{}/", t.path.trim_end_matches('/')))
+            })
+        });
+    }
+
     pub fn on_git_op_succeeded(&mut self) {
         self.invalidate_all_diff_caches();
+        self.rollback_undo_stack.clear();
         self.pending_select_immediate = true;
     }
 
-    pub fn on_engine_error(&mut self) {
+    pub fn clear_in_flight_diff_request(&mut self) {
         self.requested_diff = None;
-        self.commit_in_progress = false;
     }
 
     pub fn on_repo_snapshot_loaded(
@@ -1408,8 +1456,11 @@ impl CommitWorkbench {
             };
             self.load_draft(draft_dir.join("jbgit-commit-draft"));
         }
-        if head_changed && !self.amend {
-            self.amend_preview = None;
+        if head_changed {
+            self.rollback_undo_stack.clear();
+            if !self.amend {
+                self.amend_preview = None;
+            }
         }
         if self.amend {
             effects.push(Effect::RequestAmendPreview);
@@ -1616,6 +1667,16 @@ impl CommitWorkbench {
                 if self.requested_diff.as_ref() == Some(&diff.key) {
                     self.requested_diff = None;
                 }
+                if let Some(top_for_path) = self
+                    .rollback_undo_stack
+                    .iter()
+                    .rev()
+                    .find(|e| e.path == diff.key.path)
+                    && top_for_path.post_rollback_bytes != diff.local_bytes
+                {
+                    let stale_path = diff.key.path.clone();
+                    self.rollback_undo_stack.retain(|e| e.path != stale_path);
+                }
                 let is_wanted = self.current_diff_key.as_ref() == Some(&diff.key);
                 self.diff_cache.insert(diff.key.clone(), Arc::clone(&diff));
                 if is_wanted {
@@ -1702,6 +1763,7 @@ impl CommitWorkbench {
                 self.commit_in_progress = false;
                 if outcome.success {
                     self.invalidate_all_diff_caches();
+                    self.rollback_undo_stack.clear();
                     self.pending_select_immediate = true;
                     let was_amend = self.amend;
                     let committed_msg = self.editor.text();
@@ -1749,6 +1811,7 @@ impl CommitWorkbench {
                 None
             }
             EngineEvent::UndoCommitCompleted { restored_message } => {
+                self.rollback_undo_stack.clear();
                 self.last_commit_banner = None;
                 self.set_amend_preview(None);
                 let editor_is_only_template = self
@@ -2196,6 +2259,33 @@ impl CommitWorkbench {
             }
             Action::StageDiffUndoRollback => {
                 if let Some(entry) = self.rollback_undo_stack.pop() {
+                    let diff_mismatch = self.current_diff.as_ref().is_some_and(|d| {
+                        d.key.path == entry.path && d.local_bytes != entry.post_rollback_bytes
+                    });
+                    let disk_mismatch = ctx
+                        .snap
+                        .filter(|s| !s.workdir.as_os_str().is_empty())
+                        .is_some_and(|s| {
+                            let full = s.workdir.join(&entry.path);
+                            match std::fs::read(&full) {
+                                Ok(bytes) => bytes != entry.post_rollback_bytes,
+                                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                                    !entry.post_rollback_bytes.is_empty()
+                                        && self.status.as_ref().is_some_and(|st| {
+                                            st.unstaged.iter().any(|item| {
+                                                item.path == entry.path
+                                                    && item.kind
+                                                        == jbgit_core::FileStatusKind::Deleted
+                                            })
+                                        })
+                                }
+                                Err(_) => true,
+                            }
+                        });
+                    if diff_mismatch || disk_mismatch {
+                        self.rollback_undo_stack.retain(|e| e.path != entry.path);
+                        return true;
+                    }
                     self.invalidate_diff_cache_for_path(&entry.path);
                     self.pending_select_immediate = true;
                     *ctx.status_notice =
@@ -2354,6 +2444,7 @@ impl CommitWorkbench {
                 self.rollback_undo_stack.push(RollbackUndoEntry {
                     path: diff.key.path.clone(),
                     prev_local_bytes: diff.local_bytes.clone(),
+                    post_rollback_bytes: new_local.clone(),
                 });
                 self.visual_anchor_row = None;
                 self.invalidate_diff_cache_for_path(&diff.key.path);
@@ -2440,7 +2531,7 @@ impl CommitWorkbench {
                 if next {
                     self.saved_draft = Some(self.editor.text());
                     self.mark_draft_dirty(ctx.now);
-                    self.flush_draft_sync();
+                    self.flush_draft_async();
                     self.amend_awaiting_message = true;
                     if let Some(preview) = &self.amend_preview
                         && !preview.message.trim().is_empty()
@@ -2455,7 +2546,7 @@ impl CommitWorkbench {
                         self.editor.set_text(&draft);
                     }
                     self.mark_draft_dirty(ctx.now);
-                    self.flush_draft_sync();
+                    self.flush_draft_async();
                 }
             }
             Action::CommitToggleSignoff => {
@@ -2559,6 +2650,7 @@ impl CommitWorkbench {
                     .clone()
                     .or_else(|| self.current_diff_key.as_ref().map(|k| k.path.clone()));
                 if let Some(p) = path {
+                    self.clear_rollback_undo_for_path(&p);
                     ctx.effects.push(Effect::OpenExternalEditorFile(p));
                 }
             }
@@ -2576,7 +2668,7 @@ impl CommitWorkbench {
         if self.commit_in_progress {
             return;
         }
-        self.flush_draft_sync();
+        self.flush_draft_async();
         if let Some(status) = &self.status
             && !status.conflicted.is_empty()
         {

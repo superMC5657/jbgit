@@ -240,3 +240,144 @@ fn tui_session_host_isolates_clipboard_and_external_editor_handoffs() {
             }
     )));
 }
+
+#[test]
+fn stamped_clone_and_rebind_drop_stale_tasks_invalidate_tree_syntax_and_sync_credentials() {
+    use crate::app::{ModalLayer, UiAsyncEvent};
+    use crate::repo_lifecycle::{CloneDialogAction, CloneField};
+
+    let tmp = tempfile::TempDir::new().unwrap();
+    let repo_dir = tmp.path().join("repo-a");
+    let cloned_dir = tmp.path().join("repo-cloned");
+    std::fs::create_dir_all(&repo_dir).unwrap();
+    std::fs::create_dir_all(&cloned_dir).unwrap();
+
+    let mut snap = snapshot();
+    snap.workdir = repo_dir.clone();
+    let mut ts = TestSession::with_snapshot(snap);
+
+    // 1. Start clone task #1, cancel it, start clone task #2 -> stale task #1 completion is dropped.
+    ts.dispatch(Action::OpenCloneRepo {
+        base_dir: Some(tmp.path().to_path_buf()),
+    });
+    ts.dispatch(Action::CloneRepoUpdate(CloneDialogAction::SetFocus(
+        CloneField::Url,
+    )));
+    ts.type_str("https://example.com/repo-cloned.git");
+    ts.dispatch(Action::CloneRepoSubmit);
+    let (task1, _) = ts
+        .session
+        .take_clone_repo_task()
+        .expect("task 1 must be queued");
+
+    ts.dispatch(Action::CloneRepoCancel);
+    assert!(ts.session.take_clone_cancel_request());
+
+    // Deliver late stamped completion from cancelled task #1 -> must be ignored.
+    let gen0 = ts.session.generation();
+    ts.session.step_turn(
+        [SessionInput::UiAsyncFrom(
+            gen0,
+            UiAsyncEvent::TaskStamped {
+                task_id: task1,
+                event: Box::new(UiAsyncEvent::CloneFinished(Ok(cloned_dir.clone()))),
+            },
+        )],
+        ts.session.now(),
+        Some(&ts.engine),
+        &mut ts.host,
+    );
+    assert!(
+        ts.session.take_repo_switch_request().is_none(),
+        "cancelled clone task completion must not trigger repo switch"
+    );
+
+    // 2. Start clone task #2, then rebind to another repo -> old generation completion is dropped,
+    //    tree_syntax is invalidated on prepare_unbind, and queued credentials re-sync on rebind.
+    ts.dispatch(Action::CloneRepoSubmit);
+    let (task2, _) = ts
+        .session
+        .take_clone_repo_task()
+        .expect("task 2 must be queued");
+
+    let tree_key = jbgit_core::TreeBlobKey {
+        oid: jbgit_core::Oid::from_bytes([4u8; 20]),
+        path: "src/lib.rs".into(),
+    };
+    let (tree_epoch, _) = ts
+        .state_mut()
+        .tree_syntax
+        .begin_cancelable(tree_key)
+        .expect("tree syntax job should start");
+
+    let (cred_req, _cred_rx) =
+        jbgit_engine::askpass::AskpassRequest::new("Password:".to_string());
+    ts.deliver_ui_async(UiAsyncEvent::Askpass(cred_req));
+    assert!(!ts.state().credentials.is_empty());
+
+    let _ = ts.session.prepare_unbind();
+    assert!(
+        !ts.state().tree_syntax.is_busy(),
+        "prepare_unbind must invalidate tree_syntax (epoch {tree_epoch})"
+    );
+
+    let next_state = super::test_state(tmp.path().join("repo-b"));
+    ts.session.rebind(next_state, true);
+    assert!(
+        ts.state().modal_stack.iter().any(|l| matches!(
+            l,
+            ModalLayer::Dialog(d) if matches!(d.as_ref(), crate::dialogs::Dialog::Credential(_))
+        )),
+        "rebind must call sync_credential_dialog() to re-open carried credential prompt"
+    );
+
+    // Deliver late task #2 completion stamped with pre-rebind generation -> dropped!
+    ts.session.step_turn(
+        [SessionInput::UiAsyncFrom(
+            gen0,
+            UiAsyncEvent::TaskStamped {
+                task_id: task2,
+                event: Box::new(UiAsyncEvent::CloneFinished(Ok(cloned_dir))),
+            },
+        )],
+        ts.session.now(),
+        Some(&ts.engine),
+        &mut ts.host,
+    );
+    assert!(
+        ts.session.take_repo_switch_request().is_none(),
+        "pre-rebind clone task must not hijack newly bound repository"
+    );
+}
+
+#[test]
+fn log_flush_pending_respects_details_deadline() {
+    let mut ts = TestSession::with_snapshot(snapshot());
+    let _ = ts.take_requests();
+    // Move selection to arm the 30ms details debounce timer.
+    ts.send_key(KeyCode::Down, KeyModifiers::NONE);
+    assert!(ts.state().log.details.pending.is_some());
+    let _ = ts.take_requests();
+
+    // Flush BEFORE the 30ms deadline elapses (e.g. another timer woke the loop).
+    ts.step([SessionInput::FlushPendingDetails]);
+    let early_reqs = ts.take_requests();
+    assert!(
+        early_reqs.is_empty(),
+        "flush_pending must not emit LoadCommitDetails before deadline: {early_reqs:?}"
+    );
+    assert!(
+        ts.state().log.details.pending.is_some(),
+        "pending details entry must remain armed until deadline"
+    );
+
+    // Advance past deadline -> now emits LoadCommitDetails.
+    ts.advance_by(Duration::from_millis(40));
+    let due_reqs = ts.take_requests();
+    assert!(
+        due_reqs
+            .iter()
+            .any(|(r, _)| matches!(r, TaskRequest::LoadCommitDetails { .. })),
+        "flush_pending must emit LoadCommitDetails once deadline passes: {due_reqs:?}"
+    );
+}

@@ -703,8 +703,9 @@ impl AppState {
             Action::PromptPush { branch, up_to } => self.prompt_push(branch, *up_to, effects),
             Action::PromptMerge { rev } => self.prompt_merge(rev),
             Action::RememberMergeOptions(options) => {
+                let body = options.to_remembered();
+                self.remembered_merge_options = Some(MergeOptions::from_remembered(&body));
                 if let Some(path) = self.merge_options_path() {
-                    let body = options.to_remembered();
                     super::spawn_background_io("jbgit-opts-writer", move || {
                         let _ = std::fs::write(path, body);
                     });
@@ -712,8 +713,9 @@ impl AppState {
             }
             Action::PromptPull => self.prompt_pull(),
             Action::RememberPullOptions(options) => {
+                let body = options.to_remembered();
+                self.remembered_pull_options = Some(PullOptions::from_remembered(&body));
                 if let Some(path) = self.pull_options_path() {
-                    let body = options.to_remembered();
                     super::spawn_background_io("jbgit-opts-writer", move || {
                         let _ = std::fs::write(path, body);
                     });
@@ -736,8 +738,9 @@ impl AppState {
             }
             Action::PromptRebase { onto } => self.prompt_rebase(onto.clone()),
             Action::RememberRebaseOptions(options) => {
+                let body = options.to_remembered();
+                self.remembered_rebase_options = Some(RebaseOptions::from_remembered(&body));
                 if let Some(path) = self.rebase_options_path() {
-                    let body = options.to_remembered();
                     super::spawn_background_io("jbgit-opts-writer", move || {
                         let _ = std::fs::write(path, body);
                     });
@@ -745,7 +748,9 @@ impl AppState {
             }
             Action::OpenInteractiveRebaseFromDialog(options) => {
                 let opened = self.open_interactive_rebase_onto(&options.onto);
-                if !opened {
+                if opened {
+                    self.sync_rebase_todo_preview(effects);
+                } else {
                     self.start_git_op(GitOp::Rebase { options: options.clone() }, effects);
                 }
             }
@@ -1189,9 +1194,10 @@ impl AppState {
             );
             return;
         };
-        let local_name = remote_ref
-            .split_once('/')
-            .map_or(remote_ref, |(_, b)| b)
+        let local_name = snap
+            .split_tracking(remote_ref)
+            .map(|(_, b)| b)
+            .unwrap_or_else(|| remote_ref.split_once('/').map_or(remote_ref, |(_, b)| b))
             .to_string();
         let op = match snap.local_branch(&local_name) {
             None => GitOp::CheckoutNewBranch {
@@ -1768,6 +1774,30 @@ impl AppState {
         }
     }
 
+    pub(crate) fn preload_remembered_options_from_dir(&mut self, common_dir: &std::path::Path) {
+        if common_dir.as_os_str().is_empty() {
+            return;
+        }
+        self.remembered_merge_options = Some(
+            std::fs::read_to_string(common_dir.join("jbgit-merge-options"))
+                .ok()
+                .map(|t| MergeOptions::from_remembered(&t))
+                .unwrap_or_default(),
+        );
+        self.remembered_pull_options = Some(
+            std::fs::read_to_string(common_dir.join("jbgit-pull-options"))
+                .ok()
+                .map(|t| PullOptions::from_remembered(&t))
+                .unwrap_or_default(),
+        );
+        self.remembered_rebase_options = Some(
+            std::fs::read_to_string(common_dir.join("jbgit-rebase-options"))
+                .ok()
+                .map(|t| RebaseOptions::from_remembered(&t))
+                .unwrap_or_default(),
+        );
+    }
+
     fn merge_options_path(&self) -> Option<std::path::PathBuf> {
         let snap = self.snapshot()?;
         (!snap.common_dir.as_os_str().is_empty())
@@ -1775,10 +1805,20 @@ impl AppState {
     }
 
     fn load_merge_options(&self) -> MergeOptions {
-        self.merge_options_path()
-            .and_then(|p| std::fs::read_to_string(p).ok())
-            .map(|t| MergeOptions::from_remembered(&t))
-            .unwrap_or_default()
+        if let Some(opts) = &self.remembered_merge_options {
+            return opts.clone();
+        }
+        #[cfg(test)]
+        {
+            self.merge_options_path()
+                .and_then(|p| std::fs::read_to_string(p).ok())
+                .map(|t| MergeOptions::from_remembered(&t))
+                .unwrap_or_default()
+        }
+        #[cfg(not(test))]
+        {
+            MergeOptions::default()
+        }
     }
 
     fn prompt_merge(&mut self, rev: &str) {
@@ -1807,10 +1847,20 @@ impl AppState {
     }
 
     fn load_pull_options(&self) -> PullOptions {
-        self.pull_options_path()
-            .and_then(|p| std::fs::read_to_string(p).ok())
-            .map(|t| PullOptions::from_remembered(&t))
-            .unwrap_or_default()
+        if let Some(opts) = &self.remembered_pull_options {
+            return opts.clone();
+        }
+        #[cfg(test)]
+        {
+            self.pull_options_path()
+                .and_then(|p| std::fs::read_to_string(p).ok())
+                .map(|t| PullOptions::from_remembered(&t))
+                .unwrap_or_default()
+        }
+        #[cfg(not(test))]
+        {
+            PullOptions::default()
+        }
     }
 
     fn prompt_pull(&mut self) {
@@ -1838,10 +1888,20 @@ impl AppState {
     }
 
     fn load_rebase_options(&self) -> RebaseOptions {
-        self.rebase_options_path()
-            .and_then(|p| std::fs::read_to_string(p).ok())
-            .map(|t| RebaseOptions::from_remembered(&t))
-            .unwrap_or_default()
+        if let Some(opts) = &self.remembered_rebase_options {
+            return opts.clone();
+        }
+        #[cfg(test)]
+        {
+            self.rebase_options_path()
+                .and_then(|p| std::fs::read_to_string(p).ok())
+                .map(|t| RebaseOptions::from_remembered(&t))
+                .unwrap_or_default()
+        }
+        #[cfg(not(test))]
+        {
+            RebaseOptions::default()
+        }
     }
 
     fn prompt_rebase(&mut self, onto: Option<String>) {
@@ -1946,6 +2006,7 @@ impl AppState {
         } else {
             r.selected_file = 0;
         }
+        let mut cached_for_syntax = None;
         if r.show_diff
             && let Some(change) = bundle.changes.get(r.selected_file)
         {
@@ -1956,15 +2017,20 @@ impl AppState {
                 context,
                 whitespace: self.config.jbgit.diff.whitespace.to_core(),
             };
-            if self.diff_caches.peek_diff(&diff_key).is_none()
-                && r.diff_requested.as_ref() != Some(&diff_key)
-            {
+            if let Some(cached) = self.diff_caches.peek_diff(&diff_key) {
+                if self.diff_caches.peek_syntax(&diff_key).is_none() {
+                    cached_for_syntax = Some(std::sync::Arc::clone(cached));
+                }
+            } else if r.diff_requested.as_ref() != Some(&diff_key) {
                 r.diff_requested = Some(diff_key.clone());
                 effects.push(Effect::RequestFileDiff {
                     slot: RequestSlotId::RebaseFileDiff,
                     key: diff_key,
                 });
             }
+        }
+        if let Some(diff) = cached_for_syntax {
+            self.schedule_file_syntax(diff, effects);
         }
     }
 
@@ -2229,23 +2295,33 @@ impl AppState {
     }
 
     /// Pops the stash Update Project kept while the user resolved conflicts.
-    fn restore_pending_update_stash(&mut self, effects: &mut Vec<Effect>) {
-        if !std::mem::take(&mut self.pending_update_stash) {
+    pub(crate) fn restore_pending_update_stash(
+        &mut self,
+        from_snapshot: bool,
+        effects: &mut Vec<Effect>,
+    ) {
+        if !self.pending_update_stash {
             return;
         }
         if self.ongoing_kind().is_some() {
-            self.pending_update_stash = true;
             return;
         }
-        let index = self
-            .snapshot()
-            .and_then(|s| {
-                s.stashes
-                    .iter()
-                    .find(|e| e.message.contains(UPDATE_PROJECT_STASH_MESSAGE))
-                    .map(|e| e.index)
-            })
-            .unwrap_or(0);
+        self.pending_update_stash = false;
+        self.pending_update_stash_restore = false;
+        let stashes = self.snapshot().map(|s| s.stashes.as_slice()).unwrap_or(&[]);
+        let matched = stashes
+            .iter()
+            .find(|e| e.message.contains(UPDATE_PROJECT_STASH_MESSAGE))
+            .map(|e| e.index);
+        let index = match matched {
+            Some(idx) => idx,
+            // Only fall back to index 0 when invoked immediately after Ongoing
+            // finished on a pre-refresh snapshot that had no stashes at all;
+            // never pop an unrelated existing stash@{0} or a missing stash after
+            // a fresh snapshot arrived.
+            None if !from_snapshot && stashes.is_empty() => 0,
+            None => return,
+        };
         self.start_git_op(
             GitOp::StashApply {
                 index,
@@ -2571,7 +2647,8 @@ impl AppState {
                             )),
                         });
                     } else {
-                        self.restore_pending_update_stash(effects);
+                        self.pending_update_stash_restore = true;
+                        self.restore_pending_update_stash(false, effects);
                     }
                 }
                 _ => {}
@@ -2662,6 +2739,7 @@ impl AppState {
                 let is_update = matches!(op, GitOp::UpdateProject { .. });
                 if is_update && outcome.stash_kept && outcome.update_info.is_none() {
                     self.pending_update_stash = true;
+                    self.pending_update_stash_restore = false;
                 }
                 let kept = if is_update && outcome.stash_kept {
                     if outcome.update_info.is_some() {

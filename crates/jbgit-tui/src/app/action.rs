@@ -67,6 +67,7 @@ pub enum Action {
     RetryCliCommand {
         args: Vec<String>,
         stdin_payload: Option<Vec<u8>>,
+        env: Vec<(String, String)>,
         is_read_only: bool,
         refresh_after: RefreshScope,
     },

@@ -95,6 +95,13 @@ fn start_askpass(
     AskpassServer::start(responder).ok()
 }
 
+fn spawn_graphics_caps_probe(tx: tokio::sync::mpsc::UnboundedSender<GraphicsCapabilities>) {
+    tokio::task::spawn_blocking(move || {
+        let caps = GraphicsCapabilities::detect();
+        let _ = tx.send(caps);
+    });
+}
+
 /// In-process repository switch (Spec 12 Issue 09): validate the target,
 /// unbind the current repository (cancel slots, flush the draft, stop the
 /// engine waiting ≤ 5 s for writes, release graphics), bind the new one and
@@ -103,12 +110,18 @@ async fn switch_repository(
     session: &mut TuiSession,
     repo: &mut RepoSession,
     host: &mut ProdHost,
+    active_clone_task: &mut Option<tokio::task::JoinHandle<()>>,
     target: &std::path::Path,
 ) {
-    let loc = match RepoSession::discover(target) {
-        Ok(loc) => loc,
-        Err(e) => {
+    let target_buf = target.to_path_buf();
+    let loc = match tokio::task::spawn_blocking(move || RepoSession::discover(&target_buf)).await {
+        Ok(Ok(loc)) => loc,
+        Ok(Err(e)) => {
             session.report_repo_switch_failure(target, &e);
+            return;
+        }
+        Err(e) => {
+            session.report_repo_switch_failure(target, &e.to_string());
             return;
         }
     };
@@ -116,6 +129,10 @@ async fn switch_repository(
         session.report_repo_already_open(target);
         return;
     }
+    if let Some(handle) = active_clone_task.take() {
+        handle.abort();
+    }
+    let recent_repos = session.recent_repos_clone();
     let release = session.prepare_unbind();
     if !release.is_empty() {
         let _ = std::io::stdout().write_all(&release);
@@ -123,7 +140,17 @@ async fn switch_repository(
     let old = std::mem::replace(repo, RepoSession::detached());
     let writes_finished = old.unbind().await;
     let askpass = start_askpass(host.ui_async_tx.clone());
-    let (next_repo, next_state) = RepoSession::bind_location(loc, askpass);
+    let (next_repo, next_state) = match tokio::task::spawn_blocking(move || {
+        RepoSession::bind_location_with_recent(loc, askpass, recent_repos)
+    })
+    .await
+    {
+        Ok(bound) => bound,
+        Err(e) => {
+            session.report_repo_switch_failure(target, &e.to_string());
+            return;
+        }
+    };
     *repo = next_repo;
     session.rebind(next_state, writes_finished);
     repo.generation = session.generation();
@@ -153,7 +180,13 @@ async fn main() -> Result<()> {
     }
 
     let mut event_stream = EventStream::new();
-    let initial_caps = GraphicsCapabilities::detect();
+    let initial_caps = if std::env::var_os("TMUX").is_some() {
+        tokio::task::spawn_blocking(GraphicsCapabilities::detect)
+            .await
+            .unwrap_or_default()
+    } else {
+        GraphicsCapabilities::detect()
+    };
     session.set_graphics_capabilities(initial_caps);
     let (cell_px_tx, mut cell_px_rx) = tokio::sync::mpsc::unbounded_channel();
     let (mut probe_in_flight, mut probe_pending) = (false, false);
@@ -161,6 +194,8 @@ async fn main() -> Result<()> {
         probe_in_flight = true;
         spawn_wezterm_cell_probe(cell_px_tx.clone());
     }
+    let (gfx_probe_tx, mut gfx_probe_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (mut gfx_probe_in_flight, mut gfx_probe_pending) = (false, false);
 
     let mut active_clone_task: Option<tokio::task::JoinHandle<()>> = None;
     while !session.should_quit() {
@@ -188,6 +223,12 @@ async fn main() -> Result<()> {
         };
         let probe_sleep = async {
             match host.cell_px_probe_deadline {
+                Some(at) => tokio::time::sleep_until(at).await,
+                None => std::future::pending::<()>().await,
+            }
+        };
+        let gfx_probe_sleep = async {
+            match host.graphics_probe_deadline {
                 Some(at) => tokio::time::sleep_until(at).await,
                 None => std::future::pending::<()>().await,
             }
@@ -227,6 +268,29 @@ async fn main() -> Result<()> {
                     spawn_wezterm_cell_probe(cell_px_tx.clone());
                 }
             }
+            _ = gfx_probe_sleep => {
+                host.graphics_probe_deadline = None;
+                if gfx_probe_in_flight {
+                    gfx_probe_pending = true;
+                } else {
+                    gfx_probe_in_flight = true;
+                    spawn_graphics_caps_probe(gfx_probe_tx.clone());
+                }
+            }
+            Some(mut caps) = gfx_probe_rx.recv() => {
+                gfx_probe_in_flight = false;
+                let prev_cell_px = session.state().log.graph_renderer().capabilities().cell_px;
+                if caps.needs_async_wezterm_probe() {
+                    caps.cell_px = prev_cell_px;
+                    host.cell_px_probe_deadline =
+                        Some(tokio::time::Instant::now() + Duration::from_millis(100));
+                }
+                session.set_graphics_capabilities(caps);
+                if std::mem::take(&mut gfx_probe_pending) && host.graphics_probe_deadline.is_none() {
+                    gfx_probe_in_flight = true;
+                    spawn_graphics_caps_probe(gfx_probe_tx.clone());
+                }
+            }
         }
 
         if allow_coalesce {
@@ -254,7 +318,7 @@ async fn main() -> Result<()> {
 
         session.finish_batch(batch_effects, engine_ref, &mut host, &mut report);
 
-        if let Some(init_dir) = session.take_init_repo_request() {
+        if let Some((task_id, init_dir)) = session.take_init_repo_task() {
             let dir_for_task = init_dir.clone();
             let git_exe = session
                 .state()
@@ -264,6 +328,7 @@ async fn main() -> Result<()> {
                 .configured_executable()
                 .map(str::to_string);
             let ui_tx = host.ui_async_tx.clone();
+            let task_gen = session.generation();
             tokio::spawn(async move {
                 let res = tokio::task::spawn_blocking(move || {
                     jbgit_engine::init_repository_sync(&dir_for_task, git_exe.as_deref())
@@ -274,7 +339,13 @@ async fn main() -> Result<()> {
                     Ok(Err(e)) => UiAsyncEvent::InitRepoFailed(e.to_string()),
                     Err(e) => UiAsyncEvent::InitRepoFailed(e.to_string()),
                 };
-                let _ = ui_tx.send(SessionInput::UiAsync(ev));
+                let _ = ui_tx.send(SessionInput::UiAsyncFrom(
+                    task_gen,
+                    UiAsyncEvent::TaskStamped {
+                        task_id,
+                        event: Box::new(ev),
+                    },
+                ));
             });
         }
 
@@ -284,7 +355,7 @@ async fn main() -> Result<()> {
             handle.abort();
         }
 
-        if let Some(clone_req) = session.take_clone_repo_request() {
+        if let Some((task_id, clone_req)) = session.take_clone_repo_task() {
             if let Some(prev) = active_clone_task.take() {
                 prev.abort();
             }
@@ -297,6 +368,7 @@ async fn main() -> Result<()> {
                 .configured_executable()
                 .map(str::to_string);
             let ui_tx = host.ui_async_tx.clone();
+            let task_gen = session.generation();
             active_clone_task = Some(tokio::spawn(async move {
                 let ui_prog_tx = ui_tx.clone();
                 let result = jbgit_engine::clone_repository_async(
@@ -304,18 +376,30 @@ async fn main() -> Result<()> {
                     git_exe.as_deref(),
                     askpass_env.as_ref(),
                     move |line| {
-                        let _ = ui_prog_tx
-                            .send(SessionInput::UiAsync(UiAsyncEvent::CloneProgress(line)));
+                        let _ = ui_prog_tx.send(SessionInput::UiAsyncFrom(
+                            task_gen,
+                            UiAsyncEvent::TaskStamped {
+                                task_id,
+                                event: Box::new(UiAsyncEvent::CloneProgress(line)),
+                            },
+                        ));
                     },
                 )
                 .await
                 .map_err(|e| e.to_string());
-                let _ = ui_tx.send(SessionInput::UiAsync(UiAsyncEvent::CloneFinished(result)));
+                let _ = ui_tx.send(SessionInput::UiAsyncFrom(
+                    task_gen,
+                    UiAsyncEvent::TaskStamped {
+                        task_id,
+                        event: Box::new(UiAsyncEvent::CloneFinished(result)),
+                    },
+                ));
             }));
         }
 
-        if let Some((wt_dir, setup_cmd)) = session.take_worktree_setup_request() {
+        if let Some((task_id, wt_dir, setup_cmd)) = session.take_worktree_setup_task() {
             let ui_tx = host.ui_async_tx.clone();
+            let task_gen = session.generation();
             tokio::spawn(async move {
                 let mut cmd = if cfg!(windows) {
                     let mut c = tokio::process::Command::new("cmd");
@@ -347,17 +431,34 @@ async fn main() -> Result<()> {
                     }
                     Err(e) => Err(e.to_string()),
                 };
-                let _ = ui_tx.send(SessionInput::UiAsync(UiAsyncEvent::WorktreeSetupFinished {
-                    worktree: wt_dir,
-                    command: setup_cmd,
-                    result,
-                }));
+                let _ = ui_tx.send(SessionInput::UiAsyncFrom(
+                    task_gen,
+                    UiAsyncEvent::TaskStamped {
+                        task_id,
+                        event: Box::new(UiAsyncEvent::WorktreeSetupFinished {
+                            worktree: wt_dir,
+                            command: setup_cmd,
+                            result,
+                        }),
+                    },
+                ));
             });
         }
 
         if let Some(target) = session.take_repo_switch_request() {
-            switch_repository(&mut session, &mut repo, &mut host, &target).await;
+            switch_repository(
+                &mut session,
+                &mut repo,
+                &mut host,
+                &mut active_clone_task,
+                &target,
+            )
+            .await;
         }
+    }
+
+    if let Some(handle) = active_clone_task.take() {
+        handle.abort();
     }
 
     let _ = repo.unbind().await;

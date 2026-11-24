@@ -863,6 +863,12 @@ pub enum UiAsyncEvent {
         command: String,
         result: Result<(), String>,
     },
+    /// Monotonic task-ID wrapper for async lifecycle tasks (`init`/`clone`/`worktree_setup`)
+    /// so cancelled or superseded tasks cannot interfere with newer ones.
+    TaskStamped {
+        task_id: u64,
+        event: Box<UiAsyncEvent>,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -938,6 +944,7 @@ pub enum Effect {
     RunCli {
         args: Vec<String>,
         stdin_payload: Option<Vec<u8>>,
+        env: Vec<(String, String)>,
         is_read_only: bool,
         refresh_after: RefreshScope,
     },

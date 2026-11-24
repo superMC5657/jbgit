@@ -109,6 +109,8 @@ impl AppState {
                     self.i18n
                         .t_fmt("toast.repo_initializing", &[("path", &shown)]),
                 );
+                let task_id = self.allocate_async_task_id();
+                self.active_init_task_id = Some(task_id);
                 self.pending_init_repo = Some(dir.clone());
             }
             Action::OpenCloneRepo { base_dir } => {
@@ -131,6 +133,7 @@ impl AppState {
             }
             Action::CloneRepoSubmit => {
                 let i18n = self.i18n.clone();
+                let mut started: Option<jbgit_engine::CloneRequest> = None;
                 if let Some(ModalLayer::CloneRepo(cd)) = self.modal_stack.last_mut() {
                     if cd.cloning {
                         return true;
@@ -144,12 +147,17 @@ impl AppState {
                             self.status_notice = Some(
                                 i18n.t_fmt("toast.repo_cloning", &[("path", &dest)]),
                             );
-                            self.pending_clone_repo = Some(req);
+                            started = Some(req);
                         }
                         Err(msg) => {
                             cd.error = Some(msg);
                         }
                     }
+                }
+                if let Some(req) = started {
+                    let task_id = self.allocate_async_task_id();
+                    self.active_clone_task_id = Some(task_id);
+                    self.pending_clone_repo = Some(req);
                 }
             }
             Action::CloneRepoCancel => {
@@ -158,6 +166,8 @@ impl AppState {
                         if cd.cloning {
                             cd.cloning = false;
                             cd.error = Some(self.i18n.t("toast.repo_clone_cancelled").to_string());
+                            self.active_clone_task_id = None;
+                            self.pending_clone_repo = None;
                             self.pending_clone_cancel = true;
                             self.status_notice =
                                 Some(self.i18n.t("toast.repo_clone_cancelled").to_string());
@@ -244,7 +254,10 @@ impl AppState {
                     "toast.worktree_setup_running",
                     &[("name", &name), ("cmd", command)],
                 ));
+                let task_id = self.allocate_async_task_id();
+                self.active_worktree_setup_ids.insert(task_id);
                 self.pending_worktree_setup = Some((worktree.clone(), command.clone()));
+                self.pending_worktree_setup_task_id = Some(task_id);
             }
             _ => return false,
         }
@@ -356,7 +369,9 @@ impl AppState {
             || path.display().to_string(),
             |n| n.to_string_lossy().into(),
         );
-        if let Some(recent_target) = crate::repo_switcher::standalone_recent_target(&path) {
+        if !std::mem::take(&mut self.recent_repos_pre_recorded)
+            && let Some(recent_target) = crate::repo_switcher::standalone_recent_target(&path)
+        {
             let recent_name = recent_target.file_name().map_or_else(
                 || recent_target.display().to_string(),
                 |n| n.to_string_lossy().into(),

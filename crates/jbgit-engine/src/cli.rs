@@ -21,6 +21,7 @@ pub(crate) struct IndexLockConflict {
     pub message: String,
     pub retry_args: Vec<String>,
     pub retry_stdin: Option<Vec<u8>>,
+    pub retry_env: Vec<(String, String)>,
     pub retry_is_read_only: bool,
 }
 

@@ -1167,6 +1167,7 @@ impl<R: GitCliRunner> Runner<'_, R> {
                         message,
                         retry_args: step.args.clone(),
                         retry_stdin: step.stdin.clone(),
+                        retry_env: env.to_vec(),
                         retry_is_read_only: read_only,
                     }
                 });
@@ -4000,10 +4001,84 @@ mod tests {
             |_| {},
         )
         .await;
-        assert!(res.index_lock.is_some());
+        let conflict = res.index_lock.expect("expected index_lock conflict");
+        assert!(
+            conflict
+                .retry_env
+                .iter()
+                .any(|(k, _)| k == "GIT_SEQUENCE_EDITOR"),
+            "expected GIT_SEQUENCE_EDITOR in retry_env, got {:?}",
+            conflict.retry_env
+        );
+        assert!(
+            conflict
+                .retry_env
+                .iter()
+                .any(|(k, _)| k == "GIT_EDITOR"),
+            "expected GIT_EDITOR in retry_env, got {:?}",
+            conflict.retry_env
+        );
         assert!(
             git_dir.join("jbgit-rebase").join("git-rebase-todo").is_file(),
             ".git/jbgit-rebase must not be deleted when RewriteHistory fails on index.lock"
+        );
+    }
+
+    #[tokio::test]
+    async fn index_lock_conflict_preserves_step_and_askpass_env() {
+        let dir = tempfile::tempdir().unwrap();
+        let git_dir = dir.path().join(".git");
+        std::fs::create_dir_all(&git_dir).unwrap();
+        let loc = RepoLocation {
+            workdir: dir.path().to_path_buf(),
+            git_dir: git_dir.clone(),
+            common_dir: git_dir.clone(),
+            is_bare: false,
+            repo_name: "repo".into(),
+        };
+        let runner = RecordingCliRunner::with_responses(vec![GitCliOutput {
+            exit_code: 128,
+            duration_ms: 1,
+            stdout_lines: Vec::new(),
+            stderr_lines: vec!["fatal: Unable to create '.git/index.lock': File exists.".into()],
+            index_lock_conflict: Some((
+                git_dir.join("index.lock"),
+                "index.lock exists".into(),
+            )),
+        }]);
+        let ids = AtomicU64::new(1);
+        let askpass = crate::askpass::AskpassEnv::new(
+            PathBuf::from("/usr/bin/jbgit"),
+            "jbgit-test-pipe",
+            "0123456789abcdef",
+        );
+        let res = run_git_op(
+            &runner,
+            &loc,
+            &ids,
+            GitOp::Pull {
+                options: PullOptions::default(),
+            },
+            Some(&askpass),
+            |_| {},
+        )
+        .await;
+        let conflict = res.index_lock.expect("expected index_lock conflict");
+        assert!(
+            conflict
+                .retry_env
+                .iter()
+                .any(|(k, v)| k == "GIT_EDITOR" && v == ":"),
+            "expected GIT_EDITOR=: in retry_env, got {:?}",
+            conflict.retry_env
+        );
+        assert!(
+            conflict
+                .retry_env
+                .iter()
+                .any(|(k, v)| k == "GIT_ASKPASS" && v.contains("jbgit")),
+            "expected GIT_ASKPASS in retry_env, got {:?}",
+            conflict.retry_env
         );
     }
 }

@@ -372,6 +372,10 @@ fn index_lock_retry_replays_blocked_cli_command() {
         message: "Unable to create '.git/index.lock': File exists.".into(),
         retry_args: vec!["add".into(), "--pathspec-from-file=-".into()],
         retry_stdin: Some(b"src/lib.rs\0".to_vec()),
+        retry_env: vec![
+            ("GIT_EDITOR".into(), ":".into()),
+            ("GIT_SEQUENCE_EDITOR".into(), "true".into()),
+        ],
         retry_is_read_only: false,
         retry_refresh_after: RefreshScope::StageStatus,
     });
@@ -386,6 +390,7 @@ fn index_lock_retry_replays_blocked_cli_command() {
         TaskRequest::RunGitCli {
             args,
             stdin_payload,
+            env,
             is_read_only,
             refresh_after,
             ..
@@ -395,6 +400,13 @@ fn index_lock_retry_replays_blocked_cli_command() {
                 &vec!["add".to_string(), "--pathspec-from-file=-".to_string()]
             );
             assert_eq!(stdin_payload.as_deref(), Some(b"src/lib.rs\0".as_slice()));
+            assert_eq!(
+                env,
+                &vec![
+                    ("GIT_EDITOR".to_string(), ":".to_string()),
+                    ("GIT_SEQUENCE_EDITOR".to_string(), "true".to_string()),
+                ]
+            );
             assert!(!is_read_only);
             assert_eq!(*refresh_after, RefreshScope::StageStatus);
         }
@@ -3043,5 +3055,637 @@ fn commit_polish_template_merge_msg_reformat_author_identity_allow_empty_and_und
         ts.take_requests()
             .iter()
             .any(|(r, _)| matches!(r, TaskRequest::UndoLastCommit))
+    );
+}
+
+#[test]
+fn rollback_undo_rejects_external_edits_and_clears_on_commit_and_git_op() {
+    use jbgit_core::{DiffContext, FileStatusKind, StageEntry, StageStatusSnapshot, WhitespaceMode};
+
+    let tmp = tempfile::TempDir::new().unwrap();
+    let file_path = tmp.path().join("foo.rs");
+    let base = b"line1\noriginal\n".to_vec();
+    let before = b"line1\nmodified\n".to_vec();
+    std::fs::write(&file_path, &before).unwrap();
+
+    let mut snap = super::snapshot();
+    snap.workdir = tmp.path().to_path_buf();
+    let mut ts = TestSession::with_snapshot(snap);
+    ts.dispatch(Action::SwitchTab(WorkspaceTab::Commit));
+    ts.deliver_engine_event(EngineEvent::StageStatusLoaded {
+        status: Arc::new(StageStatusSnapshot {
+            unstaged: vec![StageEntry {
+                path: "foo.rs".into(),
+                old_path: None,
+                kind: FileStatusKind::Modified,
+            }],
+            ..Default::default()
+        }),
+        epoch: 1,
+    });
+    ts.advance_by(Duration::from_millis(60));
+    let _ = ts.take_requests();
+
+    let diff_key = StageDiffKey {
+        path: "foo.rs".into(),
+        old_path: None,
+        side: StageDiffSide::Unstaged,
+        context: DiffContext::Three,
+        whitespace: WhitespaceMode::Default,
+    };
+    let make_diff = |local: &[u8]| {
+        let tracker = jbgit_core::StageLineTracker::new(&base, &base, local);
+        let (hunks, is_truncated) = tracker.build_interactive_hunks(false, DiffContext::Three, 20_000);
+        Arc::new(ThreeDocStageDiff {
+            key: diff_key.clone(),
+            vcs_exists: true,
+            staged_exists: true,
+            local_exists: true,
+            vcs_bytes: base.clone(),
+            staged_bytes: base.clone(),
+            local_bytes: local.to_vec(),
+            file_mode: 0o100644,
+            mode_change: None,
+            is_symlink: false,
+            is_binary: false,
+            binary: None,
+            is_conflicted: false,
+            submodule: None,
+            lfs: None,
+            tracker,
+            hunks,
+            is_truncated,
+            is_too_large: false,
+        })
+    };
+
+    // 1. Roll back line in foo.rs, write rolled-back content to disk, then edit externally.
+    let ep1 = ts
+        .state()
+        .request_slots
+        .latest(jbgit_core::RequestSlotId::StageFileDiff);
+    ts.deliver_engine_event(EngineEvent::StageFileDiffLoaded {
+        diff: make_diff(&before),
+        epoch: ep1,
+    });
+    let _ = ts.take_requests();
+    ts.dispatch(Action::FocusPane(PaneId::CommitDiffPreview));
+    let rows = ts.state().stage_workbench.diff_rows().to_vec();
+    let mod_row = rows
+        .iter()
+        .position(|r| matches!(r, crate::diff_session::DiffRow::Unified(_, _)))
+        .unwrap();
+    ts.dispatch(Action::StageDiffSelectLine {
+        row_idx: mod_row + 1,
+        extend: false,
+    });
+    ts.dispatch(Action::StageDiffRollbackSelection);
+    let reqs = ts.take_requests();
+    assert!(
+        reqs.iter()
+            .any(|(r, _)| matches!(r, TaskRequest::WriteWorktreeBuffer { path, .. } if path == "foo.rs")),
+        "expected rollback WriteWorktreeBuffer, got {reqs:?}"
+    );
+
+    // Simulate external modification after rollback.
+    std::fs::write(&file_path, b"line1\nbrand_new_external_edit\n").unwrap();
+    ts.dispatch(Action::StageDiffUndoRollback);
+    let undo_reqs = ts.take_requests();
+    assert!(
+        undo_reqs
+            .iter()
+            .all(|(r, _)| !matches!(r, TaskRequest::WriteWorktreeBuffer { .. })),
+        "stale undo must NOT overwrite externally edited disk file: {undo_reqs:?}"
+    );
+
+    // 2. Roll back again, then commit succeeds -> undo stack must be cleared.
+    std::fs::write(&file_path, &before).unwrap();
+    let ep2 = ts
+        .state()
+        .request_slots
+        .latest(jbgit_core::RequestSlotId::StageFileDiff);
+    ts.deliver_engine_event(EngineEvent::StageFileDiffLoaded {
+        diff: make_diff(&before),
+        epoch: ep2,
+    });
+    let _ = ts.take_requests();
+    ts.dispatch(Action::StageDiffSelectLine {
+        row_idx: mod_row + 1,
+        extend: false,
+    });
+    ts.dispatch(Action::StageDiffRollbackSelection);
+    let rolled = ts
+        .take_requests()
+        .into_iter()
+        .find_map(|(r, _)| match r {
+            TaskRequest::WriteWorktreeBuffer { new_local_bytes, .. } => Some(new_local_bytes),
+            _ => None,
+        })
+        .expect("expected rollback buffer");
+    std::fs::write(&file_path, &rolled).unwrap();
+
+    ts.deliver_engine_event(EngineEvent::CommitCompleted(CommitOutcome {
+        success: true,
+        commit_oid: Some(Oid::from_bytes([9u8; 20])),
+        short_sha: Some("0909090".into()),
+        summary: "Committed".into(),
+        error_output: None,
+        and_push: false,
+        preserved_message: None,
+    }));
+    let _ = ts.take_requests();
+    ts.dispatch(Action::StageDiffUndoRollback);
+    let after_commit_reqs = ts.take_requests();
+    assert!(
+        after_commit_reqs
+            .iter()
+            .all(|(r, _)| !matches!(r, TaskRequest::WriteWorktreeBuffer { .. })),
+        "undo stack must be cleared after CommitCompleted: {after_commit_reqs:?}"
+    );
+}
+
+#[test]
+fn submenu_hover_timer_never_truncates_dialog_pushed_above_context_menu() {
+    use crate::app::{ContextMenuItem, MENU_HOVER_DELAY, MenuHover};
+
+    let mut ts = TestSession::with_snapshot(super::snapshot());
+    let items = vec![ContextMenuItem::submenu(
+        "More",
+        None,
+        vec![ContextMenuItem::run(
+            "Sub",
+            None,
+            None,
+            vec![Action::RefreshAll],
+        )],
+    )];
+    ts.dispatch(Action::OpenContextMenu {
+        anchor: (5, 5),
+        items,
+        depth: 0,
+    });
+    // Arm submenu hover timer.
+    let now = ts.now();
+    ts.state_mut().menu_hover = Some(MenuHover {
+        depth: 0,
+        item_idx: 0,
+        due: now + MENU_HOVER_DELAY,
+    });
+
+    // Async EngineEvent pushes an IndexLock dialog above the context menu.
+    ts.deliver_engine_event(EngineEvent::IndexLockDetected {
+        lock_path: ".git/index.lock".into(),
+        message: "File exists".into(),
+        retry_args: vec!["status".into()],
+        retry_stdin: None,
+        retry_env: Vec::new(),
+        retry_is_read_only: true,
+        retry_refresh_after: RefreshScope::None,
+    });
+    assert!(
+        ts.state().menu_hover.is_none(),
+        "push_modal must clear pending menu_hover"
+    );
+    assert_eq!(ts.state().modal_stack.len(), 2);
+
+    // Even if a MenuHover were somehow still due, take_due_menu_hover_action must abort.
+    ts.state_mut().menu_hover = Some(MenuHover {
+        depth: 0,
+        item_idx: 0,
+        due: now + MENU_HOVER_DELAY,
+    });
+    ts.advance_by(MENU_HOVER_DELAY + Duration::from_millis(50));
+    assert_eq!(
+        ts.state().modal_stack.len(),
+        2,
+        "submenu hover timer must not truncate dialog above context menu"
+    );
+    assert!(matches!(
+        ts.state().modal_stack.last(),
+        Some(ModalLayer::Dialog(_))
+    ));
+}
+
+#[test]
+fn engine_error_suppresses_infinite_retry_and_preserves_commit_in_progress() {
+    use jbgit_core::{DetailsKey, DiffContext, FileDiffKey, FileStatusKind, StageEntry, StageStatusSnapshot, WhitespaceMode};
+
+    let mut ts = TestSession::with_snapshot(super::snapshot());
+    ts.dispatch(Action::SwitchTab(WorkspaceTab::Commit));
+    ts.deliver_engine_event(EngineEvent::StageStatusLoaded {
+        status: Arc::new(StageStatusSnapshot {
+            unstaged: vec![StageEntry {
+                path: "src/broken.rs".into(),
+                old_path: None,
+                kind: FileStatusKind::Modified,
+            }],
+            ..Default::default()
+        }),
+        epoch: 1,
+    });
+    ts.advance_by(Duration::from_millis(100));
+    let _ = ts.take_requests();
+
+    // Mark a commit in progress and a Log file diff in flight.
+    ts.state_mut().stage_workbench.set_commit_in_progress(true);
+    let top_oid = ts.state().log_commit_at(0).unwrap().oid;
+    let log_diff_key = FileDiffKey {
+        details: DetailsKey::single(top_oid),
+        path: "src/a.rs".into(),
+        old_path: None,
+        context: DiffContext::Three,
+        whitespace: WhitespaceMode::Default,
+    };
+    ts.state_mut().log.details.diff.requested = Some(log_diff_key);
+
+    // Deliver unrelated EngineEvent::Error -> must NOT re-request StageFileDiff or unlock commit.
+    ts.deliver_engine_event(EngineEvent::Error("unreadable blob".into()));
+    let retry_reqs = ts.take_requests();
+    assert!(
+        retry_reqs.is_empty(),
+        "EngineEvent::Error must not trigger hot retry loop: {retry_reqs:?}"
+    );
+    assert!(
+        ts.state().stage_workbench.commit_in_progress(),
+        "unrelated EngineEvent::Error must not clear commit_in_progress"
+    );
+
+    // Explicit RefreshAll clears in-flight markers so the user can retry.
+    ts.dispatch(Action::RefreshAll);
+    assert!(ts.state().log.details.diff.requested.is_none());
+}
+
+#[test]
+fn update_project_stash_restores_on_clean_snapshot_and_skips_unrelated_stash() {
+    use jbgit_core::{GitFailure, GitOp, GitOpOutcome, OngoingKind, OngoingStep, RepositoryState, StashEntry};
+
+    let mut merge_snap = super::snapshot();
+    merge_snap.state = RepositoryState::Merge;
+    merge_snap.stashes = vec![
+        StashEntry {
+            index: 0,
+            oid: Oid::from_bytes([1u8; 20]),
+            message: "WIP on main: unrelated user work".into(),
+            timestamp: 100,
+        },
+        StashEntry {
+            index: 1,
+            oid: Oid::from_bytes([2u8; 20]),
+            message: "On main: jbgit update project".into(),
+            timestamp: 99,
+        },
+    ];
+    let mut ts = TestSession::with_snapshot(merge_snap.clone());
+
+    let mut failed = GitOpOutcome::failed(
+        GitOp::UpdateProject {
+            mode: None,
+            save_changes: true,
+            update_other_branches: false,
+            update_submodules: false,
+        },
+        GitFailure::Conflicts,
+    );
+    failed.stash_kept = true;
+    ts.deliver_engine_event(EngineEvent::GitOpFinished(failed));
+    assert!(ts.state().pending_update_stash);
+
+    // Continue succeeds BEFORE RepoSnapshotLoaded clears Merge state.
+    ts.deliver_engine_event(EngineEvent::GitOpFinished(GitOpOutcome::ok(
+        GitOp::Ongoing {
+            kind: OngoingKind::Merge,
+            step: OngoingStep::Continue,
+        },
+    )));
+    assert!(ts.state().pending_update_stash);
+    assert!(ts.take_git_ops().is_empty());
+
+    // Now fresh Clean snapshot lands -> must pop matching stash index 1 (NOT 0!).
+    let mut clean_snap = merge_snap.clone();
+    clean_snap.state = RepositoryState::Clean;
+    ts.deliver_engine_event(EngineEvent::RepoSnapshotLoaded {
+        snapshot: Arc::new(clean_snap),
+        epoch: 5,
+    });
+    assert!(!ts.state().pending_update_stash);
+    assert_eq!(
+        ts.take_git_ops(),
+        vec![GitOp::StashApply {
+            index: 1,
+            pop: true,
+            reinstate_index: false,
+        }]
+    );
+
+    // If update stash was already manually popped leaving only an unrelated stash@{0},
+    // auto-restore must NOT pop unrelated stash@{0}.
+    ts.state_mut().pending_update_stash = true;
+    ts.state_mut().pending_update_stash_restore = true;
+    let mut unrelated_only = merge_snap;
+    unrelated_only.state = RepositoryState::Clean;
+    unrelated_only.stashes.truncate(1);
+    ts.deliver_engine_event(EngineEvent::RepoSnapshotLoaded {
+        snapshot: Arc::new(unrelated_only),
+        epoch: 6,
+    });
+    assert!(!ts.state().pending_update_stash);
+    assert!(
+        ts.take_git_ops().is_empty(),
+        "must never pop unrelated stash@{{0}}"
+    );
+}
+
+#[test]
+fn noop_mouse_move_preserves_redraw_and_cross_tab_log_nav_updates_focus() {
+    let mut ts = TestSession::with_snapshot(super::snapshot());
+    ts.state_mut().needs_redraw = true;
+    ts.dispatch(Action::MouseMove { col: 0, row: 0 });
+    assert!(
+        ts.state().needs_redraw,
+        "no-op MouseMove must not clobber needs_redraw=true"
+    );
+
+    ts.state_mut().needs_redraw = false;
+    ts.dispatch(Action::MouseMove { col: 0, row: 0 });
+    assert!(
+        !ts.state().needs_redraw,
+        "no-op MouseMove must keep needs_redraw=false"
+    );
+
+    // Cross-tab Log navigation from Commit tab must update focused_pane to LogCommitTable.
+    ts.dispatch(Action::SwitchTab(WorkspaceTab::Commit));
+    assert_eq!(ts.state().focused_pane, PaneId::CommitChangesTree);
+    ts.dispatch(Action::FilterLogByPath("src/lib.rs".into()));
+    assert_eq!(ts.state().active_tab, WorkspaceTab::Log);
+    assert_eq!(ts.state().focused_pane, PaneId::LogCommitTable);
+
+    ts.dispatch(Action::SwitchTab(WorkspaceTab::Commit));
+    ts.dispatch(Action::ShowDirectoryHistory("src".into()));
+    assert_eq!(ts.state().active_tab, WorkspaceTab::Log);
+    assert_eq!(ts.state().focused_pane, PaneId::LogCommitTable);
+}
+
+#[test]
+fn compare_with_local_cache_invalidated_and_p2_invariants_hold() {
+    use jbgit_core::{CommitChangesBundle, DetailsKey, DetailsMode, DiffContext, FileChange, FileDiff, FileDiffKey, FileStatusKind, RefInfo, RefKind, StageStatusSnapshot, WhitespaceMode};
+
+    let mut snap = super::snapshot();
+    // Add a remote whose name contains '/' to test split_tracking P2 fix.
+    let head = snap.head_oid.unwrap();
+    snap.remotes.push(jbgit_core::RemoteInfo {
+        name: "team/upstream".into(),
+        fetch_url: Some("https://example.com/team/repo.git".into()),
+        push_url: None,
+        push_refspecs: Vec::new(),
+    });
+    snap.refs.push(RefInfo {
+        name: "team/upstream/feat".into(),
+        full_name: "refs/remotes/team/upstream/feat".into(),
+        kind: RefKind::RemoteBranch,
+        target_oid: head,
+        is_head: false,
+        upstream: None,
+        ahead_behind: None,
+    });
+    let mut ts = TestSession::with_snapshot(snap);
+
+    // 1. CompareWithLocal entries evicted on StageStatusLoaded & RefreshAll, normal entries kept.
+    let normal_det = DetailsKey::single(head);
+    let local_det = DetailsKey {
+        oids: vec![head],
+        mode: DetailsMode::CompareWithLocal,
+        parent_index: 0,
+        path_prefix: None,
+    };
+    let normal_diff_key = FileDiffKey {
+        details: normal_det.clone(),
+        path: "a.rs".into(),
+        old_path: None,
+        context: DiffContext::Three,
+        whitespace: WhitespaceMode::Default,
+    };
+    let local_diff_key = FileDiffKey {
+        details: local_det.clone(),
+        path: "a.rs".into(),
+        old_path: None,
+        context: DiffContext::Three,
+        whitespace: WhitespaceMode::Default,
+    };
+    let make_bundle = |key: DetailsKey| {
+        Arc::new(CommitChangesBundle {
+            key,
+            details: vec![],
+            changes: vec![FileChange {
+                path: "a.rs".into(),
+                old_path: None,
+                kind: FileStatusKind::Modified,
+                additions: 1,
+                deletions: 0,
+                is_binary: false,
+                exists_in_workdir: true,
+                old_oid: None,
+                new_oid: None,
+            }],
+        })
+    };
+    let make_diff = |key: FileDiffKey| {
+        Arc::new(FileDiff {
+            key,
+            hunks: vec![],
+            is_binary: false,
+            binary: None,
+            is_truncated: false,
+            is_too_large: false,
+            lfs: None,
+            mode_change: None,
+        })
+    };
+    ts.state_mut().diff_caches.insert_details(make_bundle(normal_det.clone()));
+    ts.state_mut().diff_caches.insert_details(make_bundle(local_det.clone()));
+    ts.state_mut().diff_caches.insert_diff(make_diff(normal_diff_key.clone()));
+    ts.state_mut().diff_caches.insert_diff(make_diff(local_diff_key.clone()));
+
+    ts.deliver_engine_event(EngineEvent::StageStatusLoaded {
+        status: Arc::new(StageStatusSnapshot::default()),
+        epoch: 1,
+    });
+    assert!(ts.state().diff_caches.peek_details(&normal_det).is_some());
+    assert!(ts.state().diff_caches.peek_details(&local_det).is_none());
+    assert!(ts.state().diff_caches.peek_diff(&normal_diff_key).is_some());
+    assert!(ts.state().diff_caches.peek_diff(&local_diff_key).is_none());
+
+    // 2. ScrollViewport::reset clears max_scroll while preserving viewport_h.
+    let mut vp = crate::app::ScrollViewport::new();
+    vp.bind_bound(20, 0);
+    vp.reset();
+    assert_eq!(vp.viewport_height(), Some(20));
+    assert_eq!(vp.max_scroll(), None);
+    vp.set_offset(50);
+    assert_eq!(vp.offset(), 50);
+
+    // 3. checkout_remote uses snap.split_tracking for remotes containing '/'.
+    let _ = ts.take_git_ops();
+    ts.dispatch(Action::CheckoutRemoteBranch {
+        remote_ref: "team/upstream/feat".into(),
+    });
+    let ops = ts.take_git_ops();
+    assert!(
+        ops.iter().any(|op| matches!(
+            op,
+            jbgit_core::GitOp::CheckoutNewBranch { name, start, .. }
+                if name == "feat" && start == "team/upstream/feat"
+        )),
+        "expected CheckoutNewBranch(name='feat') for remote with '/', got {ops:?}"
+    );
+
+    // 4. open_conflict_resolver brings buried conflict modal to top of stack.
+    ts.state_mut()
+        .modal_stack
+        .open_conflict_resolver(crate::app::ConflictMergeState {
+            path: "a.rs".into(),
+            ..Default::default()
+        });
+    ts.dispatch(Action::OpenPopup {
+        kind: crate::app::PopupKind::ShortcutsHelp,
+        initial_query: String::new(),
+    });
+    assert!(!matches!(
+        ts.state().modal_stack.last(),
+        Some(ModalLayer::ConflictResolver(_))
+    ));
+    ts.state_mut()
+        .modal_stack
+        .open_conflict_resolver(crate::app::ConflictMergeState {
+            path: "b.rs".into(),
+            ..Default::default()
+        });
+    assert!(matches!(
+        ts.state().modal_stack.last(),
+        Some(ModalLayer::ConflictResolver(cm)) if cm.path == "b.rs"
+    ));
+
+    // 5. ModalPaste types into FileHistory list search (`fh.search_editing`).
+    ts.dispatch(Action::OpenFileHistory {
+        path: "a.rs".into(),
+        start_oid: None,
+        follow_renames: true,
+        line_range: None,
+    });
+    ts.dispatch(Action::FileHistorySearchOpen);
+    ts.dispatch(Action::ModalPaste("needle\n".into()));
+    let fh = ts.state().modal_stack.file_history().unwrap();
+    assert_eq!(fh.search_query, "needle");
+}
+
+#[test]
+fn rebase_todo_preview_loads_from_dialog_and_schedules_syntax_on_arrival_and_cache_hit() {
+    use jbgit_core::{CommitChangesBundle, DiffContext, DiffHunk, DiffLine, DiffLineKind, FileChange, FileDiff, FileDiffKey, FileStatusKind, RebaseOptions, RequestSlotId, WhitespaceMode};
+
+    let snap = super::snapshot();
+    let mut ts = TestSession::with_snapshot(snap);
+    ts.host.defer_async_jobs = true;
+    let _ = ts.take_requests();
+
+    ts.dispatch(Action::OpenInteractiveRebaseFromDialog(RebaseOptions {
+        onto: "origin/main".into(),
+        interactive: true,
+        ..Default::default()
+    }));
+    let reqs = ts.take_requests();
+    let det_key = reqs
+        .iter()
+        .find_map(|(r, _)| match r {
+            TaskRequest::LoadCommitDetails {
+                slot: RequestSlotId::RebaseCommitDetails,
+                key,
+            } => Some(key.clone()),
+            _ => None,
+        })
+        .unwrap_or_else(|| {
+            panic!("OpenInteractiveRebaseFromDialog must immediately request details preview: {reqs:?}")
+        });
+    let det_epoch = ts
+        .state()
+        .request_slots
+        .latest(RequestSlotId::RebaseCommitDetails);
+    ts.deliver_engine_event(EngineEvent::CommitDetailsLoaded {
+        slot: RequestSlotId::RebaseCommitDetails,
+        bundle: Arc::new(CommitChangesBundle {
+            key: det_key.clone(),
+            details: vec![],
+            changes: vec![FileChange {
+                path: "src/main.rs".into(),
+                old_path: None,
+                kind: FileStatusKind::Modified,
+                additions: 1,
+                deletions: 0,
+                is_binary: false,
+                exists_in_workdir: true,
+                old_oid: None,
+                new_oid: None,
+            }],
+        }),
+        epoch: det_epoch,
+    });
+
+    // Enable show_diff on RebaseTodoDialog and trigger preview sync.
+    if let Some(ModalLayer::Dialog(d)) = ts.state_mut().modal_stack.last_mut()
+        && let crate::dialogs::Dialog::RebaseTodo(r) = d.as_mut()
+    {
+        r.show_diff = true;
+    }
+    let mut fx = Vec::new();
+    ts.state_mut().sync_rebase_todo_preview(&mut fx);
+    assert!(
+        fx.iter().any(|e| matches!(e, crate::app::Effect::RequestFileDiff { slot: RequestSlotId::RebaseFileDiff, .. })),
+        "expected RebaseFileDiff request, got {fx:?}"
+    );
+
+    let diff_key = FileDiffKey {
+        details: det_key,
+        path: "src/main.rs".into(),
+        old_path: None,
+        context: DiffContext::Three,
+        whitespace: WhitespaceMode::Default,
+    };
+    ts.host.pending_syntax.clear();
+    let diff_epoch = ts.state().request_slots.latest(RequestSlotId::RebaseFileDiff);
+    ts.deliver_engine_event(EngineEvent::FileDiffLoaded {
+        slot: RequestSlotId::RebaseFileDiff,
+        diff: Arc::new(FileDiff {
+            key: diff_key,
+            hunks: vec![DiffHunk {
+                header: "@@ -1,1 +1,2 @@".into(),
+                lines: vec![DiffLine {
+                    kind: DiffLineKind::Added,
+                    old_lineno: None,
+                    new_lineno: Some(2),
+                    text: "fn main() {}".into(),
+                    word_ranges: Vec::new(),
+                }],
+            }],
+            is_binary: false,
+            binary: None,
+            is_truncated: false,
+            is_too_large: false,
+            lfs: None,
+            mode_change: None,
+        }),
+        epoch: diff_epoch,
+    });
+    assert!(
+        !ts.host.pending_syntax.is_empty(),
+        "RebaseTodo FileDiffLoaded must schedule syntax highlight"
+    );
+
+    // Cache-hit path in sync_rebase_todo_preview also schedules syntax when syntax isn't cached yet.
+    ts.state_mut().file_syntax.invalidate();
+    let mut cache_fx = Vec::new();
+    ts.state_mut().sync_rebase_todo_preview(&mut cache_fx);
+    assert!(
+        cache_fx
+            .iter()
+            .any(|e| matches!(e, crate::app::Effect::RequestSyntaxHighlight(_))),
+        "RebaseTodo cache hit must schedule syntax highlight: {cache_fx:?}"
     );
 }

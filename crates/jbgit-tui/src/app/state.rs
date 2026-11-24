@@ -84,6 +84,9 @@ pub struct AppState {
     /// Update Project stopped on conflicts with local changes still stashed:
     /// pop them once the ongoing operation is continued / aborted.
     pub(crate) pending_update_stash: bool,
+    /// Set once the ongoing operation finishes so the next clean
+    /// `RepoSnapshotLoaded` restores `pending_update_stash`.
+    pub(crate) pending_update_stash_restore: bool,
     /// Askpass prompts waiting for the credential dialog (FIFO).
     pub(crate) credentials: crate::app::CredentialQueue,
     /// Remote to select in the Remotes modal once the snapshot lists it.
@@ -92,6 +95,14 @@ pub struct AppState {
     /// rebind; engine / async results stamped with an older generation are
     /// dropped by [`crate::session::TuiSession`].
     pub(crate) session_generation: u64,
+    /// Monotonic ID generator for async lifecycle tasks (`init`/`clone`/`worktree_setup`).
+    pub(crate) next_async_task_id: u64,
+    /// Currently active `git init` task ID (if any).
+    pub(crate) active_init_task_id: Option<u64>,
+    /// Currently active `git clone` task ID (if any).
+    pub(crate) active_clone_task_id: Option<u64>,
+    /// Currently active `[worktree] setup_command` task IDs.
+    pub(crate) active_worktree_setup_ids: rustc_hash::FxHashSet<u64>,
     /// Confirmed repository switch the host must perform (unbind → bind).
     pub(crate) pending_repo_switch: Option<PathBuf>,
     /// Confirmed `git init` directory request the host must execute and bind.
@@ -105,8 +116,17 @@ pub struct AppState {
     pub(crate) pending_batch_branch_deletes: Vec<(String, jbgit_core::Oid)>,
     /// Confirmed `[worktree] setup_command` the host should run in the new worktree.
     pub(crate) pending_worktree_setup: Option<(PathBuf, String)>,
+    /// Task ID paired with `pending_worktree_setup`.
+    pub(crate) pending_worktree_setup_task_id: Option<u64>,
     /// User-level most-recently-opened repositories.
     pub(crate) recent_repos: crate::repo_switcher::RecentRepos,
+    /// True when `recent_repos` was already recorded off-thread during bind.
+    pub(crate) recent_repos_pre_recorded: bool,
+    /// Cached remembered options for Merge/Pull/Rebase dialogs so opening them
+    /// never blocks the UI event loop with disk reads.
+    pub(crate) remembered_merge_options: Option<jbgit_core::MergeOptions>,
+    pub(crate) remembered_pull_options: Option<jbgit_core::PullOptions>,
+    pub(crate) remembered_rebase_options: Option<jbgit_core::RebaseOptions>,
     /// Detected `git --version` (`None` = unknown; worktree gate assumes support).
     pub(crate) git_version: Option<jbgit_core::GitVersion>,
     /// Resolved `git` executable path & version banner (Spec 13 Issue 13).
@@ -229,16 +249,26 @@ impl AppState {
             pending_commit_after_identity: None,
             last_patch_dir: None,
             pending_update_stash: false,
+            pending_update_stash_restore: false,
             credentials: crate::app::CredentialQueue::default(),
             pending_remote_selection: None,
             session_generation: 0,
+            next_async_task_id: 1,
+            active_init_task_id: None,
+            active_clone_task_id: None,
+            active_worktree_setup_ids: rustc_hash::FxHashSet::default(),
             pending_repo_switch: None,
             pending_init_repo: None,
             pending_clone_repo: None,
             pending_clone_cancel: false,
             pending_batch_branch_deletes: Vec::new(),
             pending_worktree_setup: None,
+            pending_worktree_setup_task_id: None,
             recent_repos: crate::repo_switcher::RecentRepos::in_memory(),
+            recent_repos_pre_recorded: false,
+            remembered_merge_options: None,
+            remembered_pull_options: None,
+            remembered_rebase_options: None,
             git_version: None,
             git_info: None,
             git_info_error: None,
@@ -305,6 +335,7 @@ impl AppState {
     /// on the underlying pane (preserving diff visual selection for context
     /// menus / three-way inspection).
     pub(crate) fn push_modal(&mut self, layer: ModalLayer) {
+        self.menu_hover = None;
         let preserve_visual = matches!(
             layer,
             ModalLayer::ContextMenu { .. } | ModalLayer::ThreeWayInspector { .. }
@@ -316,6 +347,12 @@ impl AppState {
             self.blur_active_pane(false);
         }
         self.modal_stack.push(layer);
+    }
+
+    pub(crate) fn allocate_async_task_id(&mut self) -> u64 {
+        let id = self.next_async_task_id;
+        self.next_async_task_id = self.next_async_task_id.wrapping_add(1).max(1);
+        id
     }
 
     pub fn ensure_graph_cache(&mut self) {

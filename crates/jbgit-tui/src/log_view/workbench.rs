@@ -580,13 +580,17 @@ impl LogWorkbench {
                 ctx.status_notice,
             );
         }
-        if let Some((key, _)) = self.details.pending.take()
-            && !ctx.diff_caches.details.contains(&key)
-        {
-            ctx.effects.push(Effect::RequestCommitDetails {
-                slot: RequestSlotId::LogCommitDetails,
-                key,
-            });
+        if let Some((key, at)) = self.details.pending.take() {
+            if at <= ctx.now {
+                if !ctx.diff_caches.details.contains(&key) {
+                    ctx.effects.push(Effect::RequestCommitDetails {
+                        slot: RequestSlotId::LogCommitDetails,
+                        key,
+                    });
+                }
+            } else {
+                self.details.pending = Some((key, at));
+            }
         }
     }
 
@@ -845,8 +849,12 @@ impl LogWorkbench {
                     } else {
                         let name = node.ref_name.clone().unwrap_or_default();
                         let short = if kind == RefKind::RemoteBranch {
-                            name.split_once('/')
-                                .map_or(name.clone(), |(_, s)| s.to_string())
+                            ctx.snap
+                                .and_then(|s| s.split_tracking(&name).map(|(_, b)| b.to_string()))
+                                .unwrap_or_else(|| {
+                                    name.split_once('/')
+                                        .map_or(name.clone(), |(_, s)| s.to_string())
+                                })
                         } else {
                             name
                         };

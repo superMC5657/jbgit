@@ -490,11 +490,8 @@ impl ModalStack {
     }
 
     pub fn open_conflict_resolver(&mut self, cm: ConflictMergeState) {
-        if let Some(existing) = self.conflict_merge_mut() {
-            *existing = cm;
-        } else {
-            self.layers.push(ModalLayer::ConflictResolver(Box::new(cm)));
-        }
+        self.close_conflict_resolver();
+        self.layers.push(ModalLayer::ConflictResolver(Box::new(cm)));
     }
 
     pub fn close_conflict_resolver(&mut self) {
@@ -522,11 +519,8 @@ impl ModalStack {
     }
 
     pub fn open_conflict_queue(&mut self, q: ConflictQueueState) {
-        if let Some(existing) = self.conflict_queue_mut() {
-            *existing = q;
-        } else {
-            self.layers.push(ModalLayer::ConflictQueue(Box::new(q)));
-        }
+        self.close_conflict_queue();
+        self.layers.push(ModalLayer::ConflictQueue(Box::new(q)));
     }
 
     pub fn close_conflict_queue(&mut self) {
@@ -562,6 +556,13 @@ impl ModalStack {
         else {
             return false;
         };
+        if self.layers[pos + 1..]
+            .iter()
+            .any(|l| !matches!(l, ModalLayer::ContextMenu { .. }))
+        {
+            *menu_hover = None;
+            return false;
+        }
         let (is_submenu, changed) = match &mut self.layers[pos] {
             ModalLayer::ContextMenu {
                 items, selected, ..
@@ -627,6 +628,12 @@ impl ModalStack {
         else {
             return (false, None);
         };
+        if self.layers[pos + 1..]
+            .iter()
+            .any(|l| !matches!(l, ModalLayer::ContextMenu { .. }))
+        {
+            return (false, None);
+        }
         if let Some(ModalLayer::ContextMenu {
             parent: Some(p),
             depth,

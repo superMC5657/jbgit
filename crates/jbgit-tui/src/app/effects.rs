@@ -231,6 +231,7 @@ pub fn execute_effects_with_host(
                     Effect::RunCli {
                         args,
                         stdin_payload,
+                        env,
                         is_read_only,
                         refresh_after,
                     } => {
@@ -240,6 +241,7 @@ pub fn execute_effects_with_host(
                             id,
                             args,
                             stdin_payload,
+                            env,
                             is_read_only,
                             refresh_after,
                         });

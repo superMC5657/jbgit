@@ -2315,6 +2315,7 @@ where
                         message,
                         retry_args: args,
                         retry_stdin: Some(stdin_payload),
+                        retry_env: Vec::new(),
                         retry_is_read_only: false,
                     });
             let mut combined = out.stderr_lines.clone();

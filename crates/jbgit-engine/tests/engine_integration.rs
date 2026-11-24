@@ -398,6 +398,7 @@ async fn watcher_and_cli_console_events() {
             id: 42,
             args: vec!["status".into(), "--short".into()],
             stdin_payload: None,
+            env: Vec::new(),
             is_read_only: true,
             refresh_after: RefreshScope::None,
         });
