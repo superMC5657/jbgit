@@ -562,6 +562,7 @@ fn lfs_diffs_and_tree_browser_render_pointer_placeholders() {
                 mode: 0o100_644,
                 size: Some(130),
                 oid: oid(99),
+                symlink_target: None,
             }],
         }),
         epoch: tree_epoch,

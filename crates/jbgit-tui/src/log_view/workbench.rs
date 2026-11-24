@@ -353,14 +353,19 @@ impl LogWorkbench {
         &mut self,
         target: Oid,
         select_path: Option<String>,
+        path_prefix: Option<String>,
         i18n: &I18n,
         status_notice: &mut Option<String>,
     ) {
         self.details.diff_preview = true;
         self.details.pending_select_path = select_path;
-        self.details.compare_override = Some(DetailsKey::compare_with_local(target));
+        let key = DetailsKey::compare_with_local_path(target, path_prefix);
         let t_s = target.short();
-        *status_notice = Some(i18n.t_fmt("toast.comparing_local", &[("target", &t_s)]));
+        *status_notice = Some(match key.path_prefix.as_deref() {
+            Some(dir) => i18n.t_fmt("toast.comparing_local_dir", &[("target", &t_s), ("dir", dir)]),
+            None => i18n.t_fmt("toast.comparing_local", &[("target", &t_s)]),
+        });
+        self.details.compare_override = Some(key);
     }
 
     pub fn start_compare_versions(

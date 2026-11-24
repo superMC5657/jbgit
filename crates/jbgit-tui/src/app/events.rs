@@ -601,6 +601,12 @@ impl AppState {
             EngineEvent::TreeBlobLoaded { blob, epoch } => {
                 self.on_tree_blob_loaded(blob, epoch, &mut effects);
             }
+            EngineEvent::TreeIndexLoaded { oid, paths, epoch } => {
+                self.on_tree_index_loaded(oid, paths, epoch);
+            }
+            EngineEvent::TreeBlobExported { path, dest, result } => {
+                self.on_tree_blob_exported(&path, &dest, result);
+            }
             EngineEvent::OutgoingLoaded { bundle, epoch } => {
                 if !self
                     .request_slots

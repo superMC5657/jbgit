@@ -268,19 +268,72 @@ pub fn stage_tree_menu_items(state: &AppState, idx: usize) -> Vec<ContextMenuIte
         ann_sc.as_deref(),
         catalog::annotate_stage_entry_at(state, idx),
     ));
+    let mut staged_paths = Vec::new();
+    let mut unstaged_paths = Vec::new();
+    let mut untracked_paths = Vec::new();
+    if let Some(status) = state.stage_workbench.status() {
+        let untracked_set: std::collections::HashSet<&str> = status
+            .untracked
+            .iter()
+            .chain(
+                status
+                    .unstaged
+                    .iter()
+                    .filter(|e| e.kind == jbgit_core::FileStatusKind::Untracked),
+            )
+            .map(|e| e.path.as_str())
+            .collect();
+        for t in &targets {
+            match t.group_kind {
+                StageNodeKind::Staged => staged_paths.push(t.path.clone()),
+                StageNodeKind::Untracked => untracked_paths.push(t.path.clone()),
+                StageNodeKind::Unstaged => {
+                    if untracked_set.contains(t.path.as_str()) {
+                        untracked_paths.push(t.path.clone());
+                    } else {
+                        unstaged_paths.push(t.path.clone());
+                    }
+                }
+                _ => {}
+            }
+        }
+        staged_paths.sort();
+        staged_paths.dedup();
+        unstaged_paths.sort();
+        unstaged_paths.dedup();
+        untracked_paths.sort();
+        untracked_paths.dedup();
+    }
+    let stage_patch_source = PatchSource::StagePaths {
+        staged: staged_paths,
+        unstaged: unstaged_paths,
+        untracked: untracked_paths,
+    };
+    let has_patch_paths = !stage_patch_source.is_empty();
+    items.push(
+        run(
+            i18n.t("menu.stage.create_patch_file"),
+            Some('w'),
+            None,
+            dialog(crate::dialogs::create_patch_dialog(
+                state,
+                stage_patch_source.clone(),
+                false,
+            )),
+        )
+        .enabled_if(has_patch_paths, i18n.t("common.select_files")),
+    );
     items.push(
         run(
             i18n.t("menu.stage.create_patch_clipboard"),
             Some('c'),
             None,
             op(GitOp::PatchToClipboard {
-                source: PatchSource::StagePaths {
-                    staged: group == Some(StageNodeKind::Staged),
-                    paths: paths.clone(),
-                },
+                source: stage_patch_source,
+                reverse: false,
             }),
         )
-        .enabled_if(has_paths, i18n.t("common.select_files")),
+        .enabled_if(has_patch_paths, i18n.t("common.select_files")),
     );
     items.push(ContextMenuItem::separator());
     items.push(
@@ -373,6 +426,35 @@ fn stage_diff_common_items(
     let ann_sc = catalog::shortcut_for_action(state, &[KeymapScope::Commit], &KeyAction::Annotate);
     let staged = side == Some(StageDiffSide::Staged);
     let paths: Vec<String> = path.iter().cloned().collect();
+    let is_untracked = !staged
+        && path.as_deref().is_some_and(|p| {
+            state.stage_workbench.status().is_some_and(|st| {
+                st.untracked.iter().any(|e| e.path == p)
+                    || st
+                        .unstaged
+                        .iter()
+                        .any(|e| e.path == p && e.kind == jbgit_core::FileStatusKind::Untracked)
+            })
+        });
+    let diff_patch_source = if staged {
+        PatchSource::StagePaths {
+            staged: paths,
+            unstaged: Vec::new(),
+            untracked: Vec::new(),
+        }
+    } else if is_untracked {
+        PatchSource::StagePaths {
+            staged: Vec::new(),
+            unstaged: Vec::new(),
+            untracked: paths,
+        }
+    } else {
+        PatchSource::StagePaths {
+            staged: Vec::new(),
+            unstaged: paths,
+            untracked: Vec::new(),
+        }
+    };
     vec![
         ContextMenuItem::from_command(
             i18n.t("menu.stage.annotate"),
@@ -381,11 +463,23 @@ fn stage_diff_common_items(
             catalog::annotate_stage_diff(state, path.as_deref()),
         ),
         run(
+            i18n.t("menu.stage.create_patch_file"),
+            Some('p'),
+            None,
+            dialog(crate::dialogs::create_patch_dialog(
+                state,
+                diff_patch_source.clone(),
+                false,
+            )),
+        )
+        .enabled_if(path.is_some(), i18n.t("menu.stage.no_file_selected")),
+        run(
             i18n.t("menu.stage.copy_patch"),
             Some('c'),
             None,
             op(GitOp::PatchToClipboard {
-                source: PatchSource::StagePaths { staged, paths },
+                source: diff_patch_source,
+                reverse: false,
             }),
         )
         .enabled_if(path.is_some(), i18n.t("menu.stage.no_file_selected")),

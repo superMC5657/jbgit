@@ -77,6 +77,8 @@ pub struct AppState {
     pub(crate) last_push_expected_commits: Option<usize>,
     /// Commit queued while configuring missing `user.name` / `user.email`.
     pub(crate) pending_commit_after_identity: Option<jbgit_engine::CommitRequest>,
+    /// Last output directory used by `Create Patch…` (defaults to `<repo>/..`).
+    pub(crate) last_patch_dir: Option<PathBuf>,
     /// Update Project stopped on conflicts with local changes still stashed:
     /// pop them once the ongoing operation is continued / aborted.
     pub(crate) pending_update_stash: bool,
@@ -214,6 +216,7 @@ impl AppState {
             git_ops_running: 0,
             last_push_expected_commits: None,
             pending_commit_after_identity: None,
+            last_patch_dir: None,
             pending_update_stash: false,
             credentials: crate::app::CredentialQueue::default(),
             pending_remote_selection: None,
@@ -404,9 +407,7 @@ impl AppState {
             }
             ScrollPane::ApplyPatch => {
                 if let Some(ap) = self.modal_stack.apply_patch_mut() {
-                    let fallback = ap
-                        .current_check()
-                        .map_or(0, |c| c.files.len().saturating_sub(1));
+                    let fallback = ap.known_files.len().saturating_sub(1);
                     ap.scroll.scroll_by(delta, fallback);
                 }
             }
@@ -440,7 +441,14 @@ impl AppState {
                     rf.diff.scroll.scroll_by(delta, fallback);
                 }
             }
+            ScrollPane::ApplyPatchPreview => {
+                if let Some(ap) = self.modal_stack.apply_patch_mut() {
+                    let fallback = ap.preview_line_count().saturating_sub(1);
+                    ap.preview_scroll.scroll_by(delta, fallback);
+                }
+            }
             ScrollPane::TreeBrowserList
+            | ScrollPane::TreeBrowserSearch
             | ScrollPane::PushCommits
             | ScrollPane::PushFiles
             | ScrollPane::Worktrees
@@ -542,9 +550,21 @@ impl AppState {
                         tb.preview_scroll.bind_bound(viewport_h, max_scroll);
                     }
                 }
+                ScrollPane::TreeBrowserSearch => {
+                    if let Some(tb) = self.modal_stack.tree_browser_mut() {
+                        let total = tb.search_matches.len();
+                        tb.search_scroll
+                            .ensure_visible(tb.search_selected, total, viewport_h);
+                    }
+                }
                 ScrollPane::ApplyPatch => {
                     if let Some(ap) = self.modal_stack.apply_patch_mut() {
                         ap.scroll.bind_bound(viewport_h, max_scroll);
+                    }
+                }
+                ScrollPane::ApplyPatchPreview => {
+                    if let Some(ap) = self.modal_stack.apply_patch_mut() {
+                        ap.preview_scroll.bind_bound(viewport_h, max_scroll);
                     }
                 }
                 ScrollPane::Worktrees => {
@@ -619,6 +639,9 @@ impl AppState {
             self.modal_stack
                 .push_dialog()
                 .and_then(PushDialogState::next_deadline),
+            self.modal_stack
+                .apply_patch()
+                .and_then(crate::patch_view::ApplyPatchState::next_deadline),
             self.menu_hover.map(|h| h.due),
             chord,
         ]
@@ -734,6 +757,11 @@ impl AppState {
             } else {
                 pd.details_pending = Some((key, at));
             }
+        }
+        if let Some(ap) = self.modal_stack.apply_patch_mut()
+            && let Some(key) = ap.flush_due(now)
+        {
+            effects.push(Effect::RequestPatchCheck(key));
         }
         if let Some(pd) = self.modal_stack.push_dialog_mut()
             && let Some(key) = pd.diff.flush_due(&self.diff_caches, now)

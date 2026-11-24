@@ -465,14 +465,6 @@ pub(crate) fn compile_simple_steps(op: &GitOp) -> Option<Vec<CompiledStep>> {
                 )]
             }
         }
-        GitOp::CreatePatchFiles { oids, base } => {
-            let mut args = vec!["format-patch".to_string(), "-o".to_string(), ".".to_string()];
-            if !push_format_patch_target(&mut args, oids, *base) {
-                return Some(Vec::new());
-            }
-            vec![CompiledStep::new(args)]
-        }
-        GitOp::PatchToClipboard { source } => compile_patch_source(source),
         GitOp::CheckoutPaths { rev, paths } => {
             if paths.is_empty() {
                 Vec::new()
@@ -481,6 +473,25 @@ pub(crate) fn compile_simple_steps(op: &GitOp) -> Option<Vec<CompiledStep>> {
                     vec!["checkout".to_string(), rev.clone()],
                     paths,
                 )]
+            }
+        }
+        GitOp::RestorePaths {
+            rev,
+            paths,
+            staged,
+            worktree,
+        } => {
+            if paths.is_empty() {
+                Vec::new()
+            } else {
+                let mut args = vec!["restore".to_string(), format!("--source={rev}")];
+                if *staged {
+                    args.push("--staged".to_string());
+                }
+                if *worktree || !*staged {
+                    args.push("--worktree".to_string());
+                }
+                vec![CompiledStep::with_pathspecs(args, paths)]
             }
         }
         GitOp::SubmoduleUpdate { path } => {
@@ -505,6 +516,8 @@ pub(crate) fn compile_simple_steps(op: &GitOp) -> Option<Vec<CompiledStep>> {
         GitOp::AcceptSide { .. }
         | GitOp::RewriteHistory { .. }
         | GitOp::ApplyPatch { .. }
+        | GitOp::CreatePatchFile { .. }
+        | GitOp::PatchToClipboard { .. }
         | GitOp::AddToIgnore { .. }
         | GitOp::DeleteFiles { .. }
         | GitOp::Sequence(_)
@@ -724,33 +737,113 @@ fn push_format_patch_target(
     }
 }
 
-fn compile_patch_source(source: &PatchSource) -> Vec<CompiledStep> {
+/// Standard Git empty-tree object id (used when diffing against an unborn HEAD).
+const EMPTY_TREE_OID: &str = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
+
+pub(crate) fn compile_patch_source(
+    source: &PatchSource,
+    reverse: bool,
+    head_exists: bool,
+) -> Vec<CompiledStep> {
     match source {
         PatchSource::Commits { oids, base } => {
-            let mut args = vec!["format-patch".to_string(), "--stdout".to_string()];
-            if !push_format_patch_target(&mut args, oids, *base) {
-                return Vec::new();
+            if !reverse {
+                let mut args = vec!["format-patch".to_string(), "--stdout".to_string()];
+                if !push_format_patch_target(&mut args, oids, *base) {
+                    return Vec::new();
+                }
+                vec![CompiledStep::new(args)]
+            } else {
+                match oids.as_slice() {
+                    [one] => vec![CompiledStep::new([
+                        "show",
+                        "--format=",
+                        "--patch",
+                        "-R",
+                        &one.to_string(),
+                    ])],
+                    [newest, ..] => {
+                        let mut args = vec!["diff".to_string(), "-R".to_string()];
+                        match base {
+                            Some(b) => args.push(format!("{b}..{newest}")),
+                            None => {
+                                args.push(EMPTY_TREE_OID.to_string());
+                                args.push(newest.to_string());
+                            }
+                        }
+                        vec![CompiledStep::new(args)]
+                    }
+                    [] => Vec::new(),
+                }
             }
+        }
+        PatchSource::CommitFile { oid, path } => {
+            let mut args = vec![
+                "show".to_string(),
+                "--format=".to_string(),
+                "--patch".to_string(),
+            ];
+            if reverse {
+                args.push("-R".to_string());
+            }
+            args.push(oid.to_string());
+            args.push("--".to_string());
+            args.push(path.clone());
             vec![CompiledStep::new(args)]
         }
-        PatchSource::CommitFile { oid, path } => vec![CompiledStep::new([
-            "show",
-            "--format=",
-            "--patch",
-            &oid.to_string(),
-            "--",
-            path.as_str(),
-        ])],
-        PatchSource::StagePaths { staged, paths } => {
-            let mut args = vec!["diff".to_string()];
-            if *staged {
-                args.push("--cached".to_string());
-            }
-            if !paths.is_empty() {
+        PatchSource::StagePaths {
+            staged,
+            unstaged,
+            ..
+        } => {
+            let staged_set: HashSet<&str> = staged.iter().map(String::as_str).collect();
+            let unstaged_set: HashSet<&str> = unstaged.iter().map(String::as_str).collect();
+            let mut both: Vec<String> = staged_set
+                .intersection(&unstaged_set)
+                .map(|s| (*s).to_string())
+                .collect();
+            let mut staged_only: Vec<String> = staged_set
+                .difference(&unstaged_set)
+                .map(|s| (*s).to_string())
+                .collect();
+            let mut unstaged_only: Vec<String> = unstaged_set
+                .difference(&staged_set)
+                .map(|s| (*s).to_string())
+                .collect();
+            both.sort();
+            staged_only.sort();
+            unstaged_only.sort();
+
+            let mut steps = Vec::new();
+            if !both.is_empty() {
+                let mut args = vec!["diff".to_string()];
+                if reverse {
+                    args.push("-R".to_string());
+                }
+                args.push(if head_exists { "HEAD" } else { EMPTY_TREE_OID }.to_string());
                 args.push("--".to_string());
-                args.extend(paths.iter().cloned());
+                args.extend(both);
+                steps.push(CompiledStep::new(args));
             }
-            vec![CompiledStep::new(args)]
+            if !staged_only.is_empty() {
+                let mut args = vec!["diff".to_string(), "--cached".to_string()];
+                if reverse {
+                    args.push("-R".to_string());
+                }
+                args.push("--".to_string());
+                args.extend(staged_only);
+                steps.push(CompiledStep::new(args));
+            }
+            if !unstaged_only.is_empty() {
+                let mut args = vec!["diff".to_string()];
+                if reverse {
+                    args.push("-R".to_string());
+                }
+                args.push("--".to_string());
+                args.extend(unstaged_only);
+                steps.push(CompiledStep::new(args));
+            }
+            steps
         }
     }
 }
@@ -1014,7 +1107,7 @@ impl<R: GitCliRunner> Runner<'_, R> {
         }
         match op.clone() {
             GitOp::AcceptSide { paths, ours } => self.run_accept_side(op, paths, ours).await,
-            GitOp::ApplyPatch { source, mode } => {
+            GitOp::ApplyPatch { source, options } => {
                 let (file, stdin) = match crate::details::resolve_patch_input(self.loc, &source) {
                     Ok(x) => x,
                     Err(e) => {
@@ -1027,7 +1120,7 @@ impl<R: GitCliRunner> Runner<'_, R> {
                     }
                 };
                 let mut step = CompiledStep::new(crate::details::apply_args(
-                    mode,
+                    &options,
                     false,
                     file.as_deref(),
                 ));
@@ -1040,6 +1133,14 @@ impl<R: GitCliRunner> Runner<'_, R> {
                     *paths = jbgit_core::parse_apply_conflicts(&res.outcome.stdout);
                 }
                 res
+            }
+            GitOp::CreatePatchFile {
+                source,
+                output,
+                reverse,
+            } => self.run_create_patch_file(op, source, output, reverse).await,
+            GitOp::PatchToClipboard { source, reverse } => {
+                self.run_patch_to_clipboard(op, source, reverse).await
             }
             GitOp::RewriteHistory {
                 base,
@@ -1175,6 +1276,213 @@ impl<R: GitCliRunner> Runner<'_, R> {
             plan_accept_side(&self.loc.git_dir, &paths, ours);
         let steps = compile_accept_side_steps(&to_checkout_add, &to_remove, git_ours);
         self.run_steps(op, steps).await
+    }
+
+    async fn collect_patch_lines(
+        &self,
+        source: &PatchSource,
+        reverse: bool,
+    ) -> Result<Vec<String>, Box<(GitFailure, Vec<String>, Option<IndexLockConflict>)>> {
+        let head_exists = git2::Repository::open(&self.loc.git_dir)
+            .ok()
+            .is_some_and(|r| r.head().is_ok());
+        let steps = compile_patch_source(source, reverse, head_exists);
+        let mut lines: Vec<String> = Vec::new();
+        for step in &steps {
+            let res = self.step(step, true).await;
+            if !res.ok() {
+                let failure = classify_failure(&res.all_lines());
+                return Err(Box::new((failure, res.stderr, res.index_lock)));
+            }
+            lines.extend(res.stdout);
+        }
+
+        if let PatchSource::StagePaths {
+            staged,
+            unstaged,
+            untracked,
+        } = source
+        {
+            let tracked: HashSet<&str> = staged
+                .iter()
+                .chain(unstaged.iter())
+                .map(String::as_str)
+                .collect();
+            let mut extra: Vec<&str> = untracked
+                .iter()
+                .map(String::as_str)
+                .filter(|p| !tracked.contains(*p))
+                .collect();
+            extra.sort_unstable();
+            extra.dedup();
+            for rel in extra {
+                let abs = self.loc.workdir.join(rel);
+                let bytes = match std::fs::read(&abs) {
+                    Ok(b) => b,
+                    Err(e) => {
+                        return Err(Box::new((
+                            GitFailure::Other(format!("failed to read '{rel}': {e}")),
+                            Vec::new(),
+                            None,
+                        )));
+                    }
+                };
+                if let Some(patch_text) = jbgit_core::build_untracked_file_patch(rel, &bytes, reverse)
+                {
+                    let trimmed = patch_text.strip_suffix('\n').unwrap_or(&patch_text);
+                    if !trimmed.is_empty() {
+                        lines.extend(trimmed.split('\n').map(str::to_string));
+                    }
+                } else {
+                    // Binary untracked file: delegate to `git diff --no-index --binary`.
+                    let args = if reverse {
+                        vec![
+                            "diff".to_string(),
+                            "--no-index".to_string(),
+                            "--binary".to_string(),
+                            "--".to_string(),
+                            rel.to_string(),
+                            "/dev/null".to_string(),
+                        ]
+                    } else {
+                        vec![
+                            "diff".to_string(),
+                            "--no-index".to_string(),
+                            "--binary".to_string(),
+                            "--".to_string(),
+                            "/dev/null".to_string(),
+                            rel.to_string(),
+                        ]
+                    };
+                    let res = self.step(&CompiledStep::new(args), true).await;
+                    // `git diff --no-index` exits 1 when differences exist.
+                    if res.exit_code != 0 && res.exit_code != 1 {
+                        let failure = classify_failure(&res.all_lines());
+                        return Err(Box::new((failure, res.stderr, res.index_lock)));
+                    }
+                    lines.extend(res.stdout);
+                }
+            }
+        }
+        Ok(lines)
+    }
+
+    async fn run_patch_to_clipboard(
+        &self,
+        op: GitOp,
+        source: PatchSource,
+        reverse: bool,
+    ) -> GitOpRunResult {
+        match self.collect_patch_lines(&source, reverse).await {
+            Ok(stdout) => {
+                let mut outcome = GitOpOutcome::ok(op);
+                outcome.stdout = stdout;
+                GitOpRunResult {
+                    outcome,
+                    index_lock: None,
+                }
+            }
+            Err(err) => {
+                let (failure, stderr, index_lock) = *err;
+                let mut outcome = GitOpOutcome::failed(op, failure);
+                outcome.stderr = stderr;
+                GitOpRunResult {
+                    outcome,
+                    index_lock,
+                }
+            }
+        }
+    }
+
+    async fn run_create_patch_file(
+        &self,
+        op: GitOp,
+        source: PatchSource,
+        output: PathBuf,
+        reverse: bool,
+    ) -> GitOpRunResult {
+        let abs = if output.is_absolute() {
+            output.clone()
+        } else {
+            self.loc.workdir.join(&output)
+        };
+        let raw_s = output.to_string_lossy();
+        let wants_dir = abs.is_dir() || raw_s.ends_with('/') || raw_s.ends_with('\\');
+
+        // Directory target for non-reversed commit range -> `git format-patch -o <dir>`.
+        if wants_dir
+            && !reverse
+            && let PatchSource::Commits { oids, base } = &source
+        {
+            if let Err(e) = std::fs::create_dir_all(&abs) {
+                return GitOpRunResult {
+                    outcome: GitOpOutcome::failed(op, GitFailure::Other(e.to_string())),
+                    index_lock: None,
+                };
+            }
+            let mut args = vec![
+                "format-patch".to_string(),
+                "-o".to_string(),
+                abs.display().to_string(),
+            ];
+            if !push_format_patch_target(&mut args, oids, *base) {
+                return GitOpRunResult {
+                    outcome: GitOpOutcome::ok(op),
+                    index_lock: None,
+                };
+            }
+            return self.run_steps(op, vec![CompiledStep::new(args)]).await;
+        }
+
+        let dest = if wants_dir {
+            let repo_name = self
+                .loc
+                .workdir
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "repo".into());
+            abs.join(source.suggested_filename(&repo_name))
+        } else {
+            abs
+        };
+
+        let lines = match self.collect_patch_lines(&source, reverse).await {
+            Ok(l) => l,
+            Err(err) => {
+                let (failure, stderr, index_lock) = *err;
+                let mut outcome = GitOpOutcome::failed(op, failure);
+                outcome.stderr = stderr;
+                return GitOpRunResult {
+                    outcome,
+                    index_lock,
+                };
+            }
+        };
+        if let Some(parent) = dest.parent()
+            && !parent.as_os_str().is_empty()
+            && let Err(e) = std::fs::create_dir_all(parent)
+        {
+            return GitOpRunResult {
+                outcome: GitOpOutcome::failed(op, GitFailure::Other(e.to_string())),
+                index_lock: None,
+            };
+        }
+        let mut content = lines.join("\n");
+        if !content.is_empty() && !content.ends_with('\n') {
+            content.push('\n');
+        }
+        if let Err(e) = std::fs::write(&dest, content.as_bytes()) {
+            return GitOpRunResult {
+                outcome: GitOpOutcome::failed(op, GitFailure::Other(e.to_string())),
+                index_lock: None,
+            };
+        }
+        let mut outcome = GitOpOutcome::ok(op);
+        outcome.stdout = vec![dest.display().to_string()];
+        GitOpRunResult {
+            outcome,
+            index_lock: None,
+        }
     }
 
     async fn run_sequence(&self, ops: Vec<GitOp>) -> GitOpRunResult {
@@ -2209,25 +2517,25 @@ mod tests {
             ]
         );
 
-        let patch_commits = GitOp::PatchToClipboard {
-            source: PatchSource::Commits {
-                oids: vec![oid(2), oid(1)],
-                base: None,
-            },
+        let patch_commits = PatchSource::Commits {
+            oids: vec![oid(2), oid(1)],
+            base: None,
         };
         assert_eq!(
-            compile_simple_steps(&patch_commits).unwrap()[0].args,
+            compile_patch_source(&patch_commits, false, true)[0].args,
             vec!["format-patch", "--stdout", "--root", &oid(2).to_string()]
         );
+        assert_eq!(
+            compile_patch_source(&patch_commits, true, true)[0].args,
+            vec!["diff", "-R", EMPTY_TREE_OID, &oid(2).to_string()]
+        );
 
-        let patch_file = GitOp::PatchToClipboard {
-            source: PatchSource::CommitFile {
-                oid: oid(3),
-                path: "src/lib.rs".into(),
-            },
+        let patch_file = PatchSource::CommitFile {
+            oid: oid(3),
+            path: "src/lib.rs".into(),
         };
         assert_eq!(
-            compile_simple_steps(&patch_file).unwrap()[0].args,
+            compile_patch_source(&patch_file, false, true)[0].args,
             vec![
                 "show",
                 "--format=",
@@ -2237,16 +2545,66 @@ mod tests {
                 "src/lib.rs"
             ]
         );
+        assert_eq!(
+            compile_patch_source(&patch_file, true, true)[0].args,
+            vec![
+                "show",
+                "--format=",
+                "--patch",
+                "-R",
+                &oid(3).to_string(),
+                "--",
+                "src/lib.rs"
+            ]
+        );
 
-        let patch_stage = GitOp::PatchToClipboard {
-            source: PatchSource::StagePaths {
-                staged: true,
-                paths: vec!["a.rs".into()],
-            },
+        let patch_stage = PatchSource::StagePaths {
+            staged: vec!["both.rs".into(), "staged.rs".into()],
+            unstaged: vec!["both.rs".into(), "work.rs".into()],
+            untracked: vec!["new.rs".into()],
+        };
+        let stage_steps = compile_patch_source(&patch_stage, false, true);
+        assert_eq!(stage_steps.len(), 3);
+        assert_eq!(stage_steps[0].args, vec!["diff", "HEAD", "--", "both.rs"]);
+        assert_eq!(
+            stage_steps[1].args,
+            vec!["diff", "--cached", "--", "staged.rs"]
+        );
+        assert_eq!(stage_steps[2].args, vec!["diff", "--", "work.rs"]);
+
+        let restore_wt = GitOp::RestorePaths {
+            rev: oid(4).to_string(),
+            paths: vec!["a.rs".into(), "b.rs".into()],
+            staged: false,
+            worktree: true,
         };
         assert_eq!(
-            compile_simple_steps(&patch_stage).unwrap()[0].args,
-            vec!["diff", "--cached", "--", "a.rs"]
+            compile_simple_steps(&restore_wt).unwrap()[0].args,
+            vec![
+                "restore",
+                &format!("--source={}", oid(4)),
+                "--worktree",
+                "--",
+                "a.rs",
+                "b.rs",
+            ]
+        );
+        let restore_both = GitOp::RestorePaths {
+            rev: oid(4).to_string(),
+            paths: vec!["a.rs".into()],
+            staged: true,
+            worktree: true,
+        };
+        assert_eq!(
+            compile_simple_steps(&restore_both).unwrap()[0].args,
+            vec![
+                "restore",
+                &format!("--source={}", oid(4)),
+                "--staged",
+                "--worktree",
+                "--",
+                "a.rs",
+            ]
         );
 
         let ongoing = GitOp::Ongoing {

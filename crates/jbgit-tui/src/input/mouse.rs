@@ -77,6 +77,21 @@ fn route_mouse_scroll(col: u16, row: u16, delta: isize, state: &AppState) -> Vec
                     crate::tree_browser::TreeBrowserAction::ScrollPreview(delta),
                 )];
             }
+            HitTarget::TreeBrowserSearchRow(_) => {
+                return vec![Action::TreeBrowser(
+                    crate::tree_browser::TreeBrowserAction::SearchMove(delta / 3),
+                )];
+            }
+            HitTarget::ApplyPatchFileRow(_) | HitTarget::ApplyPatchFileCheck(_) => {
+                return vec![Action::ApplyPatch(
+                    crate::patch_view::ApplyPatchAction::Move(delta / 3),
+                )];
+            }
+            HitTarget::ApplyPatchPreview => {
+                return vec![Action::ApplyPatch(
+                    crate::patch_view::ApplyPatchAction::ScrollPreview(delta),
+                )];
+            }
             HitTarget::BranchTreeNode { .. }
             | HitTarget::BranchTreeToggle { .. }
             | HitTarget::Pane(PaneId::LogBranchesTree) => {
@@ -688,9 +703,16 @@ fn route_mouse_right_down(col: u16, row: u16, state: &AppState) -> Vec<Action> {
             | HitTarget::CloneButton { .. }
             | HitTarget::WorktreesRow(_)
             | HitTarget::ApplyPatchMode(_)
+            | HitTarget::ApplyPatchToggleReverse
+            | HitTarget::ApplyPatchStrip(_)
+            | HitTarget::ApplyPatchEditDir
+            | HitTarget::ApplyPatchFileRow(_)
+            | HitTarget::ApplyPatchFileCheck(_)
+            | HitTarget::ApplyPatchPreview
             | HitTarget::ApplyPatchButton { .. }
             | HitTarget::TreeBrowserRow(_)
             | HitTarget::TreeBrowserPreview
+            | HitTarget::TreeBrowserSearchRow(_)
             | HitTarget::HeaderRepoName
             | HitTarget::BranchPopupFetch
             | HitTarget::BranchPopupSettings

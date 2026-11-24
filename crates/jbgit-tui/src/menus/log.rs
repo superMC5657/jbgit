@@ -462,6 +462,10 @@ pub fn log_commit_menu_items(state: &AppState) -> Vec<ContextMenuItem> {
         .first()
         .and_then(|o| snap.commit(o))
         .and_then(|c| c.parents.first().copied());
+    let commits_patch_source = PatchSource::Commits {
+        oids: newest_first,
+        base: oldest_parent,
+    };
     items.push(ContextMenuItem::submenu(
         i18n.t("menu.log.create_patch"),
         Some('a'),
@@ -470,20 +474,19 @@ pub fn log_commit_menu_items(state: &AppState) -> Vec<ContextMenuItem> {
                 i18n.t("menu.log.save_patch_files"),
                 Some('s'),
                 None,
-                op(GitOp::CreatePatchFiles {
-                    oids: newest_first.clone(),
-                    base: oldest_parent,
-                }),
+                dialog(crate::dialogs::create_patch_dialog(
+                    state,
+                    commits_patch_source.clone(),
+                    false,
+                )),
             ),
             run(
                 i18n.t("menu.log.copy_patch_clipboard"),
                 Some('c'),
                 None,
                 op(GitOp::PatchToClipboard {
-                    source: PatchSource::Commits {
-                        oids: newest_first,
-                        base: oldest_parent,
-                    },
+                    source: commits_patch_source,
+                    reverse: false,
                 }),
             ),
         ],
@@ -709,7 +712,12 @@ pub fn log_diff_menu_items(state: &AppState) -> Vec<ContextMenuItem> {
             None,
             patch_source
                 .as_ref()
-                .map(|source| op(GitOp::PatchToClipboard { source: source.clone() }))
+                .map(|source| {
+                    op(GitOp::PatchToClipboard {
+                        source: source.clone(),
+                        reverse: false,
+                    })
+                })
                 .unwrap_or_default(),
         )
         .enabled_if(patch_source.is_some(), i18n.t("menu.log.copy_patch_need_file")),
@@ -981,6 +989,7 @@ pub fn log_change_menu_items(state: &AppState) -> Vec<ContextMenuItem> {
                 oid,
                 path: row_path,
             },
+            reverse: false,
         }),
         _ => Vec::new(),
     };

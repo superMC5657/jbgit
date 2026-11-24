@@ -193,9 +193,17 @@ fn resolve_compare_versions(
     diff_deltas_to_changes(&mut diff, token)
 }
 
+fn path_matches_dir_prefix(path: &str, prefix: &str) -> bool {
+    path == prefix
+        || path
+            .strip_prefix(prefix)
+            .is_some_and(|rest| rest.starts_with('/'))
+}
+
 fn resolve_compare_with_local(
     repo: &Repository,
     base: &git2::Commit<'_>,
+    path_prefix: Option<&str>,
     token: &EpochToken,
 ) -> Result<Vec<ResolvedChange>, EngineError> {
     let base_tree = base.tree()?;
@@ -203,8 +211,23 @@ fn resolve_compare_with_local(
     opts.include_untracked(true)
         .recurse_untracked_dirs(true)
         .show_untracked_content(true);
+    let prefix = path_prefix
+        .map(|p| p.trim_matches('/'))
+        .filter(|p| !p.is_empty());
+    if let Some(p) = prefix {
+        opts.pathspec(p);
+    }
     let mut diff = repo.diff_tree_to_workdir_with_index(Some(&base_tree), Some(&mut opts))?;
-    diff_deltas_to_changes(&mut diff, token)
+    let mut changes = diff_deltas_to_changes(&mut diff, token)?;
+    if let Some(p) = prefix {
+        changes.retain(|c| {
+            path_matches_dir_prefix(&c.path, p)
+                || c.old_path
+                    .as_deref()
+                    .is_some_and(|old| path_matches_dir_prefix(old, p))
+        });
+    }
+    Ok(changes)
 }
 
 /// Folds per-commit changes oldest-to-newest (`VcsLogUtil.collectChanges` /
@@ -337,7 +360,9 @@ pub(super) fn resolve_changes<'r>(
             })?;
             resolve_compare_versions(repo, first, second, token)?
         }
-        DetailsMode::CompareWithLocal => resolve_compare_with_local(repo, first, token)?,
+        DetailsMode::CompareWithLocal => {
+            resolve_compare_with_local(repo, first, key.path_prefix.as_deref(), token)?
+        }
         DetailsMode::Commits => {
             if commits.len() == 1 {
                 resolve_single_commit_changes(repo, first, key.parent_index, token)?

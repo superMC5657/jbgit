@@ -1,11 +1,13 @@
 //! Apply Patch and Browse Repository at Revision on the app side (Spec 12
-//! Issue 13): modal actions, engine requests and their replies.
+//! Issue 13 + Spec 13 Issue 10): modal actions, engine requests and their replies.
 
+use std::path::Path;
 use std::sync::Arc;
 
-use jbgit_core::{ApplyMode, PatchCheck, RequestSlotId, TreeBlob, TreeKey, TreeListing};
+use crossterm::event::{KeyCode, KeyModifiers};
+use jbgit_core::{ApplyMode, Oid, PatchCheck, RequestSlotId, TreeBlob, TreeKey, TreeListing};
 
-use crate::patch_view::ApplyPatchState;
+use crate::patch_view::{ApplyPatchAction, ApplyPatchFocus, ApplyPatchState};
 use crate::tree_browser::TreeBrowserState;
 
 use super::{Action, AppState, Effect, ModalLayer, ScrollPane, SyntaxJob, SyntaxTarget};
@@ -33,25 +35,18 @@ impl AppState {
                 effects.push(Effect::RequestPatchCheck(s.key()));
                 self.push_modal(ModalLayer::ApplyPatch(Box::new(s)));
             }
-            Action::ApplyPatchSetMode(mode) => {
-                if let Some(s) = self.modal_stack.apply_patch_mut() {
-                    let next = mode.unwrap_or_else(|| s.mode.next());
-                    if next != s.mode {
-                        s.mode = next;
-                        s.scroll.reset();
-                        if s.current_check().is_none() {
-                            effects.push(Effect::RequestPatchCheck(s.key()));
-                        }
-                    }
-                }
+            Action::ApplyPatch(sub) => {
+                self.handle_apply_patch_action(sub, effects);
             }
-            Action::ApplyPatchScroll(delta) => {
-                self.scroll_pane(ScrollPane::ApplyPatch, *delta);
+            Action::RememberPatchDir(dir) => {
+                self.last_patch_dir = Some(dir.clone());
             }
-            Action::ApplyPatchConfirm => {
-                for a in crate::patch_view::confirm_actions(self) {
-                    effects.extend(self.dispatch(a));
-                }
+            Action::ExportTreeBlob { oid, path, dest } => {
+                effects.push(Effect::ExportTreeBlob {
+                    oid: *oid,
+                    path: path.clone(),
+                    dest: dest.clone(),
+                });
             }
             Action::OpenTreeBrowser { oid } => {
                 let title = self
@@ -96,13 +91,164 @@ impl AppState {
         true
     }
 
-    /// Issues the next queued directory listing and the selected file's preview.
+    fn handle_apply_patch_action(&mut self, sub: &ApplyPatchAction, effects: &mut Vec<Effect>) {
+        let now = self.now();
+        match sub {
+            ApplyPatchAction::SetMode(mode) => {
+                if let Some(s) = self.modal_stack.apply_patch_mut() {
+                    let next = mode.unwrap_or_else(|| s.options.mode.next());
+                    if next != s.options.mode {
+                        s.options.mode = next;
+                        s.pending_check_due = None;
+                        if !s.all_unchecked() && s.current_check().is_none() {
+                            effects.push(Effect::RequestPatchCheck(s.key()));
+                        }
+                    }
+                }
+            }
+            ApplyPatchAction::ToggleReverse => {
+                if let Some(s) = self.modal_stack.apply_patch_mut() {
+                    s.options.reverse = !s.options.reverse;
+                    s.schedule_check(now);
+                }
+            }
+            ApplyPatchAction::AdjustStrip(delta) => {
+                if let Some(s) = self.modal_stack.apply_patch_mut() {
+                    let cur = s.options.effective_strip() as i16;
+                    let next = (cur + i16::from(*delta)).clamp(0, 9) as u8;
+                    let next_opt = (next != 1).then_some(next);
+                    if next_opt != s.options.strip {
+                        s.options.strip = next_opt;
+                        s.on_path_transform_changed();
+                        s.schedule_check(now);
+                    }
+                }
+            }
+            ApplyPatchAction::StartDirEdit => {
+                if let Some(s) = self.modal_stack.apply_patch_mut() {
+                    s.editing_dir = Some(s.options.directory.clone().unwrap_or_default());
+                }
+            }
+            ApplyPatchAction::DirEditKey(key) => {
+                if let Some(s) = self.modal_stack.apply_patch_mut()
+                    && let Some(mut draft) = s.editing_dir.take()
+                {
+                    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+                    let alt = key.modifiers.contains(KeyModifiers::ALT);
+                    match key.code {
+                        KeyCode::Esc => {
+                            // Cancel without modifying options.directory.
+                        }
+                        KeyCode::Enter => {
+                            let trimmed = draft.trim().to_string();
+                            let next = (!trimmed.is_empty()).then_some(trimmed);
+                            if next != s.options.directory {
+                                s.options.directory = next;
+                                s.on_path_transform_changed();
+                                s.schedule_check(now);
+                            }
+                        }
+                        KeyCode::Backspace => {
+                            draft.pop();
+                            s.editing_dir = Some(draft);
+                        }
+                        KeyCode::Char('u') if ctrl => {
+                            draft.clear();
+                            s.editing_dir = Some(draft);
+                        }
+                        KeyCode::Char(c) if !ctrl && !alt && !c.is_control() => {
+                            draft.push(c);
+                            s.editing_dir = Some(draft);
+                        }
+                        _ => {
+                            s.editing_dir = Some(draft);
+                        }
+                    }
+                }
+            }
+            ApplyPatchAction::Move(delta) => {
+                if let Some(s) = self.modal_stack.apply_patch_mut() {
+                    s.move_selection(*delta);
+                }
+            }
+            ApplyPatchAction::Select(idx) => {
+                if let Some(s) = self.modal_stack.apply_patch_mut() {
+                    s.select_row(*idx);
+                }
+            }
+            ApplyPatchAction::ToggleFile(idx) => {
+                if let Some(s) = self.modal_stack.apply_patch_mut()
+                    && s.toggle_file_checked(*idx)
+                {
+                    s.schedule_check(now);
+                }
+            }
+            ApplyPatchAction::ToggleAll => {
+                if let Some(s) = self.modal_stack.apply_patch_mut()
+                    && s.toggle_all_checked()
+                {
+                    s.schedule_check(now);
+                }
+            }
+            ApplyPatchAction::TogglePreview => {
+                if let Some(s) = self.modal_stack.apply_patch_mut() {
+                    s.show_preview = !s.show_preview;
+                    s.preview_scroll.reset();
+                    if !s.show_preview {
+                        s.focus = ApplyPatchFocus::Files;
+                    }
+                }
+            }
+            ApplyPatchAction::OpenPreview => {
+                if let Some(s) = self.modal_stack.apply_patch_mut() {
+                    s.show_preview = true;
+                    s.preview_scroll.reset();
+                }
+            }
+            ApplyPatchAction::ToggleFocus => {
+                if let Some(s) = self.modal_stack.apply_patch_mut()
+                    && s.show_preview
+                {
+                    s.focus = match s.focus {
+                        ApplyPatchFocus::Files => ApplyPatchFocus::Preview,
+                        ApplyPatchFocus::Preview => ApplyPatchFocus::Files,
+                    };
+                }
+            }
+            ApplyPatchAction::ScrollPreview(delta) => {
+                self.scroll_pane(ScrollPane::ApplyPatchPreview, *delta);
+            }
+            ApplyPatchAction::Escape => {
+                let close_preview = self
+                    .modal_stack
+                    .apply_patch()
+                    .is_some_and(|s| s.show_preview && s.focus == ApplyPatchFocus::Preview);
+                if close_preview {
+                    if let Some(s) = self.modal_stack.apply_patch_mut() {
+                        s.focus = ApplyPatchFocus::Files;
+                    }
+                } else {
+                    effects.extend(self.dispatch(Action::PopModal));
+                }
+            }
+            ApplyPatchAction::Confirm => {
+                for a in crate::patch_view::confirm_actions(self) {
+                    effects.extend(self.dispatch(a));
+                }
+            }
+        }
+    }
+
+    /// Issues the next queued directory listing, fuzzy index, and selected file's preview.
     pub(crate) fn pump_tree_requests(&mut self, effects: &mut Vec<Effect>) {
         let Some(s) = self.modal_stack.tree_browser_mut() else {
             return;
         };
         if let Some(key) = s.next_request() {
             effects.push(Effect::RequestTree(key));
+        }
+        if let Some(oid) = s.take_wanted_index_request() {
+            effects.push(Effect::RequestTreeIndex(oid));
         }
         if let Some(key) = s.wanted_preview() {
             s.preview_requested = Some(key.clone());
@@ -118,12 +264,15 @@ impl AppState {
         if let Some(s) = self.modal_stack.apply_patch_mut()
             && s.key() == check.key
         {
-            // 3-way is the natural fallback: suggest it right away.
-            if !check.applies() && s.mode != ApplyMode::ThreeWay {
-                self.status_notice = Some(self.i18n.t("dialog.apply_patch.try_3way").into());
+            if !check.applies() {
+                if check.needs_three_way_index_fallback() {
+                    self.status_notice =
+                        Some(self.i18n.t("dialog.apply_patch.three_way_no_index").into());
+                } else if s.options.mode != ApplyMode::ThreeWay {
+                    self.status_notice = Some(self.i18n.t("dialog.apply_patch.try_3way").into());
+                }
             }
-            s.check = Some(check);
-            s.scroll.reset();
+            s.on_check(check);
         }
     }
 
@@ -156,6 +305,39 @@ impl AppState {
             s.on_listing_failed(key, message);
         }
         self.pump_tree_requests(effects);
+    }
+
+    pub(crate) fn on_tree_index_loaded(&mut self, oid: Oid, paths: Arc<Vec<String>>, epoch: u64) {
+        if !self.request_slots.accept(RequestSlotId::TreeIndex, epoch) {
+            return;
+        }
+        if let Some(s) = self.modal_stack.tree_browser_mut() {
+            s.on_index_loaded(oid, paths);
+        }
+    }
+
+    pub(crate) fn on_tree_blob_exported(
+        &mut self,
+        _path: &str,
+        dest: &Path,
+        result: Result<u64, String>,
+    ) {
+        match result {
+            Ok(bytes) => {
+                let dest_s = dest.display().to_string();
+                let bytes_s = bytes.to_string();
+                self.status_notice = Some(self.i18n.t_fmt(
+                    "view.tree.export_ok",
+                    &[("dest", &dest_s), ("bytes", &bytes_s)],
+                ));
+            }
+            Err(err) => {
+                self.status_notice = Some(
+                    self.i18n
+                        .t_fmt("view.tree.export_err", &[("error", &err)]),
+                );
+            }
+        }
     }
 
     pub(crate) fn on_tree_blob_loaded(

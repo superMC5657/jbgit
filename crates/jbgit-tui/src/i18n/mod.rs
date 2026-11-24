@@ -554,9 +554,9 @@ impl I18n {
                 let c = paths.len().to_string();
                 self.t_fmt("git_op.delete_files", &[("count", &c)])
             }
-            GitOp::CreatePatchFiles { .. } => self.t("git_op.create_patch").to_string(),
+            GitOp::CreatePatchFile { .. } => self.t("git_op.create_patch").to_string(),
             GitOp::PatchToClipboard { .. } => self.t("git_op.patch_to_clipboard").to_string(),
-            GitOp::CheckoutPaths { rev, paths } => {
+            GitOp::CheckoutPaths { rev, paths } | GitOp::RestorePaths { rev, paths, .. } => {
                 let short_rev = jbgit_core::short_rev(rev);
                 if paths.len() == 1 {
                     self.t_fmt(

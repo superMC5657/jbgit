@@ -6,7 +6,7 @@ use std::path::Path;
 use std::process::Command;
 use std::time::Duration;
 
-use jbgit_core::{ApplyMode, GitOp, PatchCheckKey, PatchInput};
+use jbgit_core::{ApplyMode, ApplyOptions, GitOp, PatchCheckKey, PatchInput};
 use jbgit_engine::{EngineBackend, EngineEvent, EngineSupervisor, RepoLocation, TaskRequest};
 use tempfile::TempDir;
 
@@ -51,10 +51,10 @@ async fn clipboard_patch_is_checked_and_applied_from_stdin() {
 
     let loc = RepoLocation::discover(dir).unwrap();
     let (handle, mut rx) = EngineSupervisor::start(loc, false).unwrap();
-    let key = PatchCheckKey {
-        source: PatchInput::Clipboard,
-        mode: ApplyMode::WorkingTree,
-    };
+    let key = PatchCheckKey::new(
+        PatchInput::Clipboard,
+        ApplyOptions::with_mode(ApplyMode::WorkingTree),
+    );
     let epoch = handle
         .dispatch(TaskRequest::CheckPatch { key: key.clone() })
         .unwrap();
@@ -74,7 +74,7 @@ async fn clipboard_patch_is_checked_and_applied_from_stdin() {
     let _ = handle.dispatch(TaskRequest::RunGitOp {
         op: GitOp::ApplyPatch {
             source: PatchInput::Clipboard,
-            mode: ApplyMode::WorkingTree,
+            options: ApplyOptions::with_mode(ApplyMode::WorkingTree),
         },
     });
     let outcome = tokio::time::timeout(Duration::from_secs(10), async {

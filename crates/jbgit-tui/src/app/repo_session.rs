@@ -208,6 +208,7 @@ impl AppState {
                     | Dialog::Merge(_)
                     | Dialog::Pull(_)
                     | Dialog::Rebase(_)
+                    | Dialog::CreatePatch(_)
                     | Dialog::Message(_)
             ),
             ModalLayer::PushDialog(_) => true,

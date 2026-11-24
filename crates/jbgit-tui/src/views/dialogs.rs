@@ -11,9 +11,9 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::app::{AppState, RenderContext, ScrollPane};
 use crate::dialogs::{
-    ChoiceDialog, CredentialDialog, Dialog, IdentityDialog, IdentityField, InputDialog,
-    MergeDialog, MergeDialogRow, MessageDialog, PullDialog, PullDialogRow, RebaseDialog,
-    RebaseDialogRow, RebaseTodoDialog,
+    ChoiceDialog, CreatePatchDialog, CreatePatchRow, CredentialDialog, Dialog, IdentityDialog,
+    IdentityField, InputDialog, MergeDialog, MergeDialogRow, MessageDialog, PullDialog,
+    PullDialogRow, RebaseDialog, RebaseDialogRow, RebaseTodoDialog,
 };
 use crate::hit_test::{DialogButtonKind, HitTarget};
 use crate::views::overlays::{draw_shadow, mnemonic_spans};
@@ -145,6 +145,7 @@ pub fn render_dialog(
         Dialog::Merge(d) => render_merge(frame, screen, ctx, d, z),
         Dialog::Pull(d) => render_pull(frame, screen, ctx, d, z),
         Dialog::Rebase(d) => render_rebase_options(frame, screen, ctx, d, z),
+        Dialog::CreatePatch(d) => render_create_patch(frame, screen, ctx, d, z),
         Dialog::Credential(d) => render_credential(frame, screen, ctx, d, z),
         Dialog::Identity(d) => render_identity(frame, screen, ctx, d, z),
     }
@@ -1668,4 +1669,157 @@ fn render_rebase_preview(
             Rect::new(area.x, area.y + 1 + vis as u16, area.width, 1),
         );
     }
+}
+
+fn render_create_patch(
+    frame: &mut Frame<'_>,
+    screen: Rect,
+    ctx: &mut RenderContext<'_>,
+    d: &CreatePatchDialog,
+    z: u8,
+) {
+    let rect = centered(screen, 84, 12);
+    let title = ctx.t("dialog.create_patch.title").to_string();
+    let inner = frame_block(frame, screen, ctx, rect, &title, false, z);
+    let width = inner.width as usize;
+    let muted = Style::default().fg(ctx.theme.fg_muted);
+
+    // Row 0: Destination (File vs Clipboard)
+    let dest_sel = d.row() == CreatePatchRow::Destination;
+    let dest_bg = if dest_sel {
+        ctx.theme.bg_selection_focused
+    } else {
+        ctx.theme.bg_elevated
+    };
+    let file_radio = if !d.to_clipboard { "●" } else { "○" };
+    let clip_radio = if d.to_clipboard { "●" } else { "○" };
+    let dest_line = Line::from(vec![
+        Span::styled(
+            format!(" {}: ", ctx.t("dialog.create_patch.destination")),
+            muted.bg(dest_bg),
+        ),
+        Span::styled(
+            format!(
+                "{file_radio} {}   {clip_radio} {}",
+                ctx.t("dialog.create_patch.to_file"),
+                ctx.t("dialog.create_patch.to_clipboard")
+            ),
+            Style::default()
+                .fg(ctx.theme.fg_primary)
+                .bg(dest_bg),
+        ),
+    ]);
+    let r0 = Rect::new(inner.x, inner.y + 1, inner.width, 1);
+    frame.render_widget(Paragraph::new(dest_line).style(Style::default().bg(dest_bg)), r0);
+    ctx.hit_registry
+        .register(r0, z + 2, HitTarget::DialogOption(0));
+
+    // Row 1: Output path (enabled when File)
+    let path_sel = d.row() == CreatePatchRow::Path;
+    let path_bg = if path_sel && !d.to_clipboard {
+        ctx.theme.bg_selection_focused
+    } else {
+        ctx.theme.bg_elevated
+    };
+    let cursor = if path_sel && !d.to_clipboard { "▏" } else { "" };
+    let path_fg = if d.to_clipboard {
+        ctx.theme.fg_muted
+    } else {
+        ctx.theme.fg_primary
+    };
+    let path_lbl = format!(" {}: ", ctx.t("dialog.create_patch.path"));
+    let path_avail = width.saturating_sub(path_lbl.width() + 2);
+    let shown_path = if d.path.width() > path_avail && path_avail > 2 {
+        let mut chars: Vec<char> = d.path.chars().collect();
+        while chars.iter().collect::<String>().width() + 1 > path_avail && !chars.is_empty() {
+            chars.remove(0);
+        }
+        format!("…{}", chars.into_iter().collect::<String>())
+    } else {
+        d.path.clone()
+    };
+    let r1 = Rect::new(inner.x, inner.y + 3, inner.width, 1);
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(path_lbl, muted.bg(path_bg)),
+            Span::styled(format!("{shown_path}{cursor}"), Style::default().fg(path_fg).bg(path_bg)),
+        ]))
+        .style(Style::default().bg(path_bg)),
+        r1,
+    );
+    ctx.hit_registry
+        .register(r1, z + 2, HitTarget::DialogOption(1));
+
+    // Row 2: Reverse (-R)
+    let rev_sel = d.row() == CreatePatchRow::Reverse;
+    let rev_bg = if rev_sel {
+        ctx.theme.bg_selection_focused
+    } else {
+        ctx.theme.bg_elevated
+    };
+    let rev_box = if d.reverse { "[x]" } else { "[ ]" };
+    let r2 = Rect::new(inner.x, inner.y + 5, inner.width, 1);
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            format!(" {rev_box} {}", ctx.t("dialog.create_patch.reverse")),
+            Style::default()
+                .fg(if d.reverse {
+                    ctx.theme.fg_accent_link
+                } else {
+                    ctx.theme.fg_primary
+                })
+                .bg(rev_bg),
+        )))
+        .style(Style::default().bg(rev_bg)),
+        r2,
+    );
+    ctx.hit_registry
+        .register(r2, z + 2, HitTarget::DialogOption(2));
+
+    // Error / hint line.
+    let err = ctx.i18n.and_then(|i| d.error(i));
+    let (hint, hint_fg) = match &err {
+        Some(e) => (format!(" ✕ {e}"), ctx.theme.status_conflicted),
+        None => (
+            format!(" {}", ctx.t("dialog.create_patch.hint")),
+            ctx.theme.fg_muted,
+        ),
+    };
+    frame.render_widget(
+        Paragraph::new(Span::styled(
+            truncate_to_width(&hint, width),
+            Style::default().fg(hint_fg),
+        )),
+        Rect::new(inner.x, inner.bottom().saturating_sub(3), inner.width, 1),
+    );
+
+    let confirm_lbl = if d.to_clipboard {
+        ctx.t("dialog.create_patch.copy_btn").into()
+    } else {
+        ctx.t("dialog.create_patch.create_btn").into()
+    };
+    render_buttons(
+        frame,
+        ctx,
+        inner.x + 1,
+        inner.bottom().saturating_sub(1),
+        inner.right(),
+        &[
+            DialogButtonSpec {
+                label: confirm_lbl,
+                selected: true,
+                enabled: err.is_none(),
+                danger: false,
+                target: HitTarget::DialogButton(DialogButtonKind::Confirm),
+            },
+            DialogButtonSpec {
+                label: ctx.cancel().into(),
+                selected: false,
+                enabled: true,
+                danger: false,
+                target: HitTarget::DialogButton(DialogButtonKind::Cancel),
+            },
+        ],
+        z,
+    );
 }

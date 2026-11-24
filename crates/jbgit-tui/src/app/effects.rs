@@ -123,6 +123,15 @@ pub fn execute_effects_with_host(
                             .request_slots
                             .note_dispatched(RequestSlotId::TreeBlob, epoch);
                     }
+                    Effect::RequestTreeIndex(oid) => {
+                        let epoch = handle.request_tree_index(oid);
+                        state
+                            .request_slots
+                            .note_dispatched(RequestSlotId::TreeIndex, epoch);
+                    }
+                    Effect::ExportTreeBlob { oid, path, dest } => {
+                        handle.request_export_tree_blob(oid, path, dest);
+                    }
                     Effect::RequestOutgoing(key) => {
                         let epoch = handle.request_outgoing(key);
                         state

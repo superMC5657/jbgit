@@ -363,6 +363,10 @@ pub enum Action {
     CompareWithLocal {
         target: Oid,
     },
+    CompareDirWithLocal {
+        target: Oid,
+        path_prefix: String,
+    },
     OpenConflictResolver(String),
     OpenConflictQueue,
     CloseConflictQueue,
@@ -516,13 +520,18 @@ pub enum Action {
     FileHistoryAnnotate,
     FileHistoryEscape,
 
-    // ── Apply Patch / Browse Repository at Revision ──
+    // ── Apply Patch / Create Patch / Browse Repository at Revision ──
     /// Opens the Apply Patch dialog and runs its preflight.
     OpenApplyPatch(jbgit_core::PatchInput),
-    /// `None` cycles to the next mode.
-    ApplyPatchSetMode(Option<jbgit_core::ApplyMode>),
-    ApplyPatchScroll(isize),
-    ApplyPatchConfirm,
+    ApplyPatch(crate::patch_view::ApplyPatchAction),
+    /// Remembers the user's last chosen Create Patch output directory.
+    RememberPatchDir(std::path::PathBuf),
+    /// Exports raw blob bytes at `oid:path` to `dest`.
+    ExportTreeBlob {
+        oid: Oid,
+        path: String,
+        dest: std::path::PathBuf,
+    },
     OpenTreeBrowser {
         oid: Oid,
     },

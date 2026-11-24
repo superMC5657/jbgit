@@ -2717,7 +2717,7 @@ fn worktree_text(dir: &Path, rel: &str) -> String {
 
 #[tokio::test]
 async fn apply_patch_check_round_trip_index_mode_and_three_way_conflicts() {
-    use jbgit_core::{ApplyMode, GitFailure, GitOp, PatchCheckKey, PatchInput};
+    use jbgit_core::{ApplyMode, ApplyOptions, GitFailure, GitOp, PatchCheckKey, PatchInput};
 
     let dir_guard = TempDir::new().unwrap();
     let dir = dir_guard.path();
@@ -2743,10 +2743,10 @@ async fn apply_patch_check_round_trip_index_mode_and_three_way_conflicts() {
     let source = PatchInput::File(patch_path.clone());
 
     // Preflight lists the files with counts and changes nothing.
-    let key = PatchCheckKey {
-        source: source.clone(),
-        mode: ApplyMode::WorkingTree,
-    };
+    let key = PatchCheckKey::new(
+        source.clone(),
+        ApplyOptions::with_mode(ApplyMode::WorkingTree),
+    );
     let check = check_patch(&handle, &mut rx, key).await;
     assert!(check.applies(), "{check:?}");
     let rows: Vec<_> = check
@@ -2766,7 +2766,7 @@ async fn apply_patch_check_round_trip_index_mode_and_three_way_conflicts() {
         &mut rx,
         GitOp::ApplyPatch {
             source: source.clone(),
-            mode: ApplyMode::Index,
+            options: ApplyOptions::with_mode(ApplyMode::Index),
         },
     )
     .await;
@@ -2787,10 +2787,10 @@ async fn apply_patch_check_round_trip_index_mode_and_three_way_conflicts() {
     let failed = check_patch(
         &handle,
         &mut rx,
-        PatchCheckKey {
-            source: source.clone(),
-            mode: ApplyMode::WorkingTree,
-        },
+        PatchCheckKey::new(
+            source.clone(),
+            ApplyOptions::with_mode(ApplyMode::WorkingTree),
+        ),
     )
     .await;
     assert_eq!(
@@ -2804,10 +2804,7 @@ async fn apply_patch_check_round_trip_index_mode_and_three_way_conflicts() {
     let three_way = check_patch(
         &handle,
         &mut rx,
-        PatchCheckKey {
-            source: source.clone(),
-            mode: ApplyMode::ThreeWay,
-        },
+        PatchCheckKey::new(source.clone(), ApplyOptions::with_mode(ApplyMode::ThreeWay)),
     )
     .await;
     assert!(three_way.applies(), "{three_way:?}");
@@ -2824,7 +2821,7 @@ async fn apply_patch_check_round_trip_index_mode_and_three_way_conflicts() {
         &mut rx,
         GitOp::ApplyPatch {
             source,
-            mode: ApplyMode::ThreeWay,
+            options: ApplyOptions::with_mode(ApplyMode::ThreeWay),
         },
     )
     .await;
@@ -2852,7 +2849,7 @@ async fn apply_patch_check_round_trip_index_mode_and_three_way_conflicts() {
         &mut rx,
         GitOp::ApplyPatch {
             source: PatchInput::File(patch_dir.path().join("missing.patch")),
-            mode: ApplyMode::WorkingTree,
+            options: ApplyOptions::with_mode(ApplyMode::WorkingTree),
         },
     )
     .await;
@@ -4734,4 +4731,263 @@ async fn crlf_precommit_warning_and_fix_autocrlf_workflow() {
         b"alpha\r\nbeta\r\nunstaged-tail\r\n",
         "unstaged worktree edit must stay intact"
     );
+}
+
+#[tokio::test]
+async fn apply_patch_depth_options_strip_directory_partial_include_and_reverse() {
+    use jbgit_core::{ApplyMode, ApplyOptions, GitOp, PatchCheckKey, PatchInput};
+
+    let tmp = TempDir::new().unwrap();
+    let dir = tmp.path();
+    git(dir, &["init", "-b", "main"]);
+    git(dir, &["config", "core.autocrlf", "false"]);
+    fs::create_dir_all(dir.join("sub")).unwrap();
+    fs::write(dir.join("sub/a.txt"), "one\ntwo\n").unwrap();
+    fs::write(dir.join("sub/b.txt"), "alpha\nbeta\n").unwrap();
+    git(dir, &["add", "."]);
+    git(dir, &["commit", "-m", "init"]);
+
+    // Build a patch with extra leading prefix `a/prefix/a.txt` & `a/prefix/b.txt`
+    // (no Git index headers to also exercise `--3way` fallback detection).
+    let patch_dir = TempDir::new().unwrap();
+    let patch_path = patch_dir.path().join("prefixed.patch");
+    let raw_patch = "\
+--- a/prefix/a.txt
++++ b/prefix/a.txt
+@@ -1,2 +1,2 @@
+ one
+-two
++TWO
+--- a/prefix/b.txt
++++ b/prefix/b.txt
+@@ -1,2 +1,2 @@
+ alpha
+-beta
++BETA
+";
+    fs::write(&patch_path, raw_patch).unwrap();
+
+    let loc = RepoLocation::discover(dir).unwrap();
+    let (handle, mut rx) = EngineSupervisor::start(loc, false).unwrap();
+    let source = PatchInput::File(patch_path.clone());
+
+    // Preflight with `-p2 --directory=sub --include=sub/a.txt`:
+    // applies cleanly and only touches `sub/a.txt`.
+    let partial_opts = ApplyOptions {
+        mode: ApplyMode::WorkingTree,
+        reverse: false,
+        strip: Some(2),
+        directory: Some("sub".into()),
+        include_paths: vec!["sub/a.txt".into()],
+    };
+    let check = check_patch(&handle, &mut rx, PatchCheckKey::new(source.clone(), partial_opts.clone())).await;
+    assert!(check.applies(), "{check:?}");
+    assert!(!check.has_index_headers);
+    assert_eq!(check.files.len(), 1);
+    assert_eq!(check.files[0].path, "sub/a.txt");
+    assert_eq!(check.sections.len(), 2);
+    assert_eq!(check.sections[0].path, "sub/a.txt");
+    assert_eq!(check.sections[1].path, "sub/b.txt");
+
+    // Apply ONLY `sub/a.txt`; `sub/b.txt` must remain untouched.
+    let applied = run_git_op(
+        &handle,
+        &mut rx,
+        GitOp::ApplyPatch {
+            source: source.clone(),
+            options: partial_opts.clone(),
+        },
+    )
+    .await;
+    assert!(applied.success, "{applied:?}");
+    assert_eq!(worktree_text(dir, "sub/a.txt"), "one\nTWO\n");
+    assert_eq!(worktree_text(dir, "sub/b.txt"), "alpha\nbeta\n");
+
+    // Reverse-apply (`-R`) with the same strip/directory/include reverts `sub/a.txt`.
+    let rev_opts = ApplyOptions {
+        reverse: true,
+        ..partial_opts
+    };
+    let rev_check = check_patch(&handle, &mut rx, PatchCheckKey::new(source.clone(), rev_opts.clone())).await;
+    assert!(rev_check.applies(), "{rev_check:?}");
+    let reverted = run_git_op(
+        &handle,
+        &mut rx,
+        GitOp::ApplyPatch {
+            source: source.clone(),
+            options: rev_opts,
+        },
+    )
+    .await;
+    assert!(reverted.success, "{reverted:?}");
+    assert_eq!(worktree_text(dir, "sub/a.txt"), "one\ntwo\n");
+
+    // Plain unified patch (no `index` headers) failing under `--3way` triggers fallback hint.
+    let bad_3way = check_patch(
+        &handle,
+        &mut rx,
+        PatchCheckKey::new(source, ApplyOptions::with_mode(ApplyMode::ThreeWay)),
+    )
+    .await;
+    assert!(!bad_3way.applies());
+    assert!(bad_3way.needs_three_way_index_fallback());
+}
+
+#[tokio::test]
+async fn create_patch_mixed_stage_untracked_and_tree_browser_index_export_dir_compare_restore() {
+    use jbgit_core::{ApplyMode, ApplyOptions, DetailsKey, GitOp, PatchInput, PatchSource, RequestSlotId};
+
+    let tmp = TempDir::new().unwrap();
+    let dir = tmp.path();
+    git(dir, &["init", "-b", "main"]);
+    git(dir, &["config", "core.autocrlf", "false"]);
+    fs::create_dir_all(dir.join("deep/nested")).unwrap();
+    fs::create_dir_all(dir.join("other")).unwrap();
+    fs::write(dir.join("staged.txt"), "s1\n").unwrap();
+    fs::write(dir.join("unstaged.txt"), "u1\n").unwrap();
+    fs::write(dir.join("both.txt"), "b1\n").unwrap();
+    fs::write(dir.join("deep/nested/file.rs"), "fn v1() {}\n").unwrap();
+    fs::write(dir.join("other/side.txt"), "side1\n").unwrap();
+    fs::write(dir.join("deep/bin.dat"), b"\x00\x01\x02\x03BIN").unwrap();
+    git(dir, &["add", "."]);
+    git(dir, &["commit", "-m", "v1"]);
+    let v1_oid: jbgit_core::Oid =
+        String::from_utf8_lossy(&git_output(dir, &["rev-parse", "HEAD"]).stdout)
+            .trim()
+            .parse()
+            .unwrap();
+
+    // Create mixed stage changes: staged + unstaged + dual (staged+unstaged) + untracked.
+    fs::write(dir.join("staged.txt"), "s2-staged\n").unwrap();
+    git(dir, &["add", "staged.txt"]);
+    fs::write(dir.join("unstaged.txt"), "u2-work\n").unwrap();
+    fs::write(dir.join("both.txt"), "b2-staged\n").unwrap();
+    git(dir, &["add", "both.txt"]);
+    fs::write(dir.join("both.txt"), "b3-work\n").unwrap();
+    fs::write(dir.join("brand_new.txt"), "hello\nworld\n").unwrap();
+
+    let loc = RepoLocation::discover(dir).unwrap();
+    let (handle, mut rx) = EngineSupervisor::start(loc, false).unwrap();
+
+    // Export mixed Stage patch to an external file outside the repo.
+    let out_dir = TempDir::new().unwrap();
+    let out_patch = out_dir.path().join("mixed.patch");
+    let created = run_git_op(
+        &handle,
+        &mut rx,
+        GitOp::CreatePatchFile {
+            source: PatchSource::StagePaths {
+                staged: vec!["staged.txt".into(), "both.txt".into()],
+                unstaged: vec!["unstaged.txt".into(), "both.txt".into()],
+                untracked: vec!["brand_new.txt".into()],
+            },
+            output: out_patch.clone(),
+            reverse: false,
+        },
+    )
+    .await;
+    assert!(created.success, "{created:?}");
+    assert!(out_patch.is_file());
+
+    // Clean worktree & re-apply the generated patch -> all 4 files match!
+    git(dir, &["reset", "--hard", "HEAD"]);
+    fs::remove_file(dir.join("brand_new.txt")).unwrap();
+    let applied = run_git_op(
+        &handle,
+        &mut rx,
+        GitOp::ApplyPatch {
+            source: PatchInput::File(out_patch),
+            options: ApplyOptions::with_mode(ApplyMode::WorkingTree),
+        },
+    )
+    .await;
+    assert!(applied.success, "{applied:?}");
+    assert_eq!(worktree_text(dir, "staged.txt"), "s2-staged\n");
+    assert_eq!(worktree_text(dir, "unstaged.txt"), "u2-work\n");
+    assert_eq!(worktree_text(dir, "both.txt"), "b3-work\n");
+    assert_eq!(worktree_text(dir, "brand_new.txt"), "hello\nworld\n");
+
+    // Reset clean for Tree Browser index, export, dir-scoped compare, and RestorePaths tests.
+    git(dir, &["reset", "--hard", "HEAD"]);
+    fs::remove_file(dir.join("brand_new.txt")).unwrap();
+
+    // 1. LoadTreeIndex lists deeply nested paths.
+    let idx_ep = handle.request_tree_index(v1_oid);
+    let paths = recv_matching(&mut rx, |ev| match ev {
+        EngineEvent::TreeIndexLoaded { oid, paths, epoch } if epoch == idx_ep && oid == v1_oid => {
+            Some(paths)
+        }
+        _ => None,
+    })
+    .await;
+    assert!(paths.iter().any(|p| p == "deep/nested/file.rs"), "{paths:?}");
+
+    // 2. ExportTreeBlob writes raw binary bytes intact to external destination.
+    let exported_bin = out_dir.path().join("exported.dat");
+    handle.request_export_tree_blob(v1_oid, "deep/bin.dat".into(), exported_bin.clone());
+    let export_res = recv_matching(&mut rx, |ev| match ev {
+        EngineEvent::TreeBlobExported { dest, result, .. } if dest == exported_bin => Some(result),
+        _ => None,
+    })
+    .await;
+    assert_eq!(export_res, Ok(7));
+    assert_eq!(fs::read(&exported_bin).unwrap(), b"\x00\x01\x02\x03BIN");
+
+    // 3. Directory-scoped CompareWithLocal only returns changes under `deep/`.
+    fs::write(dir.join("deep/nested/file.rs"), "fn v2_local() {}\n").unwrap();
+    fs::write(dir.join("other/side.txt"), "side2_local\n").unwrap();
+    let cmp_ep = handle.request_commit_details(
+        RequestSlotId::LogCommitDetails,
+        DetailsKey::compare_with_local_path(v1_oid, Some("deep".into())),
+    );
+    let cmp_bundle = recv_matching(&mut rx, |ev| match ev {
+        EngineEvent::CommitDetailsLoaded { bundle, epoch, .. } if epoch == cmp_ep => Some(bundle),
+        _ => None,
+    })
+    .await;
+    let cmp_paths: Vec<&str> = cmp_bundle.changes.iter().map(|c| c.path.as_str()).collect();
+    assert_eq!(cmp_paths, vec!["deep/nested/file.rs"]);
+
+    // 4. RestorePaths `--worktree` restores working tree WITHOUT clobbering staged index.
+    git(dir, &["add", "deep/nested/file.rs"]);
+    let restore_wt = run_git_op(
+        &handle,
+        &mut rx,
+        GitOp::RestorePaths {
+            rev: v1_oid.to_string(),
+            paths: vec!["deep/nested/file.rs".into()],
+            staged: false,
+            worktree: true,
+        },
+    )
+    .await;
+    assert!(restore_wt.success, "{restore_wt:?}");
+    assert_eq!(worktree_text(dir, "deep/nested/file.rs"), "fn v1() {}\n");
+    let index_after_wt = String::from_utf8_lossy(
+        &git_output(dir, &["show", ":deep/nested/file.rs"]).stdout,
+    )
+    .replace("\r\n", "\n");
+    assert_eq!(
+        index_after_wt, "fn v2_local() {}\n",
+        "--worktree restore must keep staged changes intact"
+    );
+
+    // `--staged --worktree` updates both working tree and index.
+    let restore_both = run_git_op(
+        &handle,
+        &mut rx,
+        GitOp::RestorePaths {
+            rev: v1_oid.to_string(),
+            paths: vec!["deep/nested/file.rs".into()],
+            staged: true,
+            worktree: true,
+        },
+    )
+    .await;
+    assert!(restore_both.success, "{restore_both:?}");
+    let index_after_both = String::from_utf8_lossy(
+        &git_output(dir, &["show", ":deep/nested/file.rs"]).stdout,
+    )
+    .replace("\r\n", "\n");
+    assert_eq!(index_after_both, "fn v1() {}\n");
 }

@@ -314,9 +314,42 @@ pub fn route_overlay_and_stash_click(
         }
         HitTarget::CloneButton { submit: true } => vec![Action::CloneRepoSubmit],
         HitTarget::CloneButton { submit: false } => vec![Action::PopModal],
-        HitTarget::ApplyPatchMode(mode) => vec![Action::ApplyPatchSetMode(Some(*mode))],
-        HitTarget::ApplyPatchButton { apply: true } => vec![Action::ApplyPatchConfirm],
+        HitTarget::ApplyPatchMode(mode) => vec![Action::ApplyPatch(
+            crate::patch_view::ApplyPatchAction::SetMode(Some(*mode)),
+        )],
+        HitTarget::ApplyPatchToggleReverse => vec![Action::ApplyPatch(
+            crate::patch_view::ApplyPatchAction::ToggleReverse,
+        )],
+        HitTarget::ApplyPatchStrip(delta) => vec![Action::ApplyPatch(
+            crate::patch_view::ApplyPatchAction::AdjustStrip(*delta),
+        )],
+        HitTarget::ApplyPatchEditDir => vec![Action::ApplyPatch(
+            crate::patch_view::ApplyPatchAction::StartDirEdit,
+        )],
+        HitTarget::ApplyPatchFileCheck(idx) => vec![Action::ApplyPatch(
+            crate::patch_view::ApplyPatchAction::ToggleFile(Some(*idx)),
+        )],
+        HitTarget::ApplyPatchFileRow(idx) => {
+            use crate::patch_view::ApplyPatchAction;
+            let mut out = vec![Action::ApplyPatch(ApplyPatchAction::Select(*idx))];
+            if is_double {
+                out.push(Action::ApplyPatch(ApplyPatchAction::OpenPreview));
+            }
+            out
+        }
+        HitTarget::ApplyPatchPreview => Vec::new(),
+        HitTarget::ApplyPatchButton { apply: true } => vec![Action::ApplyPatch(
+            crate::patch_view::ApplyPatchAction::Confirm,
+        )],
         HitTarget::ApplyPatchButton { apply: false } => vec![Action::PopModal],
+        HitTarget::TreeBrowserSearchRow(idx) => {
+            use crate::tree_browser::TreeBrowserAction;
+            let mut out = vec![Action::TreeBrowser(TreeBrowserAction::SearchSelect(*idx))];
+            if is_double {
+                out.push(Action::TreeBrowser(TreeBrowserAction::SearchConfirm));
+            }
+            out
+        }
         HitTarget::TreeBrowserRow(idx) => {
             use crate::tree_browser::TreeBrowserAction;
             if is_double {

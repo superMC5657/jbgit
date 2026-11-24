@@ -162,6 +162,55 @@ pub fn fuzzy_indices(haystack: &str, needle: &str) -> Option<(u32, Vec<u32>)> {
     Some((score, indices))
 }
 
+/// Fuzzy-filters a slice of repository paths using a single reused `nucleo`
+/// matcher, returning up to `limit` best matches as `(path, matched_char_indices)`.
+pub fn fuzzy_filter_paths(
+    paths: &[String],
+    needle: &str,
+    limit: usize,
+) -> Vec<(String, Vec<u32>)> {
+    let needle = needle.trim();
+    if needle.is_empty() {
+        return paths
+            .iter()
+            .take(limit)
+            .map(|p| (p.clone(), Vec::new()))
+            .collect();
+    }
+    let mut matcher = nucleo_matcher::Matcher::new(nucleo_matcher::Config::DEFAULT.match_paths());
+    let pattern = nucleo_matcher::pattern::Pattern::parse(
+        needle,
+        nucleo_matcher::pattern::CaseMatching::Smart,
+        nucleo_matcher::pattern::Normalization::Smart,
+    );
+    let mut buf = Vec::new();
+    let mut indices = Vec::new();
+    let mut scored: Vec<(u32, usize, Vec<u32>)> = Vec::new();
+    for (idx, path) in paths.iter().enumerate() {
+        buf.clear();
+        indices.clear();
+        if let Some(score) = pattern.indices(
+            nucleo_matcher::Utf32Str::new(path, &mut buf),
+            &mut matcher,
+            &mut indices,
+        ) {
+            indices.sort_unstable();
+            indices.dedup();
+            scored.push((score, idx, indices.clone()));
+        }
+    }
+    scored.sort_by(|a, b| {
+        b.0.cmp(&a.0)
+            .then_with(|| paths[a.1].len().cmp(&paths[b.1].len()))
+            .then_with(|| paths[a.1].cmp(&paths[b.1]))
+    });
+    scored
+        .into_iter()
+        .take(limit)
+        .map(|(_, idx, matched)| (paths[idx].clone(), matched))
+        .collect()
+}
+
 /// Branches considered "protected" (merge suggestions never offer deleting them).
 pub fn is_protected_branch(name: &str) -> bool {
     matches!(

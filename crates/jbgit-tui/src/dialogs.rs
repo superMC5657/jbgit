@@ -98,6 +98,12 @@ pub enum InputIntent {
     ApplyPatchFile {
         base: std::path::PathBuf,
     },
+    /// Tree Browser `Export to File…`: destination file path.
+    ExportTreeBlob {
+        oid: Oid,
+        path: String,
+        base: std::path::PathBuf,
+    },
 }
 
 /// Where new working trees go by default (`<parent>/<repo>-<label>`).
@@ -375,6 +381,11 @@ impl InputDialog {
             InputIntent::ApplyPatchFile { base } => vec![Action::OpenApplyPatch(
                 jbgit_core::PatchInput::File(resolve_path(base, &value)),
             )],
+            InputIntent::ExportTreeBlob { oid, path, base } => vec![Action::ExportTreeBlob {
+                oid: *oid,
+                path: path.clone(),
+                dest: resolve_path(base, &value),
+            }],
         }
     }
 }
@@ -795,6 +806,7 @@ impl RebaseTodoDialog {
             mode: DetailsMode::Commits,
             oids: vec![oid],
             parent_index: 0,
+            path_prefix: None,
         })
     }
 
@@ -1640,6 +1652,122 @@ impl RebaseDialog {
     }
 }
 
+/// Rows of the unified `Create Patch…` dialog.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum CreatePatchRow {
+    Destination,
+    Path,
+    Reverse,
+}
+
+impl CreatePatchRow {
+    pub const ALL: [Self; 3] = [Self::Destination, Self::Path, Self::Reverse];
+}
+
+/// Unified `Create Patch…` configuration dialog (used by both Log and Stage menus).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CreatePatchDialog {
+    pub source: jbgit_core::PatchSource,
+    /// `false` = save to file/directory, `true` = copy to clipboard.
+    pub to_clipboard: bool,
+    /// Target file/directory path (defaults to outside the worktree).
+    pub path: String,
+    /// Base directory for relative paths & `Tab` completion.
+    pub base: std::path::PathBuf,
+    /// Generate a reversed patch (`-R`).
+    pub reverse: bool,
+    pub selected: usize,
+}
+
+impl CreatePatchDialog {
+    pub fn row(&self) -> CreatePatchRow {
+        CreatePatchRow::ALL[self.selected.min(CreatePatchRow::ALL.len() - 1)]
+    }
+
+    pub fn editing_path(&self) -> bool {
+        self.row() == CreatePatchRow::Path && !self.to_clipboard
+    }
+
+    pub fn move_selection(&mut self, delta: isize) {
+        let len = CreatePatchRow::ALL.len() as isize;
+        let mut next = (self.selected as isize + delta).rem_euclid(len) as usize;
+        if self.to_clipboard && CreatePatchRow::ALL[next] == CreatePatchRow::Path {
+            next = (next as isize + delta.signum()).rem_euclid(len) as usize;
+        }
+        self.selected = next;
+    }
+
+    pub fn toggle(&mut self, row: CreatePatchRow) {
+        match row {
+            CreatePatchRow::Destination => self.to_clipboard = !self.to_clipboard,
+            CreatePatchRow::Reverse => self.reverse = !self.reverse,
+            CreatePatchRow::Path => {}
+        }
+    }
+
+    pub fn error(&self, i18n: &I18n) -> Option<String> {
+        if !self.to_clipboard && self.path.trim().is_empty() {
+            return Some(i18n.t("dialog.input.empty").into());
+        }
+        None
+    }
+
+    pub fn confirm_actions(&self) -> Vec<Action> {
+        if self.to_clipboard {
+            return vec![Action::RunGitOp(GitOp::PatchToClipboard {
+                source: self.source.clone(),
+                reverse: self.reverse,
+            })];
+        }
+        let dest = resolve_path(&self.base, &self.path);
+        let remember_dir = if dest.is_dir()
+            || self.path.trim().ends_with('/')
+            || self.path.trim().ends_with('\\')
+        {
+            dest.clone()
+        } else {
+            dest.parent()
+                .map(std::path::Path::to_path_buf)
+                .unwrap_or_else(|| self.base.clone())
+        };
+        vec![
+            Action::RememberPatchDir(remember_dir),
+            Action::RunGitOp(GitOp::CreatePatchFile {
+                source: self.source.clone(),
+                output: dest,
+                reverse: self.reverse,
+            }),
+        ]
+    }
+}
+
+/// Builds the `Create Patch…` dialog defaulting to an external path outside the worktree.
+pub fn create_patch_dialog(
+    state: &crate::app::AppState,
+    source: jbgit_core::PatchSource,
+    to_clipboard: bool,
+) -> Dialog {
+    let workdir = state.current_workdir();
+    let default_dir = state
+        .last_patch_dir
+        .clone()
+        .or_else(|| workdir.parent().map(std::path::Path::to_path_buf))
+        .unwrap_or_else(std::env::temp_dir);
+    let repo_name = workdir
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "repo".into());
+    let default_path = default_dir.join(source.suggested_filename(&repo_name));
+    Dialog::CreatePatch(CreatePatchDialog {
+        source,
+        to_clipboard,
+        path: default_path.display().to_string(),
+        base: default_dir,
+        reverse: false,
+        selected: if to_clipboard { 0 } else { 1 },
+    })
+}
+
 #[derive(Debug, Clone)]
 pub enum Dialog {
     Input(InputDialog),
@@ -1649,6 +1777,7 @@ pub enum Dialog {
     Merge(MergeDialog),
     Pull(PullDialog),
     Rebase(RebaseDialog),
+    CreatePatch(CreatePatchDialog),
     Credential(CredentialDialog),
     Identity(IdentityDialog),
 }
@@ -1681,6 +1810,7 @@ impl Dialog {
                 .validate(d.git_version)
                 .is_ok()
                 .then(|| d.confirm_actions()),
+            Self::CreatePatch(d) => d.error(i18n).is_none().then(|| d.confirm_actions()),
             // Answered by `AppState::answer_credential` (the secret never
             // travels inside an `Action`).
             Self::Credential(_) => Some(Vec::new()),
@@ -1793,8 +1923,16 @@ pub fn route_dialog_key(dialog: &mut Dialog, key: &KeyEvent, i18n: &I18n) -> Dia
                 d.value.clear();
                 DialogKey::Redraw
             }
-            KeyCode::Tab if matches!(d.validation, InputValidation::ExistingFile { .. }) => {
-                if let InputValidation::ExistingFile { base } = &d.validation
+            KeyCode::Tab
+                if matches!(d.validation, InputValidation::ExistingFile { .. })
+                    || matches!(d.intent, InputIntent::ExportTreeBlob { .. }) =>
+            {
+                let base = match (&d.validation, &d.intent) {
+                    (InputValidation::ExistingFile { base }, _) => Some(base),
+                    (_, InputIntent::ExportTreeBlob { base, .. }) => Some(base),
+                    _ => None,
+                };
+                if let Some(base) = base
                     && let Some(next) = crate::patch_view::complete_path(base, &d.value)
                 {
                     d.value = next;
@@ -2048,6 +2186,61 @@ pub fn route_dialog_key(dialog: &mut Dialog, key: &KeyEvent, i18n: &I18n) -> Dia
                         }
                         None => DialogKey::None,
                     }
+                }
+                _ => DialogKey::None,
+            }
+        }
+        Dialog::CreatePatch(d) => {
+            let editing = d.editing_path();
+            match key.code {
+                KeyCode::Enter => DialogKey::Confirm,
+                KeyCode::Up | KeyCode::BackTab => {
+                    d.move_selection(-1);
+                    DialogKey::Redraw
+                }
+                KeyCode::Down => {
+                    d.move_selection(1);
+                    DialogKey::Redraw
+                }
+                KeyCode::Tab if editing => {
+                    if let Some(next) = crate::patch_view::complete_path(&d.base, &d.path) {
+                        d.path = next;
+                    } else {
+                        d.move_selection(1);
+                    }
+                    DialogKey::Redraw
+                }
+                KeyCode::Tab => {
+                    d.move_selection(1);
+                    DialogKey::Redraw
+                }
+                KeyCode::Backspace if editing => {
+                    d.path.pop();
+                    DialogKey::Redraw
+                }
+                KeyCode::Char('u') if editing && ctrl => {
+                    d.path.clear();
+                    DialogKey::Redraw
+                }
+                KeyCode::Char(c) if editing && plain && !c.is_control() => {
+                    d.path.push(c);
+                    DialogKey::Redraw
+                }
+                KeyCode::Left | KeyCode::Right | KeyCode::Char(' ') if !editing => {
+                    d.toggle(d.row());
+                    DialogKey::Redraw
+                }
+                KeyCode::Char('f') if !editing && plain => {
+                    d.to_clipboard = false;
+                    DialogKey::Redraw
+                }
+                KeyCode::Char('c') if !editing && plain => {
+                    d.to_clipboard = true;
+                    DialogKey::Redraw
+                }
+                KeyCode::Char('r') if !editing && plain => {
+                    d.reverse = !d.reverse;
+                    DialogKey::Redraw
                 }
                 _ => DialogKey::None,
             }

@@ -107,10 +107,18 @@ pub fn render_changes_browser(
                             ("stats", &stats),
                         ],
                     ),
-                    DetailsMode::CompareWithLocal if !b.key.oids.is_empty() => ctx.t_fmt(
-                        "view.log_details.compare_local_sub",
-                        &[("a", &b.key.oids[0].short()), ("stats", &stats)],
-                    ),
+                    DetailsMode::CompareWithLocal if !b.key.oids.is_empty() => {
+                        match b.key.path_prefix.as_deref() {
+                            Some(dir) => ctx.t_fmt(
+                                "view.log_details.compare_local_dir_sub",
+                                &[("a", &b.key.oids[0].short()), ("dir", dir), ("stats", &stats)],
+                            ),
+                            None => ctx.t_fmt(
+                                "view.log_details.compare_local_sub",
+                                &[("a", &b.key.oids[0].short()), ("stats", &stats)],
+                            ),
+                        }
+                    }
                     _ if b.key.oids.len() > 1 => ctx.t_fmt(
                         "view.log_details.commits_stats_sub",
                         &[

@@ -65,6 +65,17 @@ pub(crate) fn load_tree_sync(
             } else {
                 format!("{dir}/{name}")
             };
+            let symlink_target = (mode == 0o120_000)
+                .then(|| {
+                    repo.find_blob(e.id()).ok().map(|b| {
+                        let bytes = b.content();
+                        let capped = &bytes[..bytes.len().min(4096)];
+                        String::from_utf8_lossy(capped)
+                            .trim_end_matches(['\r', '\n'])
+                            .to_string()
+                    })
+                })
+                .flatten();
             entries.push(TreeEntry {
                 name,
                 path,
@@ -72,6 +83,7 @@ pub(crate) fn load_tree_sync(
                 mode,
                 size,
                 oid: Oid::from_bytes(e.id().as_bytes().try_into().unwrap_or([0; 20])),
+                symlink_target,
             });
         }
         sort_tree_entries(&mut entries);
@@ -82,7 +94,7 @@ pub(crate) fn load_tree_sync(
     })
 }
 
-/// Reads `key.path` at the commit for the preview pane (4 MiB / binary guards).
+/// Reads `key.path` at the commit for the preview pane (4 MiB / binary / symlink guards).
 pub(crate) fn load_tree_blob_sync(
     loc: &RepoLocation,
     key: &TreeBlobKey,
@@ -93,24 +105,43 @@ pub(crate) fn load_tree_blob_sync(
     }
     with_thread_repo(&loc.git_dir, |repo| {
         let tree = commit_tree(repo, &key.oid)?;
-        let size = tree
-            .get_path(Path::new(&key.path))
-            .ok()
+        let tree_entry = tree.get_path(Path::new(&key.path)).ok();
+        let is_symlink = tree_entry
+            .as_ref()
+            .is_some_and(|e| e.filemode() as u32 == 0o120_000);
+        let size = tree_entry
+            .as_ref()
             .and_then(|e| repo.odb().ok()?.read_header(e.id()).ok())
             .map_or(0, |(s, _)| s as u64);
-        let content = match read_tree_path(repo, &tree, &key.path) {
-            CheckedBlob::Missing => TreeBlobContent::Missing,
-            CheckedBlob::TooLarge { .. } => TreeBlobContent::TooLarge {
-                limit: MAX_DIFF_FILE_BYTES,
-            },
-            CheckedBlob::Loaded {
-                is_binary: true, ..
-            } => TreeBlobContent::Binary,
-            CheckedBlob::Loaded { bytes, .. } => {
-                if let Some(ptr) = jbgit_core::parse_lfs_pointer(&bytes) {
-                    TreeBlobContent::Lfs(ptr)
-                } else {
-                    TreeBlobContent::Text(String::from_utf8_lossy(&bytes).into_owned())
+        let content = if is_symlink {
+            if let Some(entry) = tree_entry.as_ref()
+                && let Ok(blob) = repo.find_blob(entry.id())
+            {
+                let bytes = blob.content();
+                let capped = &bytes[..bytes.len().min(4096)];
+                TreeBlobContent::Symlink(
+                    String::from_utf8_lossy(capped)
+                        .trim_end_matches(['\r', '\n'])
+                        .to_string(),
+                )
+            } else {
+                TreeBlobContent::Missing
+            }
+        } else {
+            match read_tree_path(repo, &tree, &key.path) {
+                CheckedBlob::Missing => TreeBlobContent::Missing,
+                CheckedBlob::TooLarge { .. } => TreeBlobContent::TooLarge {
+                    limit: MAX_DIFF_FILE_BYTES,
+                },
+                CheckedBlob::Loaded {
+                    is_binary: true, ..
+                } => TreeBlobContent::Binary,
+                CheckedBlob::Loaded { bytes, .. } => {
+                    if let Some(ptr) = jbgit_core::parse_lfs_pointer(&bytes) {
+                        TreeBlobContent::Lfs(ptr)
+                    } else {
+                        TreeBlobContent::Text(String::from_utf8_lossy(&bytes).into_owned())
+                    }
                 }
             }
         };
@@ -119,5 +150,77 @@ pub(crate) fn load_tree_blob_sync(
             size,
             content,
         })
+    })
+}
+
+/// Lists every file path recursively in `oid`'s tree (`git ls-tree -r --name-only -z <oid>`).
+/// Used for `/` fuzzy search in the Tree Browser.
+pub(crate) fn load_tree_index_sync(
+    loc: &RepoLocation,
+    oid: Oid,
+    token: &EpochToken,
+) -> Result<Vec<String>, EngineError> {
+    if token.is_stale() {
+        return Err(EngineError::Cancelled);
+    }
+    let git = crate::cli::cached_git_executable().unwrap_or_else(|| std::path::PathBuf::from("git"));
+    let mut cmd = crate::cli::non_interactive_std_command(&git, Some(&loc.workdir));
+    cmd.arg("--git-dir")
+        .arg(&loc.git_dir)
+        .args(["ls-tree", "-r", "--name-only", "-z", &oid.to_string()])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    let mut child = cmd.spawn().map_err(|e| {
+        if e.kind() == std::io::ErrorKind::NotFound {
+            EngineError::GitNotFound
+        } else {
+            EngineError::Io(e)
+        }
+    })?;
+    if token.is_stale() {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(EngineError::Cancelled);
+    }
+    let output = child.wait_with_output()?;
+    if token.is_stale() {
+        return Err(EngineError::Cancelled);
+    }
+    if !output.status.success() {
+        let err = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(EngineError::Other(if err.is_empty() {
+            "git ls-tree failed".into()
+        } else {
+            err
+        }));
+    }
+    let paths = output
+        .stdout
+        .split(|&b| b == 0)
+        .filter(|s| !s.is_empty())
+        .map(|s| String::from_utf8_lossy(s).into_owned())
+        .collect();
+    Ok(paths)
+}
+
+/// Exports raw blob bytes at `oid:path` directly to `dest` (works for text, binary, and large files).
+pub(crate) fn export_tree_blob_sync(
+    loc: &RepoLocation,
+    oid: Oid,
+    path: &str,
+    dest: &Path,
+) -> Result<u64, EngineError> {
+    with_thread_repo(&loc.git_dir, |repo| {
+        let tree = commit_tree(repo, &oid)?;
+        let entry = tree.get_path(Path::new(path))?;
+        let blob = repo.find_blob(entry.id())?;
+        let bytes = blob.content();
+        if let Some(parent) = dest.parent()
+            && !parent.as_os_str().is_empty()
+        {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(dest, bytes)?;
+        Ok(bytes.len() as u64)
     })
 }

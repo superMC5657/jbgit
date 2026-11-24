@@ -533,11 +533,16 @@ async fn root_commit_fixup_patch_compare_and_conflict_resolution() {
 
     let new_root = rev(d, "HEAD~1");
     let new_second = rev(d, "HEAD");
+    let patch_out = TempDir::new().unwrap();
     let patch = run(
         d,
-        GitOp::CreatePatchFiles {
-            oids: vec![new_second, new_root],
-            base: None,
+        GitOp::CreatePatchFile {
+            source: jbgit_core::PatchSource::Commits {
+                oids: vec![new_second, new_root],
+                base: None,
+            },
+            output: patch_out.path().to_path_buf(),
+            reverse: false,
         },
     )
     .await;

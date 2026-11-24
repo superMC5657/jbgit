@@ -34,7 +34,9 @@ pub(crate) use patch::{apply_args, check_patch_sync, resolve_patch_input};
 pub(crate) use path_matches::load_path_matches_sync;
 pub use reflog::load_reflog_sync;
 pub(crate) use remote_tag::check_remote_tag_async;
-pub(crate) use tree::{load_tree_blob_sync, load_tree_sync};
+pub(crate) use tree::{
+    export_tree_blob_sync, load_tree_blob_sync, load_tree_index_sync, load_tree_sync,
+};
 #[cfg(test)]
 pub(crate) use remote_tag::parse_ls_remote_tag_exists;
 

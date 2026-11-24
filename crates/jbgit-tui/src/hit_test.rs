@@ -346,6 +346,18 @@ pub enum HitTarget {
     WorktreesRow(usize),
     /// Apply Patch mode radio.
     ApplyPatchMode(jbgit_core::ApplyMode),
+    /// Apply Patch reverse toggle (`-R`).
+    ApplyPatchToggleReverse,
+    /// Apply Patch `-p<n>` strip delta (`-1` or `+1`).
+    ApplyPatchStrip(i8),
+    /// Apply Patch `--directory` editor trigger.
+    ApplyPatchEditDir,
+    /// Apply Patch file list row.
+    ApplyPatchFileRow(usize),
+    /// Apply Patch file checkbox cell.
+    ApplyPatchFileCheck(usize),
+    /// Apply Patch right-hand diff preview pane.
+    ApplyPatchPreview,
     /// Apply Patch `[Apply]` (`true`) / `[Cancel]`.
     ApplyPatchButton {
         apply: bool,
@@ -353,6 +365,8 @@ pub enum HitTarget {
     /// Tree Browser row (index into the flattened rows).
     TreeBrowserRow(usize),
     TreeBrowserPreview,
+    /// Tree Browser `/` fuzzy search match row.
+    TreeBrowserSearchRow(usize),
     /// Repository name in the top header (opens the switcher).
     HeaderRepoName,
     BranchPopupFetch,

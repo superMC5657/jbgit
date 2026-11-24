@@ -22,8 +22,9 @@ pub use rebase::{
     render_todo,
 };
 pub use refs::{
-    RefNameError, fuzzy_indices, is_protected_branch, matches_protected_branch_patterns,
-    parse_recent_checkouts, validate_ref_name, validate_ref_name_typed,
+    RefNameError, fuzzy_filter_paths, fuzzy_indices, is_protected_branch,
+    matches_protected_branch_patterns, parse_recent_checkouts, validate_ref_name,
+    validate_ref_name_typed,
 };
 
 #[cfg(test)]
@@ -197,14 +198,14 @@ mod tests {
         );
         let file = GitOp::ApplyPatch {
             source: crate::PatchInput::File("/tmp/fix.patch".into()),
-            mode: crate::ApplyMode::ThreeWay,
+            options: crate::ApplyOptions::with_mode(crate::ApplyMode::ThreeWay),
         };
         assert_eq!(file.label(), "Apply patch 'fix.patch'");
         assert_eq!(file.refresh_scope(), RefreshScope::All);
         assert!(!file.is_network() && !file.is_read_only());
         let clip = GitOp::ApplyPatch {
             source: crate::PatchInput::Clipboard,
-            mode: crate::ApplyMode::WorkingTree,
+            options: crate::ApplyOptions::with_mode(crate::ApplyMode::WorkingTree),
         };
         assert_eq!(clip.label(), "Apply patch from clipboard");
     }
@@ -308,9 +309,11 @@ mod tests {
         assert_eq!(stash.branch(), Some("main"));
         assert_eq!(stash.short_message(), "wip parser");
 
-        let restore = GitOp::CheckoutPaths {
+        let restore = GitOp::RestorePaths {
             rev: oid(3).to_string(),
             paths: vec!["src/main.rs".into()],
+            staged: false,
+            worktree: true,
         };
         assert!(!restore.is_read_only());
         assert!(
@@ -318,7 +321,8 @@ mod tests {
                 source: PatchSource::CommitFile {
                     oid: oid(3),
                     path: "src/main.rs".into(),
-                }
+                },
+                reverse: false,
             }
             .is_read_only()
         );

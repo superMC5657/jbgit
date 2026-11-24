@@ -23,12 +23,14 @@ pub enum DetailsMode {
 }
 
 /// Identity of a details request: the selected commits (top-to-bottom visible
-/// order), which parent a single merge commit is compared against, and mode.
+/// order), which parent a single merge commit is compared against, mode, and
+/// optional directory/path prefix filter (used by Tree Browser directory Compare).
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct DetailsKey {
     pub oids: Vec<Oid>,
     pub parent_index: usize,
     pub mode: DetailsMode,
+    pub path_prefix: Option<String>,
 }
 
 impl DetailsKey {
@@ -37,6 +39,7 @@ impl DetailsKey {
             oids: vec![oid],
             parent_index: 0,
             mode: DetailsMode::Commits,
+            path_prefix: None,
         }
     }
 
@@ -45,6 +48,7 @@ impl DetailsKey {
             oids,
             parent_index,
             mode: DetailsMode::Commits,
+            path_prefix: None,
         }
     }
 
@@ -53,6 +57,7 @@ impl DetailsKey {
             oids: vec![base, target],
             parent_index: 0,
             mode: DetailsMode::CompareVersions,
+            path_prefix: None,
         }
     }
 
@@ -61,6 +66,19 @@ impl DetailsKey {
             oids: vec![oid],
             parent_index: 0,
             mode: DetailsMode::CompareWithLocal,
+            path_prefix: None,
+        }
+    }
+
+    pub fn compare_with_local_path(oid: Oid, path_prefix: Option<String>) -> Self {
+        let path_prefix = path_prefix
+            .map(|p| p.trim_matches('/').to_string())
+            .filter(|p| !p.is_empty());
+        Self {
+            oids: vec![oid],
+            parent_index: 0,
+            mode: DetailsMode::CompareWithLocal,
+            path_prefix,
         }
     }
 }

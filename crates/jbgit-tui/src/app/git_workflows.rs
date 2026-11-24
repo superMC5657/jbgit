@@ -199,6 +199,10 @@ impl AppState {
                             && let Some(err) = r.error(&self.i18n)
                         {
                             self.status_notice = Some(err);
+                        } else if let Dialog::CreatePatch(cp) = d.as_ref()
+                            && let Some(err) = cp.error(&self.i18n)
+                        {
+                            self.status_notice = Some(err);
                         }
                     }
                 }
@@ -257,10 +261,16 @@ impl AppState {
                     .start_compare_versions(*base, *target, &self.i18n, &mut self.status_notice);
             }
             Action::CompareWithLocal { target } => {
-                self.start_compare_with_local(*target, None);
+                self.start_compare_with_local(*target, None, None);
+            }
+            Action::CompareDirWithLocal {
+                target,
+                path_prefix,
+            } => {
+                self.start_compare_with_local(*target, None, Some(path_prefix.clone()));
             }
             Action::CompareFileWithLocal { target, path } => {
-                self.start_compare_with_local(*target, Some(path.clone()));
+                self.start_compare_with_local(*target, Some(path.clone()), None);
             }
             Action::OpenConflictResolver(path) => {
                 self.blur_active_pane(false);
@@ -978,11 +988,17 @@ impl AppState {
         )));
     }
 
-    fn start_compare_with_local(&mut self, target: Oid, select_path: Option<String>) {
+    fn start_compare_with_local(
+        &mut self,
+        target: Oid,
+        select_path: Option<String>,
+        path_prefix: Option<String>,
+    ) {
         self.set_focus(WorkspaceTab::Log, PaneId::LogChangesTree);
         self.log.start_compare_with_local(
             target,
             select_path,
+            path_prefix,
             &self.i18n,
             &mut self.status_notice,
         );
@@ -1943,7 +1959,7 @@ impl AppState {
                     self.status_notice = Some(self.i18n.t_fmt("toast.copied_patch", &[("count", &count_s)]));
                     effects.push(Effect::CopyToClipboard(text));
                 }
-                GitOp::CreatePatchFiles { .. } => {
+                GitOp::CreatePatchFile { .. } => {
                     let count_s = outcome.stdout.len().to_string();
                     self.status_notice = Some(self.i18n.t_fmt("toast.created_patches", &[("count", &count_s)]));
                 }

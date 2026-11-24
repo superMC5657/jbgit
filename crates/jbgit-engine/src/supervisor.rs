@@ -17,9 +17,10 @@ use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 use crate::askpass::AskpassEnv;
 use crate::cli::{CliCommand, CliStreamEvent, GitCliExecutor, GitExecutableInfo};
 use crate::details::{
-    check_patch_sync, check_remote_tag_async, load_blame_sync, load_cherry_picked_sync,
-    load_commit_details_sync, load_file_diff_with_oids_sync, load_file_history_sync,
-    load_outgoing_sync, load_path_matches_sync, load_reflog_sync, load_tree_blob_sync,
+    check_patch_sync, check_remote_tag_async, export_tree_blob_sync, load_blame_sync,
+    load_cherry_picked_sync, load_commit_details_sync, load_file_diff_with_oids_sync,
+    load_file_history_sync, load_outgoing_sync, load_path_matches_sync, load_reflog_sync,
+    load_tree_blob_sync, load_tree_index_sync,
     load_tree_sync, verify_commit_signature_sync, verify_commit_signatures_batch_sync,
 };
 use crate::error::EngineError;
@@ -89,6 +90,16 @@ pub enum TaskRequest {
     /// File content at a revision for the tree browser preview.
     LoadTreeBlob {
         key: TreeBlobKey,
+    },
+    /// Recursive file path index for `/` fuzzy search in the tree browser.
+    LoadTreeIndex {
+        oid: Oid,
+    },
+    /// Export raw blob bytes at `oid:path` to `dest`.
+    ExportTreeBlob {
+        oid: Oid,
+        path: String,
+        dest: PathBuf,
     },
     /// Commits of `snapshot` touching any of `paths` (log `Paths` filter).
     LoadPathMatches {
@@ -176,6 +187,7 @@ impl TaskRequest {
             Self::CheckPatch { .. } => Some(RequestSlotId::PatchCheck),
             Self::LoadTree { .. } => Some(RequestSlotId::TreeBrowser),
             Self::LoadTreeBlob { .. } => Some(RequestSlotId::TreeBlob),
+            Self::LoadTreeIndex { .. } => Some(RequestSlotId::TreeIndex),
             Self::VerifyCommitSignatures { .. } => Some(RequestSlotId::LogSignatures),
             Self::LoadCherryPicked { .. } => Some(RequestSlotId::LogCherryPicked),
             Self::LoadReflog { .. } => Some(RequestSlotId::Reflog),
@@ -195,7 +207,8 @@ impl TaskRequest {
             | Self::UndoLastCommit
             | Self::RunGitCli { .. }
             | Self::RunGitOp { .. }
-            | Self::SaveConflictResolution { .. } => None,
+            | Self::SaveConflictResolution { .. }
+            | Self::ExportTreeBlob { .. } => None,
         }
     }
 }
@@ -284,6 +297,16 @@ pub enum EngineEvent {
     TreeBlobLoaded {
         blob: Arc<TreeBlob>,
         epoch: u64,
+    },
+    TreeIndexLoaded {
+        oid: Oid,
+        paths: Arc<Vec<String>>,
+        epoch: u64,
+    },
+    TreeBlobExported {
+        path: String,
+        dest: PathBuf,
+        result: Result<u64, String>,
     },
     PathMatchesLoaded {
         paths: Vec<String>,
@@ -423,6 +446,15 @@ pub trait EngineBackend: Send + Sync {
     fn request_tree_blob(&self, key: TreeBlobKey) -> u64 {
         self.dispatch(TaskRequest::LoadTreeBlob { key })
             .expect("LoadTreeBlob always has a slot")
+    }
+
+    fn request_tree_index(&self, oid: Oid) -> u64 {
+        self.dispatch(TaskRequest::LoadTreeIndex { oid })
+            .expect("LoadTreeIndex always has a slot")
+    }
+
+    fn request_export_tree_blob(&self, oid: Oid, path: String, dest: PathBuf) {
+        self.dispatch(TaskRequest::ExportTreeBlob { oid, path, dest });
     }
 
     fn request_commit_signatures(&self, oids: Vec<Oid>) -> u64 {
@@ -896,6 +928,38 @@ fn handle_task_request(ctx: &SupervisorContext, task: ScheduledTask) {
                 },
                 move |blob| EngineEvent::TreeBlobLoaded { blob, epoch },
             );
+        }
+        TaskRequest::LoadTreeIndex { oid } => {
+            let pool = Arc::clone(&ctx.pool);
+            let loc = ctx.location.clone();
+            let token = token.expect("LoadTreeIndex token");
+            let epoch = token.epoch();
+            spawn_epoch_task(
+                &ctx.event_tx,
+                async move {
+                    pool.run_epoch(TaskPriority::Interactive, token, move |tok| {
+                        load_tree_index_sync(&loc, oid, tok).map(Arc::new)
+                    })
+                    .await
+                },
+                move |paths| EngineEvent::TreeIndexLoaded { oid, paths, epoch },
+            );
+        }
+        TaskRequest::ExportTreeBlob { oid, path, dest } => {
+            let pool = Arc::clone(&ctx.pool);
+            let loc = ctx.location.clone();
+            let tx = ctx.event_tx.clone();
+            tokio::spawn(async move {
+                let path_for_task = path.clone();
+                let dest_for_task = dest.clone();
+                let res = pool
+                    .run_with(TaskPriority::Interactive, move || {
+                        export_tree_blob_sync(&loc, oid, &path_for_task, &dest_for_task)
+                    })
+                    .await;
+                let result = res.map_err(|e| e.to_string());
+                let _ = tx.send(EngineEvent::TreeBlobExported { path, dest, result });
+            });
         }
         TaskRequest::VerifyCommitSignatures { oids } => {
             spawn_verify_commit_signatures(ctx, oids, token.expect("LogSignatures token"));

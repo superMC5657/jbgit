@@ -755,15 +755,64 @@ impl OngoingStep {
     }
 }
 
-/// Domain-level specification of what patch should be copied to the clipboard.
+/// Domain-level specification of what patch should be generated (saved to file or copied to clipboard).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PatchSource {
     /// Selected commits (`oids` newest-first, optional exclusive `base` parent).
     Commits { oids: Vec<Oid>, base: Option<Oid> },
     /// Single-file patch from one commit.
     CommitFile { oid: Oid, path: String },
-    /// Staged (`--cached`) or working-tree diff for selected paths.
-    StagePaths { staged: bool, paths: Vec<String> },
+    /// Stage selection: staged (`HEAD..index`), unstaged (`index..worktree`),
+    /// and untracked files. A path present in both `staged` and `unstaged`
+    /// emits the combined `HEAD..worktree` diff.
+    StagePaths {
+        staged: Vec<String>,
+        unstaged: Vec<String>,
+        untracked: Vec<String>,
+    },
+}
+
+impl PatchSource {
+    pub fn is_empty(&self) -> bool {
+        match self {
+            Self::Commits { oids, .. } => oids.is_empty(),
+            Self::CommitFile { path, .. } => path.is_empty(),
+            Self::StagePaths {
+                staged,
+                unstaged,
+                untracked,
+            } => staged.is_empty() && unstaged.is_empty() && untracked.is_empty(),
+        }
+    }
+
+    /// Suggested default `.patch` filename (never containing path separators).
+    pub fn suggested_filename(&self, repo_name: &str) -> String {
+        let safe_repo: String = repo_name
+            .chars()
+            .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '-' })
+            .collect();
+        let safe_repo = if safe_repo.is_empty() {
+            "changes".to_string()
+        } else {
+            safe_repo
+        };
+        match self {
+            Self::Commits { oids, .. } => match oids.as_slice() {
+                [one] => format!("{}.patch", one.short()),
+                [newest, ..] => format!("{safe_repo}-{}-commits-{}.patch", oids.len(), newest.short()),
+                [] => format!("{safe_repo}.patch"),
+            },
+            Self::CommitFile { oid, path } => {
+                let stem = path
+                    .rsplit('/')
+                    .next()
+                    .unwrap_or("file")
+                    .replace(['\\', '/', ':', '*', '?', '"', '<', '>', '|', ' '], "_");
+                format!("{}-{stem}.patch", oid.short())
+            }
+            Self::StagePaths { .. } => format!("{safe_repo}-changes.patch"),
+        }
+    }
 }
 
 /// High-level write operation dispatched by menus / dialogs and executed by the
@@ -988,21 +1037,30 @@ pub enum GitOp {
     DeleteFiles {
         paths: Vec<String>,
     },
-    CreatePatchFiles {
-        oids: Vec<Oid>,
-        base: Option<Oid>,
+    CreatePatchFile {
+        source: PatchSource,
+        output: std::path::PathBuf,
+        reverse: bool,
     },
     PatchToClipboard {
         source: PatchSource,
+        reverse: bool,
     },
     CheckoutPaths {
         rev: String,
         paths: Vec<String>,
     },
-    /// `git apply [--index | --3way] --whitespace=nowarn` (clipboard on stdin).
+    /// `git restore --source=<rev> [--staged] [--worktree] -- <paths...>`.
+    RestorePaths {
+        rev: String,
+        paths: Vec<String>,
+        staged: bool,
+        worktree: bool,
+    },
+    /// `git apply [--index | --3way] [-R] [-p<n>] [--directory=<dir>] [--include=<p>...] --whitespace=nowarn`.
     ApplyPatch {
         source: crate::PatchInput,
-        mode: crate::ApplyMode,
+        options: crate::ApplyOptions,
     },
     /// `git submodule update --init --recursive [-- <path>]`.
     SubmoduleUpdate {
@@ -1145,9 +1203,15 @@ impl GitOp {
             Self::IntentToAdd { .. } => "Stage without content".to_string(),
             Self::AddToIgnore { .. } => "Add to ignore".to_string(),
             Self::DeleteFiles { paths } => format!("Delete {} file(s)", paths.len()),
-            Self::CreatePatchFiles { .. } => "Create patch".to_string(),
+            Self::CreatePatchFile { output, .. } => {
+                let name = output
+                    .file_name()
+                    .map_or_else(|| output.display().to_string(), |n| n.to_string_lossy().into());
+                format!("Create patch '{name}'")
+            }
             Self::PatchToClipboard { .. } => "Copy patch".to_string(),
-            Self::CheckoutPaths { rev, paths } => {
+            Self::CheckoutPaths { rev, paths }
+            | Self::RestorePaths { rev, paths, .. } => {
                 let short_rev = short_rev(rev);
                 if let [one] = paths.as_slice() {
                     format!("Restore '{one}' from {short_rev}")

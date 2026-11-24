@@ -698,42 +698,58 @@ jbgit 同一时间只绑定**一个活动仓库**（多根同步模型不做，�
 
 ---
 
-## 七、应用 Patch 与按版本浏览 (Apply Patch & Browse at Revision)
+## 七、应用/创建 Patch 与按版本浏览 (Apply/Create Patch & Browse at Revision)
 
 ### 1. 应用 Patch (`Apply Patch…`)
 
 入口：Stage 变更树右键菜单 `Apply Patch…` / `Apply Patch from Clipboard`，或 `[1 Commit]` 中 `<Alt-p>` / `<Alt-Shift-p>`。`Apply Patch…` 先询问 Patch 文件路径（相对仓库根目录或绝对路径，`Tab` 补全目录与文件名，文件不存在时红字提示）。
 
-对话框打开时先以只读方式运行 `git apply --check --numstat [模式] --whitespace=nowarn` 预检（不修改工作区与暂存区），列出将受影响的文件与增删行数；预检失败时显示 git 的首条错误，并提示切换到三方合并。
+对话框打开时先以只读方式运行 `git apply --check --numstat [选项] --whitespace=nowarn` 预检（不修改工作区与暂存区），列出可勾选的受影响文件与增删行数；预检失败时显示 git 的首条错误，并在缺少 Git `index` 头的普通 unified patch 执行 `--3way` 失败时明确建议切回工作区模式或调整 `-p` 剥离层级。
 
 | 快捷键 | 功能描述 |
 | :--- | :--- |
-| `1` / `2` / `3`（或 `Tab` / `←` / `→` / `m`） | 应用模式：仅工作区（`git apply`） / 工作区 + 暂存区（`--index`） / 三方合并（`--3way`）；切换后重新预检 |
-| `j` / `k` | 滚动文件列表 |
-| `<Enter>` / `a` | 应用（预检未通过时禁用） |
-| `<Esc>` / `q` | 取消 |
+| `1` / `2` / `3` / `m` | 应用模式：仅工作区（`git apply`） / 工作区 + 暂存区（`--index`） / 三方合并（`--3way`）；切换后重新预检 |
+| `Space` / `a` | 勾选/取消勾选当前文件（`--include`） / 全选与取消全选（自动防抖重跑 `--check`） |
+| `d` / `<Enter>` | 在右侧预览当前选中补丁文件的实际 unified diff（走 `syntect` 语法高亮）；`Tab` 在文件列表与预览间切换焦点 |
+| `r` | 切换反向应用（`-R`），自动防抖重新预检 |
+| `+` / `-` | 调整路径剥离层级（`-p0`..`-p9`，默认 `-p1`），自动防抖重新预检 |
+| `D` | 设置目标子目录前缀（`--directory=<dir>`，`Enter` 生效、`Esc` 取消），自动防抖重新预检 |
+| `j` / `k` / `<PageUp>` / `<PageDown>` | 移动选中文件（或焦点在预览时滚动 Diff；`<Ctrl-d>` / `<Ctrl-u>` 滚动预览） |
+| `A` / `<Ctrl-Enter>` / 点击 `[ Apply ]` | 执行应用（预检未通过或未勾选任何文件时禁用） |
+| `<Esc>` / `q` | 焦点在预览时返回文件列表；否则关闭弹窗 |
 
-- 三方合并预检会标出将产生冲突的文件；应用后冲突文件出现在 `[1 Commit]` 的冲突分组中，通知栏 `<Alt-z>`「解决冲突」直接打开三栏合并窗口（单个冲突文件时）。
+- 三方合并预检会标出将产生冲突的文件；应用后冲突文件出现在 `[1 Commit]` 的冲突分组中，通知栏 `<Alt-z>`「解决冲突」直接打开三栏合并窗口（单个冲突文件时）或冲突队列（多文件时）。
 - 剪贴板读取：终端 OSC 52 只能写入剪贴板，因此 jbgit 调用系统工具读取（Windows `Get-Clipboard`、macOS `pbpaste`、Linux `wl-paste` / `xclip` / `xsel`），内容经 stdin 交给 `git apply -`；控制台只记录命令行，不记录 Patch 内容。整段统一为 CRLF 换行时会转换为 LF。环境变量 `JBGIT_CLIPBOARD_FILE` 可把"剪贴板"指向一个文件（测试 / 无图形环境）。
 
-### 2. 按版本浏览仓库 (`Browse Repository at Revision`)
+### 2. 创建 Patch (`Create Patch…`)
+
+入口：Log 提交右键菜单 `Create Patch…` → `Save Patch Files…` / `Copy Patch to Clipboard`，以及 `[1 Commit]` Stage 变更树 / Diff 右键菜单 `Create Patch…` / `Create Patch to Clipboard`。
+
+- 统一弹出「创建补丁」配置框：选择输出到 **文件/目录** 或 **剪贴板**、编辑目标路径（支持 `Tab` 补全；默认定位到上次目录或仓库外置父目录 `<repo>/..`，避免未经确认直接落盘到仓库根目录污染 `git status`）、可选开启 **Reverse Patch (`-R`)**。
+- Stage 侧支持同时选中 **Staged + Unstaged + Untracked** 混合生成完整补丁：同文件同时存在已暂存与未暂存改动时自动合并输出 `HEAD..worktree` 净差异，未追踪文本/二进制文件以标准 unified new-file hunk 纳入补丁。
+
+### 3. 按版本浏览仓库 (`Browse Repository at Revision`)
 
 入口：Log 提交右键菜单 `Browse Repository at Revision`、提交表 `<Alt-t>`、`g r` / `<Ctrl-g>` 跳转弹窗中输入修订后按 `<Alt-Enter>`。
 
-浮窗左侧为该提交的目录树（目录按层懒加载，目录在前），右侧为文件内容预览（语法高亮；二进制、超过 4 MiB 的文件显示占位；子模块条目显示其指向的提交且只读）。
+浮窗左侧为该提交的目录树（目录按层懒加载，目录在前），右侧为文件内容预览（语法高亮；符号链接明确标注 `symlink → <target>`；二进制、超过 4 MiB 的文件显示占位；子模块条目显示其指向的提交且只读）。
 
 | 快捷键 | 功能描述 |
 | :--- | :--- |
+| `/` | 打开异步模糊路径搜索（`git ls-tree -r --name-only -z <oid>` + `nucleo` 匹配高亮；`<Enter>` 自动展开祖先目录并定位预览） |
+| `Space` | 勾选/取消多选文件，用于批量 `Get Version` |
 | `j` / `k` / `<PageUp>` / `<PageDown>` / `<Home>` / `G` | 移动（焦点在预览时滚动预览；`<Ctrl-d>` / `<Ctrl-u>` 半页滚动预览） |
 | `→` / `l` / `<Enter>` / 双击 | 展开目录 / 聚焦文件预览 |
 | `←` | 折叠目录或跳到父目录（预览中返回目录树） |
 | `<Tab>` | 在目录树与预览之间切换焦点 |
-| `c` | 与本地对比（文件：该文件该版本 vs 工作区；目录：整个提交 vs 工作区），在 Log 变更树中打开 |
-| `g` | 获取此版本（确认后 `git checkout <rev> -- <path>`，同时覆盖暂存区） |
+| `c` | 与本地对比（文件：该文件 vs 工作区；目录：限定该子目录 vs 工作区），在 Log 变更树中打开 |
+| `g` | 获取此版本（支持多选批量恢复；弹窗可选「仅恢复到工作区 `git restore --source=<oid> --worktree`」或「同时更新暂存区 `--staged --worktree`」） |
+| `Y` | 复制预览文件内容（或符号链接目标）到剪贴板 |
+| `e` | 导出文件到指定路径（`Export to File…`，直接读取 git 对象，支持文本、二进制及大文件） |
 | `a` | 以该版本逐行追溯（Annotate），`<Esc>` 返回浏览器 |
 | `h` | 从该版本开始查看文件 / 目录历史 |
-| `y` | 复制路径 |
-| `<Esc>` / `q` | 关闭 |
+| `y` | 复制相对路径 |
+| `<Esc>` / `q` | 关闭（搜索打开时先关闭搜索） |
 
 ---
 

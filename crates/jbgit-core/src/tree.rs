@@ -24,6 +24,8 @@ pub struct TreeEntry {
     pub size: Option<u64>,
     /// Object id (the submodule commit for gitlinks).
     pub oid: Oid,
+    /// Link target for symlink entries (`mode == 0o120_000`).
+    pub symlink_target: Option<String>,
 }
 
 impl TreeEntry {
@@ -62,6 +64,7 @@ pub struct TreeBlobKey {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TreeBlobContent {
     Text(String),
+    Symlink(String),
     Lfs(crate::LfsPointer),
     Binary,
     TooLarge { limit: usize },
@@ -97,6 +100,7 @@ mod tests {
             mode: 0o100_644,
             size: None,
             oid: Oid::from_bytes([0; 20]),
+            symlink_target: None,
         }
     }
 

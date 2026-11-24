@@ -246,6 +246,13 @@ impl AppState {
                                 r.push_text(&clean);
                             }
                         }
+                        crate::dialogs::Dialog::CreatePatch(cp) if cp.editing_path() => {
+                            let clean: String =
+                                text.chars().filter(|c| *c != '\n' && *c != '\r').collect();
+                            if !clean.is_empty() {
+                                cp.path.push_str(&clean);
+                            }
+                        }
                         _ => {}
                     },
                     ModalLayer::BranchesPopup { .. }
@@ -369,6 +376,14 @@ impl AppState {
                             let row = r.row();
                             if !row.is_text() {
                                 r.toggle(row, true);
+                            }
+                        }
+                        crate::dialogs::Dialog::CreatePatch(cp) => {
+                            let rows = crate::dialogs::CreatePatchRow::ALL;
+                            cp.selected = idx.min(rows.len() - 1);
+                            let row = cp.row();
+                            if row != crate::dialogs::CreatePatchRow::Path {
+                                cp.toggle(row);
                             }
                         }
                         _ => {}

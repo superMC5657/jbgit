@@ -1,6 +1,6 @@
 # 10: Apply/Create Patch 深度选项与 Tree Browser 交互增强
 
-Status: ready-for-agent
+Status: resolved
 Spec: [../spec.md](../spec.md)
 Milestone: M10 — reference 深度对齐与正确性加固
 Priority: P2
@@ -25,15 +25,15 @@ Spec 12 Issue 13 落地了基础版 Apply Patch 与 Browse Repository at Revisio
 
 ## 2. 任务清单
 
-- [ ] **Apply Patch 深度选项（`patch.rs` / `details/patch.rs` / `patch_view.rs`）**：
+- [x] **Apply Patch 深度选项（`patch.rs` / `details/patch.rs` / `patch_view.rs`）**：
   - 扩展 `ApplyOptions { mode: ApplyMode, reverse: bool /* -R */, strip: Option<u8> /* -p<n> */, directory: Option<String> /* --directory=<dir> */, include_paths: Vec<String> /* --include=... */ }`；
   - `ApplyPatch` 模态文件列表升级为可勾选列表（`Space` 切换单文件、`a` 全选/反选），按 `d`/`Enter` 在右侧/弹窗预览该补丁文件的实际 diff 内容（从 patch 文本中解析对应 file section 并走 `syntect` 高亮）；
   - 选项变更（`r` 切换 Reverse、`+`/`-` 调整 `-p` 剥离层数、`D` 设置目录前缀、勾选文件变动）自动触发防抖 `--check --numstat` 重新预检；
   - 对无 `index <sha>..<sha>` 头的普通 unified patch 在 `--3way` 预检失败时给出明确降级提示（建议切换 `WorkingTree` 或调整 `-p`）。
-- [ ] **Create Patch 配置弹窗与 Stage 完整支持**：
+- [x] **Create Patch 配置弹窗与 Stage 完整支持**：
   - Commit 与 Stage 的「Create Patch File…」统一弹出配置框：目标文件/目录路径（默认用户上次目录或 `<repo>/.git/../` 外置路径，禁止无确认直接落盘到工作区根 `.` 污染 `git status`）、**Reverse Patch (`-R`)** 开关、输出去向（文件 / 剪贴板）；
   - 修复 Stage 侧 `PatchSource::StagePaths`：支持同时选中 `Staged` + `Unstaged` 混合生成完整补丁，并将选中的 `Untracked` 文件经 `git diff --no-index -- /dev/null <path>`（或纯 Rust 生成标准 unified new-file hunk）纳入补丁输出。
-- [ ] **Browse Repository at Revision（`tree_browser.rs`）增强**：
+- [x] **Browse Repository at Revision（`tree_browser.rs`）增强**：
   - 新增 `/` 模糊搜索（调用 `git ls-tree -r --name-only <oid>` 异步可取消索引当前版本全部路径并用 `nucleo-matcher` 过滤，选中即自动展开并定位到该文件）；
   - 对目录节点执行 `Compare with Local` 时改为限定该子目录路径（而非全仓库）；
   - 新增 `Copy File Content` 与 `Export to File…` 预览动作，明确标注符号链接目标（`symlink → <target>`）；

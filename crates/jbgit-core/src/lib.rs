@@ -63,8 +63,8 @@ pub use git_ops::{
     OngoingKind, OngoingStep, PatchSource, PullOptionConflict, PullOptions, PushForce,
     PushOutcomeSummary, PushTagMode, RebaseOptionError, RebaseOptions, RefNameError, ResetMode,
     RewritePlan, SkippedBranch, SquashTodoPlan, StashEntry, TodoAction, TodoEntry, UpdateInfo,
-    UpdateMode, UpdatedRange, classify_failure, default_squash_messages, fuzzy_indices,
-    infer_clone_dir_name, is_protected_branch, matches_protected_branch_patterns,
+    UpdateMode, UpdatedRange, classify_failure, default_squash_messages, fuzzy_filter_paths,
+    fuzzy_indices, infer_clone_dir_name, is_protected_branch, matches_protected_branch_patterns,
     parse_push_porcelain, parse_recent_checkouts, plan_squash_todo, render_todo, short_rev,
     validate_ref_name, validate_ref_name_typed,
 };
@@ -72,8 +72,9 @@ pub use key_token::{KeyToken, KeyTokenError, KeyTokenKind, parse_key_token};
 pub use lru::LruCache;
 pub use oid::Oid;
 pub use patch::{
-    ApplyMode, PatchCheck, PatchCheckKey, PatchFileStat, PatchInput, first_apply_error,
-    parse_apply_check, parse_apply_conflicts,
+    ApplyMode, ApplyOptions, PatchCheck, PatchCheckKey, PatchFileSection, PatchFileStat,
+    PatchInput, apply_strip_and_directory, build_untracked_file_patch, first_apply_error,
+    needs_three_way_index_fallback, parse_apply_check, parse_apply_conflicts, parse_patch_sections,
 };
 pub use reflog::{
     CherryPickedKey, DEFAULT_REFLOG_LIMIT, REFLOG_GIT_FORMAT, ReflogActionKind, ReflogBundle,
