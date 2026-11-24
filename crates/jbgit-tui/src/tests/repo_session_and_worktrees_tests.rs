@@ -337,11 +337,11 @@ fn repo_switcher_lists_recent_worktrees_and_submodules_and_switches() {
     assert_eq!(
         listed,
         vec![
-            (SwitcherSource::Recent, "other-repo"),
             (SwitcherSource::Worktree, "jbgit-feature"),
             (SwitcherSource::Submodule, "libs/sub"),
+            (SwitcherSource::Recent, "other-repo"),
         ],
-        "current repo, prunable worktree and uninitialized submodule are skipped"
+        "project-local worktrees and submodules appear before global recent repos"
     );
     assert!(
         ts.state()
@@ -354,6 +354,7 @@ fn repo_switcher_lists_recent_worktrees_and_submodules_and_switches() {
     let text = screen_text(&ts.render(120, 30));
     assert!(text.contains("Switch Repository"), "{text}");
     assert!(text.contains("feature/dag-layout"), "{text}");
+    assert!(text.contains("────────"), "expected divider between local and recent:\n{text}");
 
     // Type to filter, Enter switches.
     ts.type_str("feat");
@@ -366,8 +367,18 @@ fn repo_switcher_lists_recent_worktrees_and_submodules_and_switches() {
     );
     assert!(ts.state().modal_stack.is_empty());
 
-    // Del forgets a recent entry.
+    // Del does nothing on project-local items, and forgets a recent entry once selected.
     ts.dispatch(Action::OpenRepoSwitcher);
+    ts.send_key(KeyCode::Delete, KeyModifiers::NONE);
+    assert!(
+        ts.state()
+            .recent_repos
+            .entries()
+            .iter()
+            .any(|e| e.name == "other-repo")
+    );
+    ts.send_key(KeyCode::Down, KeyModifiers::NONE);
+    ts.send_key(KeyCode::Down, KeyModifiers::NONE);
     ts.send_key(KeyCode::Delete, KeyModifiers::NONE);
     assert!(
         ts.state()
@@ -708,4 +719,110 @@ fn rebind_carries_terminal_state_and_records_recent_repository() {
         "{:?}",
         ts.state().notification
     );
+}
+
+#[test]
+fn header_repo_switcher_shows_dropdown_caret_and_hover_without_auto_popup() {
+    let (_root, snap) = worktree_fixture();
+    let mut ts = TestSession::with_snapshot(snap);
+
+    let buf = ts.render(120, 30);
+    let header_line: String = (0..120).map(|x| buf[(x, 0)].symbol()).collect();
+    assert!(header_line.contains(" jbgit ▾ "), "{header_line}");
+
+    let repo_rect = ts
+        .state()
+        .hit_registry
+        .find(|t| *t == crate::hit_test::HitTarget::HeaderRepoName)
+        .expect("header repo hit region")
+        .rect;
+    let branch_rect = ts
+        .state()
+        .hit_registry
+        .find(|t| *t == crate::hit_test::HitTarget::BranchWidgetPill)
+        .expect("branch widget hit region")
+        .rect;
+    // 1-column visual gap separates the repo switcher from the branch pill.
+    assert_eq!(branch_rect.x, repo_rect.right() + 1);
+
+    let caret_x = repo_rect.right() - 2;
+    assert_eq!(buf[(caret_x, 0)].symbol(), "▾");
+    assert_eq!(buf[(caret_x, 0)].fg, ts.state().theme.fg_muted);
+    assert_eq!(buf[(caret_x, 0)].bg, ts.state().theme.bg_panel);
+
+    // Hovering highlights the repo switcher without popping up any dropdown/tooltip.
+    ts.send_mouse(MouseEventKind::Moved, repo_rect.x + 1, repo_rect.y);
+    let hovered_buf = ts.render(120, 30);
+    assert_eq!(hovered_buf[(caret_x, 0)].fg, ts.state().theme.fg_bright);
+    assert_eq!(hovered_buf[(caret_x, 0)].bg, ts.state().theme.bg_hover);
+    assert!(ts.state().modal_stack.is_empty());
+    let text = screen_text(&hovered_buf);
+    assert!(!text.contains("Switch Repository"), "{text}");
+
+    // Pure single repo also renders the subtle dropdown caret.
+    let single_dir = TempDir::new().unwrap();
+    let mut single_snap = RepoSnapshot {
+        repo_name: "solo".into(),
+        workdir: single_dir.path().to_path_buf(),
+        ..RepoSnapshot::default()
+    };
+    single_snap.head_branch = Some("main".into());
+    let mut solo_ts = TestSession::with_snapshot(single_snap);
+    let solo_buf = solo_ts.render(120, 30);
+    let solo_header: String = (0..120).map(|x| solo_buf[(x, 0)].symbol()).collect();
+    assert!(solo_header.contains(" solo ▾ "), "{solo_header}");
+}
+
+#[test]
+fn submodule_rebind_records_parent_instead_and_exposes_parent_tag() {
+    let tmp = TempDir::new().unwrap();
+    let parent = tmp.path().join("all2api");
+    let sub = parent.join("third_party").join("qoder2api");
+    let other = tmp.path().join("jGit");
+
+    std::fs::create_dir_all(parent.join(".git/modules/third_party/qoder2api")).unwrap();
+    std::fs::create_dir_all(&sub).unwrap();
+    std::fs::create_dir_all(other.join(".git")).unwrap();
+    std::fs::write(
+        sub.join(".git"),
+        "gitdir: ../../.git/modules/third_party/qoder2api\n",
+    )
+    .unwrap();
+
+    // Binding the submodule records its parent in recent_repos, never the submodule itself.
+    let mut ts = TestSession::new(test_state(other.clone()));
+    ts.state_mut().on_repository_bound(None);
+    ts.session.prepare_unbind();
+    ts.session.rebind(test_state(sub.clone()), true);
+    let recent_paths: Vec<PathBuf> = ts
+        .state()
+        .recent_repos
+        .entries()
+        .iter()
+        .map(|e| e.path.clone())
+        .collect();
+    assert_eq!(recent_paths, vec![parent.clone(), other.clone()]);
+
+    // Inside the submodule, switcher lists Parent first, separated from global Recent.
+    ts.dispatch(Action::OpenRepoSwitcher);
+    let rs = match ts.state().modal_stack.last() {
+        Some(ModalLayer::RepoSwitcher(rs)) => rs.as_ref().clone(),
+        other => panic!("expected switcher, got {other:?}"),
+    };
+    let listed: Vec<(SwitcherSource, &str)> = rs
+        .items
+        .iter()
+        .map(|i| (i.source, i.name.as_str()))
+        .collect();
+    assert_eq!(
+        listed,
+        vec![
+            (SwitcherSource::Parent, "all2api"),
+            (SwitcherSource::Recent, "jGit"),
+        ]
+    );
+    let text = screen_text(&ts.render(120, 30));
+    assert!(text.contains("parent"), "{text}");
+    assert!(text.contains("recent"), "{text}");
+    assert!(text.contains("────────"), "{text}");
 }

@@ -29,14 +29,31 @@ pub fn render_top_header(
         .or_else(|| state.repo_path_display.file_name().and_then(|s| s.to_str()))
         .unwrap_or("jbgit");
 
-    let repo_label = format!(" {repo_name} ");
-    let repo_label_w = repo_label.width() as u16;
+    let repo_hovered = ctx.hover_target == Some(&HitTarget::HeaderRepoName);
+    let repo_bg = if repo_hovered {
+        ctx.theme.bg_hover
+    } else {
+        bg
+    };
+    let caret_fg = if repo_hovered {
+        ctx.theme.fg_bright
+    } else {
+        ctx.theme.fg_muted
+    };
+
+    let repo_name_part = format!(" {repo_name} ");
+    let caret_part = "▾ ";
+    let repo_label_w = (repo_name_part.width() + caret_part.width()) as u16;
     spans.push(Span::styled(
-        repo_label,
+        repo_name_part,
         Style::default()
             .fg(ctx.theme.fg_bright)
-            .bg(bg)
+            .bg(repo_bg)
             .add_modifier(Modifier::BOLD),
+    ));
+    spans.push(Span::styled(
+        caret_part,
+        Style::default().fg(caret_fg).bg(repo_bg),
     ));
     // Clicking the repository name opens the repository switcher.
     ctx.hit_registry.register(
@@ -44,6 +61,7 @@ pub fn render_top_header(
         5,
         HitTarget::HeaderRepoName,
     );
+    spans.push(Span::styled(" ", Style::default().bg(bg)));
 
     // Branch widget pill
     let branch_start_x = area.x.saturating_add(span_width(&spans));

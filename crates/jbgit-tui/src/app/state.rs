@@ -609,8 +609,9 @@ impl AppState {
                 }
                 ScrollPane::RepoSwitcher => {
                     if let Some(rs) = self.modal_stack.repo_switcher_mut() {
-                        let total = rs.visible().len();
-                        rs.scroll.ensure_visible(rs.selected, total, viewport_h);
+                        let vis = rs.visible();
+                        let (sel_display, total) = rs.display_selection_and_len(&vis);
+                        rs.scroll.ensure_visible(sel_display, total, viewport_h);
                     }
                 }
                 ScrollPane::BranchCleanup => {

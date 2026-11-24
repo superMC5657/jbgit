@@ -3,7 +3,7 @@
 //! (`recent-repos.toml`) and the `RepoSwitcher` modal listing recent
 //! repositories, linked working trees and submodules with fuzzy filtering.
 
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use jbgit_core::{fuzzy_indices, same_path};
@@ -21,6 +21,132 @@ use crate::hit_test::HitTarget;
 use crate::i18n::I18n;
 use crate::views::overlays::draw_shadow;
 use crate::views::truncate_to_width;
+
+/// Classification of a repository working directory based on its `.git` entry.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RepoPathKind {
+    /// Normal standalone / main working tree (`.git` is a directory, or unknown).
+    Standalone,
+    /// Git submodule (`.git` file points into `.../.git/modules/...` or
+    /// `.../.git/worktrees/<wt>/modules/...`), with its nearest ancestor
+    /// repository working tree when present.
+    Submodule { parent: Option<PathBuf> },
+    /// Linked working tree (`.git` file points into `.../.git/worktrees/<name>`),
+    /// with the non-bare main working tree when present.
+    LinkedWorktree { main_workdir: Option<PathBuf> },
+}
+
+fn normalize_lexical(path: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for comp in path.components() {
+        match comp {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if !out.pop() {
+                    out.push(comp);
+                }
+            }
+            other => out.push(other),
+        }
+    }
+    out
+}
+
+/// Parses a `.git` gitlink file (`gitdir: <path>`) and resolves it against `workdir`.
+fn resolve_gitdir_file(workdir: &Path) -> Option<PathBuf> {
+    let dot_git = workdir.join(".git");
+    if !dot_git.is_file() {
+        return None;
+    }
+    let content = std::fs::read_to_string(&dot_git).ok()?;
+    let line = content.lines().next()?.trim();
+    let target = line.strip_prefix("gitdir:")?.trim();
+    if target.is_empty() {
+        return None;
+    }
+    let raw = Path::new(target);
+    let resolved = if raw.is_absolute() {
+        raw.to_path_buf()
+    } else {
+        workdir.join(raw)
+    };
+    Some(normalize_lexical(&resolved))
+}
+
+fn find_nearest_parent_repo(workdir: &Path) -> Option<PathBuf> {
+    workdir
+        .ancestors()
+        .skip(1)
+        .find(|dir| dir.join(".git").exists())
+        .map(Path::to_path_buf)
+}
+
+/// Classifies `workdir` by inspecting its `.git` file (when present).
+pub fn classify_repo_path(workdir: &Path) -> RepoPathKind {
+    let Some(gitdir) = resolve_gitdir_file(workdir) else {
+        return RepoPathKind::Standalone;
+    };
+    let comps: Vec<Component<'_>> = gitdir.components().collect();
+    let git_idx = comps.iter().rposition(|c| match c {
+        Component::Normal(name) => {
+            let s = name.to_string_lossy();
+            s == ".git" || s.ends_with(".git")
+        }
+        _ => false,
+    });
+    let Some(git_idx) = git_idx else {
+        return RepoPathKind::Standalone;
+    };
+    let after: Vec<String> = comps[git_idx + 1..]
+        .iter()
+        .filter_map(|c| match c {
+            Component::Normal(s) => Some(s.to_string_lossy().into_owned()),
+            _ => None,
+        })
+        .collect();
+
+    if after.first().map(String::as_str) == Some("modules")
+        || (after.first().map(String::as_str) == Some("worktrees")
+            && after.get(2).map(String::as_str) == Some("modules"))
+    {
+        return RepoPathKind::Submodule {
+            parent: find_nearest_parent_repo(workdir),
+        };
+    }
+
+    if after.len() == 2 && after[0] == "worktrees" {
+        let is_dot_git = matches!(
+            comps[git_idx],
+            Component::Normal(name) if name == ".git"
+        );
+        let main_workdir = if is_dot_git && git_idx > 0 {
+            let mut parent = PathBuf::new();
+            for c in &comps[..git_idx] {
+                parent.push(c);
+            }
+            parent.is_dir().then_some(parent)
+        } else {
+            None
+        };
+        return RepoPathKind::LinkedWorktree { main_workdir };
+    }
+
+    RepoPathKind::Standalone
+}
+
+/// Walks out of submodules and linked worktrees to find the standalone parent
+/// repository that belongs in the global `recent-repos.toml` list.
+pub fn standalone_recent_target(workdir: &Path) -> Option<PathBuf> {
+    let mut cur = workdir.to_path_buf();
+    for _ in 0..8 {
+        match classify_repo_path(&cur) {
+            RepoPathKind::Standalone => return Some(cur),
+            RepoPathKind::Submodule { parent } => cur = parent?,
+            RepoPathKind::LinkedWorktree { main_workdir } => cur = main_workdir?,
+        }
+    }
+    None
+}
 
 /// Upper bound of remembered repositories.
 pub const MAX_RECENT_REPOS: usize = 20;
@@ -65,7 +191,9 @@ impl RecentRepos {
             .join(RECENT_REPOS_FILE)
     }
 
-    /// Loads `file`, dropping entries whose directory no longer exists.
+    /// Loads `file`, dropping entries whose directory no longer exists or that
+    /// belong to a submodule / linked worktree (those are shown under their own
+    /// project-local tags instead of the global recent list).
     pub fn load(file: PathBuf) -> Self {
         let parsed: RecentReposFile = std::fs::read_to_string(&file)
             .ok()
@@ -78,15 +206,18 @@ impl RecentRepos {
         };
         let mut entries = parsed.repos;
         entries.sort_by_key(|a| std::cmp::Reverse(a.last_opened));
+        let mut cleaned = false;
         for e in entries {
             if !e.path.is_dir() {
                 store.pruned.push(e.name);
+            } else if !matches!(classify_repo_path(&e.path), RepoPathKind::Standalone) {
+                cleaned = true;
             } else if !store.entries.iter().any(|x| same_path(&x.path, &e.path)) {
                 store.entries.push(e);
             }
         }
         store.entries.truncate(MAX_RECENT_REPOS);
-        if !store.pruned.is_empty() {
+        if !store.pruned.is_empty() || cleaned {
             store.save();
         }
         store
@@ -145,9 +276,16 @@ impl RecentRepos {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SwitcherSource {
-    Recent,
+    Parent,
     Worktree,
     Submodule,
+    Recent,
+}
+
+impl SwitcherSource {
+    pub const fn is_project_local(self) -> bool {
+        matches!(self, Self::Parent | Self::Worktree | Self::Submodule)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -196,10 +334,34 @@ impl RepoSwitcherState {
         let idx = *vis.get(self.selected.min(vis.len().saturating_sub(1)))?;
         self.items.get(idx)
     }
+
+    /// Whether a horizontal divider separates project-local targets from global recent repos.
+    pub fn shows_divider(&self, vis: &[usize]) -> bool {
+        self.query.trim().is_empty()
+            && vis.iter().any(|i| self.items[*i].source.is_project_local())
+            && vis
+                .iter()
+                .any(|i| self.items[*i].source == SwitcherSource::Recent)
+    }
+
+    /// `(display_row_of_selected, total_display_rows)` accounting for the optional divider.
+    pub fn display_selection_and_len(&self, vis: &[usize]) -> (usize, usize) {
+        if vis.is_empty() {
+            return (0, 0);
+        }
+        let sel = self.selected.min(vis.len() - 1);
+        if self.shows_divider(vis) {
+            let extra = usize::from(self.items[vis[sel]].source == SwitcherSource::Recent);
+            (sel + extra, vis.len() + 1)
+        } else {
+            (sel, vis.len())
+        }
+    }
 }
 
-/// Recent repositories, then the current repository's other working trees,
-/// then its initialized submodules (the current working tree is omitted).
+/// Project-local targets first (parent repository when inside a submodule,
+/// other working trees, initialized submodules), followed by global recent
+/// standalone repositories (the current working tree is omitted).
 pub fn build_switcher_items(state: &AppState) -> Vec<SwitcherItem> {
     let current = state
         .repo_snapshot
@@ -212,17 +374,27 @@ pub fn build_switcher_items(state: &AppState) -> Vec<SwitcherItem> {
             items.push(item);
         }
     };
-    for r in state.recent_repos.entries() {
+
+    if let RepoPathKind::Submodule {
+        parent: Some(parent_path),
+    } = classify_repo_path(&current)
+    {
+        let name = parent_path.file_name().map_or_else(
+            || parent_path.display().to_string(),
+            |n| n.to_string_lossy().into(),
+        );
+        let detail = parent_path.display().to_string();
         push(
             &mut items,
             SwitcherItem {
-                source: SwitcherSource::Recent,
-                name: r.name.clone(),
-                path: r.path.clone(),
-                detail: r.path.display().to_string(),
+                source: SwitcherSource::Parent,
+                name,
+                path: parent_path,
+                detail,
             },
         );
     }
+
     if let Some(snap) = state.repo_snapshot.as_deref() {
         let detached = state.i18n.t("view.repo_switcher.detached");
         for wt in snap
@@ -248,18 +420,35 @@ pub fn build_switcher_items(state: &AppState) -> Vec<SwitcherItem> {
         for sub in &snap.submodules {
             let path = snap.workdir.join(sub);
             if path.join(".git").exists() {
+                let detail = path.display().to_string();
                 push(
                     &mut items,
                     SwitcherItem {
                         source: SwitcherSource::Submodule,
                         name: sub.clone(),
                         path,
-                        detail: sub.clone(),
+                        detail,
                     },
                 );
             }
         }
     }
+
+    for r in state.recent_repos.entries() {
+        if !matches!(classify_repo_path(&r.path), RepoPathKind::Standalone) {
+            continue;
+        }
+        push(
+            &mut items,
+            SwitcherItem {
+                source: SwitcherSource::Recent,
+                name: r.name.clone(),
+                path: r.path.clone(),
+                detail: r.path.display().to_string(),
+            },
+        );
+    }
+
     items
 }
 
@@ -358,11 +547,14 @@ pub fn render_repo_switcher_modal(
         return;
     }
     let vis = rs.visible();
+    let show_divider = rs.shows_divider(&vis);
+    let (sel_display, total_rows) = rs.display_selection_and_len(&vis);
+
     let w = screen
         .width
         .saturating_sub(4)
         .clamp(24.min(screen.width), 100);
-    let h = (vis.len().max(1) as u16 + 6)
+    let h = (total_rows.max(1) as u16 + 6)
         .clamp(9, 26)
         .min(screen.height.saturating_sub(2).max(6));
     let rect = Rect::new(
@@ -423,24 +615,43 @@ pub fn render_repo_switcher_modal(
             Rect::new(inner.x, list_top, inner.width, 1),
         );
     } else {
+        enum DisplayRow {
+            Item(usize),
+            Separator,
+        }
+        let mut display_rows = Vec::with_capacity(total_rows);
+        let mut inserted_sep = false;
+        for (row, &idx) in vis.iter().enumerate() {
+            if show_divider
+                && !inserted_sep
+                && rs.items[idx].source == SwitcherSource::Recent
+            {
+                display_rows.push(DisplayRow::Separator);
+                inserted_sep = true;
+            }
+            display_rows.push(DisplayRow::Item(row));
+        }
+
         let sel = rs.selected.min(vis.len() - 1);
         let mut vp = rs.scroll;
-        vp.ensure_visible(sel, vis.len(), list_h);
+        vp.ensure_visible(sel_display, display_rows.len(), list_h);
         let first = vp.offset();
         ctx.record_scroll_bound(
             ScrollPane::RepoSwitcher,
             list_h,
-            vis.len().saturating_sub(list_h),
+            display_rows.len().saturating_sub(list_h),
         );
         let tags = [
-            ctx.t("view.repo_switcher.tag_recent").to_string(),
+            ctx.t("view.repo_switcher.tag_parent").to_string(),
             ctx.t("view.repo_switcher.tag_worktree").to_string(),
             ctx.t("view.repo_switcher.tag_submodule").to_string(),
+            ctx.t("view.repo_switcher.tag_recent").to_string(),
         ];
         let tag_of = |s: SwitcherSource| match s {
-            SwitcherSource::Recent => tags[0].clone(),
-            SwitcherSource::Worktree => tags[1].clone(),
-            SwitcherSource::Submodule => tags[2].clone(),
+            SwitcherSource::Parent => (&tags[0], ctx.theme.ref_head.icon),
+            SwitcherSource::Worktree => (&tags[1], ctx.theme.ref_local.icon),
+            SwitcherSource::Submodule => (&tags[2], ctx.theme.fg_accent_link),
+            SwitcherSource::Recent => (&tags[3], ctx.theme.fg_muted),
         };
         let tag_w = tags.iter().map(|t| t.width()).max().unwrap_or(8);
         let name_w = vis
@@ -449,44 +660,60 @@ pub fn render_repo_switcher_modal(
             .max()
             .unwrap_or(0)
             .clamp(8, 32);
-        for (row, idx) in vis.iter().enumerate().skip(first).take(list_h) {
-            let item = &rs.items[*idx];
-            let y = list_top + (row - first) as u16;
-            let is_sel = row == sel;
-            let bg = if is_sel {
-                ctx.theme.bg_selection_focused
-            } else {
-                ctx.theme.bg_elevated
-            };
-            let tag = tag_of(item.source);
-            let name = truncate_to_width(&item.name, name_w);
-            let detail_w = width.saturating_sub(tag_w + name_w + 6);
-            let line = Line::from(vec![
-                Span::styled(
-                    format!(" {tag}{} ", " ".repeat(tag_w.saturating_sub(tag.width()))),
-                    Style::default().fg(ctx.theme.fg_muted),
-                ),
-                Span::styled(
-                    format!(
-                        "{name}{}  ",
-                        " ".repeat(name_w.saturating_sub(name.width()))
-                    ),
-                    Style::default()
-                        .fg(ctx.theme.fg_bright)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(
-                    truncate_to_width(&item.detail, detail_w),
-                    Style::default().fg(ctx.theme.fg_primary),
-                ),
-            ]);
+        for (d_idx, d_row) in display_rows.iter().enumerate().skip(first).take(list_h) {
+            let y = list_top + (d_idx - first) as u16;
             let row_rect = Rect::new(inner.x, y, inner.width, 1);
-            frame.render_widget(
-                Paragraph::new(line).style(Style::default().bg(bg)),
-                row_rect,
-            );
-            ctx.hit_registry
-                .register(row_rect, z + 2, HitTarget::RepoSwitcherRow(row));
+            match *d_row {
+                DisplayRow::Separator => {
+                    let rule = format!(" {} ", "─".repeat(width.saturating_sub(2)));
+                    frame.render_widget(
+                        Paragraph::new(Span::styled(
+                            rule,
+                            Style::default()
+                                .fg(ctx.theme.border_splitter)
+                                .bg(ctx.theme.bg_elevated),
+                        )),
+                        row_rect,
+                    );
+                }
+                DisplayRow::Item(row) => {
+                    let item = &rs.items[vis[row]];
+                    let is_sel = row == sel;
+                    let bg = if is_sel {
+                        ctx.theme.bg_selection_focused
+                    } else {
+                        ctx.theme.bg_elevated
+                    };
+                    let (tag, tag_fg) = tag_of(item.source);
+                    let name = truncate_to_width(&item.name, name_w);
+                    let detail_w = width.saturating_sub(tag_w + name_w + 6);
+                    let line = Line::from(vec![
+                        Span::styled(
+                            format!(" {tag}{} ", " ".repeat(tag_w.saturating_sub(tag.width()))),
+                            Style::default().fg(tag_fg),
+                        ),
+                        Span::styled(
+                            format!(
+                                "{name}{}  ",
+                                " ".repeat(name_w.saturating_sub(name.width()))
+                            ),
+                            Style::default()
+                                .fg(ctx.theme.fg_bright)
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                        Span::styled(
+                            truncate_to_width(&item.detail, detail_w),
+                            Style::default().fg(ctx.theme.fg_primary),
+                        ),
+                    ]);
+                    frame.render_widget(
+                        Paragraph::new(line).style(Style::default().bg(bg)),
+                        row_rect,
+                    );
+                    ctx.hit_registry
+                        .register(row_rect, z + 2, HitTarget::RepoSwitcherRow(row));
+                }
+            }
         }
     }
 
@@ -569,5 +796,95 @@ mod tests {
         rs.query = "zzz".into();
         assert!(rs.visible().is_empty());
         assert!(rs.selected_item().is_none());
+    }
+
+    #[test]
+    fn classify_repo_path_distinguishes_standalone_submodule_and_worktree() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let main_repo = tmp.path().join("modules").join("all2api");
+        let sub_repo = main_repo.join("third_party").join("qoder2api");
+        let nested_sub = sub_repo.join("vendor").join("inner");
+        let wt_repo = tmp.path().join("modules").join("all2api-feat");
+        let wt_sub = wt_repo.join("third_party").join("qoder2api");
+
+        std::fs::create_dir_all(main_repo.join(".git/modules/third_party/qoder2api/modules/vendor/inner")).unwrap();
+        std::fs::create_dir_all(main_repo.join(".git/worktrees/feat/modules/qoder2api")).unwrap();
+        std::fs::create_dir_all(&sub_repo).unwrap();
+        std::fs::create_dir_all(&nested_sub).unwrap();
+        std::fs::create_dir_all(&wt_repo).unwrap();
+        std::fs::create_dir_all(&wt_sub).unwrap();
+
+        std::fs::write(
+            sub_repo.join(".git"),
+            "gitdir: ../../.git/modules/third_party/qoder2api\n",
+        )
+        .unwrap();
+        std::fs::write(
+            nested_sub.join(".git"),
+            "gitdir: ../../../../.git/modules/third_party/qoder2api/modules/vendor/inner\n",
+        )
+        .unwrap();
+        std::fs::write(
+            wt_repo.join(".git"),
+            format!(
+                "gitdir: {}\n",
+                main_repo.join(".git/worktrees/feat").display()
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            wt_sub.join(".git"),
+            format!(
+                "gitdir: {}\n",
+                main_repo
+                    .join(".git/worktrees/feat/modules/qoder2api")
+                    .display()
+            ),
+        )
+        .unwrap();
+
+        assert_eq!(classify_repo_path(&main_repo), RepoPathKind::Standalone);
+        assert_eq!(
+            classify_repo_path(&sub_repo),
+            RepoPathKind::Submodule {
+                parent: Some(main_repo.clone())
+            }
+        );
+        assert_eq!(
+            classify_repo_path(&nested_sub),
+            RepoPathKind::Submodule {
+                parent: Some(sub_repo.clone())
+            }
+        );
+        // Even though the ancestor folder is literally named `modules`, `wt_repo` is a worktree.
+        assert_eq!(
+            classify_repo_path(&wt_repo),
+            RepoPathKind::LinkedWorktree {
+                main_workdir: Some(main_repo.clone())
+            }
+        );
+        assert_eq!(
+            classify_repo_path(&wt_sub),
+            RepoPathKind::Submodule {
+                parent: Some(wt_repo.clone())
+            }
+        );
+
+        assert_eq!(standalone_recent_target(&main_repo), Some(main_repo.clone()));
+        assert_eq!(standalone_recent_target(&sub_repo), Some(main_repo.clone()));
+        assert_eq!(standalone_recent_target(&nested_sub), Some(main_repo.clone()));
+        assert_eq!(standalone_recent_target(&wt_repo), Some(main_repo.clone()));
+        assert_eq!(standalone_recent_target(&wt_sub), Some(main_repo.clone()));
+
+        // RecentRepos::load silently strips submodule and linked worktree entries.
+        let file = tmp.path().join("cfg").join(RECENT_REPOS_FILE);
+        let mut store = RecentRepos::load(file.clone());
+        store.record(&main_repo, "all2api");
+        store.record(&sub_repo, "qoder2api");
+        store.record(&wt_repo, "all2api-feat");
+        let mut reloaded = RecentRepos::load(file);
+        let names: Vec<&str> = reloaded.entries().iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(names, vec!["all2api"]);
+        assert!(reloaded.take_pruned().is_empty());
     }
 }

@@ -55,10 +55,11 @@ impl AppState {
             Action::RepoSwitcherSetState { query, selected } => {
                 if let Some(ModalLayer::RepoSwitcher(rs)) = self.modal_stack.last_mut() {
                     rs.query.clone_from(query);
-                    let len = rs.visible().len();
-                    rs.selected = (*selected).min(len.saturating_sub(1));
+                    let vis = rs.visible();
+                    rs.selected = (*selected).min(vis.len().saturating_sub(1));
                     if let Some(vh) = rs.scroll.viewport_height() {
-                        rs.scroll.ensure_visible(rs.selected, len, vh);
+                        let (sel_display, total) = rs.display_selection_and_len(&vis);
+                        rs.scroll.ensure_visible(sel_display, total, vh);
                     }
                 }
             }
@@ -76,10 +77,11 @@ impl AppState {
                 let items = build_switcher_items(self);
                 if let Some(ModalLayer::RepoSwitcher(rs)) = self.modal_stack.last_mut() {
                     rs.items = items;
-                    let len = rs.visible().len();
-                    rs.selected = rs.selected.min(len.saturating_sub(1));
+                    let vis = rs.visible();
+                    rs.selected = rs.selected.min(vis.len().saturating_sub(1));
                     if let Some(vh) = rs.scroll.viewport_height() {
-                        rs.scroll.ensure_visible(rs.selected, len, vh);
+                        let (sel_display, total) = rs.display_selection_and_len(&vis);
+                        rs.scroll.ensure_visible(sel_display, total, vh);
                     }
                 }
             }
@@ -354,7 +356,13 @@ impl AppState {
             || path.display().to_string(),
             |n| n.to_string_lossy().into(),
         );
-        self.recent_repos.record(&path, &name);
+        if let Some(recent_target) = crate::repo_switcher::standalone_recent_target(&path) {
+            let recent_name = recent_target.file_name().map_or_else(
+                || recent_target.display().to_string(),
+                |n| n.to_string_lossy().into(),
+            );
+            self.recent_repos.record(&recent_target, &recent_name);
+        }
         let Some(writes_finished) = switched else {
             return;
         };
