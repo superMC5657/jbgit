@@ -1,0 +1,59 @@
+# jbgit 主题预设：Catppuccin Mocha
+# 可在配置目录的 themes/catppuccin-mocha.toml 中直接修改并覆写内置预设。
+
+[palette]
+bg_canvas = "#1E1E2E"
+bg_panel = "#181825"
+bg_elevated = "#313244"
+bg_selection_focused = "#45475A"
+bg_selection_unfocused = "#313244"
+bg_current_branch_row = "#2A2B3D"
+bg_hover = "#313244"
+border_splitter = "#313244"
+border_focused = "#89B4FA"
+fg_primary = "#CDD6F4"
+fg_bright = "#F5E0DC"
+fg_muted = "#7F849C"
+fg_accent_link = "#89B4FA"
+status_modified = "#89DCEB"
+status_added = "#A6E3A1"
+status_untracked = "#6C7086"
+status_deleted = "#F38BA8"
+status_renamed = "#CBA6F7"
+status_conflicted = "#EBA0AC"
+diff_add_bg = "#24382A"
+diff_add_word_bg = "#2E523A"
+diff_del_bg = "#3E232B"
+diff_del_word_bg = "#592C37"
+diff_mod_bg = "#242E3D"
+annotate_age_0 = "#3E3229"
+annotate_age_1 = "#283A32"
+annotate_age_2 = "#243347"
+annotate_age_3 = "#2B2A40"
+annotate_age_4 = "#232334"
+
+[refs]
+head = { icon = "#F9E2AF", pill_bg = "#3E382A", pill_fg = "#F9E2AF" }
+detached = { icon = "#FAB387", pill_bg = "#423226", pill_fg = "#FAB387" }
+local = { icon = "#A6E3A1", pill_bg = "#24382A", pill_fg = "#A6E3A1" }
+tracked = { icon = "#A6E3A1", pill_bg = "#313244", pill_fg = "#CDD6F4" }
+remote = { icon = "#CBA6F7", pill_bg = "#332840", pill_fg = "#CBA6F7" }
+tag = { icon = "#9399B2", pill_bg = "#313244", pill_fg = "#CDD6F4" }
+
+[graph]
+tracks = [
+    { fg = "#F38BA8", muted_bg = "#542A38" }, # 0  Red
+    { fg = "#FAB387", muted_bg = "#573828" }, # 1  Peach
+    { fg = "#F9E2AF", muted_bg = "#574D32" }, # 2  Yellow
+    { fg = "#A6E3A1", muted_bg = "#324E32" }, # 3  Green
+    { fg = "#74C7EC", muted_bg = "#244252" }, # 4  Sapphire
+    { fg = "#89B4FA", muted_bg = "#2B3C58" }, # 5  Blue
+    { fg = "#CBA6F7", muted_bg = "#463459" }, # 6  Mauve
+    { fg = "#F5C2E7", muted_bg = "#54384E" }, # 7  Pink
+    { fg = "#F2CDCD", muted_bg = "#534044" }, # 8  Flamingo
+    { fg = "#94E2D5", muted_bg = "#2A4C48" }, # 9  Teal
+    { fg = "#89DCEB", muted_bg = "#2B4B53" }, # 10 Sky
+    { fg = "#B4BEFE", muted_bg = "#3B405C" }, # 11 Lavender
+    { fg = "#EBA0AC", muted_bg = "#52333A" }, # 12 Maroon
+    { fg = "#F5E0DC", muted_bg = "#554949" }, # 13 Rosewater
+]

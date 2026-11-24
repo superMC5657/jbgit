@@ -1089,7 +1089,7 @@ fn annotate_alt_g_resolves_without_shadowing_across_all_presets() {
         KeymapPreset::Vim,
     ] {
         let mut cfg = crate::config::AppConfig::load_defaults();
-        cfg.keymap = crate::config::KeymapConfig::for_preset(preset);
+        cfg.keymap = crate::config::KeymapConfig::for_preset(preset.clone());
         let dir = tempfile::tempdir().unwrap();
         let mut ts = TestSession::with_config(dir.path().to_path_buf(), cfg);
 

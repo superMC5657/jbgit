@@ -251,30 +251,36 @@ jbgit 采用与 Yazi 类似的**多文件 TOML + 分层覆盖**配置体系，�
 ### 1. 配置文件生成与查看
 
 ```bash
-# 在全局用户配置目录下生成带中文注释的默认配置模板（已存在的文件会跳过）
+# 在全局用户配置目录下生成主配置 jbgit.toml 及全部主题与快捷键预设（themes/*.toml、keymaps/*.toml，已存在的文件会跳过）
 jbgit --init-config
 
-# 将内置默认配置打印到标准输出
-jbgit --print-default-config jbgit     # 打印 jbgit.toml 默认内容
-jbgit --print-default-config theme     # 打印 theme.toml 默认内容
-jbgit --print-default-config keymap    # 打印 keymap.toml 默认内容
+# 将内置默认配置或预设打印到标准输出
+jbgit --print-default-config jbgit            # 打印 jbgit.toml 默认内容
+jbgit --print-default-config darcula          # 打印 themes/darcula.toml 完整配色（亦可用 theme）
+jbgit --print-default-config catppuccin-mocha # 打印 themes/catppuccin-mocha.toml
+jbgit --print-default-config gruvbox-dark     # 打印 themes/gruvbox-dark.toml
+jbgit --print-default-config keymaps/default  # 打印 keymaps/default.toml 完整底表（亦可用 keymap）
+jbgit --print-default-config jetbrains        # 打印 keymaps/jetbrains.toml
+jbgit --print-default-config vim              # 打印 keymaps/vim.toml
 ```
 
 ### 2. 配置文件路径与 4 级覆盖优先级
 
 按优先级**由高到低**逐层叠加覆盖（仅覆盖显式指定的字段，未指定字段保留下层值）：
 
-1. **`JBGIT_CONFIG_DIR` 环境变量目录**：`$JBGIT_CONFIG_DIR/{jbgit,theme,keymap}.toml`
-2. **仓库级配置目录**：`<repo-workdir>/.jbgit/{jbgit,theme,keymap}.toml`（主配置亦支持 `.jbgit/config.toml` 别名）
+1. **`JBGIT_CONFIG_DIR` 环境变量目录**：`$JBGIT_CONFIG_DIR/jbgit.toml` 及 `themes/*.toml`、`keymaps/*.toml`
+2. **仓库级配置目录**：`<repo-workdir>/.jbgit/jbgit.toml`（亦支持 `.jbgit/config.toml` 别名）及 `themes/*.toml`、`keymaps/*.toml`
 3. **全局用户配置目录**：
    - **Windows**: `%APPDATA%\jbgit\config\`（若未设置 `APPDATA` 则回退至 `%USERPROFILE%\.config\jbgit\`）
    - **Linux / macOS**: `$XDG_CONFIG_HOME/jbgit/`（默认 `~/.config/jbgit/`）
 4. **程序内置默认值**
 
-配置目录包含三个独立文件：
-- `jbgit.toml`：通用设置、图谱渲染后端、Diff 选项、视图栏位比例
-- `theme.toml`：主题预设、图标模式与语义调色板覆写
-- `keymap.toml`：快捷键预设与按键映射覆写
+配置目录采用**单一主入口 + 预设子目录**结构：
+- `jbgit.toml`：唯一主配置文件（通用设置、选择主题 `flavor`、选择快捷键 `[keymap].preset`、图谱渲染、Diff 选项、视图栏位比例等）
+- `themes/<flavor>.toml`：各主题预设的完整调色板（内置 `darcula` / `catppuccin-mocha` / `gruvbox-dark`，可直接修改覆盖，也可新建自定义 `themes/<name>.toml` 并在 `jbgit.toml` 中设置 `flavor = "<name>"`）
+- `keymaps/<preset>.toml`：各快捷键预设的完整/增量定义（内置 `default` / `jetbrains` / `vim`，可直接修改覆盖，也可新建自定义 `keymaps/<name>.toml` 并在 `jbgit.toml` 中设置 `[keymap] preset = "<name>"`）
+
+> 兼容说明：若配置目录中仍放有旧版独立的 `theme.toml` 或 `keymap.toml`，程序仍会将其作为同层增量覆写叠加加载，但 `--init-config` 不再生成这两个冗余包装文件。
 
 ### 3. `jbgit.toml`：通用行为、图谱与布局比例
 
@@ -286,8 +292,16 @@ language = "zh-CN"
 # 启动时默认打开的工作区标签页: "log", "commit", "branches", "stash", "console"
 default_tab = "log"
 
-# 主题预设风格: "darcula", "catppuccin-mocha", "gruvbox-dark"
+# 主题预设风格: "darcula", "catppuccin-mocha", "gruvbox-dark"（或自定义 themes/<name>.toml）
 flavor = "darcula"
+
+[keymap]
+# 快捷键预设风格: "default", "jetbrains", "vim"（或自定义 keymaps/<name>.toml）
+preset = "default"
+# 底部快捷键提示栏最大行数（默认 1；>1 自动多行；0 隐藏）
+footer_max_lines = 1
+# 分支树面板直接打字速查（默认跟随所选预设；取消注释可强制覆盖）
+# tree_speed_search = false
 
 [graph]
 # 提交图渲染引擎: "auto" (自动侦测图形协议), "vector" (Kitty/Sixel/iTerm2 矢量图), "cell" (字符网格)
@@ -375,8 +389,10 @@ default_parent = ""
 
 ### 4. `theme.toml`：主题预设与语义配色
 
+内置三套预设调色板（完整色值位于配置目录 `themes/darcula.toml`、`themes/catppuccin-mocha.toml`、`themes/gruvbox-dark.toml`），既可直接编辑对应 `themes/<flavor>.toml` 覆盖，也可以新建 `themes/<自定义名称>.toml` 并在 `theme.toml` 中指定 `flavor = "<自定义名称>"`（未指定的颜色项自动回退至 Darcula）。
+
 ```toml
-# 主题预设: "darcula" | "catppuccin-mocha" | "gruvbox-dark"
+# 主题预设: "darcula" | "catppuccin-mocha" | "gruvbox-dark" | "<自定义名称>"
 flavor = "darcula"
 
 [glyphs]
@@ -387,32 +403,41 @@ mode = "nerd_font"
 # 取消注释并填入十六进制 RGB (#RRGGBB) 即可单独覆写对应语义色
 # bg_canvas = "#1E1F22"
 # bg_panel = "#2B2D30"
-# bg_elevated = "#2B2D30"
+# bg_elevated = "#313438"
 # bg_selection_focused = "#2E436E"
-# bg_selection_unfocused = "#35383C"
-# bg_current_branch_row = "#25324D"
-# bg_hover = "#2E3136"
-# border_splitter = "#35373B"
+# bg_selection_unfocused = "#393B40"
+# bg_current_branch_row = "#252930"
+# bg_hover = "#2D2F34"
+# border_splitter = "#393B40"
 # border_focused = "#3574F0"
 # fg_primary = "#BCBEC4"
 # fg_bright = "#DFE1E5"
-# fg_muted = "#707278"
+# fg_muted = "#6F737A"
 # fg_accent_link = "#548AF7"
 # status_modified = "#6897BB"
 # status_added = "#629755"
-# status_untracked = "#808080"
+# status_untracked = "#D1675A"
 # status_deleted = "#808080"
-# status_renamed = "#3592C4"
-# status_conflicted = "#C75450"
+# status_renamed = "#70AEFF"
+# status_conflicted = "#E55765"
 # diff_add_bg = "#294436"
-# diff_add_word_bg = "#385E42"
-# diff_del_bg = "#483033"
-# diff_del_word_bg = "#6E3B3B"
+# diff_add_word_bg = "#37664B"
+# diff_del_bg = "#482A2D"
+# diff_del_word_bg = "#6E383E"
+# diff_mod_bg = "#25364D"
 # annotate_age_0 = "#3D3124"
 # annotate_age_1 = "#2D3D30"
 # annotate_age_2 = "#253746"
 # annotate_age_3 = "#282E3B"
 # annotate_age_4 = "#25262A"
+
+[refs]
+# 分支/标签胶囊样式覆写示例:
+# head = { icon = "#E1C731", pill_bg = "#3A3728", pill_fg = "#F2E49B" }
+
+[graph]
+# 图谱 14 条轨道配色覆写示例:
+# tracks = [ { fg = "#FF6285", muted_bg = "#603239" } ]
 ```
 
 ### 5. `keymap.toml`：快捷键预设与增量覆盖
@@ -420,9 +445,10 @@ mode = "nerd_font"
 `keymap.toml` 支持全局按键预设切换与分作用域（`[global]`、`[log]`、`[branch]`、`[commit]`、`[diff]`、`[stash]`、`[console]`）增量定制：
 
 - **预设风格 (`preset`)**：
-  - `"default"`：极简零冲突推荐预设（默认）。
-  - `"jetbrains"`：贴近 IntelliJ IDEA 习惯（自动开启 `tree_speed_search = true`，并补充 `<C-k>` 打开 Commit、`<C-S-k>` Push、`<C-t>` Pull、`<C-A-n>` 新建分支、`<A-m>` Amend 等映射）。注意 `<C-t>` 保持绑定 Pull 以不改变已有习惯；Update Project 在三套预设中统一为 `<A-u>`，如需 IDEA 的 `Ctrl+T = Update Project`，可在 `[global]` 中 `prepend_keymap = [{ on = "<C-t>", run = "update_project" }]`。
-  - `"vim"`：Vim / Lazygit 风格（Log 中 `<C-d>`/`<C-u>` 半页翻滚、`d` 对比提交/开关差异、`z c`/`z o`/`z M`/`z R` 折叠 / 展开线性分支，Diff 中 `s`/`u` 暂存/取消暂存，`c` 切换上下文行数）。
+  - `"default"`：极简零冲突推荐预设（完整底表位于 `keymaps/default.toml`）。
+  - `"jetbrains"`：贴近 IntelliJ IDEA 习惯（完整定义位于 `keymaps/jetbrains.toml`，自动开启 `tree_speed_search = true`，并补充 `<C-k>` 打开 Commit、`<C-S-k>` Push、`<C-t>` Pull、`<C-A-n>` 新建分支、`<A-m>` Amend 等映射）。注意 `<C-t>` 保持绑定 Pull 以不改变已有习惯；Update Project 在三套预设中统一为 `<A-u>`，如需 IDEA 的 `Ctrl+T = Update Project`，可在 `[global]` 中 `prepend_keymap = [{ on = "<C-t>", run = "update_project" }]`。
+  - `"vim"`：Vim / Lazygit 风格（完整定义位于 `keymaps/vim.toml`，Log 中 `<C-d>`/`<C-u>` 半页翻滚、`d` 对比提交/开关差异、`z c`/`z o`/`z M`/`z R` 折叠 / 展开线性分支，Diff 中 `s`/`u` 暂存/取消暂存，`c` 切换上下文行数）。
+  - **直接修改或自定义预设**：可编辑配置目录下的 `keymaps/default.toml`、`keymaps/jetbrains.toml`、`keymaps/vim.toml` 覆写内置预设（非 default 预设在磁盘存在对应 TOML 时以磁盘文件为准），也可新建 `keymaps/<自定义名称>.toml` 并在 `keymap.toml` 中设置 `preset = "<自定义名称>"`（会在 `keymaps/default.toml` 之上叠加）。
 - **分支树直接打字搜索 (`tree_speed_search`)**：
   - `false`（默认）：在分支树面板按 `/` 或 `<Ctrl-f>` 进入搜索，单键 `j`/`k`/`c`/`q`/`r` 等保留导航与快捷操作。
   - `true`：在分支树面板直接打字即可实时过滤分支。

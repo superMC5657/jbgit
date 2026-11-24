@@ -1,0 +1,59 @@
+# jbgit 主题预设：Gruvbox Dark
+# 可在配置目录的 themes/gruvbox-dark.toml 中直接修改并覆写内置预设。
+
+[palette]
+bg_canvas = "#282828"
+bg_panel = "#3C3836"
+bg_elevated = "#504945"
+bg_selection_focused = "#504945"
+bg_selection_unfocused = "#3C3836"
+bg_current_branch_row = "#32302F"
+bg_hover = "#3C3836"
+border_splitter = "#504945"
+border_focused = "#83A598"
+fg_primary = "#EBDBB2"
+fg_bright = "#FBF1C7"
+fg_muted = "#928374"
+fg_accent_link = "#83A598"
+status_modified = "#83A598"
+status_added = "#B8BB26"
+status_untracked = "#928374"
+status_deleted = "#FB4934"
+status_renamed = "#D3869B"
+status_conflicted = "#CC241D"
+diff_add_bg = "#2B3828"
+diff_add_word_bg = "#3B5234"
+diff_del_bg = "#3C2424"
+diff_del_word_bg = "#592D2D"
+diff_mod_bg = "#26363C"
+annotate_age_0 = "#473524"
+annotate_age_1 = "#333D29"
+annotate_age_2 = "#28393D"
+annotate_age_3 = "#362D38"
+annotate_age_4 = "#302D2B"
+
+[refs]
+head = { icon = "#FABD2F", pill_bg = "#3C3424", pill_fg = "#FABD2F" }
+detached = { icon = "#FE8019", pill_bg = "#3E2B20", pill_fg = "#FE8019" }
+local = { icon = "#B8BB26", pill_bg = "#2B3828", pill_fg = "#B8BB26" }
+tracked = { icon = "#B8BB26", pill_bg = "#3C3836", pill_fg = "#EBDBB2" }
+remote = { icon = "#D3869B", pill_bg = "#392A36", pill_fg = "#D3869B" }
+tag = { icon = "#A89984", pill_bg = "#3C3836", pill_fg = "#EBDBB2" }
+
+[graph]
+tracks = [
+    { fg = "#FB4934", muted_bg = "#57221E" }, # 0  Bright Red
+    { fg = "#B8BB26", muted_bg = "#44481E" }, # 1  Bright Green
+    { fg = "#FABD2F", muted_bg = "#56451E" }, # 2  Bright Yellow
+    { fg = "#83A598", muted_bg = "#2E403C" }, # 3  Bright Blue
+    { fg = "#D3869B", muted_bg = "#4E303A" }, # 4  Bright Purple
+    { fg = "#8EC07C", muted_bg = "#334632" }, # 5  Bright Aqua
+    { fg = "#FE8019", muted_bg = "#58331A" }, # 6  Bright Orange
+    { fg = "#CC241D", muted_bg = "#491D1A" }, # 7  Neutral Red
+    { fg = "#98971A", muted_bg = "#3B3C1B" }, # 8  Neutral Green
+    { fg = "#D79921", muted_bg = "#4E3B1B" }, # 9  Neutral Yellow
+    { fg = "#458588", muted_bg = "#203739" }, # 10 Neutral Blue
+    { fg = "#B16286", muted_bg = "#432835" }, # 11 Neutral Purple
+    { fg = "#689D6A", muted_bg = "#2B3C2D" }, # 12 Neutral Aqua
+    { fg = "#D65D0E", muted_bg = "#4E2916" }, # 13 Neutral Orange
+]

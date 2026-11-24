@@ -1,0 +1,60 @@
+# jbgit 主题预设：Darcula (JetBrains 原生深色)
+# 此文件可作为完整主题模板，放置于配置目录的 themes/darcula.toml 进行覆写，
+# 或复制为 themes/<自定义名称>.toml 并在 jbgit.toml 的 [general] 中设置 flavor = "<自定义名称>"。
+
+[palette]
+bg_canvas = "#1E1F22"
+bg_panel = "#2B2D30"
+bg_elevated = "#313438"
+bg_selection_focused = "#2E436E"
+bg_selection_unfocused = "#393B40"
+bg_current_branch_row = "#252930"
+bg_hover = "#2D2F34"
+border_splitter = "#393B40"
+border_focused = "#3574F0"
+fg_primary = "#BCBEC4"
+fg_bright = "#DFE1E5"
+fg_muted = "#6F737A"
+fg_accent_link = "#548AF7"
+status_modified = "#6897BB"
+status_added = "#629755"
+status_untracked = "#D1675A"
+status_deleted = "#808080"
+status_renamed = "#70AEFF"
+status_conflicted = "#E55765"
+diff_add_bg = "#294436"
+diff_add_word_bg = "#37664B"
+diff_del_bg = "#482A2D"
+diff_del_word_bg = "#6E383E"
+diff_mod_bg = "#25364D"
+annotate_age_0 = "#3D3124"
+annotate_age_1 = "#2D3D30"
+annotate_age_2 = "#253746"
+annotate_age_3 = "#282E3B"
+annotate_age_4 = "#25262A"
+
+[refs]
+head = { icon = "#E1C731", pill_bg = "#3A3728", pill_fg = "#F2E49B" }
+detached = { icon = "#E5A93B", pill_bg = "#453422", pill_fg = "#FFCC66" }
+local = { icon = "#3CB45C", pill_bg = "#283B2E", pill_fg = "#D4E8D9" }
+tracked = { icon = "#3CB45C", pill_bg = "#2F3440", pill_fg = "#DFE1E5" }
+remote = { icon = "#9F79B5", pill_bg = "#362D3E", pill_fg = "#DFCEF0" }
+tag = { icon = "#999999", pill_bg = "#313337", pill_fg = "#B8BAC0" }
+
+[graph]
+tracks = [
+    { fg = "#FF6285", muted_bg = "#603239" }, # 0  Rose / Coral
+    { fg = "#57D185", muted_bg = "#375239" }, # 1  Sage / Emerald
+    { fg = "#8176F6", muted_bg = "#383275" }, # 2  Indigo / Iris
+    { fg = "#F2B181", muted_bg = "#614438" }, # 3  Apricot / Amber
+    { fg = "#32E0D9", muted_bg = "#1D4D4A" }, # 4  Cyan / Teal
+    { fg = "#FED277", muted_bg = "#5E4D33" }, # 5  Gold / Sand
+    { fg = "#F46BFF", muted_bg = "#562B58" }, # 6  Magenta / Orchid
+    { fg = "#CE9E7A", muted_bg = "#624E3F" }, # 7  Bronze / Ochre
+    { fg = "#4FF2B7", muted_bg = "#0D573C" }, # 8  Mint / Spring
+    { fg = "#A177F4", muted_bg = "#3B3147" }, # 9  Violet / Lavender
+    { fg = "#46C2C7", muted_bg = "#204145" }, # 10 Ocean / Cerulean
+    { fg = "#C985C9", muted_bg = "#503250" }, # 11 Plum / Mauve
+    { fg = "#ECCA88", muted_bg = "#594D36" }, # 12 Wheat / Honey
+    { fg = "#B8BDC9", muted_bg = "#494B57" }, # 13 Slate / Silver
+]

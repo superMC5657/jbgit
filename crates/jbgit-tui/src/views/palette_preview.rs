@@ -12,7 +12,7 @@ use ratatui::widgets::Paragraph;
 use crate::app::RenderContext;
 use crate::hit_test::HitTestRegistry;
 use crate::theme::color::contrast_ratio;
-use crate::theme::{CANVAS_RGB, DARCULA_TRACKS, TRACK_COUNT, TRACK_NAMES, ThemePalette};
+use crate::theme::{TRACK_COUNT, TRACK_NAMES, ThemePalette};
 use crate::widgets::PillBadgeBar;
 
 const TRACK_CELL_W: u16 = 46;
@@ -92,12 +92,12 @@ pub fn render_palette_preview(frame: &mut Frame<'_>, area: Rect, ctx: &RenderCon
     let graph = &ctx.glyph_mode.symbols().graph;
     let colors = theme.branch_color_manager();
     let cols = (area.width / TRACK_CELL_W).clamp(1, 2) as usize;
-    let rows = DARCULA_TRACKS.len().div_ceil(cols);
+    let rows = theme.track_rgbs.len().div_ceil(cols);
     for r in 0..rows {
         let mut spans = Vec::new();
         for c in 0..cols {
             let slot = c * rows + r;
-            let Some(&(fg_rgb, _)) = DARCULA_TRACKS.get(slot) else {
+            let Some(&(fg_rgb, _)) = theme.track_rgbs.get(slot) else {
                 continue;
             };
             let track = colors.track(slot);
@@ -117,7 +117,7 @@ pub fn render_palette_preview(frame: &mut Frame<'_>, area: Rect, ctx: &RenderCon
             spans.push(Span::styled(
                 format!(
                     " #{rr:02X}{gg:02X}{bb:02X} {:>5.2}:1  ",
-                    contrast_ratio(fg_rgb, CANVAS_RGB)
+                    contrast_ratio(fg_rgb, theme.bg_canvas_rgb)
                 ),
                 Style::default().fg(theme.fg_primary),
             ));

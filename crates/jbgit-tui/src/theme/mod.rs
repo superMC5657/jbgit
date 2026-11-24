@@ -1,5 +1,5 @@
-//! Darcula / Islands Dark semantic palette. UI code reads colors only through
-//! [`ThemePalette`]; nothing else hardcodes color values.
+//! Theme semantic palette. Built-in flavors live in `config/defaults/themes/*.toml`,
+//! and UI code reads colors only through [`ThemePalette`].
 
 pub mod branch_colors;
 pub mod color;
@@ -8,16 +8,11 @@ pub mod glyphs;
 use jbgit_core::{FileStatusKind, RefGroup, RefGroupKind};
 use ratatui::style::Color;
 
-pub use branch_colors::{
-    BranchColorManager, CATPPUCCIN_TRACKS, DARCULA_TRACKS, GRUVBOX_TRACKS, TRACK_COUNT, TRACK_NAMES,
-};
+pub use branch_colors::{BranchColorManager, TRACK_COUNT, TRACK_NAMES};
 pub use color::rgb_to_ansi256;
 pub use glyphs::{GlyphMode, GlyphSymbols};
 
 pub type Rgb = (u8, u8, u8);
-
-/// `bg_canvas` as raw RGB, for contrast checks.
-pub const CANVAS_RGB: Rgb = (0x1E, 0x1F, 0x22);
 
 pub fn to_color((r, g, b): Rgb, true_color: bool) -> Color {
     if true_color {
@@ -27,7 +22,7 @@ pub fn to_color((r, g, b): Rgb, true_color: bool) -> Color {
     }
 }
 
-pub fn parse_hex_color(hex: &str, true_color: bool) -> Option<Color> {
+pub fn parse_hex_rgb(hex: &str) -> Option<Rgb> {
     let s = hex.trim().strip_prefix('#').unwrap_or(hex.trim());
     if s.len() != 6 {
         return None;
@@ -35,7 +30,11 @@ pub fn parse_hex_color(hex: &str, true_color: bool) -> Option<Color> {
     let r = u8::from_str_radix(&s[0..2], 16).ok()?;
     let g = u8::from_str_radix(&s[2..4], 16).ok()?;
     let b = u8::from_str_radix(&s[4..6], 16).ok()?;
-    Some(to_color((r, g, b), true_color))
+    Some((r, g, b))
+}
+
+pub fn parse_hex_color(hex: &str, true_color: bool) -> Option<Color> {
+    parse_hex_rgb(hex).map(|rgb| to_color(rgb, true_color))
 }
 
 /// One branch track: line color plus the dark container tint behind it.
@@ -89,6 +88,7 @@ impl RefBadgeKind {
 #[derive(Debug, Clone)]
 pub struct ThemePalette {
     pub true_color: bool,
+    pub bg_canvas_rgb: Rgb,
     pub bg_canvas: Color,
     pub bg_panel: Color,
     pub bg_elevated: Color,
@@ -124,7 +124,57 @@ pub struct ThemePalette {
     pub ref_tracked: RefStyle,
     pub ref_remote: RefStyle,
     pub ref_tag: RefStyle,
+    pub track_rgbs: [(Rgb, Rgb); TRACK_COUNT],
     pub track_palette: [TrackColor; TRACK_COUNT],
+}
+
+fn req_rgb(val: Option<&String>, name: &str) -> Rgb {
+    let hex = val.unwrap_or_else(|| panic!("missing required theme key: {name}"));
+    parse_hex_rgb(hex).unwrap_or_else(|| panic!("invalid hex color for {name}: {hex}"))
+}
+
+fn req_ref_style(
+    cfg: Option<&crate::config::RefStyleConfig>,
+    name: &str,
+    true_color: bool,
+) -> RefStyle {
+    let c = cfg.unwrap_or_else(|| panic!("missing required ref style: {name}"));
+    RefStyle {
+        icon: to_color(req_rgb(c.icon.as_ref(), &format!("{name}.icon")), true_color),
+        pill_bg: to_color(
+            req_rgb(c.pill_bg.as_ref(), &format!("{name}.pill_bg")),
+            true_color,
+        ),
+        pill_fg: to_color(
+            req_rgb(c.pill_fg.as_ref(), &format!("{name}.pill_fg")),
+            true_color,
+        ),
+    }
+}
+
+fn apply_ref_override(
+    dst: &mut RefStyle,
+    src: Option<&crate::config::RefStyleConfig>,
+    true_color: bool,
+) {
+    let Some(s) = src else {
+        return;
+    };
+    if let Some(hex) = &s.icon
+        && let Some(col) = parse_hex_color(hex, true_color)
+    {
+        dst.icon = col;
+    }
+    if let Some(hex) = &s.pill_bg
+        && let Some(col) = parse_hex_color(hex, true_color)
+    {
+        dst.pill_bg = col;
+    }
+    if let Some(hex) = &s.pill_fg
+        && let Some(col) = parse_hex_color(hex, true_color)
+    {
+        dst.pill_fg = col;
+    }
 }
 
 impl ThemePalette {
@@ -132,190 +182,108 @@ impl ThemePalette {
         Self::darcula(color::detect_truecolor())
     }
 
-    pub fn darcula(true_color: bool) -> Self {
-        let c = |r: u8, g: u8, b: u8| to_color((r, g, b), true_color);
-        let style = |icon: Rgb, bg: Rgb, fg: Rgb| RefStyle {
-            icon: to_color(icon, true_color),
-            pill_bg: to_color(bg, true_color),
-            pill_fg: to_color(fg, true_color),
-        };
-
-        Self {
-            true_color,
-            bg_canvas: to_color(CANVAS_RGB, true_color), // #1E1F22
-            bg_panel: c(43, 45, 48),                     // #2B2D30
-            bg_elevated: c(49, 52, 56),                  // #313438
-            bg_selection_focused: c(46, 67, 110),        // #2E436E
-            bg_selection_unfocused: c(57, 59, 64),       // #393B40
-            bg_current_branch_row: c(37, 41, 48),        // #252930
-            bg_hover: c(45, 47, 52),                     // #2D2F34
-            border_splitter: c(57, 59, 64),              // #393B40
-            border_focused: c(53, 116, 240),             // #3574F0
-            fg_primary: c(188, 190, 196),                // #BCBEC4
-            fg_bright: c(223, 225, 229),                 // #DFE1E5
-            fg_muted: c(111, 115, 122),                  // #6F737A
-            fg_accent_link: c(84, 138, 247),             // #548AF7
-            status_modified: c(104, 151, 187),           // #6897BB
-            status_added: c(98, 151, 85),                // #629755
-            status_untracked: c(209, 103, 90),           // #D1675A
-            status_deleted: c(128, 128, 128),            // #808080
-            status_renamed: c(112, 174, 255),            // #70AEFF
-            status_conflicted: c(229, 87, 101),          // #E55765
-            diff_add_bg: c(41, 68, 54),                  // #294436
-            diff_add_word_bg: c(55, 102, 75),            // #37664B
-            diff_del_bg: c(72, 42, 45),                  // #482A2D
-            diff_del_word_bg: c(110, 56, 62),            // #6E383E
-            diff_mod_bg: c(37, 54, 77),                  // #25364D
-            annotate_age_0: c(0x3D, 0x31, 0x24),         // #3D3124 (newest)
-            annotate_age_1: c(0x2D, 0x3D, 0x30),         // #2D3D30
-            annotate_age_2: c(0x25, 0x37, 0x46),         // #253746
-            annotate_age_3: c(0x28, 0x2E, 0x3B),         // #282E3B
-            annotate_age_4: c(0x25, 0x26, 0x2A),         // #25262A (oldest)
-            //                 icon                  pill bg               pill fg
-            ref_head: style((0xE1, 0xC7, 0x31), (0x3A, 0x37, 0x28), (0xF2, 0xE4, 0x9B)),
-            ref_detached: style((0xE5, 0xA9, 0x3B), (0x45, 0x34, 0x22), (0xFF, 0xCC, 0x66)),
-            ref_local: style((0x3C, 0xB4, 0x5C), (0x28, 0x3B, 0x2E), (0xD4, 0xE8, 0xD9)),
-            // Tracked pairs use the local icon color plus `ref_remote.icon` for the second mark.
-            ref_tracked: style((0x3C, 0xB4, 0x5C), (0x2F, 0x34, 0x40), (0xDF, 0xE1, 0xE5)),
-            ref_remote: style((0x9F, 0x79, 0xB5), (0x36, 0x2D, 0x3E), (0xDF, 0xCE, 0xF0)),
-            ref_tag: style((0x99, 0x99, 0x99), (0x31, 0x33, 0x37), (0xB8, 0xBA, 0xC0)),
-            track_palette: DARCULA_TRACKS.map(|(fg, bg)| TrackColor {
-                fg: to_color(fg, true_color),
-                muted_bg: to_color(bg, true_color),
-            }),
-        }
-    }
-
-    pub fn catppuccin_mocha(true_color: bool) -> Self {
-        let c = |r: u8, g: u8, b: u8| to_color((r, g, b), true_color);
-        let style = |icon: Rgb, bg: Rgb, fg: Rgb| RefStyle {
-            icon: to_color(icon, true_color),
-            pill_bg: to_color(bg, true_color),
-            pill_fg: to_color(fg, true_color),
-        };
-
-        Self {
-            true_color,
-            bg_canvas: c(0x1E, 0x1E, 0x2E),              // #1E1E2E Base
-            bg_panel: c(0x18, 0x18, 0x25),               // #181825 Mantle
-            bg_elevated: c(0x31, 0x32, 0x44),            // #313244 Surface0
-            bg_selection_focused: c(0x45, 0x47, 0x5A),   // #45475A Surface1
-            bg_selection_unfocused: c(0x31, 0x32, 0x44), // #313244 Surface0
-            bg_current_branch_row: c(0x2A, 0x2B, 0x3D),
-            bg_hover: c(0x31, 0x32, 0x44),
-            border_splitter: c(0x31, 0x32, 0x44),        // #313244 Surface0
-            border_focused: c(0x89, 0xB4, 0xFA),         // #89B4FA Blue
-            fg_primary: c(0xCD, 0xD6, 0xF4),             // #CDD6F4 Text
-            fg_bright: c(0xF5, 0xE0, 0xDC),              // #F5E0DC Rosewater
-            fg_muted: c(0x7F, 0x84, 0x9C),               // #7F849C Subtext0
-            fg_accent_link: c(0x89, 0xB4, 0xFA),         // #89B4FA Blue
-            status_modified: c(0x89, 0xDC, 0xEB),        // #89DCEB Sky
-            status_added: c(0xA6, 0xE3, 0xA1),           // #A6E3A1 Green
-            status_untracked: c(0x6C, 0x70, 0x86),       // #6C7086 Overlay0
-            status_deleted: c(0xF3, 0x8B, 0xA8),         // #F38BA8 Red
-            status_renamed: c(0xCB, 0xA6, 0xF7),         // #CBA6F7 Mauve
-            status_conflicted: c(0xEB, 0xA0, 0xAC),       // #EBA0AC Maroon
-            diff_add_bg: c(0x24, 0x38, 0x2A),
-            diff_add_word_bg: c(0x2E, 0x52, 0x3A),
-            diff_del_bg: c(0x3E, 0x23, 0x2B),
-            diff_del_word_bg: c(0x59, 0x2C, 0x37),
-            diff_mod_bg: c(0x24, 0x2E, 0x3D),
-            annotate_age_0: c(0x3E, 0x32, 0x29),
-            annotate_age_1: c(0x28, 0x3A, 0x32),
-            annotate_age_2: c(0x24, 0x33, 0x47),
-            annotate_age_3: c(0x2B, 0x2A, 0x40),
-            annotate_age_4: c(0x23, 0x23, 0x34),
-            ref_head: style((0xF9, 0xE2, 0xAF), (0x3E, 0x38, 0x2A), (0xF9, 0xE2, 0xAF)),
-            ref_detached: style((0xFA, 0xB3, 0x87), (0x42, 0x32, 0x26), (0xFA, 0xB3, 0x87)),
-            ref_local: style((0xA6, 0xE3, 0xA1), (0x24, 0x38, 0x2A), (0xA6, 0xE3, 0xA1)),
-            ref_tracked: style((0xA6, 0xE3, 0xA1), (0x31, 0x32, 0x44), (0xCD, 0xD6, 0xF4)),
-            ref_remote: style((0xCB, 0xA6, 0xF7), (0x33, 0x28, 0x40), (0xCB, 0xA6, 0xF7)),
-            ref_tag: style((0x93, 0x99, 0xB2), (0x31, 0x32, 0x44), (0xCD, 0xD6, 0xF4)),
-            track_palette: CATPPUCCIN_TRACKS.map(|(fg, bg)| TrackColor {
-                fg: to_color(fg, true_color),
-                muted_bg: to_color(bg, true_color),
-            }),
-        }
-    }
-
-    pub fn gruvbox_dark(true_color: bool) -> Self {
-        let c = |r: u8, g: u8, b: u8| to_color((r, g, b), true_color);
-        let style = |icon: Rgb, bg: Rgb, fg: Rgb| RefStyle {
-            icon: to_color(icon, true_color),
-            pill_bg: to_color(bg, true_color),
-            pill_fg: to_color(fg, true_color),
-        };
-
-        Self {
-            true_color,
-            bg_canvas: c(0x28, 0x28, 0x28),              // #282828 bg0
-            bg_panel: c(0x3C, 0x38, 0x36),               // #3C3836 bg1
-            bg_elevated: c(0x50, 0x49, 0x45),            // #504945 bg2
-            bg_selection_focused: c(0x50, 0x49, 0x45),   // #504945
-            bg_selection_unfocused: c(0x3C, 0x38, 0x36), // #3C3836
-            bg_current_branch_row: c(0x32, 0x30, 0x2F),
-            bg_hover: c(0x3C, 0x38, 0x36),
-            border_splitter: c(0x50, 0x49, 0x45),
-            border_focused: c(0x83, 0xA5, 0x98),         // #83A598 Blue
-            fg_primary: c(0xEB, 0xDB, 0xB2),             // #EBDBB2 Light1
-            fg_bright: c(0xFB, 0xF1, 0xC7),              // #FBF1C7 Light0
-            fg_muted: c(0x92, 0x83, 0x74),               // #928374 Gray
-            fg_accent_link: c(0x83, 0xA5, 0x98),         // #83A598 Blue
-            status_modified: c(0x83, 0xA5, 0x98),        // #83A598 Blue
-            status_added: c(0xB8, 0xBB, 0x26),           // #B8BB26 Green
-            status_untracked: c(0x92, 0x83, 0x74),       // #928374 Gray
-            status_deleted: c(0xFB, 0x49, 0x34),         // #FB4934 Red
-            status_renamed: c(0xD3, 0x86, 0x9B),         // #D3869B Purple
-            status_conflicted: c(0xCC, 0x24, 0x1D),       // #CC241D Red
-            diff_add_bg: c(0x2B, 0x38, 0x28),
-            diff_add_word_bg: c(0x3B, 0x52, 0x34),
-            diff_del_bg: c(0x3C, 0x24, 0x24),
-            diff_del_word_bg: c(0x59, 0x2D, 0x2D),
-            diff_mod_bg: c(0x26, 0x36, 0x3C),
-            annotate_age_0: c(0x47, 0x35, 0x24),
-            annotate_age_1: c(0x33, 0x3D, 0x29),
-            annotate_age_2: c(0x28, 0x39, 0x3D),
-            annotate_age_3: c(0x36, 0x2D, 0x38),
-            annotate_age_4: c(0x30, 0x2D, 0x2B),
-            ref_head: style((0xFA, 0xBD, 0x2F), (0x3C, 0x34, 0x24), (0xFA, 0xBD, 0x2F)),
-            ref_detached: style((0xFE, 0x80, 0x19), (0x3E, 0x2B, 0x20), (0xFE, 0x80, 0x19)),
-            ref_local: style((0xB8, 0xBB, 0x26), (0x2B, 0x38, 0x28), (0xB8, 0xBB, 0x26)),
-            ref_tracked: style((0xB8, 0xBB, 0x26), (0x3C, 0x38, 0x36), (0xEB, 0xDB, 0xB2)),
-            ref_remote: style((0xD3, 0x86, 0x9B), (0x39, 0x2A, 0x36), (0xD3, 0x86, 0x9B)),
-            ref_tag: style((0xA8, 0x99, 0x84), (0x3C, 0x38, 0x36), (0xEB, 0xDB, 0xB2)),
-            track_palette: GRUVBOX_TRACKS.map(|(fg, bg)| TrackColor {
-                fg: to_color(fg, true_color),
-                muted_bg: to_color(bg, true_color),
-            }),
-        }
-    }
-
-    pub fn from_config(config: &crate::config::ThemeConfig) -> Self {
-        Self::from_config_with_truecolor(config, color::detect_truecolor())
-    }
-
-    pub fn from_config_with_truecolor(
-        config: &crate::config::ThemeConfig,
+    fn from_flavor_data_complete(
+        data: &crate::config::ThemeFlavorData,
         true_color: bool,
     ) -> Self {
-        use crate::config::ThemeFlavor;
-        let mut palette = match config.flavor {
-            ThemeFlavor::CatppuccinMocha => Self::catppuccin_mocha(true_color),
-            ThemeFlavor::GruvboxDark => Self::gruvbox_dark(true_color),
-            ThemeFlavor::Darcula => Self::darcula(true_color),
-        };
+        let p = &data.palette;
+        let r = &data.refs;
+        let bg_canvas_rgb = req_rgb(p.bg_canvas.as_ref(), "palette.bg_canvas");
+        let col = |v: Option<&String>, name: &str| to_color(req_rgb(v, name), true_color);
 
-        let p = &config.palette;
+        let src_tracks = data
+            .graph
+            .tracks
+            .as_ref()
+            .expect("missing required graph.tracks");
+        assert!(
+            src_tracks.len() >= TRACK_COUNT,
+            "graph.tracks must have at least {TRACK_COUNT} entries"
+        );
+        let mut track_rgbs = [((0, 0, 0), (0, 0, 0)); TRACK_COUNT];
+        let mut track_palette = [TrackColor {
+            fg: Color::Reset,
+            muted_bg: Color::Reset,
+        }; TRACK_COUNT];
+        for i in 0..TRACK_COUNT {
+            let fg_rgb = req_rgb(src_tracks[i].fg.as_ref(), "graph.tracks.fg");
+            let bg_rgb = req_rgb(src_tracks[i].muted_bg.as_ref(), "graph.tracks.muted_bg");
+            track_rgbs[i] = (fg_rgb, bg_rgb);
+            track_palette[i] = TrackColor {
+                fg: to_color(fg_rgb, true_color),
+                muted_bg: to_color(bg_rgb, true_color),
+            };
+        }
+
+        Self {
+            true_color,
+            bg_canvas_rgb,
+            bg_canvas: to_color(bg_canvas_rgb, true_color),
+            bg_panel: col(p.bg_panel.as_ref(), "palette.bg_panel"),
+            bg_elevated: col(p.bg_elevated.as_ref(), "palette.bg_elevated"),
+            bg_selection_focused: col(
+                p.bg_selection_focused.as_ref(),
+                "palette.bg_selection_focused",
+            ),
+            bg_selection_unfocused: col(
+                p.bg_selection_unfocused.as_ref(),
+                "palette.bg_selection_unfocused",
+            ),
+            bg_current_branch_row: col(
+                p.bg_current_branch_row.as_ref(),
+                "palette.bg_current_branch_row",
+            ),
+            bg_hover: col(p.bg_hover.as_ref(), "palette.bg_hover"),
+            border_splitter: col(p.border_splitter.as_ref(), "palette.border_splitter"),
+            border_focused: col(p.border_focused.as_ref(), "palette.border_focused"),
+            fg_primary: col(p.fg_primary.as_ref(), "palette.fg_primary"),
+            fg_bright: col(p.fg_bright.as_ref(), "palette.fg_bright"),
+            fg_muted: col(p.fg_muted.as_ref(), "palette.fg_muted"),
+            fg_accent_link: col(p.fg_accent_link.as_ref(), "palette.fg_accent_link"),
+            status_modified: col(p.status_modified.as_ref(), "palette.status_modified"),
+            status_added: col(p.status_added.as_ref(), "palette.status_added"),
+            status_untracked: col(p.status_untracked.as_ref(), "palette.status_untracked"),
+            status_deleted: col(p.status_deleted.as_ref(), "palette.status_deleted"),
+            status_renamed: col(p.status_renamed.as_ref(), "palette.status_renamed"),
+            status_conflicted: col(p.status_conflicted.as_ref(), "palette.status_conflicted"),
+            diff_add_bg: col(p.diff_add_bg.as_ref(), "palette.diff_add_bg"),
+            diff_add_word_bg: col(p.diff_add_word_bg.as_ref(), "palette.diff_add_word_bg"),
+            diff_del_bg: col(p.diff_del_bg.as_ref(), "palette.diff_del_bg"),
+            diff_del_word_bg: col(p.diff_del_word_bg.as_ref(), "palette.diff_del_word_bg"),
+            diff_mod_bg: col(p.diff_mod_bg.as_ref(), "palette.diff_mod_bg"),
+            annotate_age_0: col(p.annotate_age_0.as_ref(), "palette.annotate_age_0"),
+            annotate_age_1: col(p.annotate_age_1.as_ref(), "palette.annotate_age_1"),
+            annotate_age_2: col(p.annotate_age_2.as_ref(), "palette.annotate_age_2"),
+            annotate_age_3: col(p.annotate_age_3.as_ref(), "palette.annotate_age_3"),
+            annotate_age_4: col(p.annotate_age_4.as_ref(), "palette.annotate_age_4"),
+            ref_head: req_ref_style(r.head.as_ref(), "refs.head", true_color),
+            ref_detached: req_ref_style(r.detached.as_ref(), "refs.detached", true_color),
+            ref_local: req_ref_style(r.local.as_ref(), "refs.local", true_color),
+            ref_tracked: req_ref_style(r.tracked.as_ref(), "refs.tracked", true_color),
+            ref_remote: req_ref_style(r.remote.as_ref(), "refs.remote", true_color),
+            ref_tag: req_ref_style(r.tag.as_ref(), "refs.tag", true_color),
+            track_rgbs,
+            track_palette,
+        }
+    }
+
+    fn apply_palette_section(&mut self, p: &crate::config::PaletteSection) {
+        let tc = self.true_color;
+        if let Some(hex) = &p.bg_canvas
+            && let Some(rgb) = parse_hex_rgb(hex)
+        {
+            self.bg_canvas_rgb = rgb;
+            self.bg_canvas = to_color(rgb, tc);
+        }
         macro_rules! apply_override {
             ($field:ident) => {
-                if let Some(hex) = &p.$field {
-                    if let Some(col) = parse_hex_color(hex, true_color) {
-                        palette.$field = col;
-                    }
+                if let Some(hex) = &p.$field
+                    && let Some(col) = parse_hex_color(hex, tc)
+                {
+                    self.$field = col;
                 }
             };
         }
-        apply_override!(bg_canvas);
         apply_override!(bg_panel);
         apply_override!(bg_elevated);
         apply_override!(bg_selection_focused);
@@ -338,12 +306,97 @@ impl ThemePalette {
         apply_override!(diff_add_word_bg);
         apply_override!(diff_del_bg);
         apply_override!(diff_del_word_bg);
+        apply_override!(diff_mod_bg);
         apply_override!(annotate_age_0);
         apply_override!(annotate_age_1);
         apply_override!(annotate_age_2);
         apply_override!(annotate_age_3);
         apply_override!(annotate_age_4);
+    }
 
+    fn apply_refs_section(&mut self, r: &crate::config::RefsSection) {
+        let tc = self.true_color;
+        apply_ref_override(&mut self.ref_head, r.head.as_ref(), tc);
+        apply_ref_override(&mut self.ref_detached, r.detached.as_ref(), tc);
+        apply_ref_override(&mut self.ref_local, r.local.as_ref(), tc);
+        apply_ref_override(&mut self.ref_tracked, r.tracked.as_ref(), tc);
+        apply_ref_override(&mut self.ref_remote, r.remote.as_ref(), tc);
+        apply_ref_override(&mut self.ref_tag, r.tag.as_ref(), tc);
+    }
+
+    fn apply_graph_section(&mut self, g: &crate::config::GraphThemeSection) {
+        let Some(tracks) = &g.tracks else {
+            return;
+        };
+        let tc = self.true_color;
+        for (i, t) in tracks.iter().enumerate().take(TRACK_COUNT) {
+            if let Some(hex) = &t.fg
+                && let Some(rgb) = parse_hex_rgb(hex)
+            {
+                self.track_rgbs[i].0 = rgb;
+                self.track_palette[i].fg = to_color(rgb, tc);
+            }
+            if let Some(hex) = &t.muted_bg
+                && let Some(rgb) = parse_hex_rgb(hex)
+            {
+                self.track_rgbs[i].1 = rgb;
+                self.track_palette[i].muted_bg = to_color(rgb, tc);
+            }
+        }
+    }
+
+    pub fn apply_flavor_data(&mut self, data: &crate::config::ThemeFlavorData) {
+        self.apply_palette_section(&data.palette);
+        self.apply_refs_section(&data.refs);
+        self.apply_graph_section(&data.graph);
+    }
+
+    pub fn from_builtin_flavor(flavor: &crate::config::ThemeFlavor, true_color: bool) -> Self {
+        use crate::config::{
+            BUILTIN_THEME_CATPPUCCIN_MOCHA_TOML, BUILTIN_THEME_DARCULA_TOML,
+            BUILTIN_THEME_GRUVBOX_DARK_TOML, ThemeFlavor, ThemeFlavorData,
+        };
+        let base_data: ThemeFlavorData =
+            toml::from_str(BUILTIN_THEME_DARCULA_TOML).expect("valid embedded darcula.toml");
+        let mut palette = Self::from_flavor_data_complete(&base_data, true_color);
+        let extra_toml = match flavor {
+            ThemeFlavor::CatppuccinMocha => Some(BUILTIN_THEME_CATPPUCCIN_MOCHA_TOML),
+            ThemeFlavor::GruvboxDark => Some(BUILTIN_THEME_GRUVBOX_DARK_TOML),
+            ThemeFlavor::Darcula | ThemeFlavor::Custom(_) => None,
+        };
+        if let Some(toml_str) = extra_toml
+            && let Ok(data) = toml::from_str::<ThemeFlavorData>(toml_str)
+        {
+            palette.apply_flavor_data(&data);
+        }
+        palette
+    }
+
+    pub fn darcula(true_color: bool) -> Self {
+        Self::from_builtin_flavor(&crate::config::ThemeFlavor::Darcula, true_color)
+    }
+
+    pub fn catppuccin_mocha(true_color: bool) -> Self {
+        Self::from_builtin_flavor(&crate::config::ThemeFlavor::CatppuccinMocha, true_color)
+    }
+
+    pub fn gruvbox_dark(true_color: bool) -> Self {
+        Self::from_builtin_flavor(&crate::config::ThemeFlavor::GruvboxDark, true_color)
+    }
+
+    pub fn from_config(config: &crate::config::ThemeConfig) -> Self {
+        Self::from_config_with_truecolor(config, color::detect_truecolor())
+    }
+
+    pub fn from_config_with_truecolor(
+        config: &crate::config::ThemeConfig,
+        true_color: bool,
+    ) -> Self {
+        let mut palette = Self::from_builtin_flavor(&config.flavor, true_color);
+        palette.apply_flavor_data(&config.flavor_overrides);
+        palette.apply_palette_section(&config.palette);
+        palette.apply_refs_section(&config.refs);
+        palette.apply_graph_section(&config.graph);
         palette
     }
 
@@ -541,5 +594,25 @@ mod tests {
         let palette = ThemePalette::from_config_with_truecolor(&config, true);
         assert_eq!(palette.bg_canvas, Color::Rgb(0, 0, 0));
         assert_eq!(palette.fg_primary, Color::Rgb(255, 255, 255));
+    }
+
+    #[test]
+    fn embedded_theme_flavors_parse_completely_with_valid_hex() {
+        use crate::config::{
+            BUILTIN_THEME_CATPPUCCIN_MOCHA_TOML, BUILTIN_THEME_DARCULA_TOML,
+            BUILTIN_THEME_GRUVBOX_DARK_TOML, ThemeFlavorData,
+        };
+
+        for (name, content) in [
+            ("darcula", BUILTIN_THEME_DARCULA_TOML),
+            ("catppuccin-mocha", BUILTIN_THEME_CATPPUCCIN_MOCHA_TOML),
+            ("gruvbox-dark", BUILTIN_THEME_GRUVBOX_DARK_TOML),
+        ] {
+            let data: ThemeFlavorData =
+                toml::from_str(content).unwrap_or_else(|e| panic!("{name}: {e}"));
+            let pal = ThemePalette::from_flavor_data_complete(&data, true);
+            assert_ne!(pal.bg_canvas_rgb, (0, 0, 0), "{name}");
+            assert_eq!(pal.track_rgbs.len(), TRACK_COUNT);
+        }
     }
 }

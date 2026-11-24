@@ -1,0 +1,23 @@
+# jbgit 快捷键预设：vim（Vim / Lazygit 风格）
+# 基于 keymaps/default.toml 叠加，放置于配置目录的 keymaps/vim.toml 可直接修改并覆写内置预设。
+
+tree_speed_search = false
+
+[log]
+prepend_keymap = [
+    { on = [ "<C-d>" ], run = "page_down_half" },
+    { on = [ "<C-u>" ], run = "page_up_half" },
+    { on = [ "d" ], run = "compare_or_diff" },
+    { on = [ "z", "c" ], run = "collapse_linear_branch" },
+    { on = [ "z", "o" ], run = "expand_linear_branch" },
+    { on = [ "z", "M" ], run = "collapse_all_linear_branches" },
+    { on = [ "z", "R" ], run = "expand_all_linear_branches" },
+]
+
+[diff]
+prepend_keymap = [
+    { on = [ "c" ], run = "cycle_diff_context" },
+    { on = [ "s" ], run = "stage_selection", show_hint = true },
+    { on = [ "u" ], run = "unstage_selection", show_hint = true },
+    { on = [ "<Space>" ], run = "toggle_stage", show_hint = false },
+]

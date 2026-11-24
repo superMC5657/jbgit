@@ -1,5 +1,7 @@
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
+use super::keymap_config::KeymapPreset;
+
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum LanguagePref {
     #[default]
@@ -92,29 +94,32 @@ impl<'de> Deserialize<'de> for DefaultTab {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum ThemeFlavor {
     #[default]
     Darcula,
     CatppuccinMocha,
     GruvboxDark,
+    Custom(String),
 }
 
 impl ThemeFlavor {
-    pub fn parse(s: &str) -> Option<Self> {
-        match s.trim().to_ascii_lowercase().as_str() {
-            "darcula" => Some(Self::Darcula),
-            "catppuccin" | "catppuccin-mocha" | "catppuccin_mocha" => Some(Self::CatppuccinMocha),
-            "gruvbox" | "gruvbox-dark" | "gruvbox_dark" => Some(Self::GruvboxDark),
-            _ => None,
+    pub fn parse(s: &str) -> Self {
+        let trimmed = s.trim();
+        match trimmed.to_ascii_lowercase().as_str() {
+            "" | "darcula" => Self::Darcula,
+            "catppuccin" | "catppuccin-mocha" | "catppuccin_mocha" => Self::CatppuccinMocha,
+            "gruvbox" | "gruvbox-dark" | "gruvbox_dark" => Self::GruvboxDark,
+            _ => Self::Custom(trimmed.to_string()),
         }
     }
 
-    pub const fn as_str(self) -> &'static str {
+    pub fn as_str(&self) -> &str {
         match self {
             Self::Darcula => "darcula",
             Self::CatppuccinMocha => "catppuccin-mocha",
             Self::GruvboxDark => "gruvbox-dark",
+            Self::Custom(s) => s.as_str(),
         }
     }
 }
@@ -128,7 +133,7 @@ impl Serialize for ThemeFlavor {
 impl<'de> Deserialize<'de> for ThemeFlavor {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let s = String::deserialize(deserializer)?;
-        Ok(Self::parse(&s).unwrap_or_default())
+        Ok(Self::parse(&s))
     }
 }
 
@@ -393,10 +398,36 @@ impl Default for UpdateSection {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct KeymapSection {
+    #[serde(default)]
+    pub preset: KeymapPreset,
+    #[serde(default = "default_footer_max_lines")]
+    pub footer_max_lines: u16,
+    #[serde(default)]
+    pub tree_speed_search: Option<bool>,
+}
+
+fn default_footer_max_lines() -> u16 {
+    1
+}
+
+impl Default for KeymapSection {
+    fn default() -> Self {
+        Self {
+            preset: KeymapPreset::default(),
+            footer_max_lines: default_footer_max_lines(),
+            tree_speed_search: None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct JbgitConfig {
     #[serde(default)]
     pub general: GeneralSection,
+    #[serde(default)]
+    pub keymap: KeymapSection,
     #[serde(default)]
     pub graph: GraphSection,
     #[serde(default)]
@@ -692,8 +723,19 @@ impl JbgitConfig {
             if let Some(tab) = general_sec.default_tab {
                 self.general.default_tab = tab;
             }
-            if let Some(flv) = general_sec.flavor {
-                self.general.flavor = flv;
+            if let Some(flv) = &general_sec.flavor {
+                self.general.flavor = flv.clone();
+            }
+        }
+        if let Some(km) = &overlay.keymap {
+            if let Some(p) = &km.preset {
+                self.keymap.preset = p.clone();
+            }
+            if let Some(lines) = km.footer_max_lines {
+                self.keymap.footer_max_lines = lines;
+            }
+            if let Some(tss) = km.tree_speed_search {
+                self.keymap.tree_speed_search = Some(tss);
             }
         }
         if let Some(gr) = &overlay.graph {
@@ -808,6 +850,7 @@ fn g_mode(v: Option<GlyphModePref>) -> Option<GlyphModePref> {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct JbgitConfigOverlay {
     pub general: Option<GeneralSectionOverlay>,
+    pub keymap: Option<KeymapSectionOverlay>,
     pub graph: Option<GraphSectionOverlay>,
     pub diff: Option<DiffSectionOverlay>,
     pub annotate: Option<AnnotateSectionOverlay>,
@@ -816,6 +859,13 @@ pub struct JbgitConfigOverlay {
     pub worktree: Option<WorktreeSectionOverlay>,
     pub layout: Option<LayoutSectionOverlay>,
     pub performance: Option<PerformanceSectionOverlay>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct KeymapSectionOverlay {
+    pub preset: Option<KeymapPreset>,
+    pub footer_max_lines: Option<u16>,
+    pub tree_speed_search: Option<bool>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

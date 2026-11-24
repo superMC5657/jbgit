@@ -1,0 +1,32 @@
+# jbgit 快捷键预设：jetbrains（贴近 IntelliJ IDEA 习惯）
+# 基于 keymaps/default.toml 叠加，放置于配置目录的 keymaps/jetbrains.toml 可直接修改并覆写内置预设。
+
+# 分支树面板开启直接打字模糊速查
+tree_speed_search = true
+
+[global]
+prepend_keymap = [
+    { on = [ "<C-t>" ], run = "git_pull" },
+    { on = [ "<C-S-k>" ], run = "git_push" },
+    { on = [ "<C-`>" ], run = "toggle_branches_popup" },
+    { on = [ "<C-~>" ], run = "toggle_branches_popup" },
+    { on = [ "<C-k>" ], run = "tab_commit" },
+    { on = [ "<C-A-n>" ], run = "new_branch" },
+]
+
+[log]
+prepend_keymap = [
+    { on = [ "<C-l>" ], run = "focus_filter" },
+]
+
+[commit]
+prepend_keymap = [
+    { on = [ "<A-m>" ], run = "toggle_amend" },
+    { on = [ "<C-Enter>" ], run = "commit" },
+]
+
+[diff]
+prepend_keymap = [
+    { on = [ "<F4>" ], run = "zoom_diff" },
+    { on = [ "c" ], run = "cycle_diff_context" },
+]

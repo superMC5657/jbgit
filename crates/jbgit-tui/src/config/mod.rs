@@ -4,7 +4,7 @@ pub mod keymap_config;
 pub mod theme_config;
 
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use anyhow::{Context, Result};
 use serde::de::DeserializeOwned;
@@ -12,14 +12,43 @@ use serde::de::DeserializeOwned;
 pub use discovery::{JBGIT_CONFIG_DIR_ENV, find_config_file, global_config_dir};
 pub use jbgit_config::{
     AnnotateSection, DefaultTab, GlyphModePref, GraphBackendPref, JbgitConfig, JbgitConfigOverlay,
-    LanguagePref, LayoutSection, PairRatio, ThemeFlavor, TripleRatio,
+    KeymapSection, KeymapSectionOverlay, LanguagePref, LayoutSection, PairRatio, ThemeFlavor,
+    TripleRatio,
 };
 pub use keymap_config::{KeyBindingConfig, KeymapConfig, KeymapConfigOverlay, KeymapPreset, KeymapScope};
-pub use theme_config::{ThemeConfig, ThemeConfigOverlay};
+pub use theme_config::{
+    GlyphsSection, GraphThemeSection, PaletteSection, RefStyleConfig, RefsSection, ThemeConfig,
+    ThemeConfigOverlay, ThemeFlavorData, TrackColorConfig,
+};
 
 pub const DEFAULT_JBGIT_TOML: &str = include_str!("defaults/jbgit.default.toml");
-pub const DEFAULT_THEME_TOML: &str = include_str!("defaults/theme.default.toml");
-pub const DEFAULT_KEYMAP_TOML: &str = include_str!("defaults/keymap.default.toml");
+
+pub const BUILTIN_THEME_DARCULA_TOML: &str = include_str!("defaults/themes/darcula.toml");
+pub const BUILTIN_THEME_CATPPUCCIN_MOCHA_TOML: &str =
+    include_str!("defaults/themes/catppuccin-mocha.toml");
+pub const BUILTIN_THEME_GRUVBOX_DARK_TOML: &str =
+    include_str!("defaults/themes/gruvbox-dark.toml");
+
+pub const BUILTIN_KEYMAP_DEFAULT_TOML: &str = include_str!("defaults/keymaps/default.toml");
+pub const BUILTIN_KEYMAP_JETBRAINS_TOML: &str = include_str!("defaults/keymaps/jetbrains.toml");
+pub const BUILTIN_KEYMAP_VIM_TOML: &str = include_str!("defaults/keymaps/vim.toml");
+
+/// Validates a flavor/preset name and returns `<name>.toml` if it is a single safe path segment.
+pub(crate) fn safe_preset_filename(name: &str) -> Option<String> {
+    let trimmed = name.trim();
+    if trimmed.is_empty()
+        || trimmed.contains(['/', '\\', ':', '\0'])
+        || trimmed == "."
+        || trimmed == ".."
+    {
+        return None;
+    }
+    let mut comps = Path::new(trimmed).components();
+    match (comps.next(), comps.next()) {
+        (Some(Component::Normal(_)), None) => Some(format!("{trimmed}.toml")),
+        _ => None,
+    }
+}
 
 /// Root configuration aggregating all three sub-configurations.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -56,39 +85,179 @@ impl AppConfig {
     /// Parses the compiled-in default configurations.
     pub fn load_defaults() -> Self {
         let jbgit: JbgitConfig = toml::from_str(DEFAULT_JBGIT_TOML).unwrap_or_default();
-        let theme: ThemeConfig = toml::from_str(DEFAULT_THEME_TOML).unwrap_or_default();
-        let keymap = KeymapConfig::for_preset(KeymapPreset::Default);
+        let theme = ThemeConfig {
+            flavor: jbgit.general.flavor.clone(),
+            glyphs: GlyphsSection {
+                mode: jbgit.graph.glyph_mode,
+            },
+            ..ThemeConfig::default()
+        };
+        let mut keymap = KeymapConfig::for_preset(jbgit.keymap.preset.clone());
+        keymap.footer_max_lines = jbgit.keymap.footer_max_lines;
+        if let Some(tss) = jbgit.keymap.tree_speed_search {
+            keymap.tree_speed_search = tss;
+        }
         Self { jbgit, theme, keymap }
     }
 
     /// Loads the configuration with layered precedence:
     /// Default -> Global User Config -> Repository Config -> JBGIT_CONFIG_DIR
     pub fn load(workdir: Option<&Path>) -> Self {
-        let mut config = Self::load_defaults();
-
-        // Layer 1: Global user configuration
         let global_dir = global_config_dir();
-        config.apply_dir_overlays(&global_dir, false);
+        let repo_dir = workdir.map(|wd| wd.join(".jbgit"));
+        let env_dir = std::env::var_os(JBGIT_CONFIG_DIR_ENV).map(PathBuf::from);
 
-        // Layer 2: Repo-level configuration (.jbgit/)
-        if let Some(wd) = workdir {
-            let repo_jbgit_dir = wd.join(".jbgit");
-            config.apply_dir_overlays(&repo_jbgit_dir, true);
+        let mut layers: Vec<(&Path, bool)> = vec![(&global_dir, false)];
+        if let Some(ref rd) = repo_dir {
+            layers.push((rd.as_path(), true));
+        }
+        if let Some(ref ed) = env_dir {
+            layers.push((ed.as_path(), false));
         }
 
-        // Layer 3: JBGIT_CONFIG_DIR environment variable (highest override)
-        if let Some(env_dir) = std::env::var_os(JBGIT_CONFIG_DIR_ENV) {
-            config.apply_dir_overlays(Path::new(&env_dir), false);
+        Self::load_from_layers(&layers)
+    }
+
+    pub(crate) fn load_from_layers(layers: &[(&Path, bool)]) -> Self {
+        let mut config = Self::load_defaults();
+        let mut final_preset = config.keymap.preset.clone();
+        let mut keymap_overlays: Vec<KeymapConfigOverlay> = Vec::new();
+
+        // Pass 1: Load jbgit.toml / config.toml plus optional legacy theme.toml / keymap.toml overlays.
+        for &(dir, allow_config_toml_alias) in layers {
+            let mut flags = OverlayFlags::default();
+            let mut jbgit_km_preset: Option<KeymapPreset> = None;
+            let mut jbgit_km_footer: Option<u16> = None;
+            let mut jbgit_km_tss: Option<bool> = None;
+
+            let mut apply_jbgit = |ov: &JbgitConfigOverlay| {
+                if ov.general.as_ref().and_then(|g| g.flavor.as_ref()).is_some() {
+                    flags.jbgit_flavor_set = true;
+                }
+                if ov.graph.as_ref().and_then(|g| g.glyph_mode).is_some() {
+                    flags.jbgit_glyph_set = true;
+                }
+                if let Some(km) = &ov.keymap {
+                    if let Some(p) = &km.preset {
+                        jbgit_km_preset = Some(p.clone());
+                    }
+                    if let Some(lines) = km.footer_max_lines {
+                        jbgit_km_footer = Some(lines);
+                    }
+                    if let Some(tss) = km.tree_speed_search {
+                        jbgit_km_tss = Some(tss);
+                    }
+                }
+                config.jbgit.merge_overlay(ov);
+            };
+
+            if allow_config_toml_alias {
+                load_toml_overlay::<JbgitConfigOverlay>(&dir.join("config.toml"), &mut apply_jbgit);
+            }
+            load_toml_overlay::<JbgitConfigOverlay>(&dir.join("jbgit.toml"), &mut apply_jbgit);
+
+            load_toml_overlay::<ThemeConfigOverlay>(&dir.join("theme.toml"), |ov| {
+                if ov.flavor.is_some() {
+                    flags.theme_flavor_set = true;
+                }
+                if ov.glyphs.as_ref().and_then(|g| g.mode).is_some() {
+                    flags.theme_glyph_set = true;
+                }
+                config.theme.merge_overlay(ov);
+            });
+            if flags.jbgit_flavor_set && !flags.theme_flavor_set {
+                config.theme.flavor = config.jbgit.general.flavor.clone();
+            }
+            if flags.jbgit_glyph_set && !flags.theme_glyph_set {
+                config.theme.glyphs.mode = config.jbgit.graph.glyph_mode;
+            }
+
+            if let Some(p) = jbgit_km_preset {
+                final_preset = p;
+            }
+            if jbgit_km_footer.is_some() || jbgit_km_tss.is_some() {
+                keymap_overlays.push(KeymapConfigOverlay {
+                    footer_max_lines: jbgit_km_footer,
+                    tree_speed_search: jbgit_km_tss,
+                    ..Default::default()
+                });
+            }
+
+            load_toml_overlay::<KeymapConfigOverlay>(&dir.join("keymap.toml"), |ov| {
+                if let Some(p) = &ov.preset {
+                    final_preset = p.clone();
+                }
+                keymap_overlays.push(ov.clone());
+            });
         }
+
+        // Pass 2: Load layered `themes/<final_flavor>.toml` overrides.
+        if let Some(filename) = safe_preset_filename(config.theme.flavor.as_str()) {
+            for &(dir, _) in layers {
+                load_toml_overlay::<ThemeFlavorData>(&dir.join("themes").join(&filename), |data| {
+                    config.theme.flavor_overrides.merge_from(data);
+                });
+            }
+        }
+
+        // Pass 3: Build keymap from `keymaps/default.toml`, then `keymaps/<final_preset>.toml`,
+        // then apply collected `keymap.toml` overlays without re-triggering preset resets.
+        let mut keymap = KeymapConfig::for_preset(KeymapPreset::Default);
+        for &(dir, _) in layers {
+            load_toml_overlay::<KeymapConfigOverlay>(
+                &dir.join("keymaps").join("default.toml"),
+                |ov| {
+                    keymap.apply_preset_overlay(ov);
+                },
+            );
+        }
+
+        if final_preset != KeymapPreset::Default {
+            let mut disk_preset_overlays: Vec<KeymapConfigOverlay> = Vec::new();
+            if let Some(filename) = safe_preset_filename(final_preset.as_str()) {
+                for &(dir, _) in layers {
+                    load_toml_overlay::<KeymapConfigOverlay>(
+                        &dir.join("keymaps").join(&filename),
+                        |ov| {
+                            disk_preset_overlays.push(ov.clone());
+                        },
+                    );
+                }
+            }
+
+            if !disk_preset_overlays.is_empty() {
+                for ov in &disk_preset_overlays {
+                    keymap.apply_preset_overlay(ov);
+                }
+            } else {
+                let builtin = match &final_preset {
+                    KeymapPreset::Jetbrains => Some(BUILTIN_KEYMAP_JETBRAINS_TOML),
+                    KeymapPreset::Vim => Some(BUILTIN_KEYMAP_VIM_TOML),
+                    KeymapPreset::Default | KeymapPreset::Custom(_) => None,
+                };
+                if let Some(toml_str) = builtin
+                    && let Ok(ov) = toml::from_str::<KeymapConfigOverlay>(toml_str)
+                {
+                    keymap.apply_preset_overlay(&ov);
+                }
+            }
+            keymap.preset = final_preset;
+        }
+
+        for ov in &keymap_overlays {
+            keymap.merge_overlay_ignoring_preset(ov);
+        }
+        config.keymap = keymap;
 
         config
     }
 
+    #[cfg(test)]
     fn apply_dir_overlays(&mut self, dir: &Path, allow_config_toml_alias: bool) {
         let mut flags = OverlayFlags::default();
         if allow_config_toml_alias {
             load_toml_overlay::<JbgitConfigOverlay>(&dir.join("config.toml"), |ov| {
-                if ov.general.as_ref().and_then(|g| g.flavor).is_some() {
+                if ov.general.as_ref().and_then(|g| g.flavor.as_ref()).is_some() {
                     flags.jbgit_flavor_set = true;
                 }
                 if ov.graph.as_ref().and_then(|g| g.glyph_mode).is_some() {
@@ -98,7 +267,7 @@ impl AppConfig {
             });
         }
         load_toml_overlay::<JbgitConfigOverlay>(&dir.join("jbgit.toml"), |ov| {
-            if ov.general.as_ref().and_then(|g| g.flavor).is_some() {
+            if ov.general.as_ref().and_then(|g| g.flavor.as_ref()).is_some() {
                 flags.jbgit_flavor_set = true;
             }
             if ov.graph.as_ref().and_then(|g| g.glyph_mode).is_some() {
@@ -121,26 +290,45 @@ impl AppConfig {
 
         // Honor jbgit.toml `[general].flavor` / `[graph].glyph_mode` when theme.toml in this layer did not override them.
         if flags.jbgit_flavor_set && !flags.theme_flavor_set {
-            self.theme.flavor = self.jbgit.general.flavor;
+            self.theme.flavor = self.jbgit.general.flavor.clone();
         }
         if flags.jbgit_glyph_set && !flags.theme_glyph_set {
             self.theme.glyphs.mode = self.jbgit.graph.glyph_mode;
+        }
+
+        if let Some(filename) = safe_preset_filename(self.theme.flavor.as_str()) {
+            load_toml_overlay::<ThemeFlavorData>(&dir.join("themes").join(&filename), |data| {
+                self.theme.flavor_overrides.merge_from(data);
+            });
+        }
+    }
+
+    /// Returns the embedded TOML content for the requested default configuration.
+    pub fn default_config_content(which: Option<&str>) -> &'static str {
+        match which.map(|s| s.trim().to_ascii_lowercase()).as_deref() {
+            Some("theme" | "theme.toml" | "themes/darcula" | "themes/darcula.toml" | "darcula") => {
+                BUILTIN_THEME_DARCULA_TOML
+            }
+            Some("themes/catppuccin-mocha" | "themes/catppuccin-mocha.toml" | "catppuccin-mocha") => {
+                BUILTIN_THEME_CATPPUCCIN_MOCHA_TOML
+            }
+            Some("themes/gruvbox-dark" | "themes/gruvbox-dark.toml" | "gruvbox-dark") => {
+                BUILTIN_THEME_GRUVBOX_DARK_TOML
+            }
+            Some("keymap" | "keymap.toml" | "keymaps/default" | "keymaps/default.toml") => {
+                BUILTIN_KEYMAP_DEFAULT_TOML
+            }
+            Some("keymaps/jetbrains" | "keymaps/jetbrains.toml" | "jetbrains") => {
+                BUILTIN_KEYMAP_JETBRAINS_TOML
+            }
+            Some("keymaps/vim" | "keymaps/vim.toml" | "vim") => BUILTIN_KEYMAP_VIM_TOML,
+            _ => DEFAULT_JBGIT_TOML,
         }
     }
 
     /// Prints the requested default configuration to standard output.
     pub fn print_default_config(which: Option<&str>) {
-        match which {
-            Some("theme") | Some("theme.toml") => {
-                print!("{DEFAULT_THEME_TOML}");
-            }
-            Some("keymap") | Some("keymap.toml") => {
-                print!("{DEFAULT_KEYMAP_TOML}");
-            }
-            _ => {
-                print!("{DEFAULT_JBGIT_TOML}");
-            }
-        }
+        print!("{}", Self::default_config_content(which));
     }
 
     /// Initializes default configuration files in the destination directory,
@@ -159,8 +347,15 @@ impl AppConfig {
 
         let files = [
             ("jbgit.toml", DEFAULT_JBGIT_TOML),
-            ("theme.toml", DEFAULT_THEME_TOML),
-            ("keymap.toml", DEFAULT_KEYMAP_TOML),
+            ("themes/darcula.toml", BUILTIN_THEME_DARCULA_TOML),
+            (
+                "themes/catppuccin-mocha.toml",
+                BUILTIN_THEME_CATPPUCCIN_MOCHA_TOML,
+            ),
+            ("themes/gruvbox-dark.toml", BUILTIN_THEME_GRUVBOX_DARK_TOML),
+            ("keymaps/default.toml", BUILTIN_KEYMAP_DEFAULT_TOML),
+            ("keymaps/jetbrains.toml", BUILTIN_KEYMAP_JETBRAINS_TOML),
+            ("keymaps/vim.toml", BUILTIN_KEYMAP_VIM_TOML),
         ];
 
         let mut report = Vec::with_capacity(files.len());
@@ -169,6 +364,10 @@ impl AppConfig {
             if file_path.exists() && !force {
                 report.push((name, false));
             } else {
+                if let Some(parent) = file_path.parent() {
+                    fs::create_dir_all(parent)
+                        .with_context(|| format!("Failed to create directory {:?}", parent))?;
+                }
                 fs::write(&file_path, content)
                     .with_context(|| format!("Failed to write {:?}", file_path))?;
                 report.push((name, true));
@@ -246,15 +445,42 @@ load_commit_bodies = false
         let temp = tempfile::tempdir().unwrap();
         let target_dir = temp.path().join("my_config");
 
-        let res = AppConfig::init_config(Some(&target_dir), false).unwrap();
+        let (res, report) = AppConfig::init_config_detailed(Some(&target_dir), false).unwrap();
         assert_eq!(res, target_dir);
+        assert_eq!(report.len(), 7);
+        assert!(report.iter().all(|(_, created)| *created));
 
-        assert!(target_dir.join("jbgit.toml").is_file());
-        assert!(target_dir.join("theme.toml").is_file());
-        assert!(target_dir.join("keymap.toml").is_file());
+        for rel in [
+            "jbgit.toml",
+            "themes/darcula.toml",
+            "themes/catppuccin-mocha.toml",
+            "themes/gruvbox-dark.toml",
+            "keymaps/default.toml",
+            "keymaps/jetbrains.toml",
+            "keymaps/vim.toml",
+        ] {
+            assert!(target_dir.join(rel).is_file(), "missing {rel}");
+        }
+        assert!(!target_dir.join("theme.toml").exists());
+        assert!(!target_dir.join("keymap.toml").exists());
 
         let jbgit_content = fs::read_to_string(target_dir.join("jbgit.toml")).unwrap();
         assert!(jbgit_content.contains("language = \"zh-CN\""));
+        assert!(jbgit_content.contains("[keymap]"));
+
+        // Second run with force=false skips all existing files
+        let (_, report2) = AppConfig::init_config_detailed(Some(&target_dir), false).unwrap();
+        assert!(report2.iter().all(|(_, created)| !*created));
+
+        // force=true overwrites
+        fs::write(target_dir.join("themes/darcula.toml"), "# modified").unwrap();
+        let (_, report3) = AppConfig::init_config_detailed(Some(&target_dir), true).unwrap();
+        assert!(report3.iter().all(|(_, created)| *created));
+        assert!(
+            fs::read_to_string(target_dir.join("themes/darcula.toml"))
+                .unwrap()
+                .contains("[palette]")
+        );
     }
 
     #[test]
@@ -1068,5 +1294,363 @@ gutter_width = 4
         cfg.jbgit.merge_overlay(&clamp_ov);
         assert!(cfg.jbgit.annotate.ignore_whitespace);
         assert_eq!(cfg.jbgit.annotate.gutter_width, 16);
+    }
+
+    #[test]
+    fn test_embedded_keymap_presets_have_no_unknown_actions() {
+        use crate::keymap::KeyAction;
+
+        let default_cfg: KeymapConfig = toml::from_str(BUILTIN_KEYMAP_DEFAULT_TOML).unwrap();
+        for list in [
+            &default_cfg.global,
+            &default_cfg.log,
+            &default_cfg.commit,
+            &default_cfg.branch,
+            &default_cfg.diff,
+            &default_cfg.stash,
+            &default_cfg.console,
+        ] {
+            for b in &list.key_bindings {
+                assert!(!matches!(b.run, KeyAction::Unknown(_)), "unknown: {:?}", b.run);
+            }
+        }
+
+        for preset_toml in [BUILTIN_KEYMAP_JETBRAINS_TOML, BUILTIN_KEYMAP_VIM_TOML] {
+            let ov: KeymapConfigOverlay = toml::from_str(preset_toml).unwrap();
+            for sec in [
+                &ov.global,
+                &ov.log,
+                &ov.commit,
+                &ov.branch,
+                &ov.diff,
+                &ov.stash,
+                &ov.console,
+            ]
+            .into_iter()
+            .flatten()
+            {
+                for b in sec
+                    .key_bindings
+                    .iter()
+                    .chain(sec.prepend_keymap.iter())
+                    .chain(sec.append_keymap.iter())
+                {
+                    assert!(
+                        !matches!(b.run, KeyAction::Unknown(_)),
+                        "unknown action in preset: {:?}",
+                        b.run
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_init_config_load_roundtrip_and_preset_switch() {
+        use crate::keymap::KeyAction;
+
+        let dir = tempfile::tempdir().unwrap();
+        AppConfig::init_config(Some(dir.path()), false).unwrap();
+
+        let loaded = AppConfig::load_from_layers(&[(dir.path(), false)]);
+        let mut defaults = AppConfig::load_defaults();
+        // `jbgit.default.toml` has `default_parent = ""`, which `merge_overlay` normalizes to `None`.
+        defaults.jbgit.worktree.default_parent = None;
+        assert_eq!(loaded.jbgit, defaults.jbgit);
+        assert_eq!(loaded.keymap, defaults.keymap);
+        assert_eq!(loaded.theme.flavor, defaults.theme.flavor);
+        assert_eq!(loaded.theme.glyphs, defaults.theme.glyphs);
+        assert_eq!(loaded.theme.palette, defaults.theme.palette);
+        assert_eq!(loaded.theme.refs, defaults.theme.refs);
+        assert_eq!(loaded.theme.graph, defaults.theme.graph);
+        let loaded_pal = crate::theme::ThemePalette::from_config_with_truecolor(&loaded.theme, true);
+        let default_pal =
+            crate::theme::ThemePalette::from_config_with_truecolor(&defaults.theme, true);
+        assert_eq!(loaded_pal.bg_canvas, default_pal.bg_canvas);
+        assert_eq!(loaded_pal.fg_primary, default_pal.fg_primary);
+        assert_eq!(loaded_pal.track_rgbs, default_pal.track_rgbs);
+        assert_eq!(loaded_pal.ref_head, default_pal.ref_head);
+
+        // Switching `preset = "jetbrains"` directly in `jbgit.toml` activates JetBrains bindings & tree_speed_search.
+        fs::write(
+            dir.path().join("jbgit.toml"),
+            "[general]\nflavor = \"catppuccin-mocha\"\n\n[keymap]\npreset = \"jetbrains\"\nfooter_max_lines = 2\n",
+        )
+        .unwrap();
+        let jb = AppConfig::load_from_layers(&[(dir.path(), false)]);
+        assert_eq!(jb.theme.flavor, ThemeFlavor::CatppuccinMocha);
+        assert_eq!(jb.keymap.preset, KeymapPreset::Jetbrains);
+        assert!(jb.keymap.tree_speed_search);
+        assert_eq!(jb.keymap.footer_max_lines, 2);
+        assert_eq!(
+            jb.keymap
+                .primary_key_for(&[KeymapScope::Global], &KeyAction::GitPush)
+                .as_deref(),
+            Some("Ctrl+Shift+K")
+        );
+        assert_eq!(
+            jb.keymap
+                .primary_key_for(&[KeymapScope::Global], &KeyAction::TabCommit)
+                .as_deref(),
+            Some("Ctrl+K")
+        );
+
+        // Explicit `tree_speed_search = false` in `jbgit.toml` overrides the preset default.
+        fs::write(
+            dir.path().join("jbgit.toml"),
+            "[keymap]\npreset = \"jetbrains\"\ntree_speed_search = false\n",
+        )
+        .unwrap();
+        let jb_no_tss = AppConfig::load_from_layers(&[(dir.path(), false)]);
+        assert_eq!(jb_no_tss.keymap.preset, KeymapPreset::Jetbrains);
+        assert!(!jb_no_tss.keymap.tree_speed_search);
+    }
+
+    #[test]
+    fn test_disk_theme_flavor_override_and_custom_flavor() {
+        let global_dir = tempfile::tempdir().unwrap();
+        let repo_dir = tempfile::tempdir().unwrap();
+        AppConfig::init_config(Some(global_dir.path()), false).unwrap();
+
+        // Override darcula in global themes/darcula.toml (palette, refs, graph.tracks)
+        fs::create_dir_all(global_dir.path().join("themes")).unwrap();
+        fs::write(
+            global_dir.path().join("themes/darcula.toml"),
+            r##"
+[palette]
+bg_canvas = "#112233"
+
+[refs]
+head = { icon = "#AABBCC" }
+
+[graph]
+tracks = [
+    { fg = "#123456", muted_bg = "#102030" },
+]
+"##,
+        )
+        .unwrap();
+
+        // Repo layer overlays darcula bg_panel on top of global darcula.toml
+        fs::create_dir_all(repo_dir.path().join("themes")).unwrap();
+        fs::write(
+            repo_dir.path().join("themes/darcula.toml"),
+            r##"
+[palette]
+bg_panel = "#223344"
+"##,
+        )
+        .unwrap();
+        // theme.toml overrides win over themes/darcula.toml
+        fs::write(
+            repo_dir.path().join("theme.toml"),
+            r##"
+[palette]
+fg_primary = "#EEEEEE"
+"##,
+        )
+        .unwrap();
+
+        let cfg = AppConfig::load_from_layers(&[(global_dir.path(), false), (repo_dir.path(), true)]);
+        let pal = crate::theme::ThemePalette::from_config_with_truecolor(&cfg.theme, true);
+        assert_eq!(pal.bg_canvas, ratatui::style::Color::Rgb(0x11, 0x22, 0x33));
+        assert_eq!(pal.bg_canvas_rgb, (0x11, 0x22, 0x33));
+        assert_eq!(pal.bg_panel, ratatui::style::Color::Rgb(0x22, 0x33, 0x44));
+        assert_eq!(pal.fg_primary, ratatui::style::Color::Rgb(0xEE, 0xEE, 0xEE));
+        assert_eq!(pal.ref_head.icon, ratatui::style::Color::Rgb(0xAA, 0xBB, 0xCC));
+        assert_eq!(pal.track_rgbs[0], ((0x12, 0x34, 0x56), (0x10, 0x20, 0x30)));
+        // Non-overridden track 1 stays Darcula
+        assert_eq!(pal.track_rgbs[1], ((0x57, 0xD1, 0x85), (0x37, 0x52, 0x39)));
+
+        // Custom flavor `ocean` with partial fields falls back to Darcula for omitted keys
+        fs::write(
+            global_dir.path().join("themes/ocean.toml"),
+            r##"
+[palette]
+bg_canvas = "#010203"
+border_focused = "#040506"
+"##,
+        )
+        .unwrap();
+        fs::write(
+            repo_dir.path().join("theme.toml"),
+            "flavor = \"ocean\"\n",
+        )
+        .unwrap();
+        let ocean_cfg =
+            AppConfig::load_from_layers(&[(global_dir.path(), false), (repo_dir.path(), true)]);
+        assert_eq!(
+            ocean_cfg.theme.flavor,
+            ThemeFlavor::Custom("ocean".to_string())
+        );
+        let ocean_pal =
+            crate::theme::ThemePalette::from_config_with_truecolor(&ocean_cfg.theme, true);
+        assert_eq!(
+            ocean_pal.bg_canvas,
+            ratatui::style::Color::Rgb(0x01, 0x02, 0x03)
+        );
+        assert_eq!(
+            ocean_pal.border_focused,
+            ratatui::style::Color::Rgb(0x04, 0x05, 0x06)
+        );
+        // Omitted fg_primary falls back to Darcula (#BCBEC4)
+        assert_eq!(
+            ocean_pal.fg_primary,
+            ratatui::style::Color::Rgb(0xBC, 0xBE, 0xC4)
+        );
+    }
+
+    #[test]
+    fn test_disk_keymap_preset_override_and_custom_preset() {
+        use crate::keymap::KeyAction;
+
+        let dir = tempfile::tempdir().unwrap();
+        fs::create_dir_all(dir.path().join("keymaps")).unwrap();
+
+        // 1. Overriding `keymaps/jetbrains.toml` replaces built-in jetbrains overlay:
+        //    editing <C-t> changes it, and omitting <C-k> removes it cleanly.
+        fs::write(dir.path().join("keymap.toml"), "preset = \"jetbrains\"\n").unwrap();
+        fs::write(
+            dir.path().join("keymaps/jetbrains.toml"),
+            r#"
+tree_speed_search = true
+
+[global]
+prepend_keymap = [
+    { on = "<C-t>", run = "update_project" },
+]
+"#,
+        )
+        .unwrap();
+        let cfg = AppConfig::load_from_layers(&[(dir.path(), false)]);
+        assert_eq!(cfg.keymap.preset, KeymapPreset::Jetbrains);
+        assert!(cfg.keymap.tree_speed_search);
+        assert_eq!(
+            cfg.keymap
+                .primary_key_for(&[KeymapScope::Global], &KeyAction::UpdateProject)
+                .as_deref(),
+            Some("Ctrl+T")
+        );
+        assert!(
+            !cfg.keymap
+                .global
+                .key_bindings
+                .iter()
+                .any(|b| b.run == KeyAction::TabCommit && b.on == ["<C-k>"])
+        );
+
+        // 2. Overriding `keymaps/default.toml` replaces sections so deleted bindings stay removed.
+        fs::write(dir.path().join("keymap.toml"), "preset = \"default\"\n").unwrap();
+        fs::write(
+            dir.path().join("keymaps/default.toml"),
+            r#"
+[global]
+key_bindings = [
+    { on = "Q", run = "quit" },
+]
+"#,
+        )
+        .unwrap();
+        let def_cfg = AppConfig::load_from_layers(&[(dir.path(), false)]);
+        assert_eq!(def_cfg.keymap.global.key_bindings.len(), 1);
+        assert_eq!(def_cfg.keymap.global.key_bindings[0].on, ["Q"]);
+        // Unspecified `[log]` still keeps built-in default bindings
+        assert!(!def_cfg.keymap.log.key_bindings.is_empty());
+
+        // 3. Custom preset `my-keys` overlays on top of `keymaps/default.toml`, and `keymap.toml` layers on top.
+        fs::remove_file(dir.path().join("keymaps/default.toml")).unwrap();
+        fs::write(
+            dir.path().join("keymaps/my-keys.toml"),
+            r#"
+tree_speed_search = true
+
+[global]
+prepend_keymap = [
+    { on = "<F9>", run = "refresh" },
+]
+"#,
+        )
+        .unwrap();
+        fs::write(
+            dir.path().join("keymap.toml"),
+            r#"
+preset = "my-keys"
+
+[global]
+prepend_keymap = [
+    { on = "<F10>", run = "quit" },
+]
+"#,
+        )
+        .unwrap();
+        let custom_cfg = AppConfig::load_from_layers(&[(dir.path(), false)]);
+        assert_eq!(
+            custom_cfg.keymap.preset,
+            KeymapPreset::Custom("my-keys".to_string())
+        );
+        assert!(custom_cfg.keymap.tree_speed_search);
+        assert_eq!(
+            custom_cfg
+                .keymap
+                .primary_key_for(&[KeymapScope::Global], &KeyAction::Refresh)
+                .as_deref(),
+            Some("F9")
+        );
+        assert_eq!(
+            custom_cfg
+                .keymap
+                .primary_key_for(&[KeymapScope::Global], &KeyAction::Quit)
+                .as_deref(),
+            Some("F10")
+        );
+    }
+
+    #[test]
+    fn test_safe_preset_filename_and_default_config_content() {
+        assert_eq!(safe_preset_filename("darcula"), Some("darcula.toml".into()));
+        assert_eq!(
+            safe_preset_filename("catppuccin-mocha"),
+            Some("catppuccin-mocha.toml".into())
+        );
+        assert_eq!(safe_preset_filename(""), None);
+        assert_eq!(safe_preset_filename(".."), None);
+        assert_eq!(safe_preset_filename("../secret"), None);
+        assert_eq!(safe_preset_filename("a/b"), None);
+        assert_eq!(safe_preset_filename(r"a\b"), None);
+        assert_eq!(safe_preset_filename("C:foo"), None);
+
+        assert_eq!(AppConfig::default_config_content(None), DEFAULT_JBGIT_TOML);
+        assert_eq!(
+            AppConfig::default_config_content(Some("theme")),
+            BUILTIN_THEME_DARCULA_TOML
+        );
+        assert_eq!(
+            AppConfig::default_config_content(Some("keymap")),
+            BUILTIN_KEYMAP_DEFAULT_TOML
+        );
+        assert_eq!(
+            AppConfig::default_config_content(Some("darcula")),
+            BUILTIN_THEME_DARCULA_TOML
+        );
+        assert_eq!(
+            AppConfig::default_config_content(Some("themes/catppuccin-mocha.toml")),
+            BUILTIN_THEME_CATPPUCCIN_MOCHA_TOML
+        );
+        assert_eq!(
+            AppConfig::default_config_content(Some("gruvbox-dark")),
+            BUILTIN_THEME_GRUVBOX_DARK_TOML
+        );
+        assert_eq!(
+            AppConfig::default_config_content(Some("keymaps/default")),
+            BUILTIN_KEYMAP_DEFAULT_TOML
+        );
+        assert_eq!(
+            AppConfig::default_config_content(Some("jetbrains")),
+            BUILTIN_KEYMAP_JETBRAINS_TOML
+        );
+        assert_eq!(
+            AppConfig::default_config_content(Some("vim")),
+            BUILTIN_KEYMAP_VIM_TOML
+        );
     }
 }

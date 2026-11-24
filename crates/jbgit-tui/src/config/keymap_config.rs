@@ -5,29 +5,32 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::keymap::KeyAction;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum KeymapPreset {
     #[default]
     Default,
     Jetbrains,
     Vim,
+    Custom(String),
 }
 
 impl KeymapPreset {
-    pub fn parse(s: &str) -> Option<Self> {
-        match s.trim().to_ascii_lowercase().as_str() {
-            "default" | "minimal" => Some(Self::Default),
-            "jetbrains" | "idea" => Some(Self::Jetbrains),
-            "vim" | "lazygit" => Some(Self::Vim),
-            _ => None,
+    pub fn parse(s: &str) -> Self {
+        let trimmed = s.trim();
+        match trimmed.to_ascii_lowercase().as_str() {
+            "" | "default" | "minimal" => Self::Default,
+            "jetbrains" | "idea" => Self::Jetbrains,
+            "vim" | "lazygit" => Self::Vim,
+            _ => Self::Custom(trimmed.to_string()),
         }
     }
 
-    pub const fn as_str(self) -> &'static str {
+    pub fn as_str(&self) -> &str {
         match self {
             Self::Default => "default",
             Self::Jetbrains => "jetbrains",
             Self::Vim => "vim",
+            Self::Custom(s) => s.as_str(),
         }
     }
 }
@@ -41,7 +44,7 @@ impl Serialize for KeymapPreset {
 impl<'de> Deserialize<'de> for KeymapPreset {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let s = String::deserialize(deserializer)?;
-        Ok(Self::parse(&s).unwrap_or_default())
+        Ok(Self::parse(&s))
     }
 }
 
@@ -363,23 +366,12 @@ fn merge_section(base: &mut Vec<KeyBindingConfig>, overlay: &KeyBindingsList) {
     apply_overlay_entries(base, &overlay.append_keymap, MergeMode::Append);
 }
 
-fn kb_hint(
-    on: &[&str],
-    run: KeyAction,
-    desc: Option<&str>,
-    show_hint: Option<bool>,
-) -> KeyBindingConfig {
-    KeyBindingConfig {
-        on: on.iter().map(|s| (*s).to_string()).collect(),
-        run,
-        desc: desc.map(ToString::to_string),
-        show_hint,
-        parsed: ParsedKeyCache::default(),
+fn apply_preset_section(base: &mut Vec<KeyBindingConfig>, overlay: &KeyBindingsList) {
+    if !overlay.key_bindings.is_empty() {
+        *base = overlay.key_bindings.clone();
     }
-}
-
-fn kb(on: &[&str], run: KeyAction, desc: Option<&str>) -> KeyBindingConfig {
-    kb_hint(on, run, desc, None)
+    apply_overlay_entries(base, &overlay.prepend_keymap, MergeMode::Prepend);
+    apply_overlay_entries(base, &overlay.append_keymap, MergeMode::Append);
 }
 
 impl KeymapConfig {
@@ -402,84 +394,58 @@ impl KeymapConfig {
         }
     }
 
+    /// Applies a preset definition (`keymaps/<preset>.toml`), where an explicit
+    /// `key_bindings` array replaces that scope's base bindings cleanly before
+    /// applying `prepend_keymap` / `append_keymap`.
+    pub(crate) fn apply_preset_overlay(&mut self, overlay: &KeymapConfigOverlay) {
+        if let Some(tss) = overlay.tree_speed_search {
+            self.tree_speed_search = tss;
+        }
+        if let Some(lines) = overlay.footer_max_lines {
+            self.footer_max_lines = lines;
+        }
+        for (dst, src) in [
+            (&mut self.global.key_bindings, &overlay.global),
+            (&mut self.log.key_bindings, &overlay.log),
+            (&mut self.commit.key_bindings, &overlay.commit),
+            (&mut self.branch.key_bindings, &overlay.branch),
+            (&mut self.diff.key_bindings, &overlay.diff),
+            (&mut self.stash.key_bindings, &overlay.stash),
+            (&mut self.console.key_bindings, &overlay.console),
+        ] {
+            if let Some(sec) = src {
+                apply_preset_section(dst, sec);
+            }
+        }
+        self.precompile_all();
+    }
+
     pub fn for_preset(preset: KeymapPreset) -> Self {
         let mut cfg: KeymapConfig =
-            toml::from_str(crate::config::DEFAULT_KEYMAP_TOML).unwrap_or_default();
+            toml::from_str(crate::config::BUILTIN_KEYMAP_DEFAULT_TOML).unwrap_or_default();
         cfg.preset = KeymapPreset::Default;
-        cfg.tree_speed_search = false;
         cfg.normalize_sections();
 
-        match preset {
+        match &preset {
             KeymapPreset::Default => {}
             KeymapPreset::Jetbrains => {
+                if let Ok(ov) =
+                    toml::from_str::<KeymapConfigOverlay>(crate::config::BUILTIN_KEYMAP_JETBRAINS_TOML)
+                {
+                    cfg.apply_preset_overlay(&ov);
+                }
                 cfg.preset = KeymapPreset::Jetbrains;
-                cfg.tree_speed_search = true;
-                let overlay = KeymapConfigOverlay {
-                    preset: None,
-                    tree_speed_search: Some(true),
-                    global: Some(KeyBindingsList {
-                        prepend_keymap: vec![
-                            kb(&["<C-t>"], KeyAction::GitPull, None),
-                            kb(&["<C-S-k>"], KeyAction::GitPush, None),
-                            kb(&["<C-`>"], KeyAction::ToggleBranchesPopup, None),
-                            kb(&["<C-~>"], KeyAction::ToggleBranchesPopup, None),
-                            kb(&["<C-k>"], KeyAction::TabCommit, None),
-                            kb(&["<C-A-n>"], KeyAction::NewBranch, None),
-                        ],
-                        ..Default::default()
-                    }),
-                    log: Some(KeyBindingsList {
-                        prepend_keymap: vec![kb(&["<C-l>"], KeyAction::FocusFilter, None)],
-                        ..Default::default()
-                    }),
-                    commit: Some(KeyBindingsList {
-                        prepend_keymap: vec![
-                            kb(&["<A-m>"], KeyAction::ToggleAmend, None),
-                            kb(&["<C-Enter>"], KeyAction::Commit, None),
-                        ],
-                        ..Default::default()
-                    }),
-                    diff: Some(KeyBindingsList {
-                        prepend_keymap: vec![
-                            kb(&["<F4>"], KeyAction::ZoomDiff, None),
-                            kb(&["c"], KeyAction::CycleDiffContext, None),
-                        ],
-                        ..Default::default()
-                    }),
-                    ..Default::default()
-                };
-                cfg.merge_overlay(&overlay);
             }
             KeymapPreset::Vim => {
+                if let Ok(ov) =
+                    toml::from_str::<KeymapConfigOverlay>(crate::config::BUILTIN_KEYMAP_VIM_TOML)
+                {
+                    cfg.apply_preset_overlay(&ov);
+                }
                 cfg.preset = KeymapPreset::Vim;
-                cfg.tree_speed_search = false;
-                let overlay = KeymapConfigOverlay {
-                    preset: None,
-                    tree_speed_search: Some(false),
-                    log: Some(KeyBindingsList {
-                        prepend_keymap: vec![
-                            kb(&["<C-d>"], KeyAction::PageDownHalf, None),
-                            kb(&["<C-u>"], KeyAction::PageUpHalf, None),
-                            kb(&["d"], KeyAction::CompareOrDiff, None),
-                            kb(&["z", "c"], KeyAction::CollapseLinearBranch, None),
-                            kb(&["z", "o"], KeyAction::ExpandLinearBranch, None),
-                            kb(&["z", "M"], KeyAction::CollapseAllLinearBranches, None),
-                            kb(&["z", "R"], KeyAction::ExpandAllLinearBranches, None),
-                        ],
-                        ..Default::default()
-                    }),
-                    diff: Some(KeyBindingsList {
-                        prepend_keymap: vec![
-                            kb(&["c"], KeyAction::CycleDiffContext, None),
-                            kb_hint(&["s"], KeyAction::StageSelection, None, Some(true)),
-                            kb_hint(&["u"], KeyAction::UnstageSelection, None, Some(true)),
-                            kb_hint(&["<Space>"], KeyAction::ToggleStage, None, Some(false)),
-                        ],
-                        ..Default::default()
-                    }),
-                    ..Default::default()
-                };
-                cfg.merge_overlay(&overlay);
+            }
+            KeymapPreset::Custom(_) => {
+                cfg.preset = preset;
             }
         }
         cfg.precompile_all();
@@ -503,13 +469,17 @@ impl KeymapConfig {
     }
 
     pub fn merge_overlay(&mut self, overlay: &KeymapConfigOverlay) {
-        if let Some(p) = overlay.preset
-            && p != self.preset
+        if let Some(p) = &overlay.preset
+            && p != &self.preset
         {
             let prev_footer_lines = self.footer_max_lines;
-            *self = Self::for_preset(p);
+            *self = Self::for_preset(p.clone());
             self.footer_max_lines = prev_footer_lines;
         }
+        self.merge_overlay_ignoring_preset(overlay);
+    }
+
+    pub(crate) fn merge_overlay_ignoring_preset(&mut self, overlay: &KeymapConfigOverlay) {
         if let Some(tss) = overlay.tree_speed_search {
             self.tree_speed_search = tss;
         }
