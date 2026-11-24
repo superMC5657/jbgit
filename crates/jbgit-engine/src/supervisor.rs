@@ -7,9 +7,9 @@ use jbgit_core::{
     AmendCommitPreview, BlameBundle, BlameKey, CommitChangesBundle, CommitSignature,
     ConflictDocument, ConsoleStream, DetailsKey, EpochToken, FileDiff, FileDiffKey,
     FileHistoryBundle, FileHistoryKey, FileStatusKind, GitConsoleEntry, GitOp, GitOpOutcome,
-    LruCache, Oid, OutgoingBundle, OutgoingKey, PatchCheck, PatchCheckKey, RefreshScope,
-    RepoSnapshot, RequestSlotId, SignatureStatus, SlotRegistry, StageNodeKind,
-    StageStatusSnapshot, StageTarget, TreeBlob, TreeBlobKey, TreeKey, TreeListing,
+    LoadedConflict, LruCache, Oid, OutgoingBundle, OutgoingKey, PatchCheck, PatchCheckKey,
+    RefreshScope, RepoSnapshot, RequestSlotId, SignatureStatus, SlotRegistry, SpecialConflictInfo,
+    StageNodeKind, StageStatusSnapshot, StageTarget, TreeBlob, TreeBlobKey, TreeKey, TreeListing,
 };
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 
@@ -32,8 +32,8 @@ use crate::stage::{
     CommitOutcome, CommitPrecheckInfo, CommitRequest, StageDiffKey, ThreeDocStageDiff,
     apply_stage_buffer_sync, discard_targets_sync, execute_commit_cli_async,
     execute_commit_git2_sync, load_amend_preview_sync, load_stage_file_diff_sync,
-    probe_commit_precheck_sync, stage_all_tracked_sync, stage_targets_sync, undo_last_commit_sync,
-    unstage_targets_sync, write_worktree_buffer_sync,
+    probe_commit_precheck_sync, remove_conflict_path_sync, stage_all_tracked_sync,
+    stage_targets_sync, undo_last_commit_sync, unstage_targets_sync, write_worktree_buffer_sync,
 };
 use crate::watcher::{MutationGuard, MutationPermit, RepoWatcher};
 
@@ -149,6 +149,7 @@ pub enum TaskRequest {
         path: String,
         content: Vec<u8>,
         stage: bool,
+        delete: bool,
     },
 }
 
@@ -307,6 +308,10 @@ pub enum EngineEvent {
     GitOpFinished(GitOpOutcome),
     ConflictDocumentLoaded {
         doc: ConflictDocument,
+        epoch: u64,
+    },
+    SpecialConflictLoaded {
+        info: SpecialConflictInfo,
         epoch: u64,
     },
     Error(String),
@@ -993,27 +998,37 @@ fn handle_task_request(ctx: &SupervisorContext, task: ScheduledTask) {
                     })
                     .await
                 },
-                move |doc| EngineEvent::ConflictDocumentLoaded { doc, epoch },
+                move |loaded| match loaded {
+                    LoadedConflict::Text(doc) => EngineEvent::ConflictDocumentLoaded { doc, epoch },
+                    LoadedConflict::Special(info) => {
+                        EngineEvent::SpecialConflictLoaded { info, epoch }
+                    }
+                },
             );
         }
         TaskRequest::SaveConflictResolution {
             path,
             content,
             stage,
+            delete,
         } => spawn_guarded_mutation(ctx, RefreshScope::StageStatus, move |pool, loc| async move {
             pool.run_with(TaskPriority::Interactive, move || {
-                write_worktree_buffer_sync(&loc, &path, &content)?;
-                if stage {
-                    stage_targets_sync(
-                        &loc,
-                        &[StageTarget {
-                            path,
-                            old_path: None,
-                            status_kind: FileStatusKind::Conflicted,
-                            group_kind: StageNodeKind::Conflicted,
-                            is_submodule: false,
-                        }],
-                    )?;
+                if delete {
+                    remove_conflict_path_sync(&loc, &path, stage)?;
+                } else {
+                    write_worktree_buffer_sync(&loc, &path, &content)?;
+                    if stage {
+                        stage_targets_sync(
+                            &loc,
+                            &[StageTarget {
+                                path,
+                                old_path: None,
+                                status_kind: FileStatusKind::Conflicted,
+                                group_kind: StageNodeKind::Conflicted,
+                                is_submodule: false,
+                            }],
+                        )?;
+                    }
                 }
                 Ok(())
             })

@@ -23,7 +23,11 @@ pub use branch_tree::{
     BranchTreeRow, BranchesPanelSettings, BranchesTreeModel, FavoriteBranches, fuzzy_match,
     natural_cmp,
 };
-pub use conflict::{ConflictBlock, ConflictChoice, ConflictDocument, ConflictPaneRow, ConflictSegment};
+pub use conflict::{
+    ConflictBlock, ConflictChoice, ConflictDocument, ConflictPaneRow, ConflictParseOptions,
+    ConflictSegment, ConflictSideInfo, ConflictSidePresence, LoadedConflict, SpecialConflictInfo,
+    SpecialConflictKind, is_reverse_conflict_state,
+};
 pub use console::{
     ConsoleLine, ConsoleLineSeverity, ConsoleStream, GitConsoleEntry, classify_console_line,
 };

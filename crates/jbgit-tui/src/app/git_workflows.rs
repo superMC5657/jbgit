@@ -5,10 +5,10 @@
 use std::collections::HashSet;
 
 use jbgit_core::{
-    FastForward, GitFailure, GitOp, GitOpOutcome, MergeOptions, Oid, OngoingKind, OngoingStep,
-    PaneId, PushForce, RefKind, RepoSnapshot, RewritePlan, StageNodeKind, StageTreeRowKind,
-    UpdateInfo, UpdateMode, WorkspaceTab, is_protected_branch, matches_protected_branch_patterns,
-    parse_push_porcelain,
+    ConflictChoice, FastForward, GitFailure, GitOp, GitOpOutcome, MergeOptions, Oid, OngoingKind,
+    OngoingStep, PaneId, PushForce, RefKind, RepoSnapshot, RewritePlan, SpecialConflictInfo,
+    SpecialConflictKind, StageNodeKind, StageTreeRowKind, UpdateInfo, UpdateMode, WorkspaceTab,
+    is_protected_branch, matches_protected_branch_patterns, parse_push_porcelain,
 };
 
 use crate::app::{
@@ -23,6 +23,18 @@ use crate::log_view::PushDialogState;
 
 /// Stash message used by the engine's Update Project save step.
 const UPDATE_PROJECT_STASH_MESSAGE: &str = "jbgit update project";
+
+fn format_byte_size(bytes: u64) -> String {
+    const KIB: u64 = 1024;
+    const MIB: u64 = 1024 * 1024;
+    if bytes >= MIB {
+        format!("{:.1} MiB", bytes as f64 / MIB as f64)
+    } else if bytes >= KIB {
+        format!("{:.1} KiB", bytes as f64 / KIB as f64)
+    } else {
+        format!("{bytes} B")
+    }
+}
 
 impl AppState {
     pub(crate) fn snapshot(&self) -> Option<&RepoSnapshot> {
@@ -242,6 +254,7 @@ impl AppState {
                     doc: None,
                     selected_block: 0,
                     scroll: crate::app::ScrollViewport::new(),
+                    externally_resolved: false,
                 });
                 effects.push(Effect::LoadConflictDocument(path.clone()));
             }
@@ -256,6 +269,7 @@ impl AppState {
                     let next = (cm.selected_block as isize + delta)
                         .clamp(0, doc.conflict_count as isize - 1) as usize;
                     cm.selected_block = next;
+                    cm.ensure_selected_block_visible();
                 }
             }
             Action::ConflictSetBlock(idx) => {
@@ -264,15 +278,25 @@ impl AppState {
                     && *idx < doc.conflict_count
                 {
                     cm.selected_block = *idx;
+                    cm.ensure_selected_block_visible();
                 }
             }
             Action::ConflictApplyChoice(choice) => {
                 if let Some(cm) = self.modal_stack.conflict_merge_mut()
                     && let Some(doc) = &mut cm.doc
                 {
+                    if doc.is_delete_modify()
+                        && matches!(
+                            choice,
+                            ConflictChoice::BothOursFirst | ConflictChoice::BothTheirsFirst
+                        )
+                    {
+                        return true;
+                    }
                     doc.set_choice(cm.selected_block, *choice);
                     if cm.selected_block + 1 < doc.conflict_count {
                         cm.selected_block += 1;
+                        cm.ensure_selected_block_visible();
                     }
                 }
             }
@@ -291,15 +315,24 @@ impl AppState {
                     && let Some(doc) = &cm.doc
                 {
                     let all_resolved = doc.unresolved_count() == 0;
+                    let deletes = doc.deletes_file();
                     let path = doc.path.clone();
-                    let content = doc.render_merged().into_bytes();
                     let unresolved = doc.unresolved_count();
+                    let content = if deletes {
+                        Vec::new()
+                    } else {
+                        doc.render_resolved().into_bytes()
+                    };
                     effects.push(Effect::SaveConflictResolution {
                         path: path.clone(),
                         content,
                         stage: all_resolved,
+                        delete: deletes,
                     });
-                    self.status_notice = Some(if all_resolved {
+                    self.status_notice = Some(if deletes {
+                        self.i18n
+                            .t_fmt("toast.deleted_staged_conflict", &[("path", &path)])
+                    } else if all_resolved {
                         self.i18n
                             .t_fmt("toast.saved_staged_conflict", &[("path", &path)])
                     } else {
@@ -372,6 +405,111 @@ impl AppState {
             _ => return false,
         }
         true
+    }
+
+    pub(crate) fn open_special_conflict_dialog(&mut self, info: SpecialConflictInfo) {
+        let i18n = self.i18n.clone();
+        let (title_key, body_key) = match info.kind {
+            SpecialConflictKind::Binary => (
+                "dialog.special_conflict.title_binary",
+                "dialog.special_conflict.body_binary",
+            ),
+            SpecialConflictKind::Submodule => (
+                "dialog.special_conflict.title_submodule",
+                "dialog.special_conflict.body_submodule",
+            ),
+            SpecialConflictKind::Directory => (
+                "dialog.special_conflict.title_directory",
+                "dialog.special_conflict.body_directory",
+            ),
+        };
+        let format_side = |side: Option<&jbgit_core::ConflictSideInfo>| -> String {
+            match side {
+                Some(s) => {
+                    let short = s.oid.short();
+                    if info.kind == SpecialConflictKind::Submodule {
+                        format!("commit {short}")
+                    } else if let Some(sz) = s.size {
+                        format!("{short} ({})", format_byte_size(sz))
+                    } else {
+                        short
+                    }
+                }
+                None => i18n.t("dialog.special_conflict.side_deleted").to_string(),
+            }
+        };
+        let ours_meta = format_side(info.ours.as_ref());
+        let theirs_meta = format_side(info.theirs.as_ref());
+        let (yours_line, theirs_line) = if info.is_reversed {
+            (
+                i18n.t_fmt(
+                    "dialog.special_conflict.yours_rebase",
+                    &[("label", &info.ours_label), ("meta", &ours_meta)],
+                ),
+                i18n.t_fmt(
+                    "dialog.special_conflict.theirs_rebase",
+                    &[("label", &info.theirs_label), ("meta", &theirs_meta)],
+                ),
+            )
+        } else {
+            (
+                i18n.t_fmt(
+                    "dialog.special_conflict.yours",
+                    &[("label", &info.ours_label), ("meta", &ours_meta)],
+                ),
+                i18n.t_fmt(
+                    "dialog.special_conflict.theirs",
+                    &[("label", &info.theirs_label), ("meta", &theirs_meta)],
+                ),
+            )
+        };
+        let mut ours_opt = ChoiceOption::new(
+            i18n.t("dialog.special_conflict.accept_yours"),
+            Some('y'),
+            vec![Action::RunGitOp(GitOp::AcceptSide {
+                paths: vec![info.path.clone()],
+                ours: true,
+            })],
+        )
+        .detail(if info.ours.is_some() {
+            ours_meta
+        } else {
+            i18n.t("dialog.special_conflict.delete_detail").to_string()
+        });
+        if info.ours.is_none() {
+            ours_opt = ours_opt.danger();
+        }
+        let mut theirs_opt = ChoiceOption::new(
+            i18n.t("dialog.special_conflict.accept_theirs"),
+            Some('t'),
+            vec![Action::RunGitOp(GitOp::AcceptSide {
+                paths: vec![info.path.clone()],
+                ours: false,
+            })],
+        )
+        .detail(if info.theirs.is_some() {
+            theirs_meta
+        } else {
+            i18n.t("dialog.special_conflict.delete_detail").to_string()
+        });
+        if info.theirs.is_none() {
+            theirs_opt = theirs_opt.danger();
+        }
+        let options = vec![
+            ours_opt,
+            theirs_opt,
+            ChoiceOption::new(
+                i18n.t("dialog.special_conflict.open_mergetool"),
+                Some('m'),
+                vec![Action::OpenExternalMergetool(info.path.clone())],
+            ),
+            ChoiceOption::new(i18n.cancel(), Some('c'), Vec::new()),
+        ];
+        self.push_dialog(Dialog::Choice(ChoiceDialog::buttons(
+            i18n.t_fmt(title_key, &[("path", &info.path)]),
+            vec![i18n.t(body_key).to_string(), yours_line, theirs_line],
+            options,
+        )));
     }
 
     fn start_compare_with_local(&mut self, target: Oid, select_path: Option<String>) {

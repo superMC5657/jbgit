@@ -191,11 +191,13 @@ pub fn execute_effects_with_host(
                         path,
                         content,
                         stage,
+                        delete,
                     } => {
                         let _ = handle.dispatch(TaskRequest::SaveConflictResolution {
                             path,
                             content,
                             stage,
+                            delete,
                         });
                     }
                     Effect::RunCli {

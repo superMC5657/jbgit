@@ -570,7 +570,7 @@ fn non_contiguous_squash_rejected_compare_views_stash_reuse_and_conflict_modal()
     let reqs = ts.take_requests();
     assert!(reqs.iter().any(|(r, _)| matches!(
         r,
-        TaskRequest::SaveConflictResolution { path, content, stage: true }
+        TaskRequest::SaveConflictResolution { path, content, stage: true, delete: false }
             if path == "src/c.rs" && content == b"ours\n"
     )));
 }

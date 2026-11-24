@@ -579,6 +579,33 @@ pub(crate) fn write_worktree_buffer_sync(
     Ok(())
 }
 
+/// Removes `path` from the working tree (ignoring missing files) and, when
+/// `stage` is true, clears both conflict stages (`:1`/`:2`/`:3`) and stage 0
+/// from the index so a Delete/Modify or Both-Deleted conflict is resolved.
+pub(crate) fn remove_conflict_path_sync(
+    location: &RepoLocation,
+    path: &str,
+    stage: bool,
+) -> Result<(), EngineError> {
+    let full = location.workdir.join(path);
+    match fs::remove_file(&full) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e.into()),
+    }
+    if stage {
+        with_thread_repo(&location.git_dir, |repo| {
+            let mut index = repo.index()?;
+            let rel = Path::new(path);
+            let _ = index.conflict_remove(rel);
+            let _ = index.remove_path(rel);
+            index.write()?;
+            Ok(())
+        })?;
+    }
+    Ok(())
+}
+
 pub(crate) fn stage_targets_sync(
     location: &RepoLocation,
     targets: &[StageTarget],
@@ -591,11 +618,13 @@ pub(crate) fn stage_targets_sync(
             if full.exists() {
                 index.add_path(rel)?;
             } else {
+                let _ = index.conflict_remove(rel);
                 let _ = index.remove_path(rel);
             }
             if let Some(old) = &t.old_path {
                 let old_full = location.workdir.join(old);
                 if !old_full.exists() {
+                    let _ = index.conflict_remove(Path::new(old));
                     let _ = index.remove_path(Path::new(old));
                 }
             }

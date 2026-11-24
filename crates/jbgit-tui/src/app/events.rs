@@ -119,6 +119,8 @@ impl AppState {
         let snap_ref = self.repo_snapshot.clone();
         let default_remote = self.default_remote();
         let syntax_enabled = self.config.jbgit.diff.syntax_highlight;
+        let is_stage_status = matches!(event, EngineEvent::StageStatusLoaded { .. });
+        let prev_stage_ptr = self.stage_workbench.status().map(Arc::as_ptr);
         let mut modals = Vec::new();
         let event = {
             let mut cctx = crate::stage_view::CommitContext {
@@ -145,6 +147,11 @@ impl AppState {
         }
         let event = match event {
             None => {
+                if is_stage_status
+                    && self.stage_workbench.status().map(Arc::as_ptr) != prev_stage_ptr
+                {
+                    self.check_conflict_resolver_staleness();
+                }
                 self.reconcile_all_requests(&mut effects);
                 return effects;
             }
@@ -578,7 +585,24 @@ impl AppState {
                 {
                     cm.selected_block = 0;
                     cm.scroll.reset();
+                    cm.externally_resolved = false;
                     cm.doc = Some(doc);
+                }
+            }
+            EngineEvent::SpecialConflictLoaded { info, epoch } => {
+                if !self
+                    .request_slots
+                    .accept(RequestSlotId::ConflictDocument, epoch)
+                {
+                    return effects;
+                }
+                if self
+                    .modal_stack
+                    .conflict_merge()
+                    .is_some_and(|cm| cm.path == info.path)
+                {
+                    self.modal_stack.close_conflict_resolver();
+                    self.open_special_conflict_dialog(info);
                 }
             }
             EngineEvent::Error(msg) => {
@@ -614,5 +638,28 @@ impl AppState {
 
         self.reconcile_all_requests(&mut effects);
         effects
+    }
+
+    fn check_conflict_resolver_staleness(&mut self) {
+        let Some(status) = self.stage_workbench.status() else {
+            return;
+        };
+        let Some(cm) = self.modal_stack.conflict_merge_mut() else {
+            return;
+        };
+        if cm.doc.is_none() {
+            return;
+        }
+        let still_conflicted = status.conflicted.iter().any(|e| e.path == cm.path);
+        if !still_conflicted && !cm.externally_resolved {
+            cm.externally_resolved = true;
+            let path = cm.path.clone();
+            self.status_notice = Some(
+                self.i18n
+                    .t_fmt("toast.conflict_resolved_externally", &[("path", &path)]),
+            );
+        } else if still_conflicted {
+            cm.externally_resolved = false;
+        }
     }
 }

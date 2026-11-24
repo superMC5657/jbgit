@@ -11,7 +11,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use jbgit_core::{
     GitFailure, GitOp, GitOpOutcome, MergeOptions, Oid, PatchSource, SkippedBranch, UpdateInfo,
-    UpdateMode, UpdatedRange, WorktreeBranch, classify_failure, render_todo,
+    UpdateMode, UpdatedRange, WorktreeBranch, classify_failure, is_reverse_conflict_state,
+    render_todo,
 };
 
 use crate::askpass::AskpassEnv;
@@ -407,21 +408,6 @@ pub(crate) fn compile_simple_steps(op: &GitOp) -> Option<Vec<CompiledStep>> {
             name.clone(),
             format!("stash@{{{index}}}"),
         ])],
-        GitOp::AcceptSide { paths, ours } => {
-            if paths.is_empty() {
-                Vec::new()
-            } else {
-                let co = CompiledStep::with_pathspecs(
-                    vec![
-                        "checkout".to_string(),
-                        if *ours { "--ours" } else { "--theirs" }.to_string(),
-                    ],
-                    paths,
-                );
-                let add = CompiledStep::with_pathspecs(vec!["add".to_string()], paths);
-                vec![co, add]
-            }
-        }
         GitOp::IntentToAdd { paths } => {
             if paths.is_empty() {
                 Vec::new()
@@ -469,7 +455,8 @@ pub(crate) fn compile_simple_steps(op: &GitOp) -> Option<Vec<CompiledStep>> {
             "--progress",
             remote.as_str(),
         ])],
-        GitOp::RewriteHistory { .. }
+        GitOp::AcceptSide { .. }
+        | GitOp::RewriteHistory { .. }
         | GitOp::ApplyPatch { .. }
         | GitOp::AddToIgnore { .. }
         | GitOp::DeleteFiles { .. }
@@ -644,6 +631,89 @@ fn compile_patch_source(source: &PatchSource) -> Vec<CompiledStep> {
     }
 }
 
+/// Compiles the CLI steps for [`GitOp::AcceptSide`]: paths whose accepted stage
+/// has a blob run `git checkout --ours/--theirs` + `git add`; paths whose
+/// accepted stage is absent (Delete/Modify or Both-Deleted) run `git rm -f`.
+pub(crate) fn compile_accept_side_steps(
+    to_checkout_add: &[String],
+    to_remove: &[String],
+    git_ours: bool,
+) -> Vec<CompiledStep> {
+    let mut steps = Vec::new();
+    if !to_checkout_add.is_empty() {
+        steps.push(CompiledStep::with_pathspecs(
+            vec![
+                "checkout".to_string(),
+                if git_ours { "--ours" } else { "--theirs" }.to_string(),
+            ],
+            to_checkout_add,
+        ));
+        steps.push(CompiledStep::with_pathspecs(
+            vec!["add".to_string()],
+            to_checkout_add,
+        ));
+    }
+    if !to_remove.is_empty() {
+        steps.push(CompiledStep::with_pathspecs(
+            vec!["rm".to_string(), "-f".to_string()],
+            to_remove,
+        ));
+    }
+    steps
+}
+
+/// Resolves semantic `ours` (`true` = Accept Yours, `false` = Accept Theirs)
+/// against the repository state (flipping `--ours`/`--theirs` during rebase)
+/// and partitions `paths` into `(to_checkout_add, to_remove)` based on index
+/// conflict stage presence.
+fn plan_accept_side(
+    git_dir: &Path,
+    paths: &[String],
+    ours: bool,
+) -> (bool, Vec<String>, Vec<String>) {
+    let Ok(repo) = git2::Repository::open(git_dir) else {
+        return (ours, paths.to_vec(), Vec::new());
+    };
+    let probe = crate::probe::probe_repo_state(&repo);
+    let reversed = is_reverse_conflict_state(&probe.state);
+    let git_ours = ours ^ reversed;
+
+    let mut stage_presence: HashMap<String, (bool, bool)> = HashMap::new();
+    if let Ok(index) = repo.index()
+        && let Ok(conflicts) = index.conflicts()
+    {
+        for item in conflicts.flatten() {
+            let entry_path = item
+                .our
+                .as_ref()
+                .or(item.their.as_ref())
+                .or(item.ancestor.as_ref())
+                .map(|e| String::from_utf8_lossy(&e.path).replace('\\', "/"));
+            if let Some(p) = entry_path {
+                stage_presence.insert(p, (item.our.is_some(), item.their.is_some()));
+            }
+        }
+    }
+
+    let mut to_checkout_add = Vec::new();
+    let mut to_remove = Vec::new();
+    for p in paths {
+        let norm = p.replace('\\', "/");
+        match stage_presence.get(&norm).copied() {
+            Some((has_our, has_their)) => {
+                let chosen_exists = if git_ours { has_our } else { has_their };
+                if chosen_exists {
+                    to_checkout_add.push(p.clone());
+                } else {
+                    to_remove.push(p.clone());
+                }
+            }
+            None => to_checkout_add.push(p.clone()),
+        }
+    }
+    (git_ours, to_checkout_add, to_remove)
+}
+
 /// Whether a compiled step talks to a remote (and may need credentials).
 pub(crate) fn is_network_step(args: &[String]) -> bool {
     matches!(
@@ -795,6 +865,7 @@ impl<R: GitCliRunner> Runner<'_, R> {
             return res;
         }
         match op.clone() {
+            GitOp::AcceptSide { paths, ours } => self.run_accept_side(op, paths, ours).await,
             GitOp::ApplyPatch { source, mode } => {
                 let (file, stdin) = match crate::details::resolve_patch_input(self.loc, &source) {
                     Ok(x) => x,
@@ -928,6 +999,19 @@ impl<R: GitCliRunner> Runner<'_, R> {
                 index_lock: None,
             },
         }
+    }
+
+    async fn run_accept_side(&self, op: GitOp, paths: Vec<String>, ours: bool) -> GitOpRunResult {
+        if paths.is_empty() {
+            return GitOpRunResult {
+                outcome: GitOpOutcome::ok(op),
+                index_lock: None,
+            };
+        }
+        let (git_ours, to_checkout_add, to_remove) =
+            plan_accept_side(&self.loc.git_dir, &paths, ours);
+        let steps = compile_accept_side_steps(&to_checkout_add, &to_remove, git_ours);
+        self.run_steps(op, steps).await
     }
 
     async fn run_sequence(&self, ops: Vec<GitOp>) -> GitOpRunResult {
@@ -1700,10 +1784,6 @@ mod tests {
                 rev: "HEAD~1".into(),
                 paths: many.clone(),
             },
-            GitOp::AcceptSide {
-                paths: many.clone(),
-                ours: true,
-            },
             GitOp::IntentToAdd {
                 paths: many.clone(),
             },
@@ -1725,6 +1805,18 @@ mod tests {
                 let payload = step.stdin.as_ref().expect("nul-delimited stdin");
                 assert_eq!(payload.iter().filter(|&&b| b == 0).count(), 55);
             }
+        }
+
+        let accept_steps = compile_accept_side_steps(&many, &many, true);
+        assert_eq!(accept_steps.len(), 3);
+        assert_eq!(accept_steps[0].args[0], "checkout");
+        assert_eq!(accept_steps[1].args[0], "add");
+        assert_eq!(accept_steps[2].args[0], "rm");
+        for step in &accept_steps {
+            assert!(step.args.contains(&"--pathspec-from-file=-".to_string()));
+            assert!(step.args.contains(&"--pathspec-file-nul".to_string()));
+            let payload = step.stdin.as_ref().expect("nul-delimited stdin");
+            assert_eq!(payload.iter().filter(|&&b| b == 0).count(), 55);
         }
     }
 

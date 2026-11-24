@@ -28,6 +28,14 @@ impl LineEnding {
             Self::None => b"",
         }
     }
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Lf => "\n",
+            Self::Crlf => "\r\n",
+            Self::None => "",
+        }
+    }
 }
 
 /// Zero-copy line slice descriptor into a shared [`SlicedDocument`] byte buffer.

@@ -2317,3 +2317,194 @@ fn set_focus_blurs_inline_modes_and_log_navigation_clears_compare_override() {
     assert!(ts.state().log.details.compare_override.is_none());
     assert!(ts.state().log.details.pending_select_path.is_none());
 }
+
+#[test]
+fn conflict_resolver_scroll_follows_selected_block_and_handles_rebase_delete_special_and_staleness() {
+    use super::screen_text;
+    use jbgit_core::{
+        ConflictDocument, ConflictParseOptions, ConflictSideInfo, ConflictSidePresence, GitOp, Oid,
+        SpecialConflictInfo, SpecialConflictKind, StageStatusSnapshot,
+    };
+
+    let mut ts = TestSession::new(super::test_state(".".into()));
+
+    // 1. 120+ line file with 3 conflict blocks: pressing n/p keeps active block's first row visible.
+    ts.dispatch(Action::OpenConflictResolver("src/big.rs".into()));
+    let mut raw = String::new();
+    for i in 1..=5 {
+        raw.push_str(&format!("top {i}\n"));
+    }
+    raw.push_str("<<<<<<< HEAD\nb0-ours\n=======\nb0-theirs\n>>>>>>> feat\n");
+    for i in 1..=55 {
+        raw.push_str(&format!("mid1 {i}\n"));
+    }
+    raw.push_str("<<<<<<< HEAD\nb1-ours\n=======\nb1-theirs\n>>>>>>> feat\n");
+    for i in 1..=55 {
+        raw.push_str(&format!("mid2 {i}\n"));
+    }
+    raw.push_str("<<<<<<< HEAD\nb2-ours\n=======\nb2-theirs\n>>>>>>> feat\n");
+
+    let doc = ConflictDocument::parse("src/big.rs", &raw, None, None);
+    let b0_row = doc.block_first_row(0).unwrap().0;
+    let b1_row = doc.block_first_row(1).unwrap().0;
+    let b2_row = doc.block_first_row(2).unwrap().0;
+    assert!(b2_row > 100);
+    ts.deliver_engine_event(EngineEvent::ConflictDocumentLoaded { doc, epoch: 1 });
+    let _ = ts.render(120, 24);
+    let vh = ts
+        .state()
+        .modal_stack
+        .conflict_merge()
+        .unwrap()
+        .scroll
+        .viewport_height()
+        .expect("viewport height bound");
+
+    // Press `n` twice to jump from block 0 -> block 1 -> block 2.
+    ts.send_key(KeyCode::Char('n'), KeyModifiers::NONE);
+    let off1 = ts.state().modal_stack.conflict_merge().unwrap().scroll.offset();
+    assert!(
+        b1_row >= off1 && b1_row < off1 + vh,
+        "block 1 row {b1_row} must be inside visible window [{off1}, {})",
+        off1 + vh
+    );
+    ts.send_key(KeyCode::Char('n'), KeyModifiers::NONE);
+    let off2 = ts.state().modal_stack.conflict_merge().unwrap().scroll.offset();
+    assert!(
+        b2_row >= off2 && b2_row < off2 + vh,
+        "block 2 row {b2_row} must be inside visible window [{off2}, {})",
+        off2 + vh
+    );
+    // Press `p` twice to jump back to block 1 -> block 0.
+    ts.send_key(KeyCode::Char('p'), KeyModifiers::NONE);
+    let off1b = ts.state().modal_stack.conflict_merge().unwrap().scroll.offset();
+    assert!(b1_row >= off1b && b1_row < off1b + vh);
+    ts.send_key(KeyCode::Char('p'), KeyModifiers::NONE);
+    let off0 = ts.state().modal_stack.conflict_merge().unwrap().scroll.offset();
+    assert!(b0_row >= off0 && b0_row < off0 + vh);
+
+    // 2. Background StageStatusLoaded without `src/big.rs` in conflicted marks modal stale + warns.
+    ts.deliver_engine_event(EngineEvent::StageStatusLoaded {
+        status: Arc::new(StageStatusSnapshot::default()),
+        epoch: 1,
+    });
+    assert!(
+        ts.state()
+            .modal_stack
+            .conflict_merge()
+            .unwrap()
+            .externally_resolved
+    );
+    assert!(
+        ts.state()
+            .status_notice
+            .as_deref()
+            .is_some_and(|n| n.contains("externally")),
+        "{:?}",
+        ts.state().status_notice
+    );
+    let stale_txt = screen_text(&ts.render(120, 24));
+    assert!(stale_txt.contains("resolved externally"), "{stale_txt}");
+    ts.dispatch(Action::PopModal);
+
+    // 3. Rebase reversed conflict shows `Yours (replayed: ...)` and `Theirs (onto: ...)`.
+    ts.dispatch(Action::OpenConflictResolver("src/rb.rs".into()));
+    let rb_doc = ConflictDocument::parse_with_options(
+        "src/rb.rs",
+        "<<<<<<< HEAD\nonto\n=======\nreplayed\n>>>>>>> feat\n",
+        None,
+        None,
+        ConflictParseOptions {
+            is_reversed: true,
+            side_presence: ConflictSidePresence::BothPresent,
+            default_ours_label: Some("feat"),
+            default_theirs_label: Some("main"),
+        },
+    );
+    ts.deliver_engine_event(EngineEvent::ConflictDocumentLoaded {
+        doc: rb_doc,
+        epoch: 2,
+    });
+    let rb_txt = screen_text(&ts.render(140, 30));
+    assert!(rb_txt.contains("Yours (replayed: feat)"), "{rb_txt}");
+    assert!(rb_txt.contains("Theirs (onto: main)"), "{rb_txt}");
+    ts.dispatch(Action::PopModal);
+
+    // 4. Delete/Modify conflict offers Keep/Delete buttons and emits SaveConflictResolution { delete: true }.
+    ts.dispatch(Action::OpenConflictResolver("gone.txt".into()));
+    let dm_doc = ConflictDocument::parse_with_options(
+        "gone.txt",
+        "local\n",
+        Some("local\n"),
+        None,
+        ConflictParseOptions {
+            is_reversed: false,
+            side_presence: ConflictSidePresence::DeletedByTheirs,
+            ..Default::default()
+        },
+    );
+    ts.deliver_engine_event(EngineEvent::ConflictDocumentLoaded {
+        doc: dm_doc,
+        epoch: 3,
+    });
+    let dm_txt = screen_text(&ts.render(140, 30));
+    assert!(dm_txt.contains("Keep Yours"), "{dm_txt}");
+    assert!(dm_txt.contains("Delete File"), "{dm_txt}");
+    let _ = ts.take_requests();
+    ts.send_key(KeyCode::Char('t'), KeyModifiers::NONE);
+    let dm_del_txt = screen_text(&ts.render(140, 30));
+    assert!(dm_del_txt.contains("Delete & Stage"), "{dm_del_txt}");
+    ts.send_key(KeyCode::Enter, KeyModifiers::NONE);
+    let reqs = ts.take_requests();
+    assert!(reqs.iter().any(|(r, _)| matches!(
+        r,
+        TaskRequest::SaveConflictResolution {
+            path,
+            stage: true,
+            delete: true,
+            ..
+        } if path == "gone.txt"
+    )));
+
+    // 5. SpecialConflictLoaded (Binary) closes text modal and opens dedicated ChoiceDialog.
+    ts.dispatch(Action::OpenConflictResolver("assets/logo.png".into()));
+    ts.deliver_engine_event(EngineEvent::SpecialConflictLoaded {
+        info: SpecialConflictInfo {
+            path: "assets/logo.png".into(),
+            kind: SpecialConflictKind::Binary,
+            is_reversed: false,
+            ours: Some(ConflictSideInfo {
+                oid: Oid::from_bytes([0x11; 20]),
+                size: Some(2048),
+                mode: 0o100644,
+            }),
+            theirs: Some(ConflictSideInfo {
+                oid: Oid::from_bytes([0x22; 20]),
+                size: Some(4096),
+                mode: 0o100644,
+            }),
+            ours_label: "HEAD".into(),
+            theirs_label: "feat".into(),
+        },
+        epoch: 4,
+    });
+    assert!(ts.state().modal_stack.conflict_merge().is_none());
+    let bin_txt = screen_text(&ts.render(140, 30));
+    assert!(bin_txt.contains("Binary Conflict"), "{bin_txt}");
+    assert!(bin_txt.contains("1111111"), "{bin_txt}");
+    assert!(bin_txt.contains("2.0 KiB"), "{bin_txt}");
+    assert!(bin_txt.contains("2222222"), "{bin_txt}");
+    assert!(bin_txt.contains("4.0 KiB"), "{bin_txt}");
+    assert!(bin_txt.contains("Accept Yours"), "{bin_txt}");
+    assert!(bin_txt.contains("Accept Theirs"), "{bin_txt}");
+    assert!(bin_txt.contains("Open External Mergetool"), "{bin_txt}");
+    let _ = ts.take_requests();
+    ts.send_key(KeyCode::Enter, KeyModifiers::NONE);
+    let bin_reqs = ts.take_requests();
+    assert!(bin_reqs.iter().any(|(r, _)| matches!(
+        r,
+        TaskRequest::RunGitOp {
+            op: GitOp::AcceptSide { paths, ours: true }
+        } if paths == &vec!["assets/logo.png".to_string()]
+    )));
+}

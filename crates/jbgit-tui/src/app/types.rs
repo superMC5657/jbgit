@@ -365,6 +365,27 @@ pub struct ConflictMergeState {
     pub doc: Option<ConflictDocument>,
     pub selected_block: usize,
     pub scroll: super::ScrollViewport,
+    /// Set when a background status refresh observes that `path` is no longer
+    /// conflicted (e.g. resolved externally outside `jbgit`).
+    pub externally_resolved: bool,
+}
+
+impl ConflictMergeState {
+    /// Adjusts [`Self::scroll`] so the first row of [`Self::selected_block`]
+    /// falls inside the visible conflict viewport.
+    pub fn ensure_selected_block_visible(&mut self) {
+        let Some(doc) = &self.doc else {
+            return;
+        };
+        let Some((first_row, total_rows)) = doc.block_first_row(self.selected_block) else {
+            return;
+        };
+        if let Some(viewport_h) = self.scroll.viewport_height() {
+            self.scroll.ensure_visible(first_row, total_rows, viewport_h);
+        } else {
+            self.scroll.set_offset(first_row);
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -592,6 +613,7 @@ pub enum Effect {
         path: String,
         content: Vec<u8>,
         stage: bool,
+        delete: bool,
     },
     CopyToClipboard(String),
     RunCli {

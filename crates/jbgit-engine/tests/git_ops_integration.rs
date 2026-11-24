@@ -610,6 +610,7 @@ async fn root_commit_fixup_patch_compare_and_conflict_resolution() {
         path: "root.txt".into(),
         content: doc.render_merged().into_bytes(),
         stage: true,
+        delete: false,
     });
     recv_matching(&mut rx, |ev| match ev {
         EngineEvent::ExternalFsChanged(_) => Some(()),
@@ -893,4 +894,422 @@ async fn update_project_stops_on_conflict_and_keeps_stash() {
     git(d, &["merge", "--abort"]);
     git(d, &["stash", "pop"]);
     assert_eq!(fs::read_to_string(d.join("a.txt")).unwrap(), "dirty\n");
+}
+
+#[tokio::test]
+async fn rebase_conflict_reverses_accept_side_and_document_orientation() {
+    use jbgit_core::ConflictChoice;
+
+    let tmp = init_repo();
+    let d = tmp.path();
+    commit_file(d, "shared.txt", "base\n", "base");
+    git(d, &["checkout", "-b", "feat"]);
+    commit_file(d, "shared.txt", "local-feat-change\n", "feat edit");
+    git(d, &["checkout", "main"]);
+    commit_file(d, "shared.txt", "upstream-main-change\n", "main edit");
+    git(d, &["checkout", "feat"]);
+
+    let rb = run(
+        d,
+        GitOp::Rebase {
+            onto: "main".into(),
+            branch: None,
+        },
+    )
+    .await;
+    assert_eq!(rb.failure, Some(GitFailure::Conflicts), "{rb:?}");
+
+    // Loaded conflict document must swap markers/stages so Ours = replayed local commit, Theirs = onto.
+    let loc = RepoLocation::discover(d).unwrap();
+    let (handle, mut rx) = EngineSupervisor::start(loc, false).unwrap();
+    let e1 = handle.request_conflict_document("shared.txt".into());
+    let mut doc = recv_matching(&mut rx, |ev| match ev {
+        EngineEvent::ConflictDocumentLoaded { doc, epoch } if epoch == e1 => Some(doc),
+        _ => None,
+    })
+    .await;
+    assert!(doc.is_reversed, "rebase conflict must set is_reversed");
+    let blk = doc.block(0).unwrap();
+    assert_eq!(blk.ours_lines, vec!["local-feat-change"]);
+    assert_eq!(blk.theirs_lines, vec!["upstream-main-change"]);
+    doc.set_choice(0, ConflictChoice::Ours);
+    assert_eq!(doc.render_resolved(), "local-feat-change\n");
+
+    // AcceptSide { ours: true } during rebase MUST keep the replayed local commit content.
+    let accept_yours = run(
+        d,
+        GitOp::AcceptSide {
+            paths: vec!["shared.txt".into()],
+            ours: true,
+        },
+    )
+    .await;
+    assert!(accept_yours.success, "{accept_yours:?}");
+    assert_eq!(
+        fs::read_to_string(d.join("shared.txt")).unwrap(),
+        "local-feat-change\n"
+    );
+    let porcelain = git(d, &["status", "--porcelain"]);
+    assert!(!porcelain.contains("UU "), "{porcelain}");
+
+    // Abort, re-trigger rebase conflict, and verify AcceptSide { ours: false } keeps upstream (onto).
+    git(d, &["rebase", "--abort"]);
+    let rb2 = run(
+        d,
+        GitOp::Rebase {
+            onto: "main".into(),
+            branch: None,
+        },
+    )
+    .await;
+    assert_eq!(rb2.failure, Some(GitFailure::Conflicts), "{rb2:?}");
+    let accept_theirs = run(
+        d,
+        GitOp::AcceptSide {
+            paths: vec!["shared.txt".into()],
+            ours: false,
+        },
+    )
+    .await;
+    assert!(accept_theirs.success, "{accept_theirs:?}");
+    assert_eq!(
+        fs::read_to_string(d.join("shared.txt")).unwrap(),
+        "upstream-main-change\n"
+    );
+    let porcelain2 = git(d, &["status", "--porcelain"]);
+    assert!(!porcelain2.contains("UU "), "{porcelain2}");
+}
+
+#[tokio::test]
+async fn delete_modify_conflicts_resolve_via_git_rm_and_save_delete() {
+    use jbgit_core::{ConflictChoice, ConflictSidePresence};
+
+    let tmp = init_repo();
+    let d = tmp.path();
+    commit_file(d, "keep.txt", "anchor\n", "base");
+    commit_file(d, "del_them.txt", "v1\n", "add del_them");
+    commit_file(d, "del_us.txt", "v1\n", "add del_us");
+
+    // Branch `them` deletes del_them.txt and modifies del_us.txt.
+    git(d, &["checkout", "-b", "them"]);
+    git(d, &["rm", "del_them.txt"]);
+    git(d, &["commit", "-m", "them deletes del_them"]);
+    commit_file(d, "del_us.txt", "them-edit\n", "them edits del_us");
+
+    // `main` modifies del_them.txt and deletes del_us.txt.
+    git(d, &["checkout", "main"]);
+    commit_file(d, "del_them.txt", "main-edit\n", "main edits del_them");
+    git(d, &["rm", "del_us.txt"]);
+    git(d, &["commit", "-m", "main deletes del_us"]);
+
+    let merge = run(
+        d,
+        GitOp::Merge {
+            rev: "them".into(),
+            options: Default::default(),
+        },
+    )
+    .await;
+    assert_eq!(merge.failure, Some(GitFailure::Conflicts), "{merge:?}");
+
+    let loc = RepoLocation::discover(d).unwrap();
+    let (handle, mut rx) = EngineSupervisor::start(loc, false).unwrap();
+
+    // Load both conflicts and verify side_presence classification.
+    let e1 = handle.request_conflict_document("del_them.txt".into());
+    let mut doc_them = recv_matching(&mut rx, |ev| match ev {
+        EngineEvent::ConflictDocumentLoaded { doc, epoch } if epoch == e1 => Some(doc),
+        _ => None,
+    })
+    .await;
+    assert_eq!(doc_them.side_presence, ConflictSidePresence::DeletedByTheirs);
+
+    let e2 = handle.request_conflict_document("del_us.txt".into());
+    let doc_us = recv_matching(&mut rx, |ev| match ev {
+        EngineEvent::ConflictDocumentLoaded { doc, epoch } if epoch == e2 => Some(doc),
+        _ => None,
+    })
+    .await;
+    assert_eq!(doc_us.side_presence, ConflictSidePresence::DeletedByOurs);
+
+    // 1. AcceptSide choosing deleted side on DeletedByTheirs runs `git rm -f` and clears conflict.
+    let accept_del_them = run(
+        d,
+        GitOp::AcceptSide {
+            paths: vec!["del_them.txt".into()],
+            ours: false,
+        },
+    )
+    .await;
+    assert!(accept_del_them.success, "{accept_del_them:?}");
+    assert!(!d.join("del_them.txt").exists());
+    let st1 = git(d, &["status", "--porcelain"]);
+    assert!(
+        !st1.contains("UD del_them.txt") && !st1.contains("DU del_them.txt"),
+        "{st1}"
+    );
+    assert!(st1.contains("D  del_them.txt"), "{st1}");
+
+    // 2. AcceptSide choosing deleted side on DeletedByOurs runs `git rm -f` and clears conflict.
+    let accept_del_us = run(
+        d,
+        GitOp::AcceptSide {
+            paths: vec!["del_us.txt".into()],
+            ours: true,
+        },
+    )
+    .await;
+    assert!(accept_del_us.success, "{accept_del_us:?}");
+    assert!(!d.join("del_us.txt").exists());
+    let st2 = git(d, &["status", "--porcelain"]);
+    assert!(
+        !st2.contains("DU del_us.txt") && !st2.contains("UD del_us.txt"),
+        "{st2}"
+    );
+
+    // 3. Three-pane SaveConflictResolution { delete: true, stage: true } removes worktree + index stages.
+    git(d, &["merge", "--abort"]);
+    let merge2 = run(
+        d,
+        GitOp::Merge {
+            rev: "them".into(),
+            options: Default::default(),
+        },
+    )
+    .await;
+    assert_eq!(merge2.failure, Some(GitFailure::Conflicts));
+    doc_them.set_choice(0, ConflictChoice::Theirs);
+    assert!(doc_them.deletes_file());
+    let _ = handle.dispatch(TaskRequest::SaveConflictResolution {
+        path: "del_them.txt".into(),
+        content: Vec::new(),
+        stage: true,
+        delete: true,
+    });
+    recv_matching(&mut rx, |ev| match ev {
+        EngineEvent::ExternalFsChanged(_) => Some(()),
+        _ => None,
+    })
+    .await;
+    assert!(!d.join("del_them.txt").exists());
+    let st3 = git(d, &["status", "--porcelain"]);
+    assert!(st3.contains("D  del_them.txt"), "{st3}");
+}
+
+#[tokio::test]
+async fn conflict_resolution_preserves_crlf_line_endings_on_disk() {
+    use jbgit_core::{ConflictChoice, LineEnding};
+
+    let tmp = init_repo();
+    let d = tmp.path();
+    fs::write(d.join("win.txt"), b"header\r\nbase\r\nfooter\r\n").unwrap();
+    git(d, &["add", "win.txt"]);
+    git(d, &["commit", "-m", "base crlf"]);
+
+    git(d, &["checkout", "-b", "side"]);
+    fs::write(d.join("win.txt"), b"header\r\nside-line\r\nfooter\r\n").unwrap();
+    git(d, &["add", "win.txt"]);
+    git(d, &["commit", "-m", "side crlf"]);
+
+    git(d, &["checkout", "main"]);
+    fs::write(d.join("win.txt"), b"header\r\nmain-line\r\nfooter\r\n").unwrap();
+    git(d, &["add", "win.txt"]);
+    git(d, &["commit", "-m", "main crlf"]);
+
+    let merge = run(
+        d,
+        GitOp::Merge {
+            rev: "side".into(),
+            options: Default::default(),
+        },
+    )
+    .await;
+    assert_eq!(merge.failure, Some(GitFailure::Conflicts), "{merge:?}");
+
+    let loc = RepoLocation::discover(d).unwrap();
+    let (handle, mut rx) = EngineSupervisor::start(loc, false).unwrap();
+    let e1 = handle.request_conflict_document("win.txt".into());
+    let mut doc = recv_matching(&mut rx, |ev| match ev {
+        EngineEvent::ConflictDocumentLoaded { doc, epoch } if epoch == e1 => Some(doc),
+        _ => None,
+    })
+    .await;
+    assert_eq!(doc.line_ending, LineEnding::Crlf);
+    assert!(doc.has_trailing_newline);
+
+    doc.set_choice(0, ConflictChoice::Ours);
+    let _ = handle.dispatch(TaskRequest::SaveConflictResolution {
+        path: "win.txt".into(),
+        content: doc.render_resolved().into_bytes(),
+        stage: true,
+        delete: false,
+    });
+    recv_matching(&mut rx, |ev| match ev {
+        EngineEvent::ExternalFsChanged(_) => Some(()),
+        _ => None,
+    })
+    .await;
+    let raw = fs::read(d.join("win.txt")).unwrap();
+    assert_eq!(raw, b"header\r\nmain-line\r\nfooter\r\n");
+}
+
+#[tokio::test]
+async fn binary_conflict_loads_special_conflict_descriptor_with_side_metadata() {
+    use jbgit_core::SpecialConflictKind;
+
+    let tmp = init_repo();
+    let d = tmp.path();
+    let base_bin = [0x89, b'P', b'N', b'G', 0x00, 0x01, 0x02, 0x03];
+    let side_bin = [0x89, b'P', b'N', b'G', 0x00, 0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x11];
+    let main_bin = [
+        0x89, b'P', b'N', b'G', 0x00, 0x10, 0x20, 0x30, 0x40, 0x50, 0x60, 0x70, 0x80, 0x90, 0xA0,
+        0xB0,
+    ];
+
+    fs::write(d.join("asset.bin"), base_bin).unwrap();
+    git(d, &["add", "asset.bin"]);
+    git(d, &["commit", "-m", "base bin"]);
+
+    git(d, &["checkout", "-b", "side"]);
+    fs::write(d.join("asset.bin"), side_bin).unwrap();
+    git(d, &["add", "asset.bin"]);
+    git(d, &["commit", "-m", "side bin"]);
+
+    git(d, &["checkout", "main"]);
+    fs::write(d.join("asset.bin"), main_bin).unwrap();
+    git(d, &["add", "asset.bin"]);
+    git(d, &["commit", "-m", "main bin"]);
+
+    let merge = run(
+        d,
+        GitOp::Merge {
+            rev: "side".into(),
+            options: Default::default(),
+        },
+    )
+    .await;
+    assert_eq!(merge.failure, Some(GitFailure::Conflicts), "{merge:?}");
+
+    let loc = RepoLocation::discover(d).unwrap();
+    let (handle, mut rx) = EngineSupervisor::start(loc, false).unwrap();
+    let e1 = handle.request_conflict_document("asset.bin".into());
+    let info = recv_matching(&mut rx, |ev| match ev {
+        EngineEvent::SpecialConflictLoaded { info, epoch } if epoch == e1 => Some(info),
+        EngineEvent::ConflictDocumentLoaded { epoch, .. } if epoch == e1 => {
+            panic!("binary conflict must not load as a plain text ConflictDocument");
+        }
+        _ => None,
+    })
+    .await;
+    assert_eq!(info.path, "asset.bin");
+    assert_eq!(info.kind, SpecialConflictKind::Binary);
+    assert!(!info.is_reversed);
+    assert_eq!(info.ours.as_ref().and_then(|s| s.size), Some(main_bin.len() as u64));
+    assert_eq!(info.theirs.as_ref().and_then(|s| s.size), Some(side_bin.len() as u64));
+}
+
+#[tokio::test]
+async fn submodule_gitlink_and_directory_conflicts_load_special_descriptors() {
+    use jbgit_core::SpecialConflictKind;
+
+    // 1. Submodule gitlink (mode 0o160000) conflict.
+    let sub_tmp = init_repo();
+    let sd = sub_tmp.path();
+    commit_file(sd, "s.txt", "v1\n", "sub v1");
+    let sub_c1 = rev(sd, "HEAD");
+    commit_file(sd, "s.txt", "v2\n", "sub v2");
+    let sub_c2 = rev(sd, "HEAD");
+    commit_file(sd, "s.txt", "v3\n", "sub v3");
+    let sub_c3 = rev(sd, "HEAD");
+
+    let tmp = init_repo();
+    let d = tmp.path();
+    commit_file(d, "root.txt", "root\n", "root");
+    git(
+        d,
+        &[
+            "update-index",
+            "--add",
+            "--cacheinfo",
+            &format!("160000,{sub_c1},deps/sub"),
+        ],
+    );
+    git(d, &["commit", "-m", "add gitlink"]);
+
+    git(d, &["checkout", "-b", "side"]);
+    git(
+        d,
+        &[
+            "update-index",
+            "--cacheinfo",
+            &format!("160000,{sub_c2},deps/sub"),
+        ],
+    );
+    git(d, &["commit", "-m", "side bump gitlink"]);
+
+    git(d, &["checkout", "main"]);
+    git(
+        d,
+        &[
+            "update-index",
+            "--cacheinfo",
+            &format!("160000,{sub_c3},deps/sub"),
+        ],
+    );
+    git(d, &["commit", "-m", "main bump gitlink"]);
+
+    let merge = run(
+        d,
+        GitOp::Merge {
+            rev: "side".into(),
+            options: Default::default(),
+        },
+    )
+    .await;
+    assert_eq!(merge.failure, Some(GitFailure::Conflicts), "{merge:?}");
+
+    let loc = RepoLocation::discover(d).unwrap();
+    let (handle, mut rx) = EngineSupervisor::start(loc, false).unwrap();
+    let e1 = handle.request_conflict_document("deps/sub".into());
+    let info = recv_matching(&mut rx, |ev| match ev {
+        EngineEvent::SpecialConflictLoaded { info, epoch } if epoch == e1 => Some(info),
+        EngineEvent::ConflictDocumentLoaded { epoch, .. } if epoch == e1 => {
+            panic!("submodule gitlink conflict must not load as text");
+        }
+        _ => None,
+    })
+    .await;
+    assert_eq!(info.kind, SpecialConflictKind::Submodule);
+    assert_eq!(info.ours.as_ref().map(|s| s.oid), Some(sub_c3));
+    assert_eq!(info.theirs.as_ref().map(|s| s.oid), Some(sub_c2));
+    assert_eq!(info.ours.as_ref().map(|s| s.mode), Some(0o160_000));
+
+    // 2. Directory/file conflict (worktree path is a directory).
+    git(d, &["merge", "--abort"]);
+    git(d, &["checkout", "-b", "dir_side"]);
+    fs::create_dir_all(d.join("slot")).unwrap();
+    commit_file(d, "slot/nested.txt", "nested\n", "add dir slot");
+    git(d, &["checkout", "main"]);
+    commit_file(d, "slot", "file content\n", "add file slot");
+
+    let merge_df = run(
+        d,
+        GitOp::Merge {
+            rev: "dir_side".into(),
+            options: Default::default(),
+        },
+    )
+    .await;
+    assert_eq!(merge_df.failure, Some(GitFailure::Conflicts), "{merge_df:?}");
+
+    let e2 = handle.request_conflict_document("slot".into());
+    let dir_info = recv_matching(&mut rx, |ev| match ev {
+        EngineEvent::SpecialConflictLoaded { info, epoch } if epoch == e2 => Some(info),
+        EngineEvent::ConflictDocumentLoaded { epoch, .. } if epoch == e2 => {
+            panic!("directory/file conflict must not load as text");
+        }
+        _ => None,
+    })
+    .await;
+    assert_eq!(dir_info.kind, SpecialConflictKind::Directory);
 }

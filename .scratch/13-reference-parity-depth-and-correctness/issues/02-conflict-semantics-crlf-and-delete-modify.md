@@ -1,6 +1,6 @@
 # 02: 冲突语义反转（Rebase）、Delete/Modify 采纳、CRLF 保护与二进制护栏
 
-Status: ready-for-agent
+Status: resolved
 Spec: [../spec.md](../spec.md)
 Milestone: M10 — reference 深度对齐与正确性加固
 Priority: P0
@@ -27,17 +27,17 @@ Priority: P0
 
 ## 2. 任务清单
 
-- [ ] **Rebase / Unstash 冲突方向翻转**：
+- [x] **Rebase / Unstash 冲突方向翻转**：
   - 在 `jbgit-core` 定义纯函数 `is_reverse_conflict_state(state: &RepositoryState) -> bool`（`Rebase` / `RebaseInteractive` / `RebaseMerge` 返回 `true`）；
   - `GitOp::AcceptSide` 编译与 `load_conflict_document_sync` 统一按 `is_reverse_conflict_state` 映射 `--ours`/`--theirs` 及 index `:2`/`:3`，确保界面上的 **Yours（你的提交）** 与 **Theirs（上游/对方）** 在 Merge 与 Rebase 下语义一致，并在三栏标题栏显示实际侧名称（如 `Yours (replayed)` / `Theirs (onto)`）。
-- [ ] **Delete/Modify 与 Both-Deleted 冲突的正确采纳**：
+- [x] **Delete/Modify 与 Both-Deleted 冲突的正确采纳**：
   - `GitOp::AcceptSide` 执行前（在引擎 `ops.rs` 中）查询目标路径的 `IndexConflict` 状态（`:1`/`:2`/`:3` 存在性）：
     - 被采纳侧存在 blob → `git checkout --ours/--theirs -- <path>` + `git add -- <path>`；
     - 被采纳侧为删除（该 stage 为 `None`）→ `git rm -f -- <path>`；
   - 在三栏冲突弹窗中对 Delete/Modify 冲突提供明确的「保留文件」/「删除文件」决策路径，保存时支持删除路径并暂存删除。
-- [ ] **行尾符（CRLF / LF）与末尾换行符无损保留**：
+- [x] **行尾符（CRLF / LF）与末尾换行符无损保留**：
   - `ConflictDocument` 记录原始 `line_ending: LineEnding`（`CrLf` / `Lf`）与 `has_trailing_newline: bool`（基于原文统计，兼容混合换行），`render_resolved()` 按原始行尾还原写盘，不再把 CRLF 文件洗成 LF。
-- [ ] **二进制与子模块冲突护栏 + 视口跟随**：
+- [x] **二进制与子模块冲突护栏 + 视口跟随**：
   - `load_conflict_document_sync` 检测 `:2`/`:3` 或工作区内容是否为二进制（复用 8 KiB NUL 嗅探）或子模块 gitlink（`0o160000`）；若是，不打开乱码文本三栏视图，而是弹出专用选择对话框（展示两侧大小/OID，直接选择 Accept Yours / Accept Theirs / 外部 mergetool）；
   - `Action::ConflictSelectBlock`（`n`/`p` 或点击块）自动调整 `ConflictMergeState::scroll` 使选中冲突块首行落入可见区；并在后台快照刷新发现当前路径冲突已被外部解决时给出失效提示。
 

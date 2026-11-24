@@ -277,6 +277,7 @@ fn switch_guards_confirm_running_work_and_reject_bad_targets() {
                 doc: Some(doc),
                 selected_block: 0,
                 scroll: Default::default(),
+                externally_resolved: false,
             },
         )));
     ts.dispatch(Action::SwitchRepository(feature.clone()));

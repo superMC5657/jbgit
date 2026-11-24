@@ -2,8 +2,10 @@ use std::path::Path;
 
 use git2::{BranchType, Repository, Sort};
 use jbgit_core::{
-    CommitSummary, ConflictDocument, EpochToken, Oid, RefInfo, RefKind, RemoteInfo, RepoSnapshot,
-    WorktreeInfo,
+    CommitSummary, ConflictDocument, ConflictParseOptions, ConflictSideInfo, ConflictSidePresence,
+    EpochToken, LoadedConflict, Oid, RefInfo, RefKind, RemoteInfo, RepoSnapshot,
+    SpecialConflictInfo, SpecialConflictKind, WorktreeInfo, is_binary_bytes,
+    is_reverse_conflict_state,
 };
 
 use crate::error::EngineError;
@@ -17,15 +19,102 @@ use super::scan_config::{
 };
 use super::worker_pool::with_thread_repo;
 
+const GITLINK_MODE: u32 = 0o160_000;
+
+fn resolve_rebase_onto_label(repo: &Repository, git_dir: &Path) -> Option<String> {
+    let hex = ["rebase-merge", "rebase-apply"]
+        .iter()
+        .find_map(|d| std::fs::read_to_string(git_dir.join(d).join("onto")).ok())?;
+    let oid: Oid = hex.trim().parse().ok()?;
+    let target = git2::Oid::from_bytes(oid.as_bytes()).ok();
+    if let Some(target_oid) = target
+        && let Ok(branches) = repo.branches(None)
+    {
+        let mut best: Option<(u8, String)> = None;
+        for (branch, branch_type) in branches.flatten() {
+            if branch.get().target() == Some(target_oid)
+                && let Ok(Some(name)) = branch.name()
+            {
+                let rank = match branch_type {
+                    BranchType::Local => 0,
+                    BranchType::Remote => 1,
+                };
+                if best.as_ref().is_none_or(|(r, _)| rank < *r) {
+                    best = Some((rank, name.to_string()));
+                }
+            }
+        }
+        if let Some((_, name)) = best {
+            return Some(name);
+        }
+    }
+    Some(oid.short())
+}
+
+fn resolve_rebase_replayed_label(
+    state: &jbgit_core::RepositoryState,
+    git_dir: &Path,
+) -> Option<String> {
+    match state {
+        jbgit_core::RepositoryState::Rebase { branch: Some(b), .. }
+        | jbgit_core::RepositoryState::RebaseInteractive { branch: Some(b), .. }
+        | jbgit_core::RepositoryState::RebaseMerge { branch: Some(b), .. } => {
+            return Some(b.clone());
+        }
+        _ => {}
+    }
+    for (dir, file) in [
+        ("rebase-merge", "stopped-sha"),
+        ("rebase-apply", "original-commit"),
+    ] {
+        if let Ok(raw) = std::fs::read_to_string(git_dir.join(dir).join(file))
+            && let Ok(oid) = raw.trim().parse::<Oid>()
+        {
+            return Some(oid.short());
+        }
+    }
+    None
+}
+
+fn side_info_from_entry(repo: &Repository, entry: &git2::IndexEntry) -> ConflictSideInfo {
+    let size = if entry.mode == GITLINK_MODE {
+        None
+    } else {
+        repo.find_blob(entry.id).ok().map(|b| b.size() as u64)
+    };
+    ConflictSideInfo {
+        oid: to_core_oid(entry.id),
+        size,
+        mode: entry.mode,
+    }
+}
+
 pub(crate) fn load_conflict_document_sync(
     location: &RepoLocation,
     path: &str,
-) -> Result<ConflictDocument, EngineError> {
-    let worktree_bytes = std::fs::read(location.workdir.join(path)).unwrap_or_default();
-    let worktree_text = String::from_utf8_lossy(&worktree_bytes);
-    let (index_ours, index_theirs) = with_thread_repo(&location.git_dir, |repo| {
-        let mut ours = None;
-        let mut theirs = None;
+) -> Result<LoadedConflict, EngineError> {
+    let norm_path = path.replace('\\', "/");
+    let full_path = location.workdir.join(path);
+
+    with_thread_repo(&location.git_dir, |repo| {
+        let probe = probe_repo_state(repo);
+        let is_reversed = is_reverse_conflict_state(&probe.state);
+        let replayed_label = if is_reversed {
+            resolve_rebase_replayed_label(&probe.state, &location.git_dir)
+        } else {
+            None
+        };
+        let onto_label = if is_reversed {
+            resolve_rebase_onto_label(repo, &location.git_dir)
+        } else {
+            None
+        };
+
+        let mut found_conflict = false;
+        let mut ancestor_entry = None;
+        let mut raw_our = None;
+        let mut raw_their = None;
+
         if let Ok(index) = repo.index()
             && let Ok(conflicts) = index.conflicts()
         {
@@ -36,29 +125,128 @@ pub(crate) fn load_conflict_document_sync(
                     .or(item.their.as_ref())
                     .or(item.ancestor.as_ref())
                     .map(|e| String::from_utf8_lossy(&e.path).replace('\\', "/"));
-                if entry_path.as_deref() == Some(path) {
-                    if let Some(our) = item.our
-                        && let Ok(blob) = repo.find_blob(our.id)
-                    {
-                        ours = Some(String::from_utf8_lossy(blob.content()).into_owned());
-                    }
-                    if let Some(their) = item.their
-                        && let Ok(blob) = repo.find_blob(their.id)
-                    {
-                        theirs = Some(String::from_utf8_lossy(blob.content()).into_owned());
-                    }
+                if entry_path.as_deref() == Some(norm_path.as_str()) {
+                    found_conflict = true;
+                    ancestor_entry = item.ancestor;
+                    raw_our = item.our;
+                    raw_their = item.their;
                     break;
                 }
             }
         }
-        Ok((ours, theirs))
-    })?;
-    Ok(ConflictDocument::parse(
-        path,
-        &worktree_text,
-        index_ours.as_deref(),
-        index_theirs.as_deref(),
-    ))
+
+        let (yours_entry, theirs_entry) = if is_reversed {
+            (raw_their, raw_our)
+        } else {
+            (raw_our, raw_their)
+        };
+
+        let ours_info = yours_entry
+            .as_ref()
+            .map(|e| side_info_from_entry(repo, e));
+        let theirs_info = theirs_entry
+            .as_ref()
+            .map(|e| side_info_from_entry(repo, e));
+        let special_ours_label = replayed_label
+            .clone()
+            .unwrap_or_else(|| if is_reversed { "replayed" } else { "HEAD" }.to_string());
+        let special_theirs_label = onto_label
+            .clone()
+            .unwrap_or_else(|| if is_reversed { "onto" } else { "Incoming" }.to_string());
+
+        let is_submodule = ancestor_entry
+            .as_ref()
+            .is_some_and(|e| e.mode == GITLINK_MODE)
+            || yours_entry.as_ref().is_some_and(|e| e.mode == GITLINK_MODE)
+            || theirs_entry
+                .as_ref()
+                .is_some_and(|e| e.mode == GITLINK_MODE);
+        if is_submodule {
+            return Ok(LoadedConflict::Special(SpecialConflictInfo {
+                path: path.to_string(),
+                kind: SpecialConflictKind::Submodule,
+                is_reversed,
+                ours: ours_info,
+                theirs: theirs_info,
+                ours_label: special_ours_label,
+                theirs_label: special_theirs_label,
+            }));
+        }
+
+        if full_path.is_dir() {
+            return Ok(LoadedConflict::Special(SpecialConflictInfo {
+                path: path.to_string(),
+                kind: SpecialConflictKind::Directory,
+                is_reversed,
+                ours: ours_info,
+                theirs: theirs_info,
+                ours_label: special_ours_label,
+                theirs_label: special_theirs_label,
+            }));
+        }
+
+        let yours_bytes = yours_entry
+            .as_ref()
+            .and_then(|e| repo.find_blob(e.id).ok())
+            .map(|b| b.content().to_vec());
+        let theirs_bytes = theirs_entry
+            .as_ref()
+            .and_then(|e| repo.find_blob(e.id).ok())
+            .map(|b| b.content().to_vec());
+        let worktree_bytes = if full_path.is_file() {
+            std::fs::read(&full_path).unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+
+        let is_binary = yours_bytes.as_deref().is_some_and(is_binary_bytes)
+            || theirs_bytes.as_deref().is_some_and(is_binary_bytes)
+            || is_binary_bytes(&worktree_bytes);
+        if is_binary {
+            return Ok(LoadedConflict::Special(SpecialConflictInfo {
+                path: path.to_string(),
+                kind: SpecialConflictKind::Binary,
+                is_reversed,
+                ours: ours_info,
+                theirs: theirs_info,
+                ours_label: special_ours_label,
+                theirs_label: special_theirs_label,
+            }));
+        }
+
+        let side_presence = if found_conflict {
+            match (yours_entry.is_some(), theirs_entry.is_some()) {
+                (true, true) => ConflictSidePresence::BothPresent,
+                (true, false) => ConflictSidePresence::DeletedByTheirs,
+                (false, true) => ConflictSidePresence::DeletedByOurs,
+                (false, false) => ConflictSidePresence::BothDeleted,
+            }
+        } else {
+            ConflictSidePresence::BothPresent
+        };
+
+        let worktree_text = String::from_utf8_lossy(&worktree_bytes);
+        let ours_text = yours_bytes
+            .as_deref()
+            .map(|b| String::from_utf8_lossy(b).into_owned());
+        let theirs_text = theirs_bytes
+            .as_deref()
+            .map(|b| String::from_utf8_lossy(b).into_owned());
+
+        let doc = ConflictDocument::parse_with_options(
+            path,
+            &worktree_text,
+            ours_text.as_deref(),
+            theirs_text.as_deref(),
+            ConflictParseOptions {
+                is_reversed,
+                side_presence,
+                default_ours_label: replayed_label.as_deref(),
+                default_theirs_label: onto_label.as_deref(),
+            },
+        );
+        Ok(LoadedConflict::Text(doc))
+    })
 }
 
 pub fn load_repo_snapshot_with_config_sync(

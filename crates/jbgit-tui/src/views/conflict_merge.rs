@@ -90,6 +90,27 @@ pub fn render_conflict_merge_modal(
     let theirs_title = active_block.map_or(i18n.t("conflict_merge.theirs_default"), |b| {
         b.theirs_label.as_str()
     });
+    let ours_col_text = if doc.is_reversed {
+        if ours_title == "replayed" || ours_title.is_empty() {
+            i18n.t("conflict_merge.ours_col_rebase_plain").to_string()
+        } else {
+            i18n.t_fmt("conflict_merge.ours_col_rebase", &[("title", ours_title)])
+        }
+    } else {
+        i18n.t_fmt("conflict_merge.ours_col", &[("title", ours_title)])
+    };
+    let theirs_col_text = if doc.is_reversed {
+        if theirs_title == "onto" || theirs_title.is_empty() {
+            i18n.t("conflict_merge.theirs_col_rebase_plain").to_string()
+        } else {
+            i18n.t_fmt(
+                "conflict_merge.theirs_col_rebase",
+                &[("title", theirs_title)],
+            )
+        }
+    } else {
+        i18n.t_fmt("conflict_merge.theirs_col", &[("title", theirs_title)])
+    };
     let pad_col = |t: &str, w: u16| {
         let trunc = truncate_to_width(t, w as usize);
         let pad = (w as usize).saturating_sub(trunc.width());
@@ -97,10 +118,7 @@ pub fn render_conflict_merge_modal(
     };
     let hdr = Line::from(vec![
         Span::styled(
-            pad_col(
-                &i18n.t_fmt("conflict_merge.ours_col", &[("title", ours_title)]),
-                col_w,
-            ),
+            pad_col(&ours_col_text, col_w),
             Style::default()
                 .fg(ctx.theme.status_added)
                 .bg(ctx.theme.bg_panel)
@@ -116,10 +134,7 @@ pub fn render_conflict_merge_modal(
         ),
         Span::styled("│", Style::default().fg(ctx.theme.border_splitter)),
         Span::styled(
-            pad_col(
-                &i18n.t_fmt("conflict_merge.theirs_col", &[("title", theirs_title)]),
-                right_w,
-            ),
+            pad_col(&theirs_col_text, right_w),
             Style::default()
                 .fg(ctx.theme.fg_accent_link)
                 .bg(ctx.theme.bg_panel)
@@ -128,13 +143,35 @@ pub fn render_conflict_merge_modal(
     ]);
     frame.render_widget(Paragraph::new(hdr), header_rect);
 
-    let body_h = inner.height.saturating_sub(3) as usize;
+    let stale_rows: u16 = if cm.externally_resolved {
+        let warn_rect = Rect::new(inner.x, inner.y + 1, inner.width, 1);
+        frame.render_widget(
+            Paragraph::new(Span::styled(
+                truncate_to_width(
+                    i18n.t("conflict_merge.externally_resolved_banner"),
+                    inner.width as usize,
+                ),
+                Style::default()
+                    .fg(ctx.theme.status_conflicted)
+                    .bg(ctx.theme.bg_panel)
+                    .add_modifier(Modifier::BOLD),
+            ))
+            .style(Style::default().bg(ctx.theme.bg_panel)),
+            warn_rect,
+        );
+        1
+    } else {
+        0
+    };
+
+    let body_start_y = inner.y + 1 + stale_rows;
+    let body_h = inner.height.saturating_sub(3 + stale_rows) as usize;
     let rows = doc.three_pane_rows();
     let max_scroll = rows.len().saturating_sub(body_h.max(1));
     ctx.record_scroll_bound(crate::app::ScrollPane::ConflictMerge, body_h.max(1), max_scroll);
     let scroll = cm.scroll.offset().min(max_scroll);
     for (vis, row) in rows.iter().skip(scroll).take(body_h).enumerate() {
-        let y = inner.y + 1 + vis as u16;
+        let y = body_start_y + vis as u16;
         let line_rect = Rect::new(inner.x, y, inner.width, 1);
         let is_active = row.block_idx == Some(cm.selected_block);
         let (ours_bg, mid_bg, theirs_bg) = match row.choice {
@@ -186,9 +223,14 @@ pub fn render_conflict_merge_modal(
     }
 
     let hint_y = inner.bottom().saturating_sub(2);
+    let hint_text = if doc.is_delete_modify() {
+        i18n.t("conflict_merge.hint_delete_modify")
+    } else {
+        i18n.t("conflict_merge.hint")
+    };
     frame.render_widget(
         Paragraph::new(Span::styled(
-            truncate_to_width(i18n.t("conflict_merge.hint"), inner.width as usize),
+            truncate_to_width(hint_text, inner.width as usize),
             Style::default().fg(ctx.theme.fg_muted),
         ))
         .style(Style::default().bg(ctx.theme.bg_panel)),
@@ -196,25 +238,51 @@ pub fn render_conflict_merge_modal(
     );
 
     let btn_y = inner.bottom().saturating_sub(1);
-    let buttons = [
-        (i18n.t("conflict_merge.btn_ours"), ConflictMergeButtonKind::AcceptOurs, false),
-        (i18n.t("conflict_merge.btn_theirs"), ConflictMergeButtonKind::AcceptTheirs, false),
-        (i18n.t("conflict_merge.btn_both"), ConflictMergeButtonKind::AcceptBoth, false),
-        (i18n.t("conflict_merge.btn_all_ours"), ConflictMergeButtonKind::AcceptAllOurs, false),
-        (i18n.t("conflict_merge.btn_all_theirs"), ConflictMergeButtonKind::AcceptAllTheirs, false),
-        (i18n.t("conflict_merge.btn_mergetool"), ConflictMergeButtonKind::Mergetool, false),
-        (i18n.t("conflict_merge.btn_editor"), ConflictMergeButtonKind::ExternalEditor, false),
-        (
-            if doc.unresolved_count() == 0 {
-                i18n.t("conflict_merge.btn_save_stage")
-            } else {
-                i18n.t("conflict_merge.btn_save")
-            },
-            ConflictMergeButtonKind::SaveAndStage,
-            true,
-        ),
-        (i18n.t("conflict_merge.btn_close"), ConflictMergeButtonKind::Cancel, false),
-    ];
+    let save_label = if doc.deletes_file() {
+        i18n.t("conflict_merge.btn_delete_stage")
+    } else if doc.unresolved_count() == 0 {
+        i18n.t("conflict_merge.btn_save_stage")
+    } else {
+        i18n.t("conflict_merge.btn_save")
+    };
+    let buttons: Vec<(&str, ConflictMergeButtonKind, bool)> = if doc.is_delete_modify() {
+        vec![
+            (
+                if doc.side_presence.ours_deleted() {
+                    i18n.t("conflict_merge.btn_delete_file")
+                } else {
+                    i18n.t("conflict_merge.btn_keep_ours")
+                },
+                ConflictMergeButtonKind::AcceptOurs,
+                false,
+            ),
+            (
+                if doc.side_presence.theirs_deleted() {
+                    i18n.t("conflict_merge.btn_delete_file")
+                } else {
+                    i18n.t("conflict_merge.btn_keep_theirs")
+                },
+                ConflictMergeButtonKind::AcceptTheirs,
+                false,
+            ),
+            (i18n.t("conflict_merge.btn_mergetool"), ConflictMergeButtonKind::Mergetool, false),
+            (i18n.t("conflict_merge.btn_editor"), ConflictMergeButtonKind::ExternalEditor, false),
+            (save_label, ConflictMergeButtonKind::SaveAndStage, true),
+            (i18n.t("conflict_merge.btn_close"), ConflictMergeButtonKind::Cancel, false),
+        ]
+    } else {
+        vec![
+            (i18n.t("conflict_merge.btn_ours"), ConflictMergeButtonKind::AcceptOurs, false),
+            (i18n.t("conflict_merge.btn_theirs"), ConflictMergeButtonKind::AcceptTheirs, false),
+            (i18n.t("conflict_merge.btn_both"), ConflictMergeButtonKind::AcceptBoth, false),
+            (i18n.t("conflict_merge.btn_all_ours"), ConflictMergeButtonKind::AcceptAllOurs, false),
+            (i18n.t("conflict_merge.btn_all_theirs"), ConflictMergeButtonKind::AcceptAllTheirs, false),
+            (i18n.t("conflict_merge.btn_mergetool"), ConflictMergeButtonKind::Mergetool, false),
+            (i18n.t("conflict_merge.btn_editor"), ConflictMergeButtonKind::ExternalEditor, false),
+            (save_label, ConflictMergeButtonKind::SaveAndStage, true),
+            (i18n.t("conflict_merge.btn_close"), ConflictMergeButtonKind::Cancel, false),
+        ]
+    };
     let mut bx = inner.x + 1;
     for (label, kind, primary) in buttons {
         let w = label.width() as u16;
