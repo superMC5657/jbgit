@@ -185,6 +185,10 @@ pub(crate) fn load_conflict_document_sync(
             }));
         }
 
+        let base_bytes = ancestor_entry
+            .as_ref()
+            .and_then(|e| repo.find_blob(e.id).ok())
+            .map(|b| b.content().to_vec());
         let yours_bytes = yours_entry
             .as_ref()
             .and_then(|e| repo.find_blob(e.id).ok())
@@ -199,7 +203,8 @@ pub(crate) fn load_conflict_document_sync(
             Vec::new()
         };
 
-        let is_binary = yours_bytes.as_deref().is_some_and(is_binary_bytes)
+        let is_binary = base_bytes.as_deref().is_some_and(is_binary_bytes)
+            || yours_bytes.as_deref().is_some_and(is_binary_bytes)
             || theirs_bytes.as_deref().is_some_and(is_binary_bytes)
             || is_binary_bytes(&worktree_bytes);
         if is_binary {
@@ -226,6 +231,9 @@ pub(crate) fn load_conflict_document_sync(
         };
 
         let worktree_text = String::from_utf8_lossy(&worktree_bytes);
+        let base_text = base_bytes
+            .as_deref()
+            .map(|b| String::from_utf8_lossy(b).into_owned());
         let ours_text = yours_bytes
             .as_deref()
             .map(|b| String::from_utf8_lossy(b).into_owned());
@@ -233,18 +241,30 @@ pub(crate) fn load_conflict_document_sync(
             .as_deref()
             .map(|b| String::from_utf8_lossy(b).into_owned());
 
-        let doc = ConflictDocument::parse_with_options(
-            path,
-            &worktree_text,
-            ours_text.as_deref(),
-            theirs_text.as_deref(),
-            ConflictParseOptions {
-                is_reversed,
-                side_presence,
-                default_ours_label: replayed_label.as_deref(),
-                default_theirs_label: onto_label.as_deref(),
-            },
-        );
+        let parse_opts = ConflictParseOptions {
+            is_reversed,
+            side_presence,
+            default_ours_label: replayed_label.as_deref(),
+            default_theirs_label: onto_label.as_deref(),
+        };
+        let doc = if found_conflict {
+            ConflictDocument::from_three_way(
+                path,
+                &worktree_text,
+                base_text.as_deref(),
+                ours_text.as_deref(),
+                theirs_text.as_deref(),
+                parse_opts,
+            )
+        } else {
+            ConflictDocument::parse_with_options(
+                path,
+                &worktree_text,
+                ours_text.as_deref(),
+                theirs_text.as_deref(),
+                parse_opts,
+            )
+        };
         Ok(LoadedConflict::Text(doc))
     })
 }

@@ -103,15 +103,30 @@ pub enum StashButton {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConflictMergeButtonKind {
+    ApplyNonConflicting,
+    ToggleBase,
     AcceptOurs,
     AcceptTheirs,
     AcceptBoth,
+    AcceptNeither,
+    InlineEdit,
+    ResetBlock,
     AcceptAllOurs,
     AcceptAllTheirs,
     Mergetool,
     ExternalEditor,
     SaveAndStage,
     Cancel,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConflictQueueButtonKind {
+    Merge,
+    AcceptYours,
+    AcceptTheirs,
+    RevertResolved,
+    Mergetool,
+    Close,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -317,6 +332,8 @@ pub enum HitTarget {
     StashDiffToolbar(DiffToolbarButton),
     ConflictMergeBlock(usize),
     ConflictMergeButton(ConflictMergeButtonKind),
+    ConflictQueueRow(usize),
+    ConflictQueueButton(ConflictQueueButtonKind),
     FileHistoryRow {
         idx: usize,
     },

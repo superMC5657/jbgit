@@ -1,12 +1,14 @@
 //! Pure domain model for built-in three-pane conflict resolution:
-//! parses Git conflict markers (`<<<<<<<` / `|||||||` / `=======` / `>>>>>>>`)
-//! or falls back to stage 2 (Ours) / stage 3 (Theirs) index blobs, tracks
-//! per-hunk resolution choices (`Ours` / `Theirs` / `Both`), handles Rebase
-//! Ours/Theirs semantic reversal, Delete/Modify resolution, lossless line-ending
-//! preservation (CRLF / LF), and non-text (binary / submodule / directory)
-//! conflict descriptors.
+//! - True 3-way merge (`:1` Base / `:2` Ours / `:3` Theirs) via `imara-diff`,
+//!   classifying `Unchanged`, `LeftOnly`, `RightOnly`, `BothSame`, and `Conflict`
+//!   hunks and supporting one-shot `apply_non_conflicting()`;
+//! - Marker fallback parser (`<<<<<<<` / `|||||||` / `=======` / `>>>>>>>`);
+//! - Per-hunk choices (`Ours` / `Theirs` / `Both*` / `Neither` / `Custom`),
+//!   single-block reset, Rebase Ours/Theirs semantic reversal, Delete/Modify
+//!   resolution, lossless line-ending preservation (CRLF / LF), and non-text
+//!   (binary / submodule / directory) conflict descriptors.
 
-use crate::{LineEnding, Oid, RepositoryState};
+use crate::{LineEnding, Oid, RepositoryState, compute_diff_blocks};
 
 /// Returns `true` when Git's index stages (`:2` / `--ours` vs `:3` / `--theirs`)
 /// have reversed semantics relative to the user's mental model of "Yours" vs
@@ -25,24 +27,98 @@ pub const fn is_reverse_conflict_state(state: &RepositoryState) -> bool {
     )
 }
 
+/// Classification of a 3-way merged hunk relative to the common ancestor (`:1`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ThreeWayBlockKind {
+    /// Identical across base, ours, and theirs.
+    Unchanged,
+    /// Only ours (left) changed relative to base; theirs is unchanged.
+    LeftOnly,
+    /// Only theirs (right) changed relative to base; ours is unchanged.
+    RightOnly,
+    /// Both sides made the exact same change relative to base.
+    BothSame,
+    /// Conflicting changes on both sides (or add/add differing hunk without base).
+    #[default]
+    Conflict,
+}
+
+impl ThreeWayBlockKind {
+    pub const fn is_non_conflicting_change(self) -> bool {
+        matches!(self, Self::LeftOnly | Self::RightOnly | Self::BothSame)
+    }
+}
+
+/// One classified hunk produced by [`three_way_merge_blocks`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ThreeWayHunk {
+    pub kind: ThreeWayBlockKind,
+    pub base_lines: Vec<String>,
+    pub ours_lines: Vec<String>,
+    pub theirs_lines: Vec<String>,
+}
+
+/// Per-side file change status shown in the multi-file Conflict Queue table.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConflictSideStatus {
+    Unchanged,
+    Modified,
+    Added,
+    Deleted,
+}
+
+/// Maps a raw libgit2 index conflict label (from `(ancestor, our, their)`) into
+/// logical `(Yours, Theirs)` statuses, flipping sides when `is_reversed` is true.
+pub fn conflict_side_statuses(
+    label: Option<&str>,
+    is_reversed: bool,
+) -> (ConflictSideStatus, ConflictSideStatus) {
+    use ConflictSideStatus::*;
+    let (raw_our, raw_their) = match label.unwrap_or("") {
+        "Both Modified" => (Modified, Modified),
+        "Added by Both" => (Added, Added),
+        "Deleted by Them" => (Modified, Deleted),
+        "Deleted by Us" => (Deleted, Modified),
+        "Both Deleted" => (Deleted, Deleted),
+        "Added by Us" => (Added, Unchanged),
+        "Added by Them" => (Unchanged, Added),
+        _ => (Modified, Modified),
+    };
+    if is_reversed {
+        (raw_their, raw_our)
+    } else {
+        (raw_our, raw_their)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ConflictChoice {
     Unresolved,
     Ours,
     Theirs,
     BothOursFirst,
     BothTheirsFirst,
+    /// Discard changes from both sides (emits 0 lines).
+    Neither,
+    /// User-edited custom lines for the Result pane.
+    Custom(Vec<String>),
 }
 
 impl ConflictChoice {
-    pub const fn label(self) -> &'static str {
+    pub const fn label(&self) -> &'static str {
         match self {
             Self::Unresolved => "Unresolved",
             Self::Ours => "Ours",
             Self::Theirs => "Theirs",
             Self::BothOursFirst => "Both (Ours + Theirs)",
             Self::BothTheirsFirst => "Both (Theirs + Ours)",
+            Self::Neither => "Neither (Discard Both)",
+            Self::Custom(_) => "Custom (Edited)",
         }
+    }
+
+    pub const fn is_resolved(&self) -> bool {
+        !matches!(self, Self::Unresolved)
     }
 }
 
@@ -130,6 +206,7 @@ pub enum ConflictSegment {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConflictBlock {
     pub id: usize,
+    pub kind: ThreeWayBlockKind,
     pub ours_label: String,
     pub theirs_label: String,
     pub ours_lines: Vec<String>,
@@ -140,7 +217,7 @@ pub struct ConflictBlock {
 
 impl ConflictBlock {
     pub fn resolved_lines(&self) -> Option<Vec<String>> {
-        match self.choice {
+        match &self.choice {
             ConflictChoice::Unresolved => None,
             ConflictChoice::Ours => Some(self.ours_lines.clone()),
             ConflictChoice::Theirs => Some(self.theirs_lines.clone()),
@@ -154,6 +231,8 @@ impl ConflictBlock {
                 out.extend(self.ours_lines.iter().cloned());
                 Some(out)
             }
+            ConflictChoice::Neither => Some(Vec::new()),
+            ConflictChoice::Custom(lines) => Some(lines.clone()),
         }
     }
 
@@ -179,6 +258,7 @@ impl ConflictBlock {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConflictPaneRow {
     pub block_idx: Option<usize>,
+    pub block_kind: Option<ThreeWayBlockKind>,
     pub ours: String,
     pub merged: String,
     pub theirs: String,
@@ -194,6 +274,233 @@ pub struct ConflictDocument {
     pub conflict_count: usize,
     pub is_reversed: bool,
     pub side_presence: ConflictSidePresence,
+    /// `true` when stage `:1` (common ancestor Base) was available to build the
+    /// 3-way model (or diff3 `|||||||` base markers were present).
+    pub has_base: bool,
+}
+
+fn join_lines_for_diff(lines: &[String]) -> Vec<u8> {
+    let cap: usize = lines.iter().map(|l| l.len() + 1).sum();
+    let mut out = Vec::with_capacity(cap);
+    for l in lines {
+        out.extend_from_slice(l.as_bytes());
+        out.push(b'\n');
+    }
+    out
+}
+
+fn split_normalized_lines(text: &str) -> Vec<String> {
+    text.lines()
+        .map(|l| l.trim_end_matches('\r').to_string())
+        .collect()
+}
+
+/// Pure 3-way hunk merge using `imara-diff` (Histogram algorithm).
+///
+/// - When `base` is `Some(base_lines)`: diffs `base -> ours` and `base -> theirs`,
+///   coalesces overlapping/adjacent base regions, and classifies each hunk as
+///   `Unchanged`, `LeftOnly`, `RightOnly`, `BothSame`, or `Conflict`.
+/// - When `base` is `None` (e.g. Add/Add conflict without common ancestor): diffs
+///   `ours` directly against `theirs`, emitting `Unchanged` for shared regions
+///   and `Conflict` for differing regions.
+pub fn three_way_merge_blocks(
+    base: Option<&[String]>,
+    ours: &[String],
+    theirs: &[String],
+) -> Vec<ThreeWayHunk> {
+    let Some(base_lines) = base else {
+        return two_way_add_add_blocks(ours, theirs);
+    };
+
+    let base_bytes = join_lines_for_diff(base_lines);
+    let ours_bytes = join_lines_for_diff(ours);
+    let theirs_bytes = join_lines_for_diff(theirs);
+
+    let left_diffs = compute_diff_blocks(&base_bytes, &ours_bytes);
+    let right_diffs = compute_diff_blocks(&base_bytes, &theirs_bytes);
+
+    let mut out = Vec::new();
+    let mut base_pos = 0usize;
+    let mut ours_pos = 0usize;
+    let mut theirs_pos = 0usize;
+    let mut li = 0usize;
+    let mut ri = 0usize;
+
+    while li < left_diffs.len() || ri < right_diffs.len() {
+        let next_l = left_diffs.get(li).map_or(usize::MAX, |b| b.start1);
+        let next_r = right_diffs.get(ri).map_or(usize::MAX, |b| b.start1);
+        let next_start = next_l.min(next_r);
+
+        if next_start > base_pos {
+            let len = next_start - base_pos;
+            let shared = base_lines[base_pos..next_start].to_vec();
+            out.push(ThreeWayHunk {
+                kind: ThreeWayBlockKind::Unchanged,
+                base_lines: shared.clone(),
+                ours_lines: shared.clone(),
+                theirs_lines: shared,
+            });
+            base_pos = next_start;
+            ours_pos += len;
+            theirs_pos += len;
+        }
+
+        let mut l_end = li;
+        let mut r_end = ri;
+        let mut cluster_end = base_pos;
+
+        if next_l == base_pos {
+            cluster_end = cluster_end.max(left_diffs[l_end].end1);
+            l_end += 1;
+        }
+        if next_r == base_pos {
+            cluster_end = cluster_end.max(right_diffs[r_end].end1);
+            r_end += 1;
+        }
+
+        loop {
+            let mut grew = false;
+            while l_end < left_diffs.len() && left_diffs[l_end].start1 <= cluster_end {
+                cluster_end = cluster_end.max(left_diffs[l_end].end1);
+                l_end += 1;
+                grew = true;
+            }
+            while r_end < right_diffs.len() && right_diffs[r_end].start1 <= cluster_end {
+                cluster_end = cluster_end.max(right_diffs[r_end].end1);
+                r_end += 1;
+                grew = true;
+            }
+            if !grew {
+                break;
+            }
+        }
+
+        let ours_end = if l_end == li {
+            ours_pos + (cluster_end - base_pos)
+        } else {
+            let last_l = left_diffs[l_end - 1];
+            last_l.end2 + (cluster_end - last_l.end1)
+        };
+        let theirs_end = if r_end == ri {
+            theirs_pos + (cluster_end - base_pos)
+        } else {
+            let last_r = right_diffs[r_end - 1];
+            last_r.end2 + (cluster_end - last_r.end1)
+        };
+
+        let base_slice = base_lines[base_pos..cluster_end].to_vec();
+        let ours_slice = ours[ours_pos..ours_end].to_vec();
+        let theirs_slice = theirs[theirs_pos..theirs_end].to_vec();
+
+        let l_changed = l_end > li;
+        let r_changed = r_end > ri;
+        let kind = match (l_changed, r_changed) {
+            (true, false) => ThreeWayBlockKind::LeftOnly,
+            (false, true) => ThreeWayBlockKind::RightOnly,
+            (true, true) => {
+                if ours_slice == theirs_slice {
+                    ThreeWayBlockKind::BothSame
+                } else {
+                    ThreeWayBlockKind::Conflict
+                }
+            }
+            (false, false) => ThreeWayBlockKind::Unchanged,
+        };
+
+        out.push(ThreeWayHunk {
+            kind,
+            base_lines: base_slice,
+            ours_lines: ours_slice,
+            theirs_lines: theirs_slice,
+        });
+
+        base_pos = cluster_end;
+        ours_pos = ours_end;
+        theirs_pos = theirs_end;
+        li = l_end;
+        ri = r_end;
+    }
+
+    if base_pos < base_lines.len() {
+        let shared = base_lines[base_pos..].to_vec();
+        out.push(ThreeWayHunk {
+            kind: ThreeWayBlockKind::Unchanged,
+            base_lines: shared.clone(),
+            ours_lines: shared.clone(),
+            theirs_lines: shared,
+        });
+    }
+
+    out
+}
+
+fn two_way_add_add_blocks(ours: &[String], theirs: &[String]) -> Vec<ThreeWayHunk> {
+    let ours_bytes = join_lines_for_diff(ours);
+    let theirs_bytes = join_lines_for_diff(theirs);
+    let diffs = compute_diff_blocks(&ours_bytes, &theirs_bytes);
+
+    let mut out = Vec::new();
+    let mut o_pos = 0usize;
+    let mut t_pos = 0usize;
+
+    for d in diffs {
+        if d.start1 > o_pos {
+            let shared = ours[o_pos..d.start1].to_vec();
+            out.push(ThreeWayHunk {
+                kind: ThreeWayBlockKind::Unchanged,
+                base_lines: Vec::new(),
+                ours_lines: shared.clone(),
+                theirs_lines: shared,
+            });
+        }
+        out.push(ThreeWayHunk {
+            kind: ThreeWayBlockKind::Conflict,
+            base_lines: Vec::new(),
+            ours_lines: ours[d.start1..d.end1].to_vec(),
+            theirs_lines: theirs[d.start2..d.end2].to_vec(),
+        });
+        o_pos = d.end1;
+        t_pos = d.end2;
+    }
+    if o_pos < ours.len() {
+        let shared = ours[o_pos..].to_vec();
+        out.push(ThreeWayHunk {
+            kind: ThreeWayBlockKind::Unchanged,
+            base_lines: Vec::new(),
+            ours_lines: shared.clone(),
+            theirs_lines: theirs[t_pos..].to_vec(),
+        });
+    }
+    out
+}
+
+fn extract_marker_labels(worktree_text: &str, is_reversed: bool) -> (Option<String>, Option<String>) {
+    let mut top = None;
+    let mut bottom = None;
+    for raw in worktree_text.lines() {
+        let line = raw.trim_end_matches('\r');
+        if top.is_none()
+            && let Some(rest) = line.strip_prefix("<<<<<<<")
+        {
+            let lbl = rest.trim();
+            if !lbl.is_empty() {
+                top = Some(lbl.to_string());
+            }
+        } else if top.is_some()
+            && let Some(rest) = line.strip_prefix(">>>>>>>")
+        {
+            let lbl = rest.trim();
+            if !lbl.is_empty() {
+                bottom = Some(lbl.to_string());
+            }
+            break;
+        }
+    }
+    if is_reversed {
+        (bottom, top)
+    } else {
+        (top, bottom)
+    }
 }
 
 impl ConflictDocument {
@@ -213,6 +520,109 @@ impl ConflictDocument {
             index_theirs,
             ConflictParseOptions::default(),
         )
+    }
+
+    /// Builds a true 3-way [`ConflictDocument`] from index stages `:1` (Base),
+    /// logical Yours (`ours`), and logical Theirs (`theirs`) using
+    /// [`three_way_merge_blocks`].
+    ///
+    /// For Delete/Modify and Both-Deleted conflicts (where one or both sides
+    /// lack a blob), falls back to the synthetic delete/modify representation
+    /// while preserving `base_lines` from `:1` for ancestor inspection.
+    pub fn from_three_way(
+        path: impl Into<String>,
+        worktree_text: &str,
+        base: Option<&str>,
+        ours: Option<&str>,
+        theirs: Option<&str>,
+        options: ConflictParseOptions<'_>,
+    ) -> Self {
+        let path = path.into();
+        if options.side_presence.is_delete_conflict() || ours.is_none() || theirs.is_none() {
+            let mut doc = Self::parse_with_options(path, worktree_text, ours, theirs, options);
+            if let Some(base_text) = base {
+                let base_lines = split_normalized_lines(base_text);
+                if let Some(ConflictSegment::Conflict(b)) = doc.segments.first_mut() {
+                    b.base_lines = base_lines;
+                }
+                doc.has_base = true;
+            }
+            return doc;
+        }
+
+        let ours_text = ours.expect("checked is_some");
+        let theirs_text = theirs.expect("checked is_some");
+        let line_ending = detect_line_ending(worktree_text, Some(ours_text), Some(theirs_text));
+        let has_trailing_newline = if !ours_text.is_empty() {
+            ours_text.ends_with('\n')
+        } else if !theirs_text.is_empty() {
+            theirs_text.ends_with('\n')
+        } else if !worktree_text.is_empty() {
+            worktree_text.ends_with('\n')
+        } else {
+            false
+        };
+
+        let (marker_ours, marker_theirs) = extract_marker_labels(worktree_text, options.is_reversed);
+        let default_ours = options.default_ours_label.unwrap_or(if options.is_reversed {
+            "replayed"
+        } else {
+            "HEAD"
+        });
+        let default_theirs = options.default_theirs_label.unwrap_or(if options.is_reversed {
+            "onto"
+        } else {
+            "Incoming"
+        });
+        let ours_label = marker_ours.unwrap_or_else(|| default_ours.to_string());
+        let theirs_label = match marker_theirs {
+            Some(ref t) if options.is_reversed && t == "HEAD" && options.default_theirs_label.is_some() => {
+                default_theirs.to_string()
+            }
+            Some(t) => t,
+            None => default_theirs.to_string(),
+        };
+
+        let base_lines = base.map(split_normalized_lines);
+        let ours_lines = split_normalized_lines(ours_text);
+        let theirs_lines = split_normalized_lines(theirs_text);
+        let hunks = three_way_merge_blocks(base_lines.as_deref(), &ours_lines, &theirs_lines);
+
+        let mut segments = Vec::new();
+        let mut conflict_id = 0usize;
+        for hunk in hunks {
+            match hunk.kind {
+                ThreeWayBlockKind::Unchanged => {
+                    if !hunk.ours_lines.is_empty() {
+                        segments.push(ConflictSegment::Common(hunk.ours_lines));
+                    }
+                }
+                kind => {
+                    segments.push(ConflictSegment::Conflict(ConflictBlock {
+                        id: conflict_id,
+                        kind,
+                        ours_label: ours_label.clone(),
+                        theirs_label: theirs_label.clone(),
+                        ours_lines: hunk.ours_lines,
+                        base_lines: hunk.base_lines,
+                        theirs_lines: hunk.theirs_lines,
+                        choice: ConflictChoice::Unresolved,
+                    }));
+                    conflict_id += 1;
+                }
+            }
+        }
+
+        Self {
+            path,
+            segments,
+            line_ending,
+            has_trailing_newline,
+            conflict_count: conflict_id,
+            is_reversed: options.is_reversed,
+            side_presence: options.side_presence,
+            has_base: base.is_some(),
+        }
     }
 
     /// Parses a conflict document with explicit reversal, Delete/Modify
@@ -241,10 +651,7 @@ impl ConflictDocument {
         } else {
             false
         };
-        let raw_lines: Vec<String> = worktree_text
-            .lines()
-            .map(|l| l.trim_end_matches('\r').to_string())
-            .collect();
+        let raw_lines = split_normalized_lines(worktree_text);
 
         let default_ours = options.default_ours_label.unwrap_or(if options.is_reversed {
             "replayed"
@@ -261,6 +668,7 @@ impl ConflictDocument {
         let mut common = Vec::new();
         let mut i = 0usize;
         let mut conflict_id = 0usize;
+        let mut has_base = false;
 
         while i < raw_lines.len() {
             if let Some(rest) = raw_lines[i].strip_prefix("<<<<<<<") {
@@ -272,9 +680,11 @@ impl ConflictDocument {
                 let mut bottom_lines = Vec::new();
                 let mut section = 0u8; // 0 = top, 1 = base, 2 = bottom
                 let mut closed = None;
+                let mut saw_base_marker = false;
                 while i < raw_lines.len() {
                     if raw_lines[i].starts_with("|||||||") && section == 0 {
                         section = 1;
+                        saw_base_marker = true;
                     } else if raw_lines[i].starts_with("=======") && section < 2 {
                         section = 2;
                     } else if let Some(trest) = raw_lines[i].strip_prefix(">>>>>>>")
@@ -293,6 +703,9 @@ impl ConflictDocument {
                     i += 1;
                 }
                 if let Some(bottom_label) = closed {
+                    if saw_base_marker {
+                        has_base = true;
+                    }
                     if !common.is_empty() {
                         segments.push(ConflictSegment::Common(std::mem::take(&mut common)));
                     }
@@ -326,6 +739,7 @@ impl ConflictDocument {
                         };
                     segments.push(ConflictSegment::Conflict(ConflictBlock {
                         id: conflict_id,
+                        kind: ThreeWayBlockKind::Conflict,
                         ours_label,
                         theirs_label,
                         ours_lines,
@@ -357,12 +771,7 @@ impl ConflictDocument {
                 || options.side_presence.is_delete_conflict());
         if needs_synthetic {
             let split_lines = |s: Option<&str>| -> Vec<String> {
-                s.map(|t| {
-                    t.lines()
-                        .map(|l| l.trim_end_matches('\r').to_string())
-                        .collect()
-                })
-                .unwrap_or_default()
+                s.map(split_normalized_lines).unwrap_or_default()
             };
             let fallback_ours_label = options
                 .default_ours_label
@@ -373,6 +782,7 @@ impl ConflictDocument {
             segments.clear();
             segments.push(ConflictSegment::Conflict(ConflictBlock {
                 id: 0,
+                kind: ThreeWayBlockKind::Conflict,
                 ours_label: fallback_ours_label.into(),
                 theirs_label: fallback_theirs_label.into(),
                 ours_lines: split_lines(index_ours),
@@ -391,6 +801,7 @@ impl ConflictDocument {
             conflict_count: conflict_id,
             is_reversed: options.is_reversed,
             side_presence: options.side_presence,
+            has_base,
         }
     }
 
@@ -427,6 +838,55 @@ impl ConflictDocument {
             .count()
     }
 
+    /// Number of still-unresolved blocks that are non-conflicting (`LeftOnly` /
+    /// `RightOnly` / `BothSame`) and can be auto-applied in one click.
+    pub fn non_conflicting_unresolved_count(&self) -> usize {
+        self.segments
+            .iter()
+            .filter(|s| {
+                matches!(
+                    s,
+                    ConflictSegment::Conflict(b)
+                        if b.choice == ConflictChoice::Unresolved
+                            && b.kind.is_non_conflicting_change()
+                )
+            })
+            .count()
+    }
+
+    /// Auto-resolves every still-unresolved non-conflicting block (`LeftOnly` ->
+    /// `Ours`, `RightOnly` -> `Theirs`, `BothSame` -> `Ours`), returning how
+    /// many blocks were resolved.
+    pub fn apply_non_conflicting(&mut self) -> usize {
+        let mut applied = 0usize;
+        for seg in &mut self.segments {
+            if let ConflictSegment::Conflict(b) = seg
+                && b.choice == ConflictChoice::Unresolved
+            {
+                match b.kind {
+                    ThreeWayBlockKind::LeftOnly | ThreeWayBlockKind::BothSame => {
+                        b.choice = ConflictChoice::Ours;
+                        applied += 1;
+                    }
+                    ThreeWayBlockKind::RightOnly => {
+                        b.choice = ConflictChoice::Theirs;
+                        applied += 1;
+                    }
+                    ThreeWayBlockKind::Unchanged | ThreeWayBlockKind::Conflict => {}
+                }
+            }
+        }
+        applied
+    }
+
+    /// Returns the `id` of the first still-unresolved conflict block, if any.
+    pub fn first_unresolved_block(&self) -> Option<usize> {
+        self.segments.iter().find_map(|s| match s {
+            ConflictSegment::Conflict(b) if b.choice == ConflictChoice::Unresolved => Some(b.id),
+            _ => None,
+        })
+    }
+
     pub fn block(&self, idx: usize) -> Option<&ConflictBlock> {
         self.segments.iter().find_map(|s| match s {
             ConflictSegment::Conflict(b) if b.id == idx => Some(b),
@@ -445,10 +905,15 @@ impl ConflictDocument {
         }
     }
 
+    /// Resets a single conflict block back to [`ConflictChoice::Unresolved`].
+    pub fn reset_block(&mut self, block_idx: usize) {
+        self.set_choice(block_idx, ConflictChoice::Unresolved);
+    }
+
     pub fn accept_all(&mut self, choice: ConflictChoice) {
         for seg in &mut self.segments {
             if let ConflictSegment::Conflict(b) = seg {
-                b.choice = choice;
+                b.choice = choice.clone();
             }
         }
     }
@@ -535,6 +1000,7 @@ impl ConflictDocument {
                     for l in ls {
                         rows.push(ConflictPaneRow {
                             block_idx: None,
+                            block_kind: None,
                             ours: l.clone(),
                             merged: l.clone(),
                             theirs: l.clone(),
@@ -553,24 +1019,44 @@ impl ConflictDocument {
                     };
                     let merged_lines = if choice_deletes {
                         vec!["<File will be deleted>".to_string()]
+                    } else if b.choice == ConflictChoice::Neither {
+                        vec!["<Discarded (Neither)>".to_string()]
                     } else {
-                        b.resolved_lines().unwrap_or_else(|| {
-                            let hint = match self.side_presence {
-                                ConflictSidePresence::BothPresent => {
-                                    "choose [y] Ours / [t] Theirs / [b] Both"
-                                }
-                                ConflictSidePresence::DeletedByTheirs => {
-                                    "choose [y] Keep file / [t] Delete file"
-                                }
-                                ConflictSidePresence::DeletedByOurs => {
-                                    "choose [y] Delete file / [t] Keep file"
-                                }
-                                ConflictSidePresence::BothDeleted => {
-                                    "choose [y]/[t] Delete file"
-                                }
-                            };
-                            vec![format!("⚠ Conflict #{}: {hint}", b.id + 1)]
-                        })
+                        match b.resolved_lines() {
+                            Some(lines) if lines.is_empty() => {
+                                vec!["<Empty>".to_string()]
+                            }
+                            Some(lines) => lines,
+                            None => {
+                                let hint = match self.side_presence {
+                                    ConflictSidePresence::BothPresent => match b.kind {
+                                        ThreeWayBlockKind::LeftOnly => {
+                                            "Non-conflicting (Left): [a] Auto / [y] Ours"
+                                        }
+                                        ThreeWayBlockKind::RightOnly => {
+                                            "Non-conflicting (Right): [a] Auto / [t] Theirs"
+                                        }
+                                        ThreeWayBlockKind::BothSame => {
+                                            "Non-conflicting (Same): [a] Auto / [y] Keep"
+                                        }
+                                        ThreeWayBlockKind::Unchanged
+                                        | ThreeWayBlockKind::Conflict => {
+                                            "choose [y] Ours / [t] Theirs / [d] Neither / [e] Edit"
+                                        }
+                                    },
+                                    ConflictSidePresence::DeletedByTheirs => {
+                                        "choose [y] Keep file / [t] Delete file"
+                                    }
+                                    ConflictSidePresence::DeletedByOurs => {
+                                        "choose [y] Delete file / [t] Keep file"
+                                    }
+                                    ConflictSidePresence::BothDeleted => {
+                                        "choose [y]/[t] Delete file"
+                                    }
+                                };
+                                vec![format!("⚠ Block #{}: {hint}", b.id + 1)]
+                            }
+                        }
                     };
                     let max_len = b.pane_row_count(self.side_presence);
                     for i in 0..max_len {
@@ -592,10 +1078,11 @@ impl ConflictDocument {
                         };
                         rows.push(ConflictPaneRow {
                             block_idx: Some(b.id),
+                            block_kind: Some(b.kind),
                             ours,
                             merged: merged_lines.get(i).cloned().unwrap_or_default(),
                             theirs,
-                            choice: Some(b.choice),
+                            choice: Some(b.choice.clone()),
                         });
                     }
                 }
@@ -662,6 +1149,10 @@ fn detect_line_ending(
 mod tests {
     use super::*;
 
+    fn lines(items: &[&str]) -> Vec<String> {
+        items.iter().map(|s| (*s).to_string()).collect()
+    }
+
     #[test]
     fn parses_markers_resolves_per_block_and_renders_merged() {
         let src = "\
@@ -685,6 +1176,7 @@ let y = 20;
         assert_eq!(doc.unresolved_count(), 2);
         assert_eq!(doc.line_ending, LineEnding::Lf);
         assert!(doc.has_trailing_newline);
+        assert!(doc.has_base);
 
         doc.set_choice(0, ConflictChoice::Ours);
         doc.set_choice(1, ConflictChoice::BothOursFirst);
@@ -759,25 +1251,25 @@ my replayed change
         assert_eq!(b.theirs_lines, vec!["upstream line"]);
         assert_eq!(b.theirs_label, "main");
 
-        // Unresolved render keeps Git's native rebase orientation so reopening is idempotent.
         let unresolved = doc.render_resolved();
-        assert!(unresolved.contains("<<<<<<< main\nupstream line\n=======\nmy replayed change\n>>>>>>> abc1234 (my commit)\n"));
+        assert!(unresolved.contains(
+            "<<<<<<< main\nupstream line\n=======\nmy replayed change\n>>>>>>> abc1234 (my commit)\n"
+        ));
 
-        // Accepting Ours chooses the replayed local commit.
         doc.set_choice(0, ConflictChoice::Ours);
         assert_eq!(doc.render_resolved(), "my replayed change\n");
     }
 
     #[test]
     fn preserves_crlf_even_with_lf_git_markers_and_missing_trailing_newline() {
-        let crlf_with_lf_markers = "header\r\n<<<<<<< HEAD\nours line\r\n=======\ntheirs line\r\n>>>>>>> feat\nfooter\r\n";
+        let crlf_with_lf_markers =
+            "header\r\n<<<<<<< HEAD\nours line\r\n=======\ntheirs line\r\n>>>>>>> feat\nfooter\r\n";
         let mut doc = ConflictDocument::parse("win.txt", crlf_with_lf_markers, None, None);
         assert_eq!(doc.line_ending, LineEnding::Crlf);
         assert!(doc.has_trailing_newline);
         doc.set_choice(0, ConflictChoice::Ours);
         assert_eq!(doc.render_resolved(), "header\r\nours line\r\nfooter\r\n");
 
-        // No trailing newline must be preserved.
         let no_eof_nl = "<<<<<<< HEAD\nours\r\n=======\ntheirs\r\n>>>>>>> feat\ntail";
         let mut doc2 = ConflictDocument::parse("win2.txt", no_eof_nl, None, None);
         assert_eq!(doc2.line_ending, LineEnding::Crlf);
@@ -840,5 +1332,109 @@ my replayed change
             assert_eq!(total, rows.len());
             assert_eq!(rows.iter().position(|r| r.block_idx == Some(bid)), Some(first));
         }
+    }
+
+    #[test]
+    fn three_way_merge_classifies_left_right_both_same_and_conflict() {
+        let base = lines(&["a", "b", "c", "d", "e", "f", "g"]);
+        let ours = lines(&["a-left", "b", "c-same", "d", "e-ours", "f", "g"]);
+        let theirs = lines(&["a", "b", "c-same", "d", "e-theirs", "f", "g-right"]);
+
+        let hunks = three_way_merge_blocks(Some(&base), &ours, &theirs);
+        let kinds: Vec<ThreeWayBlockKind> = hunks.iter().map(|h| h.kind).collect();
+        assert_eq!(
+            kinds,
+            vec![
+                ThreeWayBlockKind::LeftOnly,
+                ThreeWayBlockKind::Unchanged,
+                ThreeWayBlockKind::BothSame,
+                ThreeWayBlockKind::Unchanged,
+                ThreeWayBlockKind::Conflict,
+                ThreeWayBlockKind::Unchanged,
+                ThreeWayBlockKind::RightOnly,
+            ]
+        );
+        assert_eq!(hunks[0].ours_lines, lines(&["a-left"]));
+        assert_eq!(hunks[2].ours_lines, lines(&["c-same"]));
+        assert_eq!(hunks[4].base_lines, lines(&["e"]));
+        assert_eq!(hunks[4].ours_lines, lines(&["e-ours"]));
+        assert_eq!(hunks[4].theirs_lines, lines(&["e-theirs"]));
+        assert_eq!(hunks[6].theirs_lines, lines(&["g-right"]));
+    }
+
+    #[test]
+    fn three_way_add_add_without_base_identifies_shared_and_conflicting_regions() {
+        let ours = lines(&["common1", "ours-only", "common2"]);
+        let theirs = lines(&["common1", "theirs-only", "common2"]);
+        let hunks = three_way_merge_blocks(None, &ours, &theirs);
+        let kinds: Vec<ThreeWayBlockKind> = hunks.iter().map(|h| h.kind).collect();
+        assert_eq!(
+            kinds,
+            vec![
+                ThreeWayBlockKind::Unchanged,
+                ThreeWayBlockKind::Conflict,
+                ThreeWayBlockKind::Unchanged,
+            ]
+        );
+        assert!(hunks[1].base_lines.is_empty());
+        assert_eq!(hunks[1].ours_lines, lines(&["ours-only"]));
+        assert_eq!(hunks[1].theirs_lines, lines(&["theirs-only"]));
+    }
+
+    #[test]
+    fn from_three_way_applies_non_conflicting_and_supports_neither_custom_and_reset() {
+        let base = "a\nb\nc\nd\ne\n";
+        let ours = "a-left\nb\nc-ours\nd\ne\n";
+        let theirs = "a\nb\nc-theirs\nd\ne-right\n";
+
+        let mut doc = ConflictDocument::from_three_way(
+            "src/app.rs",
+            "",
+            Some(base),
+            Some(ours),
+            Some(theirs),
+            ConflictParseOptions::default(),
+        );
+        assert!(doc.has_base);
+        assert_eq!(doc.conflict_count, 3);
+        assert_eq!(doc.non_conflicting_unresolved_count(), 2);
+
+        // Apply Non-Conflicting resolves block 0 (LeftOnly) and block 2 (RightOnly), leaving block 1.
+        assert_eq!(doc.apply_non_conflicting(), 2);
+        assert_eq!(doc.non_conflicting_unresolved_count(), 0);
+        assert_eq!(doc.unresolved_count(), 1);
+        assert_eq!(doc.first_unresolved_block(), Some(1));
+
+        // Custom inline edit on block 1.
+        doc.set_choice(1, ConflictChoice::Custom(lines(&["c-custom-1", "c-custom-2"])));
+        assert_eq!(doc.unresolved_count(), 0);
+        assert_eq!(
+            doc.render_resolved(),
+            "a-left\nb\nc-custom-1\nc-custom-2\nd\ne-right\n"
+        );
+
+        // Reset block 1 back to Unresolved, then choose Neither (discard both).
+        doc.reset_block(1);
+        assert_eq!(doc.unresolved_count(), 1);
+        doc.set_choice(1, ConflictChoice::Neither);
+        assert_eq!(doc.unresolved_count(), 0);
+        assert_eq!(doc.render_resolved(), "a-left\nb\nd\ne-right\n");
+    }
+
+    #[test]
+    fn conflict_side_statuses_flip_under_rebase() {
+        use ConflictSideStatus::*;
+        assert_eq!(
+            conflict_side_statuses(Some("Deleted by Them"), false),
+            (Modified, Deleted)
+        );
+        assert_eq!(
+            conflict_side_statuses(Some("Deleted by Them"), true),
+            (Deleted, Modified)
+        );
+        assert_eq!(
+            conflict_side_statuses(Some("Added by Both"), true),
+            (Added, Added)
+        );
     }
 }

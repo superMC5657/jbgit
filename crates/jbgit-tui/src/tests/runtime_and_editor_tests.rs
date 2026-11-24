@@ -2521,3 +2521,241 @@ fn conflict_resolver_scroll_follows_selected_block_and_handles_rebase_delete_spe
         } if paths == &vec!["assets/logo.png".to_string()]
     )));
 }
+
+#[test]
+fn conflict_queue_three_way_auto_merge_inline_edit_auto_advance_and_continue_prompt() {
+    use super::screen_text;
+    use jbgit_core::{
+        ConflictChoice, ConflictDocument, ConflictParseOptions, FileStatusKind, GitOp,
+        GitOpOutcome, OngoingKind, OngoingStep, RepoSnapshot, RepositoryState, StageEntry,
+        StageStatusSnapshot,
+    };
+
+    let mut ts = TestSession::new(super::test_state(".".into()));
+    ts.deliver_engine_event(EngineEvent::RepoSnapshotLoaded {
+        snapshot: Arc::new(RepoSnapshot {
+            repo_name: "demo".into(),
+            head_branch: Some("main".into()),
+            state: RepositoryState::Merge,
+            ..Default::default()
+        }),
+        epoch: 1,
+    });
+    let mut stage = StageStatusSnapshot {
+        conflicted: vec![
+            StageEntry {
+                path: "src/a.rs".into(),
+                old_path: None,
+                kind: FileStatusKind::Conflicted,
+            },
+            StageEntry {
+                path: "src/b.rs".into(),
+                old_path: None,
+                kind: FileStatusKind::Conflicted,
+            },
+        ],
+        ..Default::default()
+    };
+    stage
+        .conflict_labels
+        .insert("src/a.rs".into(), "Both Modified".into());
+    stage
+        .conflict_labels
+        .insert("src/b.rs".into(), "Deleted by Them".into());
+    ts.deliver_engine_event(EngineEvent::StageStatusLoaded {
+        status: Arc::new(stage),
+        epoch: 1,
+    });
+
+    // 1. Trigger Resolve Conflicts via <Alt-c> with 2 conflicted files -> opens ConflictQueue.
+    ts.send_key(KeyCode::Char('c'), KeyModifiers::ALT);
+    assert!(ts.state().modal_stack.conflict_queue().is_some());
+    let q_txt = screen_text(&ts.render(140, 30));
+    assert!(q_txt.contains("src/a.rs"), "{q_txt}");
+    assert!(q_txt.contains("src/b.rs"), "{q_txt}");
+    assert!(q_txt.contains("Yours (main)"), "{q_txt}");
+    assert!(q_txt.contains("Unresolved"), "{q_txt}");
+
+    // 2. Press Enter on src/a.rs -> opens 3-pane merger; deliver 3-way document.
+    let _ = ts.take_requests();
+    ts.send_key(KeyCode::Enter, KeyModifiers::NONE);
+    let reqs = ts.take_requests();
+    assert!(reqs.iter().any(|(r, _)| matches!(
+        r,
+        TaskRequest::LoadConflictDocument { path } if path == "src/a.rs"
+    )));
+    let doc_a = ConflictDocument::from_three_way(
+        "src/a.rs",
+        "",
+        Some("top\nmid\nbase_line\nsep\nend\n"),
+        Some("top_left\nmid\nours_line\nsep\nend\n"),
+        Some("top\nmid\ntheirs_line\nsep\nend_right\n"),
+        ConflictParseOptions::default(),
+    );
+    assert_eq!(doc_a.non_conflicting_unresolved_count(), 2);
+    ts.deliver_engine_event(EngineEvent::ConflictDocumentLoaded {
+        doc: doc_a,
+        epoch: 1,
+    });
+    let m_txt = screen_text(&ts.render(140, 32));
+    assert!(m_txt.contains("Apply Auto (2)"), "{m_txt}");
+
+    // 3. Press `a` (Apply Non-Conflicting) -> resolves LeftOnly & RightOnly, focuses block 1.
+    ts.send_key(KeyCode::Char('a'), KeyModifiers::NONE);
+    {
+        let cm = ts.state().modal_stack.conflict_merge().unwrap();
+        assert_eq!(cm.doc.as_ref().unwrap().unresolved_count(), 1);
+        assert_eq!(cm.selected_block, 1);
+    }
+
+    // 4. Press `b` -> expands Base (:1) ancestor panel showing `base_line`.
+    ts.send_key(KeyCode::Char('b'), KeyModifiers::NONE);
+    let base_txt = screen_text(&ts.render(140, 32));
+    assert!(base_txt.contains("Base Ancestor (:1)"), "{base_txt}");
+    assert!(base_txt.contains("base_line"), "{base_txt}");
+
+    // 5. Press `e` -> inline multi-line Result editor, type `_custom`, press Ctrl+S to apply.
+    ts.send_key(KeyCode::Char('e'), KeyModifiers::NONE);
+    assert!(
+        ts.state()
+            .modal_stack
+            .conflict_merge()
+            .unwrap()
+            .inline_editor
+            .is_some()
+    );
+    let ed_txt = screen_text(&ts.render(140, 32));
+    assert!(ed_txt.contains("Editing Result"), "{ed_txt}");
+    for ch in "_custom".chars() {
+        ts.send_key(KeyCode::Char(ch), KeyModifiers::NONE);
+    }
+    ts.send_key(KeyCode::Char('s'), KeyModifiers::CONTROL);
+    {
+        let cm = ts.state().modal_stack.conflict_merge().unwrap();
+        assert!(cm.inline_editor.is_none());
+        assert_eq!(
+            cm.doc.as_ref().unwrap().block(1).unwrap().choice,
+            ConflictChoice::Custom(vec!["ours_line_custom".into()])
+        );
+    }
+
+    // 6. Test single-block reset (`u`) and Neither (`d`), then restore Custom via `y`.
+    ts.send_key(KeyCode::Char('p'), KeyModifiers::NONE);
+    assert_eq!(ts.state().modal_stack.conflict_merge().unwrap().selected_block, 1);
+    ts.send_key(KeyCode::Char('u'), KeyModifiers::NONE);
+    assert_eq!(
+        ts.state()
+            .modal_stack
+            .conflict_merge()
+            .unwrap()
+            .doc
+            .as_ref()
+            .unwrap()
+            .block(1)
+            .unwrap()
+            .choice,
+        ConflictChoice::Unresolved
+    );
+    ts.send_key(KeyCode::Char('d'), KeyModifiers::NONE);
+    assert_eq!(
+        ts.state()
+            .modal_stack
+            .conflict_merge()
+            .unwrap()
+            .doc
+            .as_ref()
+            .unwrap()
+            .block(1)
+            .unwrap()
+            .choice,
+        ConflictChoice::Neither
+    );
+
+    // 7. Save & Stage src/a.rs -> auto-advances straight to src/b.rs in queue!
+    let _ = ts.take_requests();
+    ts.send_key(KeyCode::Enter, KeyModifiers::NONE);
+    let reqs_a = ts.take_requests();
+    assert!(reqs_a.iter().any(|(r, _)| matches!(
+        r,
+        TaskRequest::SaveConflictResolution {
+            path,
+            content,
+            stage: true,
+            delete: false
+        } if path == "src/a.rs" && content == b"top_left\nmid\nsep\nend_right\n"
+    )));
+    assert!(reqs_a.iter().any(|(r, _)| matches!(
+        r,
+        TaskRequest::LoadConflictDocument { path } if path == "src/b.rs"
+    )));
+    assert_eq!(
+        ts.state().modal_stack.conflict_merge().unwrap().path,
+        "src/b.rs"
+    );
+
+    // 8. Resolve src/b.rs -> all queue entries resolved -> pops "All Conflicts Resolved" dialog!
+    let doc_b = ConflictDocument::parse(
+        "src/b.rs",
+        "<<<<<<< HEAD\nb_ours\n=======\nb_theirs\n>>>>>>> feat\n",
+        None,
+        None,
+    );
+    ts.deliver_engine_event(EngineEvent::ConflictDocumentLoaded {
+        doc: doc_b,
+        epoch: 2,
+    });
+    ts.send_key(KeyCode::Char('y'), KeyModifiers::NONE);
+    let _ = ts.take_requests();
+    ts.send_key(KeyCode::Enter, KeyModifiers::NONE);
+
+    let done_txt = screen_text(&ts.render(140, 32));
+    assert!(done_txt.contains("All Conflicts Resolved"), "{done_txt}");
+    assert!(done_txt.contains("Continue Merge"), "{done_txt}");
+
+    // 9. Stay in queue (`Esc`) and test Revert Resolved (`r`) -> emits GitOp::UnresolveConflict!
+    ts.send_key(KeyCode::Esc, KeyModifiers::NONE);
+    let _ = ts.take_requests();
+    ts.send_key(KeyCode::Char('r'), KeyModifiers::NONE);
+    let rev_reqs = ts.take_requests();
+    assert!(rev_reqs.iter().any(|(r, _)| matches!(
+        r,
+        TaskRequest::RunGitOp {
+            op: GitOp::UnresolveConflict { paths }
+        } if paths == &vec!["src/b.rs".to_string()]
+    )));
+
+    // 10. Simulate UnresolveConflict finishing, then batch Accept Yours (`y`) -> re-triggers Continue prompt -> Enter runs Ongoing::Continue!
+    ts.deliver_engine_event(EngineEvent::GitOpFinished(GitOpOutcome::ok(
+        GitOp::UnresolveConflict {
+            paths: vec!["src/b.rs".into()],
+        },
+    )));
+    let _ = ts.take_requests();
+    ts.send_key(KeyCode::Char('y'), KeyModifiers::NONE);
+    let accept_reqs = ts.take_requests();
+    assert!(accept_reqs.iter().any(|(r, _)| matches!(
+        r,
+        TaskRequest::RunGitOp {
+            op: GitOp::AcceptSide { paths, ours: true }
+        } if paths == &vec!["src/b.rs".to_string()]
+    )));
+    ts.deliver_engine_event(EngineEvent::GitOpFinished(GitOpOutcome::ok(
+        GitOp::AcceptSide {
+            paths: vec!["src/b.rs".into()],
+            ours: true,
+        },
+    )));
+    let _ = ts.take_requests();
+    ts.send_key(KeyCode::Enter, KeyModifiers::NONE);
+    let cont_reqs = ts.take_requests();
+    assert!(cont_reqs.iter().any(|(r, _)| matches!(
+        r,
+        TaskRequest::RunGitOp {
+            op: GitOp::Ongoing {
+                kind: OngoingKind::Merge,
+                step: OngoingStep::Continue
+            }
+        }
+    )));
+    assert!(ts.state().modal_stack.conflict_queue().is_none());
+}

@@ -89,6 +89,13 @@ pub fn stage_tree_menu_items(state: &AppState, idx: usize) -> Vec<ContextMenuIte
                 .icon("⚠"),
             );
             items.push(run(
+                i18n.t("menu.stage.open_conflict_queue"),
+                Some('q'),
+                catalog::shortcut_for_action(state, &[KeymapScope::Global], &KeyAction::ResolveConflicts)
+                    .as_deref(),
+                vec![Action::OpenConflictQueue],
+            ));
+            items.push(run(
                 i18n.t("menu.stage.open_mergetool"),
                 Some('m'),
                 None,

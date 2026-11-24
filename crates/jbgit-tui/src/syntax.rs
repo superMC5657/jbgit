@@ -288,6 +288,44 @@ impl HighlightedFile {
     }
 }
 
+/// Tokenizes one source line using `path`'s syntax grammar (for small visible
+/// windows such as the three-pane conflict merger and inline Result editor).
+pub fn highlight_single_line(path: &str, line: &str) -> Vec<SyntaxToken> {
+    if line.is_empty() || line.len() > MAX_SYNTAX_LINE_BYTES {
+        return Vec::new();
+    }
+    let assets = assets();
+    let syntax = find_syntax(assets, path);
+    if syntax.name == "Plain Text" {
+        return Vec::new();
+    }
+    let mut hl = HighlightLines::new(syntax, &assets.theme);
+    let mut buf = String::with_capacity(line.len() + 1);
+    buf.push_str(line);
+    buf.push('\n');
+    let ranges = hl.highlight_line(&buf, &assets.ss).unwrap_or_default();
+    let max_len = line.len();
+    let mut pos = 0usize;
+    let mut toks = Vec::with_capacity(ranges.len());
+    for (style, text) in ranges {
+        let end = (pos + text.len()).min(max_len);
+        if end > pos {
+            toks.push(SyntaxToken {
+                start: pos,
+                end,
+                fg: (style.foreground.r, style.foreground.g, style.foreground.b),
+                bold: style.font_style.contains(FontStyle::BOLD),
+                italic: style.font_style.contains(FontStyle::ITALIC),
+            });
+        }
+        pos = end;
+        if pos >= max_len {
+            break;
+        }
+    }
+    toks
+}
+
 /// Combines syntax foreground tokens with word-diff background ranges and truncates
 /// cleanly to `max_width` display columns.
 #[cfg(test)]

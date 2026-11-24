@@ -12,8 +12,8 @@ use crate::log_view::{AnnotateState, FileHistoryState, FilterField, PushDialogSt
 use crate::views::overlays::{context_menu_rect, menu_item_row_y};
 
 use super::{
-    Action, ConflictMergeState, ContextMenuEntryKind, ContextMenuItem, MENU_HOVER_DELAY,
-    MenuHover, MenuParent, PopupKind,
+    Action, ConflictMergeState, ConflictQueueState, ContextMenuEntryKind, ContextMenuItem,
+    MENU_HOVER_DELAY, MenuHover, MenuParent, PopupKind,
 };
 
 #[derive(Debug)]
@@ -67,6 +67,8 @@ pub enum ModalLayer {
     TreeBrowser(Box<crate::tree_browser::TreeBrowserState>),
     /// Layer 2: self-contained three-pane conflict resolver (`Ours | Result | Theirs`).
     ConflictResolver(Box<ConflictMergeState>),
+    /// Layer 2: multi-file conflict queue table (`Path | Yours | Theirs | Status`).
+    ConflictQueue(Box<ConflictQueueState>),
     /// Layer 2: three-way hunk inspector (`HEAD / Staged / Worktree`).
     ThreeWayInspector {
         range_idx: Option<usize>,
@@ -183,6 +185,7 @@ impl ModalLayer {
             | Self::ApplyPatch(_)
             | Self::TreeBrowser(_)
             | Self::ConflictResolver(_)
+            | Self::ConflictQueue(_)
             | Self::ThreeWayInspector { .. }
             | Self::HookError { .. } => 20,
             Self::ContextMenu { depth, .. } => 30u8.saturating_add(depth.saturating_mul(2)),
@@ -424,6 +427,38 @@ impl ModalStack {
             .layers
             .iter()
             .rposition(|l| matches!(l, ModalLayer::ConflictResolver(_)))
+        {
+            self.layers.remove(pos);
+        }
+    }
+
+    pub fn conflict_queue(&self) -> Option<&ConflictQueueState> {
+        self.layers.iter().rev().find_map(|l| match l {
+            ModalLayer::ConflictQueue(q) => Some(q.as_ref()),
+            _ => None,
+        })
+    }
+
+    pub fn conflict_queue_mut(&mut self) -> Option<&mut ConflictQueueState> {
+        self.layers.iter_mut().rev().find_map(|l| match l {
+            ModalLayer::ConflictQueue(q) => Some(q.as_mut()),
+            _ => None,
+        })
+    }
+
+    pub fn open_conflict_queue(&mut self, q: ConflictQueueState) {
+        if let Some(existing) = self.conflict_queue_mut() {
+            *existing = q;
+        } else {
+            self.layers.push(ModalLayer::ConflictQueue(Box::new(q)));
+        }
+    }
+
+    pub fn close_conflict_queue(&mut self) {
+        if let Some(pos) = self
+            .layers
+            .iter()
+            .rposition(|l| matches!(l, ModalLayer::ConflictQueue(_)))
         {
             self.layers.remove(pos);
         }

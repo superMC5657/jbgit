@@ -585,6 +585,9 @@ impl AppState {
                 {
                     cm.selected_block = 0;
                     cm.scroll.reset();
+                    cm.h_scroll = 0;
+                    cm.show_base = false;
+                    cm.inline_editor = None;
                     cm.externally_resolved = false;
                     cm.doc = Some(doc);
                 }
@@ -641,9 +644,29 @@ impl AppState {
     }
 
     fn check_conflict_resolver_staleness(&mut self) {
-        let Some(status) = self.stage_workbench.status() else {
+        let Some(status) = self.stage_workbench.status().cloned() else {
             return;
         };
+        if let Some(cq) = self.modal_stack.conflict_queue_mut() {
+            let is_reversed = cq.is_reversed;
+            for entry in &mut cq.entries {
+                entry.resolved = !status.conflicted.iter().any(|c| c.path == entry.path);
+            }
+            for c in &status.conflicted {
+                if !cq.entries.iter().any(|e| e.path == c.path) {
+                    let raw = status.conflict_labels.get(&c.path).map(String::as_str);
+                    let (yours_status, theirs_status) =
+                        jbgit_core::conflict_side_statuses(raw, is_reversed);
+                    cq.entries.push(crate::app::ConflictQueueEntry {
+                        path: c.path.clone(),
+                        yours_status,
+                        theirs_status,
+                        resolved: false,
+                    });
+                    cq.completion_prompted = false;
+                }
+            }
+        }
         let Some(cm) = self.modal_stack.conflict_merge_mut() else {
             return;
         };

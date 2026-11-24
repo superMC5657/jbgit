@@ -7,8 +7,8 @@ use crate::input_stage::{route_commit_changes_tree_key, route_commit_priority_ke
 use crate::log_view::{complete_last_token, filter_suggestions};
 
 use super::menus::{
-    keyboard_context_menu, route_conflict_merge_key, route_context_menu_key,
-    route_stash_fallback_key,
+    keyboard_context_menu, route_conflict_merge_key, route_conflict_queue_key,
+    route_context_menu_key, route_stash_fallback_key,
 };
 
 fn plain_char(key: &KeyEvent) -> Option<char> {
@@ -117,6 +117,7 @@ fn route_modal_key(key: KeyEvent, state: &AppState) -> Vec<Action> {
         ModalLayer::ApplyPatch(_) => crate::patch_view::route_apply_patch_key(&key, state),
         ModalLayer::TreeBrowser(_) => crate::tree_browser::route_tree_browser_key(&key, state),
         ModalLayer::ConflictResolver(_) => route_conflict_merge_key(&key, state),
+        ModalLayer::ConflictQueue(_) => route_conflict_queue_key(&key),
         ModalLayer::ThreeWayInspector { .. } | ModalLayer::HookError { .. } => match key.code {
             KeyCode::Esc | KeyCode::Enter => vec![Action::PopModal],
             _ => Vec::new(),

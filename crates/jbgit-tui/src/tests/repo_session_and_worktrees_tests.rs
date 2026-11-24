@@ -277,6 +277,9 @@ fn switch_guards_confirm_running_work_and_reject_bad_targets() {
                 doc: Some(doc),
                 selected_block: 0,
                 scroll: Default::default(),
+                h_scroll: 0,
+                show_base: false,
+                inline_editor: None,
                 externally_resolved: false,
             },
         )));

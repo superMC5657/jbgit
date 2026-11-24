@@ -25,8 +25,9 @@ pub use branch_tree::{
 };
 pub use conflict::{
     ConflictBlock, ConflictChoice, ConflictDocument, ConflictPaneRow, ConflictParseOptions,
-    ConflictSegment, ConflictSideInfo, ConflictSidePresence, LoadedConflict, SpecialConflictInfo,
-    SpecialConflictKind, is_reverse_conflict_state,
+    ConflictSegment, ConflictSideInfo, ConflictSidePresence, ConflictSideStatus, LoadedConflict,
+    SpecialConflictInfo, SpecialConflictKind, ThreeWayBlockKind, ThreeWayHunk,
+    conflict_side_statuses, is_reverse_conflict_state, three_way_merge_blocks,
 };
 pub use console::{
     ConsoleLine, ConsoleLineSeverity, ConsoleStream, GitConsoleEntry, classify_console_line,

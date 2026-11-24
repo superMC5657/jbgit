@@ -1313,3 +1313,84 @@ async fn submodule_gitlink_and_directory_conflicts_load_special_descriptors() {
     .await;
     assert_eq!(dir_info.kind, SpecialConflictKind::Directory);
 }
+
+#[tokio::test]
+async fn three_way_load_classifies_non_conflicting_hunks_and_unresolve_recreates_conflict() {
+    use jbgit_core::{ConflictChoice, ThreeWayBlockKind};
+
+    let tmp = init_repo();
+    let d = tmp.path();
+    commit_file(d, "app.txt", "a\nb\nc\nd\ne\n", "base");
+
+    git(d, &["checkout", "-b", "side"]);
+    commit_file(d, "app.txt", "a\nb\nc-theirs\nd\ne-theirs\n", "side edits");
+
+    git(d, &["checkout", "main"]);
+    commit_file(d, "app.txt", "a-ours\nb\nc-ours\nd\ne\n", "main edits");
+
+    let merge = run(
+        d,
+        GitOp::Merge {
+            rev: "side".into(),
+            options: Default::default(),
+        },
+    )
+    .await;
+    assert_eq!(merge.failure, Some(GitFailure::Conflicts), "{merge:?}");
+
+    let loc = RepoLocation::discover(d).unwrap();
+    let (handle, mut rx) = EngineSupervisor::start(loc, false).unwrap();
+    let e1 = handle.request_conflict_document("app.txt".into());
+    let mut doc = recv_matching(&mut rx, |ev| match ev {
+        EngineEvent::ConflictDocumentLoaded { doc, epoch } if epoch == e1 => Some(doc),
+        _ => None,
+    })
+    .await;
+
+    assert!(doc.has_base, "must load :1 base ancestor");
+    assert_eq!(doc.conflict_count, 3);
+    assert_eq!(doc.block(0).unwrap().kind, ThreeWayBlockKind::LeftOnly);
+    assert_eq!(doc.block(1).unwrap().kind, ThreeWayBlockKind::Conflict);
+    assert_eq!(doc.block(1).unwrap().base_lines, vec!["c"]);
+    assert_eq!(doc.block(2).unwrap().kind, ThreeWayBlockKind::RightOnly);
+
+    assert_eq!(doc.apply_non_conflicting(), 2);
+    assert_eq!(doc.unresolved_count(), 1);
+    doc.set_choice(1, ConflictChoice::Custom(vec!["c-merged".into()]));
+    assert_eq!(doc.unresolved_count(), 0);
+
+    let _ = handle.dispatch(TaskRequest::SaveConflictResolution {
+        path: "app.txt".into(),
+        content: doc.render_resolved().into_bytes(),
+        stage: true,
+        delete: false,
+    });
+    recv_matching(&mut rx, |ev| match ev {
+        EngineEvent::ExternalFsChanged(_) => Some(()),
+        _ => None,
+    })
+    .await;
+    assert_eq!(
+        fs::read_to_string(d.join("app.txt")).unwrap(),
+        "a-ours\nb\nc-merged\nd\ne-theirs\n"
+    );
+    let st_resolved = git(d, &["status", "--porcelain"]);
+    assert!(st_resolved.contains("M  app.txt"), "{st_resolved}");
+
+    // GitOp::UnresolveConflict (`git checkout -m -- app.txt`) restores conflict state & markers.
+    let unresolve = run(
+        d,
+        GitOp::UnresolveConflict {
+            paths: vec!["app.txt".into()],
+        },
+    )
+    .await;
+    assert!(unresolve.success, "{unresolve:?}");
+    let st_reconflicted = git(d, &["status", "--porcelain"]);
+    assert!(
+        st_reconflicted.contains("UU app.txt"),
+        "expected UU conflict after git checkout -m, got: {st_reconflicted}"
+    );
+    let disk_after = fs::read_to_string(d.join("app.txt")).unwrap();
+    assert!(disk_after.contains("<<<<<<<"), "{disk_after}");
+}

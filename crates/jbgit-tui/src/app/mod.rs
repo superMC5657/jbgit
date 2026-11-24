@@ -18,10 +18,11 @@ pub use modal_stack::{ModalLayer, ModalStack};
 pub use scroll::ScrollViewport;
 pub use state::AppState;
 pub use types::{
-    ClickRecord, ConflictMergeState, ContainingBranchesJob, ContextMenuEntryKind, ContextMenuItem,
-    DragState, EditorMoveKind, Effect, MENU_HOVER_DELAY, MenuHover, MenuParent, Notification,
-    PopupKind, RenderContext, SCROLL_GOTO_BOTTOM, SCROLL_GOTO_TOP, ScrollPane, SyntaxJob,
-    SyntaxJobKey, SyntaxTarget, UiAsyncEvent, apply_scroll_delta,
+    ClickRecord, ConflictInlineEditor, ConflictMergeState, ConflictQueueEntry, ConflictQueueState,
+    ContainingBranchesJob, ContextMenuEntryKind, ContextMenuItem, DragState, EditorMoveKind,
+    Effect, MENU_HOVER_DELAY, MenuHover, MenuParent, Notification, PopupKind, RenderContext,
+    SCROLL_GOTO_BOTTOM, SCROLL_GOTO_TOP, ScrollPane, SyntaxJob, SyntaxJobKey, SyntaxTarget,
+    UiAsyncEvent, apply_scroll_delta,
 };
 pub(crate) use types::initial_menu_selection;
 

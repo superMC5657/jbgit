@@ -346,6 +346,12 @@ impl AppState {
                     cm.scroll.scroll_by(delta, fallback);
                 }
             }
+            ScrollPane::ConflictQueue => {
+                if let Some(cq) = self.modal_stack.conflict_queue_mut() {
+                    let fallback = cq.entries.len().saturating_sub(1);
+                    cq.scroll.scroll_by(delta, fallback);
+                }
+            }
             ScrollPane::TreeBrowserPreview => {
                 if let Some(tb) = self.modal_stack.tree_browser_mut() {
                     let fallback = tb.preview_line_count().saturating_sub(1);
@@ -433,6 +439,12 @@ impl AppState {
                 ScrollPane::ConflictMerge => {
                     if let Some(cm) = self.modal_stack.conflict_merge_mut() {
                         cm.scroll.bind_bound(viewport_h, max_scroll);
+                    }
+                }
+                ScrollPane::ConflictQueue => {
+                    if let Some(cq) = self.modal_stack.conflict_queue_mut() {
+                        let total = cq.entries.len();
+                        cq.scroll.ensure_visible(cq.selected, total, viewport_h);
                     }
                 }
                 ScrollPane::TreeBrowserList => {

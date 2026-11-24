@@ -1122,6 +1122,51 @@ fn annotate_alt_g_resolves_without_shadowing_across_all_presets() {
 }
 
 #[test]
+fn resolve_conflicts_alt_c_resolves_without_shadowing_across_all_presets() {
+    use crate::config::KeymapPreset;
+    use crate::keymap::{KeyAction, actions::check_scopes, catalog};
+
+    for preset in [
+        KeymapPreset::Default,
+        KeymapPreset::Jetbrains,
+        KeymapPreset::Vim,
+    ] {
+        let mut cfg = crate::config::AppConfig::load_defaults();
+        cfg.keymap = crate::config::KeymapConfig::for_preset(preset.clone());
+        let dir = tempfile::tempdir().unwrap();
+        let mut ts = TestSession::with_config(dir.path().to_path_buf(), cfg);
+
+        for (tab, pane) in [
+            (WorkspaceTab::Log, PaneId::LogCommitTable),
+            (WorkspaceTab::Log, PaneId::LogBranchesTree),
+            (WorkspaceTab::Commit, PaneId::CommitChangesTree),
+            (WorkspaceTab::Commit, PaneId::CommitDiffPreview),
+            (WorkspaceTab::Stash, PaneId::StashList),
+            (WorkspaceTab::Console, PaneId::ConsoleCommandList),
+        ] {
+            ts.dispatch(Action::SwitchTab(tab));
+            ts.dispatch(Action::FocusPane(pane));
+            let key = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::ALT);
+            let m = check_scopes(&[key], ts.state());
+            assert!(
+                matches!(m, crate::keymap::MatchResult::Exact(b) if b.run == KeyAction::ResolveConflicts),
+                "expected <A-c> to match KeyAction::ResolveConflicts on {preset:?} / {tab:?} / {pane:?}"
+            );
+            let sc = catalog::shortcut_for_action(
+                ts.state(),
+                &crate::keymap::actions::scopes_for_context(ts.state()),
+                &KeyAction::ResolveConflicts,
+            );
+            assert_eq!(
+                sc.as_deref(),
+                Some("Alt+C"),
+                "expected non-shadowed Alt+C shortcut display on {preset:?} / {tab:?} / {pane:?}"
+            );
+        }
+    }
+}
+
+#[test]
 fn terminal_too_small_guard_matches_min_threshold_and_i18n_text() {
     use crate::views::{MIN_TERMINAL_HEIGHT, MIN_TERMINAL_WIDTH};
 

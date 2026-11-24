@@ -206,18 +206,35 @@ jbgit 默认采用**零冲突统一键位（`preset = "default"`）**，并通�
 | `<Enter>` / `y` / `.` | 跳转到主 Log 对应提交 / 复制该行提交哈希 / 打开 Annotate 上下文菜单 |
 | `<Esc>` | 清除行跳转输入或退出可视选区，否则关闭 Annotate 浮窗 |
 
-**三栏冲突合并浮窗**（在冲突文件上下文菜单或横幅进入）：
+**多文件冲突队列与三栏 3-Way 合并浮窗**（按 `<Alt-c>` 或点击 Ongoing 横幅 `[Resolve Conflicts]` 进入；存在 ≥ 2 个冲突文件时自动打开冲突队列，单文件时直接进入三栏合并器，也可从右键菜单随时打开队列）：
+
+*多文件冲突队列 (`ConflictQueue`)*：
 
 | 快捷键 | 功能描述 |
 | :--- | :--- |
-| `j` / `k` / `<PageUp>` / `<PageDown>` | 滚动冲突视图 |
+| `j` / `k` / `<PageUp>` / `<PageDown>` / `g` / `G` | 在冲突文件表格（`Path`、`Yours`、`Theirs`、`Status`）中移动 |
+| `<Space>` / `a` | 勾选 / 取消多选文件，或全选 / 清空选择 |
+| `<Enter>` / `m` | 打开选中文件的三栏 3-Way 合并器（保存暂存后自动前进到下一个未解决文件，全部解决后弹出继续 Rebase/Merge 或前往提交面板确认框） |
+| `y` / `t` | 对当前或批量勾选的未解决文件执行 `Accept Yours` / `Accept Theirs` |
+| `r` | 对已误解文件执行 **Revert Resolved (`git checkout -m`)** 重新恢复冲突态 |
+| `M` / `<Esc>` | 在外部 Mergetool 打开当前文件 / 关闭冲突队列 |
+
+*三栏 3-Way 冲突合并浮窗 (`ConflictResolver`)*：
+
+| 快捷键 | 功能描述 |
+| :--- | :--- |
+| `j` / `k` / `<PageUp>` / `<PageDown>`、`h` / `l` / `<Left>` / `<Right>` | 垂直滚动冲突视图 / 水平平移长行 |
 | `n` / `<Tab>`、`p` / `<Shift-Tab>` | 跳转至下一个 / 上一个冲突块（视口自动跟随居中定位） |
-| `1` / `y`、`2` / `t`、`3` / `b`、`0` / `x` | 当前冲突块：采纳己方 (Ours) / 采纳对方 (Theirs) / 保留双方 / 重置为未解决（Delete/Modify 冲突提供「保留文件」/「删除文件」决策） |
+| `a` | **Apply Non-Conflicting Changes**：基于索引 `:1/:2/:3` 一键自动应用所有非冲突单侧变更（`LeftOnly` / `RightOnly` / `BothSame`） |
+| `b` | 展开 / 折叠当前冲突块的 **Base (`:1`) 共同祖先对照区** |
+| `1` / `y`、`2` / `t`、`3` / `B`、`4` / `d`、`0` / `x` / `u` | 当前块：采纳己方 (Ours) / 对方 (Theirs) / 保留双方 / 双向丢弃 (`Neither`) / 重置为未解决（Delete/Modify 冲突提供「保留文件」/「删除文件」决策） |
+| `e` | 进入当前块的**轻量多行内联编辑模式**修改 Result 文本（保留语法高亮与水平滚动，`<Ctrl-s>` / `<F2>` 应用、`<Esc>` 取消） |
 | `Y` / `T` | 全部冲突块一键采纳己方 / 采纳对方 |
-| `m` / `e` | 在外部 Mergetool / 外部编辑器中打开冲突文件 |
+| `m` / `E` | 在外部 Mergetool / `$EDITOR` 中打开冲突文件 |
 | `<Enter>` / `<Ctrl-s>` / `<Esc>` | 保存（或删除）解决结果并暂存 / 取消关闭 |
 
 > **冲突语义与护栏说明**：
+> - **真正 3-Way 模型与高亮**：读取 Git index `:1/:2/:3` 并基于 `imara-diff` 区分非冲突改动与真冲突，三栏视图接入可选语法高亮与块内词级差异提示；
 > - **Rebase 冲突方向自动对齐**：在 `Rebase` / 交互式 `Rebase` 暂停期间，界面上的 **Yours（我方，重放提交）** 与 **Theirs（对方，目标分支）** 以及 `Accept Yours` / `Accept Theirs` 均自动翻转映射至正确的 Git 索引阶段（`:3` / `:2`），与 `Merge` 保持一致语义；
 > - **Delete/Modify 与 Both-Deleted 冲突**：采纳删除侧时自动通过 `git rm -f`（或三栏弹窗内「删除并暂存」）移除工作区文件并清理索引冲突；
 > - **行尾符无损保留**：解决文本冲突写盘时自动保留原文件的 `CRLF` (`\r\n`) / `LF` (`\n`) 与末尾换行符状态；
@@ -516,7 +533,7 @@ prepend_keymap = [
 
 | 作用域 | 可用 `run` 动作标识符 |
 | :--- | :--- |
-| `global` | `quit`, `help`, `context_menu`, `refresh`, `tab_commit`, `tab_log`, `tab_branches`, `tab_stash`, `tab_console`, `focus_next`, `focus_prev`, `toggle_branches_popup`, `toggle_branches_pane`, `git_fetch`, `git_pull`, `git_push`, `update_project`, `configure_remotes`, `switch_repository`, `worktrees`, `update_submodules`, `unshallow`, `goto_revision`, `palette`, `toggle_glyph_mode`, `cycle_graph_renderer`, `git_status_probe`, `noop` |
+| `global` | `quit`, `help`, `context_menu`, `refresh`, `tab_commit`, `tab_log`, `tab_branches`, `tab_stash`, `tab_console`, `focus_next`, `focus_prev`, `toggle_branches_popup`, `toggle_branches_pane`, `git_fetch`, `git_pull`, `git_push`, `update_project`, `configure_remotes`, `switch_repository`, `worktrees`, `resolve_conflicts`, `update_submodules`, `unshallow`, `goto_revision`, `palette`, `toggle_glyph_mode`, `cycle_graph_renderer`, `git_status_probe`, `noop` |
 | `log` | `cursor_down`, `cursor_up`, `goto_top`, `goto_bottom`, `page_down_half`, `page_up_half`, `goto_revision`, `focus_filter`, `toggle_branches_pane`, `toggle_log_row_selection`, `compare_or_diff`, `swap_compare_direction`, `toggle_only_affected_changes`, `zoom_diff`, `copy_hash`, `checkout`, `new_branch`, `uncommit`, `reword`, `drop_commit`, `choose_parent`, `toggle_group`, `file_history`, `annotate`, `collapse_linear_branch`, `expand_linear_branch`, `collapse_all_linear_branches`, `expand_all_linear_branches`, `browse_revision` |
 | `branch` | `branch_search`, `toggle_favorite`, `checkout`, `new_branch`, `rename_branch`, `delete_branch`, `navigate_branch` |
 | `commit` | `cursor_down`, `cursor_up`, `goto_top`, `goto_bottom`, `toggle_stage`, `stage_selection`, `unstage_selection`, `focus_commit_msg`, `commit`, `commit_and_push`, `toggle_amend`, `toggle_signoff`, `commit_history`, `select_all`, `discard_changes`, `toggle_group`, `edit_file`, `file_history`, `annotate`, `apply_patch`, `apply_patch_clipboard` |

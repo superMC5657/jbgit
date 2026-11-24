@@ -95,6 +95,11 @@ fn render_modal_layer(
                 frame, screen, state, ctx, z,
             );
         }
+        ModalLayer::ConflictQueue(cq) => {
+            crate::views::conflict_queue::render_conflict_queue_modal(
+                frame, screen, state, cq, ctx, z,
+            );
+        }
         ModalLayer::ThreeWayInspector { range_idx } => {
             popups::render_three_way_inspector_modal(frame, screen, state, ctx, *range_idx, z);
         }

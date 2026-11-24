@@ -408,6 +408,16 @@ pub(crate) fn compile_simple_steps(op: &GitOp) -> Option<Vec<CompiledStep>> {
             name.clone(),
             format!("stash@{{{index}}}"),
         ])],
+        GitOp::UnresolveConflict { paths } => {
+            if paths.is_empty() {
+                Vec::new()
+            } else {
+                vec![CompiledStep::with_pathspecs(
+                    vec!["checkout".to_string(), "-m".to_string()],
+                    paths,
+                )]
+            }
+        }
         GitOp::IntentToAdd { paths } => {
             if paths.is_empty() {
                 Vec::new()
@@ -1782,6 +1792,9 @@ mod tests {
         for op in [
             GitOp::CheckoutPaths {
                 rev: "HEAD~1".into(),
+                paths: many.clone(),
+            },
+            GitOp::UnresolveConflict {
                 paths: many.clone(),
             },
             GitOp::IntentToAdd {

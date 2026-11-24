@@ -516,6 +516,14 @@ impl I18n {
                     self.t("git_op.accept_theirs").to_string()
                 }
             }
+            GitOp::UnresolveConflict { paths } => {
+                if let [one] = paths.as_slice() {
+                    self.t_fmt("git_op.unresolve_conflict_one", &[("path", one)])
+                } else {
+                    let c = paths.len().to_string();
+                    self.t_fmt("git_op.unresolve_conflict_many", &[("count", &c)])
+                }
+            }
             GitOp::IntentToAdd { .. } => self.t("git_op.intent_to_add").to_string(),
             GitOp::AddToIgnore { .. } => self.t("git_op.add_to_ignore").to_string(),
             GitOp::DeleteFiles { paths } => {

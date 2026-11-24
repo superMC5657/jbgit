@@ -363,6 +363,7 @@ pub fn is_action_applicable(run: &KeyAction, state: &AppState) -> bool {
         // Stays visible on git < 2.17 so `?` documents the requirement;
         // running it explains instead of opening the modal.
         | KeyAction::Worktrees
+        | KeyAction::ResolveConflicts
         | KeyAction::Palette
         | KeyAction::ToggleGlyphMode
         | KeyAction::CycleGraphRenderer => true,
@@ -606,6 +607,7 @@ pub fn execute_action(run: &KeyAction, state: &AppState) -> Option<Vec<Action>> 
         } else {
             vec![Action::Notice(state.i18n.t("toast.repo_not_loaded").into())]
         }),
+        KeyAction::ResolveConflicts => Some(vec![Action::OngoingResolve]),
         KeyAction::ConfigureRemotes => Some(if state.repo_snapshot.is_some() {
             vec![Action::OpenRemotes]
         } else {

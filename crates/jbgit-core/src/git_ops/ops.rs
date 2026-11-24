@@ -616,6 +616,11 @@ pub enum GitOp {
         paths: Vec<String>,
         ours: bool,
     },
+    /// `git checkout -m -- <paths...>` — recreates conflict markers for
+    /// previously resolved/staged files.
+    UnresolveConflict {
+        paths: Vec<String>,
+    },
     IntentToAdd {
         paths: Vec<String>,
     },
@@ -759,6 +764,13 @@ impl GitOp {
                     "Accept Yours".to_string()
                 } else {
                     "Accept Theirs".to_string()
+                }
+            }
+            Self::UnresolveConflict { paths } => {
+                if let [one] = paths.as_slice() {
+                    format!("Revert resolved '{one}'")
+                } else {
+                    format!("Revert {} resolved file(s)", paths.len())
                 }
             }
             Self::IntentToAdd { .. } => "Stage without content".to_string(),

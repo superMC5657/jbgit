@@ -123,6 +123,11 @@ impl AppState {
                     return effects;
                 };
                 match top {
+                    ModalLayer::ConflictResolver(cm) => {
+                        if let Some(ed) = &mut cm.inline_editor {
+                            ed.insert_text(&text);
+                        }
+                    }
                     ModalLayer::Dialog(d) => match d.as_mut() {
                         crate::dialogs::Dialog::Credential(c) => c.push_str(&text),
                         crate::dialogs::Dialog::Input(inp) => {

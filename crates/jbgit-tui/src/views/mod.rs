@@ -3,6 +3,7 @@ pub mod banner;
 pub mod commit;
 pub mod commit_diff;
 pub mod conflict_merge;
+pub mod conflict_queue;
 pub mod console;
 pub mod dialogs;
 pub mod file_history;

@@ -13,8 +13,8 @@ use crate::branches_popup::activate_row;
 use crate::config::KeymapScope;
 use crate::graph::GraphRendererMode;
 use crate::hit_test::{
-    ChangesToolbarButton, ConflictMergeButtonKind, DialogButtonKind, DiffToolbarButton, HitTarget,
-    OngoingButton,
+    ChangesToolbarButton, ConflictMergeButtonKind, ConflictQueueButtonKind, DialogButtonKind,
+    DiffToolbarButton, HitTarget, OngoingButton,
 };
 use crate::input_stage::stage_tree_context_menu_items;
 use crate::keymap::{KeyAction, catalog};
@@ -167,8 +167,15 @@ pub fn route_context_menu_key(key: KeyEvent, state: &AppState) -> Vec<Action> {
     }
 }
 
-/// Keyboard routing for the built-in three-pane conflict merge modal.
+/// Keyboard routing for the built-in three-pane 3-way conflict merge modal.
 pub fn route_conflict_merge_key(key: &KeyEvent, state: &AppState) -> Vec<Action> {
+    if state
+        .modal_stack
+        .conflict_merge()
+        .is_some_and(|cm| cm.inline_editor.is_some())
+    {
+        return vec![Action::ConflictInlineEditKey(*key)];
+    }
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     let alt = key.modifiers.contains(KeyModifiers::ALT);
     let path = state
@@ -182,24 +189,36 @@ pub fn route_conflict_merge_key(key: &KeyEvent, state: &AppState) -> Vec<Action>
         KeyCode::Char('s') if ctrl => vec![Action::ConflictSaveAndStage],
         KeyCode::Down | KeyCode::Char('j') if !ctrl && !alt => vec![Action::ConflictScroll(1)],
         KeyCode::Up | KeyCode::Char('k') if !ctrl && !alt => vec![Action::ConflictScroll(-1)],
+        KeyCode::Left | KeyCode::Char('h') if !ctrl && !alt => {
+            vec![Action::ConflictHorizontalScroll(-4)]
+        }
+        KeyCode::Right | KeyCode::Char('l') if !ctrl && !alt => {
+            vec![Action::ConflictHorizontalScroll(4)]
+        }
         KeyCode::PageDown => vec![Action::ConflictScroll(10)],
         KeyCode::PageUp => vec![Action::ConflictScroll(-10)],
         KeyCode::Char('n') | KeyCode::Tab if !ctrl && !alt => vec![Action::ConflictSelectBlock(1)],
         KeyCode::Char('p') | KeyCode::BackTab if !ctrl && !alt => {
             vec![Action::ConflictSelectBlock(-1)]
         }
+        KeyCode::Char('a') if !ctrl && !alt => vec![Action::ConflictApplyNonConflicting],
+        KeyCode::Char('b') if !ctrl && !alt => vec![Action::ConflictToggleBase],
         KeyCode::Char('1' | 'y') if !ctrl && !alt => {
             vec![Action::ConflictApplyChoice(ConflictChoice::Ours)]
         }
         KeyCode::Char('2' | 't') if !ctrl && !alt => {
             vec![Action::ConflictApplyChoice(ConflictChoice::Theirs)]
         }
-        KeyCode::Char('3' | 'b') if !ctrl && !alt => {
+        KeyCode::Char('3' | 'B') if !ctrl && !alt => {
             vec![Action::ConflictApplyChoice(ConflictChoice::BothOursFirst)]
         }
-        KeyCode::Char('0' | 'x') if !ctrl && !alt => {
+        KeyCode::Char('4' | 'd') if !ctrl && !alt => {
+            vec![Action::ConflictApplyChoice(ConflictChoice::Neither)]
+        }
+        KeyCode::Char('0' | 'x' | 'u') if !ctrl && !alt => {
             vec![Action::ConflictApplyChoice(ConflictChoice::Unresolved)]
         }
+        KeyCode::Char('e') if !ctrl && !alt => vec![Action::ConflictStartInlineEdit],
         KeyCode::Char('Y') if !ctrl && !alt => {
             vec![Action::ConflictAcceptAll(ConflictChoice::Ours)]
         }
@@ -209,9 +228,36 @@ pub fn route_conflict_merge_key(key: &KeyEvent, state: &AppState) -> Vec<Action>
         KeyCode::Char('m') if !ctrl && !alt && !path.is_empty() => {
             vec![Action::OpenExternalMergetool(path)]
         }
-        KeyCode::Char('e') if !ctrl && !alt && !path.is_empty() => {
+        KeyCode::Char('E') if !ctrl && !alt && !path.is_empty() => {
             vec![Action::OpenExternalEditorFile(Some(path))]
         }
+        _ => Vec::new(),
+    }
+}
+
+/// Keyboard routing for the multi-file Conflict Queue modal.
+pub fn route_conflict_queue_key(key: &KeyEvent) -> Vec<Action> {
+    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    let alt = key.modifiers.contains(KeyModifiers::ALT);
+    match key.code {
+        KeyCode::Esc => vec![Action::PopModal],
+        KeyCode::Down | KeyCode::Char('j') if !ctrl && !alt => vec![Action::ConflictQueueMove(1)],
+        KeyCode::Up | KeyCode::Char('k') if !ctrl && !alt => vec![Action::ConflictQueueMove(-1)],
+        KeyCode::PageDown => vec![Action::ConflictQueueMove(10)],
+        KeyCode::PageUp => vec![Action::ConflictQueueMove(-10)],
+        KeyCode::Home | KeyCode::Char('g') if !ctrl && !alt => vec![Action::ConflictQueueSelect(0)],
+        KeyCode::End | KeyCode::Char('G') if !ctrl && !alt => {
+            vec![Action::ConflictQueueSelect(usize::MAX)]
+        }
+        KeyCode::Char(' ') if !ctrl && !alt => vec![Action::ConflictQueueToggleSelect],
+        KeyCode::Char('a') if !alt => vec![Action::ConflictQueueToggleSelectAll],
+        KeyCode::Enter | KeyCode::Char('m') if !ctrl && !alt => {
+            vec![Action::ConflictQueueMergeSelected]
+        }
+        KeyCode::Char('y') if !ctrl && !alt => vec![Action::ConflictQueueAcceptSide(true)],
+        KeyCode::Char('t') if !ctrl && !alt => vec![Action::ConflictQueueAcceptSide(false)],
+        KeyCode::Char('r') if !ctrl && !alt => vec![Action::ConflictQueueRevertResolved],
+        KeyCode::Char('M') if !ctrl && !alt => vec![Action::ConflictQueueMergetool],
         _ => Vec::new(),
     }
 }
@@ -415,6 +461,10 @@ pub fn route_overlay_and_stash_click(
                 .map(|cm| cm.path.clone())
                 .unwrap_or_default();
             match btn {
+                ConflictMergeButtonKind::ApplyNonConflicting => {
+                    vec![Action::ConflictApplyNonConflicting]
+                }
+                ConflictMergeButtonKind::ToggleBase => vec![Action::ConflictToggleBase],
                 ConflictMergeButtonKind::AcceptOurs => {
                     vec![Action::ConflictApplyChoice(ConflictChoice::Ours)]
                 }
@@ -423,6 +473,13 @@ pub fn route_overlay_and_stash_click(
                 }
                 ConflictMergeButtonKind::AcceptBoth => {
                     vec![Action::ConflictApplyChoice(ConflictChoice::BothOursFirst)]
+                }
+                ConflictMergeButtonKind::AcceptNeither => {
+                    vec![Action::ConflictApplyChoice(ConflictChoice::Neither)]
+                }
+                ConflictMergeButtonKind::InlineEdit => vec![Action::ConflictStartInlineEdit],
+                ConflictMergeButtonKind::ResetBlock => {
+                    vec![Action::ConflictApplyChoice(ConflictChoice::Unresolved)]
                 }
                 ConflictMergeButtonKind::AcceptAllOurs => {
                     vec![Action::ConflictAcceptAll(ConflictChoice::Ours)]
@@ -443,6 +500,24 @@ pub fn route_overlay_and_stash_click(
                 ConflictMergeButtonKind::Cancel => vec![Action::PopModal],
             }
         }
+        HitTarget::ConflictQueueRow(idx) => {
+            if is_double {
+                vec![
+                    Action::ConflictQueueSelect(*idx),
+                    Action::ConflictQueueMergeSelected,
+                ]
+            } else {
+                vec![Action::ConflictQueueSelect(*idx)]
+            }
+        }
+        HitTarget::ConflictQueueButton(btn) => match btn {
+            ConflictQueueButtonKind::Merge => vec![Action::ConflictQueueMergeSelected],
+            ConflictQueueButtonKind::AcceptYours => vec![Action::ConflictQueueAcceptSide(true)],
+            ConflictQueueButtonKind::AcceptTheirs => vec![Action::ConflictQueueAcceptSide(false)],
+            ConflictQueueButtonKind::RevertResolved => vec![Action::ConflictQueueRevertResolved],
+            ConflictQueueButtonKind::Mergetool => vec![Action::ConflictQueueMergetool],
+            ConflictQueueButtonKind::Close => vec![Action::PopModal],
+        },
         _ => return None,
     };
     Some(actions)

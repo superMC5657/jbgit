@@ -1,11 +1,12 @@
+use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::time::{Duration, Instant};
 
 use jbgit_core::{
-    BlameBundle, BlameKey, ConflictDocument, DetailsKey, EpochToken, FileDiff, FileDiffKey,
-    FileHistoryKey, GitOp, Oid, OutgoingKey, PaneId, PatchCheckKey, RefreshScope, RepoSnapshot,
-    RequestSlotId, SplitAxis, SplitterId, TreeBlob, TreeBlobKey, TreeKey,
+    BlameBundle, BlameKey, ConflictDocument, ConflictSideStatus, DetailsKey, EpochToken, FileDiff,
+    FileDiffKey, FileHistoryKey, GitOp, Oid, OutgoingKey, PaneId, PatchCheckKey, RefreshScope,
+    RepoSnapshot, RequestSlotId, SplitAxis, SplitterId, TreeBlob, TreeBlobKey, TreeKey,
 };
 use jbgit_engine::{StageDiffKey, ThreeDocStageDiff};
 use ratatui::layout::Rect;
@@ -49,6 +50,7 @@ pub enum ScrollPane {
     PushFiles,
     PushDiff,
     ConflictMerge,
+    ConflictQueue,
     TreeBrowserList,
     TreeBrowserPreview,
     ApplyPatch,
@@ -359,12 +361,202 @@ pub enum PopupKind {
     CommitHistory,
 }
 
+/// Lightweight multi-line inline editor for customizing one conflict block's
+/// Result text directly inside the three-pane conflict merger.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ConflictInlineEditor {
+    pub block_idx: usize,
+    pub lines: Vec<String>,
+    pub cursor_row: usize,
+    pub cursor_col: usize,
+    pub h_scroll: usize,
+    pub v_scroll: usize,
+}
+
+impl ConflictInlineEditor {
+    pub fn open(block_idx: usize, initial_lines: Vec<String>) -> Self {
+        let lines = if initial_lines.is_empty() {
+            vec![String::new()]
+        } else {
+            initial_lines
+        };
+        let cursor_col = lines[0].chars().count();
+        Self {
+            block_idx,
+            lines,
+            cursor_row: 0,
+            cursor_col,
+            h_scroll: 0,
+            v_scroll: 0,
+        }
+    }
+
+    fn byte_idx_at_char(s: &str, char_idx: usize) -> usize {
+        s.char_indices()
+            .nth(char_idx)
+            .map_or(s.len(), |(b, _)| b)
+    }
+
+    pub fn insert_char(&mut self, ch: char) {
+        if let Some(line) = self.lines.get_mut(self.cursor_row) {
+            let b = Self::byte_idx_at_char(line, self.cursor_col);
+            line.insert(b, ch);
+            self.cursor_col += 1;
+        }
+    }
+
+    pub fn insert_text(&mut self, text: &str) {
+        for ch in text.chars() {
+            match ch {
+                '\r' => {}
+                '\n' => self.insert_newline(),
+                other => self.insert_char(other),
+            }
+        }
+    }
+
+    pub fn insert_newline(&mut self) {
+        if let Some(line) = self.lines.get_mut(self.cursor_row) {
+            let b = Self::byte_idx_at_char(line, self.cursor_col);
+            let tail = line.split_off(b);
+            self.cursor_row += 1;
+            self.lines.insert(self.cursor_row, tail);
+            self.cursor_col = 0;
+            self.h_scroll = 0;
+        }
+    }
+
+    pub fn backspace(&mut self) {
+        if self.cursor_col > 0 {
+            if let Some(line) = self.lines.get_mut(self.cursor_row) {
+                let start = Self::byte_idx_at_char(line, self.cursor_col - 1);
+                let end = Self::byte_idx_at_char(line, self.cursor_col);
+                line.replace_range(start..end, "");
+                self.cursor_col -= 1;
+            }
+        } else if self.cursor_row > 0 {
+            let removed = self.lines.remove(self.cursor_row);
+            self.cursor_row -= 1;
+            if let Some(prev) = self.lines.get_mut(self.cursor_row) {
+                self.cursor_col = prev.chars().count();
+                prev.push_str(&removed);
+            }
+        }
+    }
+
+    pub fn delete_forward(&mut self) {
+        let cur_len = self
+            .lines
+            .get(self.cursor_row)
+            .map_or(0, |l| l.chars().count());
+        if self.cursor_col < cur_len {
+            if let Some(line) = self.lines.get_mut(self.cursor_row) {
+                let start = Self::byte_idx_at_char(line, self.cursor_col);
+                let end = Self::byte_idx_at_char(line, self.cursor_col + 1);
+                line.replace_range(start..end, "");
+            }
+        } else if self.cursor_row + 1 < self.lines.len() {
+            let next = self.lines.remove(self.cursor_row + 1);
+            if let Some(line) = self.lines.get_mut(self.cursor_row) {
+                line.push_str(&next);
+            }
+        }
+    }
+
+    pub fn move_left(&mut self) {
+        if self.cursor_col > 0 {
+            self.cursor_col -= 1;
+        } else if self.cursor_row > 0 {
+            self.cursor_row -= 1;
+            self.cursor_col = self.lines[self.cursor_row].chars().count();
+        }
+    }
+
+    pub fn move_right(&mut self) {
+        let cur_len = self
+            .lines
+            .get(self.cursor_row)
+            .map_or(0, |l| l.chars().count());
+        if self.cursor_col < cur_len {
+            self.cursor_col += 1;
+        } else if self.cursor_row + 1 < self.lines.len() {
+            self.cursor_row += 1;
+            self.cursor_col = 0;
+        }
+    }
+
+    pub fn move_up(&mut self) {
+        if self.cursor_row > 0 {
+            self.cursor_row -= 1;
+            let len = self.lines[self.cursor_row].chars().count();
+            self.cursor_col = self.cursor_col.min(len);
+        }
+    }
+
+    pub fn move_down(&mut self) {
+        if self.cursor_row + 1 < self.lines.len() {
+            self.cursor_row += 1;
+            let len = self.lines[self.cursor_row].chars().count();
+            self.cursor_col = self.cursor_col.min(len);
+        }
+    }
+
+    pub fn move_home(&mut self) {
+        self.cursor_col = 0;
+        self.h_scroll = 0;
+    }
+
+    pub fn move_end(&mut self) {
+        self.cursor_col = self
+            .lines
+            .get(self.cursor_row)
+            .map_or(0, |l| l.chars().count());
+    }
+
+    /// Keeps cursor visible inside a `(width, height)` editor viewport.
+    pub fn ensure_cursor_visible(&mut self, width: usize, height: usize) {
+        if height > 0 {
+            if self.cursor_row < self.v_scroll {
+                self.v_scroll = self.cursor_row;
+            } else if self.cursor_row >= self.v_scroll + height {
+                self.v_scroll = self.cursor_row + 1 - height;
+            }
+        }
+        if width > 0 {
+            let cur_w = self.cursor_display_col();
+            if cur_w < self.h_scroll {
+                self.h_scroll = cur_w;
+            } else if cur_w >= self.h_scroll + width {
+                self.h_scroll = cur_w + 1 - width;
+            }
+        }
+    }
+
+    pub fn cursor_display_col(&self) -> usize {
+        use unicode_width::UnicodeWidthChar;
+        self.lines
+            .get(self.cursor_row)
+            .map_or(0, |line| {
+                line.chars()
+                    .take(self.cursor_col)
+                    .map(|c| if c == '\t' { 4 } else { c.width().unwrap_or(0) })
+                    .sum()
+            })
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct ConflictMergeState {
     pub path: String,
     pub doc: Option<ConflictDocument>,
     pub selected_block: usize,
     pub scroll: super::ScrollViewport,
+    /// Horizontal pan offset (in display columns) shared across the three panes.
+    pub h_scroll: usize,
+    /// Whether the Base (`:1`) ancestor panel is expanded for the active block.
+    pub show_base: bool,
+    /// Active inline multi-line Result editor for a single block (`e`).
+    pub inline_editor: Option<ConflictInlineEditor>,
     /// Set when a background status refresh observes that `path` is no longer
     /// conflicted (e.g. resolved externally outside `jbgit`).
     pub externally_resolved: bool,
@@ -385,6 +577,73 @@ impl ConflictMergeState {
         } else {
             self.scroll.set_offset(first_row);
         }
+    }
+}
+
+/// One row of the multi-file Conflict Queue modal (`ModalLayer::ConflictQueue`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConflictQueueEntry {
+    pub path: String,
+    pub yours_status: ConflictSideStatus,
+    pub theirs_status: ConflictSideStatus,
+    pub resolved: bool,
+}
+
+/// Self-contained state of the multi-file Conflict Queue modal.
+#[derive(Debug, Clone, Default)]
+pub struct ConflictQueueState {
+    pub entries: Vec<ConflictQueueEntry>,
+    pub selected: usize,
+    pub multi_selected: BTreeSet<String>,
+    pub scroll: super::ScrollViewport,
+    pub is_reversed: bool,
+    pub yours_label: String,
+    pub theirs_label: String,
+    /// Path opened in the child three-pane merger from this queue.
+    pub active_merge_path: Option<String>,
+    /// Avoids re-prompting "All conflicts resolved" once already offered.
+    pub completion_prompted: bool,
+}
+
+impl ConflictQueueState {
+    pub fn selected_entry(&self) -> Option<&ConflictQueueEntry> {
+        self.entries.get(self.selected)
+    }
+
+    pub fn unresolved_count(&self) -> usize {
+        self.entries.iter().filter(|e| !e.resolved).count()
+    }
+
+    pub fn resolved_count(&self) -> usize {
+        self.entries.iter().filter(|e| e.resolved).count()
+    }
+
+    pub fn all_resolved(&self) -> bool {
+        !self.entries.is_empty() && self.unresolved_count() == 0
+    }
+
+    /// Target paths for batch actions: multi-selected paths if any, else the
+    /// currently highlighted row.
+    pub fn target_entries(&self) -> Vec<&ConflictQueueEntry> {
+        if !self.multi_selected.is_empty() {
+            self.entries
+                .iter()
+                .filter(|e| self.multi_selected.contains(&e.path))
+                .collect()
+        } else {
+            self.selected_entry().into_iter().collect()
+        }
+    }
+
+    /// Next unresolved entry index after `after_idx` (wrapping around).
+    pub fn next_unresolved_after(&self, after_idx: usize) -> Option<usize> {
+        if self.entries.is_empty() {
+            return None;
+        }
+        let n = self.entries.len();
+        (1..=n)
+            .map(|step| (after_idx + step) % n)
+            .find(|&idx| !self.entries[idx].resolved)
     }
 }
 

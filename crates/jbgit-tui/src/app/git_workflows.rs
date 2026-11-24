@@ -2,17 +2,20 @@
 //! workflows, and follow-up dialogs driven by operation outcomes (Smart
 //! Operation, unmerged delete guard, merged-branch cleanup, `[Restore Branch]`).
 
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashSet};
 
+use crossterm::event::{KeyCode, KeyModifiers};
 use jbgit_core::{
     ConflictChoice, FastForward, GitFailure, GitOp, GitOpOutcome, MergeOptions, Oid, OngoingKind,
-    OngoingStep, PaneId, PushForce, RefKind, RepoSnapshot, RewritePlan, SpecialConflictInfo,
-    SpecialConflictKind, StageNodeKind, StageTreeRowKind, UpdateInfo, UpdateMode, WorkspaceTab,
-    is_protected_branch, matches_protected_branch_patterns, parse_push_porcelain,
+    OngoingStep, PaneId, PushForce, RefKind, RepoSnapshot, RepositoryState, RewritePlan,
+    SpecialConflictInfo, SpecialConflictKind, StageNodeKind, StageTreeRowKind, UpdateInfo,
+    UpdateMode, WorkspaceTab, conflict_side_statuses, is_protected_branch,
+    is_reverse_conflict_state, matches_protected_branch_patterns, parse_push_porcelain,
 };
 
 use crate::app::{
-    Action, AppState, ConflictMergeState, Effect, ModalLayer, Notification,
+    Action, AppState, ConflictInlineEditor, ConflictMergeState, ConflictQueueEntry,
+    ConflictQueueState, Effect, ModalLayer, Notification,
 };
 use crate::branches_popup::first_selectable_row;
 use crate::dialogs::{
@@ -254,9 +257,18 @@ impl AppState {
                     doc: None,
                     selected_block: 0,
                     scroll: crate::app::ScrollViewport::new(),
+                    h_scroll: 0,
+                    show_base: false,
+                    inline_editor: None,
                     externally_resolved: false,
                 });
                 effects.push(Effect::LoadConflictDocument(path.clone()));
+            }
+            Action::OpenConflictQueue => {
+                self.open_conflict_queue_modal();
+            }
+            Action::CloseConflictQueue => {
+                self.modal_stack.close_conflict_queue();
             }
             Action::OpenExternalMergetool(path) => {
                 effects.push(Effect::OpenExternalMergetool(path.clone()));
@@ -288,13 +300,16 @@ impl AppState {
                     if doc.is_delete_modify()
                         && matches!(
                             choice,
-                            ConflictChoice::BothOursFirst | ConflictChoice::BothTheirsFirst
+                            ConflictChoice::BothOursFirst
+                                | ConflictChoice::BothTheirsFirst
+                                | ConflictChoice::Neither
+                                | ConflictChoice::Custom(_)
                         )
                     {
                         return true;
                     }
-                    doc.set_choice(cm.selected_block, *choice);
-                    if cm.selected_block + 1 < doc.conflict_count {
+                    doc.set_choice(cm.selected_block, choice.clone());
+                    if choice.is_resolved() && cm.selected_block + 1 < doc.conflict_count {
                         cm.selected_block += 1;
                         cm.ensure_selected_block_visible();
                     }
@@ -304,7 +319,103 @@ impl AppState {
                 if let Some(cm) = self.modal_stack.conflict_merge_mut()
                     && let Some(doc) = &mut cm.doc
                 {
-                    doc.accept_all(*choice);
+                    doc.accept_all(choice.clone());
+                }
+            }
+            Action::ConflictApplyNonConflicting => {
+                let applied = if let Some(cm) = self.modal_stack.conflict_merge_mut()
+                    && let Some(doc) = &mut cm.doc
+                {
+                    let count = doc.apply_non_conflicting();
+                    if let Some(next_unres) = doc.first_unresolved_block() {
+                        cm.selected_block = next_unres;
+                        cm.ensure_selected_block_visible();
+                    }
+                    Some(count)
+                } else {
+                    None
+                };
+                if let Some(count) = applied {
+                    let count_s = count.to_string();
+                    self.status_notice = Some(if count > 0 {
+                        self.i18n
+                            .t_fmt("toast.conflict_applied_auto", &[("count", &count_s)])
+                    } else {
+                        self.i18n.t("toast.conflict_no_auto").to_string()
+                    });
+                }
+            }
+            Action::ConflictToggleBase => {
+                if let Some(cm) = self.modal_stack.conflict_merge_mut() {
+                    cm.show_base = !cm.show_base;
+                }
+            }
+            Action::ConflictHorizontalScroll(delta) => {
+                if let Some(cm) = self.modal_stack.conflict_merge_mut() {
+                    if *delta >= 0 {
+                        cm.h_scroll = cm.h_scroll.saturating_add(*delta as usize);
+                    } else {
+                        cm.h_scroll = cm.h_scroll.saturating_sub(delta.unsigned_abs());
+                    }
+                }
+            }
+            Action::ConflictStartInlineEdit => {
+                if let Some(cm) = self.modal_stack.conflict_merge_mut()
+                    && let Some(doc) = &cm.doc
+                    && !doc.is_delete_modify()
+                    && let Some(blk) = doc.block(cm.selected_block)
+                {
+                    let initial = blk
+                        .resolved_lines()
+                        .unwrap_or_else(|| blk.ours_lines.clone());
+                    cm.inline_editor = Some(ConflictInlineEditor::open(cm.selected_block, initial));
+                }
+            }
+            Action::ConflictInlineEditKey(key) => {
+                let mut notice = None;
+                if let Some(cm) = self.modal_stack.conflict_merge_mut()
+                    && let Some(ed) = cm.inline_editor.as_mut()
+                {
+                    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+                    let alt = key.modifiers.contains(KeyModifiers::ALT);
+                    let is_commit = matches!(key.code, KeyCode::F(2))
+                        || (ctrl && matches!(key.code, KeyCode::Char('s') | KeyCode::Enter))
+                        || (alt && key.code == KeyCode::Enter);
+                    if is_commit {
+                        let edited = cm.inline_editor.take().expect("checked is_some");
+                        if let Some(doc) = &mut cm.doc {
+                            doc.set_choice(
+                                edited.block_idx,
+                                ConflictChoice::Custom(edited.lines),
+                            );
+                            if edited.block_idx + 1 < doc.conflict_count {
+                                cm.selected_block = edited.block_idx + 1;
+                                cm.ensure_selected_block_visible();
+                            }
+                        }
+                        notice = Some(self.i18n.t("toast.conflict_inline_applied").to_string());
+                    } else if key.code == KeyCode::Esc {
+                        cm.inline_editor = None;
+                    } else {
+                        match key.code {
+                            KeyCode::Enter => ed.insert_newline(),
+                            KeyCode::Backspace => ed.backspace(),
+                            KeyCode::Delete => ed.delete_forward(),
+                            KeyCode::Left => ed.move_left(),
+                            KeyCode::Right => ed.move_right(),
+                            KeyCode::Up => ed.move_up(),
+                            KeyCode::Down => ed.move_down(),
+                            KeyCode::Home => ed.move_home(),
+                            KeyCode::End => ed.move_end(),
+                            KeyCode::Tab => ed.insert_text("    "),
+                            KeyCode::Char(c) if !ctrl && !alt => ed.insert_char(c),
+                            _ => {}
+                        }
+                        ed.ensure_cursor_visible(60, 5);
+                    }
+                }
+                if let Some(msg) = notice {
+                    self.status_notice = Some(msg);
                 }
             }
             Action::ConflictScroll(delta) => {
@@ -343,6 +454,120 @@ impl AppState {
                         )
                     });
                     self.modal_stack.close_conflict_resolver();
+                    if all_resolved || deletes {
+                        self.on_conflict_file_resolved_from_merger(&path, effects);
+                    }
+                }
+            }
+            Action::ConflictQueueMove(delta) => {
+                if let Some(cq) = self.modal_stack.conflict_queue_mut()
+                    && !cq.entries.is_empty()
+                {
+                    let next = (cq.selected as isize + delta)
+                        .clamp(0, cq.entries.len() as isize - 1) as usize;
+                    cq.selected = next;
+                    if let Some(vh) = cq.scroll.viewport_height() {
+                        cq.scroll.ensure_visible(cq.selected, cq.entries.len(), vh);
+                    }
+                }
+            }
+            Action::ConflictQueueSelect(idx) => {
+                if let Some(cq) = self.modal_stack.conflict_queue_mut()
+                    && !cq.entries.is_empty()
+                {
+                    cq.selected = (*idx).min(cq.entries.len() - 1);
+                    if let Some(vh) = cq.scroll.viewport_height() {
+                        cq.scroll.ensure_visible(cq.selected, cq.entries.len(), vh);
+                    }
+                }
+            }
+            Action::ConflictQueueToggleSelect => {
+                if let Some(cq) = self.modal_stack.conflict_queue_mut()
+                    && let Some(path) = cq.selected_entry().map(|e| e.path.clone())
+                {
+                    if !cq.multi_selected.remove(&path) {
+                        cq.multi_selected.insert(path);
+                    }
+                    if cq.selected + 1 < cq.entries.len() {
+                        cq.selected += 1;
+                    }
+                }
+            }
+            Action::ConflictQueueToggleSelectAll => {
+                if let Some(cq) = self.modal_stack.conflict_queue_mut() {
+                    if cq.multi_selected.len() == cq.entries.len() {
+                        cq.multi_selected.clear();
+                    } else {
+                        cq.multi_selected = cq.entries.iter().map(|e| e.path.clone()).collect();
+                    }
+                }
+            }
+            Action::ConflictQueueMergeSelected => {
+                let target = self
+                    .modal_stack
+                    .conflict_queue_mut()
+                    .and_then(|cq| {
+                        let entry = cq.selected_entry()?.clone();
+                        cq.active_merge_path = Some(entry.path.clone());
+                        Some(entry)
+                    });
+                if let Some(entry) = target {
+                    if entry.resolved {
+                        self.status_notice = Some(self.i18n.t_fmt(
+                            "toast.conflict_already_resolved_hint",
+                            &[("path", &entry.path)],
+                        ));
+                    } else {
+                        let _ = self
+                            .dispatch_git_action(&Action::OpenConflictResolver(entry.path), effects);
+                    }
+                }
+            }
+            Action::ConflictQueueAcceptSide(ours) => {
+                let paths: Vec<String> = self
+                    .modal_stack
+                    .conflict_queue()
+                    .map(|cq| {
+                        cq.target_entries()
+                            .into_iter()
+                            .filter(|e| !e.resolved)
+                            .map(|e| e.path.clone())
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                if paths.is_empty() {
+                    self.status_notice =
+                        Some(self.i18n.t("toast.conflict_queue_none_unresolved").into());
+                } else {
+                    self.start_git_op(GitOp::AcceptSide { paths, ours: *ours }, effects);
+                }
+            }
+            Action::ConflictQueueRevertResolved => {
+                let paths: Vec<String> = self
+                    .modal_stack
+                    .conflict_queue()
+                    .map(|cq| {
+                        cq.target_entries()
+                            .into_iter()
+                            .filter(|e| e.resolved)
+                            .map(|e| e.path.clone())
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                if paths.is_empty() {
+                    self.status_notice =
+                        Some(self.i18n.t("toast.conflict_queue_none_resolved").into());
+                } else {
+                    self.start_git_op(GitOp::UnresolveConflict { paths }, effects);
+                }
+            }
+            Action::ConflictQueueMergetool => {
+                if let Some(path) = self
+                    .modal_stack
+                    .conflict_queue()
+                    .and_then(|cq| cq.selected_entry().map(|e| e.path.clone()))
+                {
+                    effects.push(Effect::OpenExternalMergetool(path));
                 }
             }
             Action::PromptDeleteBranch { name } => self.prompt_delete_branch(name, effects),
@@ -374,21 +599,26 @@ impl AppState {
             }
             Action::OngoingResolve => {
                 self.set_focus(WorkspaceTab::Commit, PaneId::CommitChangesTree);
-                let first_conflict =
-                    self.stage_workbench
-                        .rows()
-                        .iter()
-                        .enumerate()
-                        .find_map(|(i, r)| match &r.kind {
+                let conflicted_paths: Vec<String> = self
+                    .stage_workbench
+                    .status()
+                    .map(|s| s.conflicted.iter().map(|e| e.path.clone()).collect())
+                    .unwrap_or_default();
+                if conflicted_paths.len() >= 2 {
+                    self.open_conflict_queue_modal();
+                } else if let Some(path) = conflicted_paths.into_iter().next() {
+                    if let Some(pos) = self.stage_workbench.rows().iter().position(|r| {
+                        matches!(
+                            &r.kind,
                             StageTreeRowKind::File {
                                 group_kind: StageNodeKind::Conflicted,
-                                path,
+                                path: p,
                                 ..
-                            } => Some((i, path.clone())),
-                            _ => None,
-                        });
-                if let Some((pos, path)) = first_conflict {
-                    self.stage_workbench.select_row(pos);
+                            } if p == &path
+                        )
+                    }) {
+                        self.stage_workbench.select_row(pos);
+                    }
                     let _ = self.dispatch_git_action(&Action::OpenConflictResolver(path), effects);
                 } else {
                     self.status_notice = Some(self.i18n.t("toast.no_conflicts_banner").into());
@@ -405,6 +635,172 @@ impl AppState {
             _ => return false,
         }
         true
+    }
+
+    fn conflict_queue_side_labels(&self) -> (bool, String, String) {
+        let snap = self.snapshot();
+        let is_reversed = snap.is_some_and(|s| is_reverse_conflict_state(&s.state));
+        if is_reversed {
+            let yours = snap
+                .and_then(|s| match &s.state {
+                    RepositoryState::Rebase { branch, .. }
+                    | RepositoryState::RebaseInteractive { branch, .. }
+                    | RepositoryState::RebaseMerge { branch, .. } => branch.clone(),
+                    _ => None,
+                })
+                .unwrap_or_else(|| "replayed".to_string());
+            let theirs = snap
+                .and_then(|s| s.ongoing_onto.clone())
+                .unwrap_or_else(|| "onto".to_string());
+            (true, yours, theirs)
+        } else {
+            let yours = snap
+                .and_then(|s| s.head_branch.clone())
+                .unwrap_or_else(|| "HEAD".to_string());
+            (false, yours, "incoming".to_string())
+        }
+    }
+
+    pub(crate) fn open_conflict_queue_modal(&mut self) {
+        let Some(status) = self.stage_workbench.status() else {
+            self.status_notice = Some(self.i18n.t("toast.no_conflicts_banner").into());
+            return;
+        };
+        if status.conflicted.is_empty() {
+            self.status_notice = Some(self.i18n.t("toast.no_conflicts_banner").into());
+            return;
+        }
+        let (is_reversed, yours_label, theirs_label) = self.conflict_queue_side_labels();
+        let entries: Vec<ConflictQueueEntry> = status
+            .conflicted
+            .iter()
+            .map(|e| {
+                let raw_label = status.conflict_labels.get(&e.path).map(String::as_str);
+                let (yours_status, theirs_status) = conflict_side_statuses(raw_label, is_reversed);
+                ConflictQueueEntry {
+                    path: e.path.clone(),
+                    yours_status,
+                    theirs_status,
+                    resolved: false,
+                }
+            })
+            .collect();
+        self.blur_active_pane(false);
+        self.modal_stack.open_conflict_queue(ConflictQueueState {
+            entries,
+            selected: 0,
+            multi_selected: BTreeSet::new(),
+            scroll: crate::app::ScrollViewport::new(),
+            is_reversed,
+            yours_label,
+            theirs_label,
+            active_merge_path: None,
+            completion_prompted: false,
+        });
+    }
+
+    fn on_conflict_file_resolved_from_merger(&mut self, path: &str, effects: &mut Vec<Effect>) {
+        let next_step = if let Some(cq) = self.modal_stack.conflict_queue_mut() {
+            let mut resolved_idx = cq.selected;
+            if let Some((idx, entry)) = cq
+                .entries
+                .iter_mut()
+                .enumerate()
+                .find(|(_, e)| e.path == path)
+            {
+                entry.resolved = true;
+                resolved_idx = idx;
+            }
+            cq.multi_selected.remove(path);
+            cq.active_merge_path = None;
+            if let Some(next_idx) = cq.next_unresolved_after(resolved_idx) {
+                cq.selected = next_idx;
+                let next_path = cq.entries[next_idx].path.clone();
+                cq.active_merge_path = Some(next_path.clone());
+                Some(Ok(next_path))
+            } else if cq.all_resolved() && !cq.completion_prompted {
+                cq.completion_prompted = true;
+                Some(Err(()))
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        match next_step {
+            Some(Ok(next_path)) => {
+                let _ = self.dispatch_git_action(&Action::OpenConflictResolver(next_path), effects);
+            }
+            Some(Err(())) => {
+                self.open_all_conflicts_resolved_dialog();
+            }
+            None => {}
+        }
+    }
+
+    pub(crate) fn open_all_conflicts_resolved_dialog(&mut self) {
+        let i18n = self.i18n.clone();
+        if let Some(kind) = self.ongoing_kind() {
+            let kind_title = i18n.ongoing_title(kind);
+            self.push_dialog(Dialog::Choice(ChoiceDialog::buttons(
+                i18n.t("dialog.all_conflicts_resolved.title"),
+                vec![i18n.t_fmt(
+                    "dialog.all_conflicts_resolved.body_ongoing",
+                    &[("kind", kind_title)],
+                )],
+                vec![
+                    ChoiceOption::new(
+                        i18n.t_fmt(
+                            "dialog.all_conflicts_resolved.continue_btn",
+                            &[("kind", kind_title)],
+                        ),
+                        Some('c'),
+                        vec![
+                            Action::CloseConflictQueue,
+                            Action::RunGitOp(GitOp::Ongoing {
+                                kind,
+                                step: OngoingStep::Continue,
+                            }),
+                        ],
+                    ),
+                    ChoiceOption::new(
+                        i18n.t("dialog.all_conflicts_resolved.commit_panel_btn"),
+                        Some('o'),
+                        vec![
+                            Action::CloseConflictQueue,
+                            Action::SwitchTab(WorkspaceTab::Commit),
+                            Action::FocusPane(PaneId::CommitMessageEditor),
+                        ],
+                    ),
+                    ChoiceOption::new(
+                        i18n.t("dialog.all_conflicts_resolved.stay_btn"),
+                        Some('s'),
+                        Vec::new(),
+                    ),
+                ],
+            )));
+        } else {
+            self.push_dialog(Dialog::Choice(ChoiceDialog::buttons(
+                i18n.t("dialog.all_conflicts_resolved.title"),
+                vec![i18n.t("dialog.all_conflicts_resolved.body_commit").to_string()],
+                vec![
+                    ChoiceOption::new(
+                        i18n.t("dialog.all_conflicts_resolved.commit_panel_btn"),
+                        Some('o'),
+                        vec![
+                            Action::CloseConflictQueue,
+                            Action::SwitchTab(WorkspaceTab::Commit),
+                            Action::FocusPane(PaneId::CommitMessageEditor),
+                        ],
+                    ),
+                    ChoiceOption::new(
+                        i18n.t("dialog.all_conflicts_resolved.stay_btn"),
+                        Some('s'),
+                        Vec::new(),
+                    ),
+                ],
+            )));
+        }
     }
 
     pub(crate) fn open_special_conflict_dialog(&mut self, info: SpecialConflictInfo) {
@@ -1114,6 +1510,38 @@ impl AppState {
                                 ChoiceOption::new(i18n.t("dialog.merge_cleanup.keep_btn"), Some('k'), Vec::new()),
                             ],
                         )));
+                    }
+                }
+                GitOp::AcceptSide { paths, .. } => {
+                    let prompt_done = if let Some(cq) = self.modal_stack.conflict_queue_mut() {
+                        for p in paths {
+                            if let Some(entry) = cq.entries.iter_mut().find(|e| &e.path == p) {
+                                entry.resolved = true;
+                            }
+                            cq.multi_selected.remove(p);
+                        }
+                        if cq.all_resolved() && !cq.completion_prompted {
+                            cq.completion_prompted = true;
+                            true
+                        } else {
+                            false
+                        }
+                    } else {
+                        false
+                    };
+                    if prompt_done {
+                        self.open_all_conflicts_resolved_dialog();
+                    }
+                }
+                GitOp::UnresolveConflict { paths } => {
+                    if let Some(cq) = self.modal_stack.conflict_queue_mut() {
+                        for p in paths {
+                            if let Some(entry) = cq.entries.iter_mut().find(|e| &e.path == p) {
+                                entry.resolved = false;
+                            }
+                            cq.multi_selected.remove(p);
+                        }
+                        cq.completion_prompted = false;
                     }
                 }
                 GitOp::PatchToClipboard { .. } => {

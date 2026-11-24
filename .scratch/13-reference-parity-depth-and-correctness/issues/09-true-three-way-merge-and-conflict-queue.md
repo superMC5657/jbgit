@@ -1,6 +1,6 @@
 # 09: 真正 3-Way 自动合并、Result 内联编辑与多文件冲突队列视图
 
-Status: ready-for-agent
+Status: resolved
 Spec: [../spec.md](../spec.md)
 Milestone: M10 — reference 深度对齐与正确性加固
 Priority: P2
@@ -26,15 +26,15 @@ Issue 02 修复了冲突方向与 CRLF/Delete-Modify 正确性后，冲突解决
 
 ## 2. 任务清单
 
-- [ ] **基于 `:1/:2/:3` 的真正 3-Way 模型与自动合并（`jbgit-core/src/conflict.rs`）**：
+- [x] **基于 `:1/:2/:3` 的真正 3-Way 模型与自动合并（`jbgit-core/src/conflict.rs`）**：
   - `load_conflict_document_sync` 从 Git index 完整读取 `:1`（Base）、`:2`（Ours）、`:3`（Theirs）三方 blob（兼容仅有一侧/无 Base 的 Add/Add 场景，按 Issue 02 的 `is_reverse_conflict_state` 对齐方向）；
   - 在 `jbgit-core` 基于 `imara-diff` 实现纯函数 3-way 块归并，区分：`Unchanged`、`LeftOnly`、`RightOnly`（非冲突单侧改动）、`BothSame`、`Conflict`；
   - 冲突合并视图提供 **「Apply Non-Conflicting Changes」** 快捷键与按钮（一键采纳全部 `LeftOnly` / `RightOnly` / `BothSame` 块），并支持按 `b` 展开/折叠当前冲突块的 **Base 祖先对照区**。
-- [ ] **Result 栏精细编辑能力**：
+- [x] **Result 栏精细编辑能力**：
   - `ConflictChoice` 新增 `Neither`（丢弃双方改动）与 `Custom(Vec<String>)`（用户内联编辑后的内容）；
   - 支持单块重置回 `Unresolved`（`u` 键），支持对当前冲突块按 `e` 进入轻量内联多行编辑模式修改 Result 文本（保留语法高亮与水平滚动）；
   - 为三栏冲突视图接入可选语法高亮与块内词级差异提示。
-- [ ] **多文件冲突队列视图（`ModalLayer::ConflictQueue`）**：
+- [x] **多文件冲突队列视图（`ModalLayer::ConflictQueue`）**：
   - 点击 Ongoing 横幅的 `[Resolve Conflicts]` 或快捷键触发时，若存在 ≥ 2 个未解决冲突文件，打开多文件冲突队列模态（单文件时可直接进合并器或按偏好打开队列）：
     - 表格列：`Path`、`Yours (<branch>)` 状态、`Theirs (<branch>)` 状态、`Status`（Unresolved / Resolved）；
     - 支持单选/多选批量 `Accept Yours` / `Accept Theirs`、`Merge…` 打开三栏合并器、`Open External Mergetool`、以及对已误解文件执行 **Revert Resolved (`git checkout -m -- <path>`)**（新增 `GitOp::UnresolveConflict`）；
