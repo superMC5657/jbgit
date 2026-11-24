@@ -431,15 +431,19 @@ fn is_empty_or_unborn_log_error(stderr: &str) -> bool {
         || low.contains("ambiguous argument")
 }
 
-/// Builds the `git log` arguments (starting at `"log"`) for a [`FileHistoryKey`].
+/// Builds the `git log` arguments (starting at `"-c"`) for a [`FileHistoryKey`].
 pub(crate) fn build_file_history_args(key: &FileHistoryKey) -> Vec<String> {
     let limit = key.effective_limit();
     let max_count_arg = format!("--max-count={}", limit.saturating_add(1));
-    let rev_arg = match &key.scope {
-        HistoryBranchScope::CurrentHead => key
-            .start_oid
+    let fallback_rev = || {
+        key.start_oid
             .map(|o| o.to_string())
-            .unwrap_or_else(|| "HEAD".to_string()),
+            .unwrap_or_else(|| "HEAD".to_string())
+    };
+    let rev_arg = match &key.scope {
+        HistoryBranchScope::CurrentHead => fallback_rev(),
+        // `git log -L` unconditionally rejects `--all` (`More than one commit to dig from`).
+        HistoryBranchScope::AllBranches if key.line_range.is_some() => fallback_rev(),
         HistoryBranchScope::AllBranches => "--all".to_string(),
         HistoryBranchScope::Branch(name) => name.clone(),
     };
@@ -458,6 +462,8 @@ pub(crate) fn build_file_history_args(key: &FileHistoryKey) -> Vec<String> {
         args.push("-L".to_string());
         args.push(range_spec);
         args.push(rev_arg);
+        // Disambiguate branch names that match a top-level file or directory path.
+        args.push("--".to_string());
     } else {
         if key.effective_follow() {
             args.push("--follow".to_string());
@@ -473,8 +479,10 @@ pub(crate) fn build_file_history_args(key: &FileHistoryKey) -> Vec<String> {
     args
 }
 
-/// Loads commit history for a single file using read-only `git log [--follow] -z --raw --numstat`.
-pub fn load_file_history_sync(
+/// Loads commit history for a single file asynchronously via read-only
+/// `git log [--follow] -z --raw --numstat` (or `-L` for selection history)
+/// outside [`crate::pool::Git2WorkerPool`].
+pub(crate) async fn load_file_history_async(
     location: &RepoLocation,
     key: &FileHistoryKey,
     token: &EpochToken,
@@ -501,17 +509,7 @@ pub fn load_file_history_sync(
         .arg(&location.workdir)
         .args(&log_args);
 
-    let output = cmd.output().map_err(|e| {
-        if e.kind() == std::io::ErrorKind::NotFound {
-            EngineError::GitNotFound
-        } else {
-            EngineError::Io(e)
-        }
-    })?;
-
-    if token.is_stale() {
-        return Err(EngineError::Cancelled);
-    }
+    let output = super::run_git_output_cancellable(cmd, None, token).await?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
@@ -529,11 +527,17 @@ pub fn load_file_history_sync(
         }));
     }
 
-    let (mut entries, truncated) = if key.line_range.is_some() {
-        parse_line_history(&output.stdout, &key.path, limit)
-    } else {
-        parse_file_history_z(&output.stdout, limit)
-    };
+    let has_line_range = key.line_range.is_some();
+    let path = key.path.clone();
+    let (mut entries, truncated) = tokio::task::spawn_blocking(move || {
+        if has_line_range {
+            parse_line_history(&output.stdout, &path, limit)
+        } else {
+            parse_file_history_z(&output.stdout, limit)
+        }
+    })
+    .await
+    .map_err(|_| EngineError::Cancelled)?;
     if token.is_stale() {
         return Err(EngineError::Cancelled);
     }

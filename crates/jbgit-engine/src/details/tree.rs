@@ -153,9 +153,10 @@ pub(crate) fn load_tree_blob_sync(
     })
 }
 
-/// Lists every file path recursively in `oid`'s tree (`git ls-tree -r --name-only -z <oid>`).
+/// Lists every file path recursively in `oid`'s tree (`git ls-tree -r --name-only -z <oid>`)
+/// asynchronously outside [`crate::pool::Git2WorkerPool`].
 /// Used for `/` fuzzy search in the Tree Browser.
-pub(crate) fn load_tree_index_sync(
+pub(crate) async fn load_tree_index_async(
     loc: &RepoLocation,
     oid: Oid,
     token: &EpochToken,
@@ -167,25 +168,8 @@ pub(crate) fn load_tree_index_sync(
     let mut cmd = crate::cli::non_interactive_std_command(&git, Some(&loc.workdir));
     cmd.arg("--git-dir")
         .arg(&loc.git_dir)
-        .args(["ls-tree", "-r", "--name-only", "-z", &oid.to_string()])
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped());
-    let mut child = cmd.spawn().map_err(|e| {
-        if e.kind() == std::io::ErrorKind::NotFound {
-            EngineError::GitNotFound
-        } else {
-            EngineError::Io(e)
-        }
-    })?;
-    if token.is_stale() {
-        let _ = child.kill();
-        let _ = child.wait();
-        return Err(EngineError::Cancelled);
-    }
-    let output = child.wait_with_output()?;
-    if token.is_stale() {
-        return Err(EngineError::Cancelled);
-    }
+        .args(["ls-tree", "-r", "--name-only", "-z", &oid.to_string()]);
+    let output = super::run_git_output_cancellable(cmd, None, token).await?;
     if !output.status.success() {
         let err = String::from_utf8_lossy(&output.stderr).trim().to_string();
         return Err(EngineError::Other(if err.is_empty() {

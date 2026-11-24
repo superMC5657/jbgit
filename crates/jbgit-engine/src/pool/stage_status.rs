@@ -95,6 +95,7 @@ pub fn load_stage_status_with_config_sync(
         if let Ok(index) = repo.index()
             && let Ok(conflicts) = index.conflicts()
         {
+            let mut is_reversed: Option<bool> = None;
             for item in conflicts.flatten() {
                 let p = item
                     .our
@@ -103,11 +104,17 @@ pub fn load_stage_status_with_config_sync(
                     .or(item.ancestor.as_ref())
                     .map(|e| String::from_utf8_lossy(&e.path).replace('\\', "/"));
                 if let Some(path) = p {
-                    let label = match (
-                        item.ancestor.is_some(),
-                        item.our.is_some(),
-                        item.their.is_some(),
-                    ) {
+                    let reversed = *is_reversed.get_or_insert_with(|| {
+                        jbgit_core::is_reverse_conflict_state(
+                            &crate::probe::probe_repo_state(repo).state,
+                        )
+                    });
+                    let (ours_present, theirs_present) = if reversed {
+                        (item.their.is_some(), item.our.is_some())
+                    } else {
+                        (item.our.is_some(), item.their.is_some())
+                    };
+                    let label = match (item.ancestor.is_some(), ours_present, theirs_present) {
                         (true, true, true) => "Both Modified",
                         (false, true, true) => "Added by Both",
                         (true, true, false) => "Deleted by Them",
@@ -248,6 +255,7 @@ pub fn load_stage_status_with_config_sync(
                 };
                 snap.submodules.insert(path.clone(), state);
                 if (state.new_commits || state.dirty_workdir)
+                    && !snap.conflicted.iter().any(|e| e.path == path)
                     && !snap.unstaged.iter().any(|e| e.path == path)
                 {
                     snap.unstaged.push(StageEntry {

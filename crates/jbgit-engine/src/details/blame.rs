@@ -108,6 +108,7 @@ fn parse_tz_offset(raw: &[u8]) -> i32 {
     let sign = if trimmed.starts_with('-') { -1 } else { 1 };
     let digits = trimmed.trim_start_matches(['+', '-']);
     if digits.len() == 4
+        && digits.is_ascii()
         && let (Ok(hours), Ok(mins)) = (digits[0..2].parse::<i32>(), digits[2..4].parse::<i32>())
     {
         return sign * (hours * 60 + mins);
@@ -353,8 +354,11 @@ fn precheck_blame_target(location: &RepoLocation, key: &BlameKey) -> Result<(), 
     }
 }
 
-/// Runs read-only `git blame --porcelain` and parses per-line blame attribution.
-pub(crate) fn load_blame_sync(
+/// Runs read-only `git blame --line-porcelain` asynchronously outside
+/// [`crate::pool::Git2WorkerPool`] so rapid file switching cancels and kills
+/// stale subprocesses without starving interactive git2 workers.
+pub(crate) async fn load_blame_async(
+    pool: &crate::pool::Git2WorkerPool,
     location: &RepoLocation,
     key: &BlameKey,
     token: &EpochToken,
@@ -366,7 +370,12 @@ pub(crate) fn load_blame_sync(
         return Err(EngineError::Other("empty path for blame".to_string()));
     }
 
-    precheck_blame_target(location, key)?;
+    let loc_pre = location.clone();
+    let key_pre = key.clone();
+    pool.run_epoch(crate::pool::TaskPriority::Interactive, token.clone(), move |_| {
+        precheck_blame_target(&loc_pre, &key_pre)
+    })
+    .await?;
     if token.is_stale() {
         return Err(EngineError::Cancelled);
     }
@@ -387,17 +396,7 @@ pub(crate) fn load_blame_sync(
     }
     cmd.arg("--").arg(&key.path);
 
-    let output = cmd.output().map_err(|e| {
-        if e.kind() == std::io::ErrorKind::NotFound {
-            EngineError::GitNotFound
-        } else {
-            EngineError::Io(e)
-        }
-    })?;
-
-    if token.is_stale() {
-        return Err(EngineError::Cancelled);
-    }
+    let output = super::run_git_output_cancellable(cmd, None, token).await?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
@@ -408,7 +407,12 @@ pub(crate) fn load_blame_sync(
         }));
     }
 
-    let parsed = parse_blame_porcelain_cancellable(&output.stdout, || token.is_stale())?;
+    let parse_token = token.clone();
+    let parsed = tokio::task::spawn_blocking(move || {
+        parse_blame_porcelain_cancellable(&output.stdout, || parse_token.is_stale())
+    })
+    .await
+    .map_err(|_| EngineError::Cancelled)??;
     Ok(BlameBundle {
         key: key.clone(),
         lines: parsed.lines,

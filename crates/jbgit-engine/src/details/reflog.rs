@@ -6,16 +6,10 @@ use crate::cli::non_interactive_std_command;
 use crate::error::EngineError;
 use crate::probe::RepoLocation;
 
-/// Loads paginated Git reflog entries via read-only
-/// `git reflog show --date=unix --format=... -n <limit+1> <ref_name> --`.
-pub fn load_reflog_sync(
+fn build_reflog_command(
     location: &RepoLocation,
     key: &ReflogKey,
-    token: &EpochToken,
-) -> Result<ReflogBundle, EngineError> {
-    if token.is_stale() {
-        return Err(EngineError::Cancelled);
-    }
+) -> Result<(std::process::Command, String), EngineError> {
     let ref_name = if key.ref_name.trim().is_empty() {
         "HEAD"
     } else {
@@ -40,18 +34,14 @@ pub fn load_reflog_sync(
             ref_name,
             "--",
         ]);
+    Ok((cmd, ref_name.to_string()))
+}
 
-    let output = cmd.output().map_err(|e| {
-        if e.kind() == std::io::ErrorKind::NotFound {
-            EngineError::GitNotFound
-        } else {
-            EngineError::Io(e)
-        }
-    })?;
-    if token.is_stale() {
-        return Err(EngineError::Cancelled);
-    }
-
+fn finish_reflog_output(
+    output: &std::process::Output,
+    key: &ReflogKey,
+    ref_name: &str,
+) -> Result<ReflogBundle, EngineError> {
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
         let low = stderr.to_ascii_lowercase();
@@ -74,4 +64,43 @@ pub fn load_reflog_sync(
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     Ok(parse_reflog_output(&stdout, key.clone()))
+}
+
+/// Loads paginated Git reflog entries via read-only
+/// `git reflog show --date=unix --format=... -n <limit+1> <ref_name> --`.
+pub fn load_reflog_sync(
+    location: &RepoLocation,
+    key: &ReflogKey,
+    token: &EpochToken,
+) -> Result<ReflogBundle, EngineError> {
+    if token.is_stale() {
+        return Err(EngineError::Cancelled);
+    }
+    let (mut cmd, ref_name) = build_reflog_command(location, key)?;
+    let output = cmd.output().map_err(|e| {
+        if e.kind() == std::io::ErrorKind::NotFound {
+            EngineError::GitNotFound
+        } else {
+            EngineError::Io(e)
+        }
+    })?;
+    if token.is_stale() {
+        return Err(EngineError::Cancelled);
+    }
+    finish_reflog_output(&output, key, &ref_name)
+}
+
+/// Async cancellable variant of [`load_reflog_sync`] that runs outside
+/// [`crate::pool::Git2WorkerPool`].
+pub(crate) async fn load_reflog_async(
+    location: &RepoLocation,
+    key: &ReflogKey,
+    token: &EpochToken,
+) -> Result<ReflogBundle, EngineError> {
+    if token.is_stale() {
+        return Err(EngineError::Cancelled);
+    }
+    let (cmd, ref_name) = build_reflog_command(location, key)?;
+    let output = super::run_git_output_cancellable(cmd, None, token).await?;
+    finish_reflog_output(&output, key, &ref_name)
 }

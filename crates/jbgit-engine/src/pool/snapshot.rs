@@ -251,7 +251,10 @@ pub(crate) fn load_conflict_document_sync(
             }));
         }
 
-        if full_path.is_dir() {
+        let worktree_file_type = std::fs::symlink_metadata(&full_path)
+            .ok()
+            .map(|m| m.file_type());
+        if worktree_file_type.is_some_and(|ft| ft.is_dir()) {
             return Ok(LoadedConflict::Special(SpecialConflictInfo {
                 path: path.to_string(),
                 kind: SpecialConflictKind::Directory,
@@ -276,18 +279,19 @@ pub(crate) fn load_conflict_document_sync(
                 crate::blob_reader::CheckedBlob::Missing => Ok(None),
             }
         };
-        let worktree_checked = if full_path.is_file() {
-            match crate::blob_reader::read_worktree_path(&location.workdir, path) {
-                crate::blob_reader::CheckedBlob::Loaded {
-                    is_binary: true, ..
+        let worktree_checked =
+            if worktree_file_type.is_some_and(|ft| ft.is_file() || ft.is_symlink()) {
+                match crate::blob_reader::read_worktree_path(&location.workdir, path) {
+                    crate::blob_reader::CheckedBlob::Loaded {
+                        is_binary: true, ..
+                    }
+                    | crate::blob_reader::CheckedBlob::TooLarge { .. } => Err(()),
+                    crate::blob_reader::CheckedBlob::Loaded { bytes, .. } => Ok(bytes),
+                    crate::blob_reader::CheckedBlob::Missing => Ok(Vec::new()),
                 }
-                | crate::blob_reader::CheckedBlob::TooLarge { .. } => Err(()),
-                crate::blob_reader::CheckedBlob::Loaded { bytes, .. } => Ok(bytes),
-                crate::blob_reader::CheckedBlob::Missing => Ok(Vec::new()),
-            }
-        } else {
-            Ok(Vec::new())
-        };
+            } else {
+                Ok(Vec::new())
+            };
 
         let (Ok(base_bytes), Ok(yours_bytes), Ok(theirs_bytes), Ok(worktree_bytes)) = (
             read_stage_checked(&ancestor_entry),
@@ -433,11 +437,15 @@ pub fn load_repo_snapshot_incremental_sync(
 
         let shallow_fingerprint = probe
             .is_shallow
-            .then(|| std::fs::read(location.common_dir.join("shallow")).ok())
+            .then(|| {
+                std::fs::read(location.common_dir.join("shallow"))
+                    .or_else(|_| std::fs::read(location.git_dir.join("shallow")))
+                    .ok()
+            })
             .flatten();
         let tip_oids = collect_tip_oids(probe.head_oid, &refs);
 
-        let (commits, has_more_commits, load_kind, reuse_index) = if probe.is_unborn_head {
+        let (commits, has_more_commits, load_kind, reuse_index) = if tip_oids.is_empty() {
             (Vec::new(), false, SnapshotLoadKind::Full, None)
         } else if mode == SnapshotLoadMode::Incremental
             && let Some(prev) = previous

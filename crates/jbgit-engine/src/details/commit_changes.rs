@@ -219,6 +219,7 @@ fn resolve_compare_with_local(
         .map(|p| p.trim_matches('/'))
         .filter(|p| !p.is_empty());
     if let Some(p) = prefix {
+        opts.disable_pathspec_match(true);
         opts.pathspec(p);
     }
     let mut diff = repo.diff_tree_to_workdir_with_index(Some(&base_tree), Some(&mut opts))?;
@@ -234,6 +235,58 @@ fn resolve_compare_with_local(
     Ok(changes)
 }
 
+struct CommitDelta {
+    is_added: bool,
+    old_p: Option<String>,
+    new_p: Option<String>,
+    old_id: git2::Oid,
+    new_id: git2::Oid,
+    old_mode: Option<u32>,
+    new_mode: Option<u32>,
+    is_bin: bool,
+}
+
+fn fold_commit_delta(existing: Option<NetEntry>, d: &CommitDelta, key_path: &str) -> NetEntry {
+    match existing {
+        Some(mut prev) => {
+            prev.after = BlobVersion {
+                path: (!d.new_id.is_zero()).then(|| key_path.to_string()),
+                oid: d.new_id,
+                mode: d.new_mode,
+            };
+            prev.is_binary |= d.is_bin;
+            prev
+        }
+        None => NetEntry {
+            before: BlobVersion {
+                path: (!d.old_id.is_zero()).then(|| d.old_p.clone()).flatten(),
+                oid: d.old_id,
+                mode: d.old_mode,
+            },
+            after: BlobVersion {
+                path: (!d.new_id.is_zero()).then(|| key_path.to_string()),
+                oid: d.new_id,
+                mode: d.new_mode,
+            },
+            is_binary: d.is_bin,
+        },
+    }
+}
+
+fn status_sort_rank(kind: FileStatusKind) -> u8 {
+    match kind {
+        FileStatusKind::Added => 0,
+        FileStatusKind::Modified => 1,
+        FileStatusKind::Renamed => 2,
+        FileStatusKind::Copied => 3,
+        FileStatusKind::Typechange => 4,
+        FileStatusKind::Deleted => 5,
+        FileStatusKind::Untracked => 6,
+        FileStatusKind::Ignored => 7,
+        FileStatusKind::Conflicted => 8,
+    }
+}
+
 /// Folds per-commit changes oldest-to-newest (`VcsLogUtil.collectChanges` /
 /// `zipChanges` semantics) so interleaved branches in the visible table never
 /// leak unrelated files into the net change set.
@@ -242,7 +295,12 @@ fn resolve_multi_commit_changes(
     commits: &[git2::Commit<'_>],
     token: &EpochToken,
 ) -> Result<Vec<ResolvedChange>, EngineError> {
-    let mut entries: HashMap<String, NetEntry> = HashMap::new();
+    // `active` tracks currently live paths, `deleted_at` tracks deleted paths that can
+    // still be resurrected by a subsequent `Added` at the same path, and `displaced`
+    // preserves entries evicted by delete+rename or path-collision overwrites.
+    let mut active: HashMap<String, NetEntry> = HashMap::new();
+    let mut deleted_at: HashMap<String, NetEntry> = HashMap::new();
+    let mut displaced: Vec<(String, NetEntry)> = Vec::new();
 
     for commit in commits.iter().rev() {
         if token.is_stale() {
@@ -253,6 +311,7 @@ fn resolve_multi_commit_changes(
         let mut diff = repo.diff_tree_to_tree(base.as_ref(), Some(&target), None)?;
         diff.find_similar(Some(DiffFindOptions::new().renames(true)))?;
 
+        let mut deltas = Vec::with_capacity(diff.deltas().len());
         for (idx, delta) in diff.deltas().enumerate() {
             if idx % 64 == 0 && token.is_stale() {
                 return Err(EngineError::Cancelled);
@@ -260,52 +319,84 @@ fn resolve_multi_commit_changes(
             if delta_to_kind(delta.status()).is_none() {
                 continue;
             }
-            let old_p = delta_path(delta.old_file());
-            let new_p = delta_path(delta.new_file());
-            let old_id = delta.old_file().id();
-            let new_id = delta.new_file().id();
-            let old_mode = file_mode_opt(&delta.old_file());
-            let new_mode = file_mode_opt(&delta.new_file());
-            let is_bin = delta.flags().is_binary();
+            deltas.push(CommitDelta {
+                is_added: delta.status() == Delta::Added,
+                old_p: delta_path(delta.old_file()),
+                new_p: delta_path(delta.new_file()),
+                old_id: delta.old_file().id(),
+                new_id: delta.new_file().id(),
+                old_mode: file_mode_opt(&delta.old_file()),
+                new_mode: file_mode_opt(&delta.new_file()),
+                is_bin: delta.flags().is_binary(),
+            });
+        }
 
-            let lookup = if delta.status() == Delta::Added {
-                new_p.as_deref()
+        let mut staged_deleted: Vec<(String, NetEntry)> = Vec::new();
+        let mut staged_live: Vec<(String, NetEntry)> = Vec::new();
+
+        // Pass 1a: consume pre-commit live sources for non-Added deltas before
+        // writing any outputs so same-commit path swaps (`a <-> b`) and
+        // rename+add (`a -> b`, `+a`) fold against the pre-commit state.
+        for d in deltas.iter().filter(|d| !d.is_added) {
+            let existing = d.old_p.as_deref().and_then(|k| active.remove(k));
+            let key_path = d
+                .new_p
+                .clone()
+                .or_else(|| d.old_p.clone())
+                .unwrap_or_default();
+            let entry = fold_commit_delta(existing, d, &key_path);
+            if entry.after.oid.is_zero() {
+                staged_deleted.push((key_path, entry));
             } else {
-                old_p.as_deref()
-            };
-            let existing = lookup.and_then(|k| entries.remove(k));
-            let key_path = new_p.clone().or_else(|| old_p.clone()).unwrap_or_default();
+                staged_live.push((key_path, entry));
+            }
+        }
 
-            let entry = match existing {
-                Some(mut prev) => {
-                    prev.after = BlobVersion {
-                        path: (!new_id.is_zero()).then(|| key_path.clone()),
-                        oid: new_id,
-                        mode: new_mode,
-                    };
-                    prev.is_binary |= is_bin;
-                    prev
-                }
-                None => NetEntry {
-                    before: BlobVersion {
-                        path: (!old_id.is_zero()).then_some(old_p).flatten(),
-                        oid: old_id,
-                        mode: old_mode,
-                    },
-                    after: BlobVersion {
-                        path: (!new_id.is_zero()).then(|| key_path.clone()),
-                        oid: new_id,
-                        mode: new_mode,
-                    },
-                    is_binary: is_bin,
-                },
-            };
-            entries.insert(key_path, entry);
+        // Pass 1b: Added deltas resurrect a previously deleted path (delete + re-add ->
+        // net Modified) or fold into any remaining live entry in non-contiguous selections.
+        for d in deltas.iter().filter(|d| d.is_added) {
+            let existing = d
+                .new_p
+                .as_deref()
+                .and_then(|k| deleted_at.remove(k).or_else(|| active.remove(k)));
+            let key_path = d
+                .new_p
+                .clone()
+                .or_else(|| d.old_p.clone())
+                .unwrap_or_default();
+            let entry = fold_commit_delta(existing, d, &key_path);
+            if entry.after.oid.is_zero() {
+                staged_deleted.push((key_path, entry));
+            } else {
+                staged_live.push((key_path, entry));
+            }
+        }
+
+        // Pass 2: place deletions first, then live outputs, keeping `active` and
+        // `deleted_at` disjoint while preserving any displaced entries.
+        for (key_path, entry) in staged_deleted {
+            if !entry.before.oid.is_zero()
+                && let Some(prev_deleted) = deleted_at.insert(key_path.clone(), entry)
+            {
+                displaced.push((key_path, prev_deleted));
+            }
+        }
+        for (key_path, entry) in staged_live {
+            if let Some(prev_deleted) = deleted_at.remove(&key_path) {
+                displaced.push((key_path.clone(), prev_deleted));
+            }
+            if let Some(prev_active) = active.insert(key_path.clone(), entry) {
+                displaced.push((key_path, prev_active));
+            }
         }
     }
 
     let mut out = Vec::new();
-    for (key_path, entry) in entries {
+    for (key_path, entry) in active
+        .into_iter()
+        .chain(deleted_at)
+        .chain(displaced)
+    {
         if entry.before.oid == entry.after.oid
             && entry.before.path == entry.after.path
             && entry.before.mode == entry.after.mode
@@ -341,7 +432,12 @@ fn resolve_multi_commit_changes(
             is_binary: entry.is_binary,
         });
     }
-    out.sort_by(|a, b| a.path.cmp(&b.path));
+    out.sort_by(|a, b| {
+        a.path
+            .cmp(&b.path)
+            .then_with(|| a.old_path.cmp(&b.old_path))
+            .then_with(|| status_sort_rank(a.kind).cmp(&status_sort_rank(b.kind)))
+    });
     Ok(out)
 }
 

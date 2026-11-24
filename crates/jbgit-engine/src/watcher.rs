@@ -133,6 +133,8 @@ impl RepoWatcher {
     {
         let git_dir = location.git_dir.clone();
         let common_dir = location.common_dir.clone();
+        let git_dir_cb = git_dir.clone();
+        let common_dir_cb = common_dir.clone();
         let guard_git = Arc::clone(&guard);
         let on_refresh_git = on_refresh.clone();
 
@@ -146,7 +148,11 @@ impl RepoWatcher {
                             ev.kind,
                             DebouncedEventKind::Any | DebouncedEventKind::AnyContinuous
                         ) {
-                            combined = combined.merge(classify_git_meta_path(&ev.path));
+                            combined = combined.merge(classify_git_meta_path(
+                                &ev.path,
+                                &git_dir_cb,
+                                &common_dir_cb,
+                            ));
                         }
                     }
                     if combined != RefreshScope::None
@@ -213,33 +219,89 @@ impl RepoWatcher {
     }
 }
 
-pub fn classify_git_meta_path(path: &Path) -> RefreshScope {
-    let s = path.to_string_lossy();
-    let normalized = s.replace('\\', "/");
+fn normalize_watcher_path(path: &Path) -> String {
+    let raw = path.to_string_lossy();
+    #[cfg(windows)]
+    let stripped = crate::probe::strip_verbatim_prefix_str(&raw);
+    #[cfg(not(windows))]
+    let stripped: Option<String> = None;
+    stripped.as_deref().unwrap_or(&raw).replace('\\', "/")
+}
 
-    // Ignore lock files, object database writes, and commit edit messages
-    if normalized.ends_with(".lock")
-        || normalized.contains("/objects/")
-        || normalized.contains("/logs/")
-        || normalized.ends_with("/COMMIT_EDITMSG")
+fn strip_prefix_normalized(path: &Path, base: &Path) -> Option<String> {
+    if let Ok(rel) = path.strip_prefix(base) {
+        let s = rel.to_string_lossy().replace('\\', "/");
+        return Some(s.trim_start_matches('/').to_string());
+    }
+    let norm_path = normalize_watcher_path(path);
+    let norm_base = normalize_watcher_path(base);
+    let base_trimmed = norm_base.trim_end_matches('/');
+    if base_trimmed.is_empty() {
+        return None;
+    }
+    #[cfg(windows)]
+    let matched_rest = {
+        let path_low = norm_path.to_ascii_lowercase();
+        let base_low = base_trimmed.to_ascii_lowercase();
+        if path_low.starts_with(&base_low) {
+            let rest = &norm_path[base_trimmed.len()..];
+            if rest.is_empty() || rest.starts_with('/') {
+                Some(rest.trim_start_matches('/'))
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    };
+    #[cfg(not(windows))]
+    let matched_rest = norm_path
+        .strip_prefix(base_trimmed)
+        .filter(|rest| rest.is_empty() || rest.starts_with('/'))
+        .map(|rest| rest.trim_start_matches('/'));
+    matched_rest.map(ToString::to_string)
+}
+
+pub fn classify_git_meta_path(path: &Path, git_dir: &Path, common_dir: &Path) -> RefreshScope {
+    // Strip `git_dir` first because in linked worktrees `git_dir` lives inside `common_dir`
+    // (`<common_dir>/worktrees/<name>`). Matching relative segments avoids false hits on
+    // ancestor directories named `logs`, `objects`, or `refs`.
+    let Some(rel) =
+        strip_prefix_normalized(path, git_dir).or_else(|| strip_prefix_normalized(path, common_dir))
+    else {
+        return RefreshScope::None;
+    };
+
+    // Ignore lock files, object database writes, reflogs, and commit edit messages
+    if rel.is_empty()
+        || rel.ends_with(".lock")
+        || rel == "objects"
+        || rel.starts_with("objects/")
+        || rel == "logs"
+        || rel.starts_with("logs/")
+        || rel == "COMMIT_EDITMSG"
     {
         return RefreshScope::None;
     }
 
-    if normalized.ends_with("/index") {
+    if rel == "index" {
         return RefreshScope::StageStatus;
     }
 
-    if normalized.ends_with("/HEAD")
-        || normalized.contains("/refs/")
-        || normalized.ends_with("/packed-refs")
-        || normalized.ends_with("/MERGE_HEAD")
-        || normalized.ends_with("/REBASE_HEAD")
-        || normalized.ends_with("/CHERRY_PICK_HEAD")
-        || normalized.ends_with("/REVERT_HEAD")
-        || normalized.ends_with("/BISECT_LOG")
-        || normalized.contains("/rebase-merge/")
-        || normalized.contains("/rebase-apply/")
+    if rel == "HEAD"
+        || rel == "refs"
+        || rel.starts_with("refs/")
+        || rel == "packed-refs"
+        || rel == "shallow"
+        || rel == "MERGE_HEAD"
+        || rel == "REBASE_HEAD"
+        || rel == "CHERRY_PICK_HEAD"
+        || rel == "REVERT_HEAD"
+        || rel == "BISECT_LOG"
+        || rel == "rebase-merge"
+        || rel.starts_with("rebase-merge/")
+        || rel == "rebase-apply"
+        || rel.starts_with("rebase-apply/")
     {
         return RefreshScope::RefsAndGraph;
     }
@@ -475,5 +537,79 @@ mod tests {
         assert!(second_acquired.load(Ordering::Acquire));
         assert_eq!(second_deferred, RefreshScope::None);
         assert!(!guard.is_mutating());
+    }
+
+    #[test]
+    fn classify_git_meta_path_strips_git_dir_prefix_before_matching() {
+        // Ancestor paths containing `logs`, `objects`, or `refs` must not poison classification.
+        let logs_git = Path::new(r"C:\Users\dev\logs\myrepo\.git");
+        assert_eq!(
+            classify_git_meta_path(&logs_git.join("HEAD"), logs_git, logs_git),
+            RefreshScope::RefsAndGraph
+        );
+        assert_eq!(
+            classify_git_meta_path(&logs_git.join("index"), logs_git, logs_git),
+            RefreshScope::StageStatus
+        );
+        assert_eq!(
+            classify_git_meta_path(&logs_git.join("logs").join("HEAD"), logs_git, logs_git),
+            RefreshScope::None
+        );
+
+        let objs_git = Path::new("/var/objects/app/.git");
+        assert_eq!(
+            classify_git_meta_path(
+                &objs_git.join("refs").join("heads").join("main"),
+                objs_git,
+                objs_git
+            ),
+            RefreshScope::RefsAndGraph
+        );
+        assert_eq!(
+            classify_git_meta_path(
+                &objs_git.join("objects").join("ab").join("cdef"),
+                objs_git,
+                objs_git
+            ),
+            RefreshScope::None
+        );
+
+        let refs_git = Path::new("/home/refs/repo/.git");
+        assert_eq!(
+            classify_git_meta_path(&refs_git.join("config"), refs_git, refs_git),
+            RefreshScope::None
+        );
+        assert_eq!(
+            classify_git_meta_path(&refs_git.join("index.lock"), refs_git, refs_git),
+            RefreshScope::None
+        );
+
+        // Linked worktree: `git_dir` nested under `common_dir/worktrees/<name>`.
+        let common = Path::new("/repo/.git");
+        let wt_git = common.join("worktrees").join("wt1");
+        assert_eq!(
+            classify_git_meta_path(&wt_git.join("HEAD"), &wt_git, common),
+            RefreshScope::RefsAndGraph
+        );
+        assert_eq!(
+            classify_git_meta_path(&wt_git.join("index"), &wt_git, common),
+            RefreshScope::StageStatus
+        );
+        assert_eq!(
+            classify_git_meta_path(&wt_git.join("logs").join("HEAD"), &wt_git, common),
+            RefreshScope::None
+        );
+        assert_eq!(
+            classify_git_meta_path(&common.join("refs").join("heads").join("main"), &wt_git, common),
+            RefreshScope::RefsAndGraph
+        );
+        assert_eq!(
+            classify_git_meta_path(
+                &common.join("worktrees").join("other").join("index"),
+                &wt_git,
+                common
+            ),
+            RefreshScope::None
+        );
     }
 }

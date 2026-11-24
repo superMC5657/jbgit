@@ -14,31 +14,115 @@ mod reflog;
 mod remote_tag;
 mod tree;
 
-use jbgit_core::{Oid, PersonStamp};
+use std::process::{Output, Stdio};
+use std::time::Duration;
+
+use jbgit_core::{EpochToken, Oid, PersonStamp};
 
 use crate::error::EngineError;
 
-pub(crate) use blame::load_blame_sync;
+pub(crate) use blame::load_blame_async;
 #[cfg(test)]
 pub(crate) use blame::parse_blame_porcelain;
 pub use cherry_picked::load_cherry_picked_sync;
+pub(crate) use cherry_picked::load_cherry_picked_async;
 pub(crate) use commit_changes::{
     load_commit_details_sync, verify_commit_signature_sync, verify_commit_signatures_batch_sync,
 };
 pub(crate) use file_diff::load_file_diff_with_oids_sync;
-pub(crate) use file_history::load_file_history_sync;
+pub(crate) use file_history::load_file_history_async;
 #[cfg(test)]
 pub(crate) use file_history::{parse_file_history_z, parse_line_history};
 pub(crate) use outgoing::load_outgoing_sync;
-pub(crate) use patch::{apply_args, check_patch_sync, resolve_patch_input};
+pub(crate) use patch::{apply_args, check_patch_async, resolve_patch_input};
 pub(crate) use path_matches::load_path_matches_sync;
 pub use reflog::load_reflog_sync;
+pub(crate) use reflog::load_reflog_async;
 pub(crate) use remote_tag::check_remote_tag_async;
-pub(crate) use tree::{
-    export_tree_blob_sync, load_tree_blob_sync, load_tree_index_sync, load_tree_sync,
-};
 #[cfg(test)]
 pub(crate) use remote_tag::parse_ls_remote_tag_exists;
+pub(crate) use tree::{
+    export_tree_blob_sync, load_tree_blob_sync, load_tree_index_async, load_tree_sync,
+};
+
+/// Runs a read-only `git` subprocess asynchronously outside [`crate::pool::Git2WorkerPool`],
+/// terminating it immediately (`kill_on_drop(true)`) if `token` becomes stale.
+pub(super) async fn run_git_output_cancellable(
+    std_cmd: std::process::Command,
+    stdin_bytes: Option<Vec<u8>>,
+    token: &EpochToken,
+) -> Result<Output, EngineError> {
+    if token.is_stale() {
+        return Err(EngineError::Cancelled);
+    }
+
+    let mut cmd = tokio::process::Command::from(std_cmd);
+    cmd.stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    if stdin_bytes.is_some() {
+        cmd.stdin(Stdio::piped());
+    }
+
+    let mut child = cmd.spawn().map_err(|e| {
+        if e.kind() == std::io::ErrorKind::NotFound {
+            EngineError::GitNotFound
+        } else {
+            EngineError::Io(e)
+        }
+    })?;
+
+    let stdin_task = if let (Some(bytes), Some(mut stdin)) = (stdin_bytes, child.stdin.take()) {
+        Some(tokio::spawn(async move {
+            use tokio::io::AsyncWriteExt;
+            let _ = stdin.write_all(&bytes).await;
+            let _ = stdin.shutdown().await;
+        }))
+    } else {
+        None
+    };
+
+    let cancel_fut = async {
+        let mut interval = tokio::time::interval(Duration::from_millis(25));
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            interval.tick().await;
+            if token.is_stale() {
+                break;
+            }
+        }
+    };
+
+    let output_res = tokio::select! {
+        biased;
+        _ = cancel_fut => {
+            if let Some(t) = stdin_task {
+                t.abort();
+            }
+            // Dropping `wait_with_output()` drops `child`, and `kill_on_drop(true)`
+            // kills the orphaned subprocess.
+            return Err(EngineError::Cancelled);
+        }
+        res = child.wait_with_output() => {
+            if let Some(t) = stdin_task {
+                let _ = t.await;
+            }
+            res
+        }
+    };
+
+    if token.is_stale() {
+        return Err(EngineError::Cancelled);
+    }
+
+    output_res.map_err(|e| {
+        if e.kind() == std::io::ErrorKind::NotFound {
+            EngineError::GitNotFound
+        } else {
+            EngineError::Io(e)
+        }
+    })
+}
 
 pub(super) fn to_git2_oid(oid: &Oid) -> Result<git2::Oid, EngineError> {
     git2::Oid::from_bytes(oid.as_bytes()).map_err(EngineError::from)
@@ -362,5 +446,87 @@ filename src/lib.rs\n\
         assert_eq!(commit.committer_offset_minutes, -300);
         assert_eq!(commit.effective_time(false), 1_700_000_000);
         assert_eq!(commit.effective_time(true), 1_700_050_000);
+    }
+
+    #[test]
+    fn remote_tag_args_include_git_dir_and_double_dash_separator() {
+        use std::ffi::OsString;
+        use std::path::PathBuf;
+
+        let loc = crate::probe::RepoLocation {
+            repo_name: "repo".into(),
+            workdir: PathBuf::from("/tmp/repo"),
+            git_dir: PathBuf::from("/tmp/repo/.git"),
+            common_dir: PathBuf::from("/tmp/repo/.git"),
+            is_bare: false,
+        };
+        let args = remote_tag::build_ls_remote_tag_args(&loc, "--upload-pack=evil", "v1.0");
+        assert_eq!(
+            args,
+            vec![
+                OsString::from("--git-dir"),
+                OsString::from("/tmp/repo/.git"),
+                OsString::from("ls-remote"),
+                OsString::from("--tags"),
+                OsString::from("--"),
+                OsString::from("--upload-pack=evil"),
+                OsString::from("refs/tags/v1.0"),
+            ]
+        );
+    }
+
+    #[test]
+    fn selection_history_args_fallback_all_branches_and_append_double_dash() {
+        use jbgit_core::{FileHistoryKey, HistoryBranchScope};
+
+        let (_, start_oid) = hex_oid(0x42);
+        let mut key = FileHistoryKey::new("docs/notes.txt", Some(start_oid), true, Some((3, 8)));
+        key.scope = HistoryBranchScope::AllBranches;
+        let all_args = file_history::build_file_history_args(&key);
+        assert!(
+            !all_args.iter().any(|a| a == "--all"),
+            "git log -L rejects --all"
+        );
+        assert_eq!(
+            &all_args[all_args.len() - 4..],
+            &["-L", "3,8:docs/notes.txt", &start_oid.to_string(), "--"]
+        );
+
+        key.start_oid = None;
+        let head_args = file_history::build_file_history_args(&key);
+        assert_eq!(
+            &head_args[head_args.len() - 4..],
+            &["-L", "3,8:docs/notes.txt", "HEAD", "--"]
+        );
+
+        key.scope = HistoryBranchScope::Branch("docs".into());
+        let branch_args = file_history::build_file_history_args(&key);
+        assert_eq!(
+            &branch_args[branch_args.len() - 4..],
+            &["-L", "3,8:docs/notes.txt", "docs", "--"]
+        );
+    }
+
+    #[test]
+    fn parse_blame_porcelain_handles_multibyte_4_byte_tz_without_panicking() {
+        let oid_s = "1111111111111111111111111111111111111111";
+        // `+aéa` has `digits = "aéa"` -> 4 UTF-8 bytes (`[0x61, 0xc3, 0xa9, 0x61]`),
+        // where byte index 2 falls in the middle of `'é'`.
+        let porcelain = format!(
+            "{oid_s} 1 1 1\n\
+author Alice\n\
+author-mail <alice@example.com>\n\
+author-time 1700000000\n\
+author-tz +aéa\n\
+committer-time 1700000000\n\
+committer-tz -éé\n\
+summary crafted tz\n\
+filename src/lib.rs\n\
+\tlet x = 1;\n"
+        );
+        let parsed = parse_blame_porcelain(porcelain.as_bytes()).expect("should not panic");
+        let oid = oid_s.parse::<Oid>().unwrap();
+        assert_eq!(parsed.commits[&oid].author.offset_minutes, 0);
+        assert_eq!(parsed.commits[&oid].committer_offset_minutes, 0);
     }
 }

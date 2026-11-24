@@ -108,10 +108,10 @@ fn read_patch_preview_text(file: Option<&Path>, stdin: Option<&[u8]>) -> String 
     String::from_utf8_lossy(&buf).into_owned()
 }
 
-/// Runs `git apply --check --numstat [options]`: never touches the working tree
-/// or index. A failing check is reported in [`PatchCheck::error`], not as an
-/// engine error.
-pub(crate) fn check_patch_sync(
+/// Runs `git apply --check --numstat [options]` asynchronously outside
+/// [`crate::pool::Git2WorkerPool`]: never touches the working tree or index.
+/// A failing check is reported in [`PatchCheck::error`], not as an engine error.
+pub(crate) async fn check_patch_async(
     loc: &RepoLocation,
     key: &PatchCheckKey,
     token: &EpochToken,
@@ -119,7 +119,27 @@ pub(crate) fn check_patch_sync(
     if token.is_stale() {
         return Err(EngineError::Cancelled);
     }
-    let (file, stdin) = match resolve_patch_input(loc, &key.source) {
+    let loc_in = loc.clone();
+    let source = key.source.clone();
+    let options = key.options.clone();
+    let prepared = tokio::task::spawn_blocking(move || {
+        let (file, stdin) = match resolve_patch_input(&loc_in, &source) {
+            Ok(x) => x,
+            Err(e) => return Err(e),
+        };
+        let preview_text = read_patch_preview_text(file.as_deref(), stdin.as_deref());
+        let (sections, has_index_headers) = jbgit_core::parse_patch_sections_with_options(
+            &preview_text,
+            options.effective_strip(),
+            options.normalized_directory().as_deref(),
+            options.reverse,
+        );
+        Ok((file, stdin, sections, has_index_headers))
+    })
+    .await
+    .map_err(|_| EngineError::Cancelled)?;
+
+    let (file, stdin, sections, has_index_headers) = match prepared {
         Ok(x) => x,
         Err(e) => {
             return Ok(PatchCheck {
@@ -131,13 +151,6 @@ pub(crate) fn check_patch_sync(
             });
         }
     };
-    let preview_text = read_patch_preview_text(file.as_deref(), stdin.as_deref());
-    let (sections, has_index_headers) = jbgit_core::parse_patch_sections_with_options(
-        &preview_text,
-        key.options.effective_strip(),
-        key.options.normalized_directory().as_deref(),
-        key.options.reverse,
-    );
     let failed = |error: String| PatchCheck {
         key: key.clone(),
         files: Vec::new(),
@@ -155,37 +168,10 @@ pub(crate) fn check_patch_sync(
         .arg("--work-tree")
         .arg(&loc.workdir)
         .args(["-c", "core.quotepath=false"])
-        .args(apply_args(&key.options, true, file.as_deref()))
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped());
-    if stdin.is_some() {
-        cmd.stdin(std::process::Stdio::piped());
-    }
-    let mut child = cmd.spawn().map_err(|e| {
-        if e.kind() == std::io::ErrorKind::NotFound {
-            EngineError::GitNotFound
-        } else {
-            EngineError::Io(e)
-        }
-    })?;
-    let stdin_pipe = child.stdin.take();
-    let output = std::thread::scope(|s| -> std::io::Result<std::process::Output> {
-        let writer = stdin.zip(stdin_pipe).map(|(bytes, mut pipe)| {
-            s.spawn(move || {
-                use std::io::Write;
-                // A rejected patch may close stdin early; the exit status reports it.
-                let _ = pipe.write_all(&bytes);
-            })
-        });
-        let output = child.wait_with_output()?;
-        if let Some(h) = writer {
-            let _ = h.join();
-        }
-        Ok(output)
-    })?;
-    if token.is_stale() {
-        return Err(EngineError::Cancelled);
-    }
+        .args(apply_args(&key.options, true, file.as_deref()));
+
+    let output = super::run_git_output_cancellable(cmd, stdin, token).await?;
+
     let split = |b: &[u8]| -> Vec<String> {
         String::from_utf8_lossy(b)
             .lines()

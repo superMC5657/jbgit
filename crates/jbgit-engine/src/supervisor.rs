@@ -17,11 +17,11 @@ use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 use crate::askpass::AskpassEnv;
 use crate::cli::{CliCommand, CliStreamEvent, GitCliExecutor, GitExecutableInfo};
 use crate::details::{
-    check_patch_sync, check_remote_tag_async, export_tree_blob_sync, load_blame_sync,
-    load_cherry_picked_sync, load_commit_details_sync, load_file_diff_with_oids_sync,
-    load_file_history_sync, load_outgoing_sync, load_path_matches_sync, load_reflog_sync,
-    load_tree_blob_sync, load_tree_index_sync,
-    load_tree_sync, verify_commit_signature_sync, verify_commit_signatures_batch_sync,
+    check_patch_async, check_remote_tag_async, export_tree_blob_sync, load_blame_async,
+    load_cherry_picked_async, load_commit_details_sync, load_file_diff_with_oids_sync,
+    load_file_history_async, load_outgoing_sync, load_path_matches_sync, load_reflog_async,
+    load_tree_blob_sync, load_tree_index_async, load_tree_sync, verify_commit_signature_sync,
+    verify_commit_signatures_batch_sync,
 };
 use crate::error::EngineError;
 use crate::pool::{
@@ -831,17 +831,15 @@ fn handle_task_request(ctx: &SupervisorContext, task: ScheduledTask) {
             );
         }
         TaskRequest::LoadFileHistory { key } => {
-            let pool = Arc::clone(&ctx.pool);
             let loc = ctx.location.clone();
             let token = token.expect("FileHistory token");
             let epoch = token.epoch();
             spawn_epoch_task(
                 &ctx.event_tx,
                 async move {
-                    pool.run_epoch(TaskPriority::Interactive, token, move |tok| {
-                        load_file_history_sync(&loc, &key, tok).map(Arc::new)
-                    })
-                    .await
+                    load_file_history_async(&loc, &key, &token)
+                        .await
+                        .map(Arc::new)
                 },
                 move |bundle| EngineEvent::FileHistoryLoaded { bundle, epoch },
             );
@@ -854,11 +852,9 @@ fn handle_task_request(ctx: &SupervisorContext, task: ScheduledTask) {
             let tx = ctx.event_tx.clone();
             tokio::spawn(async move {
                 let fail_key = key.clone();
-                let res = pool
-                    .run_epoch(TaskPriority::Interactive, token, move |tok| {
-                        load_blame_sync(&loc, &key, tok).map(Arc::new)
-                    })
-                    .await;
+                let res = load_blame_async(&pool, &loc, &key, &token)
+                    .await
+                    .map(Arc::new);
                 match res {
                     Ok(bundle) => {
                         let _ = tx.send(EngineEvent::BlameLoaded { bundle, epoch });
@@ -936,18 +932,12 @@ fn handle_task_request(ctx: &SupervisorContext, task: ScheduledTask) {
             );
         }
         TaskRequest::CheckPatch { key } => {
-            let pool = Arc::clone(&ctx.pool);
             let loc = ctx.location.clone();
             let token = token.expect("CheckPatch token");
             let epoch = token.epoch();
             spawn_epoch_task(
                 &ctx.event_tx,
-                async move {
-                    pool.run_epoch(TaskPriority::Interactive, token, move |tok| {
-                        check_patch_sync(&loc, &key, tok).map(Arc::new)
-                    })
-                    .await
-                },
+                async move { check_patch_async(&loc, &key, &token).await.map(Arc::new) },
                 move |check| EngineEvent::PatchChecked { check, epoch },
             );
         }
@@ -996,17 +986,15 @@ fn handle_task_request(ctx: &SupervisorContext, task: ScheduledTask) {
             );
         }
         TaskRequest::LoadTreeIndex { oid } => {
-            let pool = Arc::clone(&ctx.pool);
             let loc = ctx.location.clone();
             let token = token.expect("LoadTreeIndex token");
             let epoch = token.epoch();
             spawn_epoch_task(
                 &ctx.event_tx,
                 async move {
-                    pool.run_epoch(TaskPriority::Interactive, token, move |tok| {
-                        load_tree_index_sync(&loc, oid, tok).map(Arc::new)
-                    })
-                    .await
+                    load_tree_index_async(&loc, oid, &token)
+                        .await
+                        .map(Arc::new)
                 },
                 move |paths| EngineEvent::TreeIndexLoaded { oid, paths, epoch },
             );
@@ -1031,7 +1019,6 @@ fn handle_task_request(ctx: &SupervisorContext, task: ScheduledTask) {
             spawn_verify_commit_signatures(ctx, oids, token.expect("LogSignatures token"));
         }
         TaskRequest::LoadCherryPicked { key } => {
-            let pool = Arc::clone(&ctx.pool);
             let loc = ctx.location.clone();
             let token = token.expect("LogCherryPicked token");
             let epoch = token.epoch();
@@ -1039,10 +1026,9 @@ fn handle_task_request(ctx: &SupervisorContext, task: ScheduledTask) {
             spawn_epoch_task(
                 &ctx.event_tx,
                 async move {
-                    pool.run_epoch(TaskPriority::Background, token, move |tok| {
-                        load_cherry_picked_sync(&loc, &key, tok).map(Arc::new)
-                    })
-                    .await
+                    load_cherry_picked_async(&loc, &key, &token)
+                        .await
+                        .map(Arc::new)
                 },
                 move |oids| EngineEvent::CherryPickedLoaded {
                     key: reported_key,
@@ -1052,18 +1038,13 @@ fn handle_task_request(ctx: &SupervisorContext, task: ScheduledTask) {
             );
         }
         TaskRequest::LoadReflog { key } => {
-            let pool = Arc::clone(&ctx.pool);
             let loc = ctx.location.clone();
             let token = token.expect("Reflog token");
             let epoch = token.epoch();
             let tx = ctx.event_tx.clone();
             tokio::spawn(async move {
                 let fail_key = key.clone();
-                let res = pool
-                    .run_epoch(TaskPriority::Interactive, token, move |tok| {
-                        load_reflog_sync(&loc, &key, tok).map(Arc::new)
-                    })
-                    .await;
+                let res = load_reflog_async(&loc, &key, &token).await.map(Arc::new);
                 match res {
                     Ok(bundle) => {
                         let _ = tx.send(EngineEvent::ReflogLoaded { bundle, epoch });
@@ -1261,29 +1242,60 @@ fn handle_task_request(ctx: &SupervisorContext, task: ScheduledTask) {
             content,
             stage,
             delete,
-        } => spawn_guarded_mutation(ctx, RefreshScope::StageStatus, move |pool, loc| async move {
-            pool.run_with(TaskPriority::Interactive, move || {
-                if delete {
-                    remove_conflict_path_sync(&loc, &path, stage)?;
-                } else {
-                    write_worktree_buffer_sync(&loc, &path, &content)?;
-                    if stage {
-                        stage_targets_sync(
-                            &loc,
-                            &[StageTarget {
-                                path,
-                                old_path: None,
-                                status_kind: FileStatusKind::Conflicted,
-                                group_kind: StageNodeKind::Conflicted,
-                                is_submodule: false,
-                            }],
-                        )?;
+        } => {
+            let pool = Arc::clone(&ctx.pool);
+            let loc = ctx.location.clone();
+            let tx = ctx.event_tx.clone();
+            let guard = Arc::clone(&ctx.mutation_guard);
+            tokio::spawn(async move {
+                let permit = guard.acquire().await;
+                let res: Result<(), (EngineError, RefreshScope)> = pool
+                    .run_with(TaskPriority::Interactive, move || {
+                        if delete {
+                            if let Err(e) = remove_conflict_path_sync(&loc, &path, stage) {
+                                return Ok(Err((e, RefreshScope::None)));
+                            }
+                        } else {
+                            if let Err(e) = write_worktree_buffer_sync(&loc, &path, &content) {
+                                return Ok(Err((e, RefreshScope::None)));
+                            }
+                            if stage
+                                && let Err(e) = stage_targets_sync(
+                                    &loc,
+                                    &[StageTarget {
+                                        path,
+                                        old_path: None,
+                                        status_kind: FileStatusKind::Conflicted,
+                                        group_kind: StageNodeKind::Conflicted,
+                                        is_submodule: false,
+                                    }],
+                                )
+                            {
+                                // Worktree file was already written before staging failed.
+                                return Ok(Err((e, RefreshScope::WorktreeStatus)));
+                            }
+                        }
+                        Ok(Ok(()))
+                    })
+                    .await
+                    .unwrap_or_else(|e| Err((e, RefreshScope::None)));
+                let deferred = permit.finish();
+                match res {
+                    Ok(()) => {
+                        let _ = tx.send(EngineEvent::ExternalFsChanged(
+                            RefreshScope::StageStatus.merge(deferred),
+                        ));
+                    }
+                    Err((e, partial_scope)) => {
+                        let _ = tx.send(EngineEvent::Error(e.to_string()));
+                        let merged = partial_scope.merge(deferred);
+                        if merged != RefreshScope::None {
+                            let _ = tx.send(EngineEvent::ExternalFsChanged(merged));
+                        }
                     }
                 }
-                Ok(())
-            })
-            .await
-        }),
+            });
+        }
         TaskRequest::RunGitCli {
             id,
             args,
@@ -1491,10 +1503,12 @@ fn spawn_execute_commit(ctx: &SupervisorContext, id: u64, mut request: CommitReq
     let op_ids = Arc::clone(&ctx.op_ids);
     tokio::spawn(async move {
         let permit = guard.acquire().await;
-        let finish_permit = |permit: MutationPermit, tx: &UnboundedSender<EngineEvent>| {
-            let deferred = permit.finish();
-            if deferred != RefreshScope::None {
-                let _ = tx.send(EngineEvent::ExternalFsChanged(deferred));
+        let finish_permit = |permit: MutationPermit,
+                             tx: &UnboundedSender<EngineEvent>,
+                             extra: RefreshScope| {
+            let scope = extra.merge(permit.finish());
+            if scope != RefreshScope::None {
+                let _ = tx.send(EngineEvent::ExternalFsChanged(scope));
             }
         };
         if request.check_crlf {
@@ -1506,7 +1520,7 @@ fn spawn_execute_commit(ctx: &SupervisorContext, id: u64, mut request: CommitReq
                 })
                 .await
             {
-                finish_permit(permit, &tx);
+                finish_permit(permit, &tx, RefreshScope::None);
                 let _ = tx.send(EngineEvent::CommitCrlfWarning {
                     request,
                     files: problem.files,
@@ -1515,6 +1529,7 @@ fn spawn_execute_commit(ctx: &SupervisorContext, id: u64, mut request: CommitReq
             }
         }
         let mut staged_tracked_early = false;
+        let mut mutated_index = false;
         if request.fix_autocrlf {
             let fixed = if let Some(cli) = cli_exec.as_ref() {
                 let cfg_id = crate::ops::OP_CONSOLE_ID_BASE
@@ -1551,7 +1566,7 @@ fn spawn_execute_commit(ctx: &SupervisorContext, id: u64, mut request: CommitReq
                     })
                     .await
                 {
-                    finish_permit(permit, &tx);
+                    finish_permit(permit, &tx, RefreshScope::None);
                     let _ = tx.send(EngineEvent::CommitCompleted(CommitOutcome {
                         success: false,
                         commit_oid: None,
@@ -1572,7 +1587,7 @@ fn spawn_execute_commit(ctx: &SupervisorContext, id: u64, mut request: CommitReq
                     })
                     .await
                 {
-                    finish_permit(permit, &tx);
+                    finish_permit(permit, &tx, RefreshScope::None);
                     let _ = tx.send(EngineEvent::CommitCompleted(CommitOutcome {
                         success: false,
                         commit_oid: None,
@@ -1585,6 +1600,7 @@ fn spawn_execute_commit(ctx: &SupervisorContext, id: u64, mut request: CommitReq
                     return;
                 }
                 staged_tracked_early = true;
+                mutated_index = true;
             }
             let loc_norm = loc.clone();
             if let Err(e) = pool
@@ -1593,7 +1609,12 @@ fn spawn_execute_commit(ctx: &SupervisorContext, id: u64, mut request: CommitReq
                 })
                 .await
             {
-                finish_permit(permit, &tx);
+                let extra = if mutated_index {
+                    RefreshScope::StageStatus
+                } else {
+                    RefreshScope::None
+                };
+                finish_permit(permit, &tx, extra);
                 let _ = tx.send(EngineEvent::CommitCompleted(CommitOutcome {
                     success: false,
                     commit_oid: None,
@@ -1605,6 +1626,7 @@ fn spawn_execute_commit(ctx: &SupervisorContext, id: u64, mut request: CommitReq
                 }));
                 return;
             }
+            mutated_index = true;
         }
         let loc_pre = loc.clone();
         let precheck = pool
@@ -1620,7 +1642,12 @@ fn spawn_execute_commit(ctx: &SupervisorContext, id: u64, mut request: CommitReq
             || precheck.has_sequencer_state;
 
         if needs_cli && cli_exec.is_none() {
-            finish_permit(permit, &tx);
+            let extra = if mutated_index {
+                RefreshScope::StageStatus
+            } else {
+                RefreshScope::None
+            };
+            finish_permit(permit, &tx, extra);
             let detail = cli_error.unwrap_or_else(|| {
                 "Git CLI is required for signed commits, commit hooks, or merge/sequencer commits."
                     .to_string()
@@ -1646,7 +1673,12 @@ fn spawn_execute_commit(ctx: &SupervisorContext, id: u64, mut request: CommitReq
                     })
                     .await
                 {
-                    finish_permit(permit, &tx);
+                    let extra = if mutated_index {
+                        RefreshScope::StageStatus
+                    } else {
+                        RefreshScope::None
+                    };
+                    finish_permit(permit, &tx, extra);
                     let _ = tx.send(EngineEvent::CommitCompleted(CommitOutcome {
                         success: false,
                         commit_oid: None,
@@ -1658,6 +1690,7 @@ fn spawn_execute_commit(ctx: &SupervisorContext, id: u64, mut request: CommitReq
                     }));
                     return;
                 }
+                mutated_index = true;
             }
             let cli = cli_exec.expect("checked is_some");
             let fwd = tx.clone();
@@ -1668,6 +1701,11 @@ fn spawn_execute_commit(ctx: &SupervisorContext, id: u64, mut request: CommitReq
         } else {
             if staged_tracked_early {
                 request.stage_all_tracked = false;
+            }
+            if request.stage_all_tracked {
+                // `execute_commit_git2_sync` writes updated tracked entries to `.git/index`
+                // before validating the commit message or signature.
+                mutated_index = true;
             }
             let req_for_git2 = request.clone();
             let outcome = match pool
@@ -1703,10 +1741,15 @@ fn spawn_execute_commit(ctx: &SupervisorContext, id: u64, mut request: CommitReq
             });
         }
         let _ = tx.send(EngineEvent::CommitCompleted(outcome));
-        if ok {
-            let _ = tx.send(EngineEvent::ExternalFsChanged(
-                RefreshScope::All.merge(deferred),
-            ));
+        let scope = if ok {
+            RefreshScope::All.merge(deferred)
+        } else if mutated_index {
+            RefreshScope::StageStatus.merge(deferred)
+        } else {
+            deferred
+        };
+        if scope != RefreshScope::None {
+            let _ = tx.send(EngineEvent::ExternalFsChanged(scope));
         }
     });
 }
@@ -1733,6 +1776,9 @@ fn spawn_undo_last_commit(ctx: &SupervisorContext) {
             }
             Err(e) => {
                 let _ = tx.send(EngineEvent::Error(e.to_string()));
+                if deferred != RefreshScope::None {
+                    let _ = tx.send(EngineEvent::ExternalFsChanged(deferred));
+                }
             }
         }
     });
@@ -1772,7 +1818,7 @@ fn spawn_run_git_op(ctx: &SupervisorContext, op: GitOp) {
             },
         )
         .await;
-        let deferred = permit.map_or_else(|| guard.take_pending(), MutationPermit::finish);
+        let deferred = permit.map_or(RefreshScope::None, MutationPermit::finish);
         if let Some(conflict) = res.index_lock {
             let _ = tx.send(EngineEvent::IndexLockDetected {
                 lock_path: conflict.lock_path,
@@ -1832,7 +1878,7 @@ fn spawn_run_git_cli(
             )
             .await;
 
-        let deferred = permit.map_or_else(|| guard.take_pending(), MutationPermit::finish);
+        let deferred = permit.map_or(RefreshScope::None, MutationPermit::finish);
 
         match res {
             Ok(out) => {
@@ -1853,6 +1899,9 @@ fn spawn_run_git_cli(
             }
             Err(e) => {
                 let _ = tx.send(EngineEvent::Error(e.to_string()));
+                if deferred != RefreshScope::None {
+                    let _ = tx.send(EngineEvent::ExternalFsChanged(deferred));
+                }
             }
         }
     });
@@ -1900,7 +1949,239 @@ fn spawn_guarded_mutation<F, Fut>(
             }
             Err(e) => {
                 let _ = tx.send(EngineEvent::Error(e.to_string()));
+                if deferred != RefreshScope::None {
+                    let _ = tx.send(EngineEvent::ExternalFsChanged(deferred));
+                }
             }
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+    use std::process::Command;
+    use std::time::Duration;
+
+    use tempfile::TempDir;
+
+    use super::*;
+
+    fn git(dir: &Path, args: &[&str]) {
+        let out = Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .env("GIT_AUTHOR_NAME", "Test")
+            .env("GIT_AUTHOR_EMAIL", "test@example.com")
+            .env("GIT_COMMITTER_NAME", "Test")
+            .env("GIT_COMMITTER_EMAIL", "test@example.com")
+            .output()
+            .expect("git command");
+        assert!(
+            out.status.success(),
+            "git {args:?} failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    fn init_repo_with_commit() -> (TempDir, RepoLocation) {
+        let tmp = TempDir::new().unwrap();
+        let d = tmp.path();
+        git(d, &["init", "-b", "main"]);
+        git(d, &["config", "user.name", "Test"]);
+        git(d, &["config", "user.email", "test@example.com"]);
+        git(d, &["config", "commit.gpgsign", "false"]);
+        std::fs::write(d.join("a.txt"), "v1\n").unwrap();
+        git(d, &["add", "a.txt"]);
+        git(d, &["commit", "-m", "initial"]);
+        let loc = RepoLocation::discover(d).unwrap();
+        (tmp, loc)
+    }
+
+    #[tokio::test]
+    async fn read_only_cli_and_git_op_do_not_steal_pending_mutation_refresh() {
+        let (_tmp, loc) = init_repo_with_commit();
+        let (handle, mut rx) = EngineSupervisor::start(loc, false).unwrap();
+
+        // Simulate an active write mutation with deferred watcher events.
+        let permit = handle.mutation_guard.acquire().await;
+        assert!(
+            handle
+                .mutation_guard
+                .record_or_defer(RefreshScope::StageStatus)
+                .is_none()
+        );
+
+        // 1. Read-only RunGitCli completes while the mutation permit is still held.
+        handle.dispatch(TaskRequest::RunGitCli {
+            id: 42,
+            args: vec!["rev-parse".into(), "HEAD".into()],
+            stdin_payload: None,
+            is_read_only: true,
+            refresh_after: RefreshScope::None,
+        });
+        let mut cli_done = false;
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        while !cli_done {
+            let ev = tokio::time::timeout_at(deadline, rx.recv())
+                .await
+                .expect("timeout waiting for ConsoleFinished")
+                .expect("channel open");
+            match ev {
+                EngineEvent::ExternalFsChanged(scope) => {
+                    panic!("read-only RunGitCli stole deferred refresh: {scope:?}");
+                }
+                EngineEvent::ConsoleFinished { id: 42, .. } => cli_done = true,
+                _ => {}
+            }
+        }
+
+        // 2. Read-only RunGitOp completes while the mutation permit is still held.
+        handle.dispatch(TaskRequest::RunGitOp {
+            op: GitOp::Sequence(Vec::new()),
+        });
+        let mut op_done = false;
+        while !op_done {
+            let ev = tokio::time::timeout_at(deadline, rx.recv())
+                .await
+                .expect("timeout waiting for GitOpFinished")
+                .expect("channel open");
+            match ev {
+                EngineEvent::ExternalFsChanged(scope) => {
+                    panic!("read-only RunGitOp stole deferred refresh: {scope:?}");
+                }
+                EngineEvent::GitOpFinished(_) => op_done = true,
+                _ => {}
+            }
+        }
+
+        // The real mutator must still receive its deferred refresh scope.
+        assert_eq!(permit.finish(), RefreshScope::StageStatus);
+        assert!(handle.shutdown(Duration::from_secs(2)).await);
+    }
+
+    #[tokio::test]
+    async fn failed_commit_after_stage_all_and_failed_undo_preserve_refresh_scopes() {
+        let (tmp, loc) = init_repo_with_commit();
+        std::fs::write(tmp.path().join("a.txt"), "v2\n").unwrap();
+        let (handle, mut rx) = EngineSupervisor::start(loc, false).unwrap();
+
+        // 1. ExecuteCommit with `stage_all_tracked: true` mutates `.git/index`, then fails
+        // on empty commit message — must still emit StageStatus so UI syncs with the index.
+        handle.dispatch(TaskRequest::ExecuteCommit {
+            id: 1,
+            request: CommitRequest {
+                message: "   ".into(),
+                amend: false,
+                stage_all_tracked: true,
+                allow_empty: false,
+                signoff: false,
+                and_push: false,
+                gpg_sign: None,
+                author_override: None,
+                run_hooks: false,
+                check_crlf: false,
+                fix_autocrlf: false,
+            },
+        });
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        let mut saw_failed_commit = false;
+        let mut saw_stage_refresh = false;
+        while !(saw_failed_commit && saw_stage_refresh) {
+            let ev = tokio::time::timeout_at(deadline, rx.recv())
+                .await
+                .expect("timeout waiting for failed commit + stage refresh")
+                .expect("channel open");
+            match ev {
+                EngineEvent::CommitCompleted(outcome) => {
+                    assert!(!outcome.success);
+                    saw_failed_commit = true;
+                }
+                EngineEvent::ExternalFsChanged(scope) => {
+                    assert_eq!(scope, RefreshScope::StageStatus);
+                    saw_stage_refresh = true;
+                }
+                _ => {}
+            }
+        }
+
+        // 2. Deterministic partial-failure test on `SaveConflictResolution`:
+        // Hold `index.lock` so `SaveConflictResolution` writes the worktree file and then
+        // fails during `stage_targets_sync`, emitting both Error and WorktreeStatus refresh.
+        let lock_path = tmp.path().join(".git").join("index.lock");
+        std::fs::write(&lock_path, "locked").unwrap();
+        let hold = handle.mutation_guard.acquire().await;
+        handle.dispatch(TaskRequest::SaveConflictResolution {
+            path: "a.txt".into(),
+            content: b"resolved\n".to_vec(),
+            stage: true,
+            delete: false,
+        });
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        assert_eq!(hold.finish(), RefreshScope::None);
+        let mut saw_conflict_err = false;
+        let mut saw_partial_refresh = false;
+        while !(saw_conflict_err && saw_partial_refresh) {
+            let ev = tokio::time::timeout_at(deadline, rx.recv())
+                .await
+                .expect("timeout waiting for SaveConflictResolution error + refresh")
+                .expect("channel open");
+            match ev {
+                EngineEvent::Error(_) => saw_conflict_err = true,
+                EngineEvent::ExternalFsChanged(scope) => {
+                    assert_eq!(scope, RefreshScope::WorktreeStatus);
+                    saw_partial_refresh = true;
+                }
+                _ => {}
+            }
+        }
+        let _ = std::fs::remove_file(&lock_path);
+        assert_eq!(
+            std::fs::read_to_string(tmp.path().join("a.txt")).unwrap(),
+            "resolved\n"
+        );
+
+        assert!(handle.shutdown(Duration::from_secs(2)).await);
+    }
+
+    #[tokio::test]
+    async fn failed_guarded_mutation_flushes_deferred_watcher_events() {
+        // Unborn repo (zero commits) guarantees `UndoLastCommit` fails deterministically.
+        let tmp = TempDir::new().unwrap();
+        git(tmp.path(), &["init", "-b", "main"]);
+        let loc = RepoLocation::discover(tmp.path()).unwrap();
+        let (handle, mut rx) = EngineSupervisor::start(loc, false).unwrap();
+
+        // Queue `UndoLastCommit` behind `hold`, record a deferred watcher scope, then drop
+        // `hold` without calling `finish()` so the failing `UndoLastCommit` owns the drain.
+        let hold = handle.mutation_guard.acquire().await;
+        handle.dispatch(TaskRequest::UndoLastCommit);
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        assert!(
+            handle
+                .mutation_guard
+                .record_or_defer(RefreshScope::RefsAndGraph)
+                .is_none()
+        );
+        drop(hold);
+
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        let mut saw_err = false;
+        let mut saw_deferred = false;
+        while !(saw_err && saw_deferred) {
+            let ev = tokio::time::timeout_at(deadline, rx.recv())
+                .await
+                .expect("timeout waiting for failed UndoLastCommit error + deferred refresh")
+                .expect("channel open");
+            match ev {
+                EngineEvent::Error(_) => saw_err = true,
+                EngineEvent::ExternalFsChanged(scope) => {
+                    assert_eq!(scope, RefreshScope::RefsAndGraph);
+                    saw_deferred = true;
+                }
+                _ => {}
+            }
+        }
+        assert!(handle.shutdown(Duration::from_secs(2)).await);
+    }
 }

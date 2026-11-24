@@ -57,14 +57,23 @@ pub(crate) fn canonical_or_self(p: &Path) -> PathBuf {
     strip_verbatim_prefix(fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf()))
 }
 
+#[cfg(any(windows, test))]
+pub(crate) fn strip_verbatim_prefix_str(s: &str) -> Option<String> {
+    if let Some(rest) = s.strip_prefix(r"\\?\") {
+        if rest.len() >= 4 && rest[..4].eq_ignore_ascii_case(r"UNC\") {
+            Some(format!(r"\\{}", &rest[4..]))
+        } else {
+            Some(rest.to_string())
+        }
+    } else {
+        None
+    }
+}
+
 #[cfg(windows)]
 fn strip_verbatim_prefix(p: PathBuf) -> PathBuf {
     let s = p.to_string_lossy();
-    if let Some(rest) = s.strip_prefix(r"\\?\") {
-        PathBuf::from(rest)
-    } else {
-        p
-    }
+    strip_verbatim_prefix_str(&s).map_or(p, PathBuf::from)
 }
 
 #[cfg(not(windows))]
@@ -113,7 +122,14 @@ pub fn probe_repo_state(repo: &Repository) -> RepoProbeResult {
     };
 
     let state = detect_repository_state(repo, git_dir, is_detached);
-    let is_shallow = repo.is_shallow();
+    // `libgit2`'s `repo.is_shallow()` only stats `<gitdir>/shallow`, missing linked
+    // worktrees whose `shallow` file lives in `$GIT_COMMON_DIR/shallow`.
+    let is_shallow = repo.is_shallow()
+        || repo
+            .commondir()
+            .join("shallow")
+            .metadata()
+            .is_ok_and(|m| m.is_file() && m.len() > 0);
 
     RepoProbeResult {
         state,
@@ -237,4 +253,27 @@ fn read_rebase_branch(head_name_path: &Path) -> Option<String> {
 
 fn strip_refs_heads(s: &str) -> String {
     s.strip_prefix("refs/heads/").unwrap_or(s).to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::strip_verbatim_prefix_str;
+
+    #[test]
+    fn strip_verbatim_prefix_preserves_unc_and_drive_paths() {
+        assert_eq!(
+            strip_verbatim_prefix_str(r"\\?\UNC\server\share\repo").as_deref(),
+            Some(r"\\server\share\repo")
+        );
+        assert_eq!(
+            strip_verbatim_prefix_str(r"\\?\unc\server\share\repo").as_deref(),
+            Some(r"\\server\share\repo")
+        );
+        assert_eq!(
+            strip_verbatim_prefix_str(r"\\?\C:\Users\dev\repo").as_deref(),
+            Some(r"C:\Users\dev\repo")
+        );
+        assert_eq!(strip_verbatim_prefix_str(r"C:\Users\dev\repo"), None);
+        assert_eq!(strip_verbatim_prefix_str("/var/repo"), None);
+    }
 }

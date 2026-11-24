@@ -63,6 +63,12 @@ fn tree_entry_mode(tree: &git2::Tree<'_>, path: &str) -> Option<u32> {
         .map(|e| e.filemode() as u32)
 }
 
+fn tree_entry_info(tree: &git2::Tree<'_>, path: &str) -> Option<(git2::Oid, u32)> {
+    tree.get_path(Path::new(path))
+        .ok()
+        .map(|e| (e.id(), e.filemode() as u32))
+}
+
 fn lookup_commit_modes(
     repo: &Repository,
     key: &DetailsKey,
@@ -114,26 +120,98 @@ fn lookup_commit_modes(
                 .and_then(|t| tree_entry_mode(&t, path));
             (old_m, new_m)
         }
-        DetailsMode::Commits if key.oids.len() >= 2 => {
-            let old_m = key
-                .oids
-                .last()
-                .and_then(|id| to_git2_oid(id).ok())
-                .and_then(|id| repo.find_commit(id).ok())
-                .and_then(|c| c.parent(0).ok())
-                .and_then(|p| p.tree().ok())
-                .and_then(|t| tree_entry_mode(&t, lookup_old));
-            let new_m = key
-                .oids
-                .first()
-                .and_then(|id| to_git2_oid(id).ok())
-                .and_then(|id| repo.find_commit(id).ok())
-                .and_then(|c| c.tree().ok())
-                .and_then(|t| tree_entry_mode(&t, path));
-            (old_m, new_m)
-        }
         _ => (None, None),
     }
+}
+
+/// Resolves accurate `(old_mode, new_mode)` for a multi-commit selection by
+/// locating the selected commit(s) whose parent/tree entries match `known_oids`
+/// instead of assuming `oids.first()` / `oids.last()`.
+///
+/// Returns `None` when a present OID cannot be matched directly (e.g. a multi-hop
+/// rename chain), so the caller falls back to [`resolve_changes`].
+fn lookup_multi_commit_modes(
+    repo: &Repository,
+    oids: &[Oid],
+    lookup_old: &str,
+    path: &str,
+    old_id: Option<Oid>,
+    new_id: Option<Oid>,
+) -> Option<(Option<u32>, Option<u32>)> {
+    let target_old = match old_id {
+        Some(id) => Some(to_git2_oid(&id).ok()?),
+        None => None,
+    };
+    let target_new = match new_id {
+        Some(id) => Some(to_git2_oid(&id).ok()?),
+        None => None,
+    };
+
+    let commits: Vec<git2::Commit<'_>> = oids
+        .iter()
+        .filter_map(|id| to_git2_oid(id).ok().and_then(|g| repo.find_commit(g).ok()))
+        .collect();
+
+    let old_m = match target_old {
+        None => None,
+        Some(want) => {
+            let mut fallback_mode = None;
+            let mut matched_changed = None;
+            for c in commits.iter().rev() {
+                let parent_info = c
+                    .parent(0)
+                    .ok()
+                    .and_then(|p| p.tree().ok())
+                    .and_then(|t| tree_entry_info(&t, lookup_old));
+                if let Some((pid, pmode)) = parent_info
+                    && pid == want
+                {
+                    if fallback_mode.is_none() {
+                        fallback_mode = Some(pmode);
+                    }
+                    let commit_info = c
+                        .tree()
+                        .ok()
+                        .and_then(|t| tree_entry_info(&t, lookup_old));
+                    if commit_info != Some((pid, pmode)) {
+                        matched_changed = Some(pmode);
+                        break;
+                    }
+                }
+            }
+            Some(matched_changed.or(fallback_mode)?)
+        }
+    };
+
+    let new_m = match target_new {
+        None => None,
+        Some(want) => {
+            let mut fallback_mode = None;
+            let mut matched_changed = None;
+            for c in &commits {
+                let commit_info = c.tree().ok().and_then(|t| tree_entry_info(&t, path));
+                if let Some((cid, cmode)) = commit_info
+                    && cid == want
+                {
+                    if fallback_mode.is_none() {
+                        fallback_mode = Some(cmode);
+                    }
+                    let parent_info = c
+                        .parent(0)
+                        .ok()
+                        .and_then(|p| p.tree().ok())
+                        .and_then(|t| tree_entry_info(&t, path));
+                    if parent_info != Some((cid, cmode)) {
+                        matched_changed = Some(cmode);
+                        break;
+                    }
+                }
+            }
+            Some(matched_changed.or(fallback_mode)?)
+        }
+    };
+
+    Some((old_m, new_m))
 }
 
 fn populate_file_diff(
@@ -297,8 +375,16 @@ pub fn load_file_diff_with_oids_sync(
                 return populate_file_diff(out, old, new, mc, lfs_filter, context_lines, token);
             }
             DetailsMode::Commits if !key.details.oids.is_empty() => {
-                if let Some((old_id, new_id)) = known_oids {
-                    let (old_m, new_m) = lookup_commit_modes(repo, &key.details, lookup_old, &key.path);
+                if let Some((old_id, new_id)) = known_oids
+                    && let Some((old_m, new_m)) = lookup_multi_commit_modes(
+                        repo,
+                        &key.details.oids,
+                        lookup_old,
+                        &key.path,
+                        old_id,
+                        new_id,
+                    )
+                {
                     let mc = FileModeChange::from_modes(old_m, new_m);
                     return populate_file_diff(
                         out,
@@ -314,10 +400,15 @@ pub fn load_file_diff_with_oids_sync(
             _ => {}
         }
 
-        let (resolved, commits) = resolve_changes(repo, &key.details, token)?;
-        let Some(item) = resolved.into_iter().find(|c| c.path == key.path) else {
+        let (mut resolved, commits) = resolve_changes(repo, &key.details, token)?;
+        let Some(idx) = resolved
+            .iter()
+            .position(|c| c.path == key.path && c.old_path == key.old_path)
+            .or_else(|| resolved.iter().position(|c| c.path == key.path))
+        else {
             return Ok(out);
         };
+        let item = resolved.swap_remove(idx);
         let old = if item.old_oid.is_zero()
             && key.details.mode == DetailsMode::Commits
             && commits.len() == 1

@@ -188,8 +188,52 @@ impl Drop for Git2WorkerPool {
     fn drop(&mut self) {
         self.high_tx.take();
         self.bg_tx.take();
-        for handle in self.handles.drain(..) {
-            let _ = handle.join();
+        let handles = std::mem::take(&mut self.handles);
+        if handles.is_empty() {
+            return;
         }
+        if tokio::runtime::Handle::try_current().is_ok() {
+            // Avoid blocking a Tokio async worker thread on OS thread joins during
+            // repo switches or shutdown.
+            let _ = thread::Builder::new()
+                .name("jbgit-git2-pool-teardown".into())
+                .spawn(move || {
+                    for handle in handles {
+                        let _ = handle.join();
+                    }
+                });
+        } else {
+            for handle in handles {
+                let _ = handle.join();
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::{Arc, Barrier};
+    use std::time::{Duration, Instant};
+
+    use super::*;
+
+    #[tokio::test]
+    async fn dropping_pool_inside_tokio_runtime_does_not_block_async_thread() {
+        let pool = Git2WorkerPool::new(1);
+        let started = Arc::new(Barrier::new(2));
+        let started_worker = Arc::clone(&started);
+        pool.spawn_with_priority(TaskPriority::Interactive, move || {
+            started_worker.wait();
+            thread::sleep(Duration::from_millis(250));
+        });
+        started.wait();
+
+        let t0 = Instant::now();
+        drop(pool);
+        assert!(
+            t0.elapsed() < Duration::from_millis(120),
+            "Git2WorkerPool::drop blocked Tokio thread for {:?}",
+            t0.elapsed()
+        );
     }
 }
