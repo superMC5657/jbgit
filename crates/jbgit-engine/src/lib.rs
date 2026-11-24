@@ -19,7 +19,7 @@ pub use pool::{
 pub use probe::{RepoLocation, RepoProbeResult};
 pub use stage::{
     CommitOutcome, CommitPrecheckInfo, CommitRequest, StageDiffKey, StageDiffSide,
-    SubmoduleDiffInfo, ThreeDocStageDiff,
+    SubmoduleDiffInfo, ThreeDocStageDiff, probe_commit_precheck_sync,
 };
 pub use supervisor::{
     BlameFailureKind, EngineBackend, EngineEvent, EngineHandle, EngineSupervisor,

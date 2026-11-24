@@ -16,6 +16,7 @@ pub use changes_browser::{ChangesBrowserProps, render_changes_browser, render_ch
 pub(crate) use commit_details::signature_badge_and_desc_keys;
 pub(crate) use diff_view::{
     DiffLineRenderInput, diff_line_style, render_diff_side_cell, render_diff_unified_spans,
+    render_mode_change_banner,
 };
 pub use diff_view::{
     DiffPreviewProps, FileDiffRenderProps, render_details_or_diff, render_diff_preview,

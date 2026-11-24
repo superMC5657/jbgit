@@ -1,4 +1,9 @@
-use git2::{Delta, Status, StatusOptions, SubmoduleIgnore, SubmoduleStatus};
+use std::collections::HashMap;
+
+use git2::{
+    Delta, DiffFindOptions, DiffOptions, Repository, Status, StatusOptions, SubmoduleIgnore,
+    SubmoduleStatus,
+};
 use jbgit_core::{
     EpochToken, FileStatusKind, StageEntry, StageStatusSnapshot, SubmoduleState,
 };
@@ -8,6 +13,49 @@ use crate::probe::RepoLocation;
 
 use super::scan_config::StatusScanConfig;
 use super::worker_pool::with_thread_repo;
+
+/// Detects copied files in `HEAD -> index` (`Delta::Copied`) because `libgit2`'s
+/// `repo.statuses()` only detects renames and has no `INDEX_COPIED` status flag.
+fn detect_staged_copies(
+    repo: &Repository,
+    include_unmodified: bool,
+) -> HashMap<String, String> {
+    let mut copies = HashMap::new();
+    let Ok(head) = repo.head() else {
+        return copies;
+    };
+    let Ok(commit) = head.peel_to_commit() else {
+        return copies;
+    };
+    let Ok(head_tree) = commit.tree() else {
+        return copies;
+    };
+    let mut diff_opts = DiffOptions::new();
+    let mut find_opts = DiffFindOptions::new();
+    find_opts.renames(true).copies(true);
+    if include_unmodified {
+        diff_opts.include_unmodified(true);
+        find_opts.copies_from_unmodified(true);
+    }
+    let Ok(mut diff) = repo.diff_tree_to_index(Some(&head_tree), None, Some(&mut diff_opts)) else {
+        return copies;
+    };
+    if diff.find_similar(Some(&mut find_opts)).is_err() {
+        return copies;
+    }
+    for delta in diff.deltas() {
+        if delta.status() == Delta::Copied
+            && let (Some(new_p), Some(old_p)) = (delta.new_file().path(), delta.old_file().path())
+        {
+            let new_s = new_p.to_string_lossy().replace('\\', "/");
+            let old_s = old_p.to_string_lossy().replace('\\', "/");
+            if new_s != old_s {
+                copies.insert(new_s, old_s);
+            }
+        }
+    }
+    copies
+}
 
 pub fn load_stage_status_with_config_sync(
     location: &RepoLocation,
@@ -95,10 +143,14 @@ pub fn load_stage_status_with_config_sync(
                 continue;
             }
 
-            if let Some(kind) = index_status_kind(st) {
+            if let Some(kind) = index_status_kind(st, entry.head_to_index().map(|d| d.status())) {
                 let old_path = entry
                     .head_to_index()
-                    .and_then(|d| d.old_file().path().map(|p| p.to_string_lossy().to_string()))
+                    .and_then(|d| {
+                        d.old_file()
+                            .path()
+                            .map(|p| p.to_string_lossy().replace('\\', "/"))
+                    })
                     .filter(|old| old != &path);
                 snap.staged.push(StageEntry {
                     path: path.clone(),
@@ -116,7 +168,11 @@ pub fn load_stage_status_with_config_sync(
             } else if let Some(kind) = worktree_status_kind(st) {
                 let old_path = entry
                     .index_to_workdir()
-                    .and_then(|d| d.old_file().path().map(|p| p.to_string_lossy().to_string()))
+                    .and_then(|d| {
+                        d.old_file()
+                            .path()
+                            .map(|p| p.to_string_lossy().replace('\\', "/"))
+                    })
                     .filter(|old| old != &path);
                 snap.unstaged.push(StageEntry {
                     path,
@@ -126,11 +182,31 @@ pub fn load_stage_status_with_config_sync(
             } else if let Some(diff) = entry.index_to_workdir()
                 && let Some(kind) = delta_to_kind(diff.status())
             {
+                let old_path = diff
+                    .old_file()
+                    .path()
+                    .map(|p| p.to_string_lossy().replace('\\', "/"))
+                    .filter(|old| old != &path);
                 snap.unstaged.push(StageEntry {
                     path,
-                    old_path: None,
+                    old_path,
                     kind,
                 });
+            }
+        }
+
+        // Upgrade newly-added staged entries that match an existing HEAD file to `Copied`.
+        if snap.staged.iter().any(|e| e.kind == FileStatusKind::Added) {
+            let copies = detect_staged_copies(repo, index_entries <= scan_config.large_index_entries);
+            if !copies.is_empty() {
+                for entry in &mut snap.staged {
+                    if entry.kind == FileStatusKind::Added
+                        && let Some(src) = copies.get(&entry.path)
+                    {
+                        entry.kind = FileStatusKind::Copied;
+                        entry.old_path = Some(src.clone());
+                    }
+                }
             }
         }
 
@@ -170,7 +246,10 @@ pub fn load_stage_status_with_config_sync(
     })
 }
 
-fn index_status_kind(st: Status) -> Option<FileStatusKind> {
+fn index_status_kind(st: Status, delta: Option<Delta>) -> Option<FileStatusKind> {
+    if delta == Some(Delta::Copied) {
+        return Some(FileStatusKind::Copied);
+    }
     if st.contains(Status::INDEX_NEW) {
         Some(FileStatusKind::Added)
     } else if st.contains(Status::INDEX_MODIFIED) {

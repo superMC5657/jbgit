@@ -1223,9 +1223,10 @@ fn spawn_execute_commit(ctx: &SupervisorContext, id: u64, request: CommitRequest
             })
             .await
             .unwrap_or_default();
-        let use_cli =
-            ((precheck.has_commit_hooks && request.run_hooks) || precheck.gpg_sign)
-                && cli_exec.is_some();
+        let use_cli = ((precheck.has_commit_hooks && request.run_hooks)
+            || precheck.gpg_sign
+            || precheck.has_sequencer_state)
+            && cli_exec.is_some();
 
         let (outcome, index_lock) = if use_cli {
             if request.stage_all_tracked {

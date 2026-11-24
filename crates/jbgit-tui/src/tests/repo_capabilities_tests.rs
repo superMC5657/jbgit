@@ -292,6 +292,8 @@ fn submodule_stage_rows_block_mutations_and_render_diff_and_menus() {
         staged_bytes: Vec::new(),
         local_bytes: Vec::new(),
         file_mode: 0o160_000,
+        mode_change: None,
+        is_symlink: false,
         is_binary: false,
         is_conflicted: false,
         submodule: Some(SubmoduleDiffInfo {
@@ -440,6 +442,7 @@ fn lfs_diffs_and_tree_browser_render_pointer_placeholders() {
                 new: Some(ptr2.clone()),
                 filter_detected: true,
             }),
+            mode_change: None,
         }),
         epoch: ts
             .state()
@@ -489,6 +492,8 @@ fn lfs_diffs_and_tree_browser_render_pointer_placeholders() {
             staged_bytes: Vec::new(),
             local_bytes: Vec::new(),
             file_mode: 0o100_644,
+            mode_change: None,
+            is_symlink: false,
             is_binary: false,
             is_conflicted: false,
             submodule: None,
@@ -614,5 +619,243 @@ fn shallow_clone_renders_boundary_unshallow_button_popup_and_dialog() {
             .into_iter()
             .any(|op| op == GitOp::Unshallow { remote: "origin".into() }),
         "confirming unshallow must emit GitOp::Unshallow"
+    );
+}
+
+#[test]
+fn commit_hooks_dimmed_when_absent_and_mode_symlink_no_newline_diffs_render() {
+    use jbgit_core::{
+        FileModeChange, GIT_MODE_EXECUTABLE, GIT_MODE_REGULAR, GIT_MODE_SYMLINK,
+    };
+    use jbgit_engine::CommitPrecheckInfo;
+
+    let mut ts = seeded_log_session();
+    ts.dispatch(Action::SwitchTab(WorkspaceTab::Commit));
+
+    // 1. When no commit hooks exist, Hooks checkbox renders dimmed `Hooks (none)` and refuses toggle.
+    ts.deliver_engine_event(EngineEvent::CommitPrecheckLoaded {
+        info: CommitPrecheckInfo {
+            has_commit_hooks: false,
+            ..Default::default()
+        },
+    });
+    let screen_no_hooks = screen_text(&ts.render(160, 36));
+    assert!(
+        screen_no_hooks.contains("[-] Hooks (none)"),
+        "expected dimmed Hooks (none) badge:\n{screen_no_hooks}"
+    );
+    ts.dispatch(Action::CommitToggleRunHooks);
+    assert!(ts.state().stage_workbench.run_hooks());
+    assert!(
+        ts.state()
+            .status_notice
+            .as_deref()
+            .is_some_and(|n| n.contains("No Git commit hooks")),
+        "{:?}",
+        ts.state().status_notice
+    );
+
+    // When hooks ARE present, Hooks checkbox renders `[x] Hooks` and toggles cleanly.
+    ts.deliver_engine_event(EngineEvent::CommitPrecheckLoaded {
+        info: CommitPrecheckInfo {
+            has_commit_hooks: true,
+            ..Default::default()
+        },
+    });
+    let screen_with_hooks = screen_text(&ts.render(160, 36));
+    assert!(
+        screen_with_hooks.contains("[x] Hooks"),
+        "expected active [x] Hooks:\n{screen_with_hooks}"
+    );
+    ts.dispatch(Action::CommitToggleRunHooks);
+    assert!(!ts.state().stage_workbench.run_hooks());
+
+    // 2. Pure mode-change diff (100644 -> 100755) displays mode header instead of "No textual differences".
+    ts.deliver_engine_event(EngineEvent::StageStatusLoaded {
+        status: Arc::new(StageStatusSnapshot {
+            staged: vec![
+                StageEntry {
+                    path: "run.sh".into(),
+                    old_path: None,
+                    kind: FileStatusKind::Modified,
+                },
+                StageEntry {
+                    path: "eof.txt".into(),
+                    old_path: None,
+                    kind: FileStatusKind::Modified,
+                },
+                StageEntry {
+                    path: "sym".into(),
+                    old_path: None,
+                    kind: FileStatusKind::Modified,
+                },
+            ],
+            ..Default::default()
+        }),
+        epoch: 1,
+    });
+    ts.dispatch(Action::StageToggleGroupByDir);
+
+    let run_row = ts
+        .state()
+        .stage_workbench
+        .rows()
+        .iter()
+        .position(|r| r.key == "file:Staged:run.sh")
+        .unwrap();
+    ts.dispatch(Action::SelectCommitStageRow(run_row));
+    let mode_diff = Arc::new(ThreeDocStageDiff {
+        key: StageDiffKey {
+            path: "run.sh".into(),
+            old_path: None,
+            side: StageDiffSide::Staged,
+            context: DiffContext::Three,
+        },
+        vcs_exists: true,
+        staged_exists: true,
+        local_exists: true,
+        vcs_bytes: b"#!/bin/sh\n".to_vec(),
+        staged_bytes: b"#!/bin/sh\n".to_vec(),
+        local_bytes: b"#!/bin/sh\n".to_vec(),
+        file_mode: GIT_MODE_EXECUTABLE,
+        mode_change: FileModeChange::from_modes(Some(GIT_MODE_REGULAR), Some(GIT_MODE_EXECUTABLE)),
+        is_symlink: false,
+        is_binary: false,
+        is_conflicted: false,
+        submodule: None,
+        lfs: None,
+        tracker: StageLineTracker::new(b"#!/bin/sh\n", b"#!/bin/sh\n", b"#!/bin/sh\n"),
+        hunks: Vec::new(),
+        is_truncated: false,
+        is_too_large: false,
+    });
+    let ep = ts
+        .state()
+        .request_slots
+        .latest(RequestSlotId::StageFileDiff)
+        .max(1);
+    ts.deliver_engine_event(EngineEvent::StageFileDiffLoaded {
+        diff: mode_diff,
+        epoch: ep,
+    });
+    let mode_screen = screen_text(&ts.render(160, 36));
+    assert!(mode_screen.contains("mode 100644 → 100755"), "{mode_screen}");
+    assert!(
+        !mode_screen.contains("No textual differences"),
+        "pure mode change must not show 'No textual differences':\n{mode_screen}"
+    );
+
+    // 3. No-newline at EOF renders `\ No newline at end of file`.
+    let eof_row = ts
+        .state()
+        .stage_workbench
+        .rows()
+        .iter()
+        .position(|r| r.key == "file:Staged:eof.txt")
+        .unwrap();
+    ts.dispatch(Action::SelectCommitStageRow(eof_row));
+    let tracker = StageLineTracker::new(b"hello\n", b"hello", b"hello");
+    let (hunks, is_truncated) = tracker.build_interactive_hunks(true, DiffContext::Three, 20_000);
+    let ep = ts
+        .state()
+        .request_slots
+        .latest(RequestSlotId::StageFileDiff)
+        .max(1);
+    ts.deliver_engine_event(EngineEvent::StageFileDiffLoaded {
+        diff: Arc::new(ThreeDocStageDiff {
+            key: StageDiffKey {
+                path: "eof.txt".into(),
+                old_path: None,
+                side: StageDiffSide::Staged,
+                context: DiffContext::Three,
+            },
+            vcs_exists: true,
+            staged_exists: true,
+            local_exists: true,
+            vcs_bytes: b"hello\n".to_vec(),
+            staged_bytes: b"hello".to_vec(),
+            local_bytes: b"hello".to_vec(),
+            file_mode: GIT_MODE_REGULAR,
+            mode_change: None,
+            is_symlink: false,
+            is_binary: false,
+            is_conflicted: false,
+            submodule: None,
+            lfs: None,
+            tracker,
+            hunks,
+            is_truncated,
+            is_too_large: false,
+        }),
+        epoch: ep,
+    });
+    let eof_screen = screen_text(&ts.render(160, 36));
+    assert!(
+        eof_screen.contains("\\ No newline at end of file"),
+        "expected No newline marker in stage diff:\n{eof_screen}"
+    );
+
+    // 4. Symlink diff displays symlink header and blocks line-level unstaging.
+    let sym_row = ts
+        .state()
+        .stage_workbench
+        .rows()
+        .iter()
+        .position(|r| r.key == "file:Staged:sym")
+        .unwrap();
+    ts.dispatch(Action::SelectCommitStageRow(sym_row));
+    let sym_tracker = StageLineTracker::new(b"old_target", b"new_target", b"new_target");
+    let (sym_hunks, sym_trunc) =
+        sym_tracker.build_interactive_hunks(true, DiffContext::Three, 20_000);
+    let ep = ts
+        .state()
+        .request_slots
+        .latest(RequestSlotId::StageFileDiff)
+        .max(1);
+    ts.deliver_engine_event(EngineEvent::StageFileDiffLoaded {
+        diff: Arc::new(ThreeDocStageDiff {
+            key: StageDiffKey {
+                path: "sym".into(),
+                old_path: None,
+                side: StageDiffSide::Staged,
+                context: DiffContext::Three,
+            },
+            vcs_exists: true,
+            staged_exists: true,
+            local_exists: true,
+            vcs_bytes: b"old_target".to_vec(),
+            staged_bytes: b"new_target".to_vec(),
+            local_bytes: b"new_target".to_vec(),
+            file_mode: GIT_MODE_SYMLINK,
+            mode_change: FileModeChange::from_modes(Some(GIT_MODE_SYMLINK), Some(GIT_MODE_SYMLINK)),
+            is_symlink: true,
+            is_binary: false,
+            is_conflicted: false,
+            submodule: None,
+            lfs: None,
+            tracker: sym_tracker,
+            hunks: sym_hunks,
+            is_truncated: sym_trunc,
+            is_too_large: false,
+        }),
+        epoch: ep,
+    });
+    let sym_screen = screen_text(&ts.render(160, 36));
+    assert!(sym_screen.contains("symlink target (120000)"), "{sym_screen}");
+    let _ = ts.take_requests();
+    ts.dispatch(Action::StageDiffUnstageSelection);
+    assert!(
+        ts.take_requests()
+            .into_iter()
+            .all(|(r, _)| !matches!(r, TaskRequest::ApplyStageBuffer { .. })),
+        "line-level unstage on symlink must not emit ApplyStageBuffer"
+    );
+    assert!(
+        ts.state()
+            .status_notice
+            .as_deref()
+            .is_some_and(|n| n.contains("symbolic links")),
+        "{:?}",
+        ts.state().status_notice
     );
 }

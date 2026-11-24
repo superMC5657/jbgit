@@ -137,6 +137,10 @@ jbgit 默认采用**零冲突统一键位（`preset = "default"`）**，并通�
 | `v` / `e` / `H` / `<Alt-g>` | 按目录树分组 (`v`) / 外部编辑器 (`e`) / 文件历史 (`H`) / Git Blame 逐行追溯 (`<Alt-g>`) |
 | `<Ctrl-e>` / `<Ctrl-z>` / `<Ctrl-y>` / `<Ctrl-w>` | *(提交说明编辑器内)* 外部编辑器编辑说明 / 撤销 / 重做（亦支持 `<Ctrl-Shift-z>`）/ 删词（亦支持 `<Alt-Backspace>`） |
 
+> 提示：
+> - 当仓库（含 linked worktree 共享的 `common_dir/hooks`）未配置提交类 Git Hooks 时，Commit 面板的 `Hooks` 复选框会置灰显示为 `Hooks (none)`；处于 Merge / Cherry-Pick / Revert / Rebase 状态时，提交会自动走原生 `git commit` CLI 以保留多父提交并清理 sequencer 状态文件。
+> - 符号链接（含悬空链接）与类型变更在变更树中支持整文件暂存/取消暂存，行级局部暂存自动禁用。
+
 ### 统一差异对比 (Diff View — Log / Commit / Stash)
 
 | 快捷键 | 功能描述 |
@@ -149,6 +153,8 @@ jbgit 默认采用**零冲突统一键位（`preset = "default"`）**，并通�
 | `m` / `z`（或 `<F4>` / `<Ctrl-Enter>`） | *(Log Diff)* 切换停靠位置 (`m`) / 全屏差异预览 (`z`/`F4`/`Esc`)；全屏下按 `P` 切换合并父提交 |
 | `<Space>` / `v` / `d` | *(Commit Diff)* 暂存/取消 (`Space`/`s`/`u`) · 行级可视选择 (`v`) · 回滚选区 (`d`/`Del`，`<Ctrl-z>` 撤销) |
 | `x` / `i` / `c` / `<Esc>` | *(Commit Diff)* 切换未暂存与已暂存侧 (`x`) · 三方检视 (`i`) · 聚焦提交说明 (`c`) · 退出可视选择或返回变更树 (`Esc`) |
+
+> 差异视图顶部会在发生文件权限/类型变更或符号链接变更时展示元数据头（如 `mode 100644 → 100755`、`symlink target (120000)`），并在文件末尾无换行符时显式展示 `\ No newline at end of file`。
 
 ### 贮藏箱 (Stash View)
 

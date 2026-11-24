@@ -1,12 +1,15 @@
+use std::path::Path;
+
 use git2::Repository;
 use imara_diff::{Algorithm, Diff, InternedInput};
 use jbgit_core::{
-    DetailsKey, DetailsMode, EpochToken, FileDiff, FileDiffKey, FileStatusKind, LfsDiff,
-    MAX_DIFF_LINES, Oid, build_diff_hunks, parse_lfs_pointer,
+    DetailsKey, DetailsMode, EpochToken, FileDiff, FileDiffKey, FileModeChange, FileStatusKind,
+    LfsDiff, MAX_DIFF_LINES, Oid, build_diff_hunks, parse_lfs_pointer,
 };
 
 use crate::blob_reader::{
-    CheckedBlob, path_has_lfs_filter, read_blob, read_tree_path, read_worktree_path,
+    CheckedBlob, effective_worktree_mode, path_has_lfs_filter, read_blob, read_tree_path,
+    read_worktree_path,
 };
 use crate::error::EngineError;
 use crate::pool::with_thread_repo;
@@ -28,7 +31,7 @@ pub(super) fn read_new_bytes_checked(
             .workdir()
             .map_or(CheckedBlob::Missing, |w| read_worktree_path(w, &item.path));
     }
-    read_blob(repo, item.new_oid, None)
+    read_blob(repo, item.new_oid, item.new_mode)
 }
 
 pub(super) fn imara_line_stats(
@@ -53,14 +56,95 @@ pub(super) fn imara_line_stats(
     ))
 }
 
+fn tree_entry_mode(tree: &git2::Tree<'_>, path: &str) -> Option<u32> {
+    tree.get_path(Path::new(path))
+        .ok()
+        .map(|e| e.filemode() as u32)
+}
+
+fn lookup_commit_modes(
+    repo: &Repository,
+    key: &DetailsKey,
+    lookup_old: &str,
+    path: &str,
+) -> (Option<u32>, Option<u32>) {
+    match key.mode {
+        DetailsMode::CompareVersions if key.oids.len() >= 2 => {
+            let old_m = to_git2_oid(&key.oids[0])
+                .ok()
+                .and_then(|id| repo.find_commit(id).ok())
+                .and_then(|c| c.tree().ok())
+                .and_then(|t| tree_entry_mode(&t, lookup_old));
+            let new_m = to_git2_oid(&key.oids[1])
+                .ok()
+                .and_then(|id| repo.find_commit(id).ok())
+                .and_then(|c| c.tree().ok())
+                .and_then(|t| tree_entry_mode(&t, path));
+            (old_m, new_m)
+        }
+        DetailsMode::CompareWithLocal if !key.oids.is_empty() => {
+            let old_m = to_git2_oid(&key.oids[0])
+                .ok()
+                .and_then(|id| repo.find_commit(id).ok())
+                .and_then(|c| c.tree().ok())
+                .and_then(|t| tree_entry_mode(&t, lookup_old));
+            (old_m, None)
+        }
+        DetailsMode::Commits if key.oids.len() == 1 => {
+            let Some(commit) = to_git2_oid(&key.oids[0])
+                .ok()
+                .and_then(|id| repo.find_commit(id).ok())
+            else {
+                return (None, None);
+            };
+            let parent_idx = if key.parent_index < commit.parent_count() {
+                key.parent_index
+            } else {
+                0
+            };
+            let old_m = commit
+                .parent(parent_idx)
+                .ok()
+                .and_then(|p| p.tree().ok())
+                .and_then(|t| tree_entry_mode(&t, lookup_old));
+            let new_m = commit
+                .tree()
+                .ok()
+                .and_then(|t| tree_entry_mode(&t, path));
+            (old_m, new_m)
+        }
+        DetailsMode::Commits if key.oids.len() >= 2 => {
+            let old_m = key
+                .oids
+                .last()
+                .and_then(|id| to_git2_oid(id).ok())
+                .and_then(|id| repo.find_commit(id).ok())
+                .and_then(|c| c.parent(0).ok())
+                .and_then(|p| p.tree().ok())
+                .and_then(|t| tree_entry_mode(&t, lookup_old));
+            let new_m = key
+                .oids
+                .first()
+                .and_then(|id| to_git2_oid(id).ok())
+                .and_then(|id| repo.find_commit(id).ok())
+                .and_then(|c| c.tree().ok())
+                .and_then(|t| tree_entry_mode(&t, path));
+            (old_m, new_m)
+        }
+        _ => (None, None),
+    }
+}
+
 fn populate_file_diff(
     mut out: FileDiff,
     old: CheckedBlob,
     new: CheckedBlob,
+    mode_change: Option<FileModeChange>,
     lfs_filter: bool,
     context_lines: u32,
     token: &EpochToken,
 ) -> Result<FileDiff, EngineError> {
+    out.mode_change = mode_change;
     let (Some((old_bytes, old_bin)), Some((new_bytes, new_bin))) = (
         old.into_bytes_or_too_large(),
         new.into_bytes_or_too_large(),
@@ -117,13 +201,14 @@ pub fn load_file_diff_with_oids_sync(
             is_truncated: false,
             is_too_large: false,
             lfs: None,
+            mode_change: None,
         };
         let context_lines = key.context.lines();
         let lookup_old = key.old_path.as_deref().unwrap_or(&key.path);
 
-        let read_opt_oid = |opt: Option<Oid>| -> Result<CheckedBlob, EngineError> {
+        let read_opt_oid = |opt: Option<Oid>, mode: Option<u32>| -> Result<CheckedBlob, EngineError> {
             match opt {
-                Some(id) => Ok(read_blob(repo, to_git2_oid(&id)?, None)),
+                Some(id) => Ok(read_blob(repo, to_git2_oid(&id)?, mode)),
                 None => Ok(CheckedBlob::empty()),
             }
         };
@@ -131,10 +216,13 @@ pub fn load_file_diff_with_oids_sync(
         match key.details.mode {
             DetailsMode::CompareVersions if key.details.oids.len() >= 2 => {
                 if let Some((old_id, new_id)) = known_oids {
+                    let (old_m, new_m) = lookup_commit_modes(repo, &key.details, lookup_old, &key.path);
+                    let mc = FileModeChange::from_modes(old_m, new_m);
                     return populate_file_diff(
                         out,
-                        read_opt_oid(old_id)?,
-                        read_opt_oid(new_id)?,
+                        read_opt_oid(old_id, old_m)?,
+                        read_opt_oid(new_id, new_m)?,
+                        mc,
                         lfs_filter,
                         context_lines,
                         token,
@@ -146,11 +234,13 @@ pub fn load_file_diff_with_oids_sync(
                 let target_tree = target.tree()?;
                 let old = read_tree_path(repo, &base_tree, lookup_old);
                 let new = read_tree_path(repo, &target_tree, &key.path);
-                return populate_file_diff(out, old, new, lfs_filter, context_lines, token);
+                let mc = FileModeChange::from_modes(old.mode(), new.mode());
+                return populate_file_diff(out, old, new, mc, lfs_filter, context_lines, token);
             }
             DetailsMode::CompareWithLocal if !key.details.oids.is_empty() => {
+                let (old_m, _) = lookup_commit_modes(repo, &key.details, lookup_old, &key.path);
                 let old = match known_oids {
-                    Some((old_id, _)) => read_opt_oid(old_id)?,
+                    Some((old_id, _)) => read_opt_oid(old_id, old_m)?,
                     None => {
                         let base = repo.find_commit(to_git2_oid(&key.details.oids[0])?)?;
                         let base_tree = base.tree()?;
@@ -160,14 +250,19 @@ pub fn load_file_diff_with_oids_sync(
                 let new = repo
                     .workdir()
                     .map_or(CheckedBlob::Missing, |w| read_worktree_path(w, &key.path));
-                return populate_file_diff(out, old, new, lfs_filter, context_lines, token);
+                let eff_new_mode = effective_worktree_mode(repo, new.mode(), old.mode());
+                let mc = FileModeChange::from_modes(old.mode(), eff_new_mode);
+                return populate_file_diff(out, old, new, mc, lfs_filter, context_lines, token);
             }
             DetailsMode::Commits if key.details.oids.len() == 1 => {
                 if let Some((old_id, new_id)) = known_oids {
+                    let (old_m, new_m) = lookup_commit_modes(repo, &key.details, lookup_old, &key.path);
+                    let mc = FileModeChange::from_modes(old_m, new_m);
                     return populate_file_diff(
                         out,
-                        read_opt_oid(old_id)?,
-                        read_opt_oid(new_id)?,
+                        read_opt_oid(old_id, old_m)?,
+                        read_opt_oid(new_id, new_m)?,
+                        mc,
                         lfs_filter,
                         context_lines,
                         token,
@@ -186,14 +281,18 @@ pub fn load_file_diff_with_oids_sync(
                     .map(|t| read_tree_path(repo, t, lookup_old))
                     .unwrap_or_else(CheckedBlob::empty);
                 let new = read_tree_path(repo, &new_tree, &key.path);
-                return populate_file_diff(out, old, new, lfs_filter, context_lines, token);
+                let mc = FileModeChange::from_modes(old.mode(), new.mode());
+                return populate_file_diff(out, old, new, mc, lfs_filter, context_lines, token);
             }
             DetailsMode::Commits if !key.details.oids.is_empty() => {
                 if let Some((old_id, new_id)) = known_oids {
+                    let (old_m, new_m) = lookup_commit_modes(repo, &key.details, lookup_old, &key.path);
+                    let mc = FileModeChange::from_modes(old_m, new_m);
                     return populate_file_diff(
                         out,
-                        read_opt_oid(old_id)?,
-                        read_opt_oid(new_id)?,
+                        read_opt_oid(old_id, old_m)?,
+                        read_opt_oid(new_id, new_m)?,
+                        mc,
                         lfs_filter,
                         context_lines,
                         token,
@@ -209,6 +308,7 @@ pub fn load_file_diff_with_oids_sync(
         };
         if item.is_binary {
             out.is_binary = true;
+            out.mode_change = FileModeChange::from_modes(item.old_mode, item.new_mode);
             return Ok(out);
         }
         let old = if item.old_oid.is_zero()
@@ -222,9 +322,15 @@ pub fn load_file_diff_with_oids_sync(
         {
             read_tree_path(repo, &parent_tree, old_path)
         } else {
-            read_blob(repo, item.old_oid, None)
+            read_blob(repo, item.old_oid, item.old_mode)
         };
         let new = read_new_bytes_checked(repo, &key.details, &item);
-        populate_file_diff(out, old, new, lfs_filter, context_lines, token)
+        let eff_new_mode = if key.details.mode == DetailsMode::CompareWithLocal {
+            effective_worktree_mode(repo, new.mode(), old.mode())
+        } else {
+            new.mode()
+        };
+        let mc = FileModeChange::from_modes(old.mode(), eff_new_mode);
+        populate_file_diff(out, old, new, mc, lfs_filter, context_lines, token)
     })
 }

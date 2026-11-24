@@ -162,7 +162,7 @@ impl HighlightedDiff {
                 if line_idx % CHECK_CANCEL_EVERY_LINES == 0 && cancel.load(Ordering::Relaxed) {
                     return None;
                 }
-                if line.text.len() > MAX_SYNTAX_LINE_BYTES {
+                if line.kind == DiffLineKind::NoNewline || line.text.len() > MAX_SYNTAX_LINE_BYTES {
                     line_tokens.push(Vec::new());
                     continue;
                 }
@@ -190,6 +190,7 @@ impl HighlightedDiff {
                             .highlight_line(&line_buf, &assets.ss)
                             .unwrap_or_default()
                     }
+                    DiffLineKind::NoNewline => Vec::new(),
                 };
 
                 let max_len = line.text.len();
@@ -465,6 +466,9 @@ pub fn paired_line_in_hunk(lines: &[DiffLine], line_idx: usize) -> Option<(usize
             while add_start < lines.len() && lines[add_start].kind == DiffLineKind::Deleted {
                 add_start += 1;
             }
+            if add_start < lines.len() && lines[add_start].kind == DiffLineKind::NoNewline {
+                add_start += 1;
+            }
             let right_idx = add_start + offset;
             if lines.get(right_idx).is_some_and(|r| r.kind == DiffLineKind::Added) {
                 Some((line_idx, right_idx))
@@ -478,18 +482,22 @@ pub fn paired_line_in_hunk(lines: &[DiffLine], line_idx: usize) -> Option<(usize
                 add_start -= 1;
             }
             let offset = line_idx - add_start;
-            let mut del_start = add_start;
+            let mut del_end = add_start;
+            if del_end > 0 && lines[del_end - 1].kind == DiffLineKind::NoNewline {
+                del_end -= 1;
+            }
+            let mut del_start = del_end;
             while del_start > 0 && lines[del_start - 1].kind == DiffLineKind::Deleted {
                 del_start -= 1;
             }
             let left_idx = del_start + offset;
-            if left_idx < add_start {
+            if left_idx < del_end {
                 Some((left_idx, line_idx))
             } else {
                 None
             }
         }
-        DiffLineKind::Context => None,
+        DiffLineKind::Context | DiffLineKind::NoNewline => None,
     }
 }
 
@@ -652,6 +660,7 @@ mod tests {
             is_truncated: false,
             is_too_large: false,
             lfs: None,
+            mode_change: None,
         };
         let hl = HighlightedDiff::build(&diff);
         let toks = &hl.hunks[0][0];
@@ -691,6 +700,7 @@ mod tests {
             is_truncated: false,
             is_too_large: false,
             lfs: None,
+            mode_change: None,
         };
         let hl = HighlightedDiff::build(&diff);
         let (line_idx, added) = diff.hunks[0]
@@ -759,6 +769,7 @@ mod tests {
             is_truncated: false,
             is_too_large: false,
             lfs: None,
+            mode_change: None,
         };
         let hl = HighlightedDiff::build_cancellable_file(&diff, &AtomicBool::new(false)).unwrap();
         assert!(hl.hunks[0][0].is_empty(), "25KB line must skip syntect");
@@ -809,6 +820,7 @@ mod tests {
             is_truncated: false,
             is_too_large: false,
             lfs: None,
+            mode_change: None,
         };
         let hl = HighlightedDiff::build(&diff);
         // `fn` in hunk 0 line 2 is highlighted as keyword, NOT comment
@@ -849,6 +861,7 @@ mod tests {
             is_truncated: false,
             is_too_large: false,
             lfs: None,
+            mode_change: None,
         });
 
         let cache = LazyWordDiffCache::default();

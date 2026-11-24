@@ -420,7 +420,7 @@ pub fn stage_diff_menu_items(state: &AppState) -> Vec<ContextMenuItem> {
     let is_readonly_type = state
         .stage_workbench
         .current_diff()
-        .is_some_and(|d| d.submodule.is_some() || d.lfs.is_some());
+        .is_some_and(|d| d.is_line_staging_disabled());
     let editable =
         matches!(side, Some(StageDiffSide::Staged | StageDiffSide::Unstaged)) && !is_readonly_type;
     let staged = side == Some(StageDiffSide::Staged);
@@ -493,7 +493,7 @@ pub fn stage_hunk_menu_items(state: &AppState, hunk_idx: usize) -> Vec<ContextMe
     let is_readonly_type = state
         .stage_workbench
         .current_diff()
-        .is_some_and(|d| d.submodule.is_some() || d.lfs.is_some());
+        .is_some_and(|d| d.is_line_staging_disabled());
     let editable =
         matches!(side, Some(StageDiffSide::Staged | StageDiffSide::Unstaged)) && !is_readonly_type;
     let staged = side == Some(StageDiffSide::Staged);

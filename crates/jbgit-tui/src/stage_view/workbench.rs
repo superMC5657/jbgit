@@ -1096,7 +1096,7 @@ impl CommitWorkbench {
                     after_set.insert(a);
                 }
             }
-            DiffLineKind::Context => {}
+            DiffLineKind::Context | DiffLineKind::NoNewline => {}
         }
     }
 
@@ -1274,6 +1274,7 @@ impl CommitWorkbench {
         if !syntax_enabled
             || diff.is_binary
             || diff.is_too_large
+            || diff.is_symlink
             || diff.submodule.is_some()
             || diff.lfs.is_some()
             || diff.hunks.is_empty()
@@ -2006,6 +2007,8 @@ impl CommitWorkbench {
             Some("toast.submodule_line_staging_disabled")
         } else if diff.lfs.is_some() {
             Some("toast.lfs_line_staging_disabled")
+        } else if diff.is_symlink_or_typechange() {
+            Some("toast.symlink_line_staging_disabled")
         } else {
             None
         }
@@ -2152,7 +2155,11 @@ impl CommitWorkbench {
                 self.signoff = !self.signoff;
             }
             Action::CommitToggleRunHooks => {
-                self.run_hooks = !self.run_hooks;
+                if !self.precheck.has_commit_hooks {
+                    *ctx.status_notice = Some(ctx.i18n.t("toast.no_commit_hooks").to_string());
+                } else {
+                    self.run_hooks = !self.run_hooks;
+                }
             }
             Action::CommitToggleAuthorInput => {
                 self.show_author_input = !self.show_author_input;
@@ -2244,7 +2251,10 @@ impl CommitWorkbench {
             .then(|| self.author_input.clone())
             .filter(|s| !s.trim().is_empty());
 
-        if staged_empty && !self.amend && !force_stage_all_tracked {
+        let in_merge = ctx
+            .snap
+            .is_some_and(|s| s.state == jbgit_core::RepositoryState::Merge);
+        if staged_empty && !self.amend && !in_merge && !force_stage_all_tracked {
             if has_tracked_unstaged {
                 let req = CommitRequest {
                     message: msg,

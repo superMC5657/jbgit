@@ -96,6 +96,8 @@ mod tests {
             staged_bytes: vec![],
             local_bytes: vec![],
             file_mode: 0o100644,
+            mode_change: None,
+            is_symlink: false,
             is_binary: false,
             is_conflicted: false,
             submodule: None,

@@ -563,6 +563,7 @@ fn details_parent_link_click_jumps_and_diff_preview_word_highlight() {
             is_truncated: false,
             is_too_large: false,
             lfs: None,
+            mode_change: None,
         }),
         epoch: 1,
     });

@@ -34,12 +34,12 @@ pub use console::{
 pub use details::{
     BlameBundle, BlameCommit, BlameKey, BlameLine, BlameOptions, ChangeRowKind, ChangeTreeRow,
     CommitChangesBundle, CommitDetails, CommitSignature, DetailsKey, DetailsMode, DiffContext,
-    DiffHunk, DiffLine,
-    DiffLineKind, EAGER_WORD_DIFF_PAIR_BUDGET, FileChange, FileDiff, FileDiffKey,
-    FileHistoryBundle, FileHistoryEntry, FileHistoryKey, LfsDiff, LfsPointer,
-    MAX_DIFF_FILE_BYTES, MAX_OUTGOING_COMMITS, MAX_SELECTION_HISTORY_LINES,
-    MAX_WORD_DIFF_LINE_BYTES, MessageLineKind, OutgoingBundle, OutgoingKey, PersonStamp,
-    SideBySideRow, SignatureStatus, apply_word_diff, apply_word_diff_with_budget,
+    DiffHunk, DiffLine, DiffLineKind, EAGER_WORD_DIFF_PAIR_BUDGET, FileChange, FileDiff,
+    FileDiffKey, FileHistoryBundle, FileHistoryEntry, FileHistoryKey, FileModeChange,
+    GIT_MODE_EXECUTABLE, GIT_MODE_GITLINK, GIT_MODE_REGULAR, GIT_MODE_SYMLINK, LfsDiff,
+    LfsPointer, MAX_DIFF_FILE_BYTES, MAX_OUTGOING_COMMITS, MAX_SELECTION_HISTORY_LINES,
+    MAX_WORD_DIFF_LINE_BYTES, MessageLineKind, NO_NEWLINE_LINE_TEXT, OutgoingBundle, OutgoingKey,
+    PersonStamp, SideBySideRow, SignatureStatus, apply_word_diff, apply_word_diff_with_budget,
     build_change_rows, classify_message_line, has_lfs_filter_in_gitattributes, issue_ref_ranges,
     parse_lfs_pointer, parse_unified_patch_hunks, side_by_side_rows, word_diff,
 };

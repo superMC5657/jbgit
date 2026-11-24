@@ -9,7 +9,7 @@ use rustc_hash::FxHashSet;
 
 use crate::details::{
     DiffContext, DiffHunk, DiffLine, DiffLineKind, EAGER_WORD_DIFF_PAIR_BUDGET,
-    apply_word_diff_with_budget,
+    NO_NEWLINE_LINE_TEXT, apply_word_diff_with_budget,
 };
 
 /// Line ending metadata for lossless byte-for-byte document reconstruction.
@@ -308,6 +308,18 @@ where
                     None,
                     Some(b),
                 ));
+                if b_idx + 1 == doc_before.len()
+                    && doc_before.lines[b_idx].ending == LineEnding::None
+                {
+                    lines.push(DiffLine {
+                        kind: DiffLineKind::NoNewline,
+                        old_lineno: None,
+                        new_lineno: None,
+                        text: NO_NEWLINE_LINE_TEXT.to_string(),
+                        word_ranges: Vec::new(),
+                    });
+                    meta.push(on_line(DiffLineKind::NoNewline, None, None, None));
+                }
             }
             for a_idx in b.start2..b.end2 {
                 if budget == 0 {
@@ -328,6 +340,18 @@ where
                     Some(a_idx),
                     Some(b),
                 ));
+                if a_idx + 1 == doc_after.len()
+                    && doc_after.lines[a_idx].ending == LineEnding::None
+                {
+                    lines.push(DiffLine {
+                        kind: DiffLineKind::NoNewline,
+                        old_lineno: None,
+                        new_lineno: None,
+                        text: NO_NEWLINE_LINE_TEXT.to_string(),
+                        word_ranges: Vec::new(),
+                    });
+                    meta.push(on_line(DiffLineKind::NoNewline, None, None, None));
+                }
             }
             if truncated {
                 break;
@@ -357,6 +381,20 @@ where
                     Some(cur_after),
                     None,
                 ));
+                if cur_before + 1 == doc_before.len()
+                    && cur_after + 1 == doc_after.len()
+                    && doc_before.lines[cur_before].ending == LineEnding::None
+                    && doc_after.lines[cur_after].ending == LineEnding::None
+                {
+                    lines.push(DiffLine {
+                        kind: DiffLineKind::NoNewline,
+                        old_lineno: None,
+                        new_lineno: None,
+                        text: NO_NEWLINE_LINE_TEXT.to_string(),
+                        word_ranges: Vec::new(),
+                    });
+                    meta.push(on_line(DiffLineKind::NoNewline, None, None, None));
+                }
                 cur_before += 1;
                 cur_after += 1;
             }
@@ -911,6 +949,12 @@ impl StageLineTracker {
                         staged_range_idx: sr_idx,
                     }
                 }
+                DiffLineKind::NoNewline => StageDiffLineMeta {
+                    before_idx: None,
+                    after_idx: None,
+                    gutter_mark: LineGutterMark::None,
+                    staged_range_idx: None,
+                },
             },
         ) else {
             return (Vec::new(), false);

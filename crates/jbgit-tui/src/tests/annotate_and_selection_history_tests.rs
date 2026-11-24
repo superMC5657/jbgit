@@ -681,6 +681,8 @@ fn selection_history_from_annotate_and_stage_diff_renders_range_patch_and_confir
             staged_bytes: staged.to_vec(),
             local_bytes: local.to_vec(),
             file_mode: 0o100644,
+            mode_change: None,
+            is_symlink: false,
             is_binary: false,
             is_conflicted: false,
             submodule: None,

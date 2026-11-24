@@ -18,7 +18,7 @@ use crate::stage_view::CommitWorkbench;
 use crate::syntax::HighlightedDiff;
 use crate::views::log_details::{
     DiffLineRenderInput, diff_line_style, render_diff_side_cell, render_diff_unified_spans,
-    render_lfs_diff_placeholder,
+    render_lfs_diff_placeholder, render_mode_change_banner,
 };
 use crate::views::{fit_left_right_spans, render_pane_frame, render_toolbar, truncate_to_width};
 
@@ -206,7 +206,37 @@ pub fn render_stage_diff_workbench(
         frame.render_widget(muted_line(ctx, state.i18n.t("view.commit.diff_binary")), diff_area);
         return;
     }
-    if diff.hunks.is_empty() {
+    let mut diff_area = diff_area;
+    if let Some(mc) = &diff.mode_change {
+        let banner_rect = Rect::new(diff_area.x, diff_area.y, diff_area.width, 1);
+        render_mode_change_banner(frame, banner_rect, mc, ctx);
+        if diff.hunks.is_empty() {
+            ctx.record_scroll_bound(ScrollPane::StageDiff, h, 0);
+            if diff_area.height > 1 {
+                let hint_rect = Rect::new(
+                    diff_area.x,
+                    diff_area.y + 1,
+                    diff_area.width,
+                    diff_area.height - 1,
+                );
+                frame.render_widget(
+                    muted_line(ctx, state.i18n.t("view.diff.mode_only_hint")),
+                    hint_rect,
+                );
+            }
+            return;
+        }
+        if diff_area.height <= 1 {
+            ctx.record_scroll_bound(ScrollPane::StageDiff, 0, 0);
+            return;
+        }
+        diff_area = Rect::new(
+            diff_area.x,
+            diff_area.y + 1,
+            diff_area.width,
+            diff_area.height - 1,
+        );
+    } else if diff.hunks.is_empty() {
         ctx.record_scroll_bound(ScrollPane::StageDiff, h, 0);
         frame.render_widget(
             muted_line(ctx, state.i18n.t("view.commit.diff_no_text")),
@@ -214,6 +244,7 @@ pub fn render_stage_diff_workbench(
         );
         return;
     }
+    let h = diff_area.height as usize;
 
     let rows = sw.diff_rows();
     let total = rows.len() + usize::from(diff.is_truncated);
@@ -254,10 +285,14 @@ pub fn render_stage_diff_workbench(
             LineGutterMark::None => (if is_cursor && focused { "›" } else { " " }, theme.fg_muted),
             LineGutterMark::Unstaged(DiffLineKind::Added) => ("▌", theme.status_added),
             LineGutterMark::Unstaged(DiffLineKind::Deleted) => ("▸", theme.status_conflicted),
-            LineGutterMark::Unstaged(DiffLineKind::Context) => ("▌", theme.status_modified),
+            LineGutterMark::Unstaged(DiffLineKind::Context | DiffLineKind::NoNewline) => {
+                ("▌", theme.status_modified)
+            }
             LineGutterMark::Staged(DiffLineKind::Added) => ("▏", theme.status_added),
             LineGutterMark::Staged(DiffLineKind::Deleted) => ("▹", theme.status_conflicted),
-            LineGutterMark::Staged(DiffLineKind::Context) => ("▏", theme.status_modified),
+            LineGutterMark::Staged(DiffLineKind::Context | DiffLineKind::NoNewline) => {
+                ("▏", theme.status_modified)
+            }
             LineGutterMark::Both => ("▚", theme.ref_head.icon),
         };
         Span::styled(sym, Style::default().fg(fg).bg(theme.bg_panel))
@@ -322,34 +357,36 @@ pub fn render_stage_diff_workbench(
                 };
 
                 let mut pills: Vec<(String, Color, DiffHunkActionKind)> = Vec::new();
-                match diff.key.side {
-                    StageDiffSide::Staged => {
+                if !diff.is_line_staging_disabled() {
+                    match diff.key.side {
+                        StageDiffSide::Staged => {
+                            pills.push((
+                                state.i18n.t("view.commit.hunk_unstage_pill").to_string(),
+                                theme.status_untracked,
+                                DiffHunkActionKind::Unstage,
+                            ));
+                        }
+                        StageDiffSide::Unstaged => {
+                            pills.push((
+                                state.i18n.t("view.commit.hunk_stage_pill").to_string(),
+                                theme.status_added,
+                                DiffHunkActionKind::Stage,
+                            ));
+                            pills.push((
+                                state.i18n.t("view.commit.hunk_rollback_pill").to_string(),
+                                theme.status_conflicted,
+                                DiffHunkActionKind::Rollback,
+                            ));
+                        }
+                        StageDiffSide::AmendCommit => {}
+                    }
+                    if diff.key.side != StageDiffSide::AmendCommit && hunk.has_mixed_range {
                         pills.push((
-                            state.i18n.t("view.commit.hunk_unstage_pill").to_string(),
-                            theme.status_untracked,
-                            DiffHunkActionKind::Unstage,
+                            state.i18n.t("view.commit.hunk_three_way_pill").to_string(),
+                            theme.ref_head.icon,
+                            DiffHunkActionKind::Inspect3Way,
                         ));
                     }
-                    StageDiffSide::Unstaged => {
-                        pills.push((
-                            state.i18n.t("view.commit.hunk_stage_pill").to_string(),
-                            theme.status_added,
-                            DiffHunkActionKind::Stage,
-                        ));
-                        pills.push((
-                            state.i18n.t("view.commit.hunk_rollback_pill").to_string(),
-                            theme.status_conflicted,
-                            DiffHunkActionKind::Rollback,
-                        ));
-                    }
-                    StageDiffSide::AmendCommit => {}
-                }
-                if diff.key.side != StageDiffSide::AmendCommit && hunk.has_mixed_range {
-                    pills.push((
-                        state.i18n.t("view.commit.hunk_three_way_pill").to_string(),
-                        theme.ref_head.icon,
-                        DiffHunkActionKind::Inspect3Way,
-                    ));
                 }
 
                 let pills_w: usize = pills.iter().map(|(t, _, _)| t.width() + 1).sum();

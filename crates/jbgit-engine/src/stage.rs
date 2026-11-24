@@ -1,24 +1,29 @@
 use std::fs;
-use std::path::Path;
+use std::io::Write;
+use std::path::{Component, Path};
+use std::process::Stdio;
 
 use git2::build::CheckoutBuilder;
 use git2::{
-    Commit, DiffFindOptions, IndexEntry, IndexTime, ObjectType, Repository, ResetType, Signature,
-    SubmoduleIgnore, SubmoduleStatus,
+    Commit, Delta, DiffFindOptions, DiffOptions, IndexAddOption, IndexEntry, IndexTime, ObjectType,
+    Repository, RepositoryState as Git2State, ResetType, Signature, SubmoduleIgnore,
+    SubmoduleStatus,
 };
 use jbgit_core::{
     AmendCommitPreview, DetailsKey, DiffContext, DiffHunk, DiffLine, DiffLineKind, EpochToken,
-    FileChange, FileDiff, FileDiffKey, FileStatusKind, LfsDiff, MAX_DIFF_LINES, Oid,
+    FileChange, FileDiff, FileDiffKey, FileModeChange, FileStatusKind, GIT_MODE_EXECUTABLE,
+    GIT_MODE_GITLINK, GIT_MODE_REGULAR, GIT_MODE_SYMLINK, LfsDiff, MAX_DIFF_LINES, Oid,
     StageDiffHunk, StageLineTracker, StageNodeKind, StageTarget, SubmoduleState, parse_lfs_pointer,
 };
 
 use crate::blob_reader::{
-    CheckedBlob, path_has_lfs_filter, read_head_tree_path, read_index_entry, read_tree_path,
+    CheckedBlob, effective_worktree_mode, path_has_lfs_filter, path_needs_git_clean_filter,
+    read_head_tree_path, read_index_entry, read_symlink_target_bytes, read_tree_path,
     read_worktree_path,
 };
 use crate::error::EngineError;
-use crate::pool::{delta_to_kind, with_thread_repo};
-use crate::probe::{RepoLocation, to_core_oid};
+use crate::pool::{LARGE_INDEX_ENTRIES, delta_to_kind, with_thread_repo};
+use crate::probe::{RepoLocation, canonical_or_self, to_core_oid};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum StageDiffSide {
@@ -54,6 +59,8 @@ pub struct ThreeDocStageDiff {
     pub staged_bytes: Vec<u8>,
     pub local_bytes: Vec<u8>,
     pub file_mode: u32,
+    pub mode_change: Option<FileModeChange>,
+    pub is_symlink: bool,
     pub is_binary: bool,
     pub is_conflicted: bool,
     pub submodule: Option<SubmoduleDiffInfo>,
@@ -65,6 +72,19 @@ pub struct ThreeDocStageDiff {
 }
 
 impl ThreeDocStageDiff {
+    pub fn is_symlink_or_typechange(&self) -> bool {
+        self.is_symlink
+            || self.file_mode == GIT_MODE_SYMLINK
+            || self
+                .mode_change
+                .as_ref()
+                .is_some_and(FileModeChange::is_typechange)
+    }
+
+    pub fn is_line_staging_disabled(&self) -> bool {
+        self.submodule.is_some() || self.lfs.is_some() || self.is_symlink_or_typechange()
+    }
+
     pub fn as_file_diff(&self) -> FileDiff {
         FileDiff {
             key: FileDiffKey {
@@ -78,6 +98,7 @@ impl ThreeDocStageDiff {
             is_truncated: self.is_truncated,
             is_too_large: self.is_too_large,
             lfs: self.lfs.clone(),
+            mode_change: self.mode_change.clone(),
         }
     }
 }
@@ -86,6 +107,9 @@ impl ThreeDocStageDiff {
 pub struct CommitPrecheckInfo {
     pub has_commit_hooks: bool,
     pub gpg_sign: bool,
+    /// True when the repository has an active merge/rebase/cherry-pick/revert sequencer
+    /// state that must go through native `git commit` CLI (multi-parent & state cleanup).
+    pub has_sequencer_state: bool,
     pub user_name: Option<String>,
     pub user_email: Option<String>,
     pub has_remote: bool,
@@ -152,7 +176,9 @@ fn empty_submodule_diff(key: StageDiffKey, info: SubmoduleDiffInfo) -> ThreeDocS
         vcs_bytes: Vec::new(),
         staged_bytes: Vec::new(),
         local_bytes: Vec::new(),
-        file_mode: 0o160_000,
+        file_mode: GIT_MODE_GITLINK,
+        mode_change: None,
+        is_symlink: false,
         is_binary: false,
         is_conflicted: false,
         submodule: Some(info),
@@ -161,6 +187,122 @@ fn empty_submodule_diff(key: StageDiffKey, info: SubmoduleDiffInfo) -> ThreeDocS
         hunks: Vec::new(),
         is_truncated: false,
         is_too_large: false,
+    }
+}
+
+struct ThreeDocPaths {
+    head_path: String,
+    staged_path: String,
+    local_path: String,
+}
+
+fn find_head_to_index_source(repo: &Repository, staged_path: &str) -> Option<String> {
+    let head_tree = repo.head().ok()?.peel_to_commit().ok()?.tree().ok()?;
+    let index_entries = repo.index().map(|idx| idx.len()).unwrap_or(0);
+    let mut diff_opts = DiffOptions::new();
+    let mut find_opts = DiffFindOptions::new();
+    find_opts.renames(true).copies(true);
+    if index_entries <= LARGE_INDEX_ENTRIES {
+        diff_opts.include_unmodified(true);
+        find_opts.copies_from_unmodified(true);
+    }
+    let mut diff = repo
+        .diff_tree_to_index(Some(&head_tree), None, Some(&mut diff_opts))
+        .ok()?;
+    diff.find_similar(Some(&mut find_opts)).ok()?;
+    for delta in diff.deltas() {
+        if !matches!(delta.status(), Delta::Renamed | Delta::Copied) {
+            continue;
+        }
+        let new_p = delta
+            .new_file()
+            .path()
+            .map(|p| p.to_string_lossy().replace('\\', "/"));
+        if new_p.as_deref() == Some(staged_path) {
+            return delta
+                .old_file()
+                .path()
+                .map(|p| p.to_string_lossy().replace('\\', "/"));
+        }
+    }
+    None
+}
+
+fn find_index_to_workdir_rename_target(repo: &Repository, staged_path: &str) -> Option<String> {
+    let mut diff_opts = DiffOptions::new();
+    diff_opts
+        .include_untracked(true)
+        .recurse_untracked_dirs(true)
+        .show_untracked_content(true);
+    let mut diff = repo
+        .diff_index_to_workdir(None, Some(&mut diff_opts))
+        .ok()?;
+    let mut find_opts = DiffFindOptions::new();
+    find_opts.renames(true).for_untracked(true);
+    diff.find_similar(Some(&mut find_opts)).ok()?;
+    for delta in diff.deltas() {
+        if delta.status() != Delta::Renamed {
+            continue;
+        }
+        let old_p = delta
+            .old_file()
+            .path()
+            .map(|p| p.to_string_lossy().replace('\\', "/"));
+        if old_p.as_deref() == Some(staged_path) {
+            return delta
+                .new_file()
+                .path()
+                .map(|p| p.to_string_lossy().replace('\\', "/"));
+        }
+    }
+    None
+}
+
+/// Independently resolves the `HEAD`, `Staged` (index), and `Local` (workdir) paths
+/// for a staging diff key, handling staged renames/copies, unstaged renames, and
+/// dual-stage renames (`HEAD:a -> Index:b -> Workdir:c`).
+fn resolve_three_doc_paths(repo: &Repository, workdir: &Path, key: &StageDiffKey) -> ThreeDocPaths {
+    match key.side {
+        StageDiffSide::Staged => {
+            let staged_path = key.path.clone();
+            let head_path = key.old_path.clone().unwrap_or_else(|| staged_path.clone());
+            let local_path = if fs::symlink_metadata(workdir.join(&staged_path)).is_ok() {
+                staged_path.clone()
+            } else {
+                find_index_to_workdir_rename_target(repo, &staged_path)
+                    .unwrap_or_else(|| staged_path.clone())
+            };
+            ThreeDocPaths {
+                head_path,
+                staged_path,
+                local_path,
+            }
+        }
+        StageDiffSide::Unstaged => {
+            let local_path = key.path.clone();
+            let staged_path = key.old_path.clone().unwrap_or_else(|| local_path.clone());
+            let in_head = repo
+                .head()
+                .ok()
+                .and_then(|h| h.peel_to_commit().ok())
+                .and_then(|c| c.tree().ok())
+                .is_some_and(|t| t.get_path(Path::new(&staged_path)).is_ok());
+            let head_path = if in_head {
+                staged_path.clone()
+            } else {
+                find_head_to_index_source(repo, &staged_path).unwrap_or_else(|| staged_path.clone())
+            };
+            ThreeDocPaths {
+                head_path,
+                staged_path,
+                local_path,
+            }
+        }
+        StageDiffSide::AmendCommit => ThreeDocPaths {
+            head_path: key.old_path.clone().unwrap_or_else(|| key.path.clone()),
+            staged_path: key.path.clone(),
+            local_path: key.path.clone(),
+        },
     }
 }
 
@@ -209,8 +351,13 @@ pub(crate) fn load_stage_file_diff_sync(
                 return Err(EngineError::Cancelled);
             }
 
-            let file_mode = head_side.mode().or(vcs_side.mode()).unwrap_or(0o100644);
-            if file_mode == 0o160_000 {
+            let file_mode = head_side
+                .mode()
+                .or(vcs_side.mode())
+                .unwrap_or(GIT_MODE_REGULAR);
+            let mode_change = FileModeChange::from_modes(vcs_side.mode(), head_side.mode());
+            let is_symlink = vcs_side.is_symlink() || head_side.is_symlink();
+            if file_mode == GIT_MODE_GITLINK {
                 return Ok(empty_submodule_diff(
                     key.clone(),
                     SubmoduleDiffInfo {
@@ -233,6 +380,8 @@ pub(crate) fn load_stage_file_diff_sync(
                     staged_bytes: Vec::new(),
                     local_bytes: Vec::new(),
                     file_mode,
+                    mode_change,
+                    is_symlink,
                     is_binary: false,
                     is_conflicted: false,
                     submodule: None,
@@ -262,6 +411,8 @@ pub(crate) fn load_stage_file_diff_sync(
                     staged_bytes: head_bytes.clone(),
                     local_bytes: head_bytes,
                     file_mode,
+                    mode_change,
+                    is_symlink,
                     is_binary: false,
                     is_conflicted: false,
                     submodule: None,
@@ -287,6 +438,8 @@ pub(crate) fn load_stage_file_diff_sync(
                     staged_bytes: head_bytes.clone(),
                     local_bytes: head_bytes,
                     file_mode,
+                    mode_change,
+                    is_symlink,
                     is_binary: true,
                     is_conflicted: false,
                     submodule: None,
@@ -317,6 +470,8 @@ pub(crate) fn load_stage_file_diff_sync(
                 staged_bytes: head_bytes.clone(),
                 local_bytes: head_bytes,
                 file_mode,
+                mode_change,
+                is_symlink,
                 is_binary: false,
                 is_conflicted: false,
                 submodule: None,
@@ -328,15 +483,11 @@ pub(crate) fn load_stage_file_diff_sync(
             });
         }
 
-        let vcs_lookup = if key.side == StageDiffSide::Staged {
-            key.old_path.as_deref().unwrap_or(&key.path)
-        } else {
-            &key.path
-        };
+        let paths = resolve_three_doc_paths(repo, &location.workdir, key);
 
-        let vcs_side = read_head_tree_path(repo, vcs_lookup);
-        let (staged_side, is_conflicted) = read_index_entry(repo, &key.path);
-        let local_side = read_worktree_path(&location.workdir, &key.path);
+        let vcs_side = read_head_tree_path(repo, &paths.head_path);
+        let (staged_side, is_conflicted) = read_index_entry(repo, &paths.staged_path);
+        let local_side = read_worktree_path(&location.workdir, &paths.local_path);
 
         if token.is_stale() {
             return Err(EngineError::Cancelled);
@@ -346,8 +497,16 @@ pub(crate) fn load_stage_file_diff_sync(
             .mode()
             .or(vcs_side.mode())
             .or(local_side.mode())
-            .unwrap_or(0o100644);
-        if file_mode == 0o160_000 {
+            .unwrap_or(GIT_MODE_REGULAR);
+        let mode_change = if key.side == StageDiffSide::Staged {
+            FileModeChange::from_modes(vcs_side.mode(), staged_side.mode())
+        } else {
+            let eff_local_mode = effective_worktree_mode(repo, local_side.mode(), staged_side.mode());
+            FileModeChange::from_modes(staged_side.mode(), eff_local_mode)
+        };
+        let is_symlink =
+            vcs_side.is_symlink() || staged_side.is_symlink() || local_side.is_symlink();
+        if file_mode == GIT_MODE_GITLINK {
             return Ok(empty_submodule_diff(
                 key.clone(),
                 SubmoduleDiffInfo {
@@ -372,6 +531,8 @@ pub(crate) fn load_stage_file_diff_sync(
                 staged_bytes: Vec::new(),
                 local_bytes: Vec::new(),
                 file_mode,
+                mode_change,
+                is_symlink,
                 is_binary: false,
                 is_conflicted,
                 submodule: None,
@@ -407,6 +568,8 @@ pub(crate) fn load_stage_file_diff_sync(
                 staged_bytes,
                 local_bytes,
                 file_mode,
+                mode_change,
+                is_symlink,
                 is_binary: false,
                 is_conflicted,
                 submodule: None,
@@ -432,6 +595,8 @@ pub(crate) fn load_stage_file_diff_sync(
                 staged_bytes,
                 local_bytes,
                 file_mode,
+                mode_change,
+                is_symlink,
                 is_binary: true,
                 is_conflicted,
                 submodule: None,
@@ -503,6 +668,8 @@ pub(crate) fn load_stage_file_diff_sync(
             staged_bytes,
             local_bytes,
             file_mode,
+            mode_change,
+            is_symlink,
             is_binary: false,
             is_conflicted,
             submodule: None,
@@ -515,8 +682,36 @@ pub(crate) fn load_stage_file_diff_sync(
     })
 }
 
-/// Writes `new_staged_bytes` directly into `.git/objects` and `.git/index` via
-/// `git2::Index::add_frombuffer`, never touching the working tree.
+fn hash_object_with_filters(
+    location: &RepoLocation,
+    rel_path: &str,
+    bytes: &[u8],
+) -> Result<git2::Oid, EngineError> {
+    let git = crate::cli::cached_git_executable().unwrap_or_else(|| Path::new("git"));
+    let mut cmd = crate::cli::non_interactive_std_command(git, Some(&location.workdir));
+    cmd.args(["hash-object", "-w", "--stdin", "--path", rel_path])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = cmd.spawn().map_err(EngineError::Io)?;
+    if let Some(mut stdin) = child.stdin.take() {
+        stdin.write_all(bytes).map_err(EngineError::Io)?;
+    }
+    let out = child.wait_with_output().map_err(EngineError::Io)?;
+    if !out.status.success() {
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        return Err(EngineError::Other(format!(
+            "git hash-object failed for '{rel_path}': {}",
+            stderr.trim()
+        )));
+    }
+    let hex = String::from_utf8_lossy(&out.stdout);
+    git2::Oid::from_str(hex.trim()).map_err(EngineError::from)
+}
+
+/// Writes `new_staged_bytes` directly into `.git/objects` and `.git/index`, never touching
+/// the working tree. Rejects symbolic links / type changes (`0o120000`, `0o160000`) and
+/// routes files with active clean filters / `core.autocrlf` through `git hash-object --path`.
 pub(crate) fn apply_stage_buffer_sync(
     location: &RepoLocation,
     path: &str,
@@ -524,25 +719,51 @@ pub(crate) fn apply_stage_buffer_sync(
     file_mode: u32,
     remove_from_index: bool,
 ) -> Result<(), EngineError> {
+    if file_mode == GIT_MODE_SYMLINK || file_mode == GIT_MODE_GITLINK {
+        return Err(EngineError::Other(
+            "Line-level staging is not supported for symbolic links or type changes — stage or unstage the whole file instead."
+                .to_string(),
+        ));
+    }
+
+    let full = location.workdir.join(path);
+    if fs::symlink_metadata(&full).is_ok_and(|m| m.file_type().is_symlink()) {
+        return Err(EngineError::Other(
+            "Line-level staging is not supported for symbolic links or type changes — stage or unstage the whole file instead."
+                .to_string(),
+        ));
+    }
+
     with_thread_repo(&location.git_dir, |repo| {
         let mut index = repo.index()?;
+        let existing = index.get_path(Path::new(path), 0);
+        if existing
+            .as_ref()
+            .is_some_and(|e| e.mode == GIT_MODE_SYMLINK || e.mode == GIT_MODE_GITLINK)
+        {
+            return Err(EngineError::Other(
+                "Line-level staging is not supported for symbolic links or type changes — stage or unstage the whole file instead."
+                    .to_string(),
+            ));
+        }
+
         if remove_from_index {
             let _ = index.remove_path(Path::new(path));
             index.write()?;
             return Ok(());
         }
 
-        let mut entry = match index.get_path(Path::new(path), 0) {
+        let mut entry = match existing {
             Some(existing) => existing,
             None => IndexEntry {
                 ctime: IndexTime::new(0, 0),
                 mtime: IndexTime::new(0, 0),
                 dev: 0,
                 ino: 0,
-                mode: if file_mode == 0o100755 {
-                    0o100755
+                mode: if file_mode == GIT_MODE_EXECUTABLE {
+                    GIT_MODE_EXECUTABLE
                 } else {
-                    0o100644
+                    GIT_MODE_REGULAR
                 },
                 uid: 0,
                 gid: 0,
@@ -553,13 +774,28 @@ pub(crate) fn apply_stage_buffer_sync(
                 path: path.as_bytes().to_vec(),
             },
         };
-        if file_mode == 0o100755 || entry.mode == 0o100755 {
-            entry.mode = 0o100755;
+        if file_mode == GIT_MODE_EXECUTABLE || entry.mode == GIT_MODE_EXECUTABLE {
+            entry.mode = GIT_MODE_EXECUTABLE;
         } else if entry.mode == 0 {
-            entry.mode = 0o100644;
+            entry.mode = GIT_MODE_REGULAR;
         }
-        entry.file_size = new_staged_bytes.len() as u32;
-        index.add_frombuffer(&entry, new_staged_bytes)?;
+
+        if path_needs_git_clean_filter(repo, path, new_staged_bytes)
+            && let Ok(filtered_oid) = hash_object_with_filters(location, path, new_staged_bytes)
+        {
+            entry.id = filtered_oid;
+            entry.ctime = IndexTime::new(0, 0);
+            entry.mtime = IndexTime::new(0, 0);
+            entry.dev = 0;
+            entry.ino = 0;
+            entry.uid = 0;
+            entry.gid = 0;
+            entry.file_size = 0;
+            index.add(&entry)?;
+        } else {
+            entry.file_size = new_staged_bytes.len() as u32;
+            index.add_frombuffer(&entry, new_staged_bytes)?;
+        }
         index.write()?;
         Ok(())
     })
@@ -606,6 +842,33 @@ pub(crate) fn remove_conflict_path_sync(
     Ok(())
 }
 
+fn stage_symlink_entry(
+    index: &mut git2::Index,
+    rel: &Path,
+    full: &Path,
+    rel_str: &str,
+) -> Result<(), EngineError> {
+    let target_bytes = read_symlink_target_bytes(full)?;
+    let entry = IndexEntry {
+        ctime: IndexTime::new(0, 0),
+        mtime: IndexTime::new(0, 0),
+        dev: 0,
+        ino: 0,
+        mode: GIT_MODE_SYMLINK,
+        uid: 0,
+        gid: 0,
+        file_size: target_bytes.len() as u32,
+        id: git2::Oid::ZERO_SHA1,
+        flags: 0,
+        flags_extended: 0,
+        path: rel_str.as_bytes().to_vec(),
+    };
+    index.add_frombuffer(&entry, &target_bytes)?;
+    // Ensure index reflects the symlink path cleanly if an older non-link entry existed.
+    debug_assert_eq!(index.get_path(rel, 0).map(|e| e.mode), Some(GIT_MODE_SYMLINK));
+    Ok(())
+}
+
 pub(crate) fn stage_targets_sync(
     location: &RepoLocation,
     targets: &[StageTarget],
@@ -613,19 +876,37 @@ pub(crate) fn stage_targets_sync(
     with_thread_repo(&location.git_dir, |repo| {
         let mut index = repo.index()?;
         for t in targets {
-            let rel = Path::new(&t.path);
+            let trimmed = t.path.trim_end_matches(['/', '\\']);
+            let rel = Path::new(trimmed);
             let full = location.workdir.join(rel);
-            if full.exists() {
-                index.add_path(rel)?;
-            } else {
-                let _ = index.conflict_remove(rel);
-                let _ = index.remove_path(rel);
+            match fs::symlink_metadata(&full) {
+                Ok(meta) if meta.file_type().is_symlink() => {
+                    // Use libgit2 `add_path` when it preserves mode `0o120000`, otherwise
+                    // stage the raw link target directly (e.g. dangling symlinks or Windows
+                    // with `core.symlinks = false`).
+                    let staged_as_symlink = index.add_path(rel).is_ok()
+                        && index.get_path(rel, 0).map(|e| e.mode) == Some(GIT_MODE_SYMLINK);
+                    if !staged_as_symlink {
+                        stage_symlink_entry(&mut index, rel, &full, trimmed)?;
+                    }
+                }
+                Ok(meta) if meta.file_type().is_dir() => {
+                    index.add_all([trimmed], IndexAddOption::DEFAULT, None)?;
+                }
+                Ok(_) => {
+                    index.add_path(rel)?;
+                }
+                Err(_) => {
+                    let _ = index.conflict_remove(rel);
+                    let _ = index.remove_path(rel);
+                }
             }
             if let Some(old) = &t.old_path {
-                let old_full = location.workdir.join(old);
-                if !old_full.exists() {
-                    let _ = index.conflict_remove(Path::new(old));
-                    let _ = index.remove_path(Path::new(old));
+                let old_trimmed = old.trim_end_matches(['/', '\\']);
+                let old_full = location.workdir.join(old_trimmed);
+                if fs::symlink_metadata(&old_full).is_err() {
+                    let _ = index.conflict_remove(Path::new(old_trimmed));
+                    let _ = index.remove_path(Path::new(old_trimmed));
                 }
             }
         }
@@ -675,6 +956,113 @@ pub(crate) fn unstage_targets_sync(
     })
 }
 
+fn is_link_or_reparse_point(meta: &fs::Metadata) -> bool {
+    if meta.file_type().is_symlink() {
+        return true;
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0400;
+        if meta.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+            return true;
+        }
+    }
+    false
+}
+
+fn remove_symlink_entry(path: &Path) -> std::io::Result<()> {
+    #[cfg(windows)]
+    {
+        // Directory symlinks & NTFS junctions require `remove_dir` on Windows;
+        // file symlinks require `remove_file`. Neither follows the target.
+        fs::remove_file(path).or_else(|_| fs::remove_dir(path))
+    }
+    #[cfg(not(windows))]
+    {
+        fs::remove_file(path)
+    }
+}
+
+fn remove_dir_no_follow(dir: &Path) -> std::io::Result<()> {
+    for entry in fs::read_dir(dir)? {
+        let entry = entry?;
+        let child = entry.path();
+        let meta = fs::symlink_metadata(&child)?;
+        if is_link_or_reparse_point(&meta) {
+            remove_symlink_entry(&child)?;
+        } else if meta.file_type().is_dir() {
+            remove_dir_no_follow(&child)?;
+        } else {
+            fs::remove_file(&child)?;
+        }
+    }
+    fs::remove_dir(dir)
+}
+
+/// Safely deletes an untracked file, symlink, or directory within `workdir` without
+/// ever traversing parent symlinks or following external links.
+fn safe_remove_untracked_path(workdir: &Path, rel_path: &str) -> Result<(), EngineError> {
+    let trimmed = rel_path.trim_end_matches(['/', '\\']);
+    if trimmed.is_empty() {
+        return Err(EngineError::Other(
+            "Refusing to discard empty path".to_string(),
+        ));
+    }
+    let rel = Path::new(trimmed);
+    let mut parts = Vec::new();
+    for comp in rel.components() {
+        match comp {
+            Component::Normal(seg) => parts.push(seg),
+            Component::CurDir => {}
+            Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
+                return Err(EngineError::Other(format!(
+                    "Refusing to discard path outside workdir: '{rel_path}'"
+                )));
+            }
+        }
+    }
+    if parts.is_empty() {
+        return Err(EngineError::Other(format!(
+            "Refusing to discard repository root: '{rel_path}'"
+        )));
+    }
+
+    let canon_workdir = canonical_or_self(workdir);
+    let mut cursor = canon_workdir.clone();
+    for &seg in &parts[..parts.len() - 1] {
+        cursor.push(seg);
+        let Ok(meta) = fs::symlink_metadata(&cursor) else {
+            return Ok(());
+        };
+        if is_link_or_reparse_point(&meta) {
+            return Err(EngineError::Other(format!(
+                "Refusing to traverse symlinked parent while discarding '{rel_path}'"
+            )));
+        }
+    }
+
+    let full = cursor.join(parts[parts.len() - 1]);
+    let canon_parent = canonical_or_self(&cursor);
+    if !canon_parent.starts_with(&canon_workdir) {
+        return Err(EngineError::Other(format!(
+            "Refusing to discard path outside workdir: '{rel_path}'"
+        )));
+    }
+
+    let Ok(meta) = fs::symlink_metadata(&full) else {
+        return Ok(());
+    };
+    if is_link_or_reparse_point(&meta) {
+        remove_symlink_entry(&full)?;
+    } else if meta.file_type().is_dir() {
+        remove_dir_no_follow(&full)?;
+    } else {
+        fs::remove_file(&full)?;
+    }
+    Ok(())
+}
+
 pub(crate) fn discard_targets_sync(
     location: &RepoLocation,
     targets: &[StageTarget],
@@ -684,10 +1072,7 @@ pub(crate) fn discard_targets_sync(
         for t in targets {
             if t.group_kind == StageNodeKind::Untracked || t.status_kind == FileStatusKind::Untracked
             {
-                let full = location.workdir.join(&t.path);
-                if full.is_file() {
-                    let _ = fs::remove_file(full);
-                }
+                safe_remove_untracked_path(&location.workdir, &t.path)?;
             } else {
                 tracked_paths.push(t.path.clone());
             }
@@ -766,7 +1151,20 @@ pub(crate) fn load_amend_preview_sync(
     })
 }
 
-pub(crate) fn probe_commit_precheck_sync(location: &RepoLocation) -> CommitPrecheckInfo {
+/// Returns `true` when the repository is in any non-clean sequencer/merge state
+/// (`Merge`, `CherryPick`, `Revert`, `Rebase*`, `MERGE_HEAD`, `CHERRY_PICK_HEAD`,
+/// `REVERT_HEAD`, `SQUASH_MSG`) where `git commit` CLI must be used instead of `git2`.
+pub(crate) fn is_commit_sequencer_active(repo: &Repository, git_dir: &Path) -> bool {
+    repo.state() != Git2State::Clean
+        || git_dir.join("MERGE_HEAD").exists()
+        || git_dir.join("CHERRY_PICK_HEAD").exists()
+        || git_dir.join("REVERT_HEAD").exists()
+        || git_dir.join("SQUASH_MSG").exists()
+        || git_dir.join("rebase-merge").is_dir()
+        || git_dir.join("rebase-apply").is_dir()
+}
+
+pub fn probe_commit_precheck_sync(location: &RepoLocation) -> CommitPrecheckInfo {
     with_thread_repo(&location.git_dir, |repo| {
         let cfg = repo.config().ok();
         let user_name = cfg.as_ref().and_then(|c| c.get_string("user.name").ok());
@@ -775,6 +1173,7 @@ pub(crate) fn probe_commit_precheck_sync(location: &RepoLocation) -> CommitPrech
             .as_ref()
             .and_then(|c| c.get_bool("commit.gpgsign").ok())
             .unwrap_or(false);
+        let has_sequencer_state = is_commit_sequencer_active(repo, &location.git_dir);
 
         let hooks_dir = cfg
             .as_ref()
@@ -787,7 +1186,7 @@ pub(crate) fn probe_commit_precheck_sync(location: &RepoLocation) -> CommitPrech
                     location.workdir.join(pb)
                 }
             })
-            .unwrap_or_else(|| location.git_dir.join("hooks"));
+            .unwrap_or_else(|| location.common_dir.join("hooks"));
 
         let has_hook = |name: &str| -> bool {
             let p = hooks_dir.join(name);
@@ -820,6 +1219,7 @@ pub(crate) fn probe_commit_precheck_sync(location: &RepoLocation) -> CommitPrech
         Ok(CommitPrecheckInfo {
             has_commit_hooks,
             gpg_sign,
+            has_sequencer_state,
             user_name,
             user_email,
             has_remote,
@@ -847,26 +1247,84 @@ fn parse_author_override<'a>(
     )))
 }
 
-fn append_signoff_if_needed(message: &str, name: &str, email: &str) -> String {
+fn is_trailer_line(line: &str) -> bool {
+    let trimmed = line.trim_end();
+    if let Some((key, rest)) = trimmed.split_once(':') {
+        !key.is_empty()
+            && key.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+            && (rest.is_empty() || rest.starts_with(' ') || rest.starts_with('\t'))
+    } else {
+        trimmed.starts_with("(cherry picked from commit ") && trimmed.ends_with(')')
+    }
+}
+
+fn ends_with_trailer_block(body: &str) -> bool {
+    let lines: Vec<&str> = body
+        .split('\n')
+        .map(|l| l.strip_suffix('\r').unwrap_or(l))
+        .collect();
+    let Some(last_non_empty) = lines.iter().rposition(|l| !l.trim().is_empty()) else {
+        return false;
+    };
+    // Git only treats a trailing block as trailers when separated from the subject/body
+    // by at least one blank line (so single-line `feat: foo` subjects still get `\n\n`).
+    let Some(blank_idx) = lines[..last_non_empty]
+        .iter()
+        .rposition(|l| l.trim().is_empty())
+    else {
+        return false;
+    };
+    let mut saw_trailer = false;
+    for line in &lines[blank_idx + 1..=last_non_empty] {
+        if is_trailer_line(line) {
+            saw_trailer = true;
+        } else if saw_trailer && (line.starts_with(' ') || line.starts_with('\t')) {
+            continue;
+        } else {
+            return false;
+        }
+    }
+    saw_trailer
+}
+
+pub(crate) fn append_signoff_if_needed(message: &str, name: &str, email: &str) -> String {
     let trailer = format!("Signed-off-by: {name} <{email}>");
     if message.lines().any(|l| l.trim() == trailer) {
         return message.to_string();
     }
-    let mut out = message.trim_end_matches('\n').to_string();
-    if !out.is_empty() {
-        out.push_str("\n\n");
+    let out = message.trim_end_matches(['\r', '\n']);
+    if out.is_empty() {
+        return format!("{trailer}\n");
     }
-    out.push_str(&trailer);
-    out.push('\n');
-    out
+    let mut trimmed_lines: Vec<&str> = out.split('\n').collect();
+    while trimmed_lines.last().is_some_and(|l| l.trim().is_empty()) {
+        trimmed_lines.pop();
+    }
+    let body = trimmed_lines.join("\n");
+    if body.is_empty() {
+        return format!("{trailer}\n");
+    }
+    if ends_with_trailer_block(&body) {
+        format!("{body}\n{trailer}\n")
+    } else {
+        format!("{body}\n\n{trailer}\n")
+    }
 }
 
-/// Fast-path commit using `git2` (used when no commit hooks or GPG signing are active).
+/// Fast-path commit using `git2` (used only in Clean repository state when no commit
+/// hooks or GPG signing are active).
 pub(crate) fn execute_commit_git2_sync(
     location: &RepoLocation,
     req: &CommitRequest,
 ) -> Result<CommitOutcome, EngineError> {
     with_thread_repo(&location.git_dir, |repo| {
+        if is_commit_sequencer_active(repo, &location.git_dir) {
+            return Err(EngineError::Other(
+                "Active merge/rebase/cherry-pick/revert sequencer state requires native git CLI commit."
+                    .to_string(),
+            ));
+        }
+
         if req.stage_all_tracked {
             let mut index = repo.index()?;
             index.update_all(["*"], None)?;
@@ -1082,4 +1540,72 @@ pub(crate) fn undo_last_commit_sync(location: &RepoLocation) -> Result<String, E
         }
         Ok(msg)
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn append_signoff_handles_plain_body_existing_trailers_and_duplicates() {
+        // Plain subject -> blank line before Signed-off-by
+        assert_eq!(
+            append_signoff_if_needed("Fix crash", "Alice", "alice@example.com"),
+            "Fix crash\n\nSigned-off-by: Alice <alice@example.com>\n"
+        );
+
+        // Single-line conventional commit looks like `Key: value` but has no preceding
+        // blank line, so it must still get a blank line before Signed-off-by.
+        assert_eq!(
+            append_signoff_if_needed("feat: add signoff rule\n", "Alice", "alice@example.com"),
+            "feat: add signoff rule\n\nSigned-off-by: Alice <alice@example.com>\n"
+        );
+
+        // Plain body paragraph -> blank line before Signed-off-by
+        assert_eq!(
+            append_signoff_if_needed(
+                "Fix crash\n\nAvoids null deref in parser.\n",
+                "Alice",
+                "alice@example.com"
+            ),
+            "Fix crash\n\nAvoids null deref in parser.\n\nSigned-off-by: Alice <alice@example.com>\n"
+        );
+
+        // Existing `Co-authored-by:` trailer block -> appended directly on next line (no extra blank line)
+        assert_eq!(
+            append_signoff_if_needed(
+                "Fix crash\n\nCo-authored-by: Bob <bob@example.com>\n",
+                "Alice",
+                "alice@example.com"
+            ),
+            "Fix crash\n\nCo-authored-by: Bob <bob@example.com>\nSigned-off-by: Alice <alice@example.com>\n"
+        );
+
+        // Multi-trailer block with body above -> single newline separator
+        assert_eq!(
+            append_signoff_if_needed(
+                "Fix crash\n\nDetails here.\n\nCo-authored-by: Bob <bob@example.com>\nReviewed-by: Carol <carol@example.com>",
+                "Alice",
+                "alice@example.com"
+            ),
+            "Fix crash\n\nDetails here.\n\nCo-authored-by: Bob <bob@example.com>\nReviewed-by: Carol <carol@example.com>\nSigned-off-by: Alice <alice@example.com>\n"
+        );
+
+        // Identical Signed-off-by already present -> idempotent (unchanged)
+        let already = "Fix crash\n\nSigned-off-by: Alice <alice@example.com>\n";
+        assert_eq!(
+            append_signoff_if_needed(already, "Alice", "alice@example.com"),
+            already
+        );
+
+        // Different person's Signed-off-by -> appended directly on next line
+        assert_eq!(
+            append_signoff_if_needed(
+                "Fix crash\n\nSigned-off-by: Bob <bob@example.com>\n",
+                "Alice",
+                "alice@example.com"
+            ),
+            "Fix crash\n\nSigned-off-by: Bob <bob@example.com>\nSigned-off-by: Alice <alice@example.com>\n"
+        );
+    }
 }

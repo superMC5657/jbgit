@@ -7,13 +7,14 @@ use std::time::Duration;
 use jbgit_core::{
     AmendCommitPreview, BlameBundle, BlameKey, BlameOptions, CommitChangesBundle, DetailsKey,
     DiffContext, DiffLineKind, FileDiff, FileDiffKey, FileHistoryBundle, FileHistoryKey,
-    FileStatusKind, LineSelection, MAX_DIFF_FILE_BYTES, Oid, RefKind, RefreshScope, RepoSnapshot,
-    RepositoryState, RequestSlotId, StageNodeKind, StageStatusSnapshot, StageTarget,
+    FileModeChange, FileStatusKind, GIT_MODE_EXECUTABLE, GIT_MODE_REGULAR, GIT_MODE_SYMLINK,
+    LineSelection, MAX_DIFF_FILE_BYTES, NO_NEWLINE_LINE_TEXT, Oid, RefKind, RefreshScope,
+    RepoSnapshot, RepositoryState, RequestSlotId, StageNodeKind, StageStatusSnapshot, StageTarget,
 };
 use jbgit_engine::{
     BlameFailureKind, CommitOutcome, CommitRequest, EngineBackend, EngineEvent, EngineHandle,
     EngineSupervisor, RecordingEngineBackend, RepoLocation, StageDiffKey, StageDiffSide,
-    TaskRequest, ThreeDocStageDiff,
+    TaskRequest, ThreeDocStageDiff, probe_commit_precheck_sync,
 };
 use tempfile::TempDir;
 use tokio::sync::mpsc::UnboundedReceiver;
@@ -3491,4 +3492,573 @@ async fn unborn_head_stage_and_unstage_across_workers_stays_consistent() {
     });
     wait_stage_mutation(&mut rx).await;
     assert!(git_cached().is_empty());
+}
+
+#[tokio::test]
+async fn merge_no_commit_without_hooks_preserves_two_parents_and_cleans_merge_head() {
+    let tmp = TempDir::new().unwrap();
+    let dir = tmp.path();
+    git(dir, &["init", "-b", "main"]);
+    git(dir, &["config", "user.name", "Tester"]);
+    git(dir, &["config", "user.email", "tester@example.com"]);
+    git(dir, &["config", "commit.gpgsign", "false"]);
+
+    fs::write(dir.join("base.txt"), "base\n").unwrap();
+    git(dir, &["add", "."]);
+    git(dir, &["commit", "-m", "base"]);
+
+    git(dir, &["checkout", "-b", "feature"]);
+    fs::write(dir.join("feat.txt"), "feat\n").unwrap();
+    git(dir, &["add", "."]);
+    git(dir, &["commit", "-m", "feature commit"]);
+    let feat_oid = rev(dir, "HEAD");
+
+    git(dir, &["checkout", "main"]);
+    fs::write(dir.join("main.txt"), "main\n").unwrap();
+    git(dir, &["add", "."]);
+    git(dir, &["commit", "-m", "main commit"]);
+    let main_oid = rev(dir, "HEAD");
+
+    git(dir, &["merge", "--no-commit", "--no-ff", "feature"]);
+    let loc = RepoLocation::discover(dir).unwrap();
+    assert!(loc.git_dir.join("MERGE_HEAD").exists());
+
+    let precheck = probe_commit_precheck_sync(&loc);
+    assert!(!precheck.has_commit_hooks);
+    assert!(!precheck.gpg_sign);
+    assert!(
+        precheck.has_sequencer_state,
+        "MERGE_HEAD must be detected as active sequencer state"
+    );
+
+    let (handle, mut rx) = EngineSupervisor::start(loc.clone(), false).unwrap();
+    let _ = handle.dispatch(TaskRequest::ExecuteCommit {
+        id: 1,
+        request: CommitRequest {
+            message: "Merge feature into main".into(),
+            amend: false,
+            signoff: false,
+            run_hooks: true,
+            author_override: None,
+            stage_all_tracked: false,
+            and_push: false,
+        },
+    });
+    let outcome = recv_matching(&mut rx, |ev| match ev {
+        EngineEvent::CommitCompleted(o) => Some(o),
+        _ => None,
+    })
+    .await;
+    assert!(outcome.success, "merge commit must succeed: {outcome:?}");
+    assert!(
+        !loc.git_dir.join("MERGE_HEAD").exists(),
+        ".git/MERGE_HEAD must be cleaned up after merge commit"
+    );
+
+    let parents_out = git_output(dir, &["rev-list", "--parents", "-n", "1", "HEAD"]);
+    assert!(parents_out.status.success());
+    let parts: Vec<String> = String::from_utf8_lossy(&parents_out.stdout)
+        .split_whitespace()
+        .map(String::from)
+        .collect();
+    assert_eq!(
+        parts.len(),
+        3,
+        "HEAD must be a 2-parent merge commit, got: {parts:?}"
+    );
+    assert_eq!(parts[1], main_oid.to_string());
+    assert_eq!(parts[2], feat_oid.to_string());
+}
+
+#[tokio::test]
+async fn linked_worktree_detects_common_dir_pre_commit_hook_and_blocks_commit() {
+    let tmp = TempDir::new().unwrap();
+    let main_dir = tmp.path().join("main");
+    let wt_dir = tmp.path().join("linked-wt");
+    fs::create_dir_all(&main_dir).unwrap();
+
+    git(&main_dir, &["init", "-b", "main"]);
+    git(&main_dir, &["config", "user.name", "Tester"]);
+    git(&main_dir, &["config", "user.email", "tester@example.com"]);
+    fs::write(main_dir.join("a.txt"), "one\n").unwrap();
+    git(&main_dir, &["add", "."]);
+    git(&main_dir, &["commit", "-m", "init"]);
+
+    git(
+        &main_dir,
+        &["worktree", "add", "-b", "wt-branch", wt_dir.to_str().unwrap()],
+    );
+
+    let main_loc = RepoLocation::discover(&main_dir).unwrap();
+    let wt_loc = RepoLocation::discover(&wt_dir).unwrap();
+    assert_ne!(
+        wt_loc.git_dir, wt_loc.common_dir,
+        "linked worktree must have distinct git_dir and common_dir"
+    );
+    assert_eq!(wt_loc.common_dir, main_loc.common_dir);
+
+    let hooks_dir = main_loc.common_dir.join("hooks");
+    fs::create_dir_all(&hooks_dir).unwrap();
+    let hook_path = hooks_dir.join("pre-commit");
+    fs::write(
+        &hook_path,
+        "#!/bin/sh\necho 'blocked by common pre-commit hook' >&2\nexit 1\n",
+    )
+    .unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&hook_path, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    let precheck = probe_commit_precheck_sync(&wt_loc);
+    assert!(
+        precheck.has_commit_hooks,
+        "linked worktree must detect hooks in common_dir/hooks"
+    );
+
+    fs::write(wt_dir.join("b.txt"), "two\n").unwrap();
+    git(&wt_dir, &["add", "b.txt"]);
+
+    let (handle, mut rx) = EngineSupervisor::start(wt_loc, false).unwrap();
+    let _ = handle.dispatch(TaskRequest::ExecuteCommit {
+        id: 1,
+        request: CommitRequest {
+            message: "should be blocked by hook".into(),
+            amend: false,
+            signoff: false,
+            run_hooks: true,
+            author_override: None,
+            stage_all_tracked: false,
+            and_push: false,
+        },
+    });
+    let outcome = recv_matching(&mut rx, |ev| match ev {
+        EngineEvent::CommitCompleted(o) => Some(o),
+        _ => None,
+    })
+    .await;
+    assert!(
+        !outcome.success,
+        "linked worktree commit must be blocked by common_dir pre-commit hook"
+    );
+    assert!(
+        outcome
+            .error_output
+            .as_deref()
+            .is_some_and(|e| e.contains("blocked by common pre-commit hook")),
+        "unexpected hook output: {outcome:?}"
+    );
+}
+
+#[tokio::test]
+async fn dangling_symlink_stages_as_120000_and_rejects_partial_stage_buffer() {
+    let tmp = TempDir::new().unwrap();
+    let dir = tmp.path();
+    git(dir, &["init", "-b", "main"]);
+    git(dir, &["config", "user.name", "Tester"]);
+    git(dir, &["config", "user.email", "tester@example.com"]);
+    fs::write(dir.join("init.txt"), "init\n").unwrap();
+    git(dir, &["add", "."]);
+    git(dir, &["commit", "-m", "init"]);
+
+    let link_path = dir.join("dangling_link");
+    #[cfg(unix)]
+    let created_symlink = std::os::unix::fs::symlink("nonexistent/target.txt", &link_path).is_ok();
+    #[cfg(windows)]
+    let created_symlink =
+        std::os::windows::fs::symlink_file("nonexistent/target.txt", &link_path).is_ok();
+
+    let loc = RepoLocation::discover(dir).unwrap();
+    let (handle, mut rx) = EngineSupervisor::start(loc, false).unwrap();
+
+    if created_symlink {
+        // 1. Stage dangling symlink -> must record mode 120000 in index instead of removing it.
+        let _ = handle.dispatch(TaskRequest::StageTargets {
+            targets: vec![stage_target(
+                "dangling_link",
+                StageNodeKind::Untracked,
+                FileStatusKind::Untracked,
+            )],
+        });
+        wait_stage_mutation(&mut rx).await;
+
+        let ls = git_output(dir, &["ls-files", "--stage", "dangling_link"]);
+        let ls_str = String::from_utf8_lossy(&ls.stdout);
+        assert!(
+            ls_str.starts_with("120000 "),
+            "dangling symlink must be staged with mode 120000, got: {ls_str:?}"
+        );
+
+        let diff = fetch_stage_diff(
+            &handle,
+            &mut rx,
+            StageDiffKey {
+                path: "dangling_link".into(),
+                old_path: None,
+                side: StageDiffSide::Staged,
+                context: DiffContext::Three,
+            },
+        )
+        .await;
+        assert!(diff.is_symlink);
+        assert!(diff.local_exists, "dangling symlink must not be treated as Missing");
+        assert_eq!(diff.local_bytes, b"nonexistent/target.txt");
+        assert_eq!(diff.staged_bytes, b"nonexistent/target.txt");
+        assert!(diff.mode_change.as_ref().is_some_and(|mc| mc.is_symlink));
+    } else {
+        // Fallback when Windows lacks symlink privilege: stage a 120000 entry via git plumbing
+        // so symlink diff metadata & ApplyStageBuffer rejection are still verified.
+        let hash_out = Command::new("git")
+            .args(["hash-object", "-w", "--stdin"])
+            .current_dir(dir)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        {
+            use std::io::Write;
+            let mut stdin = hash_out.stdin.as_ref().unwrap();
+            stdin.write_all(b"nonexistent/target.txt").unwrap();
+        }
+        let out = hash_out.wait_with_output().unwrap();
+        let blob_oid = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        git(
+            dir,
+            &[
+                "update-index",
+                "--add",
+                "--cacheinfo",
+                &format!("120000,{blob_oid},dangling_link"),
+            ],
+        );
+        let diff = fetch_stage_diff(
+            &handle,
+            &mut rx,
+            StageDiffKey {
+                path: "dangling_link".into(),
+                old_path: None,
+                side: StageDiffSide::Staged,
+                context: DiffContext::Three,
+            },
+        )
+        .await;
+        assert!(diff.is_symlink);
+        assert!(diff.mode_change.as_ref().is_some_and(|mc| mc.is_symlink));
+    }
+
+    // 2. Partial line-level ApplyStageBuffer on a symlink must be rejected cleanly.
+    let _ = handle.dispatch(TaskRequest::ApplyStageBuffer {
+        path: "dangling_link".into(),
+        new_staged_bytes: b"other/target.txt".to_vec(),
+        file_mode: GIT_MODE_SYMLINK,
+        remove_from_index: false,
+    });
+    let err = recv_matching(&mut rx, |ev| match ev {
+        EngineEvent::Error(msg) => Some(msg),
+        _ => None,
+    })
+    .await;
+    assert!(
+        err.to_lowercase().contains("symbolic link") || err.to_lowercase().contains("type change"),
+        "expected symlink rejection error, got: {err}"
+    );
+}
+
+#[tokio::test]
+async fn discard_targets_removes_collapsed_untracked_directory_and_blocks_escape() {
+    let tmp = TempDir::new().unwrap();
+    let dir = tmp.path().join("repo");
+    let outside = tmp.path().join("outside");
+    fs::create_dir_all(&dir).unwrap();
+    fs::create_dir_all(&outside).unwrap();
+    let outside_secret = outside.join("keep.txt");
+    fs::write(&outside_secret, "precious\n").unwrap();
+
+    git(&dir, &["init", "-b", "main"]);
+    fs::write(dir.join("init.txt"), "init\n").unwrap();
+    git(&dir, &["add", "."]);
+    git(&dir, &["commit", "-m", "init"]);
+
+    let nested_dir = dir.join("untracked_dir").join("sub");
+    fs::create_dir_all(&nested_dir).unwrap();
+    fs::write(nested_dir.join("a.txt"), "temp\n").unwrap();
+    fs::write(dir.join("untracked_dir").join("b.txt"), "temp2\n").unwrap();
+
+    // If the OS allows symlinks, place a link inside the untracked dir pointing to `outside`
+    // to verify recursive discard NEVER follows external links.
+    let link_inside = dir.join("untracked_dir").join("ext_link");
+    #[cfg(unix)]
+    let _ = std::os::unix::fs::symlink(&outside, &link_inside);
+    #[cfg(windows)]
+    let _ = std::os::windows::fs::symlink_dir(&outside, &link_inside);
+
+    let loc = RepoLocation::discover(&dir).unwrap();
+    let (handle, mut rx) = EngineSupervisor::start(loc, false).unwrap();
+
+    let _ = handle.dispatch(TaskRequest::DiscardTargets {
+        targets: vec![stage_target(
+            "untracked_dir/",
+            StageNodeKind::Untracked,
+            FileStatusKind::Untracked,
+        )],
+    });
+    wait_stage_mutation(&mut rx).await;
+    assert!(
+        !dir.join("untracked_dir").exists(),
+        "collapsed untracked directory must be completely removed"
+    );
+    assert!(
+        outside_secret.exists(),
+        "external file referenced via symlink must NEVER be deleted"
+    );
+
+    // Path traversal outside workdir must be rejected with an error.
+    let _ = handle.dispatch(TaskRequest::DiscardTargets {
+        targets: vec![stage_target(
+            "../outside/keep.txt",
+            StageNodeKind::Untracked,
+            FileStatusKind::Untracked,
+        )],
+    });
+    let err = recv_matching(&mut rx, |ev| match ev {
+        EngineEvent::Error(msg) => Some(msg),
+        _ => None,
+    })
+    .await;
+    assert!(err.contains("outside workdir"), "unexpected error: {err}");
+    assert!(outside_secret.exists());
+}
+
+#[tokio::test]
+async fn diff_surfaces_mode_only_permission_change_and_no_newline_at_eof() {
+    let tmp = TempDir::new().unwrap();
+    let dir = tmp.path();
+    git(dir, &["init", "-b", "main"]);
+    git(dir, &["config", "user.name", "Tester"]);
+    git(dir, &["config", "user.email", "tester@example.com"]);
+    git(dir, &["config", "core.autocrlf", "false"]);
+
+    fs::write(dir.join("script.sh"), "#!/bin/sh\necho hi\n").unwrap();
+    fs::write(dir.join("eof.txt"), "hello\n").unwrap();
+    git(dir, &["add", "."]);
+    git(dir, &["commit", "-m", "c1"]);
+
+    // 1. Pure mode change (100644 -> 100755) staged via git update-index (works cross-platform)
+    git(dir, &["update-index", "--chmod=+x", "script.sh"]);
+    // 2. Remove trailing newline only in worktree
+    fs::write(dir.join("eof.txt"), "hello").unwrap();
+
+    let loc = RepoLocation::discover(dir).unwrap();
+    let (handle, mut rx) = EngineSupervisor::start(loc, false).unwrap();
+
+    let mode_stage_diff = fetch_stage_diff(
+        &handle,
+        &mut rx,
+        StageDiffKey {
+            path: "script.sh".into(),
+            old_path: None,
+            side: StageDiffSide::Staged,
+            context: DiffContext::Three,
+        },
+    )
+    .await;
+    assert!(mode_stage_diff.hunks.is_empty());
+    assert_eq!(
+        mode_stage_diff.mode_change,
+        Some(FileModeChange {
+            old_mode: Some(GIT_MODE_REGULAR),
+            new_mode: Some(GIT_MODE_EXECUTABLE),
+            is_symlink: false,
+        })
+    );
+
+    let eof_stage_diff = fetch_stage_diff(
+        &handle,
+        &mut rx,
+        StageDiffKey {
+            path: "eof.txt".into(),
+            old_path: None,
+            side: StageDiffSide::Unstaged,
+            context: DiffContext::Three,
+        },
+    )
+    .await;
+    assert_eq!(eof_stage_diff.hunks.len(), 1);
+    assert!(
+        eof_stage_diff.hunks[0]
+            .hunk
+            .lines
+            .iter()
+            .any(|l| l.kind == DiffLineKind::NoNewline && l.text == NO_NEWLINE_LINE_TEXT),
+        "expected NoNewline marker line, got: {:?}",
+        eof_stage_diff.hunks[0].hunk.lines
+    );
+
+    // Commit both and verify FileDiff (Log view) also carries mode_change and NoNewline!
+    git(dir, &["add", "eof.txt"]);
+    git(dir, &["commit", "-m", "c2 mode and eof"]);
+    let c2 = rev(dir, "HEAD");
+
+    let bundle = fetch_commit_details(
+        &handle,
+        &mut rx,
+        RequestSlotId::LogCommitDetails,
+        DetailsKey::single(c2),
+    )
+    .await;
+    let script_change = bundle.changes.iter().find(|c| c.path == "script.sh").unwrap();
+    let mode_file_diff = fetch_file_diff(
+        &handle,
+        &mut rx,
+        RequestSlotId::LogFileDiff,
+        FileDiffKey {
+            details: DetailsKey::single(c2),
+            path: "script.sh".into(),
+            old_path: None,
+            context: DiffContext::Three,
+        },
+        Some((script_change.old_oid, script_change.new_oid)),
+    )
+    .await;
+    assert!(mode_file_diff.hunks.is_empty());
+    assert_eq!(
+        mode_file_diff.mode_change,
+        Some(FileModeChange {
+            old_mode: Some(GIT_MODE_REGULAR),
+            new_mode: Some(GIT_MODE_EXECUTABLE),
+            is_symlink: false,
+        })
+    );
+
+    let eof_file_diff = fetch_file_diff(
+        &handle,
+        &mut rx,
+        RequestSlotId::LogFileDiff,
+        FileDiffKey {
+            details: DetailsKey::single(c2),
+            path: "eof.txt".into(),
+            old_path: None,
+            context: DiffContext::Three,
+        },
+        None,
+    )
+    .await;
+    assert!(
+        eof_file_diff.hunks[0]
+            .lines
+            .iter()
+            .any(|l| l.kind == DiffLineKind::NoNewline && l.text == NO_NEWLINE_LINE_TEXT),
+        "Log FileDiff must include NoNewline marker line"
+    );
+}
+
+#[tokio::test]
+async fn stage_status_detects_copies_and_three_doc_diff_resolves_dual_stage_rename() {
+    let tmp = TempDir::new().unwrap();
+    let dir = tmp.path();
+    git(dir, &["init", "-b", "main"]);
+    git(dir, &["config", "user.name", "Tester"]);
+    git(dir, &["config", "user.email", "tester@example.com"]);
+    git(dir, &["config", "core.autocrlf", "false"]);
+
+    let orig_body = (1..=10)
+        .map(|i| format!("original line {i}\n"))
+        .collect::<String>();
+    let rename_body = (1..=10)
+        .map(|i| format!("rename payload {i}\n"))
+        .collect::<String>();
+    fs::write(dir.join("base.txt"), &orig_body).unwrap();
+    fs::write(dir.join("a.txt"), &rename_body).unwrap();
+    git(dir, &["add", "."]);
+    git(dir, &["commit", "-m", "initial"]);
+
+    // 1. Copy `base.txt` -> `copy.txt` and stage it
+    fs::write(dir.join("copy.txt"), &orig_body).unwrap();
+    git(dir, &["add", "copy.txt"]);
+
+    // 2. Dual-stage rename: `a.txt` (HEAD) -> `b.txt` (Staged, slight edit) -> `c.txt` (Local, slight edit)
+    git(dir, &["mv", "a.txt", "b.txt"]);
+    let staged_body = rename_body.replace("payload 2", "staged 2");
+    fs::write(dir.join("b.txt"), &staged_body).unwrap();
+    git(dir, &["add", "b.txt"]);
+    let local_body = staged_body.replace("payload 8", "local 8");
+    fs::remove_file(dir.join("b.txt")).unwrap();
+    fs::write(dir.join("c.txt"), &local_body).unwrap();
+
+    let loc = RepoLocation::discover(dir).unwrap();
+    let (handle, mut rx) = EngineSupervisor::start(loc, false).unwrap();
+
+    let status = fetch_stage_status(&handle, &mut rx, false).await;
+    let copy_entry = status
+        .staged
+        .iter()
+        .find(|e| e.path == "copy.txt")
+        .expect("copy.txt staged");
+    assert_eq!(copy_entry.kind, FileStatusKind::Copied);
+    assert_eq!(copy_entry.old_path.as_deref(), Some("base.txt"));
+
+    // Viewing Staged side (`b.txt`, old_path `a.txt`) must resolve Local from `c.txt` too!
+    let staged_diff = fetch_stage_diff(
+        &handle,
+        &mut rx,
+        StageDiffKey {
+            path: "b.txt".into(),
+            old_path: Some("a.txt".into()),
+            side: StageDiffSide::Staged,
+            context: DiffContext::Three,
+        },
+    )
+    .await;
+    assert_eq!(staged_diff.vcs_bytes, rename_body.as_bytes());
+    assert_eq!(staged_diff.staged_bytes, staged_body.as_bytes());
+    assert_eq!(staged_diff.local_bytes, local_body.as_bytes());
+
+    // Viewing Unstaged side (`c.txt`, old_path `b.txt`) must resolve HEAD from `a.txt` and Staged from `b.txt`!
+    let unstaged_diff = fetch_stage_diff(
+        &handle,
+        &mut rx,
+        StageDiffKey {
+            path: "c.txt".into(),
+            old_path: Some("b.txt".into()),
+            side: StageDiffSide::Unstaged,
+            context: DiffContext::Three,
+        },
+    )
+    .await;
+    assert_eq!(unstaged_diff.vcs_bytes, rename_body.as_bytes());
+    assert_eq!(unstaged_diff.staged_bytes, staged_body.as_bytes());
+    assert_eq!(unstaged_diff.local_bytes, local_body.as_bytes());
+}
+
+#[tokio::test]
+async fn apply_stage_buffer_runs_git_clean_filter_for_autocrlf() {
+    let tmp = TempDir::new().unwrap();
+    let dir = tmp.path();
+    git(dir, &["init", "-b", "main"]);
+    git(dir, &["config", "user.name", "Tester"]);
+    git(dir, &["config", "user.email", "tester@example.com"]);
+    git(dir, &["config", "core.autocrlf", "true"]);
+
+    fs::write(dir.join("crlf.txt"), "line1\r\nline2\r\n").unwrap();
+    git(dir, &["add", "crlf.txt"]);
+    git(dir, &["commit", "-m", "init"]);
+
+    let loc = RepoLocation::discover(dir).unwrap();
+    let (handle, mut rx) = EngineSupervisor::start(loc, false).unwrap();
+
+    let _ = handle.dispatch(TaskRequest::ApplyStageBuffer {
+        path: "crlf.txt".into(),
+        new_staged_bytes: b"line1\r\nline2_mod\r\n".to_vec(),
+        file_mode: GIT_MODE_REGULAR,
+        remove_from_index: false,
+    });
+    wait_stage_mutation(&mut rx).await;
+
+    let stored = git_output(dir, &["show", ":crlf.txt"]);
+    assert!(stored.status.success());
+    assert_eq!(
+        stored.stdout, b"line1\nline2_mod\n",
+        "ApplyStageBuffer must normalize CRLF via git hash-object --path when core.autocrlf=true"
+    );
 }

@@ -580,43 +580,59 @@ fn render_commit_options_row(
         area,
     );
     let chk = |on: bool| if on { "x" } else { " " };
+    let has_hooks = sw.precheck().has_commit_hooks;
+    let hooks_text = if has_hooks {
+        format!(" [{}] {} ", chk(sw.run_hooks()), ctx.t("view.commit.hooks"))
+    } else {
+        format!(" [-] {} ", ctx.t("view.commit.hooks_none"))
+    };
     let items = [
         (
             format!(" [{}] {} ", chk(sw.amend()), ctx.t("view.commit.amend_checkbox")),
             sw.amend(),
+            false,
             CommitOptionKind::Amend,
         ),
         (
             format!(" [{}] {} ", chk(sw.signoff()), ctx.t("view.commit.sign_off")),
             sw.signoff(),
+            false,
             CommitOptionKind::Signoff,
         ),
         (
-            format!(" [{}] {} ", chk(sw.run_hooks()), ctx.t("view.commit.hooks")),
-            sw.run_hooks(),
+            hooks_text,
+            has_hooks && sw.run_hooks(),
+            !has_hooks,
             CommitOptionKind::RunHooks,
         ),
         (
             format!(" {} ", ctx.t("view.commit.author")),
             sw.show_author_input(),
+            false,
             CommitOptionKind::AuthorToggle,
         ),
-        (" 🕘 ".to_string(), false, CommitOptionKind::History),
+        (" 🕘 ".to_string(), false, false, CommitOptionKind::History),
         (
             ctx.t("view.commit.external_editor_btn").to_string(),
+            false,
             false,
             CommitOptionKind::ExternalEditor,
         ),
     ];
 
     let mut x = area.x;
-    for (text, active, kind) in items {
+    for (text, active, disabled, kind) in items {
         let w = text.width() as u16;
         if x + w > area.right() {
             break;
         }
         let rect = Rect::new(x, area.y, w, 1);
-        let style = if active {
+        let style = if disabled {
+            Style::default()
+                .fg(ctx.theme.fg_muted)
+                .bg(ctx.theme.bg_panel)
+                .add_modifier(Modifier::DIM)
+        } else if active {
             Style::default()
                 .fg(ctx.theme.fg_bright)
                 .bg(ctx.theme.bg_selection_unfocused)

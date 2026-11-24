@@ -742,6 +742,7 @@ fn file_history_modal_end_to_end_renames_compare_navigation_and_scroll() {
         is_truncated: false,
         is_too_large: false,
         lfs: None,
+        mode_change: None,
     };
     ts.deliver_engine_event(EngineEvent::FileDiffLoaded {
         slot: jbgit_core::RequestSlotId::FileHistoryDiff,

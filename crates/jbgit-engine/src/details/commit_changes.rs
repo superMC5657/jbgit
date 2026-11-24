@@ -105,6 +105,7 @@ pub fn verify_commit_signatures_batch_sync(
 struct BlobVersion {
     path: Option<String>,
     oid: git2::Oid,
+    mode: Option<u32>,
 }
 
 #[derive(Clone)]
@@ -114,7 +115,14 @@ pub(super) struct ResolvedChange {
     pub(super) kind: FileStatusKind,
     pub(super) old_oid: git2::Oid,
     pub(super) new_oid: git2::Oid,
+    pub(super) old_mode: Option<u32>,
+    pub(super) new_mode: Option<u32>,
     pub(super) is_binary: bool,
+}
+
+fn file_mode_opt(file: &git2::DiffFile<'_>) -> Option<u32> {
+    let raw: u32 = file.mode().into();
+    (raw != 0).then_some(raw)
 }
 
 struct NetEntry {
@@ -148,6 +156,8 @@ fn diff_deltas_to_changes(
             kind,
             old_oid: delta.old_file().id(),
             new_oid: delta.new_file().id(),
+            old_mode: file_mode_opt(&delta.old_file()),
+            new_mode: file_mode_opt(&delta.new_file()),
             is_binary: delta.flags().is_binary(),
         });
     }
@@ -227,6 +237,8 @@ fn resolve_multi_commit_changes(
             let new_p = delta_path(delta.new_file());
             let old_id = delta.old_file().id();
             let new_id = delta.new_file().id();
+            let old_mode = file_mode_opt(&delta.old_file());
+            let new_mode = file_mode_opt(&delta.new_file());
             let is_bin = delta.flags().is_binary();
 
             let lookup = if delta.status() == Delta::Added {
@@ -242,6 +254,7 @@ fn resolve_multi_commit_changes(
                     prev.after = BlobVersion {
                         path: (!new_id.is_zero()).then(|| key_path.clone()),
                         oid: new_id,
+                        mode: new_mode,
                     };
                     prev.is_binary |= is_bin;
                     prev
@@ -250,10 +263,12 @@ fn resolve_multi_commit_changes(
                     before: BlobVersion {
                         path: (!old_id.is_zero()).then_some(old_p).flatten(),
                         oid: old_id,
+                        mode: old_mode,
                     },
                     after: BlobVersion {
                         path: (!new_id.is_zero()).then(|| key_path.clone()),
                         oid: new_id,
+                        mode: new_mode,
                     },
                     is_binary: is_bin,
                 },
@@ -264,7 +279,10 @@ fn resolve_multi_commit_changes(
 
     let mut out = Vec::new();
     for (key_path, entry) in entries {
-        if entry.before.oid == entry.after.oid && entry.before.path == entry.after.path {
+        if entry.before.oid == entry.after.oid
+            && entry.before.path == entry.after.path
+            && entry.before.mode == entry.after.mode
+        {
             continue;
         }
         let (kind, path, old_path) = if entry.before.oid.is_zero() {
@@ -291,6 +309,8 @@ fn resolve_multi_commit_changes(
             kind,
             old_oid: entry.before.oid,
             new_oid: entry.after.oid,
+            old_mode: entry.before.mode,
+            new_mode: entry.after.mode,
             is_binary: entry.is_binary,
         });
     }

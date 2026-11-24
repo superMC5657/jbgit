@@ -619,6 +619,7 @@ mod tests {
             is_truncated: false,
             is_too_large: false,
             lfs: None,
+            mode_change: None,
         })
     }
 

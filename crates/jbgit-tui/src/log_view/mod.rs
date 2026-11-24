@@ -113,6 +113,7 @@ mod tests {
             is_truncated: false,
             is_too_large: false,
             lfs: None,
+            mode_change: None,
         });
         let dr1 = d.diff.rows_cache.rows_for(&diff, false);
         let dr2 = d.diff.rows_cache.rows_for(&diff, false);

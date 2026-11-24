@@ -540,6 +540,64 @@ pub enum DiffLineKind {
     Context,
     Added,
     Deleted,
+    /// Trailing `\ No newline at end of file` indicator line (has no source line numbers).
+    NoNewline,
+}
+
+/// Text payload stored in `DiffLine::text` for [`DiffLineKind::NoNewline`] lines.
+/// Rendered immediately after the `\` 1-column marker so the visual output is
+/// `\ No newline at end of file`.
+pub const NO_NEWLINE_LINE_TEXT: &str = " No newline at end of file";
+
+/// Canonical Git tree/index object modes.
+pub const GIT_MODE_REGULAR: u32 = 0o100_644;
+pub const GIT_MODE_EXECUTABLE: u32 = 0o100_755;
+pub const GIT_MODE_SYMLINK: u32 = 0o120_000;
+pub const GIT_MODE_GITLINK: u32 = 0o160_000;
+
+/// File mode / object type metadata attached to a [`FileDiff`] or `ThreeDocStageDiff`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FileModeChange {
+    pub old_mode: Option<u32>,
+    pub new_mode: Option<u32>,
+    /// True when either side is a symbolic link (`0o120000`).
+    pub is_symlink: bool,
+}
+
+impl FileModeChange {
+    /// Builds mode/typechange metadata when the mode changed between sides or either
+    /// side is a symbolic link (`0o120000`). Returns `None` for ordinary regular files
+    /// whose mode did not change.
+    pub fn from_modes(old_mode: Option<u32>, new_mode: Option<u32>) -> Option<Self> {
+        let is_symlink = old_mode == Some(GIT_MODE_SYMLINK) || new_mode == Some(GIT_MODE_SYMLINK);
+        let mode_changed = matches!((old_mode, new_mode), (Some(a), Some(b)) if a != b);
+        if mode_changed || is_symlink {
+            Some(Self {
+                old_mode,
+                new_mode,
+                is_symlink,
+            })
+        } else {
+            None
+        }
+    }
+
+    pub const fn is_mode_changed(&self) -> bool {
+        matches!((self.old_mode, self.new_mode), (Some(a), Some(b)) if a != b)
+    }
+
+    /// True when the Git object type bits (`0o170000`) changed (e.g. regular file ↔ symlink).
+    pub const fn is_typechange(&self) -> bool {
+        match (self.old_mode, self.new_mode) {
+            (Some(a), Some(b)) => (a & 0o170_000) != (b & 0o170_000),
+            _ => false,
+        }
+    }
+
+    /// Formats a Git mode as 6-digit octal (e.g. `100644`, `100755`, `120000`).
+    pub fn format_mode(mode: u32) -> String {
+        format!("{mode:06o}")
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -671,6 +729,8 @@ pub struct FileDiff {
     pub is_too_large: bool,
     /// Git LFS pointer metadata when either side is an LFS pointer.
     pub lfs: Option<LfsDiff>,
+    /// File mode or object-type change / symlink metadata (e.g. `100644 → 100755`, `120000`).
+    pub mode_change: Option<FileModeChange>,
 }
 
 impl FileDiff {
@@ -693,28 +753,40 @@ pub fn side_by_side_rows(hunk: &DiffHunk) -> Vec<SideBySideRow> {
     let mut i = 0;
     while i < lines.len() {
         match lines[i].kind {
-            DiffLineKind::Context => {
+            DiffLineKind::Context | DiffLineKind::NoNewline => {
                 rows.push(SideBySideRow {
                     left: Some(i),
                     right: Some(i),
                 });
                 i += 1;
             }
-            _ => {
-                let del_start = i;
+            DiffLineKind::Deleted | DiffLineKind::Added => {
+                let mut lefts = Vec::new();
                 while i < lines.len() && lines[i].kind == DiffLineKind::Deleted {
+                    lefts.push(i);
                     i += 1;
                 }
-                let add_start = i;
+                if !lefts.is_empty() && i < lines.len() && lines[i].kind == DiffLineKind::NoNewline
+                {
+                    lefts.push(i);
+                    i += 1;
+                }
+                let mut rights = Vec::new();
                 while i < lines.len() && lines[i].kind == DiffLineKind::Added {
+                    rights.push(i);
                     i += 1;
                 }
-                let dels = add_start - del_start;
-                let adds = i - add_start;
-                for k in 0..dels.max(adds) {
+                if !rights.is_empty()
+                    && i < lines.len()
+                    && lines[i].kind == DiffLineKind::NoNewline
+                {
+                    rights.push(i);
+                    i += 1;
+                }
+                for k in 0..lefts.len().max(rights.len()) {
                     rows.push(SideBySideRow {
-                        left: (k < dels).then_some(del_start + k),
-                        right: (k < adds).then_some(add_start + k),
+                        left: lefts.get(k).copied(),
+                        right: rights.get(k).copied(),
                     });
                 }
             }
@@ -737,7 +809,13 @@ pub fn apply_word_diff_with_budget(hunk: &mut DiffHunk, pair_budget: &mut usize)
     let pairs: Vec<(usize, usize)> = side_by_side_rows(hunk)
         .into_iter()
         .filter_map(|r| match (r.left, r.right) {
-            (Some(l), Some(r)) if l != r => Some((l, r)),
+            (Some(l), Some(r))
+                if l != r
+                    && hunk.lines[l].kind == DiffLineKind::Deleted
+                    && hunk.lines[r].kind == DiffLineKind::Added =>
+            {
+                Some((l, r))
+            }
             _ => None,
         })
         .take(*pair_budget)
@@ -1077,6 +1155,7 @@ pub fn parse_unified_patch_hunks(patch: &str) -> Vec<DiffHunk> {
                 old_rem = old_rem.saturating_sub(1);
                 (o, None)
             }
+            DiffLineKind::NoNewline => (None, None),
         };
 
         if let Some(h) = current.as_mut() {
@@ -1404,5 +1483,56 @@ diff --cc src/lib.rs
         assert!(has_lfs_filter_in_gitattributes(
             "*.bin filter=lfs diff=lfs merge=lfs -text\n"
         ));
+    }
+
+    #[test]
+    fn file_mode_change_and_no_newline_side_by_side_alignment() {
+        assert_eq!(
+            FileModeChange::from_modes(Some(GIT_MODE_REGULAR), Some(GIT_MODE_REGULAR)),
+            None
+        );
+        let chmod = FileModeChange::from_modes(Some(GIT_MODE_REGULAR), Some(GIT_MODE_EXECUTABLE))
+            .expect("mode change");
+        assert!(chmod.is_mode_changed());
+        assert!(!chmod.is_typechange());
+        assert!(!chmod.is_symlink);
+        assert_eq!(FileModeChange::format_mode(GIT_MODE_EXECUTABLE), "100755");
+
+        let typechange = FileModeChange::from_modes(Some(GIT_MODE_REGULAR), Some(GIT_MODE_SYMLINK))
+            .expect("typechange");
+        assert!(typechange.is_mode_changed());
+        assert!(typechange.is_typechange());
+        assert!(typechange.is_symlink);
+
+        let sym_only = FileModeChange::from_modes(Some(GIT_MODE_SYMLINK), Some(GIT_MODE_SYMLINK))
+            .expect("symlink metadata");
+        assert!(!sym_only.is_mode_changed());
+        assert!(!sym_only.is_typechange());
+        assert!(sym_only.is_symlink);
+
+        let (hunks, _) =
+            crate::build_diff_hunks(b"alpha\n", b"alpha", 3, crate::MAX_DIFF_LINES, || false)
+                .unwrap();
+        assert_eq!(hunks.len(), 1);
+        assert_eq!(hunks[0].lines.len(), 3);
+        assert_eq!(hunks[0].lines[0].kind, DiffLineKind::Deleted);
+        assert_eq!(hunks[0].lines[1].kind, DiffLineKind::Added);
+        assert_eq!(hunks[0].lines[2].kind, DiffLineKind::NoNewline);
+        assert_eq!(hunks[0].lines[2].text, NO_NEWLINE_LINE_TEXT);
+
+        let rows = side_by_side_rows(&hunks[0]);
+        assert_eq!(
+            rows,
+            vec![
+                SideBySideRow {
+                    left: Some(0),
+                    right: Some(1)
+                },
+                SideBySideRow {
+                    left: None,
+                    right: Some(2)
+                },
+            ]
+        );
     }
 }

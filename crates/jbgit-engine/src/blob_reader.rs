@@ -4,19 +4,98 @@
 use std::fs;
 use std::path::Path;
 
-use git2::{AttrCheckFlags, ObjectType, Repository};
-use jbgit_core::{MAX_DIFF_FILE_BYTES, is_binary_bytes};
+use git2::{AttrCheckFlags, AttrValue, ObjectType, Repository};
+use jbgit_core::{
+    GIT_MODE_EXECUTABLE, GIT_MODE_REGULAR, GIT_MODE_SYMLINK, MAX_DIFF_FILE_BYTES, is_binary_bytes,
+};
+
+const ATTR_FLAGS: AttrCheckFlags = AttrCheckFlags::FILE_THEN_INDEX.union(AttrCheckFlags::NO_SYSTEM);
 
 /// Returns `true` when git attributes configure `filter=lfs` for `path`.
 pub(crate) fn path_has_lfs_filter(repo: &Repository, path: &str) -> bool {
-    repo.get_attr(
-        Path::new(path),
-        "filter",
-        AttrCheckFlags::FILE_THEN_INDEX | AttrCheckFlags::NO_SYSTEM,
-    )
-    .ok()
-    .flatten()
+    repo.get_attr(Path::new(path), "filter", ATTR_FLAGS)
+        .ok()
+        .flatten()
         == Some("lfs")
+}
+
+/// Returns `true` when staging `bytes` for `path` needs Git's clean-filter / EOL
+/// conversion pipeline (`git hash-object -w --stdin --path=<rel>`) rather than raw
+/// `index.add_frombuffer`.
+pub(crate) fn path_needs_git_clean_filter(repo: &Repository, path: &str, bytes: &[u8]) -> bool {
+    let rel = Path::new(path);
+    let attr = |name: &str| {
+        AttrValue::from_string(repo.get_attr(rel, name, ATTR_FLAGS).ok().flatten())
+    };
+
+    if matches!(attr("filter"), AttrValue::String(s) if !s.is_empty()) {
+        return true;
+    }
+    if matches!(attr("eol"), AttrValue::String(s) if !s.is_empty()) {
+        return true;
+    }
+    if matches!(attr("ident"), AttrValue::True) {
+        return true;
+    }
+    if matches!(attr("working-tree-encoding"), AttrValue::String(s) if !s.is_empty()) {
+        return true;
+    }
+
+    let has_crlf = bytes.windows(2).any(|w| w == b"\r\n");
+    if !has_crlf {
+        return false;
+    }
+
+    match attr("text") {
+        AttrValue::False => return false,
+        AttrValue::True | AttrValue::String(_) | AttrValue::Bytes(_) => return true,
+        AttrValue::Unspecified => {}
+    }
+
+    repo.config()
+        .ok()
+        .and_then(|c| c.get_string("core.autocrlf").ok())
+        .is_some_and(|v| v.eq_ignore_ascii_case("true") || v.eq_ignore_ascii_case("input"))
+}
+
+/// Resolves the effective worktree file mode, respecting `core.filemode = false` so
+/// regular files on Windows (or repos with `core.filemode = false`) do not report
+/// spurious `100755 → 100644` changes while preserving real typechanges (`120000`).
+pub(crate) fn effective_worktree_mode(
+    repo: &Repository,
+    worktree_mode: Option<u32>,
+    base_mode: Option<u32>,
+) -> Option<u32> {
+    let wt = worktree_mode?;
+    if wt != GIT_MODE_REGULAR && wt != GIT_MODE_EXECUTABLE {
+        return Some(wt);
+    }
+    let track_filemode = repo
+        .config()
+        .ok()
+        .and_then(|c| c.get_bool("core.filemode").ok())
+        .unwrap_or(cfg!(unix));
+    if !track_filemode
+        && let Some(base) = base_mode
+        && (base == GIT_MODE_REGULAR || base == GIT_MODE_EXECUTABLE)
+    {
+        return Some(base);
+    }
+    Some(wt)
+}
+
+/// Reads a symbolic link's raw target path bytes (without following the link).
+pub(crate) fn read_symlink_target_bytes(path: &Path) -> std::io::Result<Vec<u8>> {
+    let target = fs::read_link(path)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStrExt;
+        Ok(target.as_os_str().as_bytes().to_vec())
+    }
+    #[cfg(not(unix))]
+    {
+        Ok(target.to_string_lossy().replace('\\', "/").into_bytes())
+    }
 }
 
 pub(crate) enum CheckedBlob {
@@ -26,6 +105,7 @@ pub(crate) enum CheckedBlob {
         bytes: Vec<u8>,
         mode: Option<u32>,
         is_binary: bool,
+        is_symlink: bool,
     },
 }
 
@@ -35,6 +115,7 @@ impl CheckedBlob {
             bytes: Vec::new(),
             mode: None,
             is_binary: false,
+            is_symlink: false,
         }
     }
 
@@ -53,12 +134,23 @@ impl CheckedBlob {
         }
     }
 
+    pub(crate) fn is_symlink(&self) -> bool {
+        match self {
+            Self::Loaded { is_symlink, mode, .. } => {
+                *is_symlink || *mode == Some(GIT_MODE_SYMLINK)
+            }
+            Self::TooLarge { mode } => *mode == Some(GIT_MODE_SYMLINK),
+            Self::Missing => false,
+        }
+    }
+
     pub(crate) fn into_parts(self) -> (Option<Vec<u8>>, Option<u32>, bool) {
         match self {
             Self::Loaded {
                 bytes,
                 mode,
                 is_binary,
+                ..
             } => (Some(bytes), mode, is_binary),
             Self::TooLarge { mode } => (None, mode, false),
             Self::Missing => (None, None, false),
@@ -82,6 +174,7 @@ pub(crate) fn read_blob(repo: &Repository, oid: git2::Oid, mode: Option<u32>) ->
     if oid.is_zero() {
         return CheckedBlob::Missing;
     }
+    let is_symlink = mode == Some(GIT_MODE_SYMLINK);
     if let Ok(odb) = repo.odb()
         && let Ok((size, ObjectType::Blob)) = odb.read_header(oid)
         && size > MAX_DIFF_FILE_BYTES
@@ -94,17 +187,19 @@ pub(crate) fn read_blob(repo: &Repository, oid: git2::Oid, mode: Option<u32>) ->
                 return CheckedBlob::TooLarge { mode };
             }
             let content = blob.content();
-            let is_binary = is_binary_bytes(content);
+            let is_binary = !is_symlink && is_binary_bytes(content);
             CheckedBlob::Loaded {
                 bytes: content.to_vec(),
                 mode,
                 is_binary,
+                is_symlink,
             }
         }
         Err(_) => CheckedBlob::Loaded {
             bytes: Vec::new(),
             mode,
             is_binary: false,
+            is_symlink,
         },
     }
 }
@@ -156,20 +251,35 @@ pub(crate) fn read_index_entry(repo: &Repository, rel_path: &str) -> (CheckedBlo
 
 pub(crate) fn read_worktree_path(workdir: &Path, rel_path: &str) -> CheckedBlob {
     let full = workdir.join(rel_path);
-    let Ok(meta) = fs::metadata(&full) else {
+    let Ok(meta) = fs::symlink_metadata(&full) else {
         return CheckedBlob::Missing;
     };
+    if meta.file_type().is_symlink() {
+        let Ok(bytes) = read_symlink_target_bytes(&full) else {
+            return CheckedBlob::Missing;
+        };
+        return CheckedBlob::Loaded {
+            bytes,
+            mode: Some(GIT_MODE_SYMLINK),
+            is_binary: false,
+            is_symlink: true,
+        };
+    }
+    if meta.file_type().is_dir() {
+        return CheckedBlob::Missing;
+    }
+
     #[cfg(unix)]
     let mode = {
         use std::os::unix::fs::PermissionsExt;
         Some(if meta.permissions().mode() & 0o111 != 0 {
-            0o100755
+            GIT_MODE_EXECUTABLE
         } else {
-            0o100644
+            GIT_MODE_REGULAR
         })
     };
     #[cfg(not(unix))]
-    let mode = Some(0o100644);
+    let mode = Some(GIT_MODE_REGULAR);
 
     if meta.len() > MAX_DIFF_FILE_BYTES as u64 {
         return CheckedBlob::TooLarge { mode };
@@ -185,5 +295,6 @@ pub(crate) fn read_worktree_path(workdir: &Path, rel_path: &str) -> CheckedBlob 
         bytes,
         mode,
         is_binary,
+        is_symlink: false,
     }
 }

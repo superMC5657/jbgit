@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use jbgit_core::{DiffLine, DiffLineKind, FileDiff, PaneId};
+use jbgit_core::{DiffLine, DiffLineKind, FileDiff, FileModeChange, PaneId};
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
@@ -35,7 +35,64 @@ pub(crate) fn diff_line_style(theme: &ThemePalette, kind: DiffLineKind) -> (Styl
             theme.bg_canvas,
             " ",
         ),
+        DiffLineKind::NoNewline => (
+            Style::default()
+                .fg(theme.fg_muted)
+                .bg(theme.bg_panel)
+                .add_modifier(Modifier::ITALIC),
+            theme.bg_panel,
+            "\\",
+        ),
     }
+}
+
+/// Formats a localized metadata header banner for mode/typechange/symlink diffs
+/// (e.g. `mode 100644 → 100755`, `typechange 100644 → 120000 (symlink target)`,
+/// `symlink target (120000)`).
+pub(crate) fn format_mode_change_header(mc: &FileModeChange, ctx: &RenderContext<'_>) -> String {
+    let old_s = mc
+        .old_mode
+        .map(FileModeChange::format_mode)
+        .unwrap_or_else(|| "------".to_string());
+    let new_s = mc
+        .new_mode
+        .map(FileModeChange::format_mode)
+        .unwrap_or_else(|| "------".to_string());
+    if mc.is_typechange() {
+        if mc.is_symlink {
+            ctx.t_fmt(
+                "view.diff.typechange_symlink",
+                &[("old", &old_s), ("new", &new_s)],
+            )
+        } else {
+            ctx.t_fmt("view.diff.typechange", &[("old", &old_s), ("new", &new_s)])
+        }
+    } else if mc.is_mode_changed() {
+        ctx.t_fmt("view.diff.mode_change", &[("old", &old_s), ("new", &new_s)])
+    } else {
+        ctx.t("view.diff.symlink_target").to_string()
+    }
+}
+
+/// Renders a 1-row metadata header banner at `area` for file mode / symlink changes.
+pub(crate) fn render_mode_change_banner(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    mc: &FileModeChange,
+    ctx: &RenderContext<'_>,
+) {
+    let label = format!(" {} ", format_mode_change_header(mc, ctx));
+    frame.render_widget(
+        Paragraph::new(Span::styled(
+            truncate_to_width(&label, area.width as usize),
+            Style::default()
+                .fg(ctx.theme.ref_detached.pill_fg)
+                .bg(ctx.theme.bg_elevated)
+                .add_modifier(Modifier::BOLD),
+        ))
+        .style(Style::default().bg(ctx.theme.bg_elevated)),
+        area,
+    );
 }
 
 pub(crate) struct DiffLineRenderInput<'a> {
@@ -342,7 +399,24 @@ pub fn render_file_diff_body(
         frame.render_widget(muted_line(ctx, ctx.t("view.log_details.binary_diff")), body);
         return;
     }
-    if diff.hunks.is_empty() {
+    let mut body = body;
+    if let Some(mc) = &diff.mode_change {
+        let banner_rect = Rect::new(body.x, body.y, body.width, 1);
+        render_mode_change_banner(frame, banner_rect, mc, ctx);
+        if diff.hunks.is_empty() {
+            ctx.record_scroll_bound(scroll_pane, h, 0);
+            if body.height > 1 {
+                let hint_rect = Rect::new(body.x, body.y + 1, body.width, body.height - 1);
+                frame.render_widget(muted_line(ctx, ctx.t("view.diff.mode_only_hint")), hint_rect);
+            }
+            return;
+        }
+        if body.height <= 1 {
+            ctx.record_scroll_bound(scroll_pane, 0, 0);
+            return;
+        }
+        body = Rect::new(body.x, body.y + 1, body.width, body.height - 1);
+    } else if diff.hunks.is_empty() {
         ctx.record_scroll_bound(scroll_pane, h, 0);
         frame.render_widget(
             muted_line(ctx, ctx.t("view.log_details.no_text_diff")),
@@ -350,6 +424,7 @@ pub fn render_file_diff_body(
         );
         return;
     }
+    let h = body.height as usize;
 
     let rows = rows_cache.rows_for(diff, side_by_side);
     let mut total = rows.len();
