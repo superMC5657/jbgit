@@ -438,6 +438,26 @@ pub enum Action {
     SwitchRepositoryConfirmed(std::path::PathBuf),
     /// Remove a path from the recent repositories list.
     ForgetRecentRepo(std::path::PathBuf),
+    /// Open the Welcome modal for a non-Git directory.
+    OpenWelcome(std::path::PathBuf),
+    /// Move selection in the Welcome modal.
+    WelcomeSelect(usize),
+    /// Initialize a Git repository in the specified directory and bind to it.
+    WelcomeInitRepo(std::path::PathBuf),
+    /// Open the `Clone Repository…` modal (`base_dir` overrides the default parent).
+    OpenCloneRepo {
+        base_dir: Option<std::path::PathBuf>,
+    },
+    /// Mutate the active `Clone Repository…` modal form.
+    CloneRepoUpdate(crate::repo_lifecycle::CloneDialogAction),
+    /// Validate and launch `git clone` from the active `Clone Repository…` modal.
+    CloneRepoSubmit,
+    /// Resolve a pre-commit CRLF warning dialog (`Fix & Commit` / `Commit As Is` / `Don't warn again`).
+    CommitCrlfResolve {
+        request: CommitRequest,
+        fix_autocrlf: bool,
+        disable_warning: bool,
+    },
     /// `Working Trees` modal.
     OpenWorktrees,
     /// Move the Worktrees modal selection by a delta.

@@ -72,6 +72,10 @@ pub enum ModalLayer {
     Remotes(crate::remotes_view::RemotesState),
     /// Layer 2: repository switcher (recent repositories, worktrees, submodules).
     RepoSwitcher(Box<crate::repo_switcher::RepoSwitcherState>),
+    /// Layer 2: startup welcome modal for non-Git directories (`Init` / `Clone…` / `Open Recent`).
+    Welcome(crate::repo_lifecycle::WelcomeState),
+    /// Layer 2: `Clone Repository…` form and live progress modal.
+    CloneRepo(Box<crate::repo_lifecycle::CloneDialogState>),
     /// Layer 2: `git worktree` list (open / new / lock / remove / prune).
     Worktrees(crate::worktrees_view::WorktreesState),
     /// Layer 2: Apply Patch preflight (files, mode) and confirmation.
@@ -201,6 +205,8 @@ impl ModalLayer {
             | Self::PushDialog(_)
             | Self::Remotes(_)
             | Self::RepoSwitcher(_)
+            | Self::Welcome(_)
+            | Self::CloneRepo(_)
             | Self::Worktrees(_)
             | Self::ApplyPatch(_)
             | Self::TreeBrowser(_)

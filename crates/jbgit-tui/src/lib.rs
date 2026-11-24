@@ -18,6 +18,7 @@ mod log_view;
 mod menus;
 mod patch_view;
 mod remotes_view;
+pub mod repo_lifecycle;
 mod repo_switcher;
 pub mod session;
 mod stage_view;

@@ -79,8 +79,8 @@ pub(crate) fn check_patch_sync(
     if token.is_stale() {
         return Err(EngineError::Cancelled);
     }
-    let git = crate::cli::cached_git_executable().unwrap_or_else(|| Path::new("git"));
-    let mut cmd = non_interactive_std_command(git, Some(&loc.workdir));
+    let git = crate::cli::cached_git_executable().unwrap_or_else(|| std::path::PathBuf::from("git"));
+    let mut cmd = non_interactive_std_command(&git, Some(&loc.workdir));
     cmd.arg("--git-dir")
         .arg(&loc.git_dir)
         .arg("--work-tree")

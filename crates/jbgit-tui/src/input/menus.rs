@@ -297,6 +297,23 @@ pub fn route_overlay_and_stash_click(
             }
             out
         }
+        HitTarget::WelcomeItem(idx) => {
+            let mut out = vec![Action::WelcomeSelect(*idx)];
+            if let Some(ModalLayer::Welcome(ws)) = state.modal_stack.last() {
+                out.extend(ws.activate_index(*idx));
+            }
+            out
+        }
+        HitTarget::CloneField(field) => {
+            use crate::repo_lifecycle::{CloneDialogAction, CloneField};
+            let mut out = vec![Action::CloneRepoUpdate(CloneDialogAction::SetFocus(*field))];
+            if *field == CloneField::RecurseSubmodules {
+                out.push(Action::CloneRepoUpdate(CloneDialogAction::ToggleSubmodules));
+            }
+            out
+        }
+        HitTarget::CloneButton { submit: true } => vec![Action::CloneRepoSubmit],
+        HitTarget::CloneButton { submit: false } => vec![Action::PopModal],
         HitTarget::ApplyPatchMode(mode) => vec![Action::ApplyPatchSetMode(Some(*mode))],
         HitTarget::ApplyPatchButton { apply: true } => vec![Action::ApplyPatchConfirm],
         HitTarget::ApplyPatchButton { apply: false } => vec![Action::PopModal],

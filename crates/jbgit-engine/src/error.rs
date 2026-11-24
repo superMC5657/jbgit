@@ -7,8 +7,11 @@ pub enum EngineError {
     #[error("no git repository found at or above {0}")]
     RepoNotFound(PathBuf),
 
-    #[error("git executable not found in PATH")]
+    #[error("git executable not found in PATH or standard install directories")]
     GitNotFound,
+
+    #[error("configured git executable '{path}' is invalid: {detail}")]
+    InvalidGitExecutable { path: PathBuf, detail: String },
 
     #[error("git index lock conflict at {lock_path}: {detail}")]
     IndexLockConflict { lock_path: PathBuf, detail: String },

@@ -355,6 +355,48 @@ pub struct WorktreeSection {
     pub default_parent: Option<String>,
 }
 
+fn deserialize_opt_non_empty<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let raw = Option::<String>::deserialize(deserializer)?;
+    Ok(raw.filter(|s| !s.trim().is_empty()))
+}
+
+/// `[git]` — external `git` CLI executable override (Spec 13 Issue 13).
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct GitSection {
+    /// Explicit path to the `git` executable; empty / unset = auto-detect
+    /// via `PATH` and standard OS install directories.
+    #[serde(default, deserialize_with = "deserialize_opt_non_empty")]
+    pub executable: Option<String>,
+}
+
+impl GitSection {
+    /// Returns the trimmed non-empty override path, if configured.
+    pub fn configured_executable(&self) -> Option<&str> {
+        self.executable
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+    }
+}
+
+/// `[commit]` — commit pre-flight safety preferences (Spec 13 Issue 13).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CommitSection {
+    /// Warn before committing staged text files with CRLF line endings when
+    /// `core.autocrlf` is neither `true` nor `input`.
+    #[serde(default = "default_true")]
+    pub warn_crlf: bool,
+}
+
+impl Default for CommitSection {
+    fn default() -> Self {
+        Self { warn_crlf: true }
+    }
+}
+
 /// `[update] mode` — how Update Project integrates upstream changes.
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
@@ -426,6 +468,10 @@ impl Default for KeymapSection {
 pub struct JbgitConfig {
     #[serde(default)]
     pub general: GeneralSection,
+    #[serde(default)]
+    pub git: GitSection,
+    #[serde(default)]
+    pub commit: CommitSection,
     #[serde(default)]
     pub keymap: KeymapSection,
     #[serde(default)]
@@ -816,6 +862,16 @@ impl JbgitConfig {
                 self.general.flavor = flv.clone();
             }
         }
+        if let Some(git_sec) = &overlay.git
+            && let Some(exe) = &git_sec.executable
+        {
+            self.git.executable = Some(exe.clone()).filter(|s| !s.trim().is_empty());
+        }
+        if let Some(commit_sec) = &overlay.commit
+            && let Some(warn) = commit_sec.warn_crlf
+        {
+            self.commit.warn_crlf = warn;
+        }
         if let Some(km) = &overlay.keymap {
             if let Some(p) = &km.preset {
                 self.keymap.preset = p.clone();
@@ -968,6 +1024,8 @@ fn g_mode(v: Option<GlyphModePref>) -> Option<GlyphModePref> {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct JbgitConfigOverlay {
     pub general: Option<GeneralSectionOverlay>,
+    pub git: Option<GitSectionOverlay>,
+    pub commit: Option<CommitSectionOverlay>,
     pub keymap: Option<KeymapSectionOverlay>,
     pub graph: Option<GraphSectionOverlay>,
     pub log: Option<LogSectionOverlay>,
@@ -1008,6 +1066,16 @@ pub struct UpdateSectionOverlay {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct WorktreeSectionOverlay {
     pub default_parent: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct GitSectionOverlay {
+    pub executable: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct CommitSectionOverlay {
+    pub warn_crlf: Option<bool>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

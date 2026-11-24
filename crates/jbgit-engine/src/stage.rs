@@ -142,7 +142,7 @@ impl Default for CommitPrecheckInfo {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct CommitRequest {
     pub message: String,
     pub amend: bool,
@@ -152,6 +152,254 @@ pub struct CommitRequest {
     pub author_override: Option<String>,
     pub stage_all_tracked: bool,
     pub and_push: bool,
+    /// When `true`, run pre-commit CRLF detection (`detect_crlf_commit_problem_sync`)
+    /// and emit `EngineEvent::CommitCrlfWarning` instead of committing if risky files are found.
+    pub check_crlf: bool,
+    /// When `true`, set `git config core.autocrlf true` on the repository before committing.
+    pub fix_autocrlf: bool,
+}
+
+/// Staged/commit-candidate text files containing CRLF (`\r\n`) when `core.autocrlf`
+/// is not set to `true` or `input` (aligned with `GitCrlfProblemsDetector`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CrlfProblem {
+    pub files: Vec<String>,
+}
+
+/// Returns `true` when `core.autocrlf` already protects commits (`true` or `input`).
+pub fn autocrlf_prevents_crlf_warning(value: Option<&str>) -> bool {
+    value.is_some_and(|raw| {
+        let v = raw.trim();
+        v.eq_ignore_ascii_case("true") || v.eq_ignore_ascii_case("input")
+    })
+}
+
+/// Returns `true` when `.gitattributes` explicitly configures line-ending handling
+/// for a file (`text`, `crlf`, or `eol` attribute is set/unset/value rather than unspecified).
+pub fn gitattributes_handles_crlf(
+    text_attr: Option<&str>,
+    crlf_attr: Option<&str>,
+    eol_attr: Option<&str>,
+) -> bool {
+    let is_specified = |attr: Option<&str>| {
+        attr.is_some_and(|v| {
+            let t = v.trim();
+            !t.is_empty() && !t.eq_ignore_ascii_case("unspecified")
+        })
+    };
+    is_specified(eol_attr) || is_specified(text_attr) || is_specified(crlf_attr)
+}
+
+/// Returns `true` when `bytes` represents a non-binary, non-LFS text file containing `\r\n`.
+pub fn bytes_contain_crlf_text(bytes: &[u8]) -> bool {
+    if bytes.is_empty()
+        || jbgit_core::is_binary_bytes(bytes)
+        || parse_lfs_pointer(bytes).is_some()
+    {
+        return false;
+    }
+    bytes.windows(2).any(|w| w == b"\r\n")
+}
+
+/// Pre-commit CRLF risk detector (aligned with IntelliJ `GitCrlfProblemsDetector`).
+///
+/// Only checks when `core.autocrlf` is neither `true` nor `input`. Inspects staged
+/// text files (plus tracked modified files when `stage_all_tracked` is true), skipping
+/// binary files, LFS pointers, symlinks, submodules, and files whose `.gitattributes`
+/// explicitly specifies `text`, `crlf`, or `eol`.
+pub fn detect_crlf_commit_problem_sync(
+    location: &RepoLocation,
+    stage_all_tracked: bool,
+) -> Result<Option<CrlfProblem>, EngineError> {
+    const MAX_CRLF_SCAN_FILES: usize = 500;
+    with_thread_repo(&location.git_dir, |repo| {
+        let autocrlf = repo
+            .config()
+            .ok()
+            .and_then(|c| c.get_string("core.autocrlf").ok());
+        if autocrlf_prevents_crlf_warning(autocrlf.as_deref()) {
+            return Ok(None);
+        }
+
+        let mut candidates: Vec<(String, bool)> = Vec::new(); // (path, read_from_workdir)
+        let mut seen = std::collections::HashSet::new();
+
+        // 1. Staged changes: HEAD -> Index
+        let head_tree = repo.head().ok().and_then(|h| h.peel_to_tree().ok());
+        let mut staged_opts = DiffOptions::new();
+        staged_opts.include_typechange(true);
+        let staged_diff = repo.diff_tree_to_index(head_tree.as_ref(), None, Some(&mut staged_opts))?;
+        for delta in staged_diff.deltas() {
+            if matches!(
+                delta.status(),
+                Delta::Added | Delta::Modified | Delta::Copied | Delta::Renamed
+            ) && let Some(path) = delta.new_file().path()
+            {
+                let p = path.to_string_lossy().replace('\\', "/");
+                if seen.insert(p.clone()) {
+                    candidates.push((p, false));
+                }
+            }
+        }
+
+        // 2. If committing with `stage_all_tracked`, also check tracked worktree modifications.
+        if stage_all_tracked {
+            let mut wt_opts = DiffOptions::new();
+            wt_opts.include_typechange(true);
+            let wt_diff = repo.diff_index_to_workdir(None, Some(&mut wt_opts))?;
+            for delta in wt_diff.deltas() {
+                if matches!(delta.status(), Delta::Modified | Delta::Renamed | Delta::Copied)
+                    && let Some(path) = delta.new_file().path()
+                {
+                    let p = path.to_string_lossy().replace('\\', "/");
+                    if seen.insert(p.clone()) {
+                        candidates.push((p, true));
+                    } else if let Some(entry) = candidates.iter_mut().find(|(ep, _)| ep == &p) {
+                        entry.1 = true;
+                    }
+                }
+            }
+        }
+
+        let mut crlf_files = Vec::new();
+        let attr_flags = git2::AttrCheckFlags::FILE_THEN_INDEX;
+        for (path, from_workdir) in candidates.into_iter().take(MAX_CRLF_SCAN_FILES) {
+            let rel = Path::new(&path);
+            let text_attr = repo.get_attr(rel, "text", attr_flags).ok().flatten();
+            let crlf_attr = repo.get_attr(rel, "crlf", attr_flags).ok().flatten();
+            let eol_attr = repo.get_attr(rel, "eol", attr_flags).ok().flatten();
+            if gitattributes_handles_crlf(text_attr, crlf_attr, eol_attr)
+                || path_has_lfs_filter(repo, &path)
+            {
+                continue;
+            }
+            let blob = if from_workdir {
+                read_worktree_path(&location.workdir, &path)
+            } else {
+                read_index_entry(repo, &path).0
+            };
+            if blob.mode() == Some(GIT_MODE_SYMLINK) || blob.mode() == Some(GIT_MODE_GITLINK) {
+                continue;
+            }
+            let (bytes_opt, _, is_bin) = blob.into_parts();
+            if is_bin {
+                continue;
+            }
+            if let Some(bytes) = bytes_opt
+                && bytes_contain_crlf_text(&bytes)
+            {
+                crlf_files.push(path);
+            }
+        }
+
+        if crlf_files.is_empty() {
+            Ok(None)
+        } else {
+            crlf_files.sort();
+            Ok(Some(CrlfProblem { files: crlf_files }))
+        }
+    })
+}
+
+/// Sets `core.autocrlf = true` in the repository's local Git configuration.
+pub fn set_core_autocrlf_true_sync(location: &RepoLocation) -> Result<(), EngineError> {
+    with_thread_repo(&location.git_dir, |repo| {
+        let mut cfg = repo.config()?.open_level(git2::ConfigLevel::Local)?;
+        cfg.set_bool("core.autocrlf", true)?;
+        Ok(())
+    })
+}
+
+/// Re-normalizes already-staged CRLF index blobs through `git hash-object --path`
+/// after `core.autocrlf = true` has been enabled, preserving partial/hunk staging
+/// without touching unstaged working-tree edits.
+pub(crate) fn renormalize_staged_crlf_entries_sync(
+    location: &RepoLocation,
+) -> Result<(), EngineError> {
+    with_thread_repo(&location.git_dir, |repo| {
+        let mut index = repo.index()?;
+        index.read(true)?;
+
+        let head_tree = repo.head().ok().and_then(|h| h.peel_to_tree().ok());
+        let mut staged_opts = DiffOptions::new();
+        staged_opts.include_typechange(true);
+        let staged_diff =
+            repo.diff_tree_to_index(head_tree.as_ref(), Some(&index), Some(&mut staged_opts))?;
+
+        let mut paths = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        for delta in staged_diff.deltas() {
+            if matches!(
+                delta.status(),
+                Delta::Added | Delta::Modified | Delta::Copied | Delta::Renamed
+            ) && let Some(path) = delta.new_file().path()
+            {
+                let p = path.to_string_lossy().replace('\\', "/");
+                if seen.insert(p.clone()) {
+                    paths.push(p);
+                }
+            }
+        }
+
+        let attr_flags = git2::AttrCheckFlags::FILE_THEN_INDEX;
+        let mut dirty = false;
+        for path in paths {
+            let rel = Path::new(&path);
+            let text_attr = repo.get_attr(rel, "text", attr_flags).ok().flatten();
+            let crlf_attr = repo.get_attr(rel, "crlf", attr_flags).ok().flatten();
+            let eol_attr = repo.get_attr(rel, "eol", attr_flags).ok().flatten();
+            if gitattributes_handles_crlf(text_attr, crlf_attr, eol_attr)
+                || path_has_lfs_filter(repo, &path)
+            {
+                continue;
+            }
+            let Some(mut entry) = index.get_path(rel, 0) else {
+                continue;
+            };
+            if entry.mode == GIT_MODE_SYMLINK || entry.mode == GIT_MODE_GITLINK {
+                continue;
+            }
+            let Ok(blob) = repo.find_blob(entry.id) else {
+                continue;
+            };
+            let content = blob.content();
+            if !bytes_contain_crlf_text(content) {
+                continue;
+            }
+
+            let new_oid = match hash_object_with_filters(location, &path, content) {
+                Ok(oid) => oid,
+                Err(_) => {
+                    // Fallback when external `git` CLI is unavailable: normalize CRLF -> LF directly.
+                    let mut normalized = Vec::with_capacity(content.len());
+                    let mut i = 0;
+                    while i < content.len() {
+                        if i + 1 < content.len() && content[i] == b'\r' && content[i + 1] == b'\n' {
+                            normalized.push(b'\n');
+                            i += 2;
+                        } else {
+                            normalized.push(content[i]);
+                            i += 1;
+                        }
+                    }
+                    repo.blob(&normalized)?
+                }
+            };
+            if new_oid != entry.id {
+                entry.id = new_oid;
+                entry.ctime = IndexTime::new(0, 0);
+                entry.mtime = IndexTime::new(0, 0);
+                entry.file_size = 0;
+                index.add(&entry)?;
+                dirty = true;
+            }
+        }
+
+        if dirty {
+            index.write()?;
+        }
+        Ok(())
+    })
 }
 
 #[derive(Debug, Clone)]
@@ -750,8 +998,8 @@ fn hash_object_with_filters(
     rel_path: &str,
     bytes: &[u8],
 ) -> Result<git2::Oid, EngineError> {
-    let git = crate::cli::cached_git_executable().unwrap_or_else(|| Path::new("git"));
-    let mut cmd = crate::cli::non_interactive_std_command(git, Some(&location.workdir));
+    let git = crate::cli::cached_git_executable().unwrap_or_else(|| std::path::PathBuf::from("git"));
+    let mut cmd = crate::cli::non_interactive_std_command(&git, Some(&location.workdir));
     cmd.args(["hash-object", "-w", "--stdin", "--path", rel_path])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -1744,5 +1992,37 @@ mod tests {
             ),
             "Fix crash\n\nSigned-off-by: Bob <bob@example.com>\nSigned-off-by: Alice <alice@example.com>\n"
         );
+    }
+
+    #[test]
+    fn crlf_pure_helpers_respect_autocrlf_binary_lfs_and_gitattributes() {
+        // core.autocrlf handling
+        assert!(autocrlf_prevents_crlf_warning(Some("true")));
+        assert!(autocrlf_prevents_crlf_warning(Some("TRUE")));
+        assert!(autocrlf_prevents_crlf_warning(Some("input")));
+        assert!(!autocrlf_prevents_crlf_warning(Some("false")));
+        assert!(!autocrlf_prevents_crlf_warning(Some("")));
+        assert!(!autocrlf_prevents_crlf_warning(None));
+
+        // bytes_contain_crlf_text detects CRLF text, skips LF-only, binary, and LFS pointers
+        assert!(bytes_contain_crlf_text(b"hello\r\nworld\r\n"));
+        assert!(!bytes_contain_crlf_text(b"hello\nworld\n"));
+        assert!(!bytes_contain_crlf_text(b"binary\0payload\r\n"));
+        let lfs_ptr = b"version https://git-lfs.github.com/spec/v1\r\noid sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\r\nsize 42\r\n";
+        assert!(!bytes_contain_crlf_text(lfs_ptr));
+
+        // gitattributes_handles_crlf skips files with explicit text/crlf/eol attributes
+        assert!(gitattributes_handles_crlf(Some("auto"), None, None));
+        assert!(gitattributes_handles_crlf(Some("set"), None, None));
+        assert!(gitattributes_handles_crlf(Some("unset"), None, None));
+        assert!(gitattributes_handles_crlf(None, Some("input"), None));
+        assert!(gitattributes_handles_crlf(None, None, Some("crlf")));
+        assert!(gitattributes_handles_crlf(None, None, Some("lf")));
+        assert!(!gitattributes_handles_crlf(None, None, None));
+        assert!(!gitattributes_handles_crlf(
+            Some("unspecified"),
+            Some("unspecified"),
+            Some("unspecified"),
+        ));
     }
 }

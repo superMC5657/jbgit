@@ -62,7 +62,8 @@ const COMMIT_EDITOR_ACTIONS: [KeyAction; 5] = [
     KeyAction::CommitHistory,
 ];
 
-const ADVANCED_TOOL_ACTIONS: [(&KeyAction, &str); 6] = [
+const ADVANCED_TOOL_ACTIONS: [(&KeyAction, &str); 7] = [
+    (&KeyAction::CloneRepository, "—"),
     (&KeyAction::Palette, "—"),
     (&KeyAction::ToggleGlyphMode, "F12"),
     (&KeyAction::CycleGraphRenderer, "F8"),
@@ -369,6 +370,7 @@ pub fn is_action_applicable(run: &KeyAction, state: &AppState) -> bool {
         | KeyAction::UpdateProject
         | KeyAction::ConfigureRemotes
         | KeyAction::SwitchRepository
+        | KeyAction::CloneRepository
         // Stays visible on git < 2.17 so `?` documents the requirement;
         // running it explains instead of opening the modal.
         | KeyAction::Worktrees
@@ -604,6 +606,7 @@ pub fn execute_action(run: &KeyAction, state: &AppState) -> Option<Vec<Action>> 
         KeyAction::GitPullDialog => Some(vec![Action::PromptPull]),
         KeyAction::GitRebaseDialog => Some(vec![Action::PromptRebase { onto: None }]),
         KeyAction::SwitchRepository => Some(vec![Action::OpenRepoSwitcher]),
+        KeyAction::CloneRepository => Some(vec![Action::OpenCloneRepo { base_dir: None }]),
         KeyAction::ApplyPatch => Some(notice_on_err(apply_patch_command(state, false))),
         KeyAction::ApplyPatchClipboard => Some(notice_on_err(apply_patch_command(state, true))),
         KeyAction::BrowseRevision => Some(notice_on_err(browse_revision_command(state))),

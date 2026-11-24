@@ -152,6 +152,8 @@ fn route_modal_key(key: KeyEvent, state: &AppState) -> Vec<Action> {
         ModalLayer::PushDialog(_) => route_push_dialog_key(&key, state),
         ModalLayer::Remotes(_) => crate::remotes_view::route_remotes_key(&key, state),
         ModalLayer::RepoSwitcher(_) => crate::repo_switcher::route_repo_switcher_key(&key, state),
+        ModalLayer::Welcome(_) => crate::repo_lifecycle::route_welcome_key(&key, state),
+        ModalLayer::CloneRepo(_) => crate::repo_lifecycle::route_clone_repo_key(&key, state),
         ModalLayer::Worktrees(_) => crate::worktrees_view::route_worktrees_key(&key, state),
         ModalLayer::ApplyPatch(_) => crate::patch_view::route_apply_patch_key(&key, state),
         ModalLayer::TreeBrowser(_) => crate::tree_browser::route_tree_browser_key(&key, state),

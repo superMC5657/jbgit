@@ -232,13 +232,25 @@ fn render_command_output(
     let visible_h = area.height as usize;
     let Some(entry) = state.console.selected_entry() else {
         ctx.record_scroll_bound(ScrollPane::ConsoleOutput, visible_h, 0);
-        frame.render_widget(
-            Paragraph::new(Span::styled(
-                state.i18n.t("view.console.select_prompt"),
-                Style::default().fg(ctx.theme.fg_muted),
-            )),
-            area,
-        );
+        let mut lines = vec![Line::from(Span::styled(
+            state.i18n.t("view.console.select_prompt"),
+            Style::default().fg(ctx.theme.fg_muted),
+        ))];
+        if let Some((summary, is_err)) = state.git_executable_summary() {
+            lines.push(Line::from(""));
+            let style = if is_err {
+                Style::default()
+                    .fg(ctx.theme.status_conflicted)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(ctx.theme.fg_primary)
+            };
+            lines.push(Line::from(Span::styled(
+                format!(" {}", truncate_to_width(&summary, area.width.saturating_sub(1) as usize)),
+                style,
+            )));
+        }
+        frame.render_widget(Paragraph::new(lines), area);
         return;
     };
 

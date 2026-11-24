@@ -191,6 +191,9 @@ impl AppState {
                             ed.insert_text(&text);
                         }
                     }
+                    ModalLayer::CloneRepo(cd) => {
+                        cd.apply(crate::repo_lifecycle::CloneDialogAction::Paste(text));
+                    }
                     ModalLayer::Dialog(d) => match d.as_mut() {
                         crate::dialogs::Dialog::Credential(c) => c.push_str(&text),
                         crate::dialogs::Dialog::Input(inp) => {
@@ -544,6 +547,24 @@ impl AppState {
                 self.stage_workbench.begin_commit_confirmed();
                 effects.push(Effect::ExecuteCommit(req));
             }
+            Action::CommitCrlfResolve {
+                mut request,
+                fix_autocrlf,
+                disable_warning,
+            } => {
+                if disable_warning {
+                    self.config.jbgit.commit.warn_crlf = false;
+                    let workdir = self.current_workdir();
+                    if self.repo_snapshot.is_some() && workdir.is_dir() {
+                        let _ =
+                            crate::config::AppConfig::persist_repo_commit_warn_crlf(&workdir, false);
+                    }
+                }
+                request.check_crlf = false;
+                request.fix_autocrlf = fix_autocrlf;
+                self.stage_workbench.begin_commit_confirmed();
+                effects.push(Effect::ExecuteCommit(request));
+            }
             Action::RetryCliCommand {
                 args,
                 stdin_payload,
@@ -650,6 +671,7 @@ impl AppState {
                     let mut cctx = crate::stage_view::CommitContext {
                         snap: snap.as_deref(),
                         default_remote: &default_remote,
+                        warn_crlf: self.config.jbgit.commit.warn_crlf,
                         i18n: &self.i18n,
                         now,
                         focused_pane: &mut self.focused_pane,

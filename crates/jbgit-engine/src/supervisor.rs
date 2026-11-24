@@ -305,6 +305,12 @@ pub enum EngineEvent {
     CommitPrecheckLoaded {
         info: CommitPrecheckInfo,
     },
+    /// Pre-commit CRLF warning: commit was paused so the user can choose Fix & Commit,
+    /// Commit As Is, or Don't Warn Again.
+    CommitCrlfWarning {
+        request: CommitRequest,
+        files: Vec<String>,
+    },
     CommitCompleted(CommitOutcome),
     UndoCommitCompleted {
         restored_message: String,
@@ -615,14 +621,36 @@ impl EngineSupervisor {
         scan_config: StatusScanConfig,
         askpass: Option<AskpassEnv>,
     ) -> Result<(EngineHandle, UnboundedReceiver<EngineEvent>), EngineError> {
+        Self::start_with_options(location, enable_watcher, scan_config, askpass, None)
+    }
+
+    /// Full supervisor startup honoring explicit `[git] executable` configuration.
+    pub fn start_with_options(
+        location: RepoLocation,
+        enable_watcher: bool,
+        scan_config: StatusScanConfig,
+        askpass: Option<AskpassEnv>,
+        git_executable: Option<String>,
+    ) -> Result<(EngineHandle, UnboundedReceiver<EngineEvent>), EngineError> {
         let slots = SlotRegistry::new();
         let pool = Arc::new(Git2WorkerPool::new(4));
-        let cli = GitCliExecutor::detect().ok();
+        let cli_res = GitCliExecutor::detect_with_executable(git_executable.as_deref());
+        let (cli, cli_error) = match cli_res {
+            Ok(exec) => (Some(exec), None),
+            Err(e) => (None, Some(e.to_string())),
+        };
         let git_info = cli.as_ref().map(GitCliExecutor::info);
         let mutation_guard = Arc::new(MutationGuard::new());
 
         let (task_tx, mut task_rx) = mpsc::unbounded_channel::<ScheduledTask>();
         let (event_tx, event_rx) = mpsc::unbounded_channel::<EngineEvent>();
+        if let Some(err) = cli_error
+            && git_executable
+                .as_deref()
+                .is_some_and(|s| !s.trim().is_empty())
+        {
+            let _ = event_tx.send(EngineEvent::Error(err));
+        }
 
         let watcher = if enable_watcher {
             let ev_tx = event_tx.clone();
@@ -1298,8 +1326,94 @@ fn spawn_execute_commit(ctx: &SupervisorContext, id: u64, request: CommitRequest
     let loc = ctx.location.clone();
     let tx = ctx.event_tx.clone();
     let guard = Arc::clone(&ctx.mutation_guard);
+    let op_ids = Arc::clone(&ctx.op_ids);
     tokio::spawn(async move {
         let permit = guard.acquire().await;
+        if request.check_crlf {
+            let loc_crlf = loc.clone();
+            let stage_all = request.stage_all_tracked;
+            if let Ok(Some(problem)) = pool
+                .run_with(TaskPriority::Interactive, move || {
+                    crate::stage::detect_crlf_commit_problem_sync(&loc_crlf, stage_all)
+                })
+                .await
+            {
+                drop(permit);
+                let _ = tx.send(EngineEvent::CommitCrlfWarning {
+                    request,
+                    files: problem.files,
+                });
+                return;
+            }
+        }
+        if request.fix_autocrlf {
+            let fixed = if let Some(cli) = cli_exec.as_ref() {
+                let cfg_id = op_ids.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                let args = vec![
+                    "config".to_string(),
+                    "core.autocrlf".to_string(),
+                    "true".to_string(),
+                ];
+                let fwd = tx.clone();
+                cli.execute(
+                    CliCommand {
+                        id: cfg_id,
+                        workdir: &loc.workdir,
+                        git_dir: &loc.git_dir,
+                        args: &args,
+                        stdin_payload: None,
+                        is_read_only: false,
+                        env: &[],
+                    },
+                    move |ev| forward_cli_event(&fwd, ev),
+                )
+                .await
+                .map(|o| o.exit_code == 0)
+                .unwrap_or(false)
+            } else {
+                false
+            };
+            if !fixed {
+                let loc_fix = loc.clone();
+                if let Err(e) = pool
+                    .run_with(TaskPriority::Interactive, move || {
+                        crate::stage::set_core_autocrlf_true_sync(&loc_fix)
+                    })
+                    .await
+                {
+                    drop(permit);
+                    let _ = tx.send(EngineEvent::CommitCompleted(CommitOutcome {
+                        success: false,
+                        commit_oid: None,
+                        short_sha: None,
+                        summary: "Failed to set core.autocrlf".to_string(),
+                        error_output: Some(e.to_string()),
+                        and_push: false,
+                        preserved_message: Some(request.message),
+                    }));
+                    return;
+                }
+            }
+            let loc_norm = loc.clone();
+            if let Err(e) = pool
+                .run_with(TaskPriority::Interactive, move || {
+                    crate::stage::renormalize_staged_crlf_entries_sync(&loc_norm)
+                })
+                .await
+            {
+                drop(permit);
+                let _ = tx.send(EngineEvent::CommitCompleted(CommitOutcome {
+                    success: false,
+                    commit_oid: None,
+                    short_sha: None,
+                    summary: "Failed to normalize staged CRLF entries".to_string(),
+                    error_output: Some(e.to_string()),
+                    and_push: false,
+                    preserved_message: Some(request.message),
+                }));
+                return;
+            }
+        }
         let loc_pre = loc.clone();
         let precheck = pool
             .run_with(TaskPriority::Interactive, move || {

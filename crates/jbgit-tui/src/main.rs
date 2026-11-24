@@ -112,7 +112,7 @@ async fn switch_repository(
             return;
         }
     };
-    if jbgit_core::same_path(&loc.workdir, &session.current_workdir()) {
+    if repo.handle.is_some() && jbgit_core::same_path(&loc.workdir, &session.current_workdir()) {
         session.report_repo_already_open(target);
         return;
     }
@@ -252,6 +252,67 @@ async fn main() -> Result<()> {
         }
 
         session.finish_batch(batch_effects, engine_ref, &mut host, &mut report);
+
+        if let Some(init_dir) = session.take_init_repo_request() {
+            let dir_for_task = init_dir.clone();
+            let git_exe = session
+                .state()
+                .config
+                .jbgit
+                .git
+                .configured_executable()
+                .map(str::to_string);
+            match tokio::task::spawn_blocking(move || {
+                jbgit_engine::init_repository_sync(&dir_for_task, git_exe.as_deref())
+            })
+            .await
+            {
+                Ok(Ok(loc)) => {
+                    switch_repository(&mut session, &mut repo, &mut host, &loc.workdir).await;
+                }
+                Ok(Err(e)) => {
+                    let _ = host
+                        .ui_async_tx
+                        .send(SessionInput::UiAsync(UiAsyncEvent::InitRepoFailed(
+                            e.to_string(),
+                        )));
+                }
+                Err(e) => {
+                    let _ = host
+                        .ui_async_tx
+                        .send(SessionInput::UiAsync(UiAsyncEvent::InitRepoFailed(
+                            e.to_string(),
+                        )));
+                }
+            }
+        }
+
+        if let Some(clone_req) = session.take_clone_repo_request() {
+            let askpass_env = repo.askpass_env();
+            let git_exe = session
+                .state()
+                .config
+                .jbgit
+                .git
+                .configured_executable()
+                .map(str::to_string);
+            let ui_tx = host.ui_async_tx.clone();
+            tokio::spawn(async move {
+                let ui_prog_tx = ui_tx.clone();
+                let result = jbgit_engine::clone_repository_async(
+                    clone_req,
+                    git_exe.as_deref(),
+                    askpass_env.as_ref(),
+                    move |line| {
+                        let _ = ui_prog_tx
+                            .send(SessionInput::UiAsync(UiAsyncEvent::CloneProgress(line)));
+                    },
+                )
+                .await
+                .map_err(|e| e.to_string());
+                let _ = ui_tx.send(SessionInput::UiAsync(UiAsyncEvent::CloneFinished(result)));
+            });
+        }
 
         if let Some(target) = session.take_repo_switch_request() {
             switch_repository(&mut session, &mut repo, &mut host, &target).await;

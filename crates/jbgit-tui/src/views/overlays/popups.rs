@@ -157,10 +157,13 @@ fn render_shortcuts_help_popup(
     if inner.width < 12 || inner.height < 4 {
         return;
     }
+    let git_summary = state.git_executable_summary();
+    let has_git_row = git_summary.is_some() && inner.height >= 6;
     let search_rect = Rect::new(inner.x, inner.y, inner.width, 1);
     let div_rect = Rect::new(inner.x, inner.y + 1, inner.width, 1);
-    let list_h = inner.height.saturating_sub(3);
+    let list_h = inner.height.saturating_sub(if has_git_row { 4 } else { 3 });
     let list_rect = Rect::new(inner.x, inner.y + 2, inner.width, list_h);
+    let git_rect = Rect::new(inner.x, inner.y + inner.height.saturating_sub(2), inner.width, 1);
     let foot_rect = Rect::new(inner.x, inner.y + inner.height - 1, inner.width, 1);
 
     let prompt_prefix = " > ";
@@ -347,6 +350,27 @@ fn render_shortcuts_help_popup(
         frame.render_widget(
             Paragraph::new(lines).style(Style::default().bg(ctx.theme.bg_elevated)),
             list_rect,
+        );
+    }
+
+    if has_git_row && let Some((summary, is_err)) = git_summary {
+        let style = if is_err {
+            Style::default()
+                .fg(ctx.theme.status_conflicted)
+                .bg(ctx.theme.bg_panel)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default()
+                .fg(ctx.theme.fg_primary)
+                .bg(ctx.theme.bg_panel)
+        };
+        let git_line = Line::from(Span::styled(
+            truncate_display_width(&format!(" {summary}"), inner.width as usize),
+            style,
+        ));
+        frame.render_widget(
+            Paragraph::new(git_line).style(Style::default().bg(ctx.theme.bg_panel)),
+            git_rect,
         );
     }
 

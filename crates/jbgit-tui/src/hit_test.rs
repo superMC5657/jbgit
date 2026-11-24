@@ -337,6 +337,11 @@ pub enum HitTarget {
     RemotesRow(usize),
     /// Visible row of the repository switcher.
     RepoSwitcherRow(usize),
+    WelcomeItem(usize),
+    CloneField(crate::repo_lifecycle::CloneField),
+    CloneButton {
+        submit: bool,
+    },
     /// Row of the `Working Trees` modal.
     WorktreesRow(usize),
     /// Apply Patch mode radio.

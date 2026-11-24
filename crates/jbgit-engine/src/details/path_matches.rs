@@ -30,7 +30,7 @@ pub fn load_path_matches_sync(
     if paths.len() <= crate::cli::MAX_INLINE_PATHSPECS
         && let Some(git) = crate::cli::cached_git_executable()
     {
-        match load_path_matches_cli(git, location, paths, snapshot, token) {
+        match load_path_matches_cli(&git, location, paths, snapshot, token) {
             Ok(set) => return Ok(set),
             Err(EngineError::Cancelled) => return Err(EngineError::Cancelled),
             Err(_) => {}

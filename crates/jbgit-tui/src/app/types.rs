@@ -833,6 +833,12 @@ pub enum UiAsyncEvent {
     LogGraphRebuilt(Box<LogGraphRebuilt>),
     /// Credential prompt from the `GIT_ASKPASS` / `SSH_ASKPASS` bridge.
     Askpass(jbgit_engine::askpass::AskpassRequest),
+    /// `git init` invoked from the Welcome modal failed.
+    InitRepoFailed(String),
+    /// One progress / stderr line streamed from an active `git clone`.
+    CloneProgress(String),
+    /// Active `git clone` completed with either the cloned directory or an error message.
+    CloneFinished(Result<std::path::PathBuf, String>),
 }
 
 #[derive(Debug, Clone)]

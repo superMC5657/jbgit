@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-use std::path::Path;
 use std::sync::Arc;
 
 use jbgit_core::{
@@ -350,8 +349,8 @@ pub(crate) fn load_blame_sync(
         return Err(EngineError::Cancelled);
     }
 
-    let git = crate::cli::cached_git_executable().unwrap_or_else(|| Path::new("git"));
-    let mut cmd = non_interactive_std_command(git, Some(&location.workdir));
+    let git = crate::cli::cached_git_executable().unwrap_or_else(|| std::path::PathBuf::from("git"));
+    let mut cmd = non_interactive_std_command(&git, Some(&location.workdir));
     cmd.arg("--git-dir")
         .arg(&location.git_dir)
         .arg("--work-tree")

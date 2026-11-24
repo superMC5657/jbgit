@@ -11,9 +11,9 @@ use serde::de::DeserializeOwned;
 
 pub use discovery::{JBGIT_CONFIG_DIR_ENV, find_config_file, global_config_dir};
 pub use jbgit_config::{
-    AnnotateSection, DefaultTab, GlyphModePref, GraphBackendPref, JbgitConfig, JbgitConfigOverlay,
-    KeymapSection, KeymapSectionOverlay, LanguagePref, LayoutSection, PairRatio, ThemeFlavor,
-    TripleRatio,
+    AnnotateSection, CommitSection, DefaultTab, GitSection, GlyphModePref, GraphBackendPref,
+    JbgitConfig, JbgitConfigOverlay, KeymapSection, KeymapSectionOverlay, LanguagePref,
+    LayoutSection, PairRatio, ThemeFlavor, TripleRatio,
 };
 pub use keymap_config::{KeyBindingConfig, KeymapConfig, KeymapConfigOverlay, KeymapPreset, KeymapScope};
 pub use theme_config::{
@@ -381,6 +381,40 @@ impl AppConfig {
     pub fn init_config(custom_dir: Option<&Path>, force: bool) -> Result<PathBuf> {
         let (dir, _) = Self::init_config_detailed(custom_dir, force)?;
         Ok(dir)
+    }
+
+    /// Persists `[commit] warn_crlf = <value>` into `<workdir>/.jbgit/jbgit.toml`
+    /// while preserving any other settings already present in that file.
+    pub fn persist_repo_commit_warn_crlf(workdir: &Path, warn_crlf: bool) -> Result<PathBuf> {
+        let jbgit_dir = workdir.join(".jbgit");
+        fs::create_dir_all(&jbgit_dir)
+            .with_context(|| format!("Failed to create {:?}", jbgit_dir))?;
+        let path = jbgit_dir.join("jbgit.toml");
+
+        let mut root = if path.is_file() {
+            let existing = fs::read_to_string(&path)
+                .with_context(|| format!("Failed to read {:?}", path))?;
+            existing
+                .parse::<toml::Table>()
+                .unwrap_or_else(|_| toml::Table::new())
+        } else {
+            toml::Table::new()
+        };
+
+        let commit_table = root
+            .entry("commit".to_string())
+            .or_insert_with(|| toml::Value::Table(toml::Table::new()));
+        if !commit_table.is_table() {
+            *commit_table = toml::Value::Table(toml::Table::new());
+        }
+        if let Some(tbl) = commit_table.as_table_mut() {
+            tbl.insert("warn_crlf".to_string(), toml::Value::Boolean(warn_crlf));
+        }
+
+        let serialized = toml::to_string_pretty(&root)
+            .with_context(|| format!("Failed to serialize {:?}", path))?;
+        fs::write(&path, serialized).with_context(|| format!("Failed to write {:?}", path))?;
+        Ok(path)
     }
 }
 

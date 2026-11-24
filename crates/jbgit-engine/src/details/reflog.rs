@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::PathBuf;
 
 use jbgit_core::{
     EpochToken, REFLOG_GIT_FORMAT, ReflogBundle, ReflogKey, parse_reflog_output,
@@ -27,8 +27,8 @@ pub fn load_reflog_sync(
     let format_arg = format!("--format={REFLOG_GIT_FORMAT}");
     let limit_arg = format!("-n{fetch_n}");
 
-    let git = crate::cli::cached_git_executable().unwrap_or_else(|| Path::new("git"));
-    let mut cmd = non_interactive_std_command(git, Some(&location.workdir));
+    let git = crate::cli::cached_git_executable().unwrap_or_else(|| PathBuf::from("git"));
+    let mut cmd = non_interactive_std_command(&git, Some(&location.workdir));
     cmd.arg("--git-dir")
         .arg(&location.git_dir)
         .arg("--work-tree")

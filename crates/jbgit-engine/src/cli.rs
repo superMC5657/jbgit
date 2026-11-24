@@ -126,16 +126,17 @@ pub struct CliCommand<'a> {
 }
 
 impl GitCliExecutor {
+    #[allow(dead_code)]
     pub fn detect() -> Result<Self, EngineError> {
-        let git_bin = find_git_executable().ok_or(EngineError::GitNotFound)?;
-        let mut cmd = non_interactive_std_command(&git_bin, None);
-        cmd.arg("--version");
-        let output = cmd.output().map_err(|_| EngineError::GitNotFound)?;
-        let version_string = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        let configured = configured_git_executable();
+        Self::detect_with_executable(configured.as_deref())
+    }
 
+    pub fn detect_with_executable(configured: Option<&str>) -> Result<Self, EngineError> {
+        let info = detect_git_executable(configured)?;
         Ok(Self {
-            git_bin,
-            version_string,
+            git_bin: info.path,
+            version_string: info.version_string,
         })
     }
 
@@ -388,38 +389,76 @@ fn detect_index_lock_conflict(
     None
 }
 
-/// `git` binary on `PATH`, resolved once per process (synchronous read-only
-/// helpers spawn it directly instead of going through [`GitCliExecutor`]).
-pub(crate) fn cached_git_executable() -> Option<&'static Path> {
-    static GIT: std::sync::OnceLock<Option<PathBuf>> = std::sync::OnceLock::new();
-    GIT.get_or_init(find_git_executable).as_deref()
+use std::sync::RwLock;
+
+#[derive(Debug, Clone)]
+struct CachedGitBinary {
+    configured: Option<String>,
+    resolved: Option<(PathBuf, Option<jbgit_core::GitVersion>)>,
+}
+
+static CONFIGURED_GIT_EXECUTABLE: RwLock<Option<String>> = RwLock::new(None);
+static CACHED_GIT_BINARY: RwLock<Option<CachedGitBinary>> = RwLock::new(None);
+
+/// Updates the process-wide `[git] executable` override (empty or `None` reverts
+/// to automatic detection) and invalidates cached binary detection.
+pub fn set_configured_git_executable(path: Option<String>) {
+    let normalized = path
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    if let Ok(mut slot) = CONFIGURED_GIT_EXECUTABLE.write() {
+        *slot = normalized;
+    }
+    if let Ok(mut cache) = CACHED_GIT_BINARY.write() {
+        *cache = None;
+    }
+}
+
+pub fn configured_git_executable() -> Option<String> {
+    CONFIGURED_GIT_EXECUTABLE
+        .read()
+        .ok()
+        .and_then(|g| g.clone())
+}
+
+/// Resolves the `git` binary respecting the configured `[git] executable` override.
+pub(crate) fn cached_git_executable() -> Option<PathBuf> {
+    git_binary_info().map(|(p, _)| p)
 }
 
 /// Max pathspecs passed on the command line to read-only helpers; beyond this
 /// callers use their libgit2 fallback (`git log` has no `--pathspec-from-file`).
 pub(crate) const MAX_INLINE_PATHSPECS: usize = PATHSPEC_FROM_FILE_THRESHOLD;
 
-/// Process-wide git binary and its version (detected once).
-fn git_binary_info() -> Option<&'static (PathBuf, Option<jbgit_core::GitVersion>)> {
-    static GIT: std::sync::OnceLock<Option<(PathBuf, Option<jbgit_core::GitVersion>)>> =
-        std::sync::OnceLock::new();
-    GIT.get_or_init(|| {
-        let bin = find_git_executable()?;
-        let version = non_interactive_std_command(&bin, None)
-            .arg("--version")
-            .output()
-            .ok()
-            .and_then(|o| jbgit_core::GitVersion::parse(&String::from_utf8_lossy(&o.stdout)));
-        Some((bin, version))
-    })
-    .as_ref()
+/// Process-wide git binary and its parsed version (re-computed if the configured override changes).
+fn git_binary_info() -> Option<(PathBuf, Option<jbgit_core::GitVersion>)> {
+    let configured = configured_git_executable();
+    if let Ok(guard) = CACHED_GIT_BINARY.read()
+        && let Some(entry) = guard.as_ref()
+        && entry.configured == configured
+    {
+        return entry.resolved.clone();
+    }
+    let resolved = detect_git_executable(configured.as_deref())
+        .ok()
+        .map(|info| {
+            let ver = jbgit_core::GitVersion::parse(&info.version_string);
+            (info.path, ver)
+        });
+    if let Ok(mut guard) = CACHED_GIT_BINARY.write() {
+        *guard = Some(CachedGitBinary {
+            configured,
+            resolved: resolved.clone(),
+        });
+    }
+    resolved
 }
 
 /// Synchronous `git worktree list --porcelain [-z]` (snapshot worker thread;
 /// `-z` only on git >= 2.36). `None` when git is unavailable or fails.
 pub(crate) fn worktree_list_sync(cwd: &Path) -> Option<Vec<jbgit_core::WorktreeInfo>> {
     let (bin, version) = git_binary_info()?;
-    let mut cmd = non_interactive_std_command(bin, Some(cwd));
+    let mut cmd = non_interactive_std_command(&bin, Some(cwd));
     cmd.args(["worktree", "list", "--porcelain"]);
     if version.is_some_and(|v| v >= jbgit_core::GitVersion::WORKTREE_LIST_Z) {
         cmd.arg("-z");
@@ -430,17 +469,122 @@ pub(crate) fn worktree_list_sync(cwd: &Path) -> Option<Vec<jbgit_core::WorktreeI
         .then(|| jbgit_core::parse_worktree_list_porcelain(&out.stdout))
 }
 
-fn find_git_executable() -> Option<PathBuf> {
+fn expand_tilde_path(raw: &str) -> PathBuf {
+    if let Some(rest) = raw.strip_prefix("~/").or_else(|| raw.strip_prefix("~\\"))
+        && let Some(home) = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE"))
+    {
+        return PathBuf::from(home).join(rest);
+    }
+    PathBuf::from(raw)
+}
+
+fn standard_git_install_candidates() -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    #[cfg(windows)]
+    {
+        if let Some(pf) = std::env::var_os("ProgramFiles") {
+            let p = PathBuf::from(pf);
+            out.push(p.join("Git").join("cmd").join("git.exe"));
+            out.push(p.join("Git").join("bin").join("git.exe"));
+        }
+        if let Some(pf86) = std::env::var_os("ProgramFiles(x86)") {
+            let p = PathBuf::from(pf86);
+            out.push(p.join("Git").join("cmd").join("git.exe"));
+            out.push(p.join("Git").join("bin").join("git.exe"));
+        }
+        if let Some(local) = std::env::var_os("LOCALAPPDATA") {
+            out.push(
+                PathBuf::from(local)
+                    .join("Programs")
+                    .join("Git")
+                    .join("cmd")
+                    .join("git.exe"),
+            );
+        }
+        out.push(PathBuf::from(r"C:\Program Files\Git\cmd\git.exe"));
+        out.push(PathBuf::from(r"C:\Program Files\Git\bin\git.exe"));
+    }
+    #[cfg(not(windows))]
+    {
+        out.push(PathBuf::from("/usr/local/bin/git"));
+        out.push(PathBuf::from("/opt/homebrew/bin/git"));
+        out.push(PathBuf::from("/usr/bin/git"));
+    }
+    out
+}
+
+/// Resolves the `git` executable path by priority:
+/// 1. Explicit `[git] executable` override (invalid path returns a clear error);
+/// 2. `PATH` search;
+/// 3. Platform standard installation directories fallback.
+pub fn find_git_executable_with_override(configured: Option<&str>) -> Result<PathBuf, EngineError> {
+    if let Some(raw) = configured.map(str::trim).filter(|s| !s.is_empty()) {
+        let path = expand_tilde_path(raw);
+        if !path.is_file() {
+            return Err(EngineError::InvalidGitExecutable {
+                path,
+                detail: "file does not exist or is not a regular file".to_string(),
+            });
+        }
+        return Ok(path);
+    }
+
     let exe_name = if cfg!(windows) { "git.exe" } else { "git" };
     if let Some(path_var) = std::env::var_os("PATH") {
         for dir in std::env::split_paths(&path_var) {
             let candidate = dir.join(exe_name);
             if candidate.is_file() {
-                return Some(candidate);
+                return Ok(candidate);
             }
         }
     }
-    None
+
+    for candidate in standard_git_install_candidates() {
+        if candidate.is_file() {
+            return Ok(candidate);
+        }
+    }
+
+    Err(EngineError::GitNotFound)
+}
+
+/// Detects the `git` binary (honoring an optional `[git] executable` override)
+/// and probes `git --version`.
+pub fn detect_git_executable(configured: Option<&str>) -> Result<GitExecutableInfo, EngineError> {
+    let explicit = configured.is_some_and(|s| !s.trim().is_empty());
+    let git_bin = find_git_executable_with_override(configured)?;
+    let mut cmd = non_interactive_std_command(&git_bin, None);
+    cmd.arg("--version");
+    let output = cmd.output().map_err(|e| {
+        if explicit {
+            EngineError::InvalidGitExecutable {
+                path: git_bin.clone(),
+                detail: e.to_string(),
+            }
+        } else {
+            EngineError::GitNotFound
+        }
+    })?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(if explicit {
+            EngineError::InvalidGitExecutable {
+                path: git_bin,
+                detail: if stderr.is_empty() {
+                    format!("exited with status {}", output.status)
+                } else {
+                    stderr
+                },
+            }
+        } else {
+            EngineError::GitNotFound
+        });
+    }
+    let version_string = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    Ok(GitExecutableInfo {
+        path: git_bin,
+        version_string,
+    })
 }
 
 #[cfg(test)]
@@ -472,5 +616,30 @@ mod tests {
         assert!(args_l.contains(&"--pathspec-file-nul".to_string()));
         let payload = stdin_l.expect("expected nul-delimited stdin payload");
         assert_eq!(payload.iter().filter(|&&b| b == 0).count(), 40);
+    }
+
+    #[test]
+    fn find_git_executable_explicit_override_and_invalid_path_error() {
+        // Explicit invalid path must fail with EngineError::InvalidGitExecutable (never silently fall back to PATH).
+        let missing = std::env::temp_dir().join("jbgit_nonexistent_git_binary_12345");
+        let missing_str = missing.to_string_lossy().to_string();
+        let err = find_git_executable_with_override(Some(&missing_str))
+            .expect_err("expected InvalidGitExecutable for missing explicit path");
+        assert!(
+            matches!(err, EngineError::InvalidGitExecutable { ref path, .. } if path == &missing_str),
+            "unexpected error variant: {err:?}"
+        );
+
+        // Explicit valid path takes priority over PATH and returns that exact path.
+        let detected = find_git_executable_with_override(None).expect("git installed in env");
+        let explicit_str = detected.to_string_lossy().to_string();
+        let resolved = find_git_executable_with_override(Some(&explicit_str))
+            .expect("explicit valid git path must resolve");
+        assert_eq!(resolved, detected);
+
+        // Empty / whitespace override falls back cleanly to auto-detection.
+        let fallback = find_git_executable_with_override(Some("   "))
+            .expect("blank override falls back to auto-detect");
+        assert!(fallback.is_file());
     }
 }

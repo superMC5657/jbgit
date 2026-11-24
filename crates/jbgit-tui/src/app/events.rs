@@ -18,6 +18,54 @@ impl AppState {
                 }
             }
             UiAsyncEvent::Askpass(req) => self.enqueue_credential(req),
+            UiAsyncEvent::InitRepoFailed(err) => {
+                if let Some(ModalLayer::Welcome(ws)) = self.modal_stack.last_mut() {
+                    ws.initializing = false;
+                    ws.error = Some(err.clone());
+                }
+                self.status_notice = Some(
+                    self.i18n
+                        .t_fmt("toast.repo_init_failed", &[("err", &err)]),
+                );
+                self.needs_redraw = true;
+            }
+            UiAsyncEvent::CloneProgress(line) => {
+                for layer in self.modal_stack.iter_mut().rev() {
+                    if let ModalLayer::CloneRepo(cd) = layer {
+                        cd.push_progress(line);
+                        self.needs_redraw = true;
+                        break;
+                    }
+                }
+            }
+            UiAsyncEvent::CloneFinished(result) => match result {
+                Ok(dir) => {
+                    self.modal_stack.retain(|l| {
+                        !matches!(l, ModalLayer::CloneRepo(_) | ModalLayer::Welcome(_))
+                    });
+                    let shown = dir.display().to_string();
+                    self.status_notice = Some(
+                        self.i18n
+                            .t_fmt("toast.repo_cloned", &[("path", &shown)]),
+                    );
+                    self.pending_repo_switch = Some(dir);
+                    self.needs_redraw = true;
+                }
+                Err(err) => {
+                    for layer in self.modal_stack.iter_mut().rev() {
+                        if let ModalLayer::CloneRepo(cd) = layer {
+                            cd.cloning = false;
+                            cd.error = Some(err.clone());
+                            break;
+                        }
+                    }
+                    self.status_notice = Some(
+                        self.i18n
+                            .t_fmt("toast.repo_clone_failed", &[("err", &err)]),
+                    );
+                    self.needs_redraw = true;
+                }
+            },
             UiAsyncEvent::LogGraphRebuilt(rebuilt) => {
                 if self.log.graph.apply_rebuilt(*rebuilt) {
                     if let Some(err) = &self.log.graph.filter_error {
@@ -126,6 +174,7 @@ impl AppState {
             let mut cctx = crate::stage_view::CommitContext {
                 snap: snap_ref.as_deref(),
                 default_remote: &default_remote,
+                warn_crlf: self.config.jbgit.commit.warn_crlf,
                 i18n: &self.i18n,
                 now,
                 focused_pane: &mut self.focused_pane,
@@ -621,6 +670,12 @@ impl AppState {
             | EngineEvent::CommitPrecheckLoaded { .. }
             | EngineEvent::UndoCommitCompleted { .. } => {
                 unreachable!("handled by apply_stage_engine_event")
+            }
+            EngineEvent::CommitCrlfWarning { request, files } => {
+                self.stage_workbench.set_commit_in_progress(false);
+                let dialog =
+                    crate::repo_lifecycle::crlf_warning_dialog(&self.i18n, request, &files);
+                self.push_modal(ModalLayer::Dialog(Box::new(dialog)));
             }
             EngineEvent::ConsoleStarted(entry) => {
                 self.console.push_started(entry);

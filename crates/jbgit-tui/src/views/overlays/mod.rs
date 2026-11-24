@@ -103,6 +103,12 @@ fn render_modal_layer(
         ModalLayer::RepoSwitcher(rs) => {
             crate::repo_switcher::render_repo_switcher_modal(frame, screen, state, rs, ctx, z);
         }
+        ModalLayer::Welcome(ws) => {
+            crate::repo_lifecycle::render_welcome_modal(frame, screen, state, ws, ctx, z);
+        }
+        ModalLayer::CloneRepo(cd) => {
+            crate::repo_lifecycle::render_clone_repo_modal(frame, screen, state, cd, ctx, z);
+        }
         ModalLayer::Worktrees(ws) => {
             crate::worktrees_view::render_worktrees_modal(frame, screen, state, ws, ctx, z);
         }

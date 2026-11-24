@@ -90,10 +90,18 @@ pub struct AppState {
     pub(crate) session_generation: u64,
     /// Confirmed repository switch the host must perform (unbind → bind).
     pub(crate) pending_repo_switch: Option<PathBuf>,
+    /// Confirmed `git init` directory request the host must execute and bind.
+    pub(crate) pending_init_repo: Option<PathBuf>,
+    /// Confirmed `git clone` request the host must execute and bind on success.
+    pub(crate) pending_clone_repo: Option<jbgit_engine::CloneRequest>,
     /// User-level most-recently-opened repositories.
     pub(crate) recent_repos: crate::repo_switcher::RecentRepos,
     /// Detected `git --version` (`None` = unknown; worktree gate assumes support).
     pub(crate) git_version: Option<jbgit_core::GitVersion>,
+    /// Resolved `git` executable path & version banner (Spec 13 Issue 13).
+    pub(crate) git_info: Option<jbgit_engine::GitExecutableInfo>,
+    /// Error message when `[git] executable` is invalid or `git` cannot be found.
+    pub(crate) git_info_error: Option<String>,
     pub(crate) pending_keys: Vec<crossterm::event::KeyEvent>,
     pub(crate) pending_key_at: Option<std::time::Instant>,
     /// Virtual monotonic clock injected by [`crate::session::TuiSession`]
@@ -211,8 +219,12 @@ impl AppState {
             pending_remote_selection: None,
             session_generation: 0,
             pending_repo_switch: None,
+            pending_init_repo: None,
+            pending_clone_repo: None,
             recent_repos: crate::repo_switcher::RecentRepos::in_memory(),
             git_version: None,
+            git_info: None,
+            git_info_error: None,
             stash,
             config,
             i18n,
@@ -226,6 +238,31 @@ impl AppState {
     /// through [`crate::session::TuiSession`], real `Instant::now()` otherwise).
     pub(crate) fn now(&self) -> Instant {
         self.clock.unwrap_or_else(Instant::now)
+    }
+
+    /// Formats a compact one-line summary of the resolved `git` executable
+    /// (or any configured `[git] executable` error) for Console startup and
+    /// Help/About overlays.
+    pub fn git_executable_summary(&self) -> Option<(String, bool)> {
+        if let Some(err) = &self.git_info_error {
+            return Some((
+                self.i18n
+                    .t_fmt("git.executable_error", &[("err", err.as_str())]),
+                true,
+            ));
+        }
+        let info = self.git_info.as_ref()?;
+        let path = info.path.display().to_string();
+        let ver = if info.version_string.trim().is_empty() {
+            "git"
+        } else {
+            info.version_string.trim()
+        };
+        Some((
+            self.i18n
+                .t_fmt("git.executable_summary", &[("version", ver), ("path", &path)]),
+            false,
+        ))
     }
 
     /// Unified focus/tab transition hook: cleanly blurs any inline editing state
@@ -558,6 +595,11 @@ impl AppState {
             || self.modal_stack.push_dialog().is_some_and(|pd| pd.loading)
             || self.console.has_running()
             || !self.credentials.is_empty()
+            || self.modal_stack.iter().any(|l| match l {
+                ModalLayer::Welcome(ws) => ws.initializing,
+                ModalLayer::CloneRepo(cd) => cd.cloning,
+                _ => false,
+            })
     }
 
     /// Next instant the main loop must wake up for (details debounce, menu hover, or key chord timeout).

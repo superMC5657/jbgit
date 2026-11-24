@@ -13,6 +13,7 @@ mod patch_and_tree_browser_tests;
 mod pull_and_rebase_dialogs_tests;
 mod remotes_and_credentials_tests;
 mod repo_capabilities_tests;
+mod repo_lifecycle_and_crlf_tests;
 mod repo_session_and_worktrees_tests;
 mod runtime_and_editor_tests;
 mod session_tests;

@@ -683,6 +683,9 @@ fn route_mouse_right_down(col: u16, row: u16, state: &AppState) -> Vec<Action> {
             | HitTarget::BranchPopupStar(_)
             | HitTarget::RemotesRow(_)
             | HitTarget::RepoSwitcherRow(_)
+            | HitTarget::WelcomeItem(_)
+            | HitTarget::CloneField(_)
+            | HitTarget::CloneButton { .. }
             | HitTarget::WorktreesRow(_)
             | HitTarget::ApplyPatchMode(_)
             | HitTarget::ApplyPatchButton { .. }

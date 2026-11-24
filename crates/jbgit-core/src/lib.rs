@@ -64,9 +64,9 @@ pub use git_ops::{
     PushOutcomeSummary, PushTagMode, RebaseOptionError, RebaseOptions, RefNameError, ResetMode,
     RewritePlan, SkippedBranch, SquashTodoPlan, StashEntry, TodoAction, TodoEntry, UpdateInfo,
     UpdateMode, UpdatedRange, classify_failure, default_squash_messages, fuzzy_indices,
-    is_protected_branch, matches_protected_branch_patterns, parse_push_porcelain,
-    parse_recent_checkouts, plan_squash_todo, render_todo, short_rev, validate_ref_name,
-    validate_ref_name_typed,
+    infer_clone_dir_name, is_protected_branch, matches_protected_branch_patterns,
+    parse_push_porcelain, parse_recent_checkouts, plan_squash_todo, render_todo, short_rev,
+    validate_ref_name, validate_ref_name_typed,
 };
 pub use key_token::{KeyToken, KeyTokenError, KeyTokenKind, parse_key_token};
 pub use lru::LruCache;

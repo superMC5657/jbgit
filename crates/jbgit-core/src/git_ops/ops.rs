@@ -1252,3 +1252,108 @@ impl GitOp {
         }
     }
 }
+
+/// Infers a default local directory name from a Git clone URL or local path
+/// (HTTPS, `ssh://`, SCP-style `git@host:user/repo.git`, or local path).
+/// Strips query/fragment suffixes, trailing slashes, and `.git` suffix.
+pub fn infer_clone_dir_name(url: &str) -> Option<String> {
+    let mut s = url.trim();
+    if s.is_empty() {
+        return None;
+    }
+    if let Some((before_frag, _)) = s.split_once('#') {
+        s = before_frag;
+    }
+    if let Some((before_query, _)) = s.split_once('?') {
+        s = before_query;
+    }
+    s = s.trim_end_matches(['/', '\\']);
+    if s.is_empty() {
+        return None;
+    }
+
+    let path_part = if let Some((_, rest)) = s.split_once("://") {
+        // Must have a path segment after the authority (`host[:port]/path`).
+        let (_, path) = rest.split_once('/')?;
+        path.trim_end_matches('/')
+    } else {
+        // Distinguish Windows drive letter (`C:\...` / `C:/...`) from SCP-style `git@host:user/repo`.
+        let is_windows_drive = s.len() >= 2
+            && s.as_bytes()[0].is_ascii_alphabetic()
+            && s.as_bytes()[1] == b':';
+        if !is_windows_drive
+            && let Some((host, path)) = s.split_once(':')
+            && !host.is_empty()
+            && !host.contains(['/', '\\'])
+        {
+            path.trim_end_matches(['/', '\\'])
+        } else {
+            s
+        }
+    };
+
+    if path_part.is_empty() {
+        return None;
+    }
+    let last = path_part
+        .rsplit(['/', '\\'])
+        .find(|seg| !seg.is_empty())?;
+    let stripped = if last.len() >= 4 && last[last.len() - 4..].eq_ignore_ascii_case(".git") {
+        &last[..last.len() - 4]
+    } else {
+        last
+    };
+    if stripped.is_empty()
+        || stripped == "."
+        || stripped == ".."
+        || stripped.contains([':', '\0'])
+    {
+        return None;
+    }
+    Some(stripped.to_string())
+}
+
+#[cfg(test)]
+mod clone_url_tests {
+    use super::infer_clone_dir_name;
+
+    #[test]
+    fn infers_directory_name_from_https_ssh_scp_and_local_urls() {
+        assert_eq!(
+            infer_clone_dir_name("https://github.com/org/jbgit.git").as_deref(),
+            Some("jbgit")
+        );
+        assert_eq!(
+            infer_clone_dir_name("https://github.com/org/jbgit///").as_deref(),
+            Some("jbgit")
+        );
+        assert_eq!(
+            infer_clone_dir_name("https://github.com/org/jbgit.git?ref=main#readme").as_deref(),
+            Some("jbgit")
+        );
+        assert_eq!(
+            infer_clone_dir_name("git@github.com:org/my-repo.git").as_deref(),
+            Some("my-repo")
+        );
+        assert_eq!(
+            infer_clone_dir_name("ssh://git@example.com:2222/team/service.git/").as_deref(),
+            Some("service")
+        );
+        assert_eq!(
+            infer_clone_dir_name("file:///tmp/repos/bare-repo.git").as_deref(),
+            Some("bare-repo")
+        );
+        assert_eq!(
+            infer_clone_dir_name(r"C:\work\repos\demo.git\").as_deref(),
+            Some("demo")
+        );
+        assert_eq!(
+            infer_clone_dir_name("/var/git/project.GIT").as_deref(),
+            Some("project")
+        );
+        assert_eq!(infer_clone_dir_name(""), None);
+        assert_eq!(infer_clone_dir_name("   "), None);
+        assert_eq!(infer_clone_dir_name("https://github.com/"), None);
+        assert_eq!(infer_clone_dir_name("https://github.com/.git"), None);
+    }
+}

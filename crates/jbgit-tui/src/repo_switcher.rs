@@ -315,6 +315,10 @@ pub fn route_repo_switcher_key(key: &KeyEvent, state: &AppState) -> Vec<Action> 
             Action::PopModal,
             Action::OpenDialog(Box::new(open_path_dialog(&state.i18n))),
         ],
+        KeyCode::Char('l') if ctrl => vec![
+            Action::PopModal,
+            Action::OpenCloneRepo { base_dir: None },
+        ],
         KeyCode::Char('u') if ctrl => set(String::new(), 0),
         KeyCode::Up => set(query, sel.saturating_sub(1)),
         KeyCode::Char('p') if ctrl => set(query, sel.saturating_sub(1)),

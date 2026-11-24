@@ -926,6 +926,7 @@ async fn commit_unborn_amend_undo_and_hooks_workflow() {
             author_override: None,
             stage_all_tracked: false,
             and_push: false,
+            ..Default::default()
         },
     )
     .await;
@@ -953,6 +954,7 @@ async fn commit_unborn_amend_undo_and_hooks_workflow() {
             author_override: None,
             stage_all_tracked: false,
             and_push: false,
+            ..Default::default()
         },
     )
     .await;
@@ -974,6 +976,7 @@ async fn commit_unborn_amend_undo_and_hooks_workflow() {
             author_override: None,
             stage_all_tracked: false,
             and_push: false,
+            ..Default::default()
         },
     )
     .await;
@@ -1017,6 +1020,7 @@ async fn commit_unborn_amend_undo_and_hooks_workflow() {
                 author_override: None,
                 stage_all_tracked: false,
                 and_push: false,
+                ..Default::default()
             },
         )
         .await;
@@ -1044,6 +1048,7 @@ async fn commit_unborn_amend_undo_and_hooks_workflow() {
                 author_override: None,
                 stage_all_tracked: false,
                 and_push: false,
+                ..Default::default()
             },
         )
         .await;
@@ -3463,6 +3468,7 @@ async fn sequential_stage_and_unstage_never_clobber_other_files_across_workers()
             author_override: None,
             stage_all_tracked: false,
             and_push: false,
+            ..Default::default()
         },
     )
     .await;
@@ -3581,6 +3587,7 @@ async fn merge_no_commit_without_hooks_preserves_two_parents_and_cleans_merge_he
             author_override: None,
             stage_all_tracked: false,
             and_push: false,
+            ..Default::default()
         },
     });
     let outcome = recv_matching(&mut rx, |ev| match ev {
@@ -3671,6 +3678,7 @@ async fn linked_worktree_detects_common_dir_pre_commit_hook_and_blocks_commit() 
             author_override: None,
             stage_all_tracked: false,
             and_push: false,
+            ..Default::default()
         },
     });
     let outcome = recv_matching(&mut rx, |ev| match ev {
@@ -4303,6 +4311,7 @@ async fn commit_template_merge_msg_comment_char_cleanup_and_allow_empty() {
             author_override: None,
             stage_all_tracked: false,
             and_push: false,
+            ..Default::default()
         },
     )
     .await;
@@ -4327,6 +4336,7 @@ async fn commit_template_merge_msg_comment_char_cleanup_and_allow_empty() {
             author_override: None,
             stage_all_tracked: false,
             and_push: false,
+            ..Default::default()
         },
     )
     .await;
@@ -4374,6 +4384,7 @@ async fn commit_template_merge_msg_comment_char_cleanup_and_allow_empty() {
             author_override: None,
             stage_all_tracked: false,
             and_push: false,
+            ..Default::default()
         },
     )
     .await;
@@ -4426,6 +4437,7 @@ async fn set_identity_op_configures_repo_and_allows_commit() {
             author_override: None,
             stage_all_tracked: false,
             and_push: false,
+            ..Default::default()
         },
     )
     .await;
@@ -4542,5 +4554,184 @@ async fn dirty_worktree_push_rejected_smart_rebase_retry_preserves_changes() {
     assert_eq!(
         fs::read_to_string(dir_a.join("scratch.txt")).unwrap(),
         "dirty untracked file\n"
+    );
+}
+
+#[test]
+fn init_repository_sync_creates_discoverable_repo_in_empty_dir() {
+    let tmp = TempDir::new().unwrap();
+    let target = tmp.path().join("fresh-project");
+    fs::create_dir_all(&target).unwrap();
+
+    let loc = jbgit_engine::init_repository_sync(&target, None).expect("git init should succeed");
+    assert!(loc.git_dir.exists(), "expected .git directory to exist");
+    let discovered = RepoLocation::discover(&target).expect("discover after init");
+    assert_eq!(discovered.workdir, loc.workdir);
+}
+
+#[tokio::test]
+async fn clone_repository_async_shallow_from_local_bare_repo() {
+    let tmp = TempDir::new().unwrap();
+    let src = tmp.path().join("src");
+    fs::create_dir_all(&src).unwrap();
+    git(&src, &["init", "-b", "main"]);
+    git(&src, &["config", "user.name", "Tester"]);
+    git(&src, &["config", "user.email", "tester@example.com"]);
+    fs::write(src.join("a.txt"), "one\n").unwrap();
+    git(&src, &["add", "a.txt"]);
+    git(&src, &["commit", "-m", "first"]);
+    fs::write(src.join("a.txt"), "two\n").unwrap();
+    git(&src, &["add", "a.txt"]);
+    git(&src, &["commit", "-m", "second"]);
+
+    let bare = tmp.path().join("origin.git");
+    git(
+        tmp.path(),
+        &[
+            "clone",
+            "--bare",
+            src.to_str().unwrap(),
+            bare.to_str().unwrap(),
+        ],
+    );
+
+    // Use a `file://` URL so git honors `--depth 1` on local clones.
+    let canon_bare = bare.canonicalize().unwrap_or(bare.clone());
+    let bare_url = {
+        let raw = canon_bare.to_string_lossy().replace('\\', "/");
+        let trimmed = raw.strip_prefix("//?/").unwrap_or(&raw);
+        if trimmed.starts_with('/') {
+            format!("file://{trimmed}")
+        } else {
+            format!("file:///{trimmed}")
+        }
+    };
+    let dest = tmp.path().join("shallow-clone");
+
+    let mut progress_lines = Vec::new();
+    let cloned_path = jbgit_engine::clone_repository_async(
+        jbgit_engine::CloneRequest {
+            url: bare_url,
+            target_dir: dest.clone(),
+            depth: Some(1),
+            recurse_submodules: false,
+        },
+        None,
+        None,
+        |line| progress_lines.push(line),
+    )
+    .await
+    .expect("shallow clone should succeed");
+
+    assert_eq!(cloned_path, dest);
+    assert!(
+        !progress_lines.is_empty(),
+        "expected streamed clone progress lines"
+    );
+    let loc = RepoLocation::discover(&dest).expect("cloned repo discoverable");
+    assert!(
+        loc.git_dir.join("shallow").is_file(),
+        "expected shallow marker file in cloned repo"
+    );
+    let (handle, mut rx) = EngineSupervisor::start(loc, false).unwrap();
+    let _ = handle.dispatch(TaskRequest::LoadRepoSnapshot);
+    let snap = recv_matching(&mut rx, |e| match e {
+        EngineEvent::RepoSnapshotLoaded { snapshot, .. } => Some(snapshot),
+        _ => None,
+    })
+    .await;
+    assert!(snap.is_shallow, "snapshot must report is_shallow == true");
+    assert_eq!(snap.commits.len(), 1);
+}
+
+#[tokio::test]
+async fn crlf_precommit_warning_and_fix_autocrlf_workflow() {
+    let tmp = TempDir::new().unwrap();
+    let dir = tmp.path();
+    git(dir, &["init", "-b", "main"]);
+    git(dir, &["config", "user.name", "Tester"]);
+    git(dir, &["config", "user.email", "tester@example.com"]);
+    git(dir, &["config", "core.autocrlf", "false"]);
+
+    fs::write(dir.join("base.txt"), "init\n").unwrap();
+    git(dir, &["add", "base.txt"]);
+    git(dir, &["commit", "-m", "initial"]);
+
+    // Configure .gitattributes covering *.auto and *.eol; stage CRLF text, binary, and attributed files.
+    fs::write(dir.join(".gitattributes"), "*.auto text=auto\n*.eol eol=crlf\n").unwrap();
+    fs::write(dir.join("win.txt"), b"alpha\r\nbeta\r\n").unwrap();
+    fs::write(dir.join("bin.dat"), b"PNG\0\r\ndata\r\n").unwrap();
+    fs::write(dir.join("managed.auto"), b"line1\r\nline2\r\n").unwrap();
+    fs::write(dir.join("explicit.eol"), b"line1\r\nline2\r\n").unwrap();
+    git(
+        dir,
+        &["add", ".gitattributes", "win.txt", "bin.dat", "managed.auto", "explicit.eol"],
+    );
+
+    let loc = RepoLocation::discover(dir).unwrap();
+    let problem = jbgit_engine::detect_crlf_commit_problem_sync(&loc, false)
+        .expect("detect crlf")
+        .expect("win.txt should trigger CRLF warning");
+    assert_eq!(problem.files, vec!["win.txt".to_string()]);
+
+    let (handle, mut rx) = EngineSupervisor::start(loc, false).unwrap();
+
+    // Step 1: ExecuteCommit with check_crlf=true pauses and emits CommitCrlfWarning.
+    let initial_req = jbgit_engine::CommitRequest {
+        message: "add windows file".into(),
+        check_crlf: true,
+        fix_autocrlf: false,
+        ..Default::default()
+    };
+    let _ = handle.dispatch(TaskRequest::ExecuteCommit {
+        id: 1,
+        request: initial_req.clone(),
+    });
+    let (warned_req, warned_files) = recv_matching(&mut rx, |e| match e {
+        EngineEvent::CommitCrlfWarning { request, files } => Some((request, files)),
+        _ => None,
+    })
+    .await;
+    assert_eq!(warned_files, vec!["win.txt".to_string()]);
+    assert_eq!(warned_req.message, "add windows file");
+
+    // Add an unstaged working-tree edit to win.txt before Fix & Commit to verify
+    // re-normalization updates only the staged index blob without clobbering unstaged worktree edits.
+    fs::write(dir.join("win.txt"), b"alpha\r\nbeta\r\nunstaged-tail\r\n").unwrap();
+
+    // Step 2: Re-submit with fix_autocrlf=true, check_crlf=false -> sets core.autocrlf=true,
+    // re-normalizes staged CRLF blobs to LF, and commits.
+    let mut fixed_req = warned_req;
+    fixed_req.check_crlf = false;
+    fixed_req.fix_autocrlf = true;
+    let _ = handle.dispatch(TaskRequest::ExecuteCommit {
+        id: 2,
+        request: fixed_req,
+    });
+    let commit_res = recv_matching(&mut rx, |e| match e {
+        EngineEvent::CommitCompleted(res) => Some(res),
+        _ => None,
+    })
+    .await;
+    assert!(commit_res.success, "expected commit to succeed: {commit_res:?}");
+
+    let autocrlf_out = git_output(dir, &["config", "--local", "--get", "core.autocrlf"]);
+    assert!(autocrlf_out.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&autocrlf_out.stdout).trim(),
+        "true",
+        "Fix & Commit must set core.autocrlf = true"
+    );
+
+    let head_blob = git_output(dir, &["show", "HEAD:win.txt"]);
+    assert!(head_blob.status.success());
+    assert_eq!(
+        head_blob.stdout, b"alpha\nbeta\n",
+        "Fix & Commit must normalize already-staged CRLF index blob to LF without pulling unstaged worktree edits"
+    );
+    assert_eq!(
+        fs::read(dir.join("win.txt")).unwrap(),
+        b"alpha\r\nbeta\r\nunstaged-tail\r\n",
+        "unstaged worktree edit must stay intact"
     );
 }

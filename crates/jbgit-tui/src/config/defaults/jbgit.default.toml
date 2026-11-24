@@ -12,6 +12,14 @@ default_tab = "log"
 # 完整调色板位于同目录 themes/<flavor>.toml，可直接编辑覆盖，也可新建 themes/<自定义名称>.toml
 flavor = "darcula"
 
+[git]
+# 自定义 git 可执行文件路径；留空 = 自动从 PATH 与系统常见安装目录探测
+executable = ""
+
+[commit]
+# 当 core.autocrlf 未设为 true/input 且待提交文本包含 CRLF 换行符时发出提示
+warn_crlf = true
+
 [keymap]
 # 快捷键预设风格: "default" (极简零冲突), "jetbrains" (IDEA 习惯), "vim" (Vim / Lazygit 风格)
 # 完整与增量键位表位于同目录 keymaps/<preset>.toml，可直接编辑覆盖，也可新建 keymaps/<自定义名称>.toml

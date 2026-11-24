@@ -441,6 +441,14 @@ update_other_branches = true
 [worktree]
 # 新建 Worktree 的默认父目录（默认路径 <目录>/<仓库名>-<分支名>，分支名中的 / 换成 -）；留空 = 主工作区的父目录，支持 ~/
 default_parent = ""
+
+[git]
+# 自定义外部 git 可执行文件路径；留空 = 按 PATH → 平台常见安装目录自动探测（配置无效路径时启动即给出明确错误提示）
+executable = ""
+
+[commit]
+# 当仓库 core.autocrlf 未设为 true/input 且待提交的暂存文本包含 CRLF (\r\n) 换行符时发出提交前提醒
+warn_crlf = true
 ```
 
 > 提示：若在同一配置层中同时存在 `jbgit.toml` 和 `theme.toml`，且 `theme.toml` 未显式设置 `flavor` 或 `[glyphs].mode`，则会继承该层 `jbgit.toml` 中的 `[general].flavor` 与 `[graph].glyph_mode`。
@@ -555,7 +563,7 @@ prepend_keymap = [
 
 | 作用域 | 可用 `run` 动作标识符 |
 | :--- | :--- |
-| `global` | `quit`, `help`, `context_menu`, `refresh`, `tab_commit`, `tab_log`, `tab_branches`, `tab_stash`, `tab_console`, `focus_next`, `focus_prev`, `toggle_branches_popup`, `toggle_branches_pane`, `git_fetch`, `git_pull`, `git_push`, `update_project`, `configure_remotes`, `switch_repository`, `worktrees`, `resolve_conflicts`, `update_submodules`, `unshallow`, `goto_revision`, `palette`, `toggle_glyph_mode`, `cycle_graph_renderer`, `git_status_probe`, `noop` |
+| `global` | `quit`, `help`, `context_menu`, `refresh`, `tab_commit`, `tab_log`, `tab_branches`, `tab_stash`, `tab_console`, `focus_next`, `focus_prev`, `toggle_branches_popup`, `toggle_branches_pane`, `git_fetch`, `git_pull`, `git_push`, `update_project`, `configure_remotes`, `switch_repository`, `clone_repository`, `worktrees`, `resolve_conflicts`, `update_submodules`, `unshallow`, `goto_revision`, `palette`, `toggle_glyph_mode`, `cycle_graph_renderer`, `git_status_probe`, `noop` |
 | `log` | `cursor_down`, `cursor_up`, `goto_top`, `goto_bottom`, `page_down_half`, `page_up_half`, `goto_revision`, `focus_filter`, `toggle_branches_pane`, `toggle_log_row_selection`, `compare_or_diff`, `swap_compare_direction`, `toggle_only_affected_changes`, `zoom_diff`, `copy_hash`, `copy_commit_message`, `copy_row_summary`, `checkout`, `new_branch`, `uncommit`, `reword`, `drop_commit`, `choose_parent`, `toggle_group`, `file_history`, `annotate`, `collapse_linear_branch`, `expand_linear_branch`, `collapse_all_linear_branches`, `expand_all_linear_branches`, `browse_revision`, `toggle_no_merges`, `toggle_linear_bek`, `log_speed_search`, `maximize_commit_message`, `open_reflog` |
 | `branch` | `branch_search`, `toggle_favorite`, `checkout`, `new_branch`, `rename_branch`, `delete_branch`, `navigate_branch`, `open_reflog` |
 | `commit` | `cursor_down`, `cursor_up`, `goto_top`, `goto_bottom`, `toggle_stage`, `stage_selection`, `unstage_selection`, `focus_commit_msg`, `commit`, `commit_and_push`, `toggle_amend`, `toggle_signoff`, `commit_history`, `select_all`, `discard_changes`, `toggle_group`, `edit_file`, `file_history`, `annotate`, `apply_patch`, `apply_patch_clipboard` |
@@ -622,6 +630,7 @@ jbgit 同一时间只绑定**一个活动仓库**（多根同步模型不做，�
 | `↑` / `↓` / `<Ctrl-p>` / `<Ctrl-n>` | 选择 |
 | `<Enter>` / 双击 | 切换到选中仓库 |
 | `<Ctrl-o>` | 输入任意路径（仓库内任意目录均可；相对路径相对于当前仓库所在目录） |
+| `<Ctrl-l>` | 打开「克隆仓库…」对话框（也可从命令面板 `?` 中的 `clone_repository` 或非 Git 目录引导界面打开） |
 | `<Del>` | 从最近仓库列表中移除选中项 |
 | `<Esc>` | 关闭 |
 
@@ -633,6 +642,16 @@ jbgit 同一时间只绑定**一个活动仓库**（多根同步模型不做，�
 - 内置冲突合并窗口中有未保存的选择 → 拒绝，需先保存或放弃。
 
 > 提交草稿按工作区保存（`<git-dir>/jbgit-commit-draft`）：主工作区与每个 linked worktree 各自保留自己的草稿。
+
+### 1.5 非 Git 目录引导、初始化与克隆仓库（`git init` / `git clone`）
+
+- **非 Git 目录启动**：在非 Git 仓库目录启动 `jbgit` 时不会直接报错退出，而是打开轻量欢迎模态框，提供三项入口：
+  1. `Initialize Git Repository`（`i`）：在当前目录执行 `git init` 并直接切入工作台；
+  2. `Clone Repository…`（`c`）：打开克隆对话框；
+  3. `Open Recent / Switch Repository…`（`o`）：复用仓库切换器打开已有仓库。
+- **克隆仓库对话框**：支持远程 URL（输入或粘贴后自动推导默认目录名）、目标目录、可选浅克隆深度（`--depth <N>`）及递归子模块（`--recurse-submodules`）。执行 `git clone --progress` 时自动复用 `GIT_ASKPASS` / `SSH_ASKPASS` 凭据对话框并实时展示进度，克隆完成后通过进程内重绑定自动切入新仓库。
+- **`[git] executable` 探测与展示**：`jbgit` 按 `[git] executable` → `PATH` → 平台常见安装目录（Windows `Program Files\Git\{cmd,bin}\git.exe` / `%LOCALAPPDATA%\Programs\Git\cmd\git.exe`，Unix/macOS `/usr/local/bin/git` / `/opt/homebrew/bin/git` / `/usr/bin/git`）顺序解析 `git`，并在 `?` 帮助面板与 Console 启动摘要中显示实际解析到的版本与路径。
+- **Windows CRLF 提交前提醒**：当 `[commit] warn_crlf = true` 且 `core.autocrlf` 未设为 `true`/`input` 时，提交前若检测到已暂存文本文件包含 `\r\n`（自动跳过二进制、LFS 指针以及 `.gitattributes` 已显式声明 `text`/`crlf`/`eol` 策略的文件），将弹出三选一确认框：**修复并提交**（设置 `core.autocrlf=true` 后提交）、**按原样提交**、或**不再提醒**（持久化写入本仓 `.jbgit/jbgit.toml` 的 `[commit] warn_crlf = false`）。
 
 ### 2. Working Trees (`<Alt-w>`)
 

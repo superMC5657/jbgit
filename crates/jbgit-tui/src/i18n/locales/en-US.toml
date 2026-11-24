@@ -693,6 +693,7 @@ arrow_jump_suffix = " (Click to jump, Alt+Left to return)"
 
 [view.footer.pill]
 switch_repository = "Repos"
+clone_repository = "Clone"
 worktrees = "Worktrees"
 resolve_conflicts = "Conflicts"
 update_submodules = "Submodules"
@@ -1218,6 +1219,11 @@ repo_already_open = "Already in this repository ({path})"
 repo_switch_conflict_unsaved = "Save or discard the conflict merge before switching repositories"
 repo_switching = "Switching to {path}…"
 repo_switched = "Switched to '{name}'"
+repo_initializing = "Initializing Git repository in {path}…"
+repo_init_failed = "Failed to initialize repository: {err}"
+repo_cloning = "Cloning into {path}…"
+repo_cloned = "Cloned repository into {path}"
+repo_clone_failed = "Clone failed: {err}"
 repo_switch_ops_detached = "the previous repository's operation is still running in the background"
 repo_switch_failed = "Cannot open {path}: {error}"
 credentials_requested = "Git is asking for credentials — answer in the dialog (Esc cancels)"
@@ -1520,6 +1526,7 @@ ruler_heading = "Glyph ruler — every glyph must sit exactly between two │ ma
 
 [help]
 action.switch_repository = "Switch repository (recent repositories / worktrees / submodules)"
+action.clone_repository = "Clone a Git repository…"
 action.worktrees = "Working trees: open / new / lock / remove / prune (git ≥ 2.17)"
 action.resolve_conflicts = "Resolve merge/rebase conflicts (Conflict Queue / 3-Pane Merge)"
 action.update_submodules = "Run git submodule update --init --recursive"
@@ -1776,7 +1783,7 @@ detached = "detached"
 tag_recent = "recent"
 tag_worktree = "worktree"
 tag_submodule = "submodule"
-hint = "Type to filter · Enter switch · Ctrl+O open path… · Del forget · Esc close"
+hint = "Type to filter · Enter switch · Ctrl+O open path… · Ctrl+L clone… · Del forget · Esc close"
 
 [view.worktrees]
 title = "Working Trees"
@@ -1854,3 +1861,44 @@ body_commit = "Every conflict in the queue is now resolved and staged. Open the 
 continue_btn = "Continue {kind}"
 commit_panel_btn = "Open Commit Panel"
 stay_btn = "Stay in Queue"
+
+[git]
+executable_summary = "Git: {version} ({path})"
+executable_error = "Git executable error: {err}"
+
+[view.welcome]
+title = "Welcome to jbgit"
+not_a_repo = "Not a Git repository: {path}"
+init_title = "Initialize Git Repository"
+init_desc = "Run git init in this directory and open workbench"
+clone_title = "Clone Repository…"
+clone_desc = "Clone a remote or local repository into a new folder"
+open_title = "Open Recent / Switch Repository…"
+open_desc = "Pick a recent repository or enter any path"
+initializing = "{spinner} Initializing repository…"
+hint = "↑/↓ Select · Enter/i/c/o Activate · Esc/q Quit"
+
+[dialog.clone]
+title = "Clone Repository"
+url_label = "Remote URL:"
+url_placeholder = "https://github.com/org/repo.git or git@host:org/repo.git"
+dir_label = "Target Directory:"
+dir_placeholder = "Auto-derived from URL (or enter custom path)"
+depth_label = "Shallow Depth (--depth, optional):"
+depth_placeholder = "Leave empty for full history, e.g. 1"
+submodules_label = "Recurse submodules (--recurse-submodules)"
+confirm_btn = "Clone"
+cloning = "{spinner} Cloning repository…"
+hint = "Tab/↑↓ Switch field · Space Toggle · Ctrl+U Clear · Enter Clone · Esc Cancel"
+dir_empty = "Target directory cannot be empty"
+dir_not_empty = "Target directory already exists and is not empty"
+invalid_depth = "Depth must be a positive integer"
+
+[dialog.crlf]
+title = "CRLF Line Separators Detected"
+body = "{count} staged text file(s) contain CRLF (\\r\\n) line endings while core.autocrlf is not enabled."
+guidance = "Set core.autocrlf=true to convert CRLF to LF on commit, commit as is, or disable this check:"
+more_files = "  … and {count} more file(s)"
+fix_and_commit = "Fix & Commit"
+commit_as_is = "Commit As Is"
+dont_warn = "Don't warn again"

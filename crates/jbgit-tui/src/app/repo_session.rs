@@ -85,6 +85,71 @@ impl AppState {
             }
             Action::SwitchRepository(path) => self.request_repo_switch(path, false),
             Action::SwitchRepositoryConfirmed(path) => self.request_repo_switch(path, true),
+            Action::OpenWelcome(dir) => {
+                self.modal_stack
+                    .retain(|l| !matches!(l, ModalLayer::Welcome(_)));
+                self.push_modal(ModalLayer::Welcome(
+                    crate::repo_lifecycle::WelcomeState::new(dir.clone()),
+                ));
+            }
+            Action::WelcomeSelect(idx) => {
+                if let Some(ModalLayer::Welcome(ws)) = self.modal_stack.last_mut() {
+                    ws.selected = (*idx).min(crate::repo_lifecycle::WELCOME_ENTRY_COUNT - 1);
+                }
+            }
+            Action::WelcomeInitRepo(dir) => {
+                if let Some(ModalLayer::Welcome(ws)) = self.modal_stack.last_mut() {
+                    ws.initializing = true;
+                    ws.error = None;
+                }
+                let shown = dir.display().to_string();
+                self.status_notice = Some(
+                    self.i18n
+                        .t_fmt("toast.repo_initializing", &[("path", &shown)]),
+                );
+                self.pending_init_repo = Some(dir.clone());
+            }
+            Action::OpenCloneRepo { base_dir } => {
+                let base = crate::repo_lifecycle::default_clone_base_dir(self, base_dir.as_deref());
+                self.modal_stack.retain(|l| {
+                    !matches!(
+                        l,
+                        ModalLayer::ContextMenu { .. } | ModalLayer::CloneRepo(_)
+                    )
+                });
+                self.blur_active_pane(false);
+                self.push_modal(ModalLayer::CloneRepo(Box::new(
+                    crate::repo_lifecycle::CloneDialogState::new(base),
+                )));
+            }
+            Action::CloneRepoUpdate(act) => {
+                if let Some(ModalLayer::CloneRepo(cd)) = self.modal_stack.last_mut() {
+                    cd.apply(act.clone());
+                }
+            }
+            Action::CloneRepoSubmit => {
+                let i18n = self.i18n.clone();
+                if let Some(ModalLayer::CloneRepo(cd)) = self.modal_stack.last_mut() {
+                    if cd.cloning {
+                        return true;
+                    }
+                    match cd.build_request(&i18n) {
+                        Ok(req) => {
+                            cd.error = None;
+                            cd.cloning = true;
+                            cd.progress_lines.clear();
+                            let dest = req.target_dir.display().to_string();
+                            self.status_notice = Some(
+                                i18n.t_fmt("toast.repo_cloning", &[("path", &dest)]),
+                            );
+                            self.pending_clone_repo = Some(req);
+                        }
+                        Err(msg) => {
+                            cd.error = Some(msg);
+                        }
+                    }
+                }
+            }
             Action::OpenWorktrees => {
                 if !crate::worktrees_view::worktrees_supported(self) {
                     let notice = crate::worktrees_view::unsupported_notice(self);
@@ -180,7 +245,7 @@ impl AppState {
             self.notify_repo_error(i18n.t_fmt("toast.repo_path_missing", &[("path", &shown)]));
             return;
         }
-        if same_path(&path, &current) {
+        if self.repo_snapshot.is_some() && same_path(&path, &current) {
             self.status_notice = Some(i18n.t_fmt("toast.repo_already_open", &[("path", &shown)]));
             return;
         }

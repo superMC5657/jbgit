@@ -693,6 +693,7 @@ arrow_jump_suffix = " (点击跳转，Alt+Left 返回)"
 
 [view.footer.pill]
 switch_repository = "仓库"
+clone_repository = "克隆"
 worktrees = "Worktree"
 resolve_conflicts = "冲突"
 update_submodules = "子模块"
@@ -1218,6 +1219,11 @@ repo_already_open = "已在该仓库中（{path}）"
 repo_switch_conflict_unsaved = "切换仓库前请先保存或放弃冲突合并的编辑"
 repo_switching = "正在切换到 {path}…"
 repo_switched = "已切换到 '{name}'"
+repo_initializing = "正在 {path} 中初始化 Git 仓库…"
+repo_init_failed = "初始化仓库失败：{err}"
+repo_cloning = "正在克隆到 {path}…"
+repo_cloned = "已克隆仓库到 {path}"
+repo_clone_failed = "克隆失败：{err}"
 repo_switch_ops_detached = "上一个仓库的操作仍在后台运行"
 repo_switch_failed = "无法打开 {path}：{error}"
 credentials_requested = "Git 需要凭据 — 请在对话框中输入（Esc 取消）"
@@ -1520,6 +1526,7 @@ ruler_heading = "字形宽度标尺 — 每个符号都应精确位于两个 │
 
 [help]
 action.switch_repository = "切换仓库（最近仓库 / Worktree / 子模块）"
+action.clone_repository = "克隆 Git 仓库…"
 action.worktrees = "Worktree 管理：打开 / 新建 / 锁定 / 删除 / 清理（需 git ≥ 2.17）"
 action.resolve_conflicts = "解决合并 / 变基冲突（多文件冲突队列 / 三栏合并器）"
 action.update_submodules = "运行 git submodule update --init --recursive"
@@ -1776,7 +1783,7 @@ detached = "游离"
 tag_recent = "最近"
 tag_worktree = "worktree"
 tag_submodule = "子模块"
-hint = "输入过滤 · Enter 切换 · Ctrl+O 打开路径… · Del 移除 · Esc 关闭"
+hint = "输入过滤 · Enter 切换 · Ctrl+O 打开路径… · Ctrl+L 克隆… · Del 移除 · Esc 关闭"
 
 [view.worktrees]
 title = "Worktree 管理"
@@ -1854,3 +1861,44 @@ body_commit = "队列中的所有冲突文件均已解决并暂存，是否切�
 continue_btn = "继续{kind}"
 commit_panel_btn = "前往提交面板"
 stay_btn = "留在队列"
+
+[git]
+executable_summary = "Git：{version}（{path}）"
+executable_error = "Git 可执行文件错误：{err}"
+
+[view.welcome]
+title = "欢迎使用 jbgit"
+not_a_repo = "当前目录不是 Git 仓库：{path}"
+init_title = "初始化 Git 仓库"
+init_desc = "在当前目录执行 git init 并直接进入工作台"
+clone_title = "克隆仓库…"
+clone_desc = "从远程或本地地址克隆仓库到新目录"
+open_title = "打开最近 / 切换仓库…"
+open_desc = "从最近仓库列表选择或输入任意路径"
+initializing = "{spinner} 正在初始化仓库…"
+hint = "↑/↓ 选择 · Enter/i/c/o 执行 · Esc/q 退出"
+
+[dialog.clone]
+title = "克隆仓库"
+url_label = "远程 URL："
+url_placeholder = "https://github.com/org/repo.git 或 git@host:org/repo.git"
+dir_label = "目标目录："
+dir_placeholder = "根据 URL 自动推导（也可输入自定义路径）"
+depth_label = "浅克隆深度（--depth，可选）："
+depth_placeholder = "留空表示完整历史，例如 1"
+submodules_label = "递归克隆子模块（--recurse-submodules）"
+confirm_btn = "克隆"
+cloning = "{spinner} 正在克隆仓库…"
+hint = "Tab/↑↓ 切换字段 · Space 勾选 · Ctrl+U 清空 · Enter 开始克隆 · Esc 取消"
+dir_empty = "目标目录不能为空"
+dir_not_empty = "目标目录已存在且非空"
+invalid_depth = "浅克隆深度必须为正整数"
+
+[dialog.crlf]
+title = "检测到 CRLF 换行符"
+body = "有 {count} 个待提交文本文件包含 CRLF（\\r\\n）换行符，且当前仓库未启用 core.autocrlf。"
+guidance = "建议启用 core.autocrlf=true 在提交时自动转换为 LF，或按原样提交 / 关闭此提醒："
+more_files = "  … 以及另外 {count} 个文件"
+fix_and_commit = "修复并提交"
+commit_as_is = "按原样提交"
+dont_warn = "不再提醒"

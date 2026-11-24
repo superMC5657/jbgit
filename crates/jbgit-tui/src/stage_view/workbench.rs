@@ -42,6 +42,7 @@ enum StageDiffOp {
 pub struct CommitContext<'a> {
     pub snap: Option<&'a RepoSnapshot>,
     pub default_remote: &'a str,
+    pub warn_crlf: bool,
     pub i18n: &'a I18n,
     pub now: Instant,
     pub focused_pane: &'a mut PaneId,
@@ -2612,6 +2613,8 @@ impl CommitWorkbench {
                     author_override,
                     stage_all_tracked: force_stage_all_tracked,
                     and_push,
+                    check_crlf: ctx.warn_crlf,
+                    fix_autocrlf: false,
                 };
                 ctx.modals.push(ModalLayer::Dialog(Box::new(Dialog::Identity(
                     IdentityDialog::new(eff_name, eff_email, Some(pending)),
@@ -2631,6 +2634,8 @@ impl CommitWorkbench {
             author_override,
             stage_all_tracked: force_stage_all_tracked,
             and_push,
+            check_crlf: ctx.warn_crlf,
+            fix_autocrlf: false,
         };
         ctx.effects.push(Effect::ExecuteCommit(req));
     }

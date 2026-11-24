@@ -11,7 +11,7 @@ mod refs;
 pub use ops::{
     FastForward, FixupKind, GitOp, MergeOptionConflict, MergeOptions, OngoingKind, OngoingStep,
     PatchSource, PullOptionConflict, PullOptions, PushForce, PushTagMode, RebaseOptionError,
-    RebaseOptions, ResetMode, UpdateMode, short_rev,
+    RebaseOptions, ResetMode, UpdateMode, infer_clone_dir_name, short_rev,
 };
 pub use outcome::{
     GitFailure, GitOpOutcome, PushOutcomeSummary, SkippedBranch, StashEntry, UpdateInfo,

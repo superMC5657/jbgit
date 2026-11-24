@@ -580,6 +580,16 @@ impl TuiSession {
         self.state.pending_repo_switch.take()
     }
 
+    /// Directory where the user requested `git init` from the Welcome modal.
+    pub fn take_init_repo_request(&mut self) -> Option<PathBuf> {
+        self.state.pending_init_repo.take()
+    }
+
+    /// Validated `git clone` request submitted from the `Clone Repository…` modal.
+    pub fn take_clone_repo_request(&mut self) -> Option<jbgit_engine::CloneRequest> {
+        self.state.pending_clone_repo.take()
+    }
+
     /// Workdir of the bound repository.
     pub fn current_workdir(&self) -> PathBuf {
         self.state.current_workdir()
@@ -633,6 +643,10 @@ impl TuiSession {
         if next.git_version.is_none() {
             next.git_version = prev.git_version;
         }
+        if next.git_info.is_none() && next.git_info_error.is_none() {
+            next.git_info = prev.git_info.clone();
+            next.git_info_error = prev.git_info_error.clone();
+        }
         next.clock = Some(self.clock);
         next.needs_redraw = true;
         next.on_repository_bound(Some(writes_finished));
@@ -657,11 +671,17 @@ pub const UNBIND_WRITE_TIMEOUT: Duration = Duration::from_secs(5);
 impl RepoSession {
     /// No engine (repository discovery or engine start failed).
     pub fn detached() -> Self {
+        Self::detached_with_askpass(None)
+    }
+
+    /// No engine, keeping an active [`AskpassServer`] alive so standalone
+    /// operations like `git clone` from the Welcome modal can answer prompts.
+    pub fn detached_with_askpass(askpass: Option<jbgit_engine::askpass::AskpassServer>) -> Self {
         Self {
             handle: None,
             events: None,
             generation: 0,
-            askpass: None,
+            askpass,
         }
     }
 
@@ -681,7 +701,7 @@ impl RepoSession {
     }
 
     /// Starts the engine for `loc` and builds the matching [`AppState`]
-    /// (per-repository config layer, detected git version).
+    /// (per-repository config layer, detected git executable & version).
     pub fn bind_location(
         loc: RepoLocation,
         askpass: Option<jbgit_engine::askpass::AskpassServer>,
@@ -689,15 +709,25 @@ impl RepoSession {
         let workdir = loc.workdir.clone();
         let config = crate::config::AppConfig::load(Some(&workdir));
         let scan_config = config.jbgit.performance.to_engine_config();
+        let git_override = config.jbgit.git.executable.clone();
+        jbgit_engine::set_configured_git_executable(git_override.clone());
         let askpass_env = askpass
             .as_ref()
             .and_then(|s| s.env_for_current_exe().ok());
-        match EngineSupervisor::start_with_askpass(loc, true, scan_config, askpass_env) {
+        match EngineSupervisor::start_with_options(
+            loc,
+            true,
+            scan_config,
+            askpass_env,
+            git_override,
+        ) {
             Ok((handle, rx)) => {
+                let configured = config.jbgit.git.configured_executable().map(str::to_string);
                 let mut state = AppState::new_with_config(workdir, None, config);
-                state.git_version = handle
-                    .git_info()
-                    .and_then(|i| jbgit_core::GitVersion::parse(&i.version_string));
+                populate_git_info(&mut state, configured.as_deref(), handle.git_info());
+                if let Some(err) = state.git_info_error.clone() {
+                    state.status_notice = Some(err);
+                }
                 let repo = Self {
                     handle: Some(handle),
                     events: Some(rx),
@@ -710,10 +740,10 @@ impl RepoSession {
                 drop(askpass);
                 let cli_i18n = crate::i18n::I18n::load_for_cli();
                 let err = cli_i18n.t_fmt("cli.engine_err", &[("err", &e.to_string())]);
-                (
-                    Self::detached(),
-                    AppState::new_with_config(workdir, Some(err), config),
-                )
+                let configured = config.jbgit.git.configured_executable().map(str::to_string);
+                let mut state = AppState::new_with_config(workdir, Some(err), config);
+                populate_git_info(&mut state, configured.as_deref(), None);
+                (Self::detached(), state)
             }
         }
     }
@@ -733,12 +763,37 @@ impl RepoSession {
     }
 }
 
+fn populate_git_info(
+    state: &mut AppState,
+    configured: Option<&str>,
+    handle_info: Option<&jbgit_engine::GitExecutableInfo>,
+) {
+    if let Some(info) = handle_info {
+        state.git_version = jbgit_core::GitVersion::parse(&info.version_string);
+        state.git_info = Some(info.clone());
+        state.git_info_error = None;
+        return;
+    }
+    match jbgit_engine::detect_git_executable(configured) {
+        Ok(info) => {
+            state.git_version = jbgit_core::GitVersion::parse(&info.version_string);
+            state.git_info = Some(info);
+            state.git_info_error = None;
+        }
+        Err(err) => {
+            state.git_info = None;
+            state.git_info_error = Some(err.to_string());
+        }
+    }
+}
+
 /// Discovers the repository at `target_path`, starts the background
 /// [`EngineSupervisor`], and builds a production [`TuiSession`] whose recent
 /// repositories list is the user-level `recent-repos.toml`.
 ///
-/// `askpass` is the credential-bridge server bound to this [`RepoSession`]
-/// (network operations only; torn down on [`RepoSession::unbind`]).
+/// When `target_path` is an existing directory outside any Git repository,
+/// keeps `askpass` alive and opens [`crate::app::ModalLayer::Welcome`] so the
+/// user can initialize a repository, clone one, or open a recent repository.
 pub fn init_engine_and_session(
     target_path: PathBuf,
     askpass: Option<jbgit_engine::askpass::AskpassServer>,
@@ -746,14 +801,43 @@ pub fn init_engine_and_session(
     let (repo, mut state) = match RepoSession::discover(&target_path) {
         Ok(loc) => RepoSession::bind_location(loc, askpass),
         Err(e) => {
-            drop(askpass);
-            (RepoSession::detached(), AppState::new(target_path, Some(e)))
+            if target_path.is_dir() {
+                let resolved_dir = target_path
+                    .canonicalize()
+                    .or_else(|_| std::env::current_dir().map(|cwd| cwd.join(&target_path)))
+                    .unwrap_or(target_path);
+                let config = crate::config::AppConfig::load(Some(&resolved_dir));
+                let configured = config.jbgit.git.configured_executable().map(str::to_string);
+                jbgit_engine::set_configured_git_executable(config.jbgit.git.executable.clone());
+                let mut state = AppState::new_with_config(resolved_dir.clone(), None, config);
+                populate_git_info(&mut state, configured.as_deref(), None);
+                state.push_modal(crate::app::ModalLayer::Welcome(
+                    crate::repo_lifecycle::WelcomeState::new(resolved_dir),
+                ));
+                (RepoSession::detached_with_askpass(askpass), state)
+            } else {
+                drop(askpass);
+                let mut state = AppState::new(target_path, Some(e));
+                let configured = state
+                    .config
+                    .jbgit
+                    .git
+                    .configured_executable()
+                    .map(str::to_string);
+                jbgit_engine::set_configured_git_executable(
+                    state.config.jbgit.git.executable.clone(),
+                );
+                populate_git_info(&mut state, configured.as_deref(), None);
+                (RepoSession::detached(), state)
+            }
         }
     };
     state.async_graph_enabled = true;
     state.recent_repos =
         crate::repo_switcher::RecentRepos::load(crate::repo_switcher::RecentRepos::default_file());
-    state.on_repository_bound(None);
+    if repo.handle.is_some() {
+        state.on_repository_bound(None);
+    }
     (repo, TuiSession::new(state))
 }
 
