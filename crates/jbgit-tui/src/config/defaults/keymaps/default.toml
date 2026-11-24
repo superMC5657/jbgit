@@ -79,6 +79,11 @@ key_bindings = [
     { on = [ "<C-S-=>" ], run = "expand_all_linear_branches", desc = "展开全部线性分支" },
     { on = [ "<C-S-+>" ], run = "expand_all_linear_branches", desc = "展开全部线性分支" },
     { on = [ "<A-t>" ], run = "browse_revision", desc = "按版本浏览仓库文件树 (Browse Repository at Revision)" },
+    { on = [ "s" ], run = "log_speed_search", desc = "表内速查定位提交（不隐藏不匹配行，n/N 步进）" },
+    { on = [ "R" ], run = "open_reflog", desc = "打开 Git Reflog 历史恢复视图" },
+    { on = [ "M" ], run = "toggle_no_merges", desc = "切换 No-Merges (--no-merges) 筛选" },
+    { on = [ "L" ], run = "toggle_linear_bek", desc = "切换 LinearBek 线性合并折叠视图" },
+    { on = [ "E" ], run = "maximize_commit_message", desc = "最大化查看完整提交说明" },
 ]
 
 [branch]
@@ -92,6 +97,7 @@ key_bindings = [
     { on = [ "<C-f>" ], run = "branch_search", desc = "在分支树中模糊搜索" },
     { on = [ "<Del>" ], run = "delete_branch", desc = "删除分支" },
     { on = [ "J" ], run = "navigate_branch", desc = "定位到日志中的分支顶端" },
+    { on = [ "R" ], run = "open_reflog", desc = "查看选中分支的 Git Reflog" },
     { on = [ "<C-A-n>" ], run = "new_branch", desc = "从当前分支新建分支" },
 ]
 

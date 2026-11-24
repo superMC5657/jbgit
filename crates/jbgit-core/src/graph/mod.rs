@@ -1,5 +1,6 @@
 pub mod collapse;
 pub mod edges_in_row;
+pub mod linear_bek;
 pub mod permanent;
 pub mod print_elements;
 pub mod visible;
@@ -12,6 +13,10 @@ pub use edges_in_row::{
     BLOCK_SIZE, CACHE_SIZE, EdgesInRowCache, EdgesInRowGenerator, WALK_SIZE,
 };
 pub use fixedbitset::FixedBitSet;
+pub use linear_bek::{
+    FoldedBekMerge, LINEAR_BEK_MAGIC_SET_SIZE, LINEAR_BEK_MAX_BLOCK_SIZE, LinearBekState,
+    apply_linear_bek,
+};
 pub use permanent::{
     BranchLayoutPriority, CommitMetaLite, DownTarget, GraphLayoutBuilder, LayoutIndex, PermNodeId,
     PermanentGraph, PermanentGraphLayout, PermanentLinearGraph, PermanentLinearGraphBuilder,
@@ -25,5 +30,6 @@ pub use print_elements::{
     VISIBLE_PART_SIZE, compare_edge_and_node, compare_elements, edge_is_visible_in_gap,
 };
 pub use visible::{
-    GraphEdge, GraphEdgeType, GraphViewOptions, SortType, VisibleGraph, VisibleLinearGraph,
+    GraphEdge, GraphEdgeType, GraphViewOptions, SortType, VisibleGraph, VisibleGraphBuildArgs,
+    VisibleLinearGraph,
 };

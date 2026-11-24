@@ -3,12 +3,14 @@
 //! (`FrameDiffPreview`) and path-filter matches (`VcsLogFileFilter`).
 
 mod blame;
+mod cherry_picked;
 mod commit_changes;
 mod file_diff;
 mod file_history;
 mod outgoing;
 mod patch;
 mod path_matches;
+mod reflog;
 mod remote_tag;
 mod tree;
 
@@ -19,6 +21,7 @@ use crate::error::EngineError;
 pub(crate) use blame::load_blame_sync;
 #[cfg(test)]
 pub(crate) use blame::parse_blame_porcelain;
+pub use cherry_picked::load_cherry_picked_sync;
 pub(crate) use commit_changes::{
     load_commit_details_sync, verify_commit_signature_sync, verify_commit_signatures_batch_sync,
 };
@@ -29,6 +32,7 @@ pub(crate) use file_history::{parse_file_history_z, parse_line_history};
 pub(crate) use outgoing::load_outgoing_sync;
 pub(crate) use patch::{apply_args, check_patch_sync, resolve_patch_input};
 pub(crate) use path_matches::load_path_matches_sync;
+pub use reflog::load_reflog_sync;
 pub(crate) use remote_tag::check_remote_tag_async;
 pub(crate) use tree::{load_tree_blob_sync, load_tree_sync};
 #[cfg(test)]

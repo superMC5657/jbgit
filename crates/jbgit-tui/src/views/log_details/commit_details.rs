@@ -223,6 +223,8 @@ fn build_single_details(
     let label = |s: &str| Span::styled(pad_label(s, 10), Style::default().fg(theme.fg_muted));
 
     let sha = d.oid.to_string();
+    let max_btn = format!(" [{}] ", ctx.t("view.log_details.maximize_msg_btn"));
+    let max_btn_w = max_btn.width() as u16;
     let mut sha_spans = vec![
         label(ctx.t("view.log_details.commit_label")),
         Span::styled(
@@ -237,12 +239,15 @@ fn build_single_details(
         .signatures
         .peek(&d.oid)
         .unwrap_or(&d.signature);
+    let mut sha_used_w: u16 = 11 + sha.width() as u16;
     if effective_sig.status.is_signed() {
         let (badge_key, _) = signature_badge_and_desc_keys(effective_sig.status);
         let (_, pill_fg, pill_bg) = theme.signature_colors(effective_sig.status);
+        let badge_txt = ctx.t(badge_key).to_string();
+        sha_used_w = sha_used_w.saturating_add(1 + badge_txt.width() as u16);
         sha_spans.push(Span::raw(" "));
         sha_spans.push(Span::styled(
-            ctx.t(badge_key).to_string(),
+            badge_txt,
             Style::default().fg(pill_fg).bg(pill_bg),
         ));
     }
@@ -252,6 +257,21 @@ fn build_single_details(
         width: sha.width() as u16,
         target: HitTarget::DetailsHash { oid: d.oid },
     });
+    if width >= (sha_used_w + max_btn_w + 1) as usize {
+        sha_spans.push(Span::raw(" "));
+        hits.push(LineHit {
+            line_idx: lines.len(),
+            x: sha_used_w + 1,
+            width: max_btn_w,
+            target: HitTarget::DetailsMaximizeMessage,
+        });
+        sha_spans.push(Span::styled(
+            max_btn,
+            Style::default()
+                .fg(theme.fg_bright)
+                .bg(theme.bg_panel),
+        ));
+    }
     lines.push(Line::from(sha_spans));
 
     if d.same_author_and_committer() {
@@ -386,6 +406,7 @@ fn build_single_details(
     }
 
     lines.push(Line::from(""));
+    let snap = state.repo_snapshot.as_deref();
     for (idx, raw) in d.message.lines().enumerate() {
         let kind = classify_message_line(idx, raw);
         let base = match kind {
@@ -395,24 +416,91 @@ fn build_single_details(
             MessageLineKind::Trailer => Style::default().fg(theme.ref_remote.pill_fg),
             MessageLineKind::Body => Style::default().fg(theme.fg_primary),
         };
-        let issue = Style::default()
-            .fg(theme.fg_accent_link)
-            .add_modifier(Modifier::UNDERLINED);
         if raw.is_empty() {
             lines.push(Line::from(""));
             continue;
         }
         for chunk in wrap_text(raw, width.saturating_sub(2).max(8)) {
-            let ranges = issue_ref_ranges(&chunk);
-            let mut spans = vec![Span::raw(" ")];
-            spans.extend(highlight_spans(
-                &chunk,
-                &ranges,
-                width.saturating_sub(1),
-                base,
-                issue,
-            ));
+            let line_idx = lines.len();
+            let (spans, hash_hits) =
+                render_body_chunk_with_links(&chunk, width.saturating_sub(1), base, snap, theme);
+            for (hx, hw, target_oid) in hash_hits {
+                hits.push(LineHit {
+                    line_idx,
+                    x: hx,
+                    width: hw,
+                    target: HitTarget::DetailsCommitHash { oid: target_oid },
+                });
+            }
             lines.push(Line::from(spans));
         }
     }
+}
+
+/// Finds word-bounded 7..=40 hex commit hash tokens in `text` that resolve to a
+/// commit in `snap`, returning `(byte_start, byte_end, resolved_oid)`.
+pub(crate) fn commit_hash_ref_ranges(
+    text: &str,
+    snap: Option<&jbgit_core::RepoSnapshot>,
+) -> Vec<(usize, usize, jbgit_core::Oid)> {
+    let Some(snap) = snap else {
+        return Vec::new();
+    };
+    let bytes = text.as_bytes();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i].is_ascii_hexdigit() {
+            let start = i;
+            while i < bytes.len() && bytes[i].is_ascii_hexdigit() {
+                i += 1;
+            }
+            let end = i;
+            let len = end - start;
+            let left_ok = start == 0 || !bytes[start - 1].is_ascii_alphanumeric();
+            let right_ok = end == bytes.len() || !bytes[end].is_ascii_alphanumeric();
+            if left_ok
+                && right_ok
+                && (7..=40).contains(&len)
+                && let Some(oid) = snap.resolve_revision(&text[start..end])
+            {
+                out.push((start, end, oid));
+            }
+        } else {
+            i += 1;
+        }
+    }
+    out
+}
+
+/// Renders one wrapped commit-message line with both issue refs (`#123`, `PROJ-4`)
+/// and clickable 7..=40 hex commit hash links highlighted, returning the spans
+/// (prefixed with `" "`) plus clickable `(x, width, oid)` hit regions.
+pub(crate) fn render_body_chunk_with_links(
+    chunk: &str,
+    max_width: usize,
+    base: Style,
+    snap: Option<&jbgit_core::RepoSnapshot>,
+    theme: &crate::theme::ThemePalette,
+) -> (Vec<Span<'static>>, Vec<(u16, u16, jbgit_core::Oid)>) {
+    let link_style = Style::default()
+        .fg(theme.fg_accent_link)
+        .add_modifier(Modifier::UNDERLINED);
+    let mut ranges = issue_ref_ranges(chunk);
+    let hash_refs = commit_hash_ref_ranges(chunk, snap);
+    let mut hits = Vec::with_capacity(hash_refs.len());
+    for &(s, e, oid) in &hash_refs {
+        ranges.push((s, e));
+        let prefix_w = chunk[..s].width();
+        let token_w = chunk[s..e].width();
+        if prefix_w < max_width && token_w > 0 {
+            let x = 1u16.saturating_add(prefix_w as u16);
+            let w = token_w.min(max_width.saturating_sub(prefix_w)) as u16;
+            hits.push((x, w, oid));
+        }
+    }
+    ranges.sort_unstable();
+    let mut spans = vec![Span::raw(" ")];
+    spans.extend(highlight_spans(chunk, &ranges, max_width, base, link_style));
+    (spans, hits)
 }

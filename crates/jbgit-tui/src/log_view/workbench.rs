@@ -2,13 +2,15 @@
 //! commit graph, Branches Dashboard, filter bar, presentation settings,
 //! graph renderer, and right-hand details/changes/diff panes.
 
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Instant;
 
 use jbgit_core::graph::SortType;
 use jbgit_core::{
-    BranchFilter, BranchNodeKind, CommitSummary, DetailsKey, DetailsMode, DiffContext, Oid, PaneId,
-    PathFilter, RefKind, RepoSnapshot, RequestSlot, RequestSlotId, WhitespaceMode,
+    BranchFilter, BranchNodeKind, CherryPickedKey, CommitSummary, DetailsKey, DetailsMode,
+    DiffContext, Oid, PaneId, PathFilter, RefKind, RepoSnapshot, RequestSlot, RequestSlotId,
+    WhitespaceMode,
 };
 
 use crate::app::{
@@ -23,7 +25,7 @@ use crate::theme::BranchColorManager;
 
 use super::{
     BranchesPaneState, DETAILS_DEBOUNCE, DetailsPaneState, FilterBarState, LogPresentation,
-    MAX_AGGREGATED_COMMITS, PathRequest, PresentationToggle,
+    LogSpeedSearchState, MAX_AGGREGATED_COMMITS, PathRequest, PresentationToggle,
 };
 
 pub struct LogDispatchCtx<'a> {
@@ -55,10 +57,15 @@ pub struct LogWorkbench {
     pub(crate) graph: LogGraphState,
     pub(crate) branches: BranchesPaneState,
     pub(crate) filter: FilterBarState,
+    pub(crate) speed_search: LogSpeedSearchState,
     pub(crate) presentation: LogPresentation,
     pub(crate) graph_renderer: GraphRenderer,
     pub(crate) details: DetailsPaneState,
     pub(crate) sig_requested: Vec<Oid>,
+    /// Loaded `git cherry <head> <branch>` patch-equivalent OIDs for the active compared branch.
+    pub(crate) cherry_picked: Option<(CherryPickedKey, Arc<HashSet<Oid>>)>,
+    /// Key of the currently in-flight `git cherry` request, if any.
+    pub(crate) cherry_picked_requested: Option<CherryPickedKey>,
 }
 
 impl LogWorkbench {
@@ -67,22 +74,30 @@ impl LogWorkbench {
         diff_whitespace: WhitespaceMode,
         diff_soft_wrap: bool,
         compact_refs: bool,
-        show_only_affected_changes: bool,
+        log_cfg: &crate::config::jbgit_config::LogSection,
         graph_mode: GraphRendererMode,
     ) -> Self {
         let mut details = DetailsPaneState::default();
         details.diff.context = diff_context;
         details.diff.whitespace = diff_whitespace;
         details.diff.soft_wrap = diff_soft_wrap;
+        let mut graph = LogGraphState::default();
+        graph.options.linear_bek = log_cfg.linear_bek;
         let presentation = LogPresentation {
             compact_refs,
-            show_only_affected_changes,
+            show_only_affected_changes: log_cfg.show_only_affected_changes,
+            highlight_my_commits: log_cfg.highlight_my_commits,
+            highlight_cherry_picked: log_cfg.highlight_cherry_picked,
+            show_author_column: log_cfg.show_author_column,
+            show_date_column: log_cfg.show_date_column,
+            align_labels_right: log_cfg.align_labels_right,
             ..Default::default()
         };
         Self {
-            graph: LogGraphState::default(),
+            graph,
             branches: BranchesPaneState::default(),
             filter: FilterBarState::default(),
+            speed_search: LogSpeedSearchState::default(),
             presentation,
             graph_renderer: GraphRenderer::new(
                 graph_mode,
@@ -90,7 +105,88 @@ impl LogWorkbench {
             ),
             details,
             sig_requested: Vec::new(),
+            cherry_picked: None,
+            cherry_picked_requested: None,
         }
+    }
+
+    pub fn speed_search(&self) -> &LogSpeedSearchState {
+        &self.speed_search
+    }
+
+    /// True when Current Branch background tinting should be drawn.
+    /// Auto-suppressed when `BranchFilter` restricts solely to `HEAD` or current branch.
+    pub fn should_highlight_current_branch(&self, snap: &RepoSnapshot) -> bool {
+        self.presentation.highlight_current_branch
+            && !self
+                .filter
+                .spec
+                .branch
+                .is_only_current_branch(snap.head_branch.as_deref())
+    }
+
+    /// True when My Commits bolding should be drawn.
+    /// Auto-suppressed for single-author repos or when `UserFilter(@me)` is active.
+    pub fn should_highlight_my_commits(&self) -> bool {
+        self.presentation.highlight_my_commits
+            && !self.filter.spec.user.has_me()
+            && self
+                .graph
+                .cached
+                .as_ref()
+                .is_some_and(|c| c.has_multiple_authors)
+    }
+
+    /// Active `CherryPickedKey` when the `Already Cherry-Picked` highlighter applies.
+    pub fn desired_cherry_picked_key(&self, snap: &RepoSnapshot) -> Option<CherryPickedKey> {
+        if !self.presentation.highlight_cherry_picked {
+            return None;
+        }
+        let head_oid = snap.head_oid?;
+        let branch = self
+            .filter
+            .spec
+            .branch
+            .single_compared_branch(snap.head_branch.as_deref())?;
+        Some(CherryPickedKey {
+            head_oid,
+            branch: branch.to_string(),
+        })
+    }
+
+    /// True if `oid` is dimmed by the Already Cherry-Picked highlighter for the current filter.
+    pub fn is_commit_cherry_picked(&self, snap: &RepoSnapshot, oid: &Oid) -> bool {
+        let Some(desired) = self.desired_cherry_picked_key(snap) else {
+            return false;
+        };
+        self.cherry_picked
+            .as_ref()
+            .is_some_and(|(key, set)| *key == desired && set.contains(oid))
+    }
+
+    pub fn apply_cherry_picked_loaded(&mut self, key: CherryPickedKey, oids: Arc<HashSet<Oid>>) {
+        if self.cherry_picked_requested.as_ref() == Some(&key) {
+            self.cherry_picked_requested = None;
+        }
+        self.cherry_picked = Some((key, oids));
+    }
+
+    pub fn favorite_branch_names(&self, snap: Option<&Arc<RepoSnapshot>>) -> Vec<String> {
+        let Some(s) = snap else {
+            return Vec::new();
+        };
+        s.refs
+            .iter()
+            .filter(|r| {
+                matches!(r.kind, RefKind::LocalBranch | RefKind::RemoteBranch)
+                    && self
+                        .branches
+                        .settings
+                        .favorites
+                        .is_favorite(&r.full_name, &r.name)
+            })
+            .map(|r| r.name.clone())
+            .collect()
     }
 
     pub fn graph(&self) -> &LogGraphState {
@@ -137,16 +233,39 @@ impl LogWorkbench {
     ) {
         if !self.uses_async_graph(snap, async_enabled) {
             let path_matches = self.filter.current_path_matches(snap);
+            let favorites = self.favorite_branch_names(snap);
             self.graph.ensure_cache(
                 snap,
                 branch_colors,
                 &FilterInputs {
                     spec: &self.filter.spec,
                     path_matches,
+                    favorites: &favorites,
                 },
             );
         }
         self.branches.sync_model(snap, false);
+        self.sync_speed_search(snap);
+    }
+
+    /// Recomputes cached in-table speed search row indices whenever the visible
+    /// graph projection has changed since the last computation.
+    pub fn sync_speed_search(&mut self, snap: Option<&Arc<RepoSnapshot>>) {
+        if !self.speed_search.is_active() {
+            return;
+        }
+        if self.speed_search.graph_revision == self.graph.visible_revision {
+            return;
+        }
+        self.speed_search.graph_revision = self.graph.visible_revision;
+        if let (Some(cached), Some(snap)) = (&self.graph.cached, snap) {
+            let _ = self
+                .speed_search
+                .recompute(cached, snap, self.graph.selected_idx);
+        } else {
+            self.speed_search.matches.clear();
+            self.speed_search.current = None;
+        }
     }
 
     pub fn on_blur(&mut self, leaving_tab: bool) {
@@ -155,6 +274,7 @@ impl LogWorkbench {
         }
         self.details.diff.search.editing = false;
         self.filter.editing_text = false;
+        self.speed_search.editing = false;
         self.branches.searching = false;
     }
 
@@ -370,6 +490,10 @@ impl LogWorkbench {
                 p.show_tag_names = !p.show_tag_names;
                 ("presentation.show_tag_names", p.show_tag_names)
             }
+            PresentationToggle::AlignLabelsRight => {
+                p.align_labels_right = !p.align_labels_right;
+                ("presentation.align_labels_right", p.align_labels_right)
+            }
             PresentationToggle::ShowLongEdges => {
                 o.show_long_edges = !o.show_long_edges;
                 ("presentation.show_long_edges", o.show_long_edges)
@@ -384,6 +508,13 @@ impl LogWorkbench {
                     o.sort_type == SortType::IntelliSort,
                 )
             }
+            PresentationToggle::LinearBek => {
+                o.linear_bek = !o.linear_bek;
+                if o.linear_bek {
+                    self.graph.linear_bek.collapse_all();
+                }
+                ("presentation.linear_bek", o.linear_bek)
+            }
             PresentationToggle::FirstParentOnly => {
                 o.first_parent_only = !o.first_parent_only;
                 ("presentation.first_parent_only", o.first_parent_only)
@@ -395,9 +526,31 @@ impl LogWorkbench {
                     p.highlight_current_branch,
                 )
             }
+            PresentationToggle::HighlightMyCommits => {
+                p.highlight_my_commits = !p.highlight_my_commits;
+                ("presentation.highlight_my_commits", p.highlight_my_commits)
+            }
             PresentationToggle::HighlightMerges => {
                 p.highlight_merges = !p.highlight_merges;
                 ("presentation.highlight_merges", p.highlight_merges)
+            }
+            PresentationToggle::HighlightCherryPicked => {
+                p.highlight_cherry_picked = !p.highlight_cherry_picked;
+                if !p.highlight_cherry_picked {
+                    self.cherry_picked_requested = None;
+                }
+                (
+                    "presentation.highlight_cherry_picked",
+                    p.highlight_cherry_picked,
+                )
+            }
+            PresentationToggle::ShowAuthorColumn => {
+                p.show_author_column = !p.show_author_column;
+                ("presentation.show_author_column", p.show_author_column)
+            }
+            PresentationToggle::ShowDateColumn => {
+                p.show_date_column = !p.show_date_column;
+                ("presentation.show_date_column", p.show_date_column)
             }
             PresentationToggle::ShowHashColumn => {
                 p.show_hash_column = !p.show_hash_column;
@@ -688,6 +841,76 @@ impl LogWorkbench {
                     ctx.status_notice,
                 );
             }
+            Action::ToggleNoMergesFilter => {
+                self.filter.spec.no_merges = !self.filter.spec.no_merges;
+                let state = ctx.i18n.on_off(self.filter.spec.no_merges);
+                *ctx.status_notice = Some(ctx.i18n.t_fmt(
+                    "toast.presentation_toggle",
+                    &[("label", ctx.i18n.t("filter.no_merges")), ("state", state)],
+                ));
+                self.on_filter_changed(
+                    ctx.snap,
+                    ctx.branch_colors,
+                    ctx.async_graph_enabled,
+                    ctx.i18n,
+                    ctx.status_notice,
+                );
+            }
+            Action::LogSpeedSearchOpen => {
+                self.filter.editing_text = false;
+                self.speed_search.open();
+                *ctx.focused_pane = PaneId::LogCommitTable;
+                self.speed_search.graph_revision = self.graph.visible_revision;
+                if let (Some(cached), Some(snap)) = (&self.graph.cached, ctx.snap)
+                    && let Some(row) =
+                        self.speed_search
+                            .recompute(cached, snap, self.graph.selected_idx)
+                {
+                    self.graph.select_row(row);
+                }
+            }
+            Action::LogSpeedSearchInput(ch) => {
+                self.speed_search.active = true;
+                self.speed_search.editing = true;
+                self.speed_search.query.push(*ch);
+                self.speed_search.graph_revision = self.graph.visible_revision;
+                if let (Some(cached), Some(snap)) = (&self.graph.cached, ctx.snap)
+                    && let Some(row) =
+                        self.speed_search
+                            .recompute(cached, snap, self.graph.selected_idx)
+                {
+                    self.graph.select_row(row);
+                }
+            }
+            Action::LogSpeedSearchBackspace => {
+                self.speed_search.query.pop();
+                self.speed_search.graph_revision = self.graph.visible_revision;
+                if let (Some(cached), Some(snap)) = (&self.graph.cached, ctx.snap)
+                    && let Some(row) =
+                        self.speed_search
+                            .recompute(cached, snap, self.graph.selected_idx)
+                {
+                    self.graph.select_row(row);
+                }
+            }
+            Action::LogSpeedSearchConfirm => {
+                if self.speed_search.query.trim().is_empty() {
+                    self.speed_search.close();
+                } else {
+                    self.speed_search.editing = false;
+                }
+            }
+            Action::LogSpeedSearchClose => {
+                self.speed_search.close();
+            }
+            Action::LogSpeedSearchStep(forward) => {
+                self.sync_speed_search(ctx.snap);
+                if self.speed_search.is_active()
+                    && let Some(row) = self.speed_search.step(*forward)
+                {
+                    self.graph.jump_to(ctx.snap, row, true);
+                }
+            }
             Action::ApplyFilterField { field, expr } => {
                 if let Err(err) = field.apply_i18n(
                     &mut self.filter.spec,
@@ -698,6 +921,7 @@ impl LogWorkbench {
                     *ctx.status_notice = Some(err);
                     return true;
                 }
+                self.filter.record_history(*field, expr);
                 self.on_filter_changed(
                     ctx.snap,
                     ctx.branch_colors,
@@ -786,7 +1010,31 @@ impl LogWorkbench {
                 self.graph.set_segments_collapsed(ids, false);
                 self.notify_fold(before, ctx);
             }
+            Action::GraphExpandBekMerge(oid) => {
+                if self.graph.expand_bek_merge(*oid) {
+                    let short = oid.short();
+                    *ctx.status_notice = Some(
+                        ctx.i18n
+                            .t_fmt("toast.linear_bek_expanded", &[("short", &short)]),
+                    );
+                }
+            }
             Action::GraphExpandEdge { up_row, down_row } => {
+                if let Some(bek_oid) = self
+                    .graph
+                    .cached
+                    .as_ref()
+                    .and_then(|c| c.visible.bek_merge_at_edge(*up_row, *down_row))
+                {
+                    if self.graph.expand_bek_merge(bek_oid) {
+                        let short = bek_oid.short();
+                        *ctx.status_notice = Some(
+                            ctx.i18n
+                                .t_fmt("toast.linear_bek_expanded", &[("short", &short)]),
+                        );
+                    }
+                    return true;
+                }
                 let collapsed_ids = self
                     .graph
                     .cached
@@ -797,13 +1045,12 @@ impl LogWorkbench {
                     let before = self.graph.visible_count();
                     self.graph.set_segments_collapsed(&collapsed_ids, false);
                     self.notify_fold(before, ctx);
-                } else if !self.graph.options.first_parent_only
-                    && let Some(seg_id) = self
-                        .graph
-                        .cached
-                        .as_ref()
-                        .filter(|c| !c.filtered)
-                        .and_then(|c| c.expanded_segment_at_edge(*up_row, *down_row))
+                } else if let Some(seg_id) = self
+                    .graph
+                    .cached
+                    .as_ref()
+                    .filter(|c| c.visible.can_collapse)
+                    .and_then(|c| c.expanded_segment_at_edge(*up_row, *down_row))
                 {
                     let before = self.graph.visible_count();
                     self.graph.collapse_segment_moving_cursor(seg_id);
@@ -817,12 +1064,23 @@ impl LogWorkbench {
                     .as_ref()
                     .map(|c| c.collapsed_segments_below(*row))
                     .unwrap_or_default();
-                if ids.is_empty() {
-                    return true;
+                if !ids.is_empty() {
+                    let before = self.graph.visible_count();
+                    self.graph.set_segments_collapsed(&ids, false);
+                    self.notify_fold(before, ctx);
+                } else if let Some(bek_oid) = self
+                    .graph
+                    .cached
+                    .as_ref()
+                    .and_then(|c| c.visible.bek_merge_at_row(*row))
+                    && self.graph.expand_bek_merge(bek_oid)
+                {
+                    let short = bek_oid.short();
+                    *ctx.status_notice = Some(
+                        ctx.i18n
+                            .t_fmt("toast.linear_bek_expanded", &[("short", &short)]),
+                    );
                 }
-                let before = self.graph.visible_count();
-                self.graph.set_segments_collapsed(&ids, false);
-                self.notify_fold(before, ctx);
             }
             Action::GraphCollapseAll => {
                 let before = self.graph.visible_count();
@@ -895,6 +1153,16 @@ impl LogWorkbench {
                     *ctx.status_notice = Some(ctx.i18n.t("toast.no_visible_child").to_string());
                 }
             },
+            Action::GoToChildCandidate(idx) => {
+                let candidates = self.graph.child_candidates(ctx.snap);
+                match candidates.get(*idx) {
+                    Some(&(row, _)) => self.graph.jump_to(ctx.snap, row, false),
+                    None => {
+                        *ctx.status_notice =
+                            Some(ctx.i18n.t("toast.no_visible_child").to_string());
+                    }
+                }
+            }
             Action::GoToRevision(expr) => {
                 let expr = expr.trim().to_string();
                 match ctx.snap.and_then(|s| s.resolve_revision(&expr)) {
@@ -1128,13 +1396,32 @@ impl LogWorkbench {
                     })
                 })
                 .map(|pm| Arc::clone(&pm.oids));
+            let favorites = self.favorite_branch_names(ctx.snap);
             if let Some(job) = self.graph.take_async_rebuild_job(
                 ctx.snap,
                 ctx.branch_colors,
                 &self.filter.spec,
+                favorites,
                 path_matches,
             ) {
                 ctx.effects.push(Effect::RebuildLogGraph(Box::new(job)));
+            }
+        }
+
+        // Reconcile async `Already Cherry-Picked` query on its own RequestSlot.
+        if let Some(snap) = ctx.snap {
+            if let Some(desired_key) = self.desired_cherry_picked_key(snap) {
+                let already_loaded = self
+                    .cherry_picked
+                    .as_ref()
+                    .is_some_and(|(k, _)| *k == desired_key);
+                let already_requested = self.cherry_picked_requested.as_ref() == Some(&desired_key);
+                if !already_loaded && !already_requested {
+                    self.cherry_picked_requested = Some(desired_key.clone());
+                    ctx.effects.push(Effect::RequestCherryPicked(desired_key));
+                }
+            } else {
+                self.cherry_picked_requested = None;
             }
         }
 

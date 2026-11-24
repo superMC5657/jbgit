@@ -8,12 +8,12 @@ use std::time::Instant;
 use ratatui::layout::Rect;
 
 use crate::dialogs::Dialog;
-use crate::log_view::{AnnotateState, FileHistoryState, FilterField, PushDialogState};
+use crate::log_view::{AnnotateState, FileHistoryState, FilterField, PushDialogState, ReflogState};
 use crate::views::overlays::{context_menu_rect, menu_item_row_y};
 
 use super::{
     Action, ConflictMergeState, ConflictQueueState, ContextMenuEntryKind, ContextMenuItem,
-    MENU_HOVER_DELAY, MenuHover, MenuParent, PopupKind,
+    MENU_HOVER_DELAY, MenuHover, MenuParent, PopupKind, ScrollViewport,
 };
 
 #[derive(Debug)]
@@ -44,6 +44,19 @@ pub enum ModalLayer {
     ChooseParent {
         selected: usize,
     },
+    /// Layer 2: child chooser for branch-point commits with ≥ 2 visible children.
+    ChooseChild {
+        selected: usize,
+    },
+    /// Layer 2: maximized scrollable full commit message modal.
+    CommitMessage {
+        oid: jbgit_core::Oid,
+        subject: String,
+        message: String,
+        scroll: ScrollViewport,
+    },
+    /// Layer 2: Git Reflog browser & recovery modal (`git reflog show` + synced diff).
+    Reflog(Box<ReflogState>),
     /// Layer 2: commit message history picker (`Ctrl+M` / `[🕘]`).
     CommitHistory {
         query: String,
@@ -111,6 +124,7 @@ impl ModalLayer {
                 query: initial_query,
             },
             PopupKind::ChooseParent => Self::ChooseParent { selected: 0 },
+            PopupKind::ChooseChild => Self::ChooseChild { selected: 0 },
             PopupKind::CommitHistory => Self::CommitHistory {
                 query: initial_query,
                 selected: 0,
@@ -132,7 +146,7 @@ impl ModalLayer {
             Self::GoToRevision { query } => {
                 *query = next_query;
             }
-            Self::ChooseParent { selected } => {
+            Self::ChooseParent { selected } | Self::ChooseChild { selected } => {
                 *selected = next_selected;
             }
             _ => {}
@@ -147,6 +161,7 @@ impl ModalLayer {
             Self::FilterEditor { field, .. } => Some(PopupKind::FilterEditor(*field)),
             Self::GoToRevision { .. } => Some(PopupKind::GoToRevision),
             Self::ChooseParent { .. } => Some(PopupKind::ChooseParent),
+            Self::ChooseChild { .. } => Some(PopupKind::ChooseChild),
             Self::CommitHistory { .. } => Some(PopupKind::CommitHistory),
             _ => None,
         }
@@ -161,7 +176,9 @@ impl ModalLayer {
             }
             | Self::CommitHistory { query, selected } => Some((query.as_str(), *selected)),
             Self::GoToRevision { query } => Some((query.as_str(), 0)),
-            Self::ChooseParent { selected } => Some(("", *selected)),
+            Self::ChooseParent { selected } | Self::ChooseChild { selected } => {
+                Some(("", *selected))
+            }
             Self::PalettePreview => Some(("", 0)),
             _ => None,
         }
@@ -175,6 +192,9 @@ impl ModalLayer {
             | Self::FilterEditor { .. }
             | Self::GoToRevision { .. }
             | Self::ChooseParent { .. }
+            | Self::ChooseChild { .. }
+            | Self::CommitMessage { .. }
+            | Self::Reflog(_)
             | Self::CommitHistory { .. }
             | Self::FileHistory(_)
             | Self::Annotate(_)
@@ -285,6 +305,45 @@ impl ModalStack {
         {
             self.layers.remove(pos);
         }
+    }
+
+    pub fn reflog(&self) -> Option<&ReflogState> {
+        self.layers.iter().rev().find_map(|l| match l {
+            ModalLayer::Reflog(r) => Some(r.as_ref()),
+            _ => None,
+        })
+    }
+
+    pub fn reflog_mut(&mut self) -> Option<&mut ReflogState> {
+        self.layers.iter_mut().rev().find_map(|l| match l {
+            ModalLayer::Reflog(r) => Some(r.as_mut()),
+            _ => None,
+        })
+    }
+
+    pub fn open_reflog(&mut self, state: ReflogState) {
+        if let Some(ModalLayer::Reflog(existing)) = self.layers.last_mut() {
+            **existing = state;
+        } else {
+            self.layers.push(ModalLayer::Reflog(Box::new(state)));
+        }
+    }
+
+    pub fn close_reflog(&mut self) {
+        if let Some(pos) = self
+            .layers
+            .iter()
+            .rposition(|l| matches!(l, ModalLayer::Reflog(_)))
+        {
+            self.layers.remove(pos);
+        }
+    }
+
+    pub fn commit_message_scroll_mut(&mut self) -> Option<&mut ScrollViewport> {
+        self.layers.iter_mut().rev().find_map(|l| match l {
+            ModalLayer::CommitMessage { scroll, .. } => Some(scroll),
+            _ => None,
+        })
     }
 
     pub fn annotate(&self) -> Option<&AnnotateState> {

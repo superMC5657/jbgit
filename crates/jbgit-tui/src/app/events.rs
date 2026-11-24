@@ -177,6 +177,8 @@ impl AppState {
                     .on_repo_snapshot_loaded(&snapshot, head_changed, &mut effects);
                 self.log.graph.on_snapshot_loaded();
                 self.log.sig_requested.clear();
+                self.log.cherry_picked = None;
+                self.log.cherry_picked_requested = None;
                 self.log.details.reset_containing();
                 for layer in self.modal_stack.iter_mut() {
                     if let ModalLayer::Dialog(d) = layer
@@ -232,6 +234,17 @@ impl AppState {
                         r.selected_file = r.selected_file.min(bundle.changes.len().saturating_sub(1));
                     }
                 }
+                if slot == RequestSlotId::ReflogCommitDetails
+                    && let Some(rf) = self.modal_stack.reflog_mut()
+                {
+                    if rf.details_requested.as_ref() == Some(&bundle.key) {
+                        rf.details_requested = None;
+                    }
+                    if rf.desired_details_key().as_ref() == Some(&bundle.key) {
+                        rf.changes.selected =
+                            rf.changes.selected.min(bundle.changes.len().saturating_sub(1));
+                    }
+                }
                 self.diff_caches.insert_details(bundle);
                 if rebase_sync {
                     self.sync_rebase_todo_preview(&mut effects);
@@ -253,6 +266,42 @@ impl AppState {
                     self.diff_caches.signatures.insert(oid, signature);
                 }
                 self.needs_redraw = true;
+            }
+            EngineEvent::CherryPickedLoaded { key, oids, epoch } => {
+                if !self
+                    .request_slots
+                    .accept(RequestSlotId::LogCherryPicked, epoch)
+                {
+                    return effects;
+                }
+                self.log.apply_cherry_picked_loaded(key, oids);
+                self.needs_redraw = true;
+            }
+            EngineEvent::ReflogLoaded { bundle, epoch } => {
+                if !self.request_slots.accept(RequestSlotId::Reflog, epoch) {
+                    return effects;
+                }
+                if let Some(rf) = self.modal_stack.reflog_mut()
+                    && rf.key == bundle.key
+                {
+                    rf.apply_bundle(bundle);
+                    self.needs_redraw = true;
+                }
+            }
+            EngineEvent::ReflogFailed {
+                key,
+                message,
+                epoch,
+            } => {
+                if !self.request_slots.accept(RequestSlotId::Reflog, epoch) {
+                    return effects;
+                }
+                if let Some(rf) = self.modal_stack.reflog_mut()
+                    && rf.key == key
+                {
+                    rf.apply_error(message);
+                    self.needs_redraw = true;
+                }
             }
             EngineEvent::FileDiffLoaded { slot, diff, epoch } => {
                 if !self.request_slots.accept(slot, epoch) {
@@ -296,6 +345,13 @@ impl AppState {
                             r.diff_requested = None;
                         }
                     }
+                    RequestSlotId::ReflogFileDiff => {
+                        if let Some(rf) = self.modal_stack.reflog_mut()
+                            && rf.diff.requested.as_ref() == Some(&diff.key)
+                        {
+                            rf.diff.requested = None;
+                        }
+                    }
                     _ => {}
                 }
                 let log_wants = self.log.details.diff_visible()
@@ -322,7 +378,14 @@ impl AppState {
                     .and_then(|pd| pd.desired_diff_key(&self.diff_caches))
                     .as_ref()
                     == Some(&diff.key);
-                let is_wanted = log_wants || stash_wants || fh_wants || ann_wants || push_wants;
+                let reflog_wants = self
+                    .modal_stack
+                    .reflog()
+                    .and_then(|rf| rf.desired_diff_key(&self.diff_caches))
+                    .as_ref()
+                    == Some(&diff.key);
+                let is_wanted =
+                    log_wants || stash_wants || fh_wants || ann_wants || push_wants || reflog_wants;
                 self.diff_caches.insert_diff(Arc::clone(&diff));
                 if is_wanted && self.diff_caches.peek_syntax(&diff.key).is_none() {
                     self.schedule_file_syntax(diff, &mut effects);

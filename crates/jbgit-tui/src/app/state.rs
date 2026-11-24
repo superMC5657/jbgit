@@ -128,7 +128,6 @@ impl AppState {
             GlyphModePref::NerdFont => GlyphMode::NerdFont,
         };
         let compact_refs = config.jbgit.graph.compact_refs;
-        let show_only_affected_changes = config.jbgit.log.show_only_affected_changes;
         let graph_mode = match config.jbgit.graph.backend {
             GraphBackendPref::Auto => crate::graph::GraphRendererMode::Auto,
             GraphBackendPref::Vector => crate::graph::GraphRendererMode::Vector,
@@ -158,7 +157,7 @@ impl AppState {
             diff_whitespace,
             diff_soft_wrap,
             compact_refs,
-            show_only_affected_changes,
+            &config.jbgit.log,
             graph_mode,
         );
         let stage_workbench =
@@ -382,6 +381,28 @@ impl AppState {
                     r.diff_scroll.scroll_by(delta, usize::MAX);
                 }
             }
+            ScrollPane::CommitMessageModal => {
+                if let Some(scroll) = self.modal_stack.commit_message_scroll_mut() {
+                    scroll.scroll_by(delta, usize::MAX);
+                }
+            }
+            ScrollPane::ReflogDiff => {
+                let fallback = self
+                    .modal_stack
+                    .reflog()
+                    .and_then(|r| r.desired_diff_key(&self.diff_caches))
+                    .and_then(|k| self.diff_caches.peek_diff(&k))
+                    .map_or(usize::MAX, |d| {
+                        d.hunks
+                            .iter()
+                            .map(|h| h.lines.len() + 1)
+                            .sum::<usize>()
+                            .saturating_sub(1)
+                    });
+                if let Some(rf) = self.modal_stack.reflog_mut() {
+                    rf.diff.scroll.scroll_by(delta, fallback);
+                }
+            }
             ScrollPane::TreeBrowserList
             | ScrollPane::PushCommits
             | ScrollPane::PushFiles
@@ -418,6 +439,16 @@ impl AppState {
                 ScrollPane::FileHistoryDiff => {
                     if let Some(fh) = self.modal_stack.file_history_mut() {
                         fh.diff.scroll.bind_bound(viewport_h, max_scroll);
+                    }
+                }
+                ScrollPane::CommitMessageModal => {
+                    if let Some(scroll) = self.modal_stack.commit_message_scroll_mut() {
+                        scroll.bind_bound(viewport_h, max_scroll);
+                    }
+                }
+                ScrollPane::ReflogDiff => {
+                    if let Some(rf) = self.modal_stack.reflog_mut() {
+                        rf.diff.scroll.bind_bound(viewport_h, max_scroll);
                     }
                 }
                 ScrollPane::Annotate => {
@@ -667,6 +698,14 @@ impl AppState {
         {
             effects.push(Effect::RequestFileDiff {
                 slot: RequestSlotId::PushFileDiff,
+                key,
+            });
+        }
+        if let Some(rf) = self.modal_stack.reflog_mut()
+            && let Some(key) = rf.diff.flush_due(&self.diff_caches, now)
+        {
+            effects.push(Effect::RequestFileDiff {
+                slot: RequestSlotId::ReflogFileDiff,
                 key,
             });
         }

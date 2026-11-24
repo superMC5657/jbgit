@@ -357,13 +357,26 @@ fn parent_child_navigation_history_and_goto() {
     let _ = ts.render(140, 30);
     assert_eq!(selected_oid(&ts), oid(M));
 
+    // On a 2-parent merge commit, → opens ChooseParent; Enter picks parent[0] (A2).
     ts.send_key(KeyCode::Right, KeyModifiers::NONE);
+    assert!(matches!(
+        ts.state().modal_stack.last(),
+        Some(ModalLayer::ChooseParent { .. })
+    ));
+    ts.send_key(KeyCode::Enter, KeyModifiers::NONE);
     assert_eq!(
         selected_oid(&ts),
         oid(A2),
-        "→ jumps to parent[0] over unrelated rows"
+        "→ + Enter jumps to parent[0] over unrelated rows"
     );
+    // A2 has 2 visible children (M and B1), so ← opens ChooseChild; Enter picks the first child.
     ts.send_key(KeyCode::Left, KeyModifiers::NONE);
+    if matches!(
+        ts.state().modal_stack.last(),
+        Some(ModalLayer::ChooseChild { .. })
+    ) {
+        ts.send_key(KeyCode::Enter, KeyModifiers::NONE);
+    }
     let child = selected_oid(&ts);
     assert!(child == oid(M) || child == oid(B1));
 

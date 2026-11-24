@@ -509,7 +509,20 @@ pub fn log_commit_menu_items(state: &AppState) -> Vec<ContextMenuItem> {
         i18n.t("menu.log.go_to_parent"),
         None,
         Some("→"),
-        vec![Action::GoToParent(0)],
+        vec![Action::GoToParentSmart],
+    ));
+    items.push(run(
+        i18n.t("menu.log.maximize_commit_message"),
+        None,
+        catalog::shortcut_for_action(state, &[KeymapScope::Log], &KeyAction::MaximizeCommitMessage)
+            .as_deref(),
+        vec![Action::OpenCommitMessageModal],
+    ));
+    items.push(run(
+        i18n.t("menu.log.show_reflog"),
+        None,
+        catalog::shortcut_for_action(state, &[KeymapScope::Log], &KeyAction::OpenReflog).as_deref(),
+        vec![Action::OpenReflog("HEAD".to_string())],
     ));
     // Fold / unfold at the selected commit: expanding wins when something
     // hangs collapsed below it.

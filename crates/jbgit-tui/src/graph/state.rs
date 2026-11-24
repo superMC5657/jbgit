@@ -4,8 +4,9 @@ use std::sync::Arc;
 
 use jbgit_core::graph::{
     CollapseInput, CollapseState, EdgesInRowCache, FixedBitSet, GraphEdgeType, GraphViewOptions,
-    LinearSegments, PermNodeId, PermanentGraph, PermanentLinearGraph, PrintElementGenerator,
-    RawCommitNode, ReachableNodes, SegmentId, VisibleGraph, VisibleRowIdx,
+    LinearBekState, LinearSegments, PermNodeId, PermanentGraph, PermanentLinearGraph,
+    PrintElementGenerator, RawCommitNode, ReachableNodes, SegmentId, VisibleGraph,
+    VisibleGraphBuildArgs, VisibleRowIdx,
 };
 use jbgit_core::{
     BranchColorId, CommitSummary, EpochToken, FilterError, LogFilterSpec, Oid, RefInfo, RefKind,
@@ -30,6 +31,13 @@ pub struct CachedLogGraph {
     pub visible: VisibleGraph,
     /// Whether `visible` was projected through a filter bitset.
     pub filtered: bool,
+    /// Cached filter inputs for fast synchronous collapse / LinearBek re-projections.
+    pub last_filter: Option<FixedBitSet>,
+    pub last_branch_heads: Option<Vec<PermNodeId>>,
+    pub branch_only_filter: bool,
+    /// True when the snapshot contains commits from at least 2 distinct authors
+    /// (used to auto-suppress `My Commits` highlighting in single-author repos).
+    pub has_multiple_authors: bool,
     pub color_map: FxHashMap<BranchColorId, Color>,
     pub current_branch_reachable: FixedBitSet,
     pub recommended_tracks: usize,
@@ -63,8 +71,10 @@ impl CachedLogGraph {
             snap,
             options,
             &CollapseState::default(),
+            &LinearBekState::default(),
+            false,
             branch_colors,
-            |_| filter.cloned(),
+            |_| (filter.cloned(), None),
         )
     }
 
@@ -75,11 +85,13 @@ impl CachedLogGraph {
         snap: &Arc<RepoSnapshot>,
         options: GraphViewOptions,
         collapse: &CollapseState,
+        linear_bek: &LinearBekState,
+        branch_only_filter: bool,
         branch_colors: &BranchColorManager,
         select: F,
     ) -> Self
     where
-        F: FnOnce(&PermanentLinearGraph) -> Option<FixedBitSet>,
+        F: FnOnce(&PermanentLinearGraph) -> (Option<FixedBitSet>, Option<Vec<PermNodeId>>),
     {
         let raw_commits: Vec<RawCommitNode> =
             snap.commits.iter().map(RawCommitNode::from).collect();
@@ -93,15 +105,21 @@ impl CachedLogGraph {
         let current_branch_reachable =
             ReachableNodes::contained_in_branch(&permanent.linear, &head_nodes);
         let segments = Arc::new(build_segments(&permanent, snap));
-        let filter = select(&permanent.linear);
-        let visible = VisibleGraph::build_collapsed(
+        let has_multiple_authors = compute_has_multiple_authors(snap);
+        let (filter, branch_heads) = select(&permanent.linear);
+        let visible = VisibleGraph::build_projected(
             &permanent,
             options,
-            filter.as_ref(),
-            Some(CollapseInput {
-                segments: &segments,
-                state: collapse,
-            }),
+            VisibleGraphBuildArgs {
+                filter: filter.as_ref(),
+                branch_heads: branch_heads.as_deref(),
+                branch_only_filter,
+                collapse: Some(CollapseInput {
+                    segments: &segments,
+                    state: collapse,
+                }),
+                linear_bek: Some(linear_bek),
+            },
         );
         let mut edges_cache = EdgesInRowCache::new(&visible.linear);
         let recommended_tracks =
@@ -114,6 +132,10 @@ impl CachedLogGraph {
             permanent,
             segments,
             filtered: filter.is_some(),
+            last_filter: filter,
+            last_branch_heads: branch_heads,
+            branch_only_filter,
+            has_multiple_authors,
             visible,
             color_map,
             current_branch_reachable,
@@ -141,18 +163,64 @@ impl CachedLogGraph {
     fn rebuild_visible(
         &mut self,
         options: GraphViewOptions,
-        filter: Option<&FixedBitSet>,
+        filter: Option<FixedBitSet>,
+        branch_heads: Option<Vec<PermNodeId>>,
+        branch_only_filter: bool,
         collapse: &CollapseState,
+        linear_bek: &LinearBekState,
     ) {
         self.filtered = filter.is_some();
-        self.visible = VisibleGraph::build_collapsed(
+        self.last_filter = filter;
+        self.last_branch_heads = branch_heads;
+        self.branch_only_filter = branch_only_filter;
+        self.visible = VisibleGraph::build_projected(
             &self.permanent,
             options,
-            filter,
-            Some(CollapseInput {
-                segments: &self.segments,
-                state: collapse,
-            }),
+            VisibleGraphBuildArgs {
+                filter: self.last_filter.as_ref(),
+                branch_heads: self.last_branch_heads.as_deref(),
+                branch_only_filter,
+                collapse: Some(CollapseInput {
+                    segments: &self.segments,
+                    state: collapse,
+                }),
+                linear_bek: Some(linear_bek),
+            },
+        );
+        let mut edges_cache = EdgesInRowCache::new(&self.visible.linear);
+        self.recommended_tracks = PrintElementGenerator::with_cache(
+            &self.permanent,
+            &self.visible,
+            self.snapshot.head_oid,
+            &mut edges_cache,
+        )
+        .recommended_track_width();
+        self.edges_cache = RefCell::new(edges_cache);
+        #[cfg(test)]
+        {
+            self.visible_builds = self.visible_builds.saturating_add(1);
+        }
+    }
+
+    fn rebuild_visible_keeping_filter(
+        &mut self,
+        options: GraphViewOptions,
+        collapse: &CollapseState,
+        linear_bek: &LinearBekState,
+    ) {
+        self.visible = VisibleGraph::build_projected(
+            &self.permanent,
+            options,
+            VisibleGraphBuildArgs {
+                filter: self.last_filter.as_ref(),
+                branch_heads: self.last_branch_heads.as_deref(),
+                branch_only_filter: self.branch_only_filter,
+                collapse: Some(CollapseInput {
+                    segments: &self.segments,
+                    state: collapse,
+                }),
+                linear_bek: Some(linear_bek),
+            },
         );
         let mut edges_cache = EdgesInRowCache::new(&self.visible.linear);
         self.recommended_tracks = PrintElementGenerator::with_cache(
@@ -316,6 +384,40 @@ impl CachedLogGraph {
         let seg = self.segments.by_id(id)?;
         Some(self.permanent.linear.commit(seg.up).oid)
     }
+
+    /// Expanded collapsible segment containing visible `row` as a middle node, if any.
+    pub fn expanded_segment_of_row(&self, row: usize) -> Option<SegmentId> {
+        if !self.visible.can_collapse {
+            return None;
+        }
+        let r = VisibleRowIdx::try_from(row).ok()?;
+        if r >= self.visible.linear.visible_count() {
+            return None;
+        }
+        let perm = self.visible.linear.perm_id(r);
+        self.segments.segment_of(perm).map(|s| s.id)
+    }
+
+    /// True if visible `row` is a middle node of expanded collapsible segment `seg_id`.
+    pub fn is_row_in_expanded_segment(&self, row: usize, seg_id: SegmentId) -> bool {
+        self.expanded_segment_of_row(row) == Some(seg_id)
+    }
+}
+
+fn compute_has_multiple_authors(snap: &RepoSnapshot) -> bool {
+    let mut first: Option<(&str, &str)> = None;
+    for c in &snap.commits {
+        let key = (c.author_name.as_str(), c.author_email.as_str());
+        match first {
+            None => first = Some(key),
+            Some((n, e)) => {
+                if !(e.eq_ignore_ascii_case(key.1) && n == key.0) {
+                    return true;
+                }
+            }
+        }
+    }
+    false
 }
 
 /// Linear segments of `permanent`, pinning every ref target and `HEAD`.
@@ -361,6 +463,7 @@ pub fn build_graph_color_map(
 pub struct FilterInputs<'a> {
     pub spec: &'a LogFilterSpec,
     pub path_matches: Option<&'a HashSet<Oid>>,
+    pub favorites: &'a [String],
 }
 
 const HISTORY_LIMIT: usize = 64;
@@ -376,6 +479,7 @@ struct GraphRebuildKey {
 pub struct CachedGraphBase {
     pub permanent: Arc<PermanentGraph>,
     pub segments: Arc<LinearSegments>,
+    pub has_multiple_authors: bool,
     pub color_map: FxHashMap<BranchColorId, Color>,
     pub current_branch_reachable: FixedBitSet,
     pub refs_by_oid: FxHashMap<Oid, Vec<usize>>,
@@ -391,7 +495,9 @@ pub struct LogGraphJob {
     pub base: Option<CachedGraphBase>,
     pub options: GraphViewOptions,
     pub collapse: CollapseState,
+    pub linear_bek: LinearBekState,
     pub filter_spec: LogFilterSpec,
+    pub favorites: Vec<String>,
     pub path_matches: Option<Arc<HashSet<Oid>>>,
     pub branch_colors: BranchColorManager,
     pub filter_generation: u64,
@@ -436,9 +542,11 @@ impl LogGraphJob {
                     ReachableNodes::contained_in_branch(&permanent.linear, &head_nodes);
                 let (refs_by_oid, ref_kind_by_name) = build_ref_indices(&self.snapshot.refs);
                 let segments = Arc::new(build_segments(&permanent, &self.snapshot));
+                let has_multiple_authors = compute_has_multiple_authors(&self.snapshot);
                 CachedGraphBase {
                     permanent,
                     segments,
+                    has_multiple_authors,
                     color_map,
                     current_branch_reachable,
                     refs_by_oid,
@@ -447,27 +555,34 @@ impl LogGraphJob {
             }
         };
 
-        let match_res = self.filter_spec.compute_matches_cancellable(
+        let branch_only_filter = self.filter_spec.is_branch_only();
+        let match_res = self.filter_spec.compute_matches_with_favorites(
             &base.permanent.linear,
             &self.snapshot,
             self.path_matches.as_deref(),
+            &self.favorites,
             || self.token.is_stale(),
         )?;
-        let (bits, filter_error) = match match_res {
-            Ok(bits) => (bits, None),
-            Err(e) => (None, Some(e)),
+        let (bits, branch_heads, filter_error) = match match_res {
+            Ok((bits, heads)) => (bits, heads, None),
+            Err(e) => (None, None, Some(e)),
         };
         if self.token.is_stale() {
             return None;
         }
-        let visible = VisibleGraph::build_collapsed(
+        let visible = VisibleGraph::build_projected(
             &base.permanent,
             self.options,
-            bits.as_ref(),
-            Some(CollapseInput {
-                segments: &base.segments,
-                state: &self.collapse,
-            }),
+            VisibleGraphBuildArgs {
+                filter: bits.as_ref(),
+                branch_heads: branch_heads.as_deref(),
+                branch_only_filter: branch_only_filter && filter_error.is_none(),
+                collapse: Some(CollapseInput {
+                    segments: &base.segments,
+                    state: &self.collapse,
+                }),
+                linear_bek: Some(&self.linear_bek),
+            },
         );
         if self.token.is_stale() {
             return None;
@@ -488,6 +603,10 @@ impl LogGraphJob {
                 permanent: base.permanent,
                 segments: base.segments,
                 filtered: bits.is_some(),
+                last_filter: bits,
+                last_branch_heads: branch_heads,
+                branch_only_filter: branch_only_filter && filter_error.is_none(),
+                has_multiple_authors: base.has_multiple_authors,
                 visible,
                 color_map: base.color_map,
                 current_branch_reachable: base.current_branch_reachable,
@@ -518,6 +637,8 @@ pub struct LogGraphState {
     pub options: GraphViewOptions,
     /// Collapsed linear segments; `options.collapse` mirrors `collapse.mode`.
     pub collapse: CollapseState,
+    /// Explicitly expanded merges when `options.linear_bek` is enabled.
+    pub linear_bek: LinearBekState,
     pub cached: Option<CachedLogGraph>,
     /// Focused cursor row (`cursor_idx`).
     pub selected_idx: usize,
@@ -537,6 +658,8 @@ pub struct LogGraphState {
     /// visible-graph rebuild.
     pub filter_generation: u64,
     pub filter_error: Option<FilterError>,
+    /// Monotonic counter bumped whenever the visible row projection changes.
+    pub visible_revision: u64,
     graph_slot: RequestSlot<GraphRebuildKey>,
     pub rebuild_in_progress: bool,
 }
@@ -546,6 +669,7 @@ impl Default for LogGraphState {
         Self {
             options: GraphViewOptions::default(),
             collapse: CollapseState::default(),
+            linear_bek: LinearBekState::default(),
             cached: None,
             selected_idx: 0,
             selected_rows: BTreeSet::new(),
@@ -557,6 +681,7 @@ impl Default for LogGraphState {
             forward_history: Vec::new(),
             filter_generation: 0,
             filter_error: None,
+            visible_revision: 0,
             graph_slot: RequestSlot::new(),
             rebuild_in_progress: false,
         }
@@ -576,6 +701,7 @@ impl LogGraphState {
     }
 
     fn preserve_selection_after_rebuild(&mut self, captured: CapturedSelection) {
+        self.visible_revision = self.visible_revision.wrapping_add(1);
         let Some(cached) = self.cached.as_ref() else {
             return;
         };
@@ -669,6 +795,9 @@ impl LogGraphState {
         filter: &FilterInputs<'_>,
     ) {
         let Some(snap) = repo_snapshot else {
+            if self.cached.is_some() {
+                self.visible_revision = self.visible_revision.wrapping_add(1);
+            }
             self.cached = None;
             self.graph_slot.invalidate();
             self.rebuild_in_progress = false;
@@ -681,6 +810,8 @@ impl LogGraphState {
 
         let captured = self.capture_selection_oids();
 
+        let branch_only_filter = filter.spec.is_branch_only();
+
         if snapshot_stale {
             // Fresh snapshot: compute the filter against the new permanent node ids
             // and project the visible graph once (no throw-away unfiltered build).
@@ -689,12 +820,26 @@ impl LogGraphState {
                 snap,
                 self.options,
                 &self.collapse,
+                &self.linear_bek,
+                branch_only_filter,
                 branch_colors,
                 |linear| {
-                    let res = filter.spec.compute_matches(linear, snap, filter.path_matches);
-                    let bits = res.as_ref().ok().cloned().flatten();
+                    let res = filter
+                        .spec
+                        .compute_matches_with_favorites(
+                            linear,
+                            snap,
+                            filter.path_matches,
+                            filter.favorites,
+                            || false,
+                        )
+                        .expect("uncancellable sync match");
+                    let (bits, heads) = match &res {
+                        Ok((b, h)) => (b.clone(), h.clone()),
+                        Err(_) => (None, None),
+                    };
                     filter_result = Some(res);
-                    bits
+                    (bits, heads)
                 },
             ));
             self.filter_error = filter_result.and_then(Result::err);
@@ -702,15 +847,36 @@ impl LogGraphState {
             let cached = self.cached.as_mut().expect("cached graph exists");
             match filter
                 .spec
-                .compute_matches(&cached.permanent.linear, snap, filter.path_matches)
+                .compute_matches_with_favorites(
+                    &cached.permanent.linear,
+                    snap,
+                    filter.path_matches,
+                    filter.favorites,
+                    || false,
+                )
+                .expect("uncancellable sync match")
             {
-                Ok(bits) => {
+                Ok((bits, heads)) => {
                     self.filter_error = None;
-                    cached.rebuild_visible(self.options, bits.as_ref(), &self.collapse);
+                    cached.rebuild_visible(
+                        self.options,
+                        bits,
+                        heads,
+                        branch_only_filter,
+                        &self.collapse,
+                        &self.linear_bek,
+                    );
                 }
                 Err(e) => {
                     self.filter_error = Some(e);
-                    cached.rebuild_visible(self.options, None, &self.collapse);
+                    cached.rebuild_visible(
+                        self.options,
+                        None,
+                        None,
+                        false,
+                        &self.collapse,
+                        &self.linear_bek,
+                    );
                 }
             }
         }
@@ -730,6 +896,7 @@ impl LogGraphState {
         repo_snapshot: Option<&Arc<RepoSnapshot>>,
         branch_colors: &BranchColorManager,
         spec: &LogFilterSpec,
+        favorites: Vec<String>,
         path_matches: Option<Arc<HashSet<Oid>>>,
     ) -> Option<LogGraphJob> {
         let snap = repo_snapshot?;
@@ -747,6 +914,7 @@ impl LogGraphState {
             self.cached.as_ref().map(|c| CachedGraphBase {
                 permanent: Arc::clone(&c.permanent),
                 segments: Arc::clone(&c.segments),
+                has_multiple_authors: c.has_multiple_authors,
                 color_map: c.color_map.clone(),
                 current_branch_reachable: c.current_branch_reachable.clone(),
                 refs_by_oid: c.refs_by_oid.clone(),
@@ -762,7 +930,9 @@ impl LogGraphState {
             base,
             options: self.options,
             collapse: self.collapse.clone(),
+            linear_bek: self.linear_bek.clone(),
             filter_spec: spec.clone(),
+            favorites,
             path_matches,
             branch_colors: branch_colors.clone(),
             filter_generation: self.filter_generation,
@@ -1039,11 +1209,7 @@ impl LogGraphState {
         self.cached.as_ref().and_then(|c| c.row_of_oid(oid))
     }
 
-    /// Re-projects the cached graph synchronously after a collapse change.
-    ///
-    /// Collapsing only applies without filter / `first_parent_only`, so the
-    /// projection needs no filter bits; when the cache was not current (a
-    /// filter change is pending) the regular rebuild path picks it up.
+    /// Re-projects the cached graph synchronously after a collapse or LinearBek change.
     fn rebuild_collapsed_now(&mut self) {
         self.options.collapse = self.collapse.mode;
         let previous = self.filter_generation;
@@ -1051,16 +1217,27 @@ impl LogGraphState {
         let Some(cached) = self.cached.as_mut() else {
             return;
         };
-        if cached.filter_generation != previous
-            || cached.filtered
-            || cached.visible.options.first_parent_only
-        {
+        if cached.filter_generation != previous {
             return;
         }
-        cached.rebuild_visible(self.options, None, &self.collapse);
+        cached.rebuild_visible_keeping_filter(self.options, &self.collapse, &self.linear_bek);
         cached.filter_generation = self.filter_generation;
         self.graph_slot.invalidate();
         self.rebuild_in_progress = false;
+    }
+
+    /// Expands a single folded `LinearBek` merge commit, restoring its original merge edge.
+    pub fn expand_bek_merge(&mut self, merge_oid: Oid) -> bool {
+        if !self.options.linear_bek {
+            return false;
+        }
+        let captured = self.capture_selection_oids();
+        if !self.linear_bek.expand(merge_oid) {
+            return false;
+        }
+        self.rebuild_collapsed_now();
+        self.preserve_selection_after_rebuild(captured);
+        true
     }
 
     /// Collapses (`true`) or expands (`false`) `ids`, keeping the selected
@@ -1100,9 +1277,12 @@ impl LogGraphState {
         self.preserve_selection_after_rebuild(captured);
     }
 
-    /// Collapse All Linear Branches (selected commits' segments stay open).
+    /// Collapse All Linear Branches (and re-fold all LinearBek merges when active).
     pub fn collapse_all(&mut self) {
         let captured = self.capture_selection_oids();
+        if self.options.linear_bek {
+            self.linear_bek.collapse_all();
+        }
         self.collapse.collapse_all();
         if let Some(cached) = self.cached.as_ref() {
             for oid in [captured.cursor_oid, captured.anchor_oid]
@@ -1124,9 +1304,14 @@ impl LogGraphState {
         self.preserve_selection_after_rebuild(captured);
     }
 
-    /// Expand All.
+    /// Expand All Linear Branches (and expand all LinearBek merges when active).
     pub fn expand_all(&mut self) {
         let captured = self.capture_selection_oids();
+        if self.options.linear_bek
+            && let Some(cached) = self.cached.as_ref()
+        {
+            self.linear_bek.expand_all(&cached.visible.bek_merges);
+        }
         self.collapse.expand_all();
         self.rebuild_collapsed_now();
         self.preserve_selection_after_rebuild(captured);
@@ -1207,6 +1392,71 @@ impl LogGraphState {
             .iter()
             .map(|e| e.down as usize)
             .min()
+    }
+
+    /// Visible parent candidates of the currently selected commit in parent order
+    /// (falling back to visible down-edges when filtered).
+    pub fn parent_candidates(&self, repo_snapshot: Option<&Arc<RepoSnapshot>>) -> Vec<(usize, Oid)> {
+        let Some(cached) = self.cached.as_ref() else {
+            return Vec::new();
+        };
+        let Some(snap) = repo_snapshot else {
+            return Vec::new();
+        };
+        let Some(commit) = self.commit_at(repo_snapshot, self.selected_idx) else {
+            return Vec::new();
+        };
+        let mut out: Vec<(usize, Oid)> = Vec::new();
+        for &poid in &commit.parents {
+            if let Some(row) = cached.row_of_oid(&poid)
+                && !out.iter().any(|&(r, _)| r == row)
+            {
+                out.push((row, poid));
+            }
+        }
+        if out.is_empty()
+            && let Ok(row) = VisibleRowIdx::try_from(self.selected_idx)
+            && row < cached.visible.linear.visible_count()
+        {
+            for e in cached.visible.linear.down_edges(row) {
+                let r = e.down as usize;
+                if let Some(c) = cached.commit_at_visible_row(snap, r)
+                    && !out.iter().any(|&(er, _)| er == r)
+                {
+                    out.push((r, c.oid));
+                }
+            }
+        }
+        out
+    }
+
+    /// Visible child candidates above the currently selected commit, ordered closest-first.
+    pub fn child_candidates(&self, repo_snapshot: Option<&Arc<RepoSnapshot>>) -> Vec<(usize, Oid)> {
+        let Some(cached) = self.cached.as_ref() else {
+            return Vec::new();
+        };
+        let Some(snap) = repo_snapshot else {
+            return Vec::new();
+        };
+        let Ok(row) = VisibleRowIdx::try_from(self.selected_idx) else {
+            return Vec::new();
+        };
+        if row >= cached.visible.linear.visible_count() {
+            return Vec::new();
+        }
+        let mut rows: Vec<usize> = cached
+            .visible
+            .linear
+            .up_edges(row)
+            .iter()
+            .map(|e| e.up as usize)
+            .collect();
+        // Closest visible child (largest row index below cursor) first.
+        rows.sort_unstable_by(|a, b| b.cmp(a));
+        rows.dedup();
+        rows.into_iter()
+            .filter_map(|r| cached.commit_at_visible_row(snap, r).map(|c| (r, c.oid)))
+            .collect()
     }
 
     /// `GoToChildRow`: the closest visible child above the selected row.

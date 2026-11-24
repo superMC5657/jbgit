@@ -2,7 +2,7 @@
 //! diff preview (bottom), and the full-screen zoomed diff.
 
 mod changes_browser;
-mod commit_details;
+pub(crate) mod commit_details;
 mod diff_view;
 
 use ratatui::style::Style;

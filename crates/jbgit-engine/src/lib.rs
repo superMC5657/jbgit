@@ -12,6 +12,7 @@ pub mod supervisor;
 pub(crate) mod watcher;
 
 pub use cli::GitExecutableInfo;
+pub use details::{load_cherry_picked_sync, load_reflog_sync};
 pub use error::EngineError;
 pub use pool::{
     AheadBehindUpdate, LARGE_INDEX_ENTRIES, StatusScanConfig, StatusScanMode, StatusScanPolicy,

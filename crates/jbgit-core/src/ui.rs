@@ -128,6 +128,12 @@ pub enum SplitterId {
     FileHistoryHorizontal,
     /// File history modal (narrow terminal): commit list (top) / diff preview (bottom).
     FileHistoryVertical,
+    /// Reflog modal: reflog entries (left) / changes & diff preview (right).
+    ReflogHorizontal,
+    /// Reflog modal (narrow terminal): reflog entries (top) / changes & diff preview (bottom).
+    ReflogVertical,
+    /// Reflog modal right pane: changed files (top) / diff preview (bottom).
+    ReflogRightVertical,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

@@ -4,22 +4,23 @@ use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Mutex};
 
 use jbgit_core::{
-    AmendCommitPreview, BlameBundle, BlameKey, CommitChangesBundle, CommitSignature,
-    ConflictDocument, ConsoleStream, DetailsKey, EpochToken, FileDiff, FileDiffKey,
-    FileHistoryBundle, FileHistoryKey, FileStatusKind, GitConsoleEntry, GitOp, GitOpOutcome,
-    LoadedConflict, LruCache, Oid, OutgoingBundle, OutgoingKey, PatchCheck, PatchCheckKey,
-    RefreshScope, RepoSnapshot, RequestSlotId, SignatureStatus, SlotRegistry, SpecialConflictInfo,
-    StageNodeKind, StageStatusSnapshot, StageTarget, TreeBlob, TreeBlobKey, TreeKey, TreeListing,
+    AmendCommitPreview, BlameBundle, BlameKey, CherryPickedKey, CommitChangesBundle,
+    CommitSignature, ConflictDocument, ConsoleStream, DetailsKey, EpochToken, FileDiff,
+    FileDiffKey, FileHistoryBundle, FileHistoryKey, FileStatusKind, GitConsoleEntry, GitOp,
+    GitOpOutcome, LoadedConflict, LruCache, Oid, OutgoingBundle, OutgoingKey, PatchCheck,
+    PatchCheckKey, ReflogBundle, ReflogKey, RefreshScope, RepoSnapshot, RequestSlotId,
+    SignatureStatus, SlotRegistry, SpecialConflictInfo, StageNodeKind, StageStatusSnapshot,
+    StageTarget, TreeBlob, TreeBlobKey, TreeKey, TreeListing,
 };
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 
 use crate::askpass::AskpassEnv;
 use crate::cli::{CliCommand, CliStreamEvent, GitCliExecutor, GitExecutableInfo};
 use crate::details::{
-    check_patch_sync, check_remote_tag_async, load_blame_sync, load_commit_details_sync,
-    load_file_diff_with_oids_sync, load_file_history_sync, load_outgoing_sync,
-    load_path_matches_sync, load_tree_blob_sync, load_tree_sync, verify_commit_signature_sync,
-    verify_commit_signatures_batch_sync,
+    check_patch_sync, check_remote_tag_async, load_blame_sync, load_cherry_picked_sync,
+    load_commit_details_sync, load_file_diff_with_oids_sync, load_file_history_sync,
+    load_outgoing_sync, load_path_matches_sync, load_reflog_sync, load_tree_blob_sync,
+    load_tree_sync, verify_commit_signature_sync, verify_commit_signatures_batch_sync,
 };
 use crate::error::EngineError;
 use crate::pool::{
@@ -98,6 +99,14 @@ pub enum TaskRequest {
     VerifyCommitSignatures {
         oids: Vec<Oid>,
     },
+    /// Patch-equivalent commit detection (`git cherry <head_oid> <branch>`).
+    LoadCherryPicked {
+        key: CherryPickedKey,
+    },
+    /// Paginated Git reflog entries (`git reflog show`).
+    LoadReflog {
+        key: ReflogKey,
+    },
     LoadStageStatus {
         include_ignored: bool,
     },
@@ -168,6 +177,8 @@ impl TaskRequest {
             Self::LoadTree { .. } => Some(RequestSlotId::TreeBrowser),
             Self::LoadTreeBlob { .. } => Some(RequestSlotId::TreeBlob),
             Self::VerifyCommitSignatures { .. } => Some(RequestSlotId::LogSignatures),
+            Self::LoadCherryPicked { .. } => Some(RequestSlotId::LogCherryPicked),
+            Self::LoadReflog { .. } => Some(RequestSlotId::Reflog),
             Self::LoadPathMatches { .. } => Some(RequestSlotId::PathFilter),
             Self::LoadStageStatus { .. } => Some(RequestSlotId::StageStatus),
             Self::LoadStageFileDiff { .. } => Some(RequestSlotId::StageFileDiff),
@@ -212,6 +223,20 @@ pub enum EngineEvent {
     },
     CommitSignaturesLoaded {
         signatures: Vec<(Oid, CommitSignature)>,
+        epoch: u64,
+    },
+    CherryPickedLoaded {
+        key: CherryPickedKey,
+        oids: Arc<HashSet<Oid>>,
+        epoch: u64,
+    },
+    ReflogLoaded {
+        bundle: Arc<ReflogBundle>,
+        epoch: u64,
+    },
+    ReflogFailed {
+        key: ReflogKey,
+        message: String,
         epoch: u64,
     },
     FileDiffLoaded {
@@ -397,6 +422,16 @@ pub trait EngineBackend: Send + Sync {
     fn request_commit_signatures(&self, oids: Vec<Oid>) -> u64 {
         self.dispatch(TaskRequest::VerifyCommitSignatures { oids })
             .expect("VerifyCommitSignatures always has a slot")
+    }
+
+    fn request_cherry_picked(&self, key: CherryPickedKey) -> u64 {
+        self.dispatch(TaskRequest::LoadCherryPicked { key })
+            .expect("LoadCherryPicked always has a slot")
+    }
+
+    fn request_reflog(&self, key: ReflogKey) -> u64 {
+        self.dispatch(TaskRequest::LoadReflog { key })
+            .expect("LoadReflog always has a slot")
     }
 
     fn request_path_matches(&self, paths: Vec<String>, snapshot: Arc<RepoSnapshot>) -> u64 {
@@ -836,6 +871,55 @@ fn handle_task_request(ctx: &SupervisorContext, task: ScheduledTask) {
         }
         TaskRequest::VerifyCommitSignatures { oids } => {
             spawn_verify_commit_signatures(ctx, oids, token.expect("LogSignatures token"));
+        }
+        TaskRequest::LoadCherryPicked { key } => {
+            let pool = Arc::clone(&ctx.pool);
+            let loc = ctx.location.clone();
+            let token = token.expect("LogCherryPicked token");
+            let epoch = token.epoch();
+            let reported_key = key.clone();
+            spawn_epoch_task(
+                &ctx.event_tx,
+                async move {
+                    pool.run_epoch(TaskPriority::Background, token, move |tok| {
+                        load_cherry_picked_sync(&loc, &key, tok).map(Arc::new)
+                    })
+                    .await
+                },
+                move |oids| EngineEvent::CherryPickedLoaded {
+                    key: reported_key,
+                    oids,
+                    epoch,
+                },
+            );
+        }
+        TaskRequest::LoadReflog { key } => {
+            let pool = Arc::clone(&ctx.pool);
+            let loc = ctx.location.clone();
+            let token = token.expect("Reflog token");
+            let epoch = token.epoch();
+            let tx = ctx.event_tx.clone();
+            tokio::spawn(async move {
+                let fail_key = key.clone();
+                let res = pool
+                    .run_epoch(TaskPriority::Interactive, token, move |tok| {
+                        load_reflog_sync(&loc, &key, tok).map(Arc::new)
+                    })
+                    .await;
+                match res {
+                    Ok(bundle) => {
+                        let _ = tx.send(EngineEvent::ReflogLoaded { bundle, epoch });
+                    }
+                    Err(EngineError::Cancelled) => {}
+                    Err(err) => {
+                        let _ = tx.send(EngineEvent::ReflogFailed {
+                            key: fail_key,
+                            message: err.to_string(),
+                            epoch,
+                        });
+                    }
+                }
+            });
         }
         TaskRequest::LoadPathMatches { paths, snapshot } => {
             let pool = Arc::clone(&ctx.pool);

@@ -34,7 +34,7 @@ pub(super) fn render_floating_popup(
         PopupKind::PalettePreview => (100, 38),
         PopupKind::ShortcutsHelp => (90, 38),
         PopupKind::GoToRevision => (64, 7),
-        PopupKind::ChooseParent => (68, 12),
+        PopupKind::ChooseParent | PopupKind::ChooseChild => (84, 14),
         PopupKind::CommitHistory => (76, 18),
         _ => (64, 18),
     };
@@ -55,6 +55,7 @@ pub(super) fn render_floating_popup(
         }
         PopupKind::GoToRevision => ctx.t("popup.goto_title").to_string(),
         PopupKind::ChooseParent => ctx.t("popup.choose_parent_title").to_string(),
+        PopupKind::ChooseChild => ctx.t("popup.choose_child_title").to_string(),
         PopupKind::CommitHistory => ctx.t("popup.commit_history_title").to_string(),
     };
 
@@ -69,7 +70,12 @@ pub(super) fn render_floating_popup(
             render_filter_editor_popup(frame, inner, state, ctx, field, query, selected);
         }
         PopupKind::GoToRevision => render_goto_revision_popup(frame, inner, state, ctx, query),
-        PopupKind::ChooseParent => render_choose_parent_popup(frame, inner, state, ctx, selected),
+        PopupKind::ChooseParent => {
+            render_choose_adjacent_popup(frame, inner, state, ctx, true, selected);
+        }
+        PopupKind::ChooseChild => {
+            render_choose_adjacent_popup(frame, inner, state, ctx, false, selected);
+        }
         PopupKind::BranchesQuickView => {}
         PopupKind::CommitHistory => {
             render_commit_history_popup(frame, inner, state, ctx, query, selected);
@@ -385,8 +391,18 @@ fn render_filter_editor_popup(
             Style::default().fg(ctx.theme.fg_muted),
         )),
     ];
-    let suggestions =
-        crate::log_view::filter_suggestions(field, state.repo_snapshot.as_deref(), query);
+    let has_favorites = !state
+        .log
+        .favorite_branch_names(state.repo_snapshot.as_ref())
+        .is_empty();
+    let history = state.log.filter.history_for(field);
+    let suggestions = crate::log_view::filter_suggestions_with_context(
+        field,
+        state.repo_snapshot.as_deref(),
+        query,
+        has_favorites,
+        history,
+    );
     let room = inner.height.saturating_sub(3) as usize;
     let sel = selected.min(suggestions.len().saturating_sub(1));
     let start = sel.saturating_sub(room.saturating_sub(1));
@@ -463,51 +479,183 @@ fn render_goto_revision_popup(
     frame.render_widget(Paragraph::new(lines), inner);
 }
 
-fn render_choose_parent_popup(
+fn render_choose_adjacent_popup(
     frame: &mut Frame<'_>,
     inner: Rect,
     state: &AppState,
     ctx: &RenderContext<'_>,
+    is_parent: bool,
     selected: usize,
 ) {
     let mut lines = Vec::new();
-    if let Some(commit) = state.log_commit_at(state.log.graph.selected_idx)
-        && let Some(snap) = &state.repo_snapshot
+    let candidates: Vec<jbgit_core::Oid> = if is_parent {
+        let vis = state.log.graph.parent_candidates(state.repo_snapshot.as_ref());
+        if !vis.is_empty() {
+            vis.into_iter().map(|(_, oid)| oid).collect()
+        } else {
+            state
+                .log_commit_at(state.log.graph.selected_idx)
+                .map(|c| c.parents.clone())
+                .unwrap_or_default()
+        }
+    } else {
+        state
+            .log
+            .graph
+            .child_candidates(state.repo_snapshot.as_ref())
+            .into_iter()
+            .map(|(_, oid)| oid)
+            .collect()
+    };
+
+    if let Some(snap) = &state.repo_snapshot
+        && !candidates.is_empty()
     {
-        let sel = selected.min(commit.parents.len().saturating_sub(1));
-        for (idx, poid) in commit.parents.iter().enumerate() {
-            let subj = snap
-                .commits
-                .iter()
-                .find(|c| c.oid == *poid)
-                .map(|c| c.subject.as_str())
-                .unwrap_or_else(|| ctx.t("popup.choose_parent_outside"));
+        let now = chrono::Local::now().timestamp();
+        let sel = selected.min(candidates.len().saturating_sub(1));
+        for (idx, oid) in candidates.iter().enumerate() {
+            let commit = snap.commits.iter().find(|c| c.oid == *oid);
             let bg = if idx == sel {
                 ctx.theme.bg_selection_focused
             } else {
                 ctx.theme.bg_elevated
             };
-            let prefix = format!(" {}. {} ", idx + 1, poid.short());
-            let max_subj = (inner.width as usize).saturating_sub(prefix.width());
-            lines.push(
-                Line::from(vec![
-                    Span::styled(prefix, Style::default().fg(ctx.theme.fg_accent_link)),
-                    Span::styled(
-                        truncate_to_width(subj, max_subj),
-                        Style::default().fg(ctx.theme.fg_primary),
-                    ),
-                ])
-                .style(Style::default().bg(bg)),
-            );
+            let prefix = format!(" {}. {} ", idx + 1, oid.short());
+            if let Some(c) = commit {
+                let date = ctx.format_relative_time(c.timestamp, now);
+                let meta = format!("  {} · {}", c.author_name, date);
+                let subj_budget = (inner.width as usize)
+                    .saturating_sub(prefix.width() + meta.width() + 2);
+                let quoted_subj = format!("\"{}\"", truncate_to_width(&c.subject, subj_budget));
+                lines.push(
+                    Line::from(vec![
+                        Span::styled(prefix, Style::default().fg(ctx.theme.fg_accent_link)),
+                        Span::styled(quoted_subj, Style::default().fg(ctx.theme.fg_bright)),
+                        Span::styled(meta, Style::default().fg(ctx.theme.fg_muted)),
+                    ])
+                    .style(Style::default().bg(bg)),
+                );
+            } else {
+                let fallback = ctx.t("popup.choose_parent_outside");
+                let max_subj = (inner.width as usize).saturating_sub(prefix.width());
+                lines.push(
+                    Line::from(vec![
+                        Span::styled(prefix, Style::default().fg(ctx.theme.fg_accent_link)),
+                        Span::styled(
+                            truncate_to_width(fallback, max_subj),
+                            Style::default().fg(ctx.theme.fg_muted),
+                        ),
+                    ])
+                    .style(Style::default().bg(bg)),
+                );
+            }
         }
     }
     if lines.is_empty() {
+        let key = if is_parent {
+            "popup.choose_parent_none"
+        } else {
+            "popup.choose_child_none"
+        };
         lines.push(Line::from(Span::styled(
-            ctx.t("popup.choose_parent_none").to_string(),
+            ctx.t(key).to_string(),
             Style::default().fg(ctx.theme.fg_muted),
         )));
     }
     frame.render_widget(Paragraph::new(lines), inner);
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn render_commit_message_modal(
+    frame: &mut Frame<'_>,
+    screen: Rect,
+    state: &AppState,
+    ctx: &mut RenderContext<'_>,
+    oid: jbgit_core::Oid,
+    subject: &str,
+    message: &str,
+    scroll: usize,
+    z: u8,
+) {
+    let short = oid.short();
+    let title = ctx.t_fmt(
+        "popup.commit_message_title",
+        &[("short", &short), ("subject", &truncate_to_width(subject, 48))],
+    );
+    let max_w = screen.width.saturating_sub(6).clamp(40, 100);
+    let max_h = screen.height.saturating_sub(4).clamp(10, 36);
+    let inner = render_centered_popup_box(frame, screen, ctx, max_w, max_h, title, z);
+    if inner.width < 8 || inner.height < 3 {
+        return;
+    }
+
+    let body_h = inner.height.saturating_sub(1) as usize;
+    let footer_rect = Rect::new(inner.x, inner.bottom().saturating_sub(1), inner.width, 1);
+    let width = inner.width.saturating_sub(2).max(8) as usize;
+
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    let mut hits: Vec<(usize, u16, u16, jbgit_core::Oid)> = Vec::new();
+    let snap = state.repo_snapshot.as_deref();
+
+    for (idx, raw) in message.lines().enumerate() {
+        let kind = jbgit_core::classify_message_line(idx, raw);
+        let base = match kind {
+            jbgit_core::MessageLineKind::Subject => Style::default()
+                .fg(ctx.theme.fg_bright)
+                .add_modifier(Modifier::BOLD),
+            jbgit_core::MessageLineKind::Trailer => Style::default().fg(ctx.theme.ref_remote.pill_fg),
+            jbgit_core::MessageLineKind::Body => Style::default().fg(ctx.theme.fg_primary),
+        };
+        if raw.is_empty() {
+            lines.push(Line::from(""));
+            continue;
+        }
+        for chunk in crate::views::wrap_text(raw, width) {
+            let line_idx = lines.len();
+            let (spans, line_hits) = crate::views::log_details::commit_details::render_body_chunk_with_links(
+                &chunk,
+                width,
+                base,
+                snap,
+                ctx.theme,
+            );
+            for (hx, hw, target_oid) in line_hits {
+                hits.push((line_idx, hx, hw, target_oid));
+            }
+            lines.push(Line::from(spans));
+        }
+    }
+
+    let max_scroll = lines.len().saturating_sub(body_h);
+    ctx.record_scroll_bound(crate::app::ScrollPane::CommitMessageModal, body_h, max_scroll);
+    let off = scroll.min(max_scroll);
+
+    for (vis_y, idx) in (off..lines.len()).take(body_h).enumerate() {
+        let rect = Rect::new(inner.x, inner.y + vis_y as u16, inner.width, 1);
+        frame.render_widget(Paragraph::new(lines[idx].clone()), rect);
+        for &(li, hx, hw, target_oid) in &hits {
+            if li == idx && hx < inner.width {
+                let w = hw.min(inner.width - hx);
+                ctx.hit_registry.register(
+                    Rect::new(inner.x + hx, rect.y, w, 1),
+                    z + 2,
+                    HitTarget::DetailsCommitHash { oid: target_oid },
+                );
+            }
+        }
+    }
+
+    frame.render_widget(
+        Paragraph::new(Span::styled(
+            truncate_to_width(
+                ctx.t("popup.commit_message_footer"),
+                footer_rect.width as usize,
+            ),
+            Style::default().fg(ctx.theme.fg_muted),
+        ))
+        .style(Style::default().bg(ctx.theme.bg_panel)),
+        footer_rect,
+    );
 }
 
 fn render_commit_history_popup(

@@ -72,6 +72,69 @@ impl AppState {
                 self.loading_snapshot = true;
                 effects.push(Effect::RefreshRepoAndStage);
             }
+            Action::GoToParentSmart => {
+                let candidates = self.log.graph.parent_candidates(self.repo_snapshot.as_ref());
+                if candidates.len() >= 2 {
+                    self.push_modal(ModalLayer::ChooseParent { selected: 0 });
+                } else {
+                    effects.extend(self.dispatch(Action::GoToParent(0)));
+                }
+            }
+            Action::GoToChild => {
+                let candidates = self.log.graph.child_candidates(self.repo_snapshot.as_ref());
+                if candidates.len() >= 2 {
+                    self.push_modal(ModalLayer::ChooseChild { selected: 0 });
+                } else {
+                    let snap = self.repo_snapshot.clone();
+                    let now = self.now();
+                    let width = self.terminal_area.width;
+                    let mut lctx = LogDispatchCtx {
+                        snap: snap.as_ref(),
+                        branch_colors: &self.branch_colors,
+                        diff_caches: &self.diff_caches,
+                        i18n: &self.i18n,
+                        now,
+                        width,
+                        async_graph_enabled: self.async_graph_enabled,
+                        focused_pane: &mut self.focused_pane,
+                        status_notice: &mut self.status_notice,
+                        effects: &mut effects,
+                    };
+                    let _ = self.log.dispatch(&Action::GoToChild, &mut lctx);
+                }
+            }
+            Action::OpenCommitMessageModal => {
+                let single = self
+                    .log
+                    .details
+                    .current_bundle(&self.diff_caches)
+                    .and_then(|b| (b.details.len() == 1).then(|| b.details[0].clone()));
+                let fallback = self.log_commit_at(self.log.graph.selected_idx).cloned();
+                if let Some(d) = single {
+                    let subject = d.message.lines().next().unwrap_or("").to_string();
+                    self.push_modal(ModalLayer::CommitMessage {
+                        oid: d.oid,
+                        subject,
+                        message: d.message,
+                        scroll: super::ScrollViewport::new(),
+                    });
+                } else if let Some(c) = fallback {
+                    let msg = if c.body.is_empty() {
+                        c.subject.clone()
+                    } else {
+                        format!("{}\n\n{}", c.subject, c.body)
+                    };
+                    self.push_modal(ModalLayer::CommitMessage {
+                        oid: c.oid,
+                        subject: c.subject,
+                        message: msg,
+                        scroll: super::ScrollViewport::new(),
+                    });
+                }
+            }
+            Action::ScrollCommitMessageModal(delta) => {
+                self.scroll_pane(ScrollPane::CommitMessageModal, delta);
+            }
             Action::OpenPopup {
                 kind,
                 initial_query,
@@ -575,6 +638,7 @@ impl AppState {
                         self.log.dispatch(&other, &mut lctx)
                     }
                     || self.dispatch_file_history_action(&other, &mut effects)
+                    || self.dispatch_reflog_action(&other, &mut effects)
                     || self.dispatch_annotate_action(&other, &mut effects)
                     || self.dispatch_push_action(&other, &mut effects)
                     || self.dispatch_git_action(&other, &mut effects)
@@ -610,6 +674,7 @@ impl AppState {
         let now = self.now();
         self.reconcile_log_requests(now, effects);
         self.reconcile_file_history_requests(now, effects);
+        self.reconcile_reflog_requests(now, effects);
         self.reconcile_annotate_requests(now, effects);
         self.reconcile_push_dialog_requests(now, effects);
         self.stage_workbench.reconcile_requests(
@@ -1951,6 +2016,222 @@ impl AppState {
             .and_then(|pd| pd.desired_diff_key(&self.diff_caches));
         let cached = self.modal_stack.push_dialog_mut().and_then(|pd| {
             pd.diff
+                .reconcile_fetch(desired_diff, &mut self.diff_caches, now, DETAILS_DEBOUNCE)
+        });
+        if let Some(diff) = cached {
+            self.schedule_file_syntax(diff, effects);
+        }
+    }
+
+    fn dispatch_reflog_action(&mut self, action: &Action, effects: &mut Vec<Effect>) -> bool {
+        match action {
+            Action::OpenReflog(ref_name) => {
+                let ref_name = if ref_name.trim().is_empty() {
+                    "HEAD".to_string()
+                } else {
+                    ref_name.trim().to_string()
+                };
+                let state = crate::log_view::ReflogState::new(
+                    ref_name,
+                    self.log.details.diff.context,
+                );
+                let key = state.key.clone();
+                self.blur_active_pane(false);
+                self.modal_stack.dismiss_context_menus();
+                self.modal_stack.open_reflog(state);
+                effects.push(Effect::RequestReflog(key));
+            }
+            Action::CloseReflog => {
+                self.modal_stack.close_reflog();
+            }
+            Action::ReflogFocus(focus) => {
+                if let Some(rf) = self.modal_stack.reflog_mut() {
+                    rf.focus = *focus;
+                }
+            }
+            Action::ReflogCycleFocus(reverse) => {
+                if let Some(rf) = self.modal_stack.reflog_mut() {
+                    rf.focus = if *reverse {
+                        rf.focus.prev()
+                    } else {
+                        rf.focus.next()
+                    };
+                }
+            }
+            Action::ReflogMove(delta) => {
+                if let Some(rf) = self.modal_stack.reflog_mut() {
+                    rf.move_selection(*delta);
+                }
+            }
+            Action::ReflogSelect(idx) => {
+                if let Some(rf) = self.modal_stack.reflog_mut() {
+                    rf.select_row(*idx);
+                }
+            }
+            Action::ReflogChangesMove(delta) => {
+                if let Some(rf) = self.modal_stack.reflog_mut() {
+                    rf.changes.move_selection(*delta, &self.diff_caches);
+                    rf.diff.scroll.reset();
+                }
+            }
+            Action::ReflogChangesSelect(idx) => {
+                if let Some(rf) = self.modal_stack.reflog_mut() {
+                    rf.changes.select_row(*idx, &self.diff_caches);
+                    rf.diff.scroll.reset();
+                }
+            }
+            Action::ReflogDiffScroll(delta) => {
+                self.scroll_pane(ScrollPane::ReflogDiff, *delta);
+            }
+            Action::ReflogToggleSideBySide => {
+                if let Some(rf) = self.modal_stack.reflog_mut() {
+                    rf.diff.toggle_side_by_side();
+                }
+            }
+            Action::ReflogCycleContext => {
+                if let Some(rf) = self.modal_stack.reflog_mut() {
+                    rf.diff.cycle_context();
+                }
+            }
+            Action::ReflogLoadMore => {
+                if let Some(rf) = self.modal_stack.reflog_mut()
+                    && !rf.loading
+                    && rf.has_more()
+                {
+                    let key = rf.load_more();
+                    effects.push(Effect::RequestReflog(key));
+                }
+            }
+            Action::ReflogCheckoutSelected => {
+                if let Some(entry) = self
+                    .modal_stack
+                    .reflog()
+                    .and_then(|rf| rf.selected_entry().cloned())
+                {
+                    self.modal_stack.close_reflog();
+                    effects.extend(self.dispatch(Action::RunGitOp(jbgit_core::GitOp::Checkout {
+                        target: entry.oid.to_string(),
+                        detach: true,
+                    })));
+                }
+            }
+            Action::ReflogNewBranchSelected => {
+                if let Some(entry) = self
+                    .modal_stack
+                    .reflog()
+                    .and_then(|rf| rf.selected_entry().cloned())
+                {
+                    let existing: Vec<String> = self
+                        .repo_snapshot
+                        .as_deref()
+                        .map(|s| {
+                            s.refs
+                                .iter()
+                                .filter(|r| r.kind == jbgit_core::RefKind::LocalBranch)
+                                .map(|r| r.name.clone())
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    let short = entry.oid.short();
+                    let dlg = crate::dialogs::new_branch_dialog(
+                        &entry.oid.to_string(),
+                        &short,
+                        existing,
+                        "",
+                        &self.i18n,
+                    );
+                    self.push_modal(ModalLayer::Dialog(Box::new(dlg)));
+                }
+            }
+            Action::ReflogCherryPickSelected => {
+                if let Some(entry) = self
+                    .modal_stack
+                    .reflog()
+                    .and_then(|rf| rf.selected_entry().cloned())
+                {
+                    self.modal_stack.close_reflog();
+                    effects.extend(self.dispatch(Action::RunGitOp(jbgit_core::GitOp::CherryPick {
+                        oids: vec![entry.oid],
+                    })));
+                }
+            }
+            Action::ReflogResetSelected => {
+                if let Some(entry) = self
+                    .modal_stack
+                    .reflog()
+                    .and_then(|rf| rf.selected_entry().cloned())
+                {
+                    let cur = self
+                        .repo_snapshot
+                        .as_deref()
+                        .and_then(|s| s.head_branch.clone())
+                        .unwrap_or_else(|| "HEAD".to_string());
+                    let dlg = crate::dialogs::reset_dialog(
+                        entry.oid,
+                        &entry.message,
+                        &cur,
+                        &self.i18n,
+                    );
+                    self.push_modal(ModalLayer::Dialog(Box::new(dlg)));
+                }
+            }
+            Action::ReflogJumpInLog => {
+                if let Some(entry) = self
+                    .modal_stack
+                    .reflog()
+                    .and_then(|rf| rf.selected_entry().cloned())
+                {
+                    self.modal_stack.close_reflog();
+                    self.active_tab = WorkspaceTab::Log;
+                    effects.extend(self.dispatch(Action::JumpToCommit(entry.oid)));
+                }
+            }
+            Action::ReflogCopyHash => {
+                if let Some(entry) = self
+                    .modal_stack
+                    .reflog()
+                    .and_then(|rf| rf.selected_entry().cloned())
+                {
+                    effects.extend(self.dispatch(Action::CopyText(entry.oid.to_string())));
+                }
+            }
+            _ => return false,
+        }
+        true
+    }
+
+    pub fn reconcile_reflog_requests(&mut self, now: Instant, effects: &mut Vec<Effect>) {
+        let Some(desired_details) = self
+            .modal_stack
+            .reflog()
+            .and_then(|rf| rf.desired_details_key())
+        else {
+            return;
+        };
+        if let Some(rf) = self.modal_stack.reflog_mut()
+            && rf.changes.current_key.as_ref() != Some(&desired_details)
+        {
+            rf.changes.current_key = Some(desired_details.clone());
+            rf.changes.selected = 0;
+            rf.diff.scroll.reset();
+        }
+        if !self.diff_caches.details.contains(&desired_details)
+            && let Some(rf) = self.modal_stack.reflog_mut()
+            && rf.details_requested.as_ref() != Some(&desired_details)
+        {
+            rf.details_requested = Some(desired_details.clone());
+            effects.push(Effect::RequestCommitDetails {
+                slot: jbgit_core::RequestSlotId::ReflogCommitDetails,
+                key: desired_details,
+            });
+        }
+
+        let desired_diff = self
+            .modal_stack
+            .reflog()
+            .and_then(|rf| rf.desired_diff_key(&self.diff_caches));
+        let cached = self.modal_stack.reflog_mut().and_then(|rf| {
+            rf.diff
                 .reconcile_fetch(desired_diff, &mut self.diff_caches, now, DETAILS_DEBOUNCE)
         });
         if let Some(diff) = cached {

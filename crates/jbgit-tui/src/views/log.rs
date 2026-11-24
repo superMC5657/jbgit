@@ -21,6 +21,7 @@ use crate::views::{
     highlight_spans, render_pane_frame, render_splitter_divider, row_background, truncate_to_width,
 };
 use crate::widgets::PillBadgeBar;
+use crate::widgets::pill_badge::layout_pills;
 
 /// Width of the collapsed Branches stripe (`ExpandStripeButton`).
 pub const STRIPE_WIDTH: u16 = 2;
@@ -420,6 +421,26 @@ fn render_filter_bar(
             );
         }
     }
+
+    // `--no-merges` filter toggle chip (`NoMergesFilterAction`).
+    let nm_on = filter.spec.no_merges;
+    let nm_chip = format!(" [{}] ", state.i18n.t("filter.no_merges"));
+    let nm_style = if nm_on {
+        Style::default()
+            .fg(theme.fg_bright)
+            .bg(theme.border_focused)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(theme.fg_muted).bg(theme.bg_panel)
+    };
+    put(
+        frame,
+        &mut x,
+        &nm_chip,
+        nm_style,
+        Some(HitTarget::FilterNoMergesToggle),
+        reserve,
+    );
 }
 
 fn render_commits_table(
@@ -463,7 +484,19 @@ fn render_commits_table(
     }
 
     // Viewport virtualization: only `offset .. offset + height` rows are touched.
-    let visible_h = area.height as usize;
+    let speed_search = &state.log.speed_search;
+    let speed_bar_h: u16 = if speed_search.active && area.height >= 2 {
+        1
+    } else {
+        0
+    };
+    let table_area = Rect::new(
+        area.x,
+        area.y,
+        area.width,
+        area.height.saturating_sub(speed_bar_h),
+    );
+    let visible_h = table_area.height as usize;
     let total = cached.visible_count();
     let selected = state.log.graph.selected_idx.min(total.saturating_sub(1));
     let commit_h = if snap.is_shallow && visible_h >= 2 && selected + 1 == total {
@@ -484,6 +517,9 @@ fn render_commits_table(
 
     let focused = ctx.focused_pane == PaneId::LogCommitTable;
     let presentation = &state.log.presentation;
+    let highlight_current_branch = state.log.should_highlight_current_branch(snap);
+    let highlight_my_commits = state.log.should_highlight_my_commits();
+    let hovered_expanded_seg = hovered_expanded_segment(cached, ctx.hover_target);
     let mut edges_cache = cached.edges_cache.borrow_mut();
     let mut elem_gen = PrintElementGenerator::with_cache(
         &cached.permanent,
@@ -512,7 +548,7 @@ fn render_commits_table(
         let is_cursor = row_idx == state.log.graph.selected_idx;
         let is_sel = state.log.graph.is_row_selected(row_idx);
         let has_multi = state.log.graph.has_multi_selection();
-        let is_in_current_branch = presentation.highlight_current_branch
+        let is_in_current_branch = highlight_current_branch
             && cached.current_branch_reachable.contains(perm_id as usize);
         let is_hovered = matches!(
             ctx.hover_target,
@@ -549,7 +585,13 @@ fn render_commits_table(
                 }
                 _ => None,
             };
-            let is_elem_selected = is_element_highlighted(&el, row_idx, ctx.hover_target);
+            let is_elem_selected = is_element_highlighted(
+                &el,
+                row_idx,
+                ctx.hover_target,
+                cached,
+                hovered_expanded_seg,
+            );
             rendered.push(RenderGraphElement {
                 element: el,
                 target_oid,
@@ -564,21 +606,21 @@ fn render_commits_table(
         });
     }
 
-    let max_graph_cols = ((area.width as usize * 45) / 100)
+    let max_graph_cols = ((table_area.width as usize * 45) / 100)
         .max(2)
-        .min(area.width as usize);
+        .min(table_area.width as usize);
     let graph_tracks = cached.recommended_tracks.max(max_track_pos + 1).max(1);
-    let graph_cols = ((graph_tracks * 2).min(max_graph_cols) as u16).min(area.width);
-    let graph_area = Rect::new(area.x, area.y, graph_cols, rows_len as u16);
+    let graph_cols = ((graph_tracks * 2).min(max_graph_cols) as u16).min(table_area.width);
+    let graph_area = Rect::new(table_area.x, table_area.y, graph_cols, rows_len as u16);
 
     // Fixed-width right columns: [Author 14-18] [Date 12-16] [Hash 8] [Sig 3].
-    let text_total = area.width.saturating_sub(graph_cols);
-    let author_w: u16 = if text_total >= 60 {
+    let text_total = table_area.width.saturating_sub(graph_cols);
+    let author_w: u16 = if presentation.show_author_column && text_total >= 60 {
         if text_total >= 100 { 18 } else { 14 }
     } else {
         0
     };
-    let date_w: u16 = if text_total >= 40 {
+    let date_w: u16 = if presentation.show_date_column && text_total >= 40 {
         if presentation.relative_dates { 12 } else { 17 }
     } else {
         0
@@ -599,7 +641,12 @@ fn render_commits_table(
     // Register row-level hit regions first (z=1) before graph elements & pills (z=2)
     for (vis_idx, row) in prepared_rows.iter().enumerate() {
         let row_idx = offset + vis_idx;
-        let row_rect = Rect::new(area.x, area.y.saturating_add(vis_idx as u16), area.width, 1);
+        let row_rect = Rect::new(
+            table_area.x,
+            table_area.y.saturating_add(vis_idx as u16),
+            table_area.width,
+            1,
+        );
         ctx.hit_registry.register(
             row_rect,
             1,
@@ -642,9 +689,9 @@ fn render_commits_table(
         let commit = cached
             .commit_at_visible_row(snap, row_idx)
             .expect("visible row maps to valid commit");
-        let row_y = area.y.saturating_add(vis_idx as u16);
-        let text_x = area.x.saturating_add(graph_cols);
-        let text_w = area.right().saturating_sub(text_x);
+        let row_y = table_area.y.saturating_add(vis_idx as u16);
+        let text_x = table_area.x.saturating_add(graph_cols);
+        let text_w = table_area.right().saturating_sub(text_x);
         if text_w == 0 {
             continue;
         }
@@ -652,6 +699,16 @@ fn render_commits_table(
         let is_sel = state.log.graph.is_row_selected(row_idx);
         let has_multi = state.log.graph.has_multi_selection();
         let is_head = snap.head_oid == Some(commit.oid);
+        let is_my_commit = highlight_my_commits
+            && (snap
+                .user_email
+                .as_deref()
+                .is_some_and(|e| !e.is_empty() && e.eq_ignore_ascii_case(&commit.author_email))
+                || snap
+                    .user_name
+                    .as_deref()
+                    .is_some_and(|n| !n.is_empty() && n == commit.author_name));
+        let is_cherry_picked = state.log.is_commit_cherry_picked(snap, &commit.oid);
         let main_w = text_w.saturating_sub(right_cols);
         let main_rect = Rect::new(text_x, row_y, main_w, 1);
 
@@ -694,27 +751,53 @@ fn render_commits_table(
             },
         );
 
-        let pills_x = main_rect.x.saturating_add(1).min(main_rect.right());
-        let pills_area = Rect::new(pills_x, row_y, main_rect.right().saturating_sub(pills_x), 1);
-        let pills_w = PillBadgeBar {
-            groups: &groups,
-            glyphs: ctx.glyph_mode.symbols(),
-            theme: ctx.theme,
-            row_bg: bg,
-            visible_row: row_idx,
-        }
-        .render(pills_area, frame.buffer_mut(), ctx.hit_registry);
+        let content_x = main_rect.x.saturating_add(1).min(main_rect.right());
+        let content_w = main_rect.right().saturating_sub(content_x);
+        let subject_area = if presentation.align_labels_right && !groups.is_empty() {
+            let layout = layout_pills(&groups, ctx.glyph_mode.symbols(), content_w);
+            let pills_w = layout.width.min(content_w);
+            let pills_x = main_rect.right().saturating_sub(pills_w);
+            if pills_w > 0 {
+                PillBadgeBar {
+                    groups: &groups,
+                    glyphs: ctx.glyph_mode.symbols(),
+                    theme: ctx.theme,
+                    row_bg: bg,
+                    visible_row: row_idx,
+                }
+                .render(
+                    Rect::new(pills_x, row_y, pills_w, 1),
+                    frame.buffer_mut(),
+                    ctx.hit_registry,
+                );
+            }
+            Rect::new(content_x, row_y, pills_x.saturating_sub(content_x), 1)
+        } else {
+            let pills_area = Rect::new(content_x, row_y, content_w, 1);
+            let pills_w = PillBadgeBar {
+                groups: &groups,
+                glyphs: ctx.glyph_mode.symbols(),
+                theme: ctx.theme,
+                row_bg: bg,
+                visible_row: row_idx,
+            }
+            .render(pills_area, frame.buffer_mut(), ctx.hit_registry);
+            let subject_x = content_x.saturating_add(pills_w);
+            Rect::new(
+                subject_x,
+                row_y,
+                main_rect.right().saturating_sub(subject_x),
+                1,
+            )
+        };
 
-        let subject_x = pills_x.saturating_add(pills_w);
-        let subject_area = Rect::new(
-            subject_x,
-            row_y,
-            main_rect.right().saturating_sub(subject_x),
-            1,
-        );
         let is_merge = commit.parents.len() > 1;
+        let is_speed_hit = speed_search.is_row_match(row_idx);
         let base = Style::default()
-            .fg(if is_sel || is_head {
+            .fg(if is_cherry_picked && !is_sel {
+                // Already Cherry-Picked highlighter dims picked commits
+                ctx.theme.fg_muted
+            } else if is_sel || is_head || is_my_commit {
                 ctx.theme.fg_bright
             } else if is_merge && presentation.highlight_merges {
                 // MergeCommitsHighlighter
@@ -723,7 +806,7 @@ fn render_commits_table(
                 ctx.theme.fg_primary
             })
             .bg(bg)
-            .add_modifier(if is_head {
+            .add_modifier(if is_head || (is_my_commit && !is_cherry_picked) {
                 Modifier::BOLD
             } else {
                 Modifier::empty()
@@ -732,10 +815,14 @@ fn render_commits_table(
             .fg(ctx.theme.ref_head.pill_fg)
             .bg(ctx.theme.ref_head.pill_bg)
             .add_modifier(Modifier::BOLD);
-        let ranges = matcher
+        let mut ranges = matcher
             .as_ref()
             .map(|m| m.find_ranges(&commit.subject))
             .unwrap_or_default();
+        if speed_search.active {
+            ranges.extend(speed_search.query_ranges(&commit.subject));
+            ranges.sort_unstable();
+        }
         let spans = highlight_spans(
             &commit.subject,
             &ranges,
@@ -750,17 +837,22 @@ fn render_commits_table(
         let muted = Style::default().fg(ctx.theme.fg_muted).bg(bg);
         if author_w > 0 {
             let author = truncate_to_width(&commit.author_name, author_w as usize - 1);
+            let author_style = Style::default()
+                .fg(if is_cherry_picked && !is_sel {
+                    ctx.theme.fg_muted
+                } else if is_sel || is_my_commit || is_speed_hit {
+                    ctx.theme.fg_bright
+                } else {
+                    ctx.theme.fg_primary
+                })
+                .bg(bg)
+                .add_modifier(if is_my_commit && !is_cherry_picked {
+                    Modifier::BOLD
+                } else {
+                    Modifier::empty()
+                });
             frame.render_widget(
-                Paragraph::new(Span::styled(
-                    format!(" {author}"),
-                    Style::default()
-                        .fg(if is_sel {
-                            ctx.theme.fg_bright
-                        } else {
-                            ctx.theme.fg_primary
-                        })
-                        .bg(bg),
-                )),
+                Paragraph::new(Span::styled(format!(" {author}"), author_style)),
                 Rect::new(col_x, row_y, author_w, 1),
             );
             col_x += author_w;
@@ -819,11 +911,11 @@ fn render_commits_table(
     }
 
     if snap.is_shallow && end == total && rows_len < visible_h {
-        let boundary_y = area.y.saturating_add(rows_len as u16);
+        let boundary_y = table_area.y.saturating_add(rows_len as u16);
         let label = state.i18n.t("view.log.shallow_boundary");
         let btn = format!(" {} ", state.i18n.t("view.log.unshallow_btn"));
         let btn_w = btn.width() as u16;
-        let line_w = area.width;
+        let line_w = table_area.width;
         let max_label_w = line_w.saturating_sub(btn_w.saturating_add(7)) as usize;
         let prefix = if max_label_w > 0 {
             format!("─── {} · ", super::truncate_to_width(label, max_label_w))
@@ -847,11 +939,11 @@ fn render_commits_table(
                 Span::styled(btn, pill_style),
                 Span::styled(trailing, muted),
             ])),
-            Rect::new(area.x, boundary_y, line_w, 1),
+            Rect::new(table_area.x, boundary_y, line_w, 1),
         );
-        let pill_x = area.x.saturating_add(prefix_w);
-        if pill_x < area.right() && btn_w > 0 {
-            let reg_w = btn_w.min(area.right() - pill_x);
+        let pill_x = table_area.x.saturating_add(prefix_w);
+        if pill_x < table_area.right() && btn_w > 0 {
+            let reg_w = btn_w.min(table_area.right() - pill_x);
             ctx.hit_registry.register(
                 Rect::new(pill_x, boundary_y, reg_w, 1),
                 2,
@@ -859,13 +951,104 @@ fn render_commits_table(
             );
         }
     }
+
+    if speed_bar_h > 0 {
+        let bar_rect = Rect::new(
+            area.x,
+            area.bottom().saturating_sub(1),
+            area.width,
+            1,
+        );
+        let count_txt = if speed_search.query.trim().is_empty() {
+            String::new()
+        } else if speed_search.matches.is_empty() {
+            format!("  {}", state.i18n.t("view.log.speed_search_no_match"))
+        } else {
+            let cur = speed_search.current.map_or(0, |i| i + 1);
+            format!("  {}/{}", cur, speed_search.matches.len())
+        };
+        let cursor = if speed_search.editing { "▏" } else { "" };
+        let line = Line::from(vec![
+            Span::styled(
+                format!(" {} ", state.i18n.t("view.log.speed_search_label")),
+                Style::default()
+                    .fg(ctx.theme.fg_accent_link)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!("{}{cursor}", speed_search.query),
+                Style::default().fg(ctx.theme.fg_bright),
+            ),
+            Span::styled(
+                count_txt,
+                Style::default().fg(if speed_search.matches.is_empty() && !speed_search.query.is_empty() {
+                    ctx.theme.status_conflicted
+                } else {
+                    ctx.theme.status_added
+                }),
+            ),
+            Span::styled(
+                format!("  {}", state.i18n.t("view.log.speed_search_hint")),
+                Style::default().fg(ctx.theme.fg_muted),
+            ),
+        ]);
+        frame.render_widget(
+            Paragraph::new(line).style(Style::default().bg(ctx.theme.bg_panel)),
+            bar_rect,
+        );
+    }
+}
+
+fn hovered_expanded_segment(
+    cached: &crate::graph::state::CachedLogGraph,
+    hover_target: Option<&HitTarget>,
+) -> Option<jbgit_core::graph::SegmentId> {
+    if !cached.visible.can_collapse {
+        return None;
+    }
+    match hover_target? {
+        HitTarget::GraphPrintElement {
+            visible_row,
+            kind: GraphHitKind::Node { .. },
+            ..
+        } => cached.expanded_segment_of_row(*visible_row),
+        HitTarget::GraphPrintElement {
+            kind: GraphHitKind::Edge { up_row, down_row } | GraphHitKind::Arrow { up_row, down_row, .. },
+            ..
+        } => cached.expanded_segment_at_edge(*up_row, *down_row),
+        _ => None,
+    }
 }
 
 fn is_element_highlighted(
     el: &GraphPrintElement,
     row_idx: usize,
     hover_target: Option<&HitTarget>,
+    cached: &crate::graph::state::CachedLogGraph,
+    hovered_expanded_seg: Option<jbgit_core::graph::SegmentId>,
 ) -> bool {
+    // Highlight the entire expanded collapsible segment when hovering any of its nodes/edges.
+    if let Some(seg_id) = hovered_expanded_seg {
+        match el {
+            GraphPrintElement::Node { .. }
+                if cached.is_row_in_expanded_segment(row_idx, seg_id) =>
+            {
+                return true;
+            }
+            GraphPrintElement::Edge {
+                up_row, down_row, ..
+            }
+            | GraphPrintElement::TerminalEdge {
+                up_row, down_row, ..
+            } if cached.expanded_segment_at_edge(*up_row as usize, *down_row as usize)
+                == Some(seg_id) =>
+            {
+                return true;
+            }
+            _ => {}
+        }
+    }
+
     let Some(HitTarget::GraphPrintElement {
         visible_row: hover_row,
         kind,

@@ -23,6 +23,15 @@ pub enum FilterField {
 impl FilterField {
     pub const ALL: [Self; 4] = [Self::Branch, Self::User, Self::Date, Self::Paths];
 
+    pub const fn index(self) -> usize {
+        match self {
+            Self::Branch => 0,
+            Self::User => 1,
+            Self::Date => 2,
+            Self::Paths => 3,
+        }
+    }
+
     pub const fn title(self) -> &'static str {
         match self {
             Self::Branch => "Branch",
@@ -34,7 +43,7 @@ impl FilterField {
 
     pub const fn hint(self) -> &'static str {
         match self {
-            Self::Branch => "names / globs, -exclude   e.g. main feat/* -dependabot/*",
+            Self::Branch => "names, a..b, Favorites, -exclude   e.g. main..feat Favorites",
             Self::User => "@me, names or emails      e.g. @me alice",
             Self::Date => "today | yesterday | 7d | 30d | YYYY-MM-DD..YYYY-MM-DD",
             Self::Paths => "repo-relative dirs / files  e.g. src/graph docs",
@@ -133,6 +142,156 @@ struct CachedTextMatcher {
     matcher: Option<Arc<TextMatcher>>,
 }
 
+/// Maximum number of recent filter queries retained per filter dimension.
+pub const MAX_FILTER_HISTORY: usize = 10;
+
+/// In-table speed search state for the Log commits table (`VcsLogSpeedSearch`).
+///
+/// Unlike [`FilterBarState`], speed search NEVER hides non-matching commits: it
+/// highlights matching rows in place and steps between them with `n` / `N`.
+#[derive(Debug, Default, Clone)]
+pub struct LogSpeedSearchState {
+    /// Speed search bar is visible / active.
+    pub active: bool,
+    /// Typing into the speed search input (`Enter` confirms to browse mode; `Esc` clears).
+    pub editing: bool,
+    pub query: String,
+    /// Visible row indices matching `query` (in ascending order).
+    pub matches: Vec<usize>,
+    /// Index into `matches` of the currently focused match.
+    pub current: Option<usize>,
+    /// `LogGraphState::visible_revision` at which `matches` was last computed.
+    pub graph_revision: u64,
+}
+
+impl LogSpeedSearchState {
+    pub fn open(&mut self) {
+        self.active = true;
+        self.editing = true;
+    }
+
+    pub fn close(&mut self) {
+        self.active = false;
+        self.editing = false;
+        self.query.clear();
+        self.matches.clear();
+        self.current = None;
+    }
+
+    pub fn is_active(&self) -> bool {
+        self.active
+    }
+
+    pub fn query_ranges(&self, text: &str) -> Vec<(usize, usize)> {
+        let q = self.query.trim();
+        if !self.active || q.is_empty() {
+            return Vec::new();
+        }
+        let q_low = q.to_lowercase();
+        if q_low.is_empty() {
+            return Vec::new();
+        }
+        if text.is_ascii() && q_low.is_ascii() {
+            let mut ranges = Vec::new();
+            let hay = text.as_bytes();
+            let needle = q_low.as_bytes();
+            let mut i = 0;
+            while i + needle.len() <= hay.len() {
+                if hay[i..i + needle.len()].eq_ignore_ascii_case(needle) {
+                    ranges.push((i, i + needle.len()));
+                    i += needle.len();
+                } else {
+                    i += 1;
+                }
+            }
+            return ranges;
+        }
+        // Unicode fallback: match on lowercased string when char lengths match.
+        let low = text.to_lowercase();
+        if low.len() == text.len() {
+            let mut ranges = Vec::new();
+            let mut start = 0;
+            while let Some(pos) = low[start..].find(&q_low) {
+                let s = start + pos;
+                let e = s + q_low.len();
+                if text.is_char_boundary(s) && text.is_char_boundary(e) {
+                    ranges.push((s, e));
+                }
+                start = e;
+            }
+            return ranges;
+        }
+        Vec::new()
+    }
+
+    pub fn is_row_match(&self, row: usize) -> bool {
+        self.active && self.matches.binary_search(&row).is_ok()
+    }
+
+    /// Recomputes `matches` against the currently visible rows and returns the
+    /// row to focus (nearest match at or after `cursor_row`, wrapping around).
+    pub fn recompute(
+        &mut self,
+        cached: &crate::graph::state::CachedLogGraph,
+        snap: &RepoSnapshot,
+        cursor_row: usize,
+    ) -> Option<usize> {
+        self.matches.clear();
+        self.current = None;
+        let q = self.query.trim();
+        if !self.active || q.is_empty() {
+            return None;
+        }
+        let q_low = q.to_lowercase();
+        let total = cached.visible_count();
+        for row in 0..total {
+            let Some(commit) = cached.commit_at_visible_row(snap, row) else {
+                continue;
+            };
+            let hit = commit.subject.to_lowercase().contains(&q_low)
+                || commit.author_name.to_lowercase().contains(&q_low)
+                || commit.oid.matches_hex_prefix(&q_low)
+                || cached
+                    .refs_for_oid(snap, commit.oid)
+                    .any(|r| r.name.to_lowercase().contains(&q_low));
+            if hit {
+                self.matches.push(row);
+            }
+        }
+        if self.matches.is_empty() {
+            return None;
+        }
+        let idx = self
+            .matches
+            .partition_point(|&r| r < cursor_row)
+            .min(self.matches.len() - 1);
+        let idx = if self.matches.get(idx).is_some_and(|&r| r >= cursor_row) {
+            idx
+        } else {
+            0
+        };
+        self.current = Some(idx);
+        Some(self.matches[idx])
+    }
+
+    /// Steps to the next (`forward == true`) or previous match, wrapping around.
+    pub fn step(&mut self, forward: bool) -> Option<usize> {
+        if self.matches.is_empty() {
+            self.current = None;
+            return None;
+        }
+        let len = self.matches.len();
+        let next = match self.current {
+            Some(i) if forward => (i + 1) % len,
+            Some(i) => (i + len - 1) % len,
+            None if forward => 0,
+            None => len - 1,
+        };
+        self.current = Some(next);
+        Some(self.matches[next])
+    }
+}
+
 #[derive(Debug, Default)]
 pub struct FilterBarState {
     pub spec: LogFilterSpec,
@@ -144,10 +303,26 @@ pub struct FilterBarState {
     pub path_requested: Option<PathRequest>,
     /// Debounced text-filter re-projection deadline (see [`FILTER_TEXT_DEBOUNCE`]).
     pub text_apply_at: Option<Instant>,
+    /// Last 10 applied queries per [`FilterField`], newest first.
+    pub history: [Vec<String>; 4],
     compiled_text: RefCell<Option<CachedTextMatcher>>,
 }
 
 impl FilterBarState {
+    pub fn record_history(&mut self, field: FilterField, expr: &str) {
+        let trimmed = expr.trim();
+        if trimmed.is_empty() {
+            return;
+        }
+        let list = &mut self.history[field.index()];
+        list.retain(|e| e != trimmed);
+        list.insert(0, trimmed.to_string());
+        list.truncate(MAX_FILTER_HISTORY);
+    }
+
+    pub fn history_for(&self, field: FilterField) -> &[String] {
+        &self.history[field.index()]
+    }
     pub fn field_label(&self, field: FilterField) -> String {
         field.label(&self.spec)
     }
@@ -228,27 +403,46 @@ impl FilterBarState {
     }
 }
 
-/// Suggestions for a filter field editor, fuzzy-filtered by the last token.
-pub fn filter_suggestions(
+/// Suggestions for a filter field editor, incorporating built-in `Favorites`
+/// (when favorite branches exist) and the per-field MRU history (up to 10 items).
+pub fn filter_suggestions_with_context(
     field: FilterField,
     snap: Option<&RepoSnapshot>,
     query: &str,
+    has_favorites: bool,
+    history: &[String],
 ) -> Vec<String> {
     let last = query
         .rsplit(|c: char| c.is_whitespace() || c == ',')
         .next()
         .unwrap_or("")
         .trim_start_matches(['-', '+']);
-    let mut base: Vec<String> = match field {
+    let mut base: Vec<String> = Vec::new();
+    let mut push_unique = |item: String| {
+        if !base.contains(&item) {
+            base.push(item);
+        }
+    };
+    match field {
         FilterField::Branch => {
-            let mut v = vec!["HEAD".to_string()];
-            if let Some(s) = snap {
-                v.extend(s.refs.iter().map(|r| r.name.clone()));
+            push_unique("HEAD".to_string());
+            if has_favorites {
+                push_unique("Favorites".to_string());
             }
-            v
+            for h in history {
+                push_unique(h.clone());
+            }
+            if let Some(s) = snap {
+                for r in &s.refs {
+                    push_unique(r.name.clone());
+                }
+            }
         }
         FilterField::User => {
-            let mut v = vec!["@me".to_string()];
+            push_unique("@me".to_string());
+            for h in history {
+                push_unique(h.clone());
+            }
             if let Some(s) = snap {
                 let mut counts: rustc_hash::FxHashMap<&str, usize> = Default::default();
                 for c in &s.commits {
@@ -256,31 +450,40 @@ pub fn filter_suggestions(
                 }
                 let mut authors: Vec<_> = counts.into_iter().collect();
                 authors.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(b.0)));
-                v.extend(authors.into_iter().take(200).map(|(a, _)| a.to_string()));
+                for (a, _) in authors.into_iter().take(200) {
+                    push_unique(a.to_string());
+                }
             }
-            v
         }
-        FilterField::Date => ["today", "yesterday", "7d", "30d", "all"]
-            .iter()
-            .map(ToString::to_string)
-            .collect(),
+        FilterField::Date => {
+            for h in history {
+                push_unique(h.clone());
+            }
+            for preset in ["today", "yesterday", "7d", "30d", "all"] {
+                push_unique(preset.to_string());
+            }
+        }
         FilterField::Paths => {
-            let mut v: Vec<String> = Vec::new();
+            for h in history {
+                push_unique(h.clone());
+            }
             if let Some(s) = snap
                 && let Ok(entries) = std::fs::read_dir(&s.workdir)
             {
+                let mut dirs = Vec::new();
                 for e in entries.flatten() {
                     let name = e.file_name().to_string_lossy().to_string();
                     if !name.starts_with('.') {
-                        v.push(name);
+                        dirs.push(name);
                     }
                 }
-                v.sort();
+                dirs.sort();
+                for d in dirs {
+                    push_unique(d);
+                }
             }
-            v
         }
-    };
-    base.dedup();
+    }
     if last.is_empty() {
         return base;
     }

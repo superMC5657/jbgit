@@ -5,6 +5,7 @@ use fixedbitset::FixedBitSet;
 
 use crate::Oid;
 use crate::graph::collapse::{CollapseInput, CollapseMode};
+use crate::graph::linear_bek::{FoldedBekMerge, LinearBekState, apply_linear_bek};
 use crate::graph::permanent::{LayoutIndex, PermNodeId, PermanentGraph, VisibleRowIdx};
 
 /// Row ordering strategy for [`VisibleGraph`].
@@ -24,9 +25,12 @@ pub struct GraphViewOptions {
     pub sort_type: SortType,
     pub first_parent_only: bool,
     pub show_long_edges: bool,
-    /// Linear-branch collapsing (`CollapsedGraph`); ignored while a filter or
-    /// `first_parent_only` is active.
+    /// Linear-branch collapsing (`CollapsedGraph`); allowed unfiltered or when
+    /// only `BranchFilter` is active (ignored under other filters or `first_parent_only`).
     pub collapse: CollapseMode,
+    /// `LinearBek` view mode: fold merge edges into dotted edges from merged
+    /// branch tails to the merge's deeper parent.
+    pub linear_bek: bool,
 }
 
 impl Default for GraphViewOptions {
@@ -36,6 +40,7 @@ impl Default for GraphViewOptions {
             first_parent_only: false,
             show_long_edges: false,
             collapse: CollapseMode::None,
+            linear_bek: false,
         }
     }
 }
@@ -105,14 +110,32 @@ impl VisibleLinearGraph {
     }
 }
 
+/// Optional contextual inputs for [`VisibleGraph::build_projected`].
+#[derive(Debug, Clone, Copy, Default)]
+pub struct VisibleGraphBuildArgs<'a> {
+    pub filter: Option<&'a FixedBitSet>,
+    /// Explicit starting heads from `BranchFilter` (used to scope `first_parent_only`
+    /// walks so unrelated side-branch tips/tags do not leak into the projection).
+    pub branch_heads: Option<&'a [PermNodeId]>,
+    /// True when `filter` originates exclusively from `BranchFilter` (no text,
+    /// user, date, path, range, or `--no-merges` predicates), allowing linear
+    /// segment collapsing to remain active.
+    pub branch_only_filter: bool,
+    pub collapse: Option<CollapseInput<'a>>,
+    pub linear_bek: Option<&'a LinearBekState>,
+}
+
 /// Complete visible graph state ready for `EdgesInRowGenerator` and `PrintElementGenerator`.
 #[derive(Debug, Clone)]
 pub struct VisibleGraph {
     pub linear: VisibleLinearGraph,
     pub options: GraphViewOptions,
-    /// Whether linear-segment collapsing was applied to this projection
-    /// (only without filter / `first_parent_only`).
+    /// Whether linear-segment collapsing was applied to this projection.
     pub collapse_applied: bool,
+    /// Whether linear-segment collapsing is permitted for the active filter/view mode.
+    pub can_collapse: bool,
+    /// Merges folded by `LinearBek` in this projection (for hit-testing & expand).
+    pub bek_merges: Vec<FoldedBekMerge>,
 }
 
 impl VisibleGraph {
@@ -127,26 +150,78 @@ impl VisibleGraph {
     }
 
     /// [`Self::build`] plus linear-segment collapsing. Collapsing is skipped
-    /// (`collapse_applied == false`) while a filter or `first_parent_only` is
-    /// active, mirroring IDEA which only collapses the unfiltered graph.
+    /// (`collapse_applied == false`) while a non-branch filter or `first_parent_only`
+    /// is active.
     pub fn build_collapsed(
         permanent: &PermanentGraph,
         options: GraphViewOptions,
         filter: Option<&FixedBitSet>,
         collapse: Option<CollapseInput<'_>>,
     ) -> Self {
-        let collapse = collapse.filter(|c| {
-            filter.is_none()
-                && !options.first_parent_only
-                && c.state.is_active()
-                && !c.segments.is_empty()
+        Self::build_projected(
+            permanent,
+            options,
+            VisibleGraphBuildArgs {
+                filter,
+                branch_heads: None,
+                branch_only_filter: false,
+                collapse,
+                linear_bek: None,
+            },
+        )
+    }
+
+    /// Full projection entry point supporting branch-scoped `FirstParentOnly`,
+    /// branch-filter-compatible linear collapsing, and `LinearBek`.
+    pub fn build_projected(
+        permanent: &PermanentGraph,
+        options: GraphViewOptions,
+        args: VisibleGraphBuildArgs<'_>,
+    ) -> Self {
+        let can_collapse =
+            !options.first_parent_only && (args.filter.is_none() || args.branch_only_filter);
+        let collapse = args.collapse.filter(|c| {
+            can_collapse && c.state.is_active() && !c.segments.is_empty()
         });
-        let flags = collapse.map(|c| c.state.collapsed_flags(c.segments));
-        let linear = build_visible_linear(permanent, options, filter, collapse, flags.as_deref());
+        let flags = collapse.map(|c| {
+            let mut f = c.state.collapsed_flags(c.segments);
+            if let Some(filter) = args.filter {
+                // Only collapse a segment if both endpoints and every middle node are in the branch filter.
+                for (idx, seg) in c.segments.iter().enumerate() {
+                    if f[idx]
+                        && (!filter.contains(seg.up as usize)
+                            || !filter.contains(seg.down as usize)
+                            || !c
+                                .segments
+                                .middle_nodes(&permanent.linear, seg)
+                                .all(|n| filter.contains(n as usize)))
+                    {
+                        f[idx] = false;
+                    }
+                }
+            }
+            f
+        });
+        let linear = build_visible_linear(
+            permanent,
+            options,
+            args.filter,
+            args.branch_heads,
+            collapse,
+            flags.as_deref(),
+        );
+        let (linear, bek_merges) = if options.linear_bek && !options.first_parent_only {
+            let default_bek = LinearBekState::default();
+            apply_linear_bek(permanent, linear, args.linear_bek.unwrap_or(&default_bek))
+        } else {
+            (linear, Vec::new())
+        };
         Self {
             linear,
             options,
             collapse_applied: collapse.is_some(),
+            can_collapse,
+            bek_merges,
         }
     }
 
@@ -154,12 +229,38 @@ impl VisibleGraph {
     pub fn layout_index(&self, permanent: &PermanentGraph, row: VisibleRowIdx) -> LayoutIndex {
         permanent.layout_index(self.linear.perm_id(row))
     }
+
+    /// Returns the folded `LinearBek` merge OID owning dotted edge `(up_row, down_row)`.
+    pub fn bek_merge_at_edge(&self, up_row: usize, down_row: usize) -> Option<Oid> {
+        let (Ok(u), Ok(d)) = (
+            VisibleRowIdx::try_from(up_row),
+            VisibleRowIdx::try_from(down_row),
+        ) else {
+            return None;
+        };
+        self.bek_merges
+            .iter()
+            .find(|m| m.dotted_edges.contains(&(u, d)))
+            .map(|m| m.merge_oid)
+    }
+
+    /// Returns the folded `LinearBek` merge OID whose merge row or tail row is `row`.
+    pub fn bek_merge_at_row(&self, row: usize) -> Option<Oid> {
+        let Ok(r) = VisibleRowIdx::try_from(row) else {
+            return None;
+        };
+        self.bek_merges
+            .iter()
+            .find(|m| m.merge_row == r || m.dotted_edges.iter().any(|&(u, _)| u == r))
+            .map(|m| m.merge_oid)
+    }
 }
 
 fn build_visible_linear(
     permanent: &PermanentGraph,
     options: GraphViewOptions,
     filter: Option<&FixedBitSet>,
+    branch_heads: Option<&[PermNodeId]>,
     collapse: Option<CollapseInput<'_>>,
     collapsed_flags: Option<&[bool]>,
 ) -> VisibleLinearGraph {
@@ -180,7 +281,7 @@ fn build_visible_linear(
 
     // 1. Determine visible node mask (combining first_parent_only and filter if present).
     let fp_mask = if options.first_parent_only {
-        Some(compute_first_parent_mask(permanent))
+        Some(compute_first_parent_mask(permanent, branch_heads))
     } else {
         None
     };
@@ -229,20 +330,23 @@ fn build_visible_linear(
     let mut perm_edges: Vec<Vec<(PermNodeId, GraphEdgeType)>> = vec![Vec::new(); total];
 
     if let (false, Some(c)) = (all_visible, collapse) {
-        // Collapsed segments: a hidden parent is always the first middle node
-        // of a collapsed segment, which jumps straight to its `down` end.
+        // Collapsed segments (either unfiltered or pure branch filter):
+        // a hidden parent that belongs to a collapsed segment jumps straight to `seg.down`.
+        // Parents excluded by a branch range cutoff (not in `filter`) are simply omitted.
         for &u in &visible_perms {
             let edges_u = &mut perm_edges[u as usize];
             for p in pg.loaded_down_nodes(u) {
                 let edge = match collapsed_segment(p as usize) {
                     Some(idx) => {
                         let seg = c.segments.get(idx).expect("segment index in range");
-                        (seg.down, GraphEdgeType::Collapsed)
+                        Some((seg.down, GraphEdgeType::Collapsed))
                     }
-                    None => (p, GraphEdgeType::Normal),
+                    None if is_vis_vec[p as usize] => Some((p, GraphEdgeType::Normal)),
+                    None => None,
                 };
-                // Parallel collapsed arms share one edge.
-                if !edges_u.contains(&edge) {
+                if let Some(edge) = edge
+                    && !edges_u.contains(&edge)
+                {
                     edges_u.push(edge);
                 }
             }
@@ -410,12 +514,19 @@ fn build_visible_linear(
     }
 }
 
-fn compute_first_parent_mask(permanent: &PermanentGraph) -> FixedBitSet {
+fn compute_first_parent_mask(
+    permanent: &PermanentGraph,
+    branch_heads: Option<&[PermNodeId]>,
+) -> FixedBitSet {
     let pg = &permanent.linear;
     let total = pg.nodes_count as usize;
     let mut mask = FixedBitSet::with_capacity(total);
 
-    for &head in &permanent.sorted_heads {
+    let start_heads = branch_heads.unwrap_or(&permanent.sorted_heads);
+    for &head in start_heads {
+        if (head as usize) >= total {
+            continue;
+        }
         let mut curr = head;
         while !mask.put(curr as usize) {
             if let Some(p0) = pg.loaded_down_nodes(curr).next() {
@@ -719,5 +830,157 @@ mod tests {
                 edge_type: GraphEdgeType::Dotted,
             }]
         );
+    }
+
+    #[test]
+    fn first_parent_with_branch_filter_does_not_leak_side_branch_tip_or_tag() {
+        // 0 (main, merge [1, 2]) -> 1 -> 3; side branch 2 (also tagged/branched as `feat`) -> 3.
+        // Without branch_heads scoping, `permanent.sorted_heads` contains both 0 and 2,
+        // leaking side-branch tip 2 into `Branch=main + FirstParentOnly`.
+        let commits = vec![
+            raw(0, &[1, 2], 50),
+            raw(1, &[3], 40),
+            raw(2, &[3], 35),
+            raw(3, &[], 10),
+        ];
+        let refs = vec![branch_ref("main", 0), branch_ref("feat", 2)];
+        let pg = PermanentGraph::build(&commits, &refs, Some(oid(0)));
+        let main_node = pg.linear.node_of_oid(&oid(0)).unwrap();
+        let main_mask = ReachableNodes::contained_in_branch(&pg.linear, &[main_node]);
+
+        let vis = VisibleGraph::build_projected(
+            &pg,
+            GraphViewOptions {
+                first_parent_only: true,
+                ..Default::default()
+            },
+            VisibleGraphBuildArgs {
+                filter: Some(&main_mask),
+                branch_heads: Some(&[main_node]),
+                branch_only_filter: true,
+                collapse: None,
+                linear_bek: None,
+            },
+        );
+        let visible_oids: Vec<Oid> = (0..vis.linear.visible_count())
+            .map(|r| pg.linear.commit(vis.linear.perm_id(r)).oid)
+            .collect();
+        assert_eq!(visible_oids, vec![oid(0), oid(1), oid(3)]);
+    }
+
+    #[test]
+    fn linear_bek_folds_merge_into_dotted_edge_and_restores_on_expand() {
+        // 0 (main merge [1, 2]) -> 1 (main parent, ts 40) -> 4 (base, ts 10)
+        //                       -> 2 (feat tip, ts 45) -> 3 (feat base, ts 42) -> 4
+        // In IntelliSort order: 0 (ts 50), 2 (ts 45), 3 (ts 42), 1 (ts 40), 4 (ts 10).
+        // Merge 0 has right_child = 2 (row 1) and left_child = 1 (row 3).
+        // LinearBek folds (0 -> 1) and replaces (3 -> 4) with dotted (3 -> 1).
+        let commits = vec![
+            raw(0, &[1, 2], 50),
+            raw(2, &[3], 45),
+            raw(3, &[4], 42),
+            raw(1, &[4], 40),
+            raw(4, &[], 10),
+        ];
+        let refs = vec![branch_ref("main", 0)];
+        let pg = PermanentGraph::build(&commits, &refs, Some(oid(0)));
+
+        let bek_state = LinearBekState::default();
+        let vis = VisibleGraph::build_projected(
+            &pg,
+            GraphViewOptions {
+                sort_type: SortType::IntelliSort,
+                linear_bek: true,
+                ..Default::default()
+            },
+            VisibleGraphBuildArgs {
+                linear_bek: Some(&bek_state),
+                ..Default::default()
+            },
+        );
+        assert_eq!(vis.bek_merges.len(), 1);
+        assert_eq!(vis.bek_merges[0].merge_oid, oid(0));
+        // Merge row 0 now has only a single down edge (to feat tip row 1), no direct edge to row 3.
+        assert_eq!(vis.linear.down_edges(0).len(), 1);
+        assert_eq!(vis.linear.down_edges(0)[0].down, 1);
+        // Tail row 2 (commit 3) now has a Dotted edge to left_child row 3 (commit 1).
+        assert_eq!(
+            vis.linear.down_edges(2),
+            &[GraphEdge {
+                up: 2,
+                down: 3,
+                edge_type: GraphEdgeType::Dotted,
+            }]
+        );
+        assert_eq!(vis.bek_merge_at_edge(2, 3), Some(oid(0)));
+
+        // Expanding oid(0) restores the original 2-parent merge edges.
+        let mut expanded = LinearBekState::default();
+        expanded.expand(oid(0));
+        let vis_restored = VisibleGraph::build_projected(
+            &pg,
+            GraphViewOptions {
+                sort_type: SortType::IntelliSort,
+                linear_bek: true,
+                ..Default::default()
+            },
+            VisibleGraphBuildArgs {
+                linear_bek: Some(&expanded),
+                ..Default::default()
+            },
+        );
+        assert!(vis_restored.bek_merges.is_empty());
+        assert_eq!(vis_restored.linear.down_edges(0).len(), 2);
+    }
+
+    #[test]
+    fn collapse_remains_active_under_branch_only_filter() {
+        use crate::graph::collapse::{CollapseState, LinearSegments};
+        // main: 0 -> 1 -> 2 -> 3 -> 4 (segment [1,2,3] collapsible between 0 and 4)
+        // side: 5 -> 4
+        let commits = vec![
+            raw(0, &[1], 60),
+            raw(1, &[2], 50),
+            raw(2, &[3], 40),
+            raw(3, &[4], 30),
+            raw(5, &[4], 25),
+            raw(4, &[], 10),
+        ];
+        let refs = vec![branch_ref("main", 0), branch_ref("side", 5)];
+        let pg = PermanentGraph::build(&commits, &refs, Some(oid(0)));
+        let pinned = LinearSegments::pinned_nodes(&pg.linear, [oid(0), oid(5)], Some(oid(0)));
+        let segments = LinearSegments::compute(&pg.linear, &pinned);
+        assert_eq!(segments.len(), 1);
+
+        let mut collapse = CollapseState::default();
+        collapse.collapse_all();
+        let main_node = pg.linear.node_of_oid(&oid(0)).unwrap();
+        let main_mask = ReachableNodes::contained_in_branch(&pg.linear, &[main_node]);
+
+        let vis = VisibleGraph::build_projected(
+            &pg,
+            GraphViewOptions {
+                collapse: collapse.mode,
+                ..Default::default()
+            },
+            VisibleGraphBuildArgs {
+                filter: Some(&main_mask),
+                branch_heads: Some(&[main_node]),
+                branch_only_filter: true,
+                collapse: Some(CollapseInput {
+                    segments: &segments,
+                    state: &collapse,
+                }),
+                linear_bek: None,
+            },
+        );
+        assert!(vis.collapse_applied);
+        assert!(vis.can_collapse);
+        // Only 0 and 4 remain visible on `main`, linked by a Collapsed edge.
+        let oids: Vec<Oid> = (0..vis.linear.visible_count())
+            .map(|r| pg.linear.commit(vis.linear.perm_id(r)).oid)
+            .collect();
+        assert_eq!(oids, vec![oid(0), oid(4)]);
+        assert_eq!(vis.linear.down_edges(0)[0].edge_type, GraphEdgeType::Collapsed);
     }
 }

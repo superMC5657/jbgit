@@ -93,10 +93,14 @@ pub enum RequestSlotId {
     LogSignatures = 22,
     RebaseCommitDetails = 23,
     RebaseFileDiff = 24,
+    LogCherryPicked = 25,
+    Reflog = 26,
+    ReflogCommitDetails = 27,
+    ReflogFileDiff = 28,
 }
 
 impl RequestSlotId {
-    pub const COUNT: usize = 25;
+    pub const COUNT: usize = 29;
 
     pub const ALL: [Self; Self::COUNT] = [
         Self::RepoSnapshot,
@@ -124,6 +128,10 @@ impl RequestSlotId {
         Self::LogSignatures,
         Self::RebaseCommitDetails,
         Self::RebaseFileDiff,
+        Self::LogCherryPicked,
+        Self::Reflog,
+        Self::ReflogCommitDetails,
+        Self::ReflogFileDiff,
     ];
 
     #[inline]

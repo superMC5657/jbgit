@@ -128,6 +128,30 @@ impl Default for SplitterState {
                 min_second: 3,
             },
         );
+        specs.insert(
+            SplitterId::ReflogHorizontal,
+            SplitterSpec {
+                default_ratio: 0.48,
+                min_first: 28,
+                min_second: 24,
+            },
+        );
+        specs.insert(
+            SplitterId::ReflogVertical,
+            SplitterSpec {
+                default_ratio: 0.45,
+                min_first: 4,
+                min_second: 6,
+            },
+        );
+        specs.insert(
+            SplitterId::ReflogRightVertical,
+            SplitterSpec {
+                default_ratio: 0.35,
+                min_first: 3,
+                min_second: 4,
+            },
+        );
 
         let ratios = specs.iter().map(|(&id, s)| (id, s.default_ratio)).collect();
         Self { ratios, specs }

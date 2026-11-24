@@ -119,6 +119,13 @@ pub fn branch_menu_items(state: &AppState, name: &str, kind: RefKind) -> Vec<Con
                 )
                 .enabled_if(!is_current, i18n.t("menu.branch.compare_self")),
             );
+            items.push(run(
+                i18n.t_fmt("menu.branch.show_reflog", &[("name", &ellipsize(&name, 24))]),
+                None,
+                catalog::shortcut_for_action(state, &[KeymapScope::Branch], &KeyAction::OpenReflog)
+                    .as_deref(),
+                vec![Action::OpenReflog(name.clone())],
+            ));
             let diff_local = info
                 .map(|r| vec![Action::CompareWithLocal { target: r.target_oid }])
                 .unwrap_or_default();

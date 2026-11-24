@@ -2,11 +2,17 @@
 pub enum PresentationToggle {
     CompactRefs,
     ShowTagNames,
+    AlignLabelsRight,
     ShowLongEdges,
     IntelliSort,
+    LinearBek,
     FirstParentOnly,
     HighlightCurrentBranch,
+    HighlightMyCommits,
     HighlightMerges,
+    HighlightCherryPicked,
+    ShowAuthorColumn,
+    ShowDateColumn,
     ShowHashColumn,
     ShowSignatureColumn,
     RelativeDates,
@@ -20,8 +26,16 @@ pub struct LogPresentation {
     pub compact_refs: bool,
     /// `Show Tag Names`: when off, tags collapse to icons.
     pub show_tag_names: bool,
+    /// `Align Labels`: when on, render ref pills right-aligned at the end of the Subject column.
+    pub align_labels_right: bool,
     pub highlight_current_branch: bool,
+    /// Highlight commits authored by the current Git user (auto-suppressed for single-author repos or `@me`).
+    pub highlight_my_commits: bool,
     pub highlight_merges: bool,
+    /// Dim commits on a filtered/compared branch whose patch-id already exists on HEAD (`git cherry`).
+    pub highlight_cherry_picked: bool,
+    pub show_author_column: bool,
+    pub show_date_column: bool,
     pub show_hash_column: bool,
     pub show_signature_column: bool,
     pub relative_dates: bool,
@@ -36,8 +50,13 @@ impl Default for LogPresentation {
         Self {
             compact_refs: false,
             show_tag_names: true,
+            align_labels_right: false,
             highlight_current_branch: true,
+            highlight_my_commits: true,
             highlight_merges: true,
+            highlight_cherry_picked: true,
+            show_author_column: true,
+            show_date_column: true,
             show_hash_column: false,
             show_signature_column: false,
             relative_dates: true,

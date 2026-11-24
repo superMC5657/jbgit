@@ -467,6 +467,11 @@ pub fn is_action_applicable(run: &KeyAction, state: &AppState) -> bool {
         | KeyAction::CompareVersions
         | KeyAction::GotoRevision
         | KeyAction::FocusFilter
+        | KeyAction::ToggleNoMerges
+        | KeyAction::ToggleLinearBek
+        | KeyAction::LogSpeedSearch
+        | KeyAction::MaximizeCommitMessage
+        | KeyAction::OpenReflog
         | KeyAction::ToggleBranchesPane => state.active_tab == WorkspaceTab::Log,
         KeyAction::FileHistory => {
             (state.active_tab == WorkspaceTab::Log && state.focused_pane == PaneId::LogChangesTree)
@@ -803,6 +808,24 @@ pub fn execute_action(run: &KeyAction, state: &AppState) -> Option<Vec<Action>> 
         KeyAction::ToggleOnlyAffectedChanges => Some(vec![Action::TogglePresentation(
             crate::log_view::PresentationToggle::ShowOnlyAffectedChanges,
         )]),
+        KeyAction::ToggleNoMerges => Some(vec![Action::ToggleNoMergesFilter]),
+        KeyAction::ToggleLinearBek => Some(vec![Action::TogglePresentation(
+            crate::log_view::PresentationToggle::LinearBek,
+        )]),
+        KeyAction::LogSpeedSearch => Some(vec![Action::LogSpeedSearchOpen]),
+        KeyAction::MaximizeCommitMessage => Some(vec![Action::OpenCommitMessageModal]),
+        KeyAction::OpenReflog => {
+            let ref_name = if state.focused_pane == PaneId::LogBranchesTree
+                && let Some(node) = state.log.branches.selected_node()
+                && let BranchNodeKind::Leaf(RefKind::LocalBranch) = node.kind
+                && let Some(name) = node.ref_name.as_deref()
+            {
+                name.to_string()
+            } else {
+                "HEAD".to_string()
+            };
+            Some(vec![Action::OpenReflog(ref_name)])
+        }
         KeyAction::CopyHash => {
             let oids = state.selected_commits_oldest_first();
             if oids.is_empty() {
@@ -1254,7 +1277,7 @@ pub fn graph_collapse_available(state: &AppState) -> Result<(), String> {
             .t("menu.log.collapse_disabled_first_parent")
             .to_string());
     }
-    if !state.log.filter.spec.is_empty() {
+    if !state.log.filter.spec.is_empty() && !state.log.filter.spec.is_branch_only() {
         return Err(i18n.t("menu.log.collapse_disabled_filter").to_string());
     }
     Ok(())
@@ -1289,7 +1312,7 @@ pub fn graph_expand_selected(state: &AppState) -> CommandResult {
 pub fn graph_collapse_all(state: &AppState) -> CommandResult {
     graph_collapse_available(state)?;
     let cached = state.log.graph.cached.as_ref().expect("checked above");
-    if cached.segments.is_empty() {
+    if cached.segments.is_empty() && !state.log.graph.options.linear_bek {
         return Err(state.i18n.t("menu.log.no_linear_branches").to_string());
     }
     Ok(vec![Action::GraphCollapseAll])
@@ -1298,7 +1321,13 @@ pub fn graph_collapse_all(state: &AppState) -> CommandResult {
 /// `Expand All Linear Branches` (`zR`).
 pub fn graph_expand_all(state: &AppState) -> CommandResult {
     graph_collapse_available(state)?;
-    if !state.log.graph.collapse.is_active() {
+    let has_bek = state
+        .log
+        .graph
+        .cached
+        .as_ref()
+        .is_some_and(|c| !c.visible.bek_merges.is_empty());
+    if !state.log.graph.collapse.is_active() && !has_bek {
         return Err(state.i18n.t("menu.log.nothing_collapsed").to_string());
     }
     Ok(vec![Action::GraphExpandAll])

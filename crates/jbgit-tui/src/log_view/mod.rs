@@ -9,6 +9,7 @@ mod file_history;
 mod filter_bar;
 mod presentation;
 mod push_dialog;
+mod reflog;
 mod workbench;
 
 pub use annotate::{AnnotateError, AnnotateFocus, AnnotateNavFrame, AnnotateState};
@@ -20,12 +21,14 @@ pub use details_pane::{
 };
 pub use file_history::{FILE_HISTORY_G_WINDOW, FileHistoryFocus, FileHistoryState};
 pub use filter_bar::{
-    FilterBarState, FilterField, PathMatches, PathRequest, complete_last_token, filter_suggestions,
+    FilterBarState, FilterField, LogSpeedSearchState, PathMatches, PathRequest,
+    complete_last_token, filter_suggestions_with_context,
 };
 pub use presentation::{
     LogPresentation, PresentationToggle, format_absolute_time, format_relative_time,
 };
 pub use push_dialog::{PushDialogFocus, PushDialogState};
+pub use reflog::{ReflogFocus, ReflogState};
 pub use workbench::{LogDispatchCtx, LogReconcileCtx, LogWorkbench};
 
 #[cfg(test)]

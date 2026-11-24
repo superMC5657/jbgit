@@ -11,6 +11,7 @@ pub mod key_token;
 pub mod lru;
 pub mod oid;
 pub mod patch;
+pub mod reflog;
 pub mod refs;
 pub mod repo;
 pub mod stage;
@@ -73,6 +74,10 @@ pub use oid::Oid;
 pub use patch::{
     ApplyMode, PatchCheck, PatchCheckKey, PatchFileStat, PatchInput, first_apply_error,
     parse_apply_check, parse_apply_conflicts,
+};
+pub use reflog::{
+    CherryPickedKey, DEFAULT_REFLOG_LIMIT, REFLOG_GIT_FORMAT, ReflogActionKind, ReflogBundle,
+    ReflogEntry, ReflogKey, parse_git_cherry_output, parse_reflog_output,
 };
 pub use refs::{
     BranchColorId, GroupOptions, LabelDisplay, RefGroup, RefGroupKind, branch_color_id,

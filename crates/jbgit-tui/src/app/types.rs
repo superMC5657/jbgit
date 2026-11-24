@@ -4,9 +4,10 @@ use std::sync::atomic::AtomicBool;
 use std::time::{Duration, Instant};
 
 use jbgit_core::{
-    BlameBundle, BlameKey, ConflictDocument, ConflictSideStatus, DetailsKey, EpochToken, FileDiff,
-    FileDiffKey, FileHistoryKey, GitOp, Oid, OutgoingKey, PaneId, PatchCheckKey, RefreshScope,
-    RepoSnapshot, RequestSlotId, SplitAxis, SplitterId, TreeBlob, TreeBlobKey, TreeKey,
+    BlameBundle, BlameKey, CherryPickedKey, ConflictDocument, ConflictSideStatus, DetailsKey,
+    EpochToken, FileDiff, FileDiffKey, FileHistoryKey, GitOp, Oid, OutgoingKey, PaneId,
+    PatchCheckKey, ReflogKey, RefreshScope, RepoSnapshot, RequestSlotId, SplitAxis, SplitterId,
+    TreeBlob, TreeBlobKey, TreeKey,
 };
 use jbgit_engine::{StageDiffKey, ThreeDocStageDiff};
 use ratatui::layout::Rect;
@@ -58,6 +59,8 @@ pub enum ScrollPane {
     RepoSwitcher,
     Remotes,
     RebaseDiff,
+    CommitMessageModal,
+    ReflogDiff,
 }
 
 pub struct RenderContext<'a> {
@@ -369,6 +372,8 @@ pub enum PopupKind {
     GoToRevision,
     /// Parent chooser for merge commits with ≥ 2 parents.
     ChooseParent,
+    /// Child chooser for branch-point commits with ≥ 2 visible children.
+    ChooseChild,
     /// Commit message history picker (`Ctrl+M` / `[🕘]`).
     CommitHistory,
 }
@@ -839,6 +844,8 @@ pub enum Effect {
         key: DetailsKey,
     },
     RequestCommitSignatures(Vec<Oid>),
+    RequestCherryPicked(CherryPickedKey),
+    RequestReflog(ReflogKey),
     RequestFileDiff {
         slot: RequestSlotId,
         key: FileDiffKey,

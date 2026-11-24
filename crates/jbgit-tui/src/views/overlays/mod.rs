@@ -61,10 +61,32 @@ fn render_modal_layer(
         | ModalLayer::FilterEditor { .. }
         | ModalLayer::GoToRevision { .. }
         | ModalLayer::ChooseParent { .. }
+        | ModalLayer::ChooseChild { .. }
         | ModalLayer::CommitHistory { .. } => {
             let kind = layer.popup_kind().expect("popup kind");
             let (query, selected) = layer.popup_query_and_selected().unwrap_or(("", 0));
             popups::render_floating_popup(frame, screen, state, ctx, kind, query, selected, z);
+        }
+        ModalLayer::CommitMessage {
+            oid,
+            subject,
+            message,
+            scroll,
+        } => {
+            popups::render_commit_message_modal(
+                frame,
+                screen,
+                state,
+                ctx,
+                *oid,
+                subject,
+                message,
+                scroll.offset(),
+                z,
+            );
+        }
+        ModalLayer::Reflog(rf) => {
+            crate::views::reflog::render_reflog_modal(frame, screen, state, rf, ctx, z);
         }
         ModalLayer::FileHistory(fh) => {
             crate::views::file_history::render_file_history_modal(frame, screen, state, fh, ctx, z);

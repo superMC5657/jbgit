@@ -454,12 +454,30 @@ pub struct LogSection {
     /// paths in the Log Changes tree (`ShowOnlyAffectedChangesAction`).
     #[serde(default = "default_true")]
     pub show_only_affected_changes: bool,
+    #[serde(default = "default_true")]
+    pub highlight_my_commits: bool,
+    #[serde(default = "default_true")]
+    pub highlight_cherry_picked: bool,
+    #[serde(default = "default_true")]
+    pub show_author_column: bool,
+    #[serde(default = "default_true")]
+    pub show_date_column: bool,
+    #[serde(default)]
+    pub align_labels_right: bool,
+    #[serde(default)]
+    pub linear_bek: bool,
 }
 
 impl Default for LogSection {
     fn default() -> Self {
         Self {
             show_only_affected_changes: true,
+            highlight_my_commits: true,
+            highlight_cherry_picked: true,
+            show_author_column: true,
+            show_date_column: true,
+            align_labels_right: false,
+            linear_bek: false,
         }
     }
 }
@@ -820,10 +838,28 @@ impl JbgitConfig {
                 self.graph.compact_refs = c;
             }
         }
-        if let Some(log) = &overlay.log
-            && let Some(only_affected) = log.show_only_affected_changes
-        {
-            self.log.show_only_affected_changes = only_affected;
+        if let Some(log) = &overlay.log {
+            if let Some(only_affected) = log.show_only_affected_changes {
+                self.log.show_only_affected_changes = only_affected;
+            }
+            if let Some(v) = log.highlight_my_commits {
+                self.log.highlight_my_commits = v;
+            }
+            if let Some(v) = log.highlight_cherry_picked {
+                self.log.highlight_cherry_picked = v;
+            }
+            if let Some(v) = log.show_author_column {
+                self.log.show_author_column = v;
+            }
+            if let Some(v) = log.show_date_column {
+                self.log.show_date_column = v;
+            }
+            if let Some(v) = log.align_labels_right {
+                self.log.align_labels_right = v;
+            }
+            if let Some(v) = log.linear_bek {
+                self.log.linear_bek = v;
+            }
         }
         if let Some(df) = &overlay.diff {
             if let Some(sh) = df.syntax_highlight {
@@ -947,6 +983,12 @@ pub struct JbgitConfigOverlay {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct LogSectionOverlay {
     pub show_only_affected_changes: Option<bool>,
+    pub highlight_my_commits: Option<bool>,
+    pub highlight_cherry_picked: Option<bool>,
+    pub show_author_column: Option<bool>,
+    pub show_date_column: Option<bool>,
+    pub align_labels_right: Option<bool>,
+    pub linear_bek: Option<bool>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

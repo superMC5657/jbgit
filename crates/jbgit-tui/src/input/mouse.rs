@@ -140,6 +140,15 @@ fn route_mouse_scroll(col: u16, row: u16, delta: isize, state: &AppState) -> Vec
             HitTarget::FileHistoryDiffArea => {
                 return vec![Action::DiffScroll(DiffScope::FileHistory, delta)];
             }
+            HitTarget::ReflogRow { .. } | HitTarget::ReflogListArea => {
+                return vec![Action::ReflogMove(delta / 3)];
+            }
+            HitTarget::ReflogChangeRow { .. } | HitTarget::ReflogChangesArea => {
+                return vec![Action::ReflogChangesMove(delta / 3)];
+            }
+            HitTarget::ReflogDiffArea => {
+                return vec![Action::ReflogDiffScroll(delta)];
+            }
             HitTarget::AnnotateLine { .. } | HitTarget::AnnotateArea => {
                 return vec![Action::AnnotateScroll(delta)];
             }
@@ -248,6 +257,7 @@ fn route_mouse_left_down(
         HitTarget::FilterTextInput => vec![Action::FocusFilterText],
         HitTarget::FilterRegexToggle => vec![Action::ToggleFilterRegex],
         HitTarget::FilterCaseToggle => vec![Action::ToggleFilterCase],
+        HitTarget::FilterNoMergesToggle => vec![Action::ToggleNoMergesFilter],
         HitTarget::FilterChip(field) => {
             let mut initial = state.log.filter.field_expr(field);
             if !initial.is_empty() {
@@ -305,6 +315,17 @@ fn route_mouse_left_down(
         ],
         HitTarget::DetailsHash { oid } => vec![Action::CopyText(oid.to_string())],
         HitTarget::DetailsParent { oid } => vec![Action::JumpToCommit(oid)],
+        HitTarget::DetailsCommitHash { oid } => {
+            if matches!(
+                state.modal_stack.last(),
+                Some(crate::app::ModalLayer::CommitMessage { .. })
+            ) {
+                vec![Action::PopModal, Action::JumpToCommit(oid)]
+            } else {
+                vec![Action::JumpToCommit(oid)]
+            }
+        }
+        HitTarget::DetailsMaximizeMessage => vec![Action::OpenCommitMessageModal],
         HitTarget::DetailsArea | HitTarget::DiffArea => {
             vec![Action::FocusPane(PaneId::LogDetailsDiff)]
         }
@@ -521,6 +542,43 @@ fn route_mouse_left_down(
             FileHistoryToolbarButton::LocateInLog => vec![Action::FileHistoryJumpToLog],
             FileHistoryToolbarButton::Annotate => vec![Action::FileHistoryAnnotate],
         },
+        HitTarget::ReflogRow { idx } => {
+            let mut actions = vec![
+                Action::ReflogFocus(crate::log_view::ReflogFocus::Entries),
+                Action::ReflogSelect(idx),
+            ];
+            if is_double {
+                actions.push(Action::ReflogJumpInLog);
+            }
+            actions
+        }
+        HitTarget::ReflogChangeRow { idx } => vec![
+            Action::ReflogFocus(crate::log_view::ReflogFocus::Changes),
+            Action::ReflogChangesSelect(idx),
+        ],
+        HitTarget::ReflogListArea => {
+            vec![Action::ReflogFocus(crate::log_view::ReflogFocus::Entries)]
+        }
+        HitTarget::ReflogChangesArea => {
+            vec![Action::ReflogFocus(crate::log_view::ReflogFocus::Changes)]
+        }
+        HitTarget::ReflogDiffArea => {
+            vec![Action::ReflogFocus(crate::log_view::ReflogFocus::Diff)]
+        }
+        HitTarget::ReflogToolbar(btn) => match btn {
+            crate::hit_test::ReflogToolbarButton::Checkout => vec![Action::ReflogCheckoutSelected],
+            crate::hit_test::ReflogToolbarButton::NewBranch => vec![Action::ReflogNewBranchSelected],
+            crate::hit_test::ReflogToolbarButton::CherryPick => {
+                vec![Action::ReflogCherryPickSelected]
+            }
+            crate::hit_test::ReflogToolbarButton::ResetHere => vec![Action::ReflogResetSelected],
+            crate::hit_test::ReflogToolbarButton::JumpInLog => vec![Action::ReflogJumpInLog],
+            crate::hit_test::ReflogToolbarButton::LoadMore => vec![Action::ReflogLoadMore],
+            crate::hit_test::ReflogToolbarButton::SideBySide => {
+                vec![Action::ReflogToggleSideBySide]
+            }
+            crate::hit_test::ReflogToolbarButton::Context => vec![Action::ReflogCycleContext],
+        },
         HitTarget::AnnotateLine { line_idx } => {
             let mut actions = vec![
                 Action::AnnotateSetFocus(crate::log_view::AnnotateFocus::Code),
@@ -637,6 +695,12 @@ fn route_mouse_right_down(col: u16, row: u16, state: &AppState) -> Vec<Action> {
             | HitTarget::FileHistoryToolbar(_)
             | HitTarget::FileHistoryListArea
             | HitTarget::FileHistoryDiffArea
+            | HitTarget::ReflogRow { .. }
+            | HitTarget::ReflogChangeRow { .. }
+            | HitTarget::ReflogToolbar(_)
+            | HitTarget::ReflogListArea
+            | HitTarget::ReflogChangesArea
+            | HitTarget::ReflogDiffArea
             | HitTarget::AnnotateToolbar(_)
             | HitTarget::PushTargetBranch
             | HitTarget::PushRemotePicker

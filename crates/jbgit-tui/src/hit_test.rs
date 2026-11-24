@@ -151,6 +151,18 @@ pub enum FileHistoryToolbarButton {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReflogToolbarButton {
+    Checkout,
+    NewBranch,
+    CherryPick,
+    ResetHere,
+    JumpInLog,
+    LoadMore,
+    SideBySide,
+    Context,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AnnotateToolbarButton {
     IgnoreWhitespace,
     DetectMoves,
@@ -224,6 +236,7 @@ pub enum HitTarget {
     FilterTextInput,
     FilterRegexToggle,
     FilterCaseToggle,
+    FilterNoMergesToggle,
     FilterChip(FilterField),
     FilterClear(FilterField),
     /// `×` of the read-only Range chip (Update Info "View").
@@ -243,6 +256,12 @@ pub enum HitTarget {
     DetailsParent {
         oid: Oid,
     },
+    /// Clickable 7..=40 hex commit hash reference inside commit message body.
+    DetailsCommitHash {
+        oid: Oid,
+    },
+    /// `[⤢]` button in Commit Details pane header to open maximized commit message modal.
+    DetailsMaximizeMessage,
     DetailsArea,
     DiffToolbar(DiffToolbarButton),
     DiffArea,
@@ -351,6 +370,16 @@ pub enum HitTarget {
     FileHistoryToolbar(FileHistoryToolbarButton),
     FileHistoryListArea,
     FileHistoryDiffArea,
+    ReflogRow {
+        idx: usize,
+    },
+    ReflogChangeRow {
+        idx: usize,
+    },
+    ReflogToolbar(ReflogToolbarButton),
+    ReflogListArea,
+    ReflogChangesArea,
+    ReflogDiffArea,
     AnnotateLine {
         line_idx: usize,
     },
@@ -391,6 +420,9 @@ impl HitTarget {
                 | HitTarget::StageDiffGutter { .. }
                 | HitTarget::FileHistoryListArea
                 | HitTarget::FileHistoryDiffArea
+                | HitTarget::ReflogListArea
+                | HitTarget::ReflogChangesArea
+                | HitTarget::ReflogDiffArea
                 | HitTarget::AnnotateArea
                 | HitTarget::AnnotateDiffArea
                 | HitTarget::PushCommitListArea

@@ -36,6 +36,17 @@ compact_refs = false
 [log]
 # 启用路径筛选 (Paths) 时，右侧变更文件树是否仅显示命中筛选路径的文件
 show_only_affected_changes = true
+# 是否高亮当前 Git 用户的提交（单人仓库或筛选 @me 时自动抑制）
+highlight_my_commits = true
+# 筛选/对比单分支时是否异步检测并淡化已 Cherry-Pick 至当前分支的提交
+highlight_cherry_picked = true
+# 是否显示 Author 列和 Date 列
+show_author_column = true
+show_date_column = true
+# 是否将引用胶囊右对齐显示在主题列末尾
+align_labels_right = false
+# 是否默认启用 LinearBek 线性化合并边折叠视图
+linear_bek = false
 
 [diff]
 # 代码差异高亮: 是否开启语法加亮 (基于 syntect)

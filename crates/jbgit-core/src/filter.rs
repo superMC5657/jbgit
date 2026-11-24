@@ -18,6 +18,9 @@ pub enum FilterError {
     InvalidRegex(String),
 }
 
+/// Result of evaluating a [`LogFilterSpec`]: `(matching_nodes, branch_start_heads)`.
+pub type FilterMatchWithHeads = (Option<FixedBitSet>, Option<Vec<crate::graph::PermNodeId>>);
+
 /// Text / hash search (`[.*]` regex and `[Cc]` match-case toggles).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TextFilter {
@@ -31,7 +34,12 @@ pub struct TextFilter {
 #[derive(Debug, Clone)]
 pub struct TextMatcher {
     re: Regex,
-    hash_prefix: Option<String>,
+    /// One or more space-separated 4..=40 hex commit hash prefixes.
+    hash_prefixes: Vec<String>,
+}
+
+fn is_hex_hash_token(tok: &str) -> bool {
+    (4..=40).contains(&tok.len()) && tok.chars().all(|c| c.is_ascii_hexdigit())
 }
 
 impl TextFilter {
@@ -53,18 +61,29 @@ impl TextFilter {
             .case_insensitive(!self.match_case)
             .build()
             .map_err(|e| FilterError::InvalidRegex(e.to_string()))?;
-        let hash_prefix =
-            (q.len() >= 4 && q.len() <= 40 && q.chars().all(|c| c.is_ascii_hexdigit()))
-                .then(|| q.to_ascii_lowercase());
-        Ok(Some(TextMatcher { re, hash_prefix }))
+        let hash_prefixes = if self.regex {
+            if is_hex_hash_token(q) {
+                vec![q.to_ascii_lowercase()]
+            } else {
+                Vec::new()
+            }
+        } else {
+            let tokens: Vec<&str> = q.split_whitespace().collect();
+            if !tokens.is_empty() && tokens.iter().all(|t| is_hex_hash_token(t)) {
+                tokens.into_iter().map(str::to_ascii_lowercase).collect()
+            } else {
+                Vec::new()
+            }
+        };
+        Ok(Some(TextMatcher { re, hash_prefixes }))
     }
 }
 
 impl TextMatcher {
     pub fn matches_commit(&self, oid: &Oid, subject: &str, body: &str) -> bool {
-        self.hash_prefix
-            .as_deref()
-            .is_some_and(|p| oid.matches_hex_prefix(p))
+        self.hash_prefixes
+            .iter()
+            .any(|p| oid.matches_hex_prefix(p))
             || self.re.is_match(subject)
             || (!body.is_empty() && self.re.is_match(body))
     }
@@ -79,11 +98,13 @@ impl TextMatcher {
     }
 }
 
-/// Branch include / exclude rules (`main feat/* -dependabot/*`).
+/// Branch include / exclude / range rules (`main feat/* -dependabot/* main..feat Favorites`).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct BranchFilter {
     pub include: Vec<String>,
     pub exclude: Vec<String>,
+    /// Revision ranges `a..b` (commits reachable from `b` excluding `a`).
+    pub ranges: Vec<(String, String)>,
 }
 
 impl BranchFilter {
@@ -96,6 +117,16 @@ impl BranchFilter {
             if let Some(ex) = tok.strip_prefix('-') {
                 if !ex.is_empty() && !out.exclude.iter().any(|e| e == ex) {
                     out.exclude.push(ex.to_string());
+                }
+            } else if let Some((from, to)) = tok.split_once("..")
+                && !from.is_empty()
+                && !to.is_empty()
+                && !to.starts_with('.')
+                && !to.contains("..")
+            {
+                let pair = (from.to_string(), to.to_string());
+                if !out.ranges.contains(&pair) {
+                    out.ranges.push(pair);
                 }
             } else {
                 let inc = tok.strip_prefix('+').unwrap_or(tok);
@@ -111,29 +142,37 @@ impl BranchFilter {
         Self {
             include: names,
             exclude: Vec::new(),
+            ranges: Vec::new(),
         }
     }
 
     pub fn is_empty(&self) -> bool {
-        self.include.is_empty() && self.exclude.is_empty()
+        self.include.is_empty() && self.exclude.is_empty() && self.ranges.is_empty()
     }
 
     pub fn to_expr(&self) -> String {
         self.include
             .iter()
             .cloned()
+            .chain(self.ranges.iter().map(|(a, b)| format!("{a}..{b}")))
             .chain(self.exclude.iter().map(|e| format!("-{e}")))
             .collect::<Vec<_>>()
             .join(" ")
     }
 
-    /// Compact chip label: `main + feat/*`, `main +2`, `-dependabot/*`.
+    /// Compact chip label: `main + feat/*`, `main..feat`, `main +2`, `-dependabot/*`.
     pub fn label(&self) -> String {
         let mut parts = Vec::new();
-        match self.include.len() {
+        let positives: Vec<String> = self
+            .include
+            .iter()
+            .cloned()
+            .chain(self.ranges.iter().map(|(a, b)| format!("{a}..{b}")))
+            .collect();
+        match positives.len() {
             0 => {}
-            1 | 2 => parts.push(self.include.join(" + ")),
-            n => parts.push(format!("{} +{}", self.include[0], n - 1)),
+            1 | 2 => parts.push(positives.join(" + ")),
+            n => parts.push(format!("{} +{}", positives[0], n - 1)),
         }
         parts.extend(self.exclude.iter().map(|e| format!("-{e}")));
         if parts.is_empty() {
@@ -143,11 +182,93 @@ impl BranchFilter {
         }
     }
 
+    fn is_favorites_token(tok: &str) -> bool {
+        tok.eq_ignore_ascii_case("favorites") || tok.eq_ignore_ascii_case("@favorites")
+    }
+
+    fn matches_current_branch(tok: &str, head_branch: Option<&str>) -> bool {
+        tok.eq_ignore_ascii_case("HEAD")
+            || head_branch.is_some_and(|b| tok == b || tok == format!("refs/heads/{b}"))
+    }
+
+    /// True when this branch filter restricts visibility strictly to `HEAD` or
+    /// the current branch itself (aligned with `CurrentBranchHighlighter.java:49-56`).
+    pub fn is_only_current_branch(&self, head_branch: Option<&str>) -> bool {
+        self.exclude.is_empty()
+            && self.ranges.is_empty()
+            && self.include.len() == 1
+            && Self::matches_current_branch(&self.include[0], head_branch)
+    }
+
+    /// Returns a single non-current branch being inspected or compared against
+    /// `HEAD` (used to drive the async `Already Cherry-Picked` highlighter).
+    pub fn single_compared_branch<'a>(&'a self, head_branch: Option<&str>) -> Option<&'a str> {
+        let is_concrete_other = |tok: &str| -> bool {
+            !tok.is_empty()
+                && !tok.contains('*')
+                && !tok.contains('?')
+                && !Self::is_favorites_token(tok)
+                && !Self::matches_current_branch(tok, head_branch)
+        };
+        if !self.exclude.is_empty() {
+            return None;
+        }
+        if self.ranges.is_empty() {
+            match self.include.as_slice() {
+                [only] if is_concrete_other(only) => Some(only.as_str()),
+                [a, b]
+                    if Self::matches_current_branch(a, head_branch) && is_concrete_other(b) =>
+                {
+                    Some(b.as_str())
+                }
+                [a, b]
+                    if Self::matches_current_branch(b, head_branch) && is_concrete_other(a) =>
+                {
+                    Some(a.as_str())
+                }
+                _ => None,
+            }
+        } else if self.include.is_empty() && self.ranges.len() == 1 {
+            let (from, to) = &self.ranges[0];
+            if Self::matches_current_branch(from, head_branch) && is_concrete_other(to) {
+                Some(to.as_str())
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    }
+
+    /// Expands any `Favorites` / `@favorites` placeholder tokens using `favorites`.
+    pub fn expand_favorites(&self, favorites: &[String]) -> Self {
+        if !self.include.iter().any(|t| Self::is_favorites_token(t)) {
+            return self.clone();
+        }
+        let mut include = Vec::new();
+        for tok in &self.include {
+            if Self::is_favorites_token(tok) {
+                for fav in favorites {
+                    if !include.contains(fav) {
+                        include.push(fav.clone());
+                    }
+                }
+            } else if !include.contains(tok) {
+                include.push(tok.clone());
+            }
+        }
+        Self {
+            include,
+            exclude: self.exclude.clone(),
+            ranges: self.ranges.clone(),
+        }
+    }
+
     fn ref_matches(pattern: &str, r: &RefInfo) -> bool {
         glob_match(pattern, &r.name) || glob_match(pattern, &r.full_name)
     }
 
-    /// Head commits whose ancestry forms the visible set.
+    /// Head commits whose ancestry forms the visible set (for `include`/`exclude` rules).
     pub fn select_heads(
         &self,
         refs: &[RefInfo],
@@ -155,7 +276,7 @@ impl BranchFilter {
         head_oid: Option<Oid>,
     ) -> Vec<Oid> {
         let mut out = Vec::new();
-        let include_all = self.include.is_empty();
+        let include_all = self.include.is_empty() && self.ranges.is_empty();
         let head_matches = |pattern: &str| -> bool {
             glob_match(pattern, "HEAD")
                 || head_branch.is_some_and(|b| {
@@ -177,6 +298,68 @@ impl BranchFilter {
         out.sort_unstable();
         out.dedup();
         out
+    }
+
+    /// Resolves `include`, `exclude`, `ranges` (`a..b`), and `Favorites` into a
+    /// visible node bitset plus the resolved head `PermNodeId`s for first-parent walks.
+    pub fn compute_mask_and_heads(
+        &self,
+        graph: &PermanentLinearGraph,
+        snapshot: &RepoSnapshot,
+        favorites: &[String],
+    ) -> (FixedBitSet, Vec<crate::graph::PermNodeId>) {
+        let n = graph.nodes_count as usize;
+        let expanded = self.expand_favorites(favorites);
+        // If user explicitly asked for `Favorites` (even with excludes) and has no favorites, match nothing.
+        let asked_only_empty_favorites = self.include.iter().all(|t| Self::is_favorites_token(t))
+            && !self.include.is_empty()
+            && expanded.include.is_empty()
+            && self.ranges.is_empty();
+        if asked_only_empty_favorites {
+            return (FixedBitSet::with_capacity(n), Vec::new());
+        }
+
+        let mut start_heads: Vec<crate::graph::PermNodeId> = Vec::new();
+        let mut mask = FixedBitSet::with_capacity(n);
+
+        let has_branch_rules =
+            !expanded.include.is_empty() || !expanded.exclude.is_empty() || expanded.ranges.is_empty();
+        if has_branch_rules {
+            let heads: Vec<_> = expanded
+                .select_heads(
+                    &snapshot.refs,
+                    snapshot.head_branch.as_deref(),
+                    snapshot.head_oid,
+                )
+                .iter()
+                .filter_map(|oid| graph.node_of_oid(oid))
+                .collect();
+            let branch_reach = ReachableNodes::contained_in_branch(graph, &heads);
+            mask.union_with(&branch_reach);
+            start_heads.extend(heads);
+        }
+
+        for (from, to) in &expanded.ranges {
+            let to_node = snapshot
+                .resolve_revision(to)
+                .and_then(|oid| graph.node_of_oid(&oid));
+            let from_node = snapshot
+                .resolve_revision(from)
+                .and_then(|oid| graph.node_of_oid(&oid));
+            if let Some(t) = to_node {
+                let mut reach_to = ReachableNodes::contained_in_branch(graph, &[t]);
+                if let Some(f) = from_node {
+                    let reach_from = ReachableNodes::contained_in_branch(graph, &[f]);
+                    reach_to.difference_with(&reach_from);
+                }
+                mask.union_with(&reach_to);
+                start_heads.push(t);
+            }
+        }
+
+        start_heads.sort_unstable();
+        start_heads.dedup();
+        (mask, start_heads)
     }
 }
 
@@ -230,6 +413,12 @@ impl UserFilter {
 
     fn is_me(tok: &str) -> bool {
         tok.eq_ignore_ascii_case("@me") || tok.eq_ignore_ascii_case("me")
+    }
+
+    /// True when this user filter includes `@me` / `me` (used to auto-suppress
+    /// `My Commits` bold highlighting when the entire table is already filtered to `@me`).
+    pub fn has_me(&self) -> bool {
+        self.users.iter().any(|tok| Self::is_me(tok))
     }
 
     pub fn matches(&self, name: &str, email: &str, me: RepoUser<'_>) -> bool {
@@ -506,6 +695,8 @@ pub struct LogFilterSpec {
     pub paths: PathFilter,
     /// Active read-only commit range (an empty range matches nothing).
     pub range: Option<RangeFilter>,
+    /// Exclude merge commits (`parents.len() > 1`, `--no-merges`).
+    pub no_merges: bool,
 }
 
 impl LogFilterSpec {
@@ -516,6 +707,19 @@ impl LogFilterSpec {
             && self.date.is_empty()
             && self.paths.is_empty()
             && self.range.is_none()
+            && !self.no_merges
+    }
+
+    /// True when only `BranchFilter` is active (no text, user, date, paths,
+    /// range, or `--no-merges` constraint), allowing linear-branch collapsing.
+    pub fn is_branch_only(&self) -> bool {
+        !self.branch.is_empty()
+            && self.text.is_empty()
+            && self.user.is_empty()
+            && self.date.is_empty()
+            && self.paths.is_empty()
+            && self.range.is_none()
+            && !self.no_merges
     }
 
     /// Computes the matching-node bitset over `graph` (indexed by `PermNodeId`).
@@ -542,6 +746,21 @@ impl LogFilterSpec {
         path_matches: Option<&HashSet<Oid>>,
         is_cancelled: impl Fn() -> bool,
     ) -> Option<Result<Option<FixedBitSet>, FilterError>> {
+        self.compute_matches_with_favorites(graph, snapshot, path_matches, &[], is_cancelled)
+            .map(|r| r.map(|(bits, _)| bits))
+    }
+
+    /// Evaluates active filter dimensions with favorite branch expansion and
+    /// returns `(matching_bitset, branch_start_heads)` so `FirstParentOnly` can
+    /// walk exclusively from the active branch heads.
+    pub fn compute_matches_with_favorites(
+        &self,
+        graph: &PermanentLinearGraph,
+        snapshot: &RepoSnapshot,
+        path_matches: Option<&HashSet<Oid>>,
+        favorites: &[String],
+        is_cancelled: impl Fn() -> bool,
+    ) -> Option<Result<FilterMatchWithHeads, FilterError>> {
         if is_cancelled() {
             return None;
         }
@@ -557,27 +776,19 @@ impl LogFilterSpec {
             && self.date.is_empty()
             && !use_paths
             && range.is_none()
+            && !self.no_merges
         {
-            return Some(Ok(None));
+            return Some(Ok((None, None)));
         }
 
         let n = graph.nodes_count as usize;
-        let mut matches = if self.branch.is_empty() {
+        let (mut matches, branch_heads) = if self.branch.is_empty() {
             let mut all = FixedBitSet::with_capacity(n);
             all.insert_range(..);
-            all
+            (all, None)
         } else {
-            let heads: Vec<_> = self
-                .branch
-                .select_heads(
-                    &snapshot.refs,
-                    snapshot.head_branch.as_deref(),
-                    snapshot.head_oid,
-                )
-                .iter()
-                .filter_map(|oid| graph.node_of_oid(oid))
-                .collect();
-            ReachableNodes::contained_in_branch(graph, &heads)
+            let (mask, heads) = self.branch.compute_mask_and_heads(graph, snapshot, favorites);
+            (mask, Some(heads))
         };
         if is_cancelled() {
             return None;
@@ -588,8 +799,9 @@ impl LogFilterSpec {
             && self.date.is_empty()
             && !use_paths
             && range.is_none()
+            && !self.no_merges
         {
-            return Some(Ok(Some(matches)));
+            return Some(Ok((Some(matches), branch_heads)));
         }
 
         let me = RepoUser {
@@ -612,9 +824,10 @@ impl LogFilterSpec {
                 matches.set(node, false);
                 continue;
             };
-            let ok = text
-                .as_ref()
-                .is_none_or(|m| m.matches_commit(&commit.oid, &commit.subject, &commit.body))
+            let ok = (!self.no_merges || commit.parents.len() <= 1)
+                && text
+                    .as_ref()
+                    .is_none_or(|m| m.matches_commit(&commit.oid, &commit.subject, &commit.body))
                 && user
                     .as_ref()
                     .is_none_or(|u| u.matches(&commit.author_name, &commit.author_email, me))
@@ -625,7 +838,7 @@ impl LogFilterSpec {
                 matches.set(node, false);
             }
         }
-        Some(Ok(Some(matches)))
+        Some(Ok((Some(matches), branch_heads)))
     }
 }
 
@@ -973,5 +1186,110 @@ mod tests {
         assert!(DateFilter::parse("garbage", now).is_none());
         assert!(DateFilter::parse("", now).unwrap().is_empty());
         assert!(glob_match("feat/*", "feat/a/b") && !glob_match("feat/?", "feat/ab"));
+    }
+
+    #[test]
+    fn multi_hash_space_separated_matches_any_commit() {
+        let (snap, graph) = fixture();
+        let h1 = oid(1).short();
+        let h3 = oid(3).short();
+        let spec = LogFilterSpec {
+            text: TextFilter {
+                query: format!("{h1}  {h3}"),
+                regex: false,
+                match_case: false,
+            },
+            ..Default::default()
+        };
+        let bits = spec.compute_matches(&graph, &snap, None).unwrap().unwrap();
+        assert_eq!(bits.count_ones(..), 2);
+        assert!(bits.contains(graph.node_of_oid(&oid(1)).unwrap() as usize));
+        assert!(bits.contains(graph.node_of_oid(&oid(3)).unwrap() as usize));
+        assert!(!bits.contains(graph.node_of_oid(&oid(2)).unwrap() as usize));
+    }
+
+    #[test]
+    fn branch_range_and_favorites_and_no_merges_filter() {
+        let (mut snap, _) = fixture();
+        // Add a merge commit 7 merging main (3) and feature/a (5) for --no-merges testing.
+        snap.commits.insert(0, commit(7, &[3, 5], "Alice", 70, "merge feature/a"));
+        snap.refs.push(branch("merged", 7));
+        let raw: Vec<RawCommitNode> = snap.commits.iter().map(RawCommitNode::from).collect();
+        let graph = PermanentLinearGraphBuilder::build(&raw);
+
+        // fixture: main -> 3 -> 2 -> 1; feature/a -> 5 -> 4 -> 1
+        let bf = BranchFilter::parse("main..feature/a");
+        assert_eq!(bf.ranges, vec![("main".to_string(), "feature/a".to_string())]);
+        assert_eq!(bf.label(), "main..feature/a");
+        assert_eq!(bf.single_compared_branch(Some("main")), Some("feature/a"));
+
+        // main..feature/a: reachable from feature/a (5,4,1) excluding main (3,2,1) = {4, 5}.
+        let spec = LogFilterSpec {
+            branch: bf,
+            ..Default::default()
+        };
+        assert!(spec.is_branch_only());
+        let (bits, heads) = spec
+            .compute_matches_with_favorites(&graph, &snap, None, &[], || false)
+            .unwrap()
+            .unwrap();
+        let bits = bits.unwrap();
+        assert_eq!(bits.count_ones(..), 2);
+        assert!(bits.contains(graph.node_of_oid(&oid(4)).unwrap() as usize));
+        assert!(bits.contains(graph.node_of_oid(&oid(5)).unwrap() as usize));
+        assert_eq!(heads.unwrap(), vec![graph.node_of_oid(&oid(5)).unwrap()]);
+
+        // Favorites expands to favorite branches list (`feature/a` -> {1, 4, 5}).
+        let fav_spec = LogFilterSpec {
+            branch: BranchFilter::parse("Favorites"),
+            ..Default::default()
+        };
+        let (fav_bits, _) = fav_spec
+            .compute_matches_with_favorites(
+                &graph,
+                &snap,
+                None,
+                &["feature/a".to_string()],
+                || false,
+            )
+            .unwrap()
+            .unwrap();
+        let fav_bits = fav_bits.unwrap();
+        assert_eq!(fav_bits.count_ones(..), 3);
+        assert!(fav_bits.contains(graph.node_of_oid(&oid(1)).unwrap() as usize));
+        assert!(fav_bits.contains(graph.node_of_oid(&oid(4)).unwrap() as usize));
+        assert!(fav_bits.contains(graph.node_of_oid(&oid(5)).unwrap() as usize));
+
+        // --no-merges excludes merge commit 7 (parents = [3, 5]).
+        let nm_spec = LogFilterSpec {
+            no_merges: true,
+            ..Default::default()
+        };
+        assert!(!nm_spec.is_empty());
+        assert!(!nm_spec.is_branch_only());
+        let nm_bits = nm_spec
+            .compute_matches(&graph, &snap, None)
+            .unwrap()
+            .unwrap();
+        assert!(!nm_bits.contains(graph.node_of_oid(&oid(7)).unwrap() as usize));
+        assert_eq!(nm_bits.count_ones(..), 6);
+
+        // CurrentBranch auto-suppression & cherry-picked branch detection.
+        assert!(BranchFilter::parse("HEAD").is_only_current_branch(Some("main")));
+        assert!(BranchFilter::parse("main").is_only_current_branch(Some("main")));
+        assert!(!BranchFilter::parse("feature/a").is_only_current_branch(Some("main")));
+        assert!(!BranchFilter::parse("main feature/a").is_only_current_branch(Some("main")));
+        assert_eq!(
+            BranchFilter::parse("feature/a").single_compared_branch(Some("main")),
+            Some("feature/a")
+        );
+        assert_eq!(
+            BranchFilter::parse("feature/a main").single_compared_branch(Some("main")),
+            Some("feature/a")
+        );
+        assert_eq!(
+            BranchFilter::parse("main").single_compared_branch(Some("main")),
+            None
+        );
     }
 }

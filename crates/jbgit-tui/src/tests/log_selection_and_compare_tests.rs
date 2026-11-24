@@ -31,6 +31,7 @@ fn build_graph(snap: &Arc<jbgit_core::RepoSnapshot>) -> LogGraphState {
         &FilterInputs {
             spec: &LogFilterSpec::default(),
             path_matches: None,
+            favorites: &[],
         },
     );
     g
@@ -99,6 +100,7 @@ fn log_graph_state_non_contiguous_selection_state_machine_and_oid_reload() {
         &FilterInputs {
             spec: &LogFilterSpec::default(),
             path_matches: None,
+            favorites: &[],
         },
     );
     assert_eq!(g.selected_rows_vec(), vec![1, 7]);

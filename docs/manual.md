@@ -556,8 +556,8 @@ prepend_keymap = [
 | 作用域 | 可用 `run` 动作标识符 |
 | :--- | :--- |
 | `global` | `quit`, `help`, `context_menu`, `refresh`, `tab_commit`, `tab_log`, `tab_branches`, `tab_stash`, `tab_console`, `focus_next`, `focus_prev`, `toggle_branches_popup`, `toggle_branches_pane`, `git_fetch`, `git_pull`, `git_push`, `update_project`, `configure_remotes`, `switch_repository`, `worktrees`, `resolve_conflicts`, `update_submodules`, `unshallow`, `goto_revision`, `palette`, `toggle_glyph_mode`, `cycle_graph_renderer`, `git_status_probe`, `noop` |
-| `log` | `cursor_down`, `cursor_up`, `goto_top`, `goto_bottom`, `page_down_half`, `page_up_half`, `goto_revision`, `focus_filter`, `toggle_branches_pane`, `toggle_log_row_selection`, `compare_or_diff`, `swap_compare_direction`, `toggle_only_affected_changes`, `zoom_diff`, `copy_hash`, `copy_commit_message`, `copy_row_summary`, `checkout`, `new_branch`, `uncommit`, `reword`, `drop_commit`, `choose_parent`, `toggle_group`, `file_history`, `annotate`, `collapse_linear_branch`, `expand_linear_branch`, `collapse_all_linear_branches`, `expand_all_linear_branches`, `browse_revision` |
-| `branch` | `branch_search`, `toggle_favorite`, `checkout`, `new_branch`, `rename_branch`, `delete_branch`, `navigate_branch` |
+| `log` | `cursor_down`, `cursor_up`, `goto_top`, `goto_bottom`, `page_down_half`, `page_up_half`, `goto_revision`, `focus_filter`, `toggle_branches_pane`, `toggle_log_row_selection`, `compare_or_diff`, `swap_compare_direction`, `toggle_only_affected_changes`, `zoom_diff`, `copy_hash`, `copy_commit_message`, `copy_row_summary`, `checkout`, `new_branch`, `uncommit`, `reword`, `drop_commit`, `choose_parent`, `toggle_group`, `file_history`, `annotate`, `collapse_linear_branch`, `expand_linear_branch`, `collapse_all_linear_branches`, `expand_all_linear_branches`, `browse_revision`, `toggle_no_merges`, `toggle_linear_bek`, `log_speed_search`, `maximize_commit_message`, `open_reflog` |
+| `branch` | `branch_search`, `toggle_favorite`, `checkout`, `new_branch`, `rename_branch`, `delete_branch`, `navigate_branch`, `open_reflog` |
 | `commit` | `cursor_down`, `cursor_up`, `goto_top`, `goto_bottom`, `toggle_stage`, `stage_selection`, `unstage_selection`, `focus_commit_msg`, `commit`, `commit_and_push`, `toggle_amend`, `toggle_signoff`, `commit_history`, `select_all`, `discard_changes`, `toggle_group`, `edit_file`, `file_history`, `annotate`, `apply_patch`, `apply_patch_clipboard` |
 | `diff` | `cursor_down`, `cursor_up`, `goto_top`, `goto_bottom`, `prev_hunk`, `next_hunk`, `prev_file`, `next_file`, `toggle_side_by_side`, `cycle_diff_context`, `cycle_diff_whitespace`, `toggle_diff_soft_wrap`, `diff_scroll_left`, `diff_scroll_right`, `diff_search`, `diff_search_next`, `diff_search_prev`, `cycle_diff_dock`, `zoom_diff`, `swap_compare_direction`, `toggle_stage`, `stage_selection`, `unstage_selection`, `toggle_visual`, `rollback_selection`, `undo_rollback`, `switch_diff_side`, `three_way_inspector` |
 | `stash` | `cursor_down`, `cursor_up`, `goto_top`, `goto_bottom`, `stash_new`, `stash_apply`, `stash_pop`, `stash_drop`, `stash_branch`, `stash_clear`, `toggle_group` |
@@ -674,7 +674,8 @@ jbgit 同一时间只绑定**一个活动仓库**（多根同步模型不做，�
 
 - 折叠标记：片段上端的节点绘制为空心（`HEAD` 节点保留 HEAD 颜色）；字符网格与矢量两种渲染引擎一致。多条平行片段（菱形 / 章鱼合并的多个分支臂）共用一条虚线边，点击后一并展开。
 - 「全部折叠」会保留选中提交所在的片段；之后刷新出的新片段也会自动折叠。跳转到被折叠的提交（`g r` 跳转、点击父提交哈希、导航后退 / 前进）时自动展开其所在片段；刷新后选中提交落入新片段时同样自动展开。
-- 筛选生效或开启 `First Parent Only` 时折叠不可用（菜单置灰并说明原因），与 IDEA 一致；关闭筛选后恢复原折叠状态。
+- 仅启用 `Branch` 筛选时仍允许折叠线性分支；同时启用文本/作者/日期/路径/`--no-merges` 筛选或开启 `First Parent Only` 时折叠不可用（菜单置灰并说明原因），关闭后恢复原折叠状态。鼠标悬停在展开的可折叠片段节点或边上时，将高亮整段可折叠线性分支。
+- **LinearBek 视图模式 (`L` / `[⚙ Presentation]` → `LinearBek`)**：将双父合并提交的跨分支边折叠为从合入分支尾端指向主线父提交的虚线边，以单列线性展示历史；点击该虚线边或在对应行按 `Enter` 可展开单次合并，全部折叠/展开同步支持 LinearBek。
 
 ---
 
@@ -733,3 +734,24 @@ jbgit 同一时间只绑定**一个活动仓库**（多根同步模型不做，�
 4. **浅克隆检测与完整拉取 (`Unshallow`)**
    - 当仓库为浅克隆（`Repository::is_shallow`）时，Log 副标题显示 `· shallow`，提交列表底部出现浅克隆边界标记与可点击的 `[Unshallow…]` 按钮；分支速查浮窗、Log 右键菜单与 `unshallow` 动作（命令面板）同样可发起确认。
    - 确认后执行 `git fetch --unshallow --progress <remote>`，控制台原地刷新 `\r` 进度输出。
+
+---
+
+## 九、VCS Log 高亮器、增强筛选、表内速查与 Git Reflog 恢复视图
+
+1. **Log 高亮器与自动抑制**
+   - **My Commits**（`[⚙ Presentation]` → `Highlight: My Commits`，配置项 `[log].highlight_my_commits = true`）：加粗高亮当前 Git 用户（`user.name` / `user.email`）的提交；当仓库仅有单一作者或已启用 `User: @me` 筛选时自动抑制。
+   - **Already Cherry-Picked**（`[⚙ Presentation]` → `Highlight: Already Cherry-Picked`，配置项 `[log].highlight_cherry_picked = true`）：当分支筛选聚焦于单个非当前分支或执行 `Compare with Current` 时，在独立异步槽位（`RequestSlotId::LogCherryPicked`）运行 `git cherry <HEAD> <branch>`，将已存在等价补丁（`- <oid>`）的提交淡化显示。
+   - **Current Branch 自动抑制**：当 `Branch` 筛选仅限定为 `HEAD` 或当前分支本身时，自动抑制整表当前分支背景色，避免全表同色干扰阅读。
+
+2. **父/子提交候选选择器、增强筛选与表内速查**
+   - **Go to Parent (`→`) / Go to Child (`←`)**：当目标父提交或可见子提交数量 ≥ 2 时，弹出编号候选列表（展示 `hash "subject" author date`），按 `1–9` 或 `Enter` 精准跳转。
+   - **No-Merges 筛选 (`M` / 筛选栏 `[No Merges]`)**：等价于 `--no-merges`，快速过滤合并提交。
+   - **增强 Branch 与 Hash 筛选**：`Branch` 筛选框原生支持 `a..b` 范围语法（如 `main..feat`）、内置 `Favorites` 快捷组（自动展开收藏分支），以及各筛选字段最近 10 条历史建议；文本搜索框支持空格分隔多个哈希前缀同时匹配。
+   - **表内速查 (`s`)**：在 Log 提交表内高亮匹配提交（主题/作者/哈希/引用名）且**不隐藏**不匹配行，确认后用 `n` / `N` 步进定位，`Esc` 清除。
+   - **列与详情增强**：`[⚙ Presentation]` 独立开关 `Author` 列（`[log].show_author_column`）、`Date` 列（`[log].show_date_column`）及 `Align Labels to Right`（引用胶囊右对齐，`[log].align_labels_right`）；Commit Details 支持点击正文中的 7–40 位提交哈希跳转，以及点击 `[⤢ Full]` 或按 `E` 打开可滚动的完整提交说明浮窗。
+
+3. **Git Reflog 历史恢复视图 (`R`)**
+   - 入口：Log 提交表/分支树按 `R`、Log 右键菜单 `Show Reflog (HEAD)…`、分支右键菜单 `Show Reflog for '<branch>'…` 或 `?` 命令面板 `open_reflog`。
+   - 左侧展示分页 `git reflog show` 记录（`HEAD@{n}`、操作类型徽标 `reset`/`rebase`/`commit`/`checkout` 等、短哈希、相对时间与说明，按 `m` 加载更多），右侧同步展示对应提交的变更文件树与语法高亮差异预览（独立 `RequestSlot` 单飞取消）。
+   - 支持对任意历史条目一键恢复：`c` 检出（游离 HEAD）、`n` 在此新建分支（恢复误 `reset --hard` 丢失的提交）、`p` 拣选（Cherry-Pick）、`r` 将当前分支重置至此、`y` 复制哈希、`Enter`/`l` 在 Log 中定位。

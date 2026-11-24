@@ -70,6 +70,18 @@ pub fn execute_effects_with_host(
                             .request_slots
                             .note_dispatched(RequestSlotId::LogSignatures, epoch);
                     }
+                    Effect::RequestCherryPicked(key) => {
+                        let epoch = handle.request_cherry_picked(key);
+                        state
+                            .request_slots
+                            .note_dispatched(RequestSlotId::LogCherryPicked, epoch);
+                    }
+                    Effect::RequestReflog(key) => {
+                        let epoch = handle.request_reflog(key);
+                        state
+                            .request_slots
+                            .note_dispatched(RequestSlotId::Reflog, epoch);
+                    }
                     Effect::RequestFileDiff { slot, key } => {
                         let known_oids = state.diff_caches.known_oids_for(&key);
                         let epoch = handle.request_file_diff_with_oids(slot, key, known_oids);
