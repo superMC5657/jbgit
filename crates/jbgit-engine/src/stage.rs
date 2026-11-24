@@ -10,10 +10,11 @@ use git2::{
     SubmoduleStatus,
 };
 use jbgit_core::{
-    AmendCommitPreview, DetailsKey, DiffContext, DiffHunk, DiffLine, DiffLineKind, EpochToken,
-    FileChange, FileDiff, FileDiffKey, FileModeChange, FileStatusKind, GIT_MODE_EXECUTABLE,
-    GIT_MODE_GITLINK, GIT_MODE_REGULAR, GIT_MODE_SYMLINK, LfsDiff, MAX_DIFF_LINES, Oid,
-    StageDiffHunk, StageLineTracker, StageNodeKind, StageTarget, SubmoduleState, parse_lfs_pointer,
+    AmendCommitPreview, BinaryDiffInfo, DetailsKey, DiffContext, DiffHunk, DiffLine, DiffLineKind,
+    EpochToken, FileChange, FileDiff, FileDiffKey, FileModeChange, FileStatusKind,
+    GIT_MODE_EXECUTABLE, GIT_MODE_GITLINK, GIT_MODE_REGULAR, GIT_MODE_SYMLINK, LfsDiff,
+    MAX_DIFF_LINES, Oid, StageDiffHunk, StageLineTracker, StageNodeKind, StageTarget,
+    SubmoduleState, WhitespaceMode, parse_lfs_pointer,
 };
 
 use crate::blob_reader::{
@@ -38,6 +39,7 @@ pub struct StageDiffKey {
     pub old_path: Option<String>,
     pub side: StageDiffSide,
     pub context: DiffContext,
+    pub whitespace: WhitespaceMode,
 }
 
 /// Read-only submodule pointer metadata shown instead of a text diff.
@@ -62,6 +64,7 @@ pub struct ThreeDocStageDiff {
     pub mode_change: Option<FileModeChange>,
     pub is_symlink: bool,
     pub is_binary: bool,
+    pub binary: Option<BinaryDiffInfo>,
     pub is_conflicted: bool,
     pub submodule: Option<SubmoduleDiffInfo>,
     pub lfs: Option<LfsDiff>,
@@ -92,9 +95,11 @@ impl ThreeDocStageDiff {
                 path: self.key.path.clone(),
                 old_path: self.key.old_path.clone(),
                 context: self.key.context,
+                whitespace: self.key.whitespace,
             },
             hunks: self.hunks.iter().map(|h| h.hunk.clone()).collect(),
             is_binary: self.is_binary,
+            binary: self.binary.clone(),
             is_truncated: self.is_truncated,
             is_too_large: self.is_too_large,
             lfs: self.lfs.clone(),
@@ -180,6 +185,7 @@ fn empty_submodule_diff(key: StageDiffKey, info: SubmoduleDiffInfo) -> ThreeDocS
         mode_change: None,
         is_symlink: false,
         is_binary: false,
+        binary: None,
         is_conflicted: false,
         submodule: Some(info),
         lfs: None,
@@ -383,6 +389,7 @@ pub(crate) fn load_stage_file_diff_sync(
                     mode_change,
                     is_symlink,
                     is_binary: false,
+                    binary: None,
                     is_conflicted: false,
                     submodule: None,
                     lfs: None,
@@ -393,6 +400,8 @@ pub(crate) fn load_stage_file_diff_sync(
                 });
             }
 
+            let (vcs_size, vcs_oid) = vcs_side.metadata();
+            let (head_size, head_oid) = head_side.metadata();
             let (vcs_opt, _, vcs_bin) = vcs_side.into_parts();
             let (head_opt, _, head_bin) = head_side.into_parts();
             let is_binary = vcs_bin || head_bin;
@@ -414,6 +423,7 @@ pub(crate) fn load_stage_file_diff_sync(
                     mode_change,
                     is_symlink,
                     is_binary: false,
+                    binary: None,
                     is_conflicted: false,
                     submodule: None,
                     lfs: Some(LfsDiff {
@@ -441,6 +451,12 @@ pub(crate) fn load_stage_file_diff_sync(
                     mode_change,
                     is_symlink,
                     is_binary: true,
+                    binary: Some(BinaryDiffInfo {
+                        old_size: vcs_size,
+                        new_size: head_size,
+                        old_oid: vcs_oid,
+                        new_oid: head_oid,
+                    }),
                     is_conflicted: false,
                     submodule: None,
                     lfs: None,
@@ -451,7 +467,8 @@ pub(crate) fn load_stage_file_diff_sync(
                 });
             }
 
-            let tracker = StageLineTracker::new(&vcs_bytes, &head_bytes, &head_bytes);
+            let tracker =
+                StageLineTracker::new_with_whitespace(&vcs_bytes, &head_bytes, &head_bytes, key.whitespace);
             if token.is_stale() {
                 return Err(EngineError::Cancelled);
             }
@@ -473,6 +490,7 @@ pub(crate) fn load_stage_file_diff_sync(
                 mode_change,
                 is_symlink,
                 is_binary: false,
+                binary: None,
                 is_conflicted: false,
                 submodule: None,
                 lfs: None,
@@ -534,6 +552,7 @@ pub(crate) fn load_stage_file_diff_sync(
                 mode_change,
                 is_symlink,
                 is_binary: false,
+                binary: None,
                 is_conflicted,
                 submodule: None,
                 lfs: None,
@@ -544,6 +563,9 @@ pub(crate) fn load_stage_file_diff_sync(
             });
         }
 
+        let (vcs_size, vcs_oid) = vcs_side.metadata();
+        let (staged_size, staged_oid) = staged_side.metadata();
+        let (local_size, local_oid) = local_side.metadata();
         let (vcs_opt, _, vcs_bin) = vcs_side.into_parts();
         let (staged_opt, _, staged_bin) = staged_side.into_parts();
         let (local_opt, _, local_bin) = local_side.into_parts();
@@ -571,6 +593,7 @@ pub(crate) fn load_stage_file_diff_sync(
                 mode_change,
                 is_symlink,
                 is_binary: false,
+                binary: None,
                 is_conflicted,
                 submodule: None,
                 lfs: Some(LfsDiff {
@@ -586,6 +609,11 @@ pub(crate) fn load_stage_file_diff_sync(
         }
 
         if is_binary {
+            let (old_size, old_oid, new_size, new_oid) = if key.side == StageDiffSide::Staged {
+                (vcs_size, vcs_oid, staged_size, staged_oid)
+            } else {
+                (staged_size, staged_oid, local_size, local_oid)
+            };
             return Ok(ThreeDocStageDiff {
                 key: key.clone(),
                 vcs_exists,
@@ -598,6 +626,12 @@ pub(crate) fn load_stage_file_diff_sync(
                 mode_change,
                 is_symlink,
                 is_binary: true,
+                binary: Some(BinaryDiffInfo {
+                    old_size,
+                    new_size,
+                    old_oid,
+                    new_oid,
+                }),
                 is_conflicted,
                 submodule: None,
                 lfs: None,
@@ -608,7 +642,12 @@ pub(crate) fn load_stage_file_diff_sync(
             });
         }
 
-        let tracker = StageLineTracker::new(&vcs_bytes, &staged_bytes, &local_bytes);
+        let tracker = StageLineTracker::new_with_whitespace(
+            &vcs_bytes,
+            &staged_bytes,
+            &local_bytes,
+            key.whitespace,
+        );
         if token.is_stale() {
             return Err(EngineError::Cancelled);
         }
@@ -671,6 +710,7 @@ pub(crate) fn load_stage_file_diff_sync(
             mode_change,
             is_symlink,
             is_binary: false,
+            binary: None,
             is_conflicted,
             submodule: None,
             lfs: None,

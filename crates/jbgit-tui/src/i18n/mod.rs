@@ -2,7 +2,7 @@ use std::fs;
 use std::path::Path;
 use jbgit_core::{
     BranchCategory, DiffContext, GitOp, OngoingKind, OngoingStep, PaneId, RefNameError, ResetMode,
-    RewritePlanError, StageNodeKind, TodoAction, validate_ref_name_typed,
+    RewritePlanError, StageNodeKind, TodoAction, WhitespaceMode, validate_ref_name_typed,
 };
 use rustc_hash::FxHashMap;
 
@@ -193,6 +193,14 @@ impl I18n {
             DiffContext::Three => "3",
             DiffContext::Ten => "10",
             DiffContext::Full => self.t("diff.context.full"),
+        }
+    }
+
+    pub fn diff_whitespace_label(&self, mode: WhitespaceMode) -> &str {
+        match mode {
+            WhitespaceMode::Default => self.t("diff.whitespace.default"),
+            WhitespaceMode::IgnoreChange => "-b",
+            WhitespaceMode::IgnoreAll => "-w",
         }
     }
 

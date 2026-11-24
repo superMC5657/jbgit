@@ -469,18 +469,21 @@ async fn sibling_consumer_file_diff_slots_never_cancel_each_other() {
         path: "a.txt".into(),
         old_path: None,
         context: DiffContext::Three,
+            whitespace: jbgit_core::WhitespaceMode::Default,
     };
     let key_b = FileDiffKey {
         details: DetailsKey::single(c2),
         path: "b.txt".into(),
         old_path: None,
         context: DiffContext::Three,
+            whitespace: jbgit_core::WhitespaceMode::Default,
     };
     let key_c = FileDiffKey {
         details: DetailsKey::single(c2),
         path: "c.txt".into(),
         old_path: None,
         context: DiffContext::Three,
+            whitespace: jbgit_core::WhitespaceMode::Default,
     };
 
     let e_log = handle.request_file_diff(RequestSlotId::LogFileDiff, key_a.clone());
@@ -550,6 +553,7 @@ fn recording_engine_backend_assigns_independent_per_slot_epochs() {
             path: "a.rs".into(),
             old_path: None,
             context: DiffContext::Three,
+            whitespace: jbgit_core::WhitespaceMode::Default,
         },
     );
     let e_fh_1 = backend.request_file_diff(
@@ -559,6 +563,7 @@ fn recording_engine_backend_assigns_independent_per_slot_epochs() {
             path: "b.rs".into(),
             old_path: None,
             context: DiffContext::Three,
+            whitespace: jbgit_core::WhitespaceMode::Default,
         },
     );
     let e_log_2 = backend.request_file_diff(
@@ -568,6 +573,7 @@ fn recording_engine_backend_assigns_independent_per_slot_epochs() {
             path: "c.rs".into(),
             old_path: None,
             context: DiffContext::Three,
+            whitespace: jbgit_core::WhitespaceMode::Default,
         },
     );
     assert_eq!(e_log_1, 1);
@@ -699,6 +705,7 @@ async fn commit_details_changes_file_diff_and_path_matches() {
             path: "src/core/lib.rs".into(),
             old_path: None,
             context: DiffContext::Three,
+            whitespace: jbgit_core::WhitespaceMode::Default,
         },
         None,
     )
@@ -790,6 +797,7 @@ async fn partial_hunk_and_line_staging_matches_native_git_diff() {
             old_path: None,
             side: StageDiffSide::Unstaged,
             context: DiffContext::Three,
+            whitespace: jbgit_core::WhitespaceMode::Default,
         },
     )
     .await;
@@ -861,6 +869,7 @@ async fn partial_stage_untracked_file_and_preserve_executable_mode() {
             old_path: None,
             side: StageDiffSide::Unstaged,
             context: DiffContext::Three,
+            whitespace: jbgit_core::WhitespaceMode::Default,
         },
     )
     .await;
@@ -1067,6 +1076,7 @@ async fn amend_commit_side_loads_head_parent_diff_even_when_clean() {
             old_path: None,
             side: StageDiffSide::AmendCommit,
             context: DiffContext::Three,
+            whitespace: jbgit_core::WhitespaceMode::Default,
         },
     )
     .await;
@@ -1163,6 +1173,7 @@ async fn file_history_follow_renames_cjk_diffs_and_supervisor_epoch_cancellation
                 path: entry.path_at_commit.clone(),
                 old_path: entry.old_path.clone(),
                 context: DiffContext::Three,
+            whitespace: jbgit_core::WhitespaceMode::Default,
             },
             None,
         )
@@ -1181,6 +1192,7 @@ async fn file_history_follow_renames_cjk_diffs_and_supervisor_epoch_cancellation
             path: follow.entries[0].path_at_commit.clone(),
             old_path: Some(follow.entries[3].path_at_commit.clone()),
             context: DiffContext::Three,
+            whitespace: jbgit_core::WhitespaceMode::Default,
         },
         None,
     )
@@ -1201,6 +1213,7 @@ async fn file_history_follow_renames_cjk_diffs_and_supervisor_epoch_cancellation
             path: "sub/b 中文.txt".into(),
             old_path: Some(follow.entries[3].path_at_commit.clone()),
             context: DiffContext::Three,
+            whitespace: jbgit_core::WhitespaceMode::Default,
         },
         None,
     )
@@ -1282,6 +1295,7 @@ async fn large_file_exceeding_limit_short_circuits_file_and_stage_diff() {
             path: "huge.txt".into(),
             old_path: None,
             context: DiffContext::Three,
+            whitespace: jbgit_core::WhitespaceMode::Default,
         },
         None,
     )
@@ -1301,6 +1315,7 @@ async fn large_file_exceeding_limit_short_circuits_file_and_stage_diff() {
             old_path: None,
             side: StageDiffSide::Unstaged,
             context: DiffContext::Three,
+            whitespace: jbgit_core::WhitespaceMode::Default,
         },
     )
     .await;
@@ -1364,6 +1379,7 @@ async fn fast_file_diff_paths_match_rename_add_delete_compare_local_and_multi_co
             path: "added.txt".into(),
             old_path: None,
             context: DiffContext::Three,
+            whitespace: jbgit_core::WhitespaceMode::Default,
         },
         None,
     )
@@ -1384,6 +1400,7 @@ async fn fast_file_diff_paths_match_rename_add_delete_compare_local_and_multi_co
             path: "to_delete.txt".into(),
             old_path: None,
             context: DiffContext::Three,
+            whitespace: jbgit_core::WhitespaceMode::Default,
         },
         None,
     )
@@ -1404,6 +1421,7 @@ async fn fast_file_diff_paths_match_rename_add_delete_compare_local_and_multi_co
             path: "new_name.txt".into(),
             old_path: Some("old_name.txt".into()),
             context: DiffContext::Three,
+            whitespace: jbgit_core::WhitespaceMode::Default,
         },
         None,
     )
@@ -1428,6 +1446,7 @@ async fn fast_file_diff_paths_match_rename_add_delete_compare_local_and_multi_co
         path: "keep.txt".into(),
         old_path: None,
         context: DiffContext::Three,
+            whitespace: jbgit_core::WhitespaceMode::Default,
     };
     let via_oids = fetch_file_diff(
         &handle,
@@ -1457,6 +1476,7 @@ async fn fast_file_diff_paths_match_rename_add_delete_compare_local_and_multi_co
             path: "keep.txt".into(),
             old_path: None,
             context: DiffContext::Three,
+            whitespace: jbgit_core::WhitespaceMode::Default,
         },
         None,
     )
@@ -1477,6 +1497,7 @@ async fn fast_file_diff_paths_match_rename_add_delete_compare_local_and_multi_co
             path: "keep.txt".into(),
             old_path: None,
             context: DiffContext::Three,
+            whitespace: jbgit_core::WhitespaceMode::Default,
         },
         None,
     )
@@ -1531,6 +1552,7 @@ async fn stage_diff_index_entry_conflict_vs_normal_detection() {
             old_path: None,
             side: StageDiffSide::Unstaged,
             context: DiffContext::Three,
+            whitespace: jbgit_core::WhitespaceMode::Default,
         },
     )
     .await;
@@ -1545,6 +1567,7 @@ async fn stage_diff_index_entry_conflict_vs_normal_detection() {
             old_path: None,
             side: StageDiffSide::Unstaged,
             context: DiffContext::Three,
+            whitespace: jbgit_core::WhitespaceMode::Default,
         },
     )
     .await;
@@ -1585,6 +1608,7 @@ async fn real_tab_indented_files_preserve_raw_tabs_in_diffs_and_partial_staging(
             path: "tabs.rs".into(),
             old_path: None,
             context: DiffContext::Three,
+            whitespace: jbgit_core::WhitespaceMode::Default,
         },
         None,
     )
@@ -1614,6 +1638,7 @@ async fn real_tab_indented_files_preserve_raw_tabs_in_diffs_and_partial_staging(
             old_path: None,
             side: StageDiffSide::Unstaged,
             context: DiffContext::Three,
+            whitespace: jbgit_core::WhitespaceMode::Default,
         },
     )
     .await;
@@ -3087,6 +3112,7 @@ async fn submodule_dirty_workdir_new_commit_and_update_op() {
             old_path: None,
             side: StageDiffSide::Unstaged,
             context: DiffContext::Three,
+            whitespace: jbgit_core::WhitespaceMode::Default,
         },
     )
     .await;
@@ -3152,6 +3178,7 @@ async fn lfs_gitattributes_and_pointer_placeholders_avoid_smudge() {
             path: "assets/blob.bin".into(),
             old_path: None,
             context: DiffContext::Three,
+            whitespace: jbgit_core::WhitespaceMode::Default,
         },
         None,
     )
@@ -3178,6 +3205,7 @@ async fn lfs_gitattributes_and_pointer_placeholders_avoid_smudge() {
             old_path: None,
             side: StageDiffSide::Unstaged,
             context: DiffContext::Three,
+            whitespace: jbgit_core::WhitespaceMode::Default,
         },
     )
     .await;
@@ -3279,6 +3307,7 @@ async fn sequential_stage_and_unstage_never_clobber_other_files_across_workers()
             old_path: None,
             side: StageDiffSide::Staged,
             context: DiffContext::from_lines(3),
+            whitespace: jbgit_core::WhitespaceMode::Default,
         });
     }
     let initial = fetch_stage_status(&handle, &mut rx, false).await;
@@ -3698,6 +3727,7 @@ async fn dangling_symlink_stages_as_120000_and_rejects_partial_stage_buffer() {
                 old_path: None,
                 side: StageDiffSide::Staged,
                 context: DiffContext::Three,
+                whitespace: jbgit_core::WhitespaceMode::Default,
             },
         )
         .await;
@@ -3740,6 +3770,7 @@ async fn dangling_symlink_stages_as_120000_and_rejects_partial_stage_buffer() {
                 old_path: None,
                 side: StageDiffSide::Staged,
                 context: DiffContext::Three,
+                whitespace: jbgit_core::WhitespaceMode::Default,
             },
         )
         .await;
@@ -3860,6 +3891,7 @@ async fn diff_surfaces_mode_only_permission_change_and_no_newline_at_eof() {
             old_path: None,
             side: StageDiffSide::Staged,
             context: DiffContext::Three,
+            whitespace: jbgit_core::WhitespaceMode::Default,
         },
     )
     .await;
@@ -3881,6 +3913,7 @@ async fn diff_surfaces_mode_only_permission_change_and_no_newline_at_eof() {
             old_path: None,
             side: StageDiffSide::Unstaged,
             context: DiffContext::Three,
+            whitespace: jbgit_core::WhitespaceMode::Default,
         },
     )
     .await;
@@ -3917,6 +3950,7 @@ async fn diff_surfaces_mode_only_permission_change_and_no_newline_at_eof() {
             path: "script.sh".into(),
             old_path: None,
             context: DiffContext::Three,
+            whitespace: jbgit_core::WhitespaceMode::Default,
         },
         Some((script_change.old_oid, script_change.new_oid)),
     )
@@ -3940,6 +3974,7 @@ async fn diff_surfaces_mode_only_permission_change_and_no_newline_at_eof() {
             path: "eof.txt".into(),
             old_path: None,
             context: DiffContext::Three,
+            whitespace: jbgit_core::WhitespaceMode::Default,
         },
         None,
     )
@@ -4007,6 +4042,7 @@ async fn stage_status_detects_copies_and_three_doc_diff_resolves_dual_stage_rena
             old_path: Some("a.txt".into()),
             side: StageDiffSide::Staged,
             context: DiffContext::Three,
+            whitespace: jbgit_core::WhitespaceMode::Default,
         },
     )
     .await;
@@ -4023,6 +4059,7 @@ async fn stage_status_detects_copies_and_three_doc_diff_resolves_dual_stage_rena
             old_path: Some("b.txt".into()),
             side: StageDiffSide::Unstaged,
             context: DiffContext::Three,
+            whitespace: jbgit_core::WhitespaceMode::Default,
         },
     )
     .await;
@@ -4061,4 +4098,151 @@ async fn apply_stage_buffer_runs_git_clean_filter_for_autocrlf() {
         stored.stdout, b"line1\nline2_mod\n",
         "ApplyStageBuffer must normalize CRLF via git hash-object --path when core.autocrlf=true"
     );
+}
+
+#[tokio::test]
+async fn diff_whitespace_modes_and_binary_metadata_work_for_commit_and_stage() {
+    let tmp = TempDir::new().unwrap();
+    let dir = tmp.path();
+    git(dir, &["init", "-b", "main"]);
+
+    fs::write(dir.join("indent.rs"), "fn main() {\n  let x = 1;\n}\n").unwrap();
+    let mut bin_v1 = vec![0u8; 12_698];
+    bin_v1[0..4].copy_from_slice(&[0x89, b'P', b'N', b'G']);
+    fs::write(dir.join("blob.bin"), &bin_v1).unwrap();
+    git(dir, &["add", "."]);
+    git(dir, &["commit", "-m", "initial"]);
+
+    // Commit 2: pure indentation/trailing-space change in indent.rs + resized binary blob.bin
+    fs::write(dir.join("indent.rs"), "fn main() {\n    let   x = 1;   \n}\n").unwrap();
+    let mut bin_v2 = vec![0xABu8; 15_155];
+    bin_v2[0..4].copy_from_slice(&[0x89, b'P', b'N', b'G']);
+    bin_v2[10] = 0x00;
+    fs::write(dir.join("blob.bin"), &bin_v2).unwrap();
+    git(dir, &["add", "."]);
+    git(dir, &["commit", "-m", "ws and binary"]);
+    let head_oid = rev(dir, "HEAD");
+
+    // Unstaged working tree changes: spaces removed inside `x=1` + resized binary blob
+    fs::write(dir.join("indent.rs"), "fn main() {\n    let x=1;\n}\n").unwrap();
+    let mut bin_v3 = vec![0xCDu8; 20_480];
+    bin_v3[0..4].copy_from_slice(&[0x89, b'P', b'N', b'G']);
+    bin_v3[10] = 0x00;
+    fs::write(dir.join("blob.bin"), &bin_v3).unwrap();
+
+    let loc = RepoLocation::discover(dir).unwrap();
+    let (handle, mut rx) = EngineSupervisor::start(loc, false).unwrap();
+
+    // 1. Commit FileDiff with Default vs IgnoreChange (-b)
+    let diff_default = fetch_file_diff(
+        &handle,
+        &mut rx,
+        RequestSlotId::LogFileDiff,
+        FileDiffKey {
+            details: DetailsKey::single(head_oid),
+            path: "indent.rs".into(),
+            old_path: None,
+            context: DiffContext::Three,
+            whitespace: jbgit_core::WhitespaceMode::Default,
+        },
+        None,
+    )
+    .await;
+    assert!(!diff_default.hunks.is_empty());
+
+    let diff_ignore_change = fetch_file_diff(
+        &handle,
+        &mut rx,
+        RequestSlotId::LogFileDiff,
+        FileDiffKey {
+            details: DetailsKey::single(head_oid),
+            path: "indent.rs".into(),
+            old_path: None,
+            context: DiffContext::Three,
+            whitespace: jbgit_core::WhitespaceMode::IgnoreChange,
+        },
+        None,
+    )
+    .await;
+    assert!(
+        diff_ignore_change.hunks.is_empty(),
+        "pure space-count & trailing-space commit diff should be empty under -b"
+    );
+
+    // 2. Commit binary FileDiff populates old/new sizes and OIDs
+    let bin_diff = fetch_file_diff(
+        &handle,
+        &mut rx,
+        RequestSlotId::LogFileDiff,
+        FileDiffKey {
+            details: DetailsKey::single(head_oid),
+            path: "blob.bin".into(),
+            old_path: None,
+            context: DiffContext::Three,
+            whitespace: jbgit_core::WhitespaceMode::Default,
+        },
+        None,
+    )
+    .await;
+    assert!(bin_diff.is_binary);
+    let info = bin_diff.binary.as_ref().expect("binary metadata");
+    assert_eq!(info.old_size, Some(12_698));
+    assert_eq!(info.new_size, Some(15_155));
+    assert!(info.old_oid.is_some());
+    assert!(info.new_oid.is_some());
+    assert_ne!(info.old_oid, info.new_oid);
+    assert_eq!(info.size_summary("(none)"), "12.4 KiB → 14.8 KiB (+2.4 KiB)");
+
+    // 3. Stage Diff with IgnoreChange vs IgnoreAll (-w) on `let   x = 1;` vs `let x=1;`
+    let stage_ws_b = fetch_stage_diff(
+        &handle,
+        &mut rx,
+        StageDiffKey {
+            path: "indent.rs".into(),
+            old_path: None,
+            side: StageDiffSide::Unstaged,
+            context: DiffContext::Three,
+            whitespace: jbgit_core::WhitespaceMode::IgnoreChange,
+        },
+    )
+    .await;
+    assert!(!stage_ws_b.hunks.is_empty());
+
+    let stage_ws_w = fetch_stage_diff(
+        &handle,
+        &mut rx,
+        StageDiffKey {
+            path: "indent.rs".into(),
+            old_path: None,
+            side: StageDiffSide::Unstaged,
+            context: DiffContext::Three,
+            whitespace: jbgit_core::WhitespaceMode::IgnoreAll,
+        },
+    )
+    .await;
+    assert!(
+        stage_ws_w.hunks.is_empty(),
+        "removing spaces around `=` should vanish under -w"
+    );
+
+    // 4. Stage binary diff populates old/new sizes and hashes worktree blob OID
+    let stage_bin = fetch_stage_diff(
+        &handle,
+        &mut rx,
+        StageDiffKey {
+            path: "blob.bin".into(),
+            old_path: None,
+            side: StageDiffSide::Unstaged,
+            context: DiffContext::Three,
+            whitespace: jbgit_core::WhitespaceMode::Default,
+        },
+    )
+    .await;
+    assert!(stage_bin.is_binary);
+    let stage_bin_info = stage_bin.binary.as_ref().expect("stage binary metadata");
+    assert_eq!(stage_bin_info.old_size, Some(15_155));
+    assert_eq!(stage_bin_info.new_size, Some(20_480));
+    assert!(stage_bin_info.old_oid.is_some());
+    assert!(stage_bin_info.new_oid.is_some());
+    assert_ne!(stage_bin_info.old_oid, stage_bin_info.new_oid);
 }

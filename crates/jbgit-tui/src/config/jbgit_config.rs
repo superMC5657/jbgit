@@ -484,6 +484,53 @@ pub struct GraphSection {
     pub compact_refs: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum WhitespaceModePref {
+    #[default]
+    Default,
+    IgnoreChange,
+    IgnoreAll,
+}
+
+impl WhitespaceModePref {
+    pub fn parse(s: &str) -> Option<Self> {
+        jbgit_core::WhitespaceMode::parse(s).map(Self::from_core)
+    }
+
+    pub const fn from_core(mode: jbgit_core::WhitespaceMode) -> Self {
+        match mode {
+            jbgit_core::WhitespaceMode::Default => Self::Default,
+            jbgit_core::WhitespaceMode::IgnoreChange => Self::IgnoreChange,
+            jbgit_core::WhitespaceMode::IgnoreAll => Self::IgnoreAll,
+        }
+    }
+
+    pub const fn to_core(self) -> jbgit_core::WhitespaceMode {
+        match self {
+            Self::Default => jbgit_core::WhitespaceMode::Default,
+            Self::IgnoreChange => jbgit_core::WhitespaceMode::IgnoreChange,
+            Self::IgnoreAll => jbgit_core::WhitespaceMode::IgnoreAll,
+        }
+    }
+
+    pub const fn as_str(self) -> &'static str {
+        self.to_core().as_str()
+    }
+}
+
+impl Serialize for WhitespaceModePref {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for WhitespaceModePref {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let s = String::deserialize(deserializer)?;
+        Ok(Self::parse(&s).unwrap_or_default())
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct DiffSection {
     #[serde(default = "default_true")]
@@ -492,6 +539,10 @@ pub struct DiffSection {
     pub tab_size: usize,
     #[serde(default = "default_context_lines")]
     pub context_lines: usize,
+    #[serde(default)]
+    pub whitespace: WhitespaceModePref,
+    #[serde(default)]
+    pub soft_wrap: bool,
 }
 
 fn default_true() -> bool {
@@ -512,6 +563,8 @@ impl Default for DiffSection {
             syntax_highlight: true,
             tab_size: 4,
             context_lines: 3,
+            whitespace: WhitespaceModePref::Default,
+            soft_wrap: false,
         }
     }
 }
@@ -782,6 +835,12 @@ impl JbgitConfig {
             if let Some(cl) = df.context_lines {
                 self.diff.context_lines = cl;
             }
+            if let Some(ws) = df.whitespace {
+                self.diff.whitespace = ws;
+            }
+            if let Some(sw) = df.soft_wrap {
+                self.diff.soft_wrap = sw;
+            }
         }
         if let Some(ann) = &overlay.annotate {
             if let Some(iw) = ann.ignore_whitespace {
@@ -948,6 +1007,8 @@ pub struct DiffSectionOverlay {
     pub syntax_highlight: Option<bool>,
     pub tab_size: Option<usize>,
     pub context_lines: Option<usize>,
+    pub whitespace: Option<WhitespaceModePref>,
+    pub soft_wrap: Option<bool>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

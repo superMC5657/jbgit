@@ -703,6 +703,7 @@ fn file_history_modal_end_to_end_renames_compare_navigation_and_scroll() {
         path: "mid_name.rs".into(),
         old_path: Some("old_name.rs".into()),
         context: DiffContext::Three,
+        whitespace: jbgit_core::WhitespaceMode::Default,
     };
     let reqs = ts.take_requests();
     assert!(reqs.iter().any(|(r, _)| matches!(
@@ -739,6 +740,7 @@ fn file_history_modal_end_to_end_renames_compare_navigation_and_scroll() {
             },
         ],
         is_binary: false,
+        binary: None,
         is_truncated: false,
         is_too_large: false,
         lfs: None,

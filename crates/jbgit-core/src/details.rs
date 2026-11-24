@@ -2,6 +2,7 @@
 //! right-hand Log panes (`CommitDetailsPanel`, `VcsLogChangesBrowser`,
 //! `FrameDiffPreview`).
 
+use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
@@ -546,6 +547,163 @@ impl DiffContext {
     }
 }
 
+/// Whitespace comparison policy for diff computation (`git diff` / `-b` / `-w`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub enum WhitespaceMode {
+    /// Compare lines byte-for-byte.
+    #[default]
+    Default,
+    /// Ignore changes in amount of horizontal whitespace and trailing whitespace (`-b`).
+    IgnoreChange,
+    /// Ignore all horizontal whitespace (`-w`).
+    IgnoreAll,
+}
+
+impl WhitespaceMode {
+    pub const fn next(self) -> Self {
+        match self {
+            Self::Default => Self::IgnoreChange,
+            Self::IgnoreChange => Self::IgnoreAll,
+            Self::IgnoreAll => Self::Default,
+        }
+    }
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Default => "default",
+            Self::IgnoreChange => "ignore-change",
+            Self::IgnoreAll => "ignore-all",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "default" | "none" | "exact" => Some(Self::Default),
+            "ignore-change" | "ignore_change" | "change" | "-b" | "b" => Some(Self::IgnoreChange),
+            "ignore-all" | "ignore_all" | "all" | "-w" | "w" => Some(Self::IgnoreAll),
+            _ => None,
+        }
+    }
+
+    pub const fn short_flag(self) -> &'static str {
+        match self {
+            Self::Default => "",
+            Self::IgnoreChange => "-b",
+            Self::IgnoreAll => "-w",
+        }
+    }
+
+    /// Normalizes a single line (with or without trailing `\r`/`\n`) for diff comparison
+    /// while leaving display text untouched.
+    pub fn normalize_line<'a>(self, line: &'a [u8]) -> Cow<'a, [u8]> {
+        let is_hws = |b: u8| matches!(b, b' ' | b'\t' | b'\r');
+        match self {
+            Self::Default => Cow::Borrowed(line),
+            Self::IgnoreChange => {
+                let mut end = line.len();
+                while end > 0 && matches!(line[end - 1], b' ' | b'\t' | b'\r' | b'\n') {
+                    end -= 1;
+                }
+                let trimmed = &line[..end];
+                let mut out = Vec::with_capacity(trimmed.len());
+                let mut in_ws = false;
+                for &b in trimmed {
+                    if is_hws(b) {
+                        if !in_ws {
+                            out.push(b' ');
+                            in_ws = true;
+                        }
+                    } else {
+                        out.push(b);
+                        in_ws = false;
+                    }
+                }
+                Cow::Owned(out)
+            }
+            Self::IgnoreAll => {
+                let mut end = line.len();
+                while end > 0 && matches!(line[end - 1], b'\r' | b'\n') {
+                    end -= 1;
+                }
+                let mut out = Vec::with_capacity(end);
+                for &b in &line[..end] {
+                    if !is_hws(b) {
+                        out.push(b);
+                    }
+                }
+                Cow::Owned(out)
+            }
+        }
+    }
+}
+
+/// Formats a byte count into a concise human-readable unit (`B` / `KiB` / `MiB` / `GiB`).
+pub fn format_byte_size(bytes: u64) -> String {
+    const KIB: f64 = 1024.0;
+    const MIB: f64 = 1024.0 * 1024.0;
+    const GIB: f64 = 1024.0 * 1024.0 * 1024.0;
+    let b = bytes as f64;
+    if bytes < 1024 {
+        format!("{bytes} B")
+    } else if bytes < 1024 * 1024 {
+        format!("{:.1} KiB", b / KIB)
+    } else if bytes < 1024 * 1024 * 1024 {
+        format!("{:.1} MiB", b / MIB)
+    } else {
+        format!("{:.2} GiB", b / GIB)
+    }
+}
+
+/// Formats a signed byte size delta (`+2.4 KiB`, `-512 B`, `±0 B`).
+pub fn format_signed_byte_delta(delta: i128) -> String {
+    if delta == 0 {
+        return "±0 B".to_string();
+    }
+    let sign = if delta > 0 { '+' } else { '-' };
+    format!("{sign}{}", format_byte_size(delta.unsigned_abs() as u64))
+}
+
+/// Binary file metadata surfaced in Diff panels instead of a static placeholder.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BinaryDiffInfo {
+    pub old_size: Option<u64>,
+    pub new_size: Option<u64>,
+    pub old_oid: Option<Oid>,
+    pub new_oid: Option<Oid>,
+}
+
+impl BinaryDiffInfo {
+    /// Formats `12.4 KiB → 14.8 KiB (+2.4 KiB)` (using `missing_label` when a side is absent).
+    pub fn size_summary(&self, missing_label: &str) -> String {
+        match (self.old_size, self.new_size) {
+            (Some(old), Some(new)) => {
+                let delta = i128::from(new) - i128::from(old);
+                format!(
+                    "{} → {} ({})",
+                    format_byte_size(old),
+                    format_byte_size(new),
+                    format_signed_byte_delta(delta)
+                )
+            }
+            (None, Some(new)) => {
+                format!(
+                    "{missing_label} → {} (+{})",
+                    format_byte_size(new),
+                    format_byte_size(new)
+                )
+            }
+            (Some(old), None) => {
+                format!(
+                    "{} → {missing_label} (-{})",
+                    format_byte_size(old),
+                    format_byte_size(old)
+                )
+            }
+            (None, None) => format!("{missing_label} → {missing_label}"),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DiffLineKind {
     Context,
@@ -634,6 +792,7 @@ pub struct FileDiffKey {
     pub path: String,
     pub old_path: Option<String>,
     pub context: DiffContext,
+    pub whitespace: WhitespaceMode,
 }
 
 /// Hard ceiling (4 MiB) on single-file diff preview / three-doc tracker loading.
@@ -734,6 +893,8 @@ pub struct FileDiff {
     pub key: FileDiffKey,
     pub hunks: Vec<DiffHunk>,
     pub is_binary: bool,
+    /// Binary file byte sizes and blob OIDs when `is_binary == true`.
+    pub binary: Option<BinaryDiffInfo>,
     /// Diff exceeded the line budget and was truncated.
     pub is_truncated: bool,
     /// Either side exceeded [`MAX_DIFF_FILE_BYTES`] and full diffing was skipped.
@@ -757,7 +918,158 @@ pub struct SideBySideRow {
     pub right: Option<usize>,
 }
 
-/// Aligns deletions with following additions; context lines appear on both sides.
+const SIMILARITY_PAIR_CELL_LIMIT: usize = 2048;
+const SIMILARITY_MIN_SCORE: u32 = 300;
+const SIMILARITY_MAX_CHARS: usize = 512;
+
+fn sorted_char_bigrams(trimmed: &str) -> Vec<(char, char)> {
+    let mut iter = trimmed.chars().take(SIMILARITY_MAX_CHARS);
+    let Some(mut prev) = iter.next() else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for ch in iter {
+        out.push((prev, ch));
+        prev = ch;
+    }
+    out.sort_unstable();
+    out
+}
+
+/// Dice-coefficient bigram similarity in `0..=1000` on trimmed lines.
+fn line_similarity_score(
+    old_trimmed: &str,
+    old_bigrams: &[(char, char)],
+    new_trimmed: &str,
+    new_bigrams: &[(char, char)],
+) -> u32 {
+    if old_trimmed.is_empty() || new_trimmed.is_empty() {
+        return 0;
+    }
+    if old_trimmed == new_trimmed {
+        return 1000;
+    }
+    if old_bigrams.is_empty() || new_bigrams.is_empty() {
+        return 0;
+    }
+    let mut i = 0usize;
+    let mut j = 0usize;
+    let mut common = 0usize;
+    while i < old_bigrams.len() && j < new_bigrams.len() {
+        match old_bigrams[i].cmp(&new_bigrams[j]) {
+            std::cmp::Ordering::Equal => {
+                common += 1;
+                i += 1;
+                j += 1;
+            }
+            std::cmp::Ordering::Less => i += 1,
+            std::cmp::Ordering::Greater => j += 1,
+        }
+    }
+    let denom = old_bigrams.len() + new_bigrams.len();
+    ((common * 2000) / denom) as u32
+}
+
+/// Pairs a contiguous deletion run `del_start..del_end` with the following
+/// addition run `add_start..add_end` using order-preserving greedy similarity matching.
+fn pair_change_block(
+    lines: &[DiffLine],
+    del_start: usize,
+    del_end: usize,
+    add_start: usize,
+    add_end: usize,
+    out: &mut Vec<SideBySideRow>,
+) {
+    let dels = del_end - del_start;
+    let adds = add_end - add_start;
+    if dels == 0 || adds == 0 || (dels == 1 && adds == 1) || dels.saturating_mul(adds) > SIMILARITY_PAIR_CELL_LIMIT {
+        for k in 0..dels.max(adds) {
+            out.push(SideBySideRow {
+                left: (k < dels).then_some(del_start + k),
+                right: (k < adds).then_some(add_start + k),
+            });
+        }
+        return;
+    }
+
+    let del_trimmed: Vec<&str> = (del_start..del_end)
+        .map(|idx| lines[idx].text.trim())
+        .collect();
+    let add_trimmed: Vec<&str> = (add_start..add_end)
+        .map(|idx| lines[idx].text.trim())
+        .collect();
+    let del_bigrams: Vec<Vec<(char, char)>> = del_trimmed
+        .iter()
+        .map(|s| sorted_char_bigrams(s))
+        .collect();
+    let add_bigrams: Vec<Vec<(char, char)>> = add_trimmed
+        .iter()
+        .map(|s| sorted_char_bigrams(s))
+        .collect();
+
+    let mut candidates: Vec<(u32, usize, usize)> = Vec::new();
+    for di in 0..dels {
+        for ai in 0..adds {
+            let score = line_similarity_score(
+                del_trimmed[di],
+                &del_bigrams[di],
+                add_trimmed[ai],
+                &add_bigrams[ai],
+            );
+            if score >= SIMILARITY_MIN_SCORE {
+                candidates.push((score, di, ai));
+            }
+        }
+    }
+    candidates.sort_unstable_by(|a, b| {
+        b.0.cmp(&a.0)
+            .then_with(|| a.1.abs_diff(a.2).cmp(&b.1.abs_diff(b.2)))
+            .then_with(|| a.1.cmp(&b.1))
+            .then_with(|| a.2.cmp(&b.2))
+    });
+
+    let mut used_d = vec![false; dels];
+    let mut used_a = vec![false; adds];
+    let mut anchors: Vec<(usize, usize)> = Vec::new();
+    for (_, di, ai) in candidates {
+        if used_d[di] || used_a[ai] {
+            continue;
+        }
+        if anchors.iter().all(|&(pd, pa)| (di < pd) == (ai < pa)) {
+            used_d[di] = true;
+            used_a[ai] = true;
+            anchors.push((di, ai));
+        }
+    }
+    anchors.sort_unstable_by_key(|&(di, _)| di);
+
+    let emit_gap = |out: &mut Vec<SideBySideRow>, d_lo: usize, d_hi: usize, a_lo: usize, a_hi: usize| {
+        let dg = d_hi - d_lo;
+        let ag = a_hi - a_lo;
+        for k in 0..dg.max(ag) {
+            out.push(SideBySideRow {
+                left: (k < dg).then_some(del_start + d_lo + k),
+                right: (k < ag).then_some(add_start + a_lo + k),
+            });
+        }
+    };
+
+    let mut prev_d = 0usize;
+    let mut prev_a = 0usize;
+    for (di, ai) in anchors {
+        emit_gap(out, prev_d, di, prev_a, ai);
+        out.push(SideBySideRow {
+            left: Some(del_start + di),
+            right: Some(add_start + ai),
+        });
+        prev_d = di + 1;
+        prev_a = ai + 1;
+    }
+    emit_gap(out, prev_d, dels, prev_a, adds);
+}
+
+/// Aligns deletions with following additions using order-preserving greedy
+/// similarity pairing; context lines appear on both sides.
 pub fn side_by_side_rows(hunk: &DiffHunk) -> Vec<SideBySideRow> {
     let mut rows = Vec::with_capacity(hunk.lines.len());
     let lines = &hunk.lines;
@@ -772,38 +1084,103 @@ pub fn side_by_side_rows(hunk: &DiffHunk) -> Vec<SideBySideRow> {
                 i += 1;
             }
             DiffLineKind::Deleted | DiffLineKind::Added => {
-                let mut lefts = Vec::new();
+                let del_start = i;
                 while i < lines.len() && lines[i].kind == DiffLineKind::Deleted {
-                    lefts.push(i);
                     i += 1;
                 }
-                if !lefts.is_empty() && i < lines.len() && lines[i].kind == DiffLineKind::NoNewline
-                {
-                    lefts.push(i);
-                    i += 1;
-                }
-                let mut rights = Vec::new();
-                while i < lines.len() && lines[i].kind == DiffLineKind::Added {
-                    rights.push(i);
-                    i += 1;
-                }
-                if !rights.is_empty()
+                let del_end = i;
+                let left_no_nl = if del_end > del_start
                     && i < lines.len()
                     && lines[i].kind == DiffLineKind::NoNewline
                 {
-                    rights.push(i);
+                    let idx = i;
+                    i += 1;
+                    Some(idx)
+                } else {
+                    None
+                };
+                let add_start = i;
+                while i < lines.len() && lines[i].kind == DiffLineKind::Added {
                     i += 1;
                 }
-                for k in 0..lefts.len().max(rights.len()) {
+                let add_end = i;
+                let right_no_nl = if add_end > add_start
+                    && i < lines.len()
+                    && lines[i].kind == DiffLineKind::NoNewline
+                {
+                    let idx = i;
+                    i += 1;
+                    Some(idx)
+                } else {
+                    None
+                };
+                pair_change_block(lines, del_start, del_end, add_start, add_end, &mut rows);
+                if left_no_nl.is_some() || right_no_nl.is_some() {
                     rows.push(SideBySideRow {
-                        left: lefts.get(k).copied(),
-                        right: rights.get(k).copied(),
+                        left: left_no_nl,
+                        right: right_no_nl,
                     });
                 }
             }
         }
     }
     rows
+}
+
+/// Finds the paired `(deleted_idx, added_idx)` for `line_idx` within a hunk's
+/// lines, using the exact same similarity pairing as [`side_by_side_rows`].
+pub fn paired_line_in_hunk(lines: &[DiffLine], line_idx: usize) -> Option<(usize, usize)> {
+    let line = lines.get(line_idx)?;
+    let (del_start, del_end, add_start, add_end) = match line.kind {
+        DiffLineKind::Deleted => {
+            let mut ds = line_idx;
+            while ds > 0 && lines[ds - 1].kind == DiffLineKind::Deleted {
+                ds -= 1;
+            }
+            let mut de = line_idx + 1;
+            while de < lines.len() && lines[de].kind == DiffLineKind::Deleted {
+                de += 1;
+            }
+            let mut as_ = de;
+            if as_ < lines.len() && lines[as_].kind == DiffLineKind::NoNewline {
+                as_ += 1;
+            }
+            let mut ae = as_;
+            while ae < lines.len() && lines[ae].kind == DiffLineKind::Added {
+                ae += 1;
+            }
+            (ds, de, as_, ae)
+        }
+        DiffLineKind::Added => {
+            let mut as_ = line_idx;
+            while as_ > 0 && lines[as_ - 1].kind == DiffLineKind::Added {
+                as_ -= 1;
+            }
+            let mut de = as_;
+            if de > 0 && lines[de - 1].kind == DiffLineKind::NoNewline {
+                de -= 1;
+            }
+            let mut ds = de;
+            while ds > 0 && lines[ds - 1].kind == DiffLineKind::Deleted {
+                ds -= 1;
+            }
+            let mut ae = line_idx + 1;
+            while ae < lines.len() && lines[ae].kind == DiffLineKind::Added {
+                ae += 1;
+            }
+            (ds, de, as_, ae)
+        }
+        DiffLineKind::Context | DiffLineKind::NoNewline => return None,
+    };
+    if del_start == del_end || add_start == add_end {
+        return None;
+    }
+    let mut rows = Vec::with_capacity((del_end - del_start).max(add_end - add_start));
+    pair_change_block(lines, del_start, del_end, add_start, add_end, &mut rows);
+    rows.into_iter().find_map(|r| match (r.left, r.right) {
+        (Some(l), Some(r)) if l == line_idx || r == line_idx => Some((l, r)),
+        _ => None,
+    })
 }
 
 /// Fills `word_ranges` on paired deleted/added lines (`ByWord` highlighting).
@@ -1545,5 +1922,111 @@ diff --cc src/lib.rs
                 },
             ]
         );
+    }
+
+    #[test]
+    fn whitespace_mode_normalization_and_cycle() {
+        assert_eq!(WhitespaceMode::Default.next(), WhitespaceMode::IgnoreChange);
+        assert_eq!(WhitespaceMode::IgnoreChange.next(), WhitespaceMode::IgnoreAll);
+        assert_eq!(WhitespaceMode::IgnoreAll.next(), WhitespaceMode::Default);
+
+        assert_eq!(WhitespaceMode::parse("default"), Some(WhitespaceMode::Default));
+        assert_eq!(WhitespaceMode::parse("-b"), Some(WhitespaceMode::IgnoreChange));
+        assert_eq!(WhitespaceMode::parse("ignore_change"), Some(WhitespaceMode::IgnoreChange));
+        assert_eq!(WhitespaceMode::parse("-w"), Some(WhitespaceMode::IgnoreAll));
+        assert_eq!(WhitespaceMode::parse("ignore_all"), Some(WhitespaceMode::IgnoreAll));
+
+        // IgnoreChange (-b): collapses horizontal runs & strips trailing whitespace,
+        // while keeping word separation distinct from no-space concatenation.
+        assert_eq!(
+            WhitespaceMode::IgnoreChange.normalize_line(b"  let   x  =  1;   \r\n"),
+            WhitespaceMode::IgnoreChange.normalize_line(b"\tlet x = 1;\n")
+        );
+        assert_ne!(
+            WhitespaceMode::IgnoreChange.normalize_line(b"let x=1;\n"),
+            WhitespaceMode::IgnoreChange.normalize_line(b"let x = 1;\n")
+        );
+
+        // IgnoreAll (-w): strips all horizontal whitespace.
+        assert_eq!(
+            WhitespaceMode::IgnoreAll.normalize_line(b"    let x = 1;  \r\n"),
+            WhitespaceMode::IgnoreAll.normalize_line(b"letx=1;\n")
+        );
+    }
+
+    #[test]
+    fn greedy_similarity_pairing_aligns_modified_line_past_inserted_lines() {
+        let mk = |kind, text: &str| DiffLine {
+            kind,
+            old_lineno: (kind != DiffLineKind::Added).then_some(1),
+            new_lineno: (kind != DiffLineKind::Deleted).then_some(1),
+            text: text.into(),
+            word_ranges: Vec::new(),
+        };
+        // Deleted block has 1 line; Added block inserts a comment line BEFORE the modified line.
+        let mut hunk = DiffHunk {
+            header: "@@ -1,1 +1,2 @@".into(),
+            lines: vec![
+                mk(DiffLineKind::Deleted, "let result = compute_total(old_value, count);"),
+                mk(DiffLineKind::Added, "// newly inserted explanatory comment"),
+                mk(DiffLineKind::Added, "let result = compute_total(new_value, count);"),
+            ],
+        };
+
+        let sbs = side_by_side_rows(&hunk);
+        assert_eq!(
+            sbs,
+            vec![
+                SideBySideRow {
+                    left: None,
+                    right: Some(1)
+                },
+                SideBySideRow {
+                    left: Some(0),
+                    right: Some(2)
+                },
+            ]
+        );
+        assert_eq!(paired_line_in_hunk(&hunk.lines, 0), Some((0, 2)));
+        assert_eq!(paired_line_in_hunk(&hunk.lines, 1), None);
+        assert_eq!(paired_line_in_hunk(&hunk.lines, 2), Some((0, 2)));
+
+        apply_word_diff(&mut hunk);
+        assert!(hunk.lines[1].word_ranges.is_empty());
+        assert_eq!(
+            &hunk.lines[0].text[hunk.lines[0].word_ranges[0].0..hunk.lines[0].word_ranges[0].1],
+            "old_value"
+        );
+        assert_eq!(
+            &hunk.lines[2].text[hunk.lines[2].word_ranges[0].0..hunk.lines[2].word_ranges[0].1],
+            "new_value"
+        );
+    }
+
+    #[test]
+    fn binary_diff_info_formats_size_delta_and_sides() {
+        let modified = BinaryDiffInfo {
+            old_size: Some(12_698),
+            new_size: Some(15_155),
+            old_oid: Some(Oid::from_bytes([0x11; 20])),
+            new_oid: Some(Oid::from_bytes([0x22; 20])),
+        };
+        assert_eq!(modified.size_summary("(none)"), "12.4 KiB → 14.8 KiB (+2.4 KiB)");
+
+        let added = BinaryDiffInfo {
+            old_size: None,
+            new_size: Some(2048),
+            old_oid: None,
+            new_oid: Some(Oid::from_bytes([0x33; 20])),
+        };
+        assert_eq!(added.size_summary("(none)"), "(none) → 2.0 KiB (+2.0 KiB)");
+
+        let deleted = BinaryDiffInfo {
+            old_size: Some(512),
+            new_size: None,
+            old_oid: Some(Oid::from_bytes([0x44; 20])),
+            new_oid: None,
+        };
+        assert_eq!(deleted.size_summary("(none)"), "512 B → (none) (-512 B)");
     }
 }

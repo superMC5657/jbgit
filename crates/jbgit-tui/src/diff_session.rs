@@ -5,23 +5,25 @@
 //! deep implementation instead of cloning LRU caches or duplicating tree/diff
 //! state machines per workbench.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use jbgit_core::{
     ChangeRowKind, ChangeTreeRow, CommitChangesBundle, CommitSignature, DetailsKey, DiffContext,
     DiffHunk, FileChange, FileDiff, FileDiffKey, LruCache, Oid, PathFilter, StageDiffHunk,
-    build_change_rows_filtered, side_by_side_rows,
+    WhitespaceMode, build_change_rows_filtered, side_by_side_rows,
 };
 use rustc_hash::FxHashSet;
 
 use crate::app::ScrollViewport;
-use crate::syntax::{HighlightedDiff, LazyWordDiffCache};
+use crate::syntax::{HighlightedDiff, LazyWordDiffCache, wrapped_line_row_count};
 
 pub const DETAILS_CACHE_CAPACITY: usize = 256;
 pub const DIFF_CACHE_CAPACITY: usize = 64;
 pub const SIGNATURES_CACHE_CAPACITY: usize = 1024;
+pub const DIFF_HORIZ_SCROLL_STEP: isize = 4;
+pub const DIFF_HORIZ_SCROLL_MAX: u16 = 4096;
 
 /// Single global LRU store shared by Log, Stash, and File History so any
 /// commit details, file diff, or syntax highlight loaded in one view is
@@ -377,6 +379,7 @@ impl ChangesTreeSession {
         &self,
         store: &DiffCacheStore,
         context: DiffContext,
+        whitespace: WhitespaceMode,
     ) -> Option<FileDiffKey> {
         let details = self.current_key.clone()?;
         let change = self.selected_change(store)?;
@@ -385,6 +388,7 @@ impl ChangesTreeSession {
             path: change.path.clone(),
             old_path: change.old_path.clone(),
             context,
+            whitespace,
         })
     }
 
@@ -497,18 +501,288 @@ impl ChangesTreeSession {
     }
 }
 
+/// Case-insensitive non-overlapping substring search returning valid UTF-8 byte ranges in `haystack`.
+pub fn find_case_insensitive_ranges(haystack: &str, query: &str) -> Vec<(usize, usize)> {
+    if query.is_empty() || haystack.is_empty() {
+        return Vec::new();
+    }
+    if haystack.is_ascii() && query.is_ascii() {
+        let h = haystack.as_bytes();
+        let q: Vec<u8> = query.bytes().map(|b| b.to_ascii_lowercase()).collect();
+        let qlen = q.len();
+        let mut out = Vec::new();
+        let mut i = 0usize;
+        while i + qlen <= h.len() {
+            if h[i..i + qlen]
+                .iter()
+                .zip(q.iter())
+                .all(|(&a, &b)| a.to_ascii_lowercase() == b)
+            {
+                out.push((i, i + qlen));
+                i += qlen;
+            } else {
+                i += 1;
+            }
+        }
+        return out;
+    }
+
+    let q_chars: Vec<char> = query.chars().flat_map(char::to_lowercase).collect();
+    if q_chars.is_empty() {
+        return Vec::new();
+    }
+    let mut lowered: Vec<(char, usize, usize)> = Vec::with_capacity(haystack.len());
+    for (start, ch) in haystack.char_indices() {
+        let end = start + ch.len_utf8();
+        for lc in ch.to_lowercase() {
+            lowered.push((lc, start, end));
+        }
+    }
+    let qlen = q_chars.len();
+    let mut out = Vec::new();
+    let mut i = 0usize;
+    while i + qlen <= lowered.len() {
+        if lowered[i..i + qlen]
+            .iter()
+            .zip(q_chars.iter())
+            .all(|(&(lc, _, _), &qc)| lc == qc)
+        {
+            let byte_start = lowered[i].1;
+            let byte_end = lowered[i + qlen - 1].2;
+            out.push((byte_start, byte_end));
+            i += qlen;
+        } else {
+            i += 1;
+        }
+    }
+    out
+}
+
+/// One inline search hit within a projected diff row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DiffSearchMatch {
+    /// Index into projected [`DiffRow`]s.
+    pub row_idx: usize,
+    /// `0` for Unified/Header or Split-left; `1` for Split-right.
+    pub side: u8,
+    /// Valid UTF-8 byte range `(start, end)` within the matched text.
+    pub byte_range: (usize, usize),
+}
+
+/// Reusable inline `/` diff search state shared across Log, Stage, File History,
+/// Stash, Annotate, and Push diff viewers.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DiffSearchState {
+    pub active: bool,
+    pub editing: bool,
+    pub query: String,
+    pub matches: Vec<DiffSearchMatch>,
+    pub current: usize,
+}
+
+/// `(all_match_ranges, active_match_range)` for one projected diff row side.
+pub type RowSearchRanges = (Vec<(usize, usize)>, Option<(usize, usize)>);
+
+impl DiffSearchState {
+    pub fn open(&mut self) {
+        self.active = true;
+        self.editing = true;
+        self.query.clear();
+        self.matches.clear();
+        self.current = 0;
+    }
+
+    pub fn close(&mut self) {
+        self.active = false;
+        self.editing = false;
+        self.query.clear();
+        self.matches.clear();
+        self.current = 0;
+    }
+
+    pub fn finish_editing(&mut self) {
+        if self.query.is_empty() {
+            self.close();
+        } else {
+            self.editing = false;
+        }
+    }
+
+    pub fn push_char(&mut self, c: char) {
+        self.query.push(c);
+    }
+
+    pub fn backspace(&mut self) {
+        self.query.pop();
+    }
+
+    pub fn clear_query(&mut self) {
+        self.query.clear();
+        self.matches.clear();
+        self.current = 0;
+    }
+
+    /// Recomputes all case-insensitive matches over `rows`, picking the first match
+    /// at or after `anchor_row` (wrapping to 0 if none follow).
+    pub fn recompute<'a>(
+        &mut self,
+        rows: &[DiffRow],
+        get_hunk: impl Fn(usize) -> &'a DiffHunk,
+        anchor_row: usize,
+    ) -> Option<usize> {
+        self.matches.clear();
+        self.current = 0;
+        if self.query.is_empty() {
+            return None;
+        }
+        for (row_idx, row) in rows.iter().enumerate() {
+            match *row {
+                DiffRow::Header(hh) => {
+                    for range in find_case_insensitive_ranges(&get_hunk(hh).header, &self.query) {
+                        self.matches.push(DiffSearchMatch {
+                            row_idx,
+                            side: 0,
+                            byte_range: range,
+                        });
+                    }
+                }
+                DiffRow::Unified(hh, l) => {
+                    let text = &get_hunk(hh).lines[l].text;
+                    for range in find_case_insensitive_ranges(text, &self.query) {
+                        self.matches.push(DiffSearchMatch {
+                            row_idx,
+                            side: 0,
+                            byte_range: range,
+                        });
+                    }
+                }
+                DiffRow::Split(hh, left, right) => {
+                    let hunk = get_hunk(hh);
+                    if let Some(li) = left {
+                        for range in find_case_insensitive_ranges(&hunk.lines[li].text, &self.query)
+                        {
+                            self.matches.push(DiffSearchMatch {
+                                row_idx,
+                                side: 0,
+                                byte_range: range,
+                            });
+                        }
+                    }
+                    if let Some(ri) = right {
+                        for range in find_case_insensitive_ranges(&hunk.lines[ri].text, &self.query)
+                        {
+                            self.matches.push(DiffSearchMatch {
+                                row_idx,
+                                side: 1,
+                                byte_range: range,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+        if self.matches.is_empty() {
+            return None;
+        }
+        self.current = self
+            .matches
+            .iter()
+            .position(|m| m.row_idx >= anchor_row)
+            .unwrap_or(0);
+        Some(self.matches[self.current].row_idx)
+    }
+
+    /// Steps to the next (`delta >= 0`) or previous (`delta < 0`) match, wrapping around.
+    pub fn step(&mut self, delta: isize) -> Option<usize> {
+        if self.matches.is_empty() {
+            return None;
+        }
+        let len = self.matches.len() as isize;
+        self.current = (self.current as isize + delta).rem_euclid(len) as usize;
+        Some(self.matches[self.current].row_idx)
+    }
+
+    pub fn current_match(&self) -> Option<&DiffSearchMatch> {
+        self.matches.get(self.current)
+    }
+
+    /// Returns `(all_ranges, active_range)` for a projected row and side (`0` or `1`).
+    pub fn ranges_for(&self, row_idx: usize, side: u8) -> RowSearchRanges {
+        if !self.active || self.matches.is_empty() {
+            return (Vec::new(), None);
+        }
+        let mut ranges = Vec::new();
+        let mut active = None;
+        for (idx, m) in self.matches.iter().enumerate() {
+            if m.row_idx == row_idx && m.side == side {
+                ranges.push(m.byte_range);
+                if idx == self.current {
+                    active = Some(m.byte_range);
+                }
+            }
+        }
+        (ranges, active)
+    }
+
+    /// Match counter badge (`[3/12]` or `[0/0]`).
+    pub fn count_badge(&self) -> String {
+        if self.matches.is_empty() {
+            "[0/0]".to_string()
+        } else {
+            format!("[{}/{}]", self.current + 1, self.matches.len())
+        }
+    }
+}
+
+/// Visual row height of one projected [`DiffRow`] under current soft-wrap settings.
+pub fn diff_row_visual_height<'a>(
+    row: DiffRow,
+    get_hunk: impl Fn(usize) -> &'a DiffHunk,
+    soft_wrap: bool,
+    unified_text_w: usize,
+    split_left_w: usize,
+    split_right_w: usize,
+    tab_size: usize,
+) -> usize {
+    if !soft_wrap {
+        return 1;
+    }
+    match row {
+        DiffRow::Header(_) => 1,
+        DiffRow::Unified(hh, l) => {
+            wrapped_line_row_count(&get_hunk(hh).lines[l].text, unified_text_w, tab_size)
+        }
+        DiffRow::Split(hh, left, right) => {
+            let hunk = get_hunk(hh);
+            let lh = left.map_or(1, |li| {
+                wrapped_line_row_count(&hunk.lines[li].text, split_left_w, tab_size)
+            });
+            let rh = right.map_or(1, |ri| {
+                wrapped_line_row_count(&hunk.lines[ri].text, split_right_w, tab_size)
+            });
+            lh.max(rh).max(1)
+        }
+    }
+}
+
 /// Shared diff viewer session (Unified/Split projection cache, lazy word-diff
-/// cache, context mode, hunk navigation, bounded scroll, and debounced fetch
-/// tracking) reused across `[2 Log]`, `[3 Stash]`, and `File History`.
+/// cache, context & whitespace mode, horizontal scroll, soft wrap, inline search,
+/// hunk navigation, bounded scroll, and debounced fetch tracking) reused across
+/// `[2 Log]`, `[3 Stash]`, `File History`, `Annotate`, and `Push`.
 #[derive(Debug)]
 pub struct DiffSession {
     pub side_by_side: bool,
     pub context: DiffContext,
+    pub whitespace: WhitespaceMode,
+    pub horiz_scroll: u16,
+    pub soft_wrap: bool,
+    pub search: DiffSearchState,
     pub zoomed: bool,
     pub scroll: ScrollViewport,
     pub pending: Option<(FileDiffKey, Instant)>,
     pub requested: Option<FileDiffKey>,
     pub rows_cache: FileDiffRowsCache,
+    last_wrap_widths: Cell<(usize, usize, usize)>,
 }
 
 impl Default for DiffSession {
@@ -519,26 +793,69 @@ impl Default for DiffSession {
 
 impl DiffSession {
     pub fn new(context: DiffContext) -> Self {
+        Self::from_prefs(context, WhitespaceMode::Default, false)
+    }
+
+    pub fn from_prefs(
+        context: DiffContext,
+        whitespace: WhitespaceMode,
+        soft_wrap: bool,
+    ) -> Self {
         Self {
             side_by_side: false,
             context,
+            whitespace,
+            horiz_scroll: 0,
+            soft_wrap,
+            search: DiffSearchState::default(),
             zoomed: false,
             scroll: ScrollViewport::new(),
             pending: None,
             requested: None,
             rows_cache: FileDiffRowsCache::default(),
+            last_wrap_widths: Cell::new((80, 36, 36)),
         }
+    }
+
+    pub fn record_wrap_widths(&self, unified_w: usize, split_left_w: usize, split_right_w: usize) {
+        self.last_wrap_widths
+            .set((unified_w.max(1), split_left_w.max(1), split_right_w.max(1)));
+    }
+
+    pub fn wrap_widths(&self) -> (usize, usize, usize) {
+        self.last_wrap_widths.get()
     }
 
     pub fn rows_for(&self, diff: &Arc<FileDiff>) -> Arc<[DiffRow]> {
         self.rows_cache.rows_for(diff, self.side_by_side)
     }
 
+    pub fn visual_row_offset_of(&self, diff: &Arc<FileDiff>, row_idx: usize, tab_size: usize) -> usize {
+        if !self.soft_wrap {
+            return row_idx;
+        }
+        let rows = self.rows_for(diff);
+        let (uw, slw, srw) = self.last_wrap_widths.get();
+        rows.iter()
+            .take(row_idx)
+            .map(|&r| diff_row_visual_height(r, |hh| &diff.hunks[hh], true, uw, slw, srw, tab_size))
+            .sum()
+    }
+
     pub fn total_rows(&self, diff: &Arc<FileDiff>) -> usize {
         if diff.is_too_large || diff.is_binary || diff.lfs.is_some() || diff.hunks.is_empty() {
             return 0;
         }
-        self.rows_for(diff).len() + usize::from(diff.is_truncated)
+        let rows = self.rows_for(diff);
+        let content_rows: usize = if self.soft_wrap {
+            let (uw, slw, srw) = self.last_wrap_widths.get();
+            rows.iter()
+                .map(|&r| diff_row_visual_height(r, |hh| &diff.hunks[hh], true, uw, slw, srw, 4))
+                .sum()
+        } else {
+            rows.len()
+        };
+        content_rows + usize::from(diff.is_truncated)
     }
 
     pub fn fallback_max_scroll(&self, diff: Option<&Arc<FileDiff>>) -> usize {
@@ -546,11 +863,24 @@ impl DiffSession {
     }
 
     pub fn hunk_header_offsets(&self, diff: &Arc<FileDiff>) -> Vec<usize> {
-        self.rows_for(diff)
-            .iter()
-            .enumerate()
-            .filter_map(|(idx, r)| matches!(r, DiffRow::Header(_)).then_some(idx))
-            .collect()
+        let rows = self.rows_for(diff);
+        if !self.soft_wrap {
+            return rows
+                .iter()
+                .enumerate()
+                .filter_map(|(idx, r)| matches!(r, DiffRow::Header(_)).then_some(idx))
+                .collect();
+        }
+        let (uw, slw, srw) = self.last_wrap_widths.get();
+        let mut vis = 0usize;
+        let mut out = Vec::new();
+        for &r in rows.iter() {
+            if matches!(r, DiffRow::Header(_)) {
+                out.push(vis);
+            }
+            vis += diff_row_visual_height(r, |hh| &diff.hunks[hh], true, uw, slw, srw, 4);
+        }
+        out
     }
 
     pub fn jump_hunk(&mut self, delta: isize, diff: Option<&Arc<FileDiff>>) {
@@ -581,6 +911,7 @@ impl DiffSession {
 
     pub fn toggle_side_by_side(&mut self) {
         self.side_by_side = !self.side_by_side;
+        self.horiz_scroll = 0;
         self.scroll.reset();
     }
 
@@ -588,6 +919,73 @@ impl DiffSession {
         self.context = self.context.next();
         self.scroll.reset();
         self.pending = None;
+    }
+
+    pub fn cycle_whitespace(&mut self) {
+        self.whitespace = self.whitespace.next();
+        self.scroll.reset();
+        self.pending = None;
+    }
+
+    pub fn toggle_soft_wrap(&mut self) {
+        self.soft_wrap = !self.soft_wrap;
+        if self.soft_wrap {
+            self.horiz_scroll = 0;
+        }
+        self.scroll.reset();
+    }
+
+    pub fn scroll_horiz(&mut self, delta: isize) {
+        if self.soft_wrap {
+            return;
+        }
+        let next = (self.horiz_scroll as isize + delta).clamp(0, DIFF_HORIZ_SCROLL_MAX as isize);
+        self.horiz_scroll = next as u16;
+    }
+
+    pub fn reset_view_offsets(&mut self) {
+        self.scroll.reset();
+        self.horiz_scroll = 0;
+        if self.search.active {
+            self.search.matches.clear();
+            self.search.current = 0;
+        }
+    }
+
+    /// Recomputes inline search matches against `diff` and centers `scroll` on the active hit.
+    pub fn refresh_search(&mut self, diff: Option<&Arc<FileDiff>>, tab_size: usize) {
+        let Some(diff) = diff else {
+            self.search.matches.clear();
+            self.search.current = 0;
+            return;
+        };
+        let rows = self.rows_for(diff);
+        let anchor = self.scroll.offset().min(rows.len());
+        if let Some(row_idx) = self.search.recompute(&rows, |hh| &diff.hunks[hh], anchor) {
+            self.center_on_row(row_idx, diff, tab_size);
+        }
+    }
+
+    /// Jumps to the next (`delta >= 0`) or previous (`delta < 0`) search hit and centers `scroll`.
+    pub fn jump_search(&mut self, delta: isize, diff: Option<&Arc<FileDiff>>, tab_size: usize) {
+        let Some(diff) = diff else {
+            return;
+        };
+        if self.search.active && self.search.matches.is_empty() && !self.search.query.is_empty() {
+            self.refresh_search(Some(diff), tab_size);
+            return;
+        }
+        if let Some(row_idx) = self.search.step(delta) {
+            self.center_on_row(row_idx, diff, tab_size);
+        }
+    }
+
+    /// Scrolls `self.scroll` so projected `row_idx` sits vertically centered in the viewport.
+    pub fn center_on_row(&mut self, row_idx: usize, diff: &Arc<FileDiff>, tab_size: usize) {
+        let vis_row = self.visual_row_offset_of(diff, row_idx, tab_size);
+        let vh = self.scroll.viewport_height().unwrap_or(20);
+        let target = vis_row.saturating_sub(vh / 2);
+        self.scroll.set_offset(target);
     }
 
     pub fn toggle_zoom(&mut self) {
@@ -661,6 +1059,7 @@ mod tests {
                 path: "src/lib.rs".into(),
                 old_path: None,
                 context: DiffContext::Three,
+                whitespace: WhitespaceMode::Default,
             },
             hunks: vec![
                 DiffHunk {
@@ -679,6 +1078,7 @@ mod tests {
                 },
             ],
             is_binary: false,
+            binary: None,
             is_truncated: false,
             is_too_large: false,
             lfs: None,
@@ -746,10 +1146,47 @@ mod tests {
         assert_eq!(tree.expand_state(&store), ChangesExpandState::AllCollapsed);
         assert!(tree.select_path("src/b.rs", &store));
         assert_eq!(tree.selected_change(&store).unwrap().path, "src/b.rs");
-        let fk = tree.desired_diff_key(&store, DiffContext::Three).unwrap();
+        let fk = tree
+            .desired_diff_key(&store, DiffContext::Three, WhitespaceMode::Default)
+            .unwrap();
         assert_eq!(
             store.known_oids_for(&fk),
             Some((None, Some(Oid::from_bytes([4; 20]))))
         );
+    }
+
+    #[test]
+    fn diff_search_finds_case_insensitive_matches_and_centers_scroll() {
+        assert_eq!(
+            find_case_insensitive_ranges("Alpha alpha ALPHA", "alpha"),
+            vec![(0, 5), (6, 11), (12, 17)]
+        );
+        assert_eq!(
+            find_case_insensitive_ranges("你好Foo世界foo", "FOO"),
+            vec![(6, 9), (15, 18)]
+        );
+
+        let diff = sample_diff();
+        let mut session = DiffSession::new(DiffContext::Three);
+        session.scroll.bind_bound(2, 5);
+        session.search.open();
+        session.search.query = "LET".into();
+        session.refresh_search(Some(&diff), 4);
+        assert_eq!(session.search.matches.len(), 4);
+        assert_eq!(session.search.current, 0);
+
+        session.jump_search(1, Some(&diff), 4);
+        assert_eq!(session.search.current, 1);
+        session.jump_search(-1, Some(&diff), 4);
+        assert_eq!(session.search.current, 0);
+        session.jump_search(-1, Some(&diff), 4);
+        assert_eq!(session.search.current, 3);
+
+        // Verify Split mode also indexes both left (side=0) and right (side=1) matches.
+        session.toggle_side_by_side();
+        session.refresh_search(Some(&diff), 4);
+        assert_eq!(session.search.matches.len(), 4);
+        assert!(session.search.matches.iter().any(|m| m.side == 0));
+        assert!(session.search.matches.iter().any(|m| m.side == 1));
     }
 }

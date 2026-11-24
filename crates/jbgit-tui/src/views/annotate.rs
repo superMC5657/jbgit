@@ -531,10 +531,8 @@ fn render_inline_diff_pane(
         body,
         FileDiffRenderProps {
             diff,
-            rows_cache: &ann.diff.rows_cache,
+            session: &ann.diff,
             cached_syntax,
-            side_by_side: ann.diff.side_by_side,
-            diff_scroll: ann.diff.scroll.offset(),
             scroll_pane: ScrollPane::AnnotateDiff,
         },
         ctx,

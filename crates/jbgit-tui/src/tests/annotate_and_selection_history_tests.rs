@@ -563,6 +563,7 @@ fn selection_history_from_annotate_and_stage_diff_renders_range_patch_and_confir
         path: "src/auth.rs".into(),
         old_path: None,
         context: DiffContext::Three,
+        whitespace: jbgit_core::WhitespaceMode::Default,
     };
     assert!(ts.state().diff_caches.peek_diff(&diff_key).is_none());
 
@@ -673,6 +674,7 @@ fn selection_history_from_annotate_and_stage_diff_renders_range_patch_and_confir
                 old_path: None,
                 side: StageDiffSide::Unstaged,
                 context: DiffContext::Three,
+                whitespace: jbgit_core::WhitespaceMode::Default,
             },
             vcs_exists: true,
             staged_exists: true,
@@ -684,6 +686,7 @@ fn selection_history_from_annotate_and_stage_diff_renders_range_patch_and_confir
             mode_change: None,
             is_symlink: false,
             is_binary: false,
+            binary: None,
             is_conflicted: false,
             submodule: None,
             lfs: None,

@@ -363,6 +363,20 @@ pub fn log_commit_menu_items(state: &AppState) -> Vec<ContextMenuItem> {
                 .join(" "),
         )],
     ));
+    items.push(ContextMenuItem::from_command(
+        i18n.t("menu.log.copy_commit_message"),
+        None,
+        catalog::shortcut_for_action(state, &[KeymapScope::Log], &KeyAction::CopyCommitMessage)
+            .as_deref(),
+        catalog::commit_copy_message(state),
+    ));
+    items.push(ContextMenuItem::from_command(
+        i18n.t("menu.log.copy_row_summary"),
+        None,
+        catalog::shortcut_for_action(state, &[KeymapScope::Log], &KeyAction::CopyRowSummary)
+            .as_deref(),
+        catalog::commit_copy_row_summary(state),
+    ));
     let mut newest_first = oids.clone();
     newest_first.reverse();
     let oldest_parent = oids
@@ -547,6 +561,8 @@ pub fn log_diff_menu_items(state: &AppState) -> Vec<ContextMenuItem> {
     let i18n = &state.i18n;
     let sbs_sc = catalog::shortcut_for_action(state, &[KeymapScope::Diff], &KeyAction::ToggleSideBySide);
     let ctx_sc = catalog::shortcut_for_action(state, &[KeymapScope::Diff], &KeyAction::CycleDiffContext);
+    let ws_sc = catalog::shortcut_for_action(state, &[KeymapScope::Diff], &KeyAction::CycleDiffWhitespace);
+    let wrap_sc = catalog::shortcut_for_action(state, &[KeymapScope::Diff], &KeyAction::ToggleDiffSoftWrap);
     let zoom_sc = catalog::shortcut_for_action(state, &[KeymapScope::Diff], &KeyAction::ZoomDiff);
     let ann_sc = catalog::shortcut_for_action(state, &[KeymapScope::Log], &KeyAction::Annotate);
     let selected_change = state.log.details.selected_change(&state.diff_caches);
@@ -599,6 +615,18 @@ pub fn log_diff_menu_items(state: &AppState) -> Vec<ContextMenuItem> {
             Some('c'),
             ctx_sc.as_deref(),
             vec![Action::DiffCycleContext(DiffScope::Log)],
+        ),
+        run(
+            i18n.t("menu.log.cycle_whitespace"),
+            Some('b'),
+            ws_sc.as_deref(),
+            vec![Action::DiffCycleWhitespace(DiffScope::Log)],
+        ),
+        run(
+            i18n.t("menu.log.toggle_soft_wrap"),
+            Some('w'),
+            wrap_sc.as_deref(),
+            vec![Action::DiffToggleSoftWrap(DiffScope::Log)],
         ),
         run(
             i18n.t("menu.log.copy_patch_file"),

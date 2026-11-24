@@ -3,8 +3,9 @@ use std::path::Path;
 use git2::Repository;
 use imara_diff::{Algorithm, Diff, InternedInput};
 use jbgit_core::{
-    DetailsKey, DetailsMode, EpochToken, FileDiff, FileDiffKey, FileModeChange, FileStatusKind,
-    LfsDiff, MAX_DIFF_LINES, Oid, build_diff_hunks, parse_lfs_pointer,
+    BinaryDiffInfo, DetailsKey, DetailsMode, EpochToken, FileDiff, FileDiffKey, FileModeChange,
+    FileStatusKind, LfsDiff, MAX_DIFF_LINES, Oid, build_diff_hunks_with_whitespace,
+    parse_lfs_pointer,
 };
 
 use crate::blob_reader::{
@@ -145,6 +146,8 @@ fn populate_file_diff(
     token: &EpochToken,
 ) -> Result<FileDiff, EngineError> {
     out.mode_change = mode_change;
+    let (old_size, old_oid) = old.metadata();
+    let (new_size, new_oid) = new.metadata();
     let (Some((old_bytes, old_bin)), Some((new_bytes, new_bin))) = (
         old.into_bytes_or_too_large(),
         new.into_bytes_or_too_large(),
@@ -164,13 +167,21 @@ fn populate_file_diff(
     }
     if old_bin || new_bin {
         out.is_binary = true;
+        out.binary = Some(BinaryDiffInfo {
+            old_size,
+            new_size,
+            old_oid,
+            new_oid,
+        });
         return Ok(out);
     }
-    let (hunks, is_truncated) = build_diff_hunks(
+    let whitespace = out.key.whitespace;
+    let (hunks, is_truncated) = build_diff_hunks_with_whitespace(
         &old_bytes,
         &new_bytes,
         context_lines as usize,
         MAX_DIFF_LINES,
+        whitespace,
         || token.is_stale(),
     )
     .ok_or(EngineError::Cancelled)?;
@@ -194,10 +205,11 @@ pub fn load_file_diff_with_oids_sync(
             return Err(EngineError::Cancelled);
         }
         let lfs_filter = path_has_lfs_filter(repo, &key.path);
-        let mut out = FileDiff {
+        let out = FileDiff {
             key: key.clone(),
             hunks: Vec::new(),
             is_binary: false,
+            binary: None,
             is_truncated: false,
             is_too_large: false,
             lfs: None,
@@ -209,7 +221,7 @@ pub fn load_file_diff_with_oids_sync(
         let read_opt_oid = |opt: Option<Oid>, mode: Option<u32>| -> Result<CheckedBlob, EngineError> {
             match opt {
                 Some(id) => Ok(read_blob(repo, to_git2_oid(&id)?, mode)),
-                None => Ok(CheckedBlob::empty()),
+                None => Ok(CheckedBlob::Missing),
             }
         };
 
@@ -279,7 +291,7 @@ pub fn load_file_diff_with_oids_sync(
                 let old = old_tree
                     .as_ref()
                     .map(|t| read_tree_path(repo, t, lookup_old))
-                    .unwrap_or_else(CheckedBlob::empty);
+                    .unwrap_or(CheckedBlob::Missing);
                 let new = read_tree_path(repo, &new_tree, &key.path);
                 let mc = FileModeChange::from_modes(old.mode(), new.mode());
                 return populate_file_diff(out, old, new, mc, lfs_filter, context_lines, token);
@@ -306,11 +318,6 @@ pub fn load_file_diff_with_oids_sync(
         let Some(item) = resolved.into_iter().find(|c| c.path == key.path) else {
             return Ok(out);
         };
-        if item.is_binary {
-            out.is_binary = true;
-            out.mode_change = FileModeChange::from_modes(item.old_mode, item.new_mode);
-            return Ok(out);
-        }
         let old = if item.old_oid.is_zero()
             && key.details.mode == DetailsMode::Commits
             && commits.len() == 1
@@ -331,6 +338,20 @@ pub fn load_file_diff_with_oids_sync(
             new.mode()
         };
         let mc = FileModeChange::from_modes(old.mode(), eff_new_mode);
+        if item.is_binary {
+            let (old_size, old_oid) = old.metadata();
+            let (new_size, new_oid) = new.metadata();
+            let mut out = out;
+            out.is_binary = true;
+            out.mode_change = mc;
+            out.binary = Some(BinaryDiffInfo {
+                old_size,
+                new_size,
+                old_oid,
+                new_oid,
+            });
+            return Ok(out);
+        }
         populate_file_diff(out, old, new, mc, lfs_filter, context_lines, token)
     })
 }

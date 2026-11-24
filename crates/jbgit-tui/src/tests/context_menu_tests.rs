@@ -432,6 +432,7 @@ fn non_contiguous_squash_disabled_and_hunk_menu_respects_diff_side() {
         old_path: None,
         side: StageDiffSide::Staged,
         context: DiffContext::Three,
+        whitespace: jbgit_core::WhitespaceMode::Default,
     }));
     let staged_hunk = crate::menus::stage_hunk_menu_items(ts.state(), 0);
     assert!(find_item(&staged_hunk, "Stage Hunk").disabled_reason.is_some());
@@ -447,6 +448,7 @@ fn non_contiguous_squash_disabled_and_hunk_menu_respects_diff_side() {
         old_path: None,
         side: StageDiffSide::Unstaged,
         context: DiffContext::Three,
+        whitespace: jbgit_core::WhitespaceMode::Default,
     }));
     let unstaged_hunk = crate::menus::stage_hunk_menu_items(ts.state(), 0);
     assert!(find_item(&unstaged_hunk, "Stage Hunk").is_enabled());

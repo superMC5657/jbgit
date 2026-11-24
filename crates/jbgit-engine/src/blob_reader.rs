@@ -6,8 +6,11 @@ use std::path::Path;
 
 use git2::{AttrCheckFlags, AttrValue, ObjectType, Repository};
 use jbgit_core::{
-    GIT_MODE_EXECUTABLE, GIT_MODE_REGULAR, GIT_MODE_SYMLINK, MAX_DIFF_FILE_BYTES, is_binary_bytes,
+    GIT_MODE_EXECUTABLE, GIT_MODE_REGULAR, GIT_MODE_SYMLINK, MAX_DIFF_FILE_BYTES, Oid,
+    is_binary_bytes,
 };
+
+use crate::probe::to_core_oid;
 
 const ATTR_FLAGS: AttrCheckFlags = AttrCheckFlags::FILE_THEN_INDEX.union(AttrCheckFlags::NO_SYSTEM);
 
@@ -100,25 +103,21 @@ pub(crate) fn read_symlink_target_bytes(path: &Path) -> std::io::Result<Vec<u8>>
 
 pub(crate) enum CheckedBlob {
     Missing,
-    TooLarge { mode: Option<u32> },
+    TooLarge {
+        mode: Option<u32>,
+        size: Option<u64>,
+        oid: Option<Oid>,
+    },
     Loaded {
         bytes: Vec<u8>,
         mode: Option<u32>,
         is_binary: bool,
         is_symlink: bool,
+        oid: Option<Oid>,
     },
 }
 
 impl CheckedBlob {
-    pub(crate) fn empty() -> Self {
-        Self::Loaded {
-            bytes: Vec::new(),
-            mode: None,
-            is_binary: false,
-            is_symlink: false,
-        }
-    }
-
     pub(crate) fn is_too_large(&self) -> bool {
         matches!(self, Self::TooLarge { .. })
     }
@@ -130,7 +129,15 @@ impl CheckedBlob {
     pub(crate) fn mode(&self) -> Option<u32> {
         match self {
             Self::Missing => None,
-            Self::TooLarge { mode } | Self::Loaded { mode, .. } => *mode,
+            Self::TooLarge { mode, .. } | Self::Loaded { mode, .. } => *mode,
+        }
+    }
+
+    pub(crate) fn metadata(&self) -> (Option<u64>, Option<Oid>) {
+        match self {
+            Self::Missing => (None, None),
+            Self::TooLarge { size, oid, .. } => (*size, *oid),
+            Self::Loaded { bytes, oid, .. } => (Some(bytes.len() as u64), *oid),
         }
     }
 
@@ -139,7 +146,7 @@ impl CheckedBlob {
             Self::Loaded { is_symlink, mode, .. } => {
                 *is_symlink || *mode == Some(GIT_MODE_SYMLINK)
             }
-            Self::TooLarge { mode } => *mode == Some(GIT_MODE_SYMLINK),
+            Self::TooLarge { mode, .. } => *mode == Some(GIT_MODE_SYMLINK),
             Self::Missing => false,
         }
     }
@@ -152,7 +159,7 @@ impl CheckedBlob {
                 is_binary,
                 ..
             } => (Some(bytes), mode, is_binary),
-            Self::TooLarge { mode } => (None, mode, false),
+            Self::TooLarge { mode, .. } => (None, mode, false),
             Self::Missing => (None, None, false),
         }
     }
@@ -175,16 +182,25 @@ pub(crate) fn read_blob(repo: &Repository, oid: git2::Oid, mode: Option<u32>) ->
         return CheckedBlob::Missing;
     }
     let is_symlink = mode == Some(GIT_MODE_SYMLINK);
+    let core_oid = Some(to_core_oid(oid));
     if let Ok(odb) = repo.odb()
         && let Ok((size, ObjectType::Blob)) = odb.read_header(oid)
         && size > MAX_DIFF_FILE_BYTES
     {
-        return CheckedBlob::TooLarge { mode };
+        return CheckedBlob::TooLarge {
+            mode,
+            size: Some(size as u64),
+            oid: core_oid,
+        };
     }
     match repo.find_blob(oid) {
         Ok(blob) => {
             if blob.size() > MAX_DIFF_FILE_BYTES {
-                return CheckedBlob::TooLarge { mode };
+                return CheckedBlob::TooLarge {
+                    mode,
+                    size: Some(blob.size() as u64),
+                    oid: core_oid,
+                };
             }
             let content = blob.content();
             let is_binary = !is_symlink && is_binary_bytes(content);
@@ -193,14 +209,10 @@ pub(crate) fn read_blob(repo: &Repository, oid: git2::Oid, mode: Option<u32>) ->
                 mode,
                 is_binary,
                 is_symlink,
+                oid: core_oid,
             }
         }
-        Err(_) => CheckedBlob::Loaded {
-            bytes: Vec::new(),
-            mode,
-            is_binary: false,
-            is_symlink,
-        },
+        Err(_) => CheckedBlob::Missing,
     }
 }
 
@@ -263,6 +275,7 @@ pub(crate) fn read_worktree_path(workdir: &Path, rel_path: &str) -> CheckedBlob 
             mode: Some(GIT_MODE_SYMLINK),
             is_binary: false,
             is_symlink: true,
+            oid: None,
         };
     }
     if meta.file_type().is_dir() {
@@ -282,19 +295,35 @@ pub(crate) fn read_worktree_path(workdir: &Path, rel_path: &str) -> CheckedBlob 
     let mode = Some(GIT_MODE_REGULAR);
 
     if meta.len() > MAX_DIFF_FILE_BYTES as u64 {
-        return CheckedBlob::TooLarge { mode };
+        return CheckedBlob::TooLarge {
+            mode,
+            size: Some(meta.len()),
+            oid: None,
+        };
     }
     let Ok(bytes) = fs::read(&full) else {
         return CheckedBlob::Missing;
     };
     if bytes.len() > MAX_DIFF_FILE_BYTES {
-        return CheckedBlob::TooLarge { mode };
+        return CheckedBlob::TooLarge {
+            mode,
+            size: Some(bytes.len() as u64),
+            oid: None,
+        };
     }
     let is_binary = is_binary_bytes(&bytes);
+    let oid = if is_binary {
+        git2::Oid::hash_object(ObjectType::Blob, &bytes)
+            .ok()
+            .map(to_core_oid)
+    } else {
+        None
+    };
     CheckedBlob::Loaded {
         bytes,
         mode,
         is_binary,
         is_symlink: false,
+        oid,
     }
 }

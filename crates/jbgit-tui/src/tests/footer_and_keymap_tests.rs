@@ -301,6 +301,7 @@ fn footer_and_help_respect_amend_readonly_author_edit_speed_search_and_console_d
         old_path: None,
         side: StageDiffSide::AmendCommit,
         context: jbgit_core::DiffContext::Three,
+        whitespace: jbgit_core::WhitespaceMode::Default,
     }));
     let buf = ts.render(160, 40);
     let amend_footer = row_text(&buf, 39);

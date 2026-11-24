@@ -1185,6 +1185,8 @@ impl AppState {
             up_to,
             jbgit_core::DiffContext::from_lines(self.config.jbgit.diff.context_lines),
         );
+        pd.diff.whitespace = self.config.jbgit.diff.whitespace.to_core();
+        pd.diff.soft_wrap = self.config.jbgit.diff.soft_wrap;
         let has_remote = !pd.remote().is_empty();
         if !has_remote {
             pd.loading = false;

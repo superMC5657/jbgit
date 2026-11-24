@@ -3,7 +3,7 @@ use std::time::{Duration, Instant};
 
 use jbgit_core::{
     DetailsKey, DiffContext, FileDiff, FileDiffKey, FileHistoryBundle, FileHistoryEntry,
-    FileHistoryKey, Oid, parse_unified_patch_hunks,
+    FileHistoryKey, Oid, WhitespaceMode, parse_unified_patch_hunks,
 };
 
 use crate::diff_session::{DiffCacheStore, DiffRow, DiffSession};
@@ -38,6 +38,15 @@ pub struct FileHistoryState {
 
 impl FileHistoryState {
     pub fn new(key: FileHistoryKey, diff_context: DiffContext) -> Self {
+        Self::with_diff_prefs(key, diff_context, WhitespaceMode::Default, false)
+    }
+
+    pub fn with_diff_prefs(
+        key: FileHistoryKey,
+        diff_context: DiffContext,
+        diff_whitespace: WhitespaceMode,
+        diff_soft_wrap: bool,
+    ) -> Self {
         Self {
             key,
             bundle: None,
@@ -47,7 +56,7 @@ impl FileHistoryState {
             anchor: None,
             compare_with_local: false,
             focus: FileHistoryFocus::Commits,
-            diff: DiffSession::new(diff_context),
+            diff: DiffSession::from_prefs(diff_context, diff_whitespace, diff_soft_wrap),
             pending_g: None,
             range_diff: None,
             range_syntax: None,
@@ -85,9 +94,11 @@ impl FileHistoryState {
                 path: entry.path_at_commit.clone(),
                 old_path: entry.old_path.clone(),
                 context: self.diff.context,
+                whitespace: self.diff.whitespace,
             },
             hunks,
             is_binary: entry.is_binary,
+            binary: None,
             is_truncated: false,
             is_too_large: false,
             lfs: None,
@@ -153,6 +164,7 @@ impl FileHistoryState {
                 old_path: (cur.path_at_commit != self.key.path)
                     .then(|| cur.path_at_commit.clone()),
                 context: self.diff.context,
+                whitespace: self.diff.whitespace,
             })
         } else if let Some((older, newer)) = self.comparison_pair() {
             Some(FileDiffKey {
@@ -161,6 +173,7 @@ impl FileHistoryState {
                 old_path: (older.path_at_commit != newer.path_at_commit)
                     .then(|| older.path_at_commit.clone()),
                 context: self.diff.context,
+                whitespace: self.diff.whitespace,
             })
         } else {
             Some(FileDiffKey {
@@ -168,6 +181,7 @@ impl FileHistoryState {
                 path: cur.path_at_commit.clone(),
                 old_path: cur.old_path.clone(),
                 context: self.diff.context,
+                whitespace: self.diff.whitespace,
             })
         }
     }
@@ -237,6 +251,20 @@ impl FileHistoryState {
 
     pub fn cycle_context(&mut self) {
         self.diff.cycle_context();
+    }
+
+    pub fn cycle_whitespace(&mut self) {
+        self.diff.cycle_whitespace();
+    }
+
+    pub fn toggle_soft_wrap(&mut self) {
+        self.diff.toggle_soft_wrap();
+    }
+
+    pub fn current_diff_arc(&self, store: &DiffCacheStore) -> Option<Arc<FileDiff>> {
+        self.current_range_diff()
+            .cloned()
+            .or_else(|| self.desired_diff_key().and_then(|k| store.peek_diff(&k).cloned()))
     }
 
     pub fn toggle_zoom(&mut self) {

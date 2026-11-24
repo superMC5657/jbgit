@@ -312,6 +312,8 @@ fn route_mouse_left_down(
             DiffToolbarButton::SideBySide => vec![Action::DiffToggleSideBySide(DiffScope::Log)],
             DiffToolbarButton::Context => vec![Action::DiffCycleContext(DiffScope::Log)],
             DiffToolbarButton::SwapCompare => vec![Action::SwapCompareDirection],
+            DiffToolbarButton::Whitespace => vec![Action::DiffCycleWhitespace(DiffScope::Log)],
+            DiffToolbarButton::SoftWrap => vec![Action::DiffToggleSoftWrap(DiffScope::Log)],
             DiffToolbarButton::Dock => vec![Action::DiffCycleDock],
             DiffToolbarButton::Zoom => vec![Action::ZoomDiff(!state.log.details.diff.zoomed)],
             DiffToolbarButton::Close => {
@@ -508,6 +510,12 @@ fn route_mouse_left_down(
             }
             FileHistoryToolbarButton::Context => {
                 vec![Action::DiffCycleContext(DiffScope::FileHistory)]
+            }
+            FileHistoryToolbarButton::Whitespace => {
+                vec![Action::DiffCycleWhitespace(DiffScope::FileHistory)]
+            }
+            FileHistoryToolbarButton::SoftWrap => {
+                vec![Action::DiffToggleSoftWrap(DiffScope::FileHistory)]
             }
             FileHistoryToolbarButton::Zoom => vec![Action::FileHistoryToggleZoom],
             FileHistoryToolbarButton::LocateInLog => vec![Action::FileHistoryJumpToLog],

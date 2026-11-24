@@ -258,6 +258,7 @@ impl PushDialogState {
             path: change.path.clone(),
             old_path: change.old_path.clone(),
             context: self.diff.context,
+            whitespace: self.diff.whitespace,
         })
     }
 

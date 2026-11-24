@@ -6,6 +6,7 @@ use std::sync::Arc;
 
 use jbgit_core::{
     DetailsKey, DiffContext, FileDiff, FileDiffKey, RepoSnapshot, RequestSlotId, StashEntry,
+    WhitespaceMode,
 };
 
 use crate::app::{Action, ChangesHost, DiffScope, Effect};
@@ -21,10 +22,18 @@ pub struct StashWorkbench {
 
 impl StashWorkbench {
     pub fn with_diff_context(context: DiffContext) -> Self {
+        Self::with_diff_prefs(context, WhitespaceMode::Default, false)
+    }
+
+    pub fn with_diff_prefs(
+        context: DiffContext,
+        whitespace: WhitespaceMode,
+        soft_wrap: bool,
+    ) -> Self {
         Self {
             selected: 0,
             changes: ChangesTreeSession::default(),
-            diff: DiffSession::new(context),
+            diff: DiffSession::from_prefs(context, whitespace, soft_wrap),
             requested_details: None,
         }
     }
@@ -55,7 +64,8 @@ impl StashWorkbench {
     }
 
     pub fn diff_key(&self, store: &DiffCacheStore) -> Option<FileDiffKey> {
-        self.changes.desired_diff_key(store, self.diff.context)
+        self.changes
+            .desired_diff_key(store, self.diff.context, self.diff.whitespace)
     }
 
     pub fn scroll_diff(&mut self, delta: isize, store: &DiffCacheStore) {
@@ -147,6 +157,41 @@ impl StashWorkbench {
             }
             Action::DiffCycleContext(DiffScope::Stash) => {
                 self.diff.cycle_context();
+            }
+            Action::DiffCycleWhitespace(DiffScope::Stash) => {
+                self.diff.cycle_whitespace();
+            }
+            Action::DiffToggleSoftWrap(DiffScope::Stash) => {
+                self.diff.toggle_soft_wrap();
+            }
+            Action::DiffScrollHoriz(DiffScope::Stash, delta) => {
+                self.diff.scroll_horiz(*delta);
+            }
+            Action::DiffSearchOpen(DiffScope::Stash) => {
+                self.diff.search.open();
+            }
+            Action::DiffSearchChar(DiffScope::Stash, ch) => {
+                self.diff.search.push_char(*ch);
+                let diff = self.diff_key(store).and_then(|k| store.peek_diff(&k).cloned());
+                self.diff.refresh_search(diff.as_ref(), 4);
+            }
+            Action::DiffSearchBackspace(DiffScope::Stash) => {
+                self.diff.search.backspace();
+                let diff = self.diff_key(store).and_then(|k| store.peek_diff(&k).cloned());
+                self.diff.refresh_search(diff.as_ref(), 4);
+            }
+            Action::DiffSearchClear(DiffScope::Stash) => {
+                self.diff.search.clear_query();
+            }
+            Action::DiffSearchConfirm(DiffScope::Stash) => {
+                self.diff.search.finish_editing();
+            }
+            Action::DiffSearchClose(DiffScope::Stash) => {
+                self.diff.search.close();
+            }
+            Action::DiffSearchJump(DiffScope::Stash, delta) => {
+                let diff = self.diff_key(store).and_then(|k| store.peek_diff(&k).cloned());
+                self.diff.jump_search(*delta, diff.as_ref(), 4);
             }
             Action::DiffScroll(DiffScope::Stash, delta) => {
                 self.scroll_diff(*delta, store);

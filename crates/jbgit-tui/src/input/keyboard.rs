@@ -23,6 +23,21 @@ fn plain_char(key: &KeyEvent) -> Option<char> {
     }
 }
 
+pub(crate) fn route_diff_search_editing_key(key: &KeyEvent, scope: DiffScope) -> Vec<Action> {
+    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    let alt = key.modifiers.contains(KeyModifiers::ALT);
+    match key.code {
+        KeyCode::Esc => vec![Action::DiffSearchClose(scope)],
+        KeyCode::Enter => vec![Action::DiffSearchConfirm(scope)],
+        KeyCode::Backspace => vec![Action::DiffSearchBackspace(scope)],
+        KeyCode::Char('u') if ctrl => vec![Action::DiffSearchClear(scope)],
+        KeyCode::Down => vec![Action::DiffSearchJump(scope, 1)],
+        KeyCode::Up => vec![Action::DiffSearchJump(scope, -1)],
+        KeyCode::Char(c) if !ctrl && !alt => vec![Action::DiffSearchChar(scope, c)],
+        _ => Vec::new(),
+    }
+}
+
 pub(crate) fn route_key(key: KeyEvent, state: &AppState) -> Vec<Action> {
     if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
         return vec![Action::Quit];
@@ -58,6 +73,13 @@ pub(crate) fn route_key(key: KeyEvent, state: &AppState) -> Vec<Action> {
         && let Some(actions) = route_commit_priority_key(&key, state)
     {
         return actions;
+    }
+
+    if state.active_tab == WorkspaceTab::Stash
+        && state.focused_pane == PaneId::StashDiffPreview
+        && state.stash.diff().search.editing
+    {
+        return route_diff_search_editing_key(&key, DiffScope::Stash);
     }
 
     let clear_bracket = state.active_tab == WorkspaceTab::Commit
@@ -361,7 +383,12 @@ fn route_pane_fallback_key(key: KeyEvent, state: &AppState) -> Vec<Action> {
             match key.code {
                 KeyCode::PageDown => vec![Action::DiffScroll(DiffScope::Log, page)],
                 KeyCode::PageUp => vec![Action::DiffScroll(DiffScope::Log, -page)],
+                KeyCode::Left if shift => vec![Action::DiffScrollHoriz(DiffScope::Log, -16)],
+                KeyCode::Right if shift => vec![Action::DiffScrollHoriz(DiffScope::Log, 16)],
                 KeyCode::Enter if ctrl => vec![Action::ZoomDiff(true)],
+                KeyCode::Esc if state.log.details.diff.search.active => {
+                    vec![Action::DiffSearchClose(DiffScope::Log)]
+                }
                 KeyCode::Esc => vec![
                     Action::ToggleDiffPreview,
                     Action::FocusPane(PaneId::LogChangesTree),
@@ -471,16 +498,20 @@ fn route_shortcuts_help_key(key: &KeyEvent, state: &AppState) -> Vec<Action> {
 }
 
 /// Fallback keymap for full-screen zoomed diff viewer (after dynamic keymap).
-fn route_diff_zoomed_fallback(key: &KeyEvent, page: isize) -> Vec<Action> {
+fn route_diff_zoomed_fallback(key: &KeyEvent, page: isize, search_active: bool) -> Vec<Action> {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    let shift = key.modifiers.contains(KeyModifiers::SHIFT);
     match key.code {
         KeyCode::PageDown => vec![Action::DiffScroll(DiffScope::Log, page)],
         KeyCode::Char(' ') => vec![Action::DiffScroll(DiffScope::Log, page)],
         KeyCode::PageUp => vec![Action::DiffScroll(DiffScope::Log, -page)],
+        KeyCode::Left if shift => vec![Action::DiffScrollHoriz(DiffScope::Log, -16)],
+        KeyCode::Right if shift => vec![Action::DiffScrollHoriz(DiffScope::Log, 16)],
         KeyCode::Home => vec![Action::DiffScroll(DiffScope::Log, crate::app::SCROLL_GOTO_TOP)],
         KeyCode::End => vec![Action::DiffScroll(DiffScope::Log, crate::app::SCROLL_GOTO_BOTTOM)],
         KeyCode::Char('P') => vec![Action::SwitchMergeParent],
         KeyCode::Enter if ctrl => vec![Action::ZoomDiff(false)],
+        KeyCode::Esc if search_active => vec![Action::DiffSearchClose(DiffScope::Log)],
         KeyCode::Esc => vec![Action::ZoomDiff(false)],
         _ => Vec::new(),
     }
@@ -492,6 +523,13 @@ fn route_log_priority_key(key: &KeyEvent, state: &AppState) -> Option<Vec<Action
     let alt = key.modifiers.contains(KeyModifiers::ALT);
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
 
+    if state.log.details.diff.search.editing
+        && (state.log.details.diff.zoomed
+            || (state.focused_pane == PaneId::LogDetailsDiff && state.log.details.diff_preview))
+    {
+        return Some(route_diff_search_editing_key(key, DiffScope::Log));
+    }
+
     if state.log.details.diff.zoomed {
         if let Some(actions) = crate::keymap::route_dynamic_key(key, state) {
             return Some(actions);
@@ -501,7 +539,11 @@ fn route_log_priority_key(key: &KeyEvent, state: &AppState) -> Option<Vec<Action
             out.push(Action::ClearPendingKeySequence);
         }
         let page = state.terminal_area.height.max(6) as isize / 2;
-        out.extend(route_diff_zoomed_fallback(key, page));
+        out.extend(route_diff_zoomed_fallback(
+            key,
+            page,
+            state.log.details.diff.search.active,
+        ));
         return Some(out);
     }
 
@@ -558,6 +600,9 @@ fn route_file_history_key(key: &KeyEvent, state: &AppState) -> Vec<Action> {
     let Some(fh) = state.modal_stack.file_history() else {
         return vec![Action::FileHistoryEscape];
     };
+    if fh.diff.search.editing {
+        return route_diff_search_editing_key(key, DiffScope::FileHistory);
+    }
     let had_pending_g = fh.pending_g.is_some();
     let pending_g = fh
         .pending_g
@@ -614,10 +659,45 @@ fn route_file_history_key(key: &KeyEvent, state: &AppState) -> Vec<Action> {
             return vec![Action::FileHistorySetPendingG(Some(state.now()))];
         }
         KeyCode::Char('f') if !fh.is_selection_history() => Some(Action::FileHistoryToggleFollow),
+        KeyCode::Char('b') if diff_focused => {
+            Some(Action::DiffCycleWhitespace(DiffScope::FileHistory))
+        }
         KeyCode::Char('b') => Some(Action::FileHistoryAnnotate),
+        KeyCode::Char('l') if diff_focused => Some(Action::DiffScrollHoriz(
+            DiffScope::FileHistory,
+            crate::diff_session::DIFF_HORIZ_SCROLL_STEP,
+        )),
+        KeyCode::Char('h') if diff_focused => Some(Action::DiffScrollHoriz(
+            DiffScope::FileHistory,
+            -crate::diff_session::DIFF_HORIZ_SCROLL_STEP,
+        )),
+        KeyCode::Left if shift || diff_focused => Some(Action::DiffScrollHoriz(
+            DiffScope::FileHistory,
+            if shift {
+                -16
+            } else {
+                -crate::diff_session::DIFF_HORIZ_SCROLL_STEP
+            },
+        )),
+        KeyCode::Right if shift || diff_focused => Some(Action::DiffScrollHoriz(
+            DiffScope::FileHistory,
+            if shift {
+                16
+            } else {
+                crate::diff_session::DIFF_HORIZ_SCROLL_STEP
+            },
+        )),
         KeyCode::Char('l') => Some(Action::FileHistoryToggleCompareLocal),
         KeyCode::Char('S') => Some(Action::DiffToggleSideBySide(DiffScope::FileHistory)),
         KeyCode::Char('w') => Some(Action::DiffCycleContext(DiffScope::FileHistory)),
+        KeyCode::Char('W') => Some(Action::DiffToggleSoftWrap(DiffScope::FileHistory)),
+        KeyCode::Char('/') => Some(Action::DiffSearchOpen(DiffScope::FileHistory)),
+        KeyCode::Char('n') if fh.diff.search.active || diff_focused => {
+            Some(Action::DiffSearchJump(DiffScope::FileHistory, 1))
+        }
+        KeyCode::Char('N') if fh.diff.search.active || diff_focused => {
+            Some(Action::DiffSearchJump(DiffScope::FileHistory, -1))
+        }
         KeyCode::Char('[') => Some(Action::DiffJumpHunk(DiffScope::FileHistory, -1)),
         KeyCode::Char(']') => Some(Action::DiffJumpHunk(DiffScope::FileHistory, 1)),
         KeyCode::Char('z') | KeyCode::F(4) => Some(Action::FileHistoryToggleZoom),
@@ -681,6 +761,9 @@ fn route_annotate_key(key: &KeyEvent, state: &AppState) -> Vec<Action> {
     let Some(ann) = state.modal_stack.annotate() else {
         return vec![Action::AnnotateEscape];
     };
+    if ann.diff.search.editing {
+        return route_diff_search_editing_key(key, DiffScope::Annotate);
+    }
     if ann.goto_line_input.is_some() {
         return match key.code {
             KeyCode::Esc => vec![Action::AnnotateGotoLineCancel],
@@ -762,6 +845,29 @@ fn route_annotate_key(key: &KeyEvent, state: &AppState) -> Vec<Action> {
             KeyCode::Char('P') | KeyCode::Backspace => Some(Action::AnnotateNavBack),
             KeyCode::Char('S') => Some(Action::DiffToggleSideBySide(DiffScope::Annotate)),
             KeyCode::Char('c') => Some(Action::DiffCycleContext(DiffScope::Annotate)),
+            KeyCode::Char('W') if diff_focused => {
+                Some(Action::DiffToggleSoftWrap(DiffScope::Annotate))
+            }
+            KeyCode::Char('b') if diff_focused => {
+                Some(Action::DiffCycleWhitespace(DiffScope::Annotate))
+            }
+            KeyCode::Char('/') if diff_focused => {
+                Some(Action::DiffSearchOpen(DiffScope::Annotate))
+            }
+            KeyCode::Char('n') if diff_focused && ann.diff.search.active => {
+                Some(Action::DiffSearchJump(DiffScope::Annotate, 1))
+            }
+            KeyCode::Char('N') if diff_focused && ann.diff.search.active => {
+                Some(Action::DiffSearchJump(DiffScope::Annotate, -1))
+            }
+            KeyCode::Left | KeyCode::Char('h') if diff_focused => Some(Action::DiffScrollHoriz(
+                DiffScope::Annotate,
+                if shift { -16 } else { -crate::diff_session::DIFF_HORIZ_SCROLL_STEP },
+            )),
+            KeyCode::Right | KeyCode::Char('l') if diff_focused => Some(Action::DiffScrollHoriz(
+                DiffScope::Annotate,
+                if shift { 16 } else { crate::diff_session::DIFF_HORIZ_SCROLL_STEP },
+            )),
             KeyCode::Char('[') => Some(Action::DiffJumpHunk(DiffScope::Annotate, -1)),
             KeyCode::Char(']') => Some(Action::DiffJumpHunk(DiffScope::Annotate, 1)),
             KeyCode::F(10) if shift => {

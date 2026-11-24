@@ -179,6 +179,17 @@ impl<'a> RenderContext<'a> {
             .map_or(ctx.label(), |i| i.diff_context_label(ctx))
     }
 
+    pub fn diff_whitespace_label(&self, mode: jbgit_core::WhitespaceMode) -> &str {
+        self.i18n.map_or_else(
+            || match mode {
+                jbgit_core::WhitespaceMode::Default => "Exact",
+                jbgit_core::WhitespaceMode::IgnoreChange => "-b",
+                jbgit_core::WhitespaceMode::IgnoreAll => "-w",
+            },
+            |i| i.diff_whitespace_label(mode),
+        )
+    }
+
     pub fn diff_dock_label(&self, dock: DiffPreviewDock) -> &str {
         self.i18n.map_or(dock.label(), |i| i.diff_dock_label(dock))
     }

@@ -128,7 +128,8 @@ impl DetailsPaneState {
     }
 
     pub fn desired_diff_key(&self, store: &DiffCacheStore) -> Option<FileDiffKey> {
-        self.changes.desired_diff_key(store, self.diff.context)
+        self.changes
+            .desired_diff_key(store, self.diff.context, self.diff.whitespace)
     }
 
     pub fn current_diff<'a>(&self, store: &'a DiffCacheStore) -> Option<&'a Arc<FileDiff>> {
@@ -199,7 +200,7 @@ impl DetailsPaneState {
 
     pub fn select_next_file(&mut self, delta: isize, store: &DiffCacheStore) {
         self.changes.select_next_file(delta, store);
-        self.diff.scroll.reset();
+        self.diff.reset_view_offsets();
     }
 
     /// Consumes `pending_select_path` once the active bundle has loaded.

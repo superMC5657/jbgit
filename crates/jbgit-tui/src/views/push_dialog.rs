@@ -539,10 +539,8 @@ fn render_files_pane(
                 body_rect,
                 FileDiffRenderProps {
                     diff,
-                    rows_cache: &pd.diff.rows_cache,
+                    session: &pd.diff,
                     cached_syntax,
-                    side_by_side: pd.diff.side_by_side,
-                    diff_scroll: pd.diff.scroll.offset(),
                     scroll_pane: ScrollPane::PushDiff,
                 },
                 ctx,

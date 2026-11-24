@@ -573,6 +573,7 @@ async fn root_commit_fixup_patch_compare_and_conflict_resolution() {
             path: "root.txt".into(),
             old_path: None,
             context: DiffContext::Three,
+            whitespace: jbgit_core::WhitespaceMode::Default,
         },
     );
     let diff = recv_matching(&mut rx, |ev| match ev {

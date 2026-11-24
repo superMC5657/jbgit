@@ -287,6 +287,7 @@ fn non_contiguous_two_commit_compare_versions_and_swap_direction() {
         path: "file.txt".into(),
         old_path: None,
         context: jbgit_core::DiffContext::Three,
+        whitespace: jbgit_core::WhitespaceMode::Default,
     };
     engine.dispatch(TaskRequest::LoadFileDiff {
         slot: RequestSlotId::LogFileDiff,

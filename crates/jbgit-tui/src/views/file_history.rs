@@ -144,6 +144,19 @@ pub fn render_file_history_modal(
             FileHistoryToolbarButton::Context,
         ),
         (
+            ctx.t_fmt(
+                "view.log_details.ws_btn",
+                &[("ws", ctx.diff_whitespace_label(fh.diff.whitespace))],
+            ),
+            fh.diff.whitespace != jbgit_core::WhitespaceMode::Default,
+            FileHistoryToolbarButton::Whitespace,
+        ),
+        (
+            ctx.t("view.log_details.wrap_btn").to_string(),
+            fh.diff.soft_wrap,
+            FileHistoryToolbarButton::SoftWrap,
+        ),
+        (
             if fh.diff.zoomed {
                 ctx.t("view.log_details.restore_btn")
             } else {
@@ -445,7 +458,7 @@ fn render_diff_pane(
         ctx.theme.fg_muted
     };
 
-    let header_label = if let Some(cur) = fh.selected_entry() {
+    let mut header_label = if let Some(cur) = fh.selected_entry() {
         if fh.compare_with_local {
             ctx.t_fmt(
                 "view.file_history.diff_compare_local",
@@ -503,6 +516,9 @@ fn render_diff_pane(
     } else {
         ctx.t("view.log_details.diff_preview").to_string()
     };
+    if !fh.diff.soft_wrap && fh.diff.horiz_scroll > 0 {
+        header_label.push_str(&format!("  Col +{}", fh.diff.horiz_scroll));
+    }
 
     let hdr_spans = vec![
         Span::styled(if focused { "▌" } else { " " }, Style::default().fg(bar_fg)),
@@ -555,10 +571,8 @@ fn render_diff_pane(
             body,
             FileDiffRenderProps {
                 diff,
-                rows_cache: &fh.diff.rows_cache,
+                session: &fh.diff,
                 cached_syntax,
-                side_by_side: fh.diff.side_by_side,
-                diff_scroll: fh.diff.scroll.offset(),
                 scroll_pane: ScrollPane::FileHistoryDiff,
             },
             ctx,
@@ -611,10 +625,8 @@ fn render_diff_pane(
         body,
         FileDiffRenderProps {
             diff,
-            rows_cache: &fh.diff.rows_cache,
+            session: &fh.diff,
             cached_syntax,
-            side_by_side: fh.diff.side_by_side,
-            diff_scroll: fh.diff.scroll.offset(),
             scroll_pane: ScrollPane::FileHistoryDiff,
         },
         ctx,

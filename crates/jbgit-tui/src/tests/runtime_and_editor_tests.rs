@@ -636,6 +636,7 @@ fn stage_workbench_dual_presence_visual_select_and_amend_draft_restore() {
             old_path: None,
             side: StageDiffSide::Unstaged,
             context: DiffContext::Three,
+            whitespace: jbgit_core::WhitespaceMode::Default,
         },
         vcs_exists: true,
         staged_exists: true,
@@ -647,6 +648,7 @@ fn stage_workbench_dual_presence_visual_select_and_amend_draft_restore() {
         mode_change: None,
         is_symlink: false,
         is_binary: false,
+        binary: None,
         is_conflicted: false,
         submodule: None,
         lfs: None,
@@ -940,6 +942,7 @@ fn stage_review_fixes_amend_diff_gutter_click_draft_persistence_and_push_confirm
                 old_path: None,
                 side: StageDiffSide::Unstaged,
                 context: DiffContext::Three,
+                whitespace: jbgit_core::WhitespaceMode::Default,
             },
             vcs_exists: true,
             staged_exists: true,
@@ -951,6 +954,7 @@ fn stage_review_fixes_amend_diff_gutter_click_draft_persistence_and_push_confirm
             mode_change: None,
             is_symlink: false,
             is_binary: false,
+            binary: None,
             is_conflicted: false,
             submodule: None,
             lfs: None,
@@ -1300,6 +1304,7 @@ fn log_diff_double_goto_bottom_no_overflow_and_reverses_immediately() {
         path: "lib.rs".into(),
         old_path: None,
         context: ts.state().log.details.diff.context,
+        whitespace: ts.state().log.details.diff.whitespace,
     };
     let lines: Vec<DiffLine> = (0..80)
         .map(|i| DiffLine {
@@ -1319,6 +1324,7 @@ fn log_diff_double_goto_bottom_no_overflow_and_reverses_immediately() {
                 lines,
             }],
             is_binary: false,
+            binary: None,
             is_truncated: false,
             is_too_large: false,
             lfs: None,
@@ -1570,6 +1576,7 @@ fn commit_tab_diff_lru_cache_invalidation_debounce_and_effect_coalescing() {
                 old_path: None,
                 side: StageDiffSide::Unstaged,
                 context: DiffContext::Three,
+                whitespace: jbgit_core::WhitespaceMode::Default,
             },
             vcs_exists: true,
             staged_exists: true,
@@ -1581,6 +1588,7 @@ fn commit_tab_diff_lru_cache_invalidation_debounce_and_effect_coalescing() {
             mode_change: None,
             is_symlink: false,
             is_binary: false,
+            binary: None,
             is_conflicted: false,
             submodule: None,
             lfs: None,
@@ -1652,12 +1660,14 @@ fn commit_tab_diff_lru_cache_invalidation_debounce_and_effect_coalescing() {
         old_path: None,
         side: StageDiffSide::Unstaged,
         context: DiffContext::Three,
+        whitespace: jbgit_core::WhitespaceMode::Default,
     };
     let key_b = StageDiffKey {
         path: "b.rs".into(),
         old_path: None,
         side: StageDiffSide::Unstaged,
         context: DiffContext::Three,
+        whitespace: jbgit_core::WhitespaceMode::Default,
     };
     assert!(!ts.state().stage_workbench.diff_cache_contains(&key_a));
     assert!(ts.state().stage_workbench.diff_cache_contains(&key_b));
@@ -1669,6 +1679,7 @@ fn commit_tab_diff_lru_cache_invalidation_debounce_and_effect_coalescing() {
             old_path: None,
             side: StageDiffSide::Unstaged,
             context: DiffContext::Three,
+            whitespace: jbgit_core::WhitespaceMode::Default,
         }));
     }
     raw.push(Effect::CopyToClipboard("keep-me".into()));
@@ -1839,18 +1850,21 @@ fn cross_consumer_request_slots_coalesce_independently_and_filter_stale_events()
         path: "log.rs".into(),
         old_path: None,
         context: DiffContext::Three,
+        whitespace: jbgit_core::WhitespaceMode::Default,
     };
     let key_fh = FileDiffKey {
         details: DetailsKey::single(Oid::from_bytes([2; 20])),
         path: "fh.rs".into(),
         old_path: None,
         context: DiffContext::Three,
+        whitespace: jbgit_core::WhitespaceMode::Default,
     };
     let key_stash = FileDiffKey {
         details: DetailsKey::single(Oid::from_bytes([3; 20])),
         path: "stash.rs".into(),
         old_path: None,
         context: DiffContext::Three,
+        whitespace: jbgit_core::WhitespaceMode::Default,
     };
 
     // Coalescing must preserve sibling consumer requests while collapsing duplicates within one slot.
@@ -1956,6 +1970,7 @@ fn cross_consumer_request_slots_coalesce_independently_and_filter_stale_events()
             key: key_log.clone(),
             hunks: vec![],
             is_binary: false,
+            binary: None,
             is_truncated: false,
             is_too_large: false,
             lfs: None,
@@ -2001,6 +2016,7 @@ fn stale_diff_responses_for_same_key_never_overwrite_fresh_state_or_cache() {
                 old_path: None,
                 side: StageDiffSide::Unstaged,
                 context: DiffContext::Three,
+                whitespace: jbgit_core::WhitespaceMode::Default,
             },
             vcs_exists: false,
             staged_exists: false,
@@ -2012,6 +2028,7 @@ fn stale_diff_responses_for_same_key_never_overwrite_fresh_state_or_cache() {
             mode_change: None,
             is_symlink: false,
             is_binary: false,
+            binary: None,
             is_conflicted: false,
             submodule: None,
             lfs: None,
@@ -2047,6 +2064,7 @@ fn stale_diff_responses_for_same_key_never_overwrite_fresh_state_or_cache() {
         path: "src/foo.rs".into(),
         old_path: None,
         context: DiffContext::Three,
+        whitespace: jbgit_core::WhitespaceMode::Default,
     };
     ts.state_mut()
         .request_slots
@@ -2057,6 +2075,7 @@ fn stale_diff_responses_for_same_key_never_overwrite_fresh_state_or_cache() {
             key: cmp_key.clone(),
             hunks: vec![],
             is_binary: false,
+            binary: None,
             is_truncated: false,
             is_too_large: false,
             lfs: None,
@@ -2073,6 +2092,7 @@ fn stale_diff_responses_for_same_key_never_overwrite_fresh_state_or_cache() {
                 lines: Vec::new(),
             }],
             is_binary: false,
+            binary: None,
             is_truncated: false,
             is_too_large: false,
             lfs: None,
@@ -2174,6 +2194,7 @@ fn conflict_resolver_scroll_clamps_without_dead_zone_and_commit_editor_follows_c
         path: "src/shared.rs".into(),
         old_path: None,
         context: DiffContext::Three,
+        whitespace: jbgit_core::WhitespaceMode::Default,
     };
     ts.deliver_engine_event(EngineEvent::RepoSnapshotLoaded {
         snapshot: Arc::new(RepoSnapshot {
@@ -2230,6 +2251,7 @@ fn conflict_resolver_scroll_clamps_without_dead_zone_and_commit_editor_follows_c
             key: diff_key,
             hunks: vec![],
             is_binary: false,
+            binary: None,
             is_truncated: false,
             is_too_large: false,
             lfs: None,

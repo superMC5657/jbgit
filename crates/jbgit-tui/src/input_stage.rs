@@ -59,6 +59,12 @@ pub(crate) fn route_commit_priority_key(
     }
 
     if state.focused_pane == PaneId::CommitDiffPreview {
+        if state.stage_workbench.diff_search().editing {
+            return Some(crate::input::keyboard::route_diff_search_editing_key(
+                key,
+                DiffScope::Stage,
+            ));
+        }
         // Support `]c` / `[c` hunk jump sequence without accidentally triggering `c` shortcuts.
         if key.code == KeyCode::Char('c')
             && !ctrl
@@ -78,6 +84,7 @@ pub(crate) fn route_commit_priority_key(
 pub(crate) fn route_commit_diff_fallback_key(key: &KeyEvent, state: &AppState) -> Vec<Action> {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     let alt = key.modifiers.contains(KeyModifiers::ALT);
+    let shift = key.modifiers.contains(KeyModifiers::SHIFT);
     let side = state
         .stage_workbench
         .current_diff_key()
@@ -87,6 +94,8 @@ pub(crate) fn route_commit_diff_fallback_key(key: &KeyEvent, state: &AppState) -
     match key.code {
         KeyCode::PageDown => vec![Action::StageDiffMoveCursor(10)],
         KeyCode::PageUp => vec![Action::StageDiffMoveCursor(-10)],
+        KeyCode::Left if shift => vec![Action::DiffScrollHoriz(DiffScope::Stage, -16)],
+        KeyCode::Right if shift => vec![Action::DiffScrollHoriz(DiffScope::Stage, 16)],
         KeyCode::Char('s' | '+') if !ctrl && !alt && !is_amend_ref => {
             vec![if side == Some(StageDiffSide::Staged) {
                 Action::StageDiffUnstageSelection
@@ -98,7 +107,9 @@ pub(crate) fn route_commit_diff_fallback_key(key: &KeyEvent, state: &AppState) -
             vec![Action::StageDiffUnstageSelection]
         }
         KeyCode::Esc => {
-            if state.stage_workbench.visual_anchor_row().is_some() {
+            if state.stage_workbench.diff_search().active {
+                vec![Action::DiffSearchClose(DiffScope::Stage)]
+            } else if state.stage_workbench.visual_anchor_row().is_some() {
                 vec![Action::StageDiffToggleVisual]
             } else {
                 vec![Action::FocusPane(PaneId::CommitChangesTree)]
@@ -211,6 +222,12 @@ pub(crate) fn route_stage_left_click(
                 vec![Action::DiffToggleSideBySide(DiffScope::Stage)]
             }
             StageDiffToolbarButton::Context => vec![Action::DiffCycleContext(DiffScope::Stage)],
+            StageDiffToolbarButton::Whitespace => {
+                vec![Action::DiffCycleWhitespace(DiffScope::Stage)]
+            }
+            StageDiffToolbarButton::SoftWrap => {
+                vec![Action::DiffToggleSoftWrap(DiffScope::Stage)]
+            }
             StageDiffToolbarButton::PrevHunk => vec![Action::DiffJumpHunk(DiffScope::Stage, -1)],
             StageDiffToolbarButton::NextHunk => vec![Action::DiffJumpHunk(DiffScope::Stage, 1)],
             StageDiffToolbarButton::Close => vec![Action::StageToggleDiffCollapsed],

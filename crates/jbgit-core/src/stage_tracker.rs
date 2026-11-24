@@ -9,7 +9,7 @@ use rustc_hash::FxHashSet;
 
 use crate::details::{
     DiffContext, DiffHunk, DiffLine, DiffLineKind, EAGER_WORD_DIFF_PAIR_BUDGET,
-    NO_NEWLINE_LINE_TEXT, apply_word_diff_with_budget,
+    NO_NEWLINE_LINE_TEXT, WhitespaceMode, apply_word_diff_with_budget,
 };
 
 /// Line ending metadata for lossless byte-for-byte document reconstruction.
@@ -436,10 +436,30 @@ pub fn build_diff_hunks(
     max_lines: usize,
     is_cancelled: impl Fn() -> bool,
 ) -> Option<(Vec<DiffHunk>, bool)> {
+    build_diff_hunks_with_whitespace(
+        before,
+        after,
+        context_len,
+        max_lines,
+        WhitespaceMode::Default,
+        is_cancelled,
+    )
+}
+
+/// Builds two-document `imara-diff` hunks using `whitespace` normalization for
+/// comparison while preserving raw original lines in `DiffLine::text`.
+pub fn build_diff_hunks_with_whitespace(
+    before: &[u8],
+    after: &[u8],
+    context_len: usize,
+    max_lines: usize,
+    whitespace: WhitespaceMode,
+    is_cancelled: impl Fn() -> bool,
+) -> Option<(Vec<DiffHunk>, bool)> {
     if is_cancelled() {
         return None;
     }
-    let blocks = compute_diff_blocks(before, after);
+    let blocks = compute_diff_blocks_with_whitespace(before, after, whitespace);
     if blocks.is_empty() {
         return Some((Vec::new(), false));
     }
@@ -460,10 +480,48 @@ pub fn build_diff_hunks(
 /// Computes exact line diff blocks between two byte slices using `imara-diff` Histogram.
 /// Line indices match `SlicedDocument::from_bytes` 1-to-1.
 pub fn compute_diff_blocks(before: &[u8], after: &[u8]) -> Vec<DiffBlock> {
+    compute_diff_blocks_with_whitespace(before, after, WhitespaceMode::Default)
+}
+
+/// Computes line diff blocks between two byte slices using `whitespace` line
+/// normalization. Returned line indices always match `SlicedDocument::from_bytes` 1-to-1.
+pub fn compute_diff_blocks_with_whitespace(
+    before: &[u8],
+    after: &[u8],
+    whitespace: WhitespaceMode,
+) -> Vec<DiffBlock> {
     if before == after {
         return Vec::new();
     }
-    let input = InternedInput::new(before, after);
+    if whitespace == WhitespaceMode::Default {
+        let input = InternedInput::new(before, after);
+        let mut diff = Diff::compute(Algorithm::Histogram, &input);
+        diff.postprocess_lines(&input);
+        return diff
+            .hunks()
+            .map(|h| DiffBlock {
+                start1: h.before.start as usize,
+                end1: h.before.end as usize,
+                start2: h.after.start as usize,
+                end2: h.after.end as usize,
+            })
+            .collect();
+    }
+
+    let doc_before = SlicedDocument::from_bytes(before);
+    let doc_after = SlicedDocument::from_bytes(after);
+    let norm_before: Vec<Vec<u8>> = (0..doc_before.len())
+        .map(|i| whitespace.normalize_line(doc_before.line_content(i)).into_owned())
+        .collect();
+    let norm_after: Vec<Vec<u8>> = (0..doc_after.len())
+        .map(|i| whitespace.normalize_line(doc_after.line_content(i)).into_owned())
+        .collect();
+    if norm_before == norm_after {
+        return Vec::new();
+    }
+    let mut input: InternedInput<&[u8]> = InternedInput::default();
+    input.update_before(norm_before.iter().map(Vec::as_slice));
+    input.update_after(norm_after.iter().map(Vec::as_slice));
     let mut diff = Diff::compute(Algorithm::Histogram, &input);
     diff.postprocess_lines(&input);
     diff.hunks()
@@ -667,11 +725,21 @@ pub struct StageLineTracker {
 
 impl StageLineTracker {
     pub fn new(vcs_bytes: &[u8], staged_bytes: &[u8], local_bytes: &[u8]) -> Self {
+        Self::new_with_whitespace(vcs_bytes, staged_bytes, local_bytes, WhitespaceMode::Default)
+    }
+
+    pub fn new_with_whitespace(
+        vcs_bytes: &[u8],
+        staged_bytes: &[u8],
+        local_bytes: &[u8],
+        whitespace: WhitespaceMode,
+    ) -> Self {
         let vcs_doc = SlicedDocument::from_bytes(vcs_bytes);
         let staged_doc = SlicedDocument::from_bytes(staged_bytes);
         let local_doc = SlicedDocument::from_bytes(local_bytes);
-        let staged_blocks = compute_diff_blocks(vcs_bytes, staged_bytes);
-        let unstaged_blocks = compute_diff_blocks(staged_bytes, local_bytes);
+        let staged_blocks = compute_diff_blocks_with_whitespace(vcs_bytes, staged_bytes, whitespace);
+        let unstaged_blocks =
+            compute_diff_blocks_with_whitespace(staged_bytes, local_bytes, whitespace);
         let ranges = merge_stage_blocks(&staged_blocks, &unstaged_blocks);
         Self {
             vcs_doc,
@@ -1262,5 +1330,63 @@ mod tests {
             });
             assert_eq!(tracker.range_for_local_line(l), linear, "local mismatch at {l}");
         }
+    }
+
+    #[test]
+    fn whitespace_modes_collapse_indent_and_trailing_space_while_preserving_display_text() {
+        let base = b"fn demo() {\n  let x = 1;\n  let y = 2;\n}\n";
+        // Only indentation & trailing spaces changed on line 2; line 3 adds spacing inside `y=2`.
+        let indent_only = b"fn demo() {\n    let   x = 1;   \n  let y = 2;\n}\n";
+        let added_spaces = b"fn demo() {\n  let x = 1;\n  let y=2;\n}\n";
+        // Real semantic edit PLUS indentation change — raw display text must keep original spaces.
+        let real_and_ws = b"fn demo() {\n    let x = 1;  \n  let y = 99;\n}\n";
+
+        assert!(!compute_diff_blocks_with_whitespace(base, indent_only, WhitespaceMode::Default).is_empty());
+        assert!(compute_diff_blocks_with_whitespace(base, indent_only, WhitespaceMode::IgnoreChange).is_empty());
+        assert!(compute_diff_blocks_with_whitespace(base, indent_only, WhitespaceMode::IgnoreAll).is_empty());
+
+        // `y = 2` vs `y=2`: IgnoreChange still sees a difference, IgnoreAll collapses it.
+        assert!(!compute_diff_blocks_with_whitespace(base, added_spaces, WhitespaceMode::IgnoreChange).is_empty());
+        assert!(compute_diff_blocks_with_whitespace(base, added_spaces, WhitespaceMode::IgnoreAll).is_empty());
+
+        // Real edit with whitespace-only neighbor: only line 3 is diffed under IgnoreChange,
+        // and displayed context/added lines preserve original raw text!
+        let (hunks, _) = build_diff_hunks_with_whitespace(
+            base,
+            real_and_ws,
+            3,
+            1000,
+            WhitespaceMode::IgnoreChange,
+            || false,
+        )
+        .expect("not cancelled");
+        assert_eq!(hunks.len(), 1);
+        assert!(
+            hunks[0]
+                .lines
+                .iter()
+                .any(|l| l.kind == DiffLineKind::Context && l.text == "  let x = 1;"),
+            "original raw indentation must be preserved: {:?}",
+            hunks[0].lines
+        );
+        assert!(
+            hunks[0]
+                .lines
+                .iter()
+                .any(|l| l.kind == DiffLineKind::Added && l.text == "  let y = 99;"),
+            "{:?}",
+            hunks[0].lines
+        );
+
+        // StageLineTracker with IgnoreChange collapses pure-indent unstaged change.
+        let tracker = StageLineTracker::new_with_whitespace(
+            base,
+            base,
+            indent_only,
+            WhitespaceMode::IgnoreChange,
+        );
+        assert!(tracker.unstaged_blocks.is_empty());
+        let (stage_hunks, _) = tracker.build_interactive_hunks(false, DiffContext::Three, 1000);
+        assert!(stage_hunks.is_empty());
     }
 }

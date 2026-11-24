@@ -669,7 +669,12 @@ impl AppState {
                     },
                     line_range: normalized_range,
                 };
-                let mut fh = FileHistoryState::new(key.clone(), self.log.details.diff.context);
+                let mut fh = FileHistoryState::with_diff_prefs(
+                    key.clone(),
+                    self.log.details.diff.context,
+                    self.log.details.diff.whitespace,
+                    self.log.details.diff.soft_wrap,
+                );
                 fh.diff.side_by_side = self.log.details.diff.side_by_side;
                 self.blur_active_pane(false);
                 self.modal_stack.dismiss_context_menus();
@@ -780,6 +785,64 @@ impl AppState {
                     fh.cycle_context();
                 }
             }
+            Action::DiffCycleWhitespace(DiffScope::FileHistory) => {
+                if let Some(fh) = self.modal_stack.file_history_mut() {
+                    fh.cycle_whitespace();
+                }
+            }
+            Action::DiffToggleSoftWrap(DiffScope::FileHistory) => {
+                if let Some(fh) = self.modal_stack.file_history_mut() {
+                    fh.toggle_soft_wrap();
+                }
+            }
+            Action::DiffScrollHoriz(DiffScope::FileHistory, delta) => {
+                if let Some(fh) = self.modal_stack.file_history_mut() {
+                    fh.diff.scroll_horiz(*delta);
+                }
+            }
+            Action::DiffSearchOpen(DiffScope::FileHistory) => {
+                if let Some(fh) = self.modal_stack.file_history_mut() {
+                    fh.diff.search.open();
+                }
+            }
+            Action::DiffSearchChar(DiffScope::FileHistory, ch) => {
+                let tab_size = self.config.jbgit.diff.tab_size;
+                if let Some(fh) = self.modal_stack.file_history_mut() {
+                    fh.diff.search.push_char(*ch);
+                    let diff = fh.current_diff_arc(&self.diff_caches);
+                    fh.diff.refresh_search(diff.as_ref(), tab_size);
+                }
+            }
+            Action::DiffSearchBackspace(DiffScope::FileHistory) => {
+                let tab_size = self.config.jbgit.diff.tab_size;
+                if let Some(fh) = self.modal_stack.file_history_mut() {
+                    fh.diff.search.backspace();
+                    let diff = fh.current_diff_arc(&self.diff_caches);
+                    fh.diff.refresh_search(diff.as_ref(), tab_size);
+                }
+            }
+            Action::DiffSearchClear(DiffScope::FileHistory) => {
+                if let Some(fh) = self.modal_stack.file_history_mut() {
+                    fh.diff.search.clear_query();
+                }
+            }
+            Action::DiffSearchConfirm(DiffScope::FileHistory) => {
+                if let Some(fh) = self.modal_stack.file_history_mut() {
+                    fh.diff.search.finish_editing();
+                }
+            }
+            Action::DiffSearchClose(DiffScope::FileHistory) => {
+                if let Some(fh) = self.modal_stack.file_history_mut() {
+                    fh.diff.search.close();
+                }
+            }
+            Action::DiffSearchJump(DiffScope::FileHistory, delta) => {
+                let tab_size = self.config.jbgit.diff.tab_size;
+                if let Some(fh) = self.modal_stack.file_history_mut() {
+                    let diff = fh.current_diff_arc(&self.diff_caches);
+                    fh.diff.jump_search(*delta, diff.as_ref(), tab_size);
+                }
+            }
             Action::DiffScroll(DiffScope::FileHistory, delta) => {
                 self.scroll_pane(ScrollPane::FileHistoryDiff, *delta);
             }
@@ -795,6 +858,14 @@ impl AppState {
             }
             Action::FileHistoryEscape => {
                 if self
+                    .modal_stack
+                    .file_history()
+                    .is_some_and(|fh| fh.diff.search.active)
+                {
+                    if let Some(fh) = self.modal_stack.file_history_mut() {
+                        fh.diff.search.close();
+                    }
+                } else if self
                     .modal_stack
                     .file_history()
                     .is_some_and(|fh| fh.diff.zoomed)
@@ -826,9 +897,11 @@ impl AppState {
                         detect_moves: self.config.jbgit.annotate.detect_moves,
                     },
                 };
-                let ann = AnnotateState::new(
+                let ann = AnnotateState::with_diff_prefs(
                     key.clone(),
                     self.log.details.diff.context,
+                    self.log.details.diff.whitespace,
+                    self.log.details.diff.soft_wrap,
                     self.log.details.diff.side_by_side,
                 );
                 self.blur_active_pane(false);
@@ -934,6 +1007,73 @@ impl AppState {
             Action::DiffCycleContext(DiffScope::Annotate) => {
                 if let Some(ann) = self.modal_stack.annotate_mut() {
                     ann.diff.cycle_context();
+                }
+            }
+            Action::DiffCycleWhitespace(DiffScope::Annotate) => {
+                if let Some(ann) = self.modal_stack.annotate_mut() {
+                    ann.diff.cycle_whitespace();
+                }
+            }
+            Action::DiffToggleSoftWrap(DiffScope::Annotate) => {
+                if let Some(ann) = self.modal_stack.annotate_mut() {
+                    ann.diff.toggle_soft_wrap();
+                }
+            }
+            Action::DiffScrollHoriz(DiffScope::Annotate, delta) => {
+                if let Some(ann) = self.modal_stack.annotate_mut() {
+                    ann.diff.scroll_horiz(*delta);
+                }
+            }
+            Action::DiffSearchOpen(DiffScope::Annotate) => {
+                if let Some(ann) = self.modal_stack.annotate_mut() {
+                    ann.diff.search.open();
+                }
+            }
+            Action::DiffSearchChar(DiffScope::Annotate, ch) => {
+                let head_oid = self.repo_snapshot.as_ref().and_then(|s| s.head_oid);
+                let tab_size = self.config.jbgit.diff.tab_size;
+                if let Some(ann) = self.modal_stack.annotate_mut() {
+                    ann.diff.search.push_char(*ch);
+                    let diff = ann
+                        .desired_diff_key(head_oid)
+                        .and_then(|k| self.diff_caches.peek_diff(&k).cloned());
+                    ann.diff.refresh_search(diff.as_ref(), tab_size);
+                }
+            }
+            Action::DiffSearchBackspace(DiffScope::Annotate) => {
+                let head_oid = self.repo_snapshot.as_ref().and_then(|s| s.head_oid);
+                let tab_size = self.config.jbgit.diff.tab_size;
+                if let Some(ann) = self.modal_stack.annotate_mut() {
+                    ann.diff.search.backspace();
+                    let diff = ann
+                        .desired_diff_key(head_oid)
+                        .and_then(|k| self.diff_caches.peek_diff(&k).cloned());
+                    ann.diff.refresh_search(diff.as_ref(), tab_size);
+                }
+            }
+            Action::DiffSearchClear(DiffScope::Annotate) => {
+                if let Some(ann) = self.modal_stack.annotate_mut() {
+                    ann.diff.search.clear_query();
+                }
+            }
+            Action::DiffSearchConfirm(DiffScope::Annotate) => {
+                if let Some(ann) = self.modal_stack.annotate_mut() {
+                    ann.diff.search.finish_editing();
+                }
+            }
+            Action::DiffSearchClose(DiffScope::Annotate) => {
+                if let Some(ann) = self.modal_stack.annotate_mut() {
+                    ann.diff.search.close();
+                }
+            }
+            Action::DiffSearchJump(DiffScope::Annotate, delta) => {
+                let head_oid = self.repo_snapshot.as_ref().and_then(|s| s.head_oid);
+                let tab_size = self.config.jbgit.diff.tab_size;
+                if let Some(ann) = self.modal_stack.annotate_mut() {
+                    let diff = ann
+                        .desired_diff_key(head_oid)
+                        .and_then(|k| self.diff_caches.peek_diff(&k).cloned());
+                    ann.diff.jump_search(*delta, diff.as_ref(), tab_size);
                 }
             }
             Action::DiffScroll(DiffScope::Annotate, delta) => {
@@ -1091,14 +1231,19 @@ impl AppState {
                 }
             }
             Action::AnnotateEscape => {
-                let (has_goto, has_visual) = match self.modal_stack.annotate() {
+                let (has_search, has_goto, has_visual) = match self.modal_stack.annotate() {
                     Some(ann) => (
+                        ann.diff.search.active,
                         ann.goto_line_input.is_some(),
                         ann.visual_anchor.is_some(),
                     ),
-                    None => (false, false),
+                    None => (false, false, false),
                 };
-                if has_goto {
+                if has_search {
+                    if let Some(ann) = self.modal_stack.annotate_mut() {
+                        ann.diff.search.close();
+                    }
+                } else if has_goto {
                     if let Some(ann) = self.modal_stack.annotate_mut() {
                         ann.goto_line_input = None;
                     }
@@ -1301,6 +1446,70 @@ impl AppState {
             Action::DiffCycleContext(DiffScope::Push) => {
                 if let Some(pd) = self.modal_stack.push_dialog_mut() {
                     pd.diff.cycle_context();
+                }
+            }
+            Action::DiffCycleWhitespace(DiffScope::Push) => {
+                if let Some(pd) = self.modal_stack.push_dialog_mut() {
+                    pd.diff.cycle_whitespace();
+                }
+            }
+            Action::DiffToggleSoftWrap(DiffScope::Push) => {
+                if let Some(pd) = self.modal_stack.push_dialog_mut() {
+                    pd.diff.toggle_soft_wrap();
+                }
+            }
+            Action::DiffScrollHoriz(DiffScope::Push, delta) => {
+                if let Some(pd) = self.modal_stack.push_dialog_mut() {
+                    pd.diff.scroll_horiz(*delta);
+                }
+            }
+            Action::DiffSearchOpen(DiffScope::Push) => {
+                if let Some(pd) = self.modal_stack.push_dialog_mut() {
+                    pd.diff.search.open();
+                }
+            }
+            Action::DiffSearchChar(DiffScope::Push, ch) => {
+                let tab_size = self.config.jbgit.diff.tab_size;
+                if let Some(pd) = self.modal_stack.push_dialog_mut() {
+                    pd.diff.search.push_char(*ch);
+                    let diff = pd
+                        .desired_diff_key(&self.diff_caches)
+                        .and_then(|k| self.diff_caches.peek_diff(&k).cloned());
+                    pd.diff.refresh_search(diff.as_ref(), tab_size);
+                }
+            }
+            Action::DiffSearchBackspace(DiffScope::Push) => {
+                let tab_size = self.config.jbgit.diff.tab_size;
+                if let Some(pd) = self.modal_stack.push_dialog_mut() {
+                    pd.diff.search.backspace();
+                    let diff = pd
+                        .desired_diff_key(&self.diff_caches)
+                        .and_then(|k| self.diff_caches.peek_diff(&k).cloned());
+                    pd.diff.refresh_search(diff.as_ref(), tab_size);
+                }
+            }
+            Action::DiffSearchClear(DiffScope::Push) => {
+                if let Some(pd) = self.modal_stack.push_dialog_mut() {
+                    pd.diff.search.clear_query();
+                }
+            }
+            Action::DiffSearchConfirm(DiffScope::Push) => {
+                if let Some(pd) = self.modal_stack.push_dialog_mut() {
+                    pd.diff.search.finish_editing();
+                }
+            }
+            Action::DiffSearchClose(DiffScope::Push) => {
+                if let Some(pd) = self.modal_stack.push_dialog_mut() {
+                    pd.diff.search.close();
+                }
+            }
+            Action::DiffSearchJump(DiffScope::Push, delta) => {
+                let tab_size = self.config.jbgit.diff.tab_size;
+                if let Some(pd) = self.modal_stack.push_dialog_mut() {
+                    let diff = pd
+                        .desired_diff_key(&self.diff_caches)
+                        .and_then(|k| self.diff_caches.peek_diff(&k).cloned());
+                    pd.diff.jump_search(*delta, diff.as_ref(), tab_size);
                 }
             }
             Action::DiffScroll(DiffScope::Push, delta) => {

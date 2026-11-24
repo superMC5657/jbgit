@@ -84,7 +84,7 @@ jbgit 默认采用**零冲突统一键位（`preset = "default"`）**，并通�
 | `<Ctrl-b>` / `<Alt-b>` | 折叠 / 展开左侧分支树栏位 |
 | `c` | 检出 (Checkout) 选中的提交或分支 |
 | `n` | 在当前提交创建新分支 |
-| `y` | 复制选中提交哈希 |
+| `y` | 复制选中提交哈希（提交右键菜单 / 命令面板亦支持 **Copy Commit Message** 复制完整提交说明与 **Copy Row Summary** 复制 `hash subject — author (date)` 行摘要，支持多选逐行复制） |
 | `<Ctrl-d>` | 版本差异对比（任意选中两个提交（含非连续）时自动按较旧 → 较新对比两者；单选时开关差异预览） |
 | `X` | *(双提交对比模式)* 交换对比方向（Base ↔ Target），亦可在变更树 / Diff 工具栏点击 `⇄ 交换` |
 | `a` | 切换「仅显示受影响变更」（启用 Paths 路径筛选时仅列出命中路径的变更文件，标题栏显示可点击的 `[已筛选: M/N]` 徽标） |
@@ -153,7 +153,11 @@ jbgit 默认采用**零冲突统一键位（`preset = "default"`）**，并通�
 | `{` / `}` | 跳转至上一个 / 下一个变更文件 |
 | `S` | 切换单列统一对比 (Unified) / 双列并排对比 (Side-by-Side) |
 | `w` | 循环切换上下文保留行数 (3 行 / 10 行 / 全量) |
-| `m` / `z`（或 `<F4>` / `<Ctrl-Enter>`） | *(Log Diff)* 切换停靠位置 (`m`) / 全屏差异预览 (`z`/`F4`/`Esc`)；全屏下按 `P` 切换合并父提交 |
+| `b` | 循环切换忽略空白模式（`Exact` → `-b` 忽略空白数量变化 → `-w` 忽略全部空白；Commit Diff 开启忽略空白时自动禁用局部行/块暂存，避免丢失空白） |
+| `W` | 切换软换行（Soft Wrap，按显示宽度与 CJK 字符边界自动折行并同步滚屏高度） |
+| `h` / `l` 或 `<Left>` / `<Right>` | 未开启软换行时按列水平滚动（`<Shift-Left>` / `<Shift-Right>` 大步进），标题栏显示 `Col +N` 指示；Tab 字符按真实 `tab_size` 列对齐展开 |
+| `/` · `n` / `N` · `<Esc>` | Diff 内联搜索：`/` 打开底部搜索栏（忽略大小写、实时统计 `[cur/total]` 并高亮命中片段），`Enter` 确认后用 `n` / `N` 跳转下一/上一命中并自动居中滚屏，`<Esc>` 优先关闭搜索 |
+| `m` / `z`（或 `<F4>` / `<Ctrl-Enter>`） | *(Log Diff)* 切换停靠位置 (`m`) / 全屏差异预览 (`z`/`F4`/`Esc`)；全屏下按 `P` 切换合并父提交；二进制文件自动展示 Old/New 字节体积变化与短 Blob OID 元数据卡片 |
 | `<Space>` / `v` / `d` | *(Commit Diff)* 暂存/取消 (`Space`/`s`/`u`) · 行级可视选择 (`v`) · 回滚选区 (`d`/`Del`，`<Ctrl-z>` 撤销) |
 | `x` / `i` / `c` / `<Esc>` | *(Commit Diff)* 切换未暂存与已暂存侧 (`x`) · 三方检视 (`i`) · 聚焦提交说明 (`c`) · 退出可视选择或返回变更树 (`Esc`) |
 
@@ -359,6 +363,12 @@ tab_size = 4
 # Diff 上下文保留行数
 context_lines = 3
 
+# 默认忽略空白模式: "default" (精确) | "ignore-change" (-b) | "ignore-all" (-w)
+whitespace = "default"
+
+# 是否默认开启 Diff 软换行
+soft_wrap = false
+
 [layout]
 # --- Log 提交历史视图 ---
 # 横向三栏权重: [左侧分支树, 中间提交图谱, 右侧变更与详情区]
@@ -534,10 +544,10 @@ prepend_keymap = [
 | 作用域 | 可用 `run` 动作标识符 |
 | :--- | :--- |
 | `global` | `quit`, `help`, `context_menu`, `refresh`, `tab_commit`, `tab_log`, `tab_branches`, `tab_stash`, `tab_console`, `focus_next`, `focus_prev`, `toggle_branches_popup`, `toggle_branches_pane`, `git_fetch`, `git_pull`, `git_push`, `update_project`, `configure_remotes`, `switch_repository`, `worktrees`, `resolve_conflicts`, `update_submodules`, `unshallow`, `goto_revision`, `palette`, `toggle_glyph_mode`, `cycle_graph_renderer`, `git_status_probe`, `noop` |
-| `log` | `cursor_down`, `cursor_up`, `goto_top`, `goto_bottom`, `page_down_half`, `page_up_half`, `goto_revision`, `focus_filter`, `toggle_branches_pane`, `toggle_log_row_selection`, `compare_or_diff`, `swap_compare_direction`, `toggle_only_affected_changes`, `zoom_diff`, `copy_hash`, `checkout`, `new_branch`, `uncommit`, `reword`, `drop_commit`, `choose_parent`, `toggle_group`, `file_history`, `annotate`, `collapse_linear_branch`, `expand_linear_branch`, `collapse_all_linear_branches`, `expand_all_linear_branches`, `browse_revision` |
+| `log` | `cursor_down`, `cursor_up`, `goto_top`, `goto_bottom`, `page_down_half`, `page_up_half`, `goto_revision`, `focus_filter`, `toggle_branches_pane`, `toggle_log_row_selection`, `compare_or_diff`, `swap_compare_direction`, `toggle_only_affected_changes`, `zoom_diff`, `copy_hash`, `copy_commit_message`, `copy_row_summary`, `checkout`, `new_branch`, `uncommit`, `reword`, `drop_commit`, `choose_parent`, `toggle_group`, `file_history`, `annotate`, `collapse_linear_branch`, `expand_linear_branch`, `collapse_all_linear_branches`, `expand_all_linear_branches`, `browse_revision` |
 | `branch` | `branch_search`, `toggle_favorite`, `checkout`, `new_branch`, `rename_branch`, `delete_branch`, `navigate_branch` |
 | `commit` | `cursor_down`, `cursor_up`, `goto_top`, `goto_bottom`, `toggle_stage`, `stage_selection`, `unstage_selection`, `focus_commit_msg`, `commit`, `commit_and_push`, `toggle_amend`, `toggle_signoff`, `commit_history`, `select_all`, `discard_changes`, `toggle_group`, `edit_file`, `file_history`, `annotate`, `apply_patch`, `apply_patch_clipboard` |
-| `diff` | `cursor_down`, `cursor_up`, `goto_top`, `goto_bottom`, `prev_hunk`, `next_hunk`, `prev_file`, `next_file`, `toggle_side_by_side`, `cycle_diff_context`, `cycle_diff_dock`, `zoom_diff`, `swap_compare_direction`, `toggle_stage`, `stage_selection`, `unstage_selection`, `toggle_visual`, `rollback_selection`, `undo_rollback`, `switch_diff_side`, `three_way_inspector` |
+| `diff` | `cursor_down`, `cursor_up`, `goto_top`, `goto_bottom`, `prev_hunk`, `next_hunk`, `prev_file`, `next_file`, `toggle_side_by_side`, `cycle_diff_context`, `cycle_diff_whitespace`, `toggle_diff_soft_wrap`, `diff_scroll_left`, `diff_scroll_right`, `diff_search`, `diff_search_next`, `diff_search_prev`, `cycle_diff_dock`, `zoom_diff`, `swap_compare_direction`, `toggle_stage`, `stage_selection`, `unstage_selection`, `toggle_visual`, `rollback_selection`, `undo_rollback`, `switch_diff_side`, `three_way_inspector` |
 | `stash` | `cursor_down`, `cursor_up`, `goto_top`, `goto_bottom`, `stash_new`, `stash_apply`, `stash_pop`, `stash_drop`, `stash_branch`, `stash_clear`, `toggle_group` |
 | `console` | `cursor_down`, `cursor_up`, `goto_top`, `goto_bottom`, `page_down_half`, `page_up_half` |
 

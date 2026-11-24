@@ -47,6 +47,12 @@ tab_size = 4
 # Diff 上下文保留行数
 context_lines = 3
 
+# 空白忽略模式: "default" (精确比对), "ignore-change" (-b 忽略空白数量变化), "ignore-all" (-w 忽略所有空白)
+whitespace = "default"
+
+# Diff 超长行是否默认软换行 (false = 支持左右水平滚动)
+soft_wrap = false
+
 [annotate]
 # 逐行注解 (Git Blame) 默认行为
 ignore_whitespace = false

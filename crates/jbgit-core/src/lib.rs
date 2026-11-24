@@ -33,17 +33,18 @@ pub use console::{
     ConsoleLine, ConsoleLineSeverity, ConsoleStream, GitConsoleEntry, classify_console_line,
 };
 pub use details::{
-    BlameBundle, BlameCommit, BlameKey, BlameLine, BlameOptions, ChangeRowKind, ChangeTreeRow,
-    CommitChangesBundle, CommitDetails, CommitSignature, DetailsKey, DetailsMode, DiffContext,
-    DiffHunk, DiffLine, DiffLineKind, EAGER_WORD_DIFF_PAIR_BUDGET, FileChange, FileDiff,
-    FileDiffKey, FileHistoryBundle, FileHistoryEntry, FileHistoryKey, FileModeChange,
+    BinaryDiffInfo, BlameBundle, BlameCommit, BlameKey, BlameLine, BlameOptions, ChangeRowKind,
+    ChangeTreeRow, CommitChangesBundle, CommitDetails, CommitSignature, DetailsKey, DetailsMode,
+    DiffContext, DiffHunk, DiffLine, DiffLineKind, EAGER_WORD_DIFF_PAIR_BUDGET, FileChange,
+    FileDiff, FileDiffKey, FileHistoryBundle, FileHistoryEntry, FileHistoryKey, FileModeChange,
     GIT_MODE_EXECUTABLE, GIT_MODE_GITLINK, GIT_MODE_REGULAR, GIT_MODE_SYMLINK, LfsDiff,
     LfsPointer, MAX_DIFF_FILE_BYTES, MAX_OUTGOING_COMMITS, MAX_SELECTION_HISTORY_LINES,
     MAX_WORD_DIFF_LINE_BYTES, MessageLineKind, NO_NEWLINE_LINE_TEXT, OutgoingBundle, OutgoingKey,
-    PersonStamp, SideBySideRow, SignatureStatus, apply_word_diff, apply_word_diff_with_budget,
-    build_change_rows, build_change_rows_filtered, classify_message_line,
-    has_lfs_filter_in_gitattributes, issue_ref_ranges,
-    parse_lfs_pointer, parse_unified_patch_hunks, side_by_side_rows, word_diff,
+    PersonStamp, SideBySideRow, SignatureStatus, WhitespaceMode, apply_word_diff,
+    apply_word_diff_with_budget, build_change_rows, build_change_rows_filtered,
+    classify_message_line, format_byte_size, format_signed_byte_delta,
+    has_lfs_filter_in_gitattributes, issue_ref_ranges, paired_line_in_hunk, parse_lfs_pointer,
+    parse_unified_patch_hunks, side_by_side_rows, word_diff,
 };
 pub use epoch::{EpochToken, RequestEpoch, RequestSlot, RequestSlotId, RequestSlotTable, SlotRegistry};
 pub use filter::{
@@ -83,8 +84,8 @@ pub use stage::{
 pub use stage_tracker::{
     BINARY_SNIFF_BYTES, DiffBlock, LineEnding, LineGutterMark, LineSelection, LineSlice,
     MAX_DIFF_LINES, SlicedDocument, StageDiffHunk, StageDiffLineMeta, StageLineTracker,
-    StagedRange, assemble_hunks, build_diff_hunks, compute_diff_blocks, is_binary_bytes,
-    merge_stage_blocks,
+    StagedRange, assemble_hunks, build_diff_hunks, build_diff_hunks_with_whitespace,
+    compute_diff_blocks, compute_diff_blocks_with_whitespace, is_binary_bytes, merge_stage_blocks,
 };
 pub use tree::{
     TreeBlob, TreeBlobContent, TreeBlobKey, TreeEntry, TreeEntryKind, TreeKey, TreeListing,

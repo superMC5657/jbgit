@@ -333,6 +333,13 @@ pub fn is_action_applicable(run: &KeyAction, state: &AppState) -> bool {
                 | KeyAction::NextFile
                 | KeyAction::ToggleSideBySide
                 | KeyAction::CycleDiffContext
+                | KeyAction::CycleDiffWhitespace
+                | KeyAction::ToggleDiffSoftWrap
+                | KeyAction::DiffScrollLeft
+                | KeyAction::DiffScrollRight
+                | KeyAction::DiffSearch
+                | KeyAction::DiffSearchNext
+                | KeyAction::DiffSearchPrev
                 | KeyAction::ZoomDiff
                 | KeyAction::ChooseParent
                 | KeyAction::SwapCompareDirection
@@ -400,7 +407,14 @@ pub fn is_action_applicable(run: &KeyAction, state: &AppState) -> bool {
         | KeyAction::PrevFile
         | KeyAction::NextFile
         | KeyAction::ToggleSideBySide
-        | KeyAction::CycleDiffContext => is_diff_focused(state),
+        | KeyAction::CycleDiffContext
+        | KeyAction::CycleDiffWhitespace
+        | KeyAction::ToggleDiffSoftWrap
+        | KeyAction::DiffScrollLeft
+        | KeyAction::DiffScrollRight
+        | KeyAction::DiffSearch
+        | KeyAction::DiffSearchNext
+        | KeyAction::DiffSearchPrev => is_diff_focused(state),
 
         KeyAction::Checkout => {
             state.active_tab == WorkspaceTab::Log
@@ -411,6 +425,8 @@ pub fn is_action_applicable(run: &KeyAction, state: &AppState) -> bool {
         }
         KeyAction::CopyHash
         | KeyAction::ToggleLogRowSelection
+        | KeyAction::CopyCommitMessage
+        | KeyAction::CopyRowSummary
         | KeyAction::Uncommit
         | KeyAction::Reword
         | KeyAction::DropCommit
@@ -785,6 +801,8 @@ pub fn execute_action(run: &KeyAction, state: &AppState) -> Option<Vec<Action>> 
                 Some(vec![Action::CopyText(text)])
             }
         }
+        KeyAction::CopyCommitMessage => Some(notice_on_err(commit_copy_message(state))),
+        KeyAction::CopyRowSummary => Some(notice_on_err(commit_copy_row_summary(state))),
         KeyAction::Checkout => {
             if state.focused_pane == PaneId::LogBranchesTree {
                 selected_branch_command(state, &KeyAction::Checkout)
@@ -1032,6 +1050,21 @@ pub fn execute_action(run: &KeyAction, state: &AppState) -> Option<Vec<Action>> 
         KeyAction::NextFile => Some(vec![Action::DiffNextFile(diff_scope(state), 1)]),
         KeyAction::ToggleSideBySide => Some(vec![Action::DiffToggleSideBySide(diff_scope(state))]),
         KeyAction::CycleDiffContext => Some(vec![Action::DiffCycleContext(diff_scope(state))]),
+        KeyAction::CycleDiffWhitespace => {
+            Some(vec![Action::DiffCycleWhitespace(diff_scope(state))])
+        }
+        KeyAction::ToggleDiffSoftWrap => Some(vec![Action::DiffToggleSoftWrap(diff_scope(state))]),
+        KeyAction::DiffScrollLeft => Some(vec![Action::DiffScrollHoriz(
+            diff_scope(state),
+            -crate::diff_session::DIFF_HORIZ_SCROLL_STEP,
+        )]),
+        KeyAction::DiffScrollRight => Some(vec![Action::DiffScrollHoriz(
+            diff_scope(state),
+            crate::diff_session::DIFF_HORIZ_SCROLL_STEP,
+        )]),
+        KeyAction::DiffSearch => Some(vec![Action::DiffSearchOpen(diff_scope(state))]),
+        KeyAction::DiffSearchNext => Some(vec![Action::DiffSearchJump(diff_scope(state), 1)]),
+        KeyAction::DiffSearchPrev => Some(vec![Action::DiffSearchJump(diff_scope(state), -1)]),
         KeyAction::CycleDiffDock => Some(vec![Action::DiffCycleDock]),
         KeyAction::ZoomDiff => Some(vec![Action::ZoomDiff(!state.log.details.diff.zoomed)]),
 
@@ -1049,6 +1082,62 @@ pub fn execute_action(run: &KeyAction, state: &AppState) -> Option<Vec<Action>> 
 
 fn op(o: GitOp) -> Vec<Action> {
     vec![Action::RunGitOp(o)]
+}
+
+/// Copies the full commit message (subject + body) of selected Log commit(s).
+pub fn commit_copy_message(state: &AppState) -> CommandResult {
+    let Some(snap) = state.repo_snapshot.as_deref() else {
+        return Err(state.i18n.t("toast.repo_not_loaded").to_string());
+    };
+    let oids = state.selected_commits_oldest_first();
+    if oids.is_empty() {
+        return Err(state.i18n.t("menu.log.need_single").to_string());
+    }
+    let bundle = state.log.details.current_bundle(&state.diff_caches);
+    let mut parts = Vec::with_capacity(oids.len());
+    for oid in oids.iter().rev() {
+        let from_details = bundle
+            .and_then(|b| b.details.iter().find(|d| d.oid == *oid))
+            .map(|d| d.message.trim_end_matches(['\r', '\n']).to_string())
+            .filter(|m| !m.is_empty());
+        if let Some(msg) = from_details {
+            parts.push(msg);
+        } else if let Some(c) = snap.commit(oid) {
+            parts.push(c.full_message());
+        }
+    }
+    if parts.is_empty() {
+        return Err(state.i18n.t("toast.repo_not_loaded").to_string());
+    }
+    Ok(vec![Action::CopyText(parts.join("\n\n"))])
+}
+
+/// Copies one-line `hash subject — author (date)` summaries for selected Log commit(s).
+pub fn commit_copy_row_summary(state: &AppState) -> CommandResult {
+    let Some(snap) = state.repo_snapshot.as_deref() else {
+        return Err(state.i18n.t("toast.repo_not_loaded").to_string());
+    };
+    let oids = state.selected_commits_oldest_first();
+    if oids.is_empty() {
+        return Err(state.i18n.t("menu.log.need_single").to_string());
+    }
+    let mut lines = Vec::with_capacity(oids.len());
+    for oid in oids.iter().rev() {
+        if let Some(c) = snap.commit(oid) {
+            let date = crate::log_view::format_absolute_time(c.timestamp, true);
+            lines.push(format!(
+                "{} {} — {} ({})",
+                c.oid.short(),
+                c.subject,
+                c.author_name,
+                date
+            ));
+        }
+    }
+    if lines.is_empty() {
+        return Err(state.i18n.t("toast.repo_not_loaded").to_string());
+    }
+    Ok(vec![Action::CopyText(lines.join("\n"))])
 }
 
 fn dialog(d: Dialog) -> Vec<Action> {

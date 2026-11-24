@@ -8,7 +8,7 @@ use std::time::Instant;
 use jbgit_core::graph::SortType;
 use jbgit_core::{
     BranchFilter, BranchNodeKind, CommitSummary, DetailsKey, DetailsMode, DiffContext, Oid, PaneId,
-    PathFilter, RefKind, RepoSnapshot, RequestSlot, RequestSlotId,
+    PathFilter, RefKind, RepoSnapshot, RequestSlot, RequestSlotId, WhitespaceMode,
 };
 
 use crate::app::{
@@ -64,12 +64,16 @@ pub struct LogWorkbench {
 impl LogWorkbench {
     pub fn new(
         diff_context: DiffContext,
+        diff_whitespace: WhitespaceMode,
+        diff_soft_wrap: bool,
         compact_refs: bool,
         show_only_affected_changes: bool,
         graph_mode: GraphRendererMode,
     ) -> Self {
         let mut details = DetailsPaneState::default();
         details.diff.context = diff_context;
+        details.diff.whitespace = diff_whitespace;
+        details.diff.soft_wrap = diff_soft_wrap;
         let presentation = LogPresentation {
             compact_refs,
             show_only_affected_changes,
@@ -149,6 +153,7 @@ impl LogWorkbench {
         if leaving_tab {
             self.details.diff.zoomed = false;
         }
+        self.details.diff.search.editing = false;
         self.filter.editing_text = false;
         self.branches.searching = false;
     }
@@ -1053,6 +1058,51 @@ impl LogWorkbench {
                     ctx.i18n
                         .t_fmt("toast.diff_context_set", &[("ctx", ctx_lbl)]),
                 );
+            }
+            Action::DiffCycleWhitespace(DiffScope::Log) => {
+                self.details.diff.cycle_whitespace();
+                let ws_lbl = ctx.i18n.diff_whitespace_label(self.details.diff.whitespace);
+                *ctx.status_notice = Some(
+                    ctx.i18n
+                        .t_fmt("toast.diff_whitespace_set", &[("ws", ws_lbl)]),
+                );
+            }
+            Action::DiffToggleSoftWrap(DiffScope::Log) => {
+                self.details.diff.toggle_soft_wrap();
+                let on_off = ctx.i18n.on_off(self.details.diff.soft_wrap);
+                *ctx.status_notice = Some(
+                    ctx.i18n
+                        .t_fmt("toast.diff_soft_wrap_set", &[("state", on_off)]),
+                );
+            }
+            Action::DiffScrollHoriz(DiffScope::Log, delta) => {
+                self.details.diff.scroll_horiz(*delta);
+            }
+            Action::DiffSearchOpen(DiffScope::Log) => {
+                self.details.diff.search.open();
+            }
+            Action::DiffSearchChar(DiffScope::Log, ch) => {
+                self.details.diff.search.push_char(*ch);
+                let diff = self.details.current_diff(ctx.diff_caches).cloned();
+                self.details.diff.refresh_search(diff.as_ref(), 4);
+            }
+            Action::DiffSearchBackspace(DiffScope::Log) => {
+                self.details.diff.search.backspace();
+                let diff = self.details.current_diff(ctx.diff_caches).cloned();
+                self.details.diff.refresh_search(diff.as_ref(), 4);
+            }
+            Action::DiffSearchClear(DiffScope::Log) => {
+                self.details.diff.search.clear_query();
+            }
+            Action::DiffSearchConfirm(DiffScope::Log) => {
+                self.details.diff.search.finish_editing();
+            }
+            Action::DiffSearchClose(DiffScope::Log) => {
+                self.details.diff.search.close();
+            }
+            Action::DiffSearchJump(DiffScope::Log, delta) => {
+                let diff = self.details.current_diff(ctx.diff_caches).cloned();
+                self.details.diff.jump_search(*delta, diff.as_ref(), 4);
             }
             Action::DiffScroll(DiffScope::Log, delta) => {
                 self.scroll_pane(ScrollPane::LogDiff, *delta, ctx.diff_caches);

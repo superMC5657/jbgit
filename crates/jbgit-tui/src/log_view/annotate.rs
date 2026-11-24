@@ -3,6 +3,7 @@ use std::time::Instant;
 
 use jbgit_core::{
     BlameBundle, BlameCommit, BlameKey, BlameLine, DetailsKey, DiffContext, FileDiffKey, Oid,
+    WhitespaceMode,
 };
 
 use crate::app::ScrollViewport;
@@ -51,7 +52,17 @@ pub struct AnnotateState {
 
 impl AnnotateState {
     pub fn new(key: BlameKey, diff_context: DiffContext, side_by_side: bool) -> Self {
-        let mut diff = DiffSession::new(diff_context);
+        Self::with_diff_prefs(key, diff_context, WhitespaceMode::Default, false, side_by_side)
+    }
+
+    pub fn with_diff_prefs(
+        key: BlameKey,
+        diff_context: DiffContext,
+        diff_whitespace: WhitespaceMode,
+        diff_soft_wrap: bool,
+        side_by_side: bool,
+    ) -> Self {
+        let mut diff = DiffSession::from_prefs(diff_context, diff_whitespace, diff_soft_wrap);
         diff.side_by_side = side_by_side;
         Self {
             key,
@@ -181,6 +192,7 @@ impl AnnotateState {
                 old_path: (!line.orig_path.is_empty() && line.orig_path != bundle.key.path)
                     .then(|| line.orig_path.clone()),
                 context: self.diff.context,
+                whitespace: self.diff.whitespace,
             });
         }
         let commit = bundle.commits.get(&line.oid);
@@ -199,6 +211,7 @@ impl AnnotateState {
             path,
             old_path,
             context: self.diff.context,
+            whitespace: self.diff.whitespace,
         })
     }
 

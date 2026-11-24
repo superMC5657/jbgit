@@ -366,6 +366,8 @@ fn stage_diff_common_items(
 ) -> Vec<ContextMenuItem> {
     let i18n = &state.i18n;
     let sbs_sc = catalog::shortcut_for_action(state, &[KeymapScope::Diff], &KeyAction::ToggleSideBySide);
+    let ws_sc = catalog::shortcut_for_action(state, &[KeymapScope::Diff], &KeyAction::CycleDiffWhitespace);
+    let wrap_sc = catalog::shortcut_for_action(state, &[KeymapScope::Diff], &KeyAction::ToggleDiffSoftWrap);
     let three_sc = catalog::shortcut_for_action(state, &[KeymapScope::Diff], &KeyAction::ThreeWayInspector);
     let edit_sc = catalog::shortcut_for_action(state, &[KeymapScope::Commit], &KeyAction::EditFile);
     let ann_sc = catalog::shortcut_for_action(state, &[KeymapScope::Commit], &KeyAction::Annotate);
@@ -392,6 +394,18 @@ fn stage_diff_common_items(
             Some('t'),
             sbs_sc.as_deref(),
             vec![Action::DiffToggleSideBySide(DiffScope::Stage)],
+        ),
+        run(
+            i18n.t("menu.log.cycle_whitespace"),
+            None,
+            ws_sc.as_deref(),
+            vec![Action::DiffCycleWhitespace(DiffScope::Stage)],
+        ),
+        run(
+            i18n.t("menu.log.toggle_soft_wrap"),
+            Some('w'),
+            wrap_sc.as_deref(),
+            vec![Action::DiffToggleSoftWrap(DiffScope::Stage)],
         ),
         run(
             i18n.t("menu.stage.inspect_three_way"),
@@ -427,7 +441,8 @@ pub fn stage_diff_menu_items(state: &AppState) -> Vec<ContextMenuItem> {
     let is_readonly_type = state
         .stage_workbench
         .current_diff()
-        .is_some_and(|d| d.is_line_staging_disabled());
+        .is_some_and(|d| d.is_line_staging_disabled())
+        || state.stage_workbench.diff_whitespace() != jbgit_core::WhitespaceMode::Default;
     let editable =
         matches!(side, Some(StageDiffSide::Staged | StageDiffSide::Unstaged)) && !is_readonly_type;
     let staged = side == Some(StageDiffSide::Staged);
@@ -500,7 +515,8 @@ pub fn stage_hunk_menu_items(state: &AppState, hunk_idx: usize) -> Vec<ContextMe
     let is_readonly_type = state
         .stage_workbench
         .current_diff()
-        .is_some_and(|d| d.is_line_staging_disabled());
+        .is_some_and(|d| d.is_line_staging_disabled())
+        || state.stage_workbench.diff_whitespace() != jbgit_core::WhitespaceMode::Default;
     let editable =
         matches!(side, Some(StageDiffSide::Staged | StageDiffSide::Unstaged)) && !is_readonly_type;
     let staged = side == Some(StageDiffSide::Staged);

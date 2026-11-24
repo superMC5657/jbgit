@@ -1,4 +1,4 @@
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 use jbgit_core::{
     AmendCommitPreview, DiffContext, DiffLineKind, GitOp, LineSelection, LruCache, PaneId,
     RefreshScope, RepoSnapshot, RequestSlot, RequestSlotId, StageNodeKind, StageStatusSnapshot,
-    StageTarget, StageTreeOptions, StageTreeRow, StageTreeRowKind, StagedRange,
+    StageTarget, StageTreeOptions, StageTreeRow, StageTreeRowKind, StagedRange, WhitespaceMode,
     build_stage_tree_rows, collect_targets_under_row, next_anchor_after_mutation,
 };
 use jbgit_engine::{
@@ -19,7 +19,9 @@ use crate::app::{
     apply_scroll_delta,
 };
 use crate::dialogs::{ChoiceDialog, Dialog};
-use crate::diff_session::{DiffRow, build_stage_diff_rows};
+use crate::diff_session::{
+    DIFF_HORIZ_SCROLL_MAX, DiffRow, DiffSearchState, build_stage_diff_rows, diff_row_visual_height,
+};
 use crate::hit_test::DiffHunkActionKind;
 use crate::i18n::I18n;
 use crate::syntax::{HighlightedDiff, LazyWordDiffCache};
@@ -126,6 +128,11 @@ pub struct CommitWorkbench {
     diff_collapsed: bool,
     diff_side_by_side: bool,
     diff_context: DiffContext,
+    diff_whitespace: WhitespaceMode,
+    diff_horiz_scroll: u16,
+    diff_soft_wrap: bool,
+    diff_search: DiffSearchState,
+    diff_wrap_widths: Cell<(usize, usize, usize)>,
     diff_scroll: ScrollViewport,
     diff_cursor_row: usize,
     visual_anchor_row: Option<usize>,
@@ -180,6 +187,11 @@ impl Default for CommitWorkbench {
             diff_collapsed: false,
             diff_side_by_side: false,
             diff_context: DiffContext::Three,
+            diff_whitespace: WhitespaceMode::Default,
+            diff_horiz_scroll: 0,
+            diff_soft_wrap: false,
+            diff_search: DiffSearchState::default(),
+            diff_wrap_widths: Cell::new((80, 36, 36)),
             diff_scroll: ScrollViewport::new(),
             diff_cursor_row: 0,
             visual_anchor_row: None,
@@ -224,8 +236,18 @@ impl Default for CommitWorkbench {
 
 impl CommitWorkbench {
     pub fn with_diff_context(diff_context: DiffContext) -> Self {
+        Self::with_diff_prefs(diff_context, WhitespaceMode::Default, false)
+    }
+
+    pub fn with_diff_prefs(
+        diff_context: DiffContext,
+        diff_whitespace: WhitespaceMode,
+        diff_soft_wrap: bool,
+    ) -> Self {
         Self {
             diff_context,
+            diff_whitespace,
+            diff_soft_wrap,
             ..Self::default()
         }
     }
@@ -248,6 +270,67 @@ impl CommitWorkbench {
 
     pub fn diff_context(&self) -> DiffContext {
         self.diff_context
+    }
+
+    pub fn diff_whitespace(&self) -> WhitespaceMode {
+        self.diff_whitespace
+    }
+
+    pub fn diff_horiz_scroll(&self) -> u16 {
+        self.diff_horiz_scroll
+    }
+
+    pub fn diff_soft_wrap(&self) -> bool {
+        self.diff_soft_wrap
+    }
+
+    pub fn diff_search(&self) -> &DiffSearchState {
+        &self.diff_search
+    }
+
+    pub fn record_diff_wrap_widths(
+        &self,
+        unified_w: usize,
+        split_left_w: usize,
+        split_right_w: usize,
+    ) {
+        self.diff_wrap_widths
+            .set((unified_w.max(1), split_left_w.max(1), split_right_w.max(1)));
+    }
+
+    pub fn diff_visual_row_offset_of(&self, row_idx: usize, tab_size: usize) -> usize {
+        if !self.diff_soft_wrap {
+            return row_idx;
+        }
+        let Some(diff) = self.current_diff.as_ref() else {
+            return row_idx;
+        };
+        let rows = self.diff_rows();
+        let (uw, slw, srw) = self.diff_wrap_widths.get();
+        rows.iter()
+            .take(row_idx)
+            .map(|&r| {
+                diff_row_visual_height(r, |hh| &diff.hunks[hh].hunk, true, uw, slw, srw, tab_size)
+            })
+            .sum()
+    }
+
+    pub fn diff_total_visual_rows(&self, tab_size: usize) -> usize {
+        let Some(diff) = self.current_diff.as_ref() else {
+            return 0;
+        };
+        let rows = self.diff_rows();
+        if !self.diff_soft_wrap {
+            return rows.len() + usize::from(diff.is_truncated);
+        }
+        let (uw, slw, srw) = self.diff_wrap_widths.get();
+        let body: usize = rows
+            .iter()
+            .map(|&r| {
+                diff_row_visual_height(r, |hh| &diff.hunks[hh].hunk, true, uw, slw, srw, tab_size)
+            })
+            .sum();
+        body + usize::from(diff.is_truncated)
     }
 
     pub fn diff_scroll(&self) -> &ScrollViewport {
@@ -618,11 +701,13 @@ impl CommitWorkbench {
     pub fn on_blur(&mut self) {
         self.editing_author = false;
         self.visual_anchor_row = None;
+        self.diff_search.editing = false;
     }
 
     /// Cleans up inline text inputs without clearing diff visual line selection.
     pub fn blur_text_inputs(&mut self) {
         self.editing_author = false;
+        self.diff_search.editing = false;
     }
 
     pub fn next_deadline(&self) -> Option<Instant> {
@@ -862,6 +947,7 @@ impl CommitWorkbench {
                     old_path: old_path.clone(),
                     side,
                     context: self.diff_context,
+                    whitespace: self.diff_whitespace,
                 })
             }
             StageTreeRowKind::AmendFile { path, old_path, .. } => Some(StageDiffKey {
@@ -869,6 +955,7 @@ impl CommitWorkbench {
                 old_path: old_path.clone(),
                 side: StageDiffSide::AmendCommit,
                 context: self.diff_context,
+                whitespace: self.diff_whitespace,
             }),
             StageTreeRowKind::Group {
                 kind: StageNodeKind::AmendCommit,
@@ -879,6 +966,7 @@ impl CommitWorkbench {
                     old_path: old_path.clone(),
                     side: StageDiffSide::AmendCommit,
                     context: self.diff_context,
+                    whitespace: self.diff_whitespace,
                 }),
                 _ => None,
             }),
@@ -900,6 +988,7 @@ impl CommitWorkbench {
                     old_path: first.old_path.clone(),
                     side,
                     context: self.diff_context,
+                    whitespace: self.diff_whitespace,
                 })
             }
         }
@@ -1814,8 +1903,10 @@ impl CommitWorkbench {
                         .viewport_height()
                         .filter(|&h| h > 0)
                         .unwrap_or(18);
+                    let vis_row = self.diff_visual_row_offset_of(self.diff_cursor_row, 4);
+                    let total_vis = self.diff_total_visual_rows(4).max(len);
                     self.diff_scroll
-                        .ensure_visible(self.diff_cursor_row, len, viewport_h);
+                        .ensure_visible(vis_row, total_vis, viewport_h);
                 }
             }
             Action::DiffScroll(DiffScope::Stage, delta) => {
@@ -1841,7 +1932,8 @@ impl CommitWorkbench {
                             .unwrap_or(*headers.last().unwrap())
                     };
                     self.diff_cursor_row = target;
-                    self.diff_scroll.set_offset(target);
+                    let vis_target = self.diff_visual_row_offset_of(target, 4);
+                    self.diff_scroll.set_offset(vis_target);
                 }
             }
             Action::DiffNextFile(DiffScope::Stage, delta) => {
@@ -1884,6 +1976,7 @@ impl CommitWorkbench {
             }
             Action::DiffToggleSideBySide(DiffScope::Stage) => {
                 self.diff_side_by_side = !self.diff_side_by_side;
+                self.diff_horiz_scroll = 0;
                 self.visual_anchor_row = None;
             }
             Action::DiffCycleContext(DiffScope::Stage) => {
@@ -1892,6 +1985,67 @@ impl CommitWorkbench {
                 self.pending_diff = None;
                 self.visual_anchor_row = None;
                 self.pending_select_immediate = true;
+            }
+            Action::DiffCycleWhitespace(DiffScope::Stage) => {
+                self.diff_whitespace = self.diff_whitespace.next();
+                self.requested_diff = None;
+                self.pending_diff = None;
+                self.visual_anchor_row = None;
+                self.pending_select_immediate = true;
+                let ws_lbl = ctx.i18n.diff_whitespace_label(self.diff_whitespace);
+                *ctx.status_notice = Some(
+                    ctx.i18n
+                        .t_fmt("toast.diff_whitespace_set", &[("ws", ws_lbl)]),
+                );
+            }
+            Action::DiffToggleSoftWrap(DiffScope::Stage) => {
+                self.diff_soft_wrap = !self.diff_soft_wrap;
+                if self.diff_soft_wrap {
+                    self.diff_horiz_scroll = 0;
+                }
+                self.diff_scroll.reset();
+                let on_off = ctx.i18n.on_off(self.diff_soft_wrap);
+                *ctx.status_notice = Some(
+                    ctx.i18n
+                        .t_fmt("toast.diff_soft_wrap_set", &[("state", on_off)]),
+                );
+            }
+            Action::DiffScrollHoriz(DiffScope::Stage, delta) => {
+                if !self.diff_soft_wrap {
+                    let next = (self.diff_horiz_scroll as isize + *delta)
+                        .clamp(0, DIFF_HORIZ_SCROLL_MAX as isize);
+                    self.diff_horiz_scroll = next as u16;
+                }
+            }
+            Action::DiffSearchOpen(DiffScope::Stage) => {
+                self.diff_search.open();
+            }
+            Action::DiffSearchChar(DiffScope::Stage, ch) => {
+                self.diff_search.push_char(*ch);
+                self.refresh_diff_search();
+            }
+            Action::DiffSearchBackspace(DiffScope::Stage) => {
+                self.diff_search.backspace();
+                self.refresh_diff_search();
+            }
+            Action::DiffSearchClear(DiffScope::Stage) => {
+                self.diff_search.clear_query();
+            }
+            Action::DiffSearchConfirm(DiffScope::Stage) => {
+                self.diff_search.finish_editing();
+            }
+            Action::DiffSearchClose(DiffScope::Stage) => {
+                self.diff_search.close();
+            }
+            Action::DiffSearchJump(DiffScope::Stage, delta) => {
+                if self.diff_search.active
+                    && self.diff_search.matches.is_empty()
+                    && !self.diff_search.query.is_empty()
+                {
+                    self.refresh_diff_search();
+                } else if let Some(row_idx) = self.diff_search.step(*delta) {
+                    self.center_diff_on_row(row_idx);
+                }
             }
             Action::StageDiffSwitchSide => {
                 if let Some(key) = &self.current_diff_key {
@@ -1980,17 +2134,23 @@ impl CommitWorkbench {
                         }
                     }
                     DiffHunkActionKind::Stage => {
-                        if let Some(sel) = self.collect_hunk_line_sets(hunk_idx) {
+                        if let Some(key) = self.readonly_diff_notice_key() {
+                            *ctx.status_notice = Some(ctx.i18n.t(key).to_string());
+                        } else if let Some(sel) = self.collect_hunk_line_sets(hunk_idx) {
                             self.apply_stage_diff_selection(StageDiffOp::Stage, sel, ctx);
                         }
                     }
                     DiffHunkActionKind::Unstage => {
-                        if let Some(sel) = self.collect_hunk_line_sets(hunk_idx) {
+                        if let Some(key) = self.readonly_diff_notice_key() {
+                            *ctx.status_notice = Some(ctx.i18n.t(key).to_string());
+                        } else if let Some(sel) = self.collect_hunk_line_sets(hunk_idx) {
                             self.apply_stage_diff_selection(StageDiffOp::Unstage, sel, ctx);
                         }
                     }
                     DiffHunkActionKind::Rollback => {
-                        if let Some(sel) = self.collect_hunk_line_sets(hunk_idx) {
+                        if let Some(key) = self.readonly_diff_notice_key() {
+                            *ctx.status_notice = Some(ctx.i18n.t(key).to_string());
+                        } else if let Some(sel) = self.collect_hunk_line_sets(hunk_idx) {
                             self.apply_stage_diff_selection(StageDiffOp::Rollback, sel, ctx);
                         }
                     }
@@ -2001,7 +2161,33 @@ impl CommitWorkbench {
         true
     }
 
+    fn refresh_diff_search(&mut self) {
+        let Some(diff) = self.current_diff.as_ref().cloned() else {
+            self.diff_search.matches.clear();
+            self.diff_search.current = 0;
+            return;
+        };
+        let rows = self.diff_rows();
+        let anchor = self.diff_cursor_row.min(rows.len());
+        if let Some(row_idx) = self
+            .diff_search
+            .recompute(&rows, |hh| &diff.hunks[hh].hunk, anchor)
+        {
+            self.center_diff_on_row(row_idx);
+        }
+    }
+
+    fn center_diff_on_row(&mut self, row_idx: usize) {
+        self.diff_cursor_row = row_idx;
+        let vis = self.diff_visual_row_offset_of(row_idx, 4);
+        let vh = self.diff_scroll.viewport_height().unwrap_or(18);
+        self.diff_scroll.set_offset(vis.saturating_sub(vh / 2));
+    }
+
     fn readonly_diff_notice_key(&self) -> Option<&'static str> {
+        if self.diff_whitespace != WhitespaceMode::Default {
+            return Some("toast.whitespace_line_staging_disabled");
+        }
         let diff = self.current_diff.as_ref()?;
         if diff.submodule.is_some() {
             Some("toast.submodule_line_staging_disabled")

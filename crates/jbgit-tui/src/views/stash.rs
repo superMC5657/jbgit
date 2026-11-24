@@ -233,12 +233,15 @@ fn render_stash_preview(
             SplitAxis::Vertical,
             ctx,
         );
-        let diff_sub = state
+        let mut diff_sub = state
             .stash
             .changes()
             .selected_change(&state.diff_caches)
             .map(|c| state.i18n.t_fmt("view.log_details.diff_file", &[("path", &c.path)]))
             .unwrap_or_else(|| state.i18n.t("view.log_details.diff_preview").to_string());
+        if !state.stash.diff().soft_wrap && state.stash.diff().horiz_scroll > 0 {
+            diff_sub.push_str(&format!("  Col +{}", state.stash.diff().horiz_scroll));
+        }
         let diff_body = render_pane_frame(
             frame,
             preview_split.second,

@@ -451,6 +451,8 @@ pub fn route_overlay_and_stash_click(
         HitTarget::StashDiffToolbar(btn) => match btn {
             DiffToolbarButton::SideBySide => vec![Action::DiffToggleSideBySide(DiffScope::Stash)],
             DiffToolbarButton::Context => vec![Action::DiffCycleContext(DiffScope::Stash)],
+            DiffToolbarButton::Whitespace => vec![Action::DiffCycleWhitespace(DiffScope::Stash)],
+            DiffToolbarButton::SoftWrap => vec![Action::DiffToggleSoftWrap(DiffScope::Stash)],
             _ => Vec::new(),
         },
         HitTarget::ConflictMergeBlock(id) => vec![Action::ConflictSetBlock(*id)],
@@ -538,17 +540,27 @@ pub fn route_stash_fallback_key(key: &KeyEvent, state: &AppState) -> Vec<Action>
             KeyCode::Enter | KeyCode::Right => vec![Action::FocusPane(PaneId::StashDiffPreview)],
             _ => Vec::new(),
         },
-        PaneId::StashDiffPreview => match key.code {
-            KeyCode::Right => vec![Action::ChangesExpand(ChangesHost::Stash, true)],
-            KeyCode::Left => vec![Action::ChangesExpand(ChangesHost::Stash, false)],
-            KeyCode::Char('v') => vec![Action::ChangesToggleGroupByDir(ChangesHost::Stash)],
-            KeyCode::Char('e') => vec![Action::ChangesExpandAll(ChangesHost::Stash, true)],
-            KeyCode::Char('E') => vec![Action::ChangesExpandAll(ChangesHost::Stash, false)],
-            KeyCode::PageDown | KeyCode::Char(' ') => vec![Action::DiffScroll(DiffScope::Stash, 10)],
-            KeyCode::PageUp => vec![Action::DiffScroll(DiffScope::Stash, -10)],
-            KeyCode::Esc => vec![Action::FocusPane(PaneId::StashList)],
-            _ => Vec::new(),
-        },
+        PaneId::StashDiffPreview => {
+            let shift = key.modifiers.contains(KeyModifiers::SHIFT);
+            match key.code {
+                KeyCode::Left if shift => vec![Action::DiffScrollHoriz(DiffScope::Stash, -16)],
+                KeyCode::Right if shift => vec![Action::DiffScrollHoriz(DiffScope::Stash, 16)],
+                KeyCode::Right => vec![Action::ChangesExpand(ChangesHost::Stash, true)],
+                KeyCode::Left => vec![Action::ChangesExpand(ChangesHost::Stash, false)],
+                KeyCode::Char('v') => vec![Action::ChangesToggleGroupByDir(ChangesHost::Stash)],
+                KeyCode::Char('e') => vec![Action::ChangesExpandAll(ChangesHost::Stash, true)],
+                KeyCode::Char('E') => vec![Action::ChangesExpandAll(ChangesHost::Stash, false)],
+                KeyCode::PageDown | KeyCode::Char(' ') => {
+                    vec![Action::DiffScroll(DiffScope::Stash, 10)]
+                }
+                KeyCode::PageUp => vec![Action::DiffScroll(DiffScope::Stash, -10)],
+                KeyCode::Esc if state.stash.diff().search.active => {
+                    vec![Action::DiffSearchClose(DiffScope::Stash)]
+                }
+                KeyCode::Esc => vec![Action::FocusPane(PaneId::StashList)],
+                _ => Vec::new(),
+            }
+        }
         _ => Vec::new(),
     }
 }

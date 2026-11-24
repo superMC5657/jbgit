@@ -529,6 +529,7 @@ fn details_parent_link_click_jumps_and_diff_preview_word_highlight() {
         path: "src/lib.rs".into(),
         old_path: None,
         context: DiffContext::Three,
+        whitespace: jbgit_core::WhitespaceMode::Default,
     };
     let reqs = ts.take_requests();
     assert!(
@@ -560,6 +561,7 @@ fn details_parent_link_click_jumps_and_diff_preview_word_highlight() {
             key: diff_key,
             hunks: vec![hunk],
             is_binary: false,
+            binary: None,
             is_truncated: false,
             is_too_large: false,
             lfs: None,

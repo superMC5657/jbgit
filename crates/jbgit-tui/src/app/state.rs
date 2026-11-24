@@ -133,6 +133,8 @@ impl AppState {
             GraphBackendPref::Cell => crate::graph::GraphRendererMode::CharacterGrid,
         };
         let diff_context = jbgit_core::DiffContext::from_lines(config.jbgit.diff.context_lines);
+        let diff_whitespace = config.jbgit.diff.whitespace.to_core();
+        let diff_soft_wrap = config.jbgit.diff.soft_wrap;
 
         let locales_dir =
             crate::config::discovery::find_config_file("locales", Some(&repo_path_display))
@@ -151,12 +153,15 @@ impl AppState {
 
         let log = LogWorkbench::new(
             diff_context,
+            diff_whitespace,
+            diff_soft_wrap,
             compact_refs,
             show_only_affected_changes,
             graph_mode,
         );
-        let stage_workbench = CommitWorkbench::with_diff_context(diff_context);
-        let stash = StashWorkbench::with_diff_context(diff_context);
+        let stage_workbench =
+            CommitWorkbench::with_diff_prefs(diff_context, diff_whitespace, diff_soft_wrap);
+        let stash = StashWorkbench::with_diff_prefs(diff_context, diff_whitespace, diff_soft_wrap);
 
         Self {
             theme,

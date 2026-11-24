@@ -1,4 +1,4 @@
-mod keyboard;
+pub(crate) mod keyboard;
 pub(crate) mod menus;
 mod mouse;
 
