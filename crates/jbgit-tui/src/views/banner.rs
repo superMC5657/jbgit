@@ -11,18 +11,33 @@ use ratatui::widgets::Paragraph;
 use unicode_width::UnicodeWidthStr;
 
 use crate::app::{AppState, RenderContext};
-use crate::hit_test::{HitTarget, OngoingButton};
+use crate::hit_test::{BisectButton, HitTarget, OngoingButton};
 use crate::views::truncate_to_width;
 
 pub fn banner_visible(state: &AppState) -> bool {
-    state.ongoing_kind().is_some()
+    state.ongoing_kind().is_some() || state.is_bisecting()
 }
 
-/// Banner text without buttons (`⚠ REBASING feat onto main (Step 2/5) — 1 conflicted file`).
+/// Banner text without buttons (`⚠ REBASING feat onto main (Step 2/5) — 1 conflicted file`,
+/// or `⚠ BISECTING — ~3 step(s) left (6 rev(s))`).
 pub fn banner_text(state: &AppState) -> Option<String> {
     let snap = state.repo_snapshot.as_deref()?;
-    let kind = OngoingKind::from_state(&snap.state)?;
     let i18n = &state.i18n;
+    if snap.state == jbgit_core::RepositoryState::Bisect {
+        let mut text = i18n.t("ongoing.state_bisecting").to_string();
+        if let Some(info) = &snap.bisect
+            && let (Some(steps), Some(revs)) = (info.remaining_steps, info.remaining_revisions)
+        {
+            let steps_s = steps.to_string();
+            let revs_s = revs.to_string();
+            text.push_str(&i18n.t_fmt(
+                "banner.bisect_remaining",
+                &[("steps", &steps_s), ("revs", &revs_s)],
+            ));
+        }
+        return Some(format!("⚠ {text}"));
+    }
+    let kind = OngoingKind::from_state(&snap.state)?;
     let mut text = match &snap.state {
         jbgit_core::RepositoryState::Rebase { progress, branch }
         | jbgit_core::RepositoryState::RebaseInteractive { progress, branch }
@@ -72,6 +87,63 @@ pub fn render_banner(
     ctx: &mut RenderContext<'_>,
 ) {
     if area.height == 0 {
+        return;
+    }
+    if state.is_bisecting() {
+        let Some(text) = banner_text(state) else {
+            return;
+        };
+        let amber = ctx.theme.ref_detached.icon;
+        let bg = ctx.theme.ref_detached.pill_bg;
+        let buttons = [
+            (state.i18n.t("banner.bisect_good_btn"), BisectButton::Good),
+            (state.i18n.t("banner.bisect_bad_btn"), BisectButton::Bad),
+            (state.i18n.t("banner.bisect_skip_btn"), BisectButton::Skip),
+            (state.i18n.t("banner.bisect_reset_btn"), BisectButton::Reset),
+        ];
+        let buttons_w: usize = buttons.iter().map(|(l, _)| l.width() + 4).sum();
+        let text_w = (area.width as usize).saturating_sub(buttons_w + 1);
+        let shown = truncate_to_width(&format!(" {text}"), text_w);
+        let mut spans = vec![Span::styled(
+            shown.clone(),
+            Style::default().fg(amber).add_modifier(Modifier::BOLD),
+        )];
+        let pad = text_w.saturating_sub(shown.width());
+        spans.push(Span::raw(" ".repeat(pad)));
+        let mut x = area.x + (shown.width() + pad) as u16;
+        for (label, btn) in buttons {
+            spans.push(Span::raw(" "));
+            x += 1;
+            let style = match btn {
+                BisectButton::Good => Style::default()
+                    .fg(Color::Black)
+                    .bg(ctx.theme.status_added)
+                    .add_modifier(Modifier::BOLD),
+                BisectButton::Bad => Style::default()
+                    .fg(Color::White)
+                    .bg(ctx.theme.status_conflicted)
+                    .add_modifier(Modifier::BOLD),
+                BisectButton::Reset => Style::default()
+                    .fg(Color::Black)
+                    .bg(amber)
+                    .add_modifier(Modifier::BOLD),
+                BisectButton::Skip => Style::default()
+                    .fg(ctx.theme.fg_bright)
+                    .bg(ctx.theme.bg_elevated),
+            };
+            let w = label.width() as u16 + 2;
+            spans.push(Span::styled(format!("[{label}]"), style));
+            if x + w <= area.right() {
+                ctx.hit_registry
+                    .register(Rect::new(x, area.y, w, 1), 6, HitTarget::BisectBanner(btn));
+            }
+            x += w + 1;
+            spans.push(Span::raw(" "));
+        }
+        frame.render_widget(
+            Paragraph::new(Line::from(spans)).style(Style::default().bg(bg)),
+            area,
+        );
         return;
     }
     let Some(kind) = state.ongoing_kind() else {

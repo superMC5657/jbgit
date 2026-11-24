@@ -274,6 +274,15 @@ impl CommitSummary {
     }
 }
 
+/// Live progress metadata when the repository is in [`RepositoryState::Bisect`].
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct BisectInfo {
+    /// Approximate remaining candidate revisions between `bad` and `good` refs.
+    pub remaining_revisions: Option<usize>,
+    /// Approximate remaining binary-search steps (`ceil(log2(revisions))`).
+    pub remaining_steps: Option<usize>,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RepoSnapshot {
     pub repo_name: String,
@@ -281,6 +290,8 @@ pub struct RepoSnapshot {
     pub git_dir: PathBuf,
     pub common_dir: PathBuf,
     pub state: RepositoryState,
+    /// Bisect progress estimate when `state == RepositoryState::Bisect`.
+    pub bisect: Option<BisectInfo>,
     pub is_unborn_head: bool,
     pub head_branch: Option<String>,
     pub head_oid: Option<Oid>,

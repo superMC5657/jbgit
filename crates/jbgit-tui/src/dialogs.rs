@@ -141,16 +141,19 @@ impl WorktreeDialogCtx {
             }
             _ => i18n.t_fmt("dialog.worktree.path_title", &[("branch", &label)]),
         };
-        Dialog::Input(InputDialog::new(
-            title,
-            i18n.t("dialog.worktree.path_prompt"),
-            self.default_path(&label).display().to_string(),
-            InputValidation::NewPath { base: self.base() },
-            InputIntent::WorktreePath {
-                branch,
-                base: self.base(),
-            },
-        ))
+        Dialog::Input(
+            InputDialog::new(
+                title,
+                i18n.t("dialog.worktree.path_prompt"),
+                self.default_path(&label).display().to_string(),
+                InputValidation::NewPath { base: self.base() },
+                InputIntent::WorktreePath {
+                    branch,
+                    base: self.base(),
+                },
+            )
+            .with_checkbox(i18n.t("dialog.worktree.force_checkbox"), false),
+        )
     }
 }
 
@@ -184,6 +187,8 @@ pub struct InputDialog {
     pub value: String,
     pub validation: InputValidation,
     pub checkbox: Option<(String, bool)>,
+    /// Optional second checkbox (e.g. `Sign tag (-s)` in New Tag dialog; toggled via `Ctrl+S` or click).
+    pub secondary_checkbox: Option<(String, bool)>,
     pub intent: InputIntent,
 }
 
@@ -201,12 +206,18 @@ impl InputDialog {
             value: value.into(),
             validation,
             checkbox: None,
+            secondary_checkbox: None,
             intent,
         }
     }
 
     pub fn with_checkbox(mut self, label: impl Into<String>, on: bool) -> Self {
         self.checkbox = Some((label.into(), on));
+        self
+    }
+
+    pub fn with_secondary_checkbox(mut self, label: impl Into<String>, on: bool) -> Self {
+        self.secondary_checkbox = Some((label.into(), on));
         self
     }
 
@@ -270,9 +281,14 @@ impl InputDialog {
         self.checkbox.as_ref().is_some_and(|(_, on)| *on)
     }
 
+    pub fn secondary_checked(&self) -> bool {
+        self.secondary_checkbox.as_ref().is_some_and(|(_, on)| *on)
+    }
+
     pub fn confirm_actions(&self, i18n: &I18n) -> Vec<Action> {
         let value = self.value.trim().to_string();
         let checked = self.checked();
+        let sign = self.secondary_checked();
         match &self.intent {
             InputIntent::NewBranch { start } => vec![Action::RunGitOp(if checked {
                 GitOp::CheckoutNewBranch {
@@ -304,7 +320,7 @@ impl InputDialog {
                 }
             }
             InputIntent::NewTag { target } => {
-                if checked {
+                if checked || sign {
                     vec![Action::OpenDialog(Box::new(Dialog::Message(
                         MessageDialog::new(
                             i18n.t_fmt("dialog.new_tag.annotated_title", &[("name", &value)]),
@@ -312,6 +328,7 @@ impl InputDialog {
                             MessageIntent::AnnotatedTag {
                                 name: value,
                                 target: *target,
+                                sign,
                             },
                         ),
                     )))]
@@ -321,6 +338,7 @@ impl InputDialog {
                         target: *target,
                         message: None,
                         force: false,
+                        sign: false,
                     })]
                 }
             }
@@ -385,6 +403,7 @@ impl InputDialog {
                 vec![Action::RunGitOp(GitOp::AddWorktree {
                     path: resolve_path(base, &value),
                     branch: branch.clone(),
+                    force: checked,
                 })]
             }
             InputIntent::LockWorktree { path } => vec![Action::RunGitOp(GitOp::LockWorktree {
@@ -493,17 +512,20 @@ pub struct CredentialDialog {
     pub id: u64,
     pub prompt: String,
     pub masked: bool,
+    /// `true` when verifying an SSH host-key fingerprint (unmasked, full text).
+    pub host_key_confirm: bool,
     /// Masked value temporarily shown in clear text (`Tab`).
     pub revealed: bool,
     pub value: Secret,
 }
 
 impl CredentialDialog {
-    pub fn new(id: u64, prompt: impl Into<String>, masked: bool) -> Self {
+    pub fn new(id: u64, prompt: impl Into<String>, masked: bool, host_key_confirm: bool) -> Self {
         Self {
             id,
             prompt: prompt.into(),
-            masked,
+            masked: masked && !host_key_confirm,
+            host_key_confirm,
             revealed: false,
             // Pre-sized so typing never reallocates (and leaves copies behind).
             value: Secret::new(String::with_capacity(256)),
@@ -707,6 +729,7 @@ pub enum MessageIntent {
     AnnotatedTag {
         name: String,
         target: Oid,
+        sign: bool,
     },
     /// Message for one entry of the open interactive-rebase dialog.
     TodoEntry {
@@ -753,12 +776,13 @@ impl MessageDialog {
                     no_verify: false,
                 })]
             }
-            MessageIntent::AnnotatedTag { name, target } => {
+            MessageIntent::AnnotatedTag { name, target, sign } => {
                 vec![Action::RunGitOp(GitOp::CreateTag {
                     name: name.clone(),
                     target: *target,
                     message: (!msg.trim().is_empty()).then_some(msg),
                     force: false,
+                    sign: *sign,
                 })]
             }
             MessageIntent::TodoEntry { idx } => vec![Action::SetTodoMessage {
@@ -2249,6 +2273,12 @@ pub fn route_dialog_key(dialog: &mut Dialog, key: &KeyEvent, i18n: &I18n) -> Dia
             }
             KeyCode::Char('u') if ctrl => {
                 d.value.clear();
+                DialogKey::Redraw
+            }
+            KeyCode::Char('s') if ctrl || alt => {
+                if let Some((_, on)) = d.secondary_checkbox.as_mut() {
+                    *on = !*on;
+                }
                 DialogKey::Redraw
             }
             KeyCode::Tab

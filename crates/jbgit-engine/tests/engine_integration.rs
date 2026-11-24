@@ -2125,6 +2125,7 @@ async fn tag_management_lifecycle_push_remote_check_overwrite_delete_and_restore
             target: c1,
             message: Some("release 1.0".into()),
             force: false,
+            sign: false,
         },
     )
     .await;
@@ -2140,6 +2141,7 @@ async fn tag_management_lifecycle_push_remote_check_overwrite_delete_and_restore
             target: c2,
             message: None,
             force: false,
+            sign: false,
         },
     )
     .await;
@@ -2155,6 +2157,7 @@ async fn tag_management_lifecycle_push_remote_check_overwrite_delete_and_restore
             target: c2,
             message: None,
             force: true,
+            sign: false,
         },
     )
     .await;
@@ -2193,6 +2196,7 @@ async fn tag_management_lifecycle_push_remote_check_overwrite_delete_and_restore
             target: c1,
             message: None,
             force: true,
+            sign: false,
         },
     )
     .await;
@@ -2488,6 +2492,7 @@ async fn worktree_lifecycle_add_list_lock_remove_and_prune() {
         GitOp::AddWorktree {
             path: wt_feature.clone(),
             branch: WorktreeBranch::Existing("feature".into()),
+            force: false,
         },
     )
     .await;
@@ -2502,6 +2507,7 @@ async fn worktree_lifecycle_add_list_lock_remove_and_prune() {
                 name: "topic".into(),
                 start: "main".into(),
             },
+            force: false,
         },
     )
     .await;
@@ -2514,6 +2520,7 @@ async fn worktree_lifecycle_add_list_lock_remove_and_prune() {
         GitOp::AddWorktree {
             path: wt_detached.clone(),
             branch: WorktreeBranch::Detached(head),
+            force: false,
         },
     )
     .await;
@@ -2526,6 +2533,7 @@ async fn worktree_lifecycle_add_list_lock_remove_and_prune() {
         GitOp::AddWorktree {
             path: root.join("main-feature-2"),
             branch: WorktreeBranch::Existing("feature".into()),
+            force: false,
         },
     )
     .await;
@@ -5068,4 +5076,284 @@ async fn file_history_branch_scopes_pagination_and_blame_move_and_commit_date() 
     assert_eq!(c1_commit.committer_time, 1_700_100_000);
     assert_eq!(c1_commit.effective_time(false), 1_700_000_000);
     assert_eq!(c1_commit.effective_time(true), 1_700_100_000);
+}
+
+#[tokio::test]
+async fn bisect_five_commits_locates_culprit_and_resets() {
+    let tmp = TempDir::new().unwrap();
+    let dir = tmp.path();
+    git(dir, &["init", "-b", "main"]);
+    git(dir, &["config", "user.name", "Tester"]);
+    git(dir, &["config", "user.email", "tester@example.com"]);
+    git(dir, &["config", "commit.gpgsign", "false"]);
+
+    // 5 linear commits: c1 (good), c2 (good), c3 (culprit introduces "BUG"), c4 (bad), c5 (bad)
+    let mut oids = Vec::new();
+    for i in 1..=5 {
+        let content = if i >= 3 {
+            format!("v{i} BUG\n")
+        } else {
+            format!("v{i} OK\n")
+        };
+        fs::write(dir.join("app.txt"), content).unwrap();
+        git(dir, &["add", "app.txt"]);
+        git(dir, &["commit", "-m", &format!("commit {i}")]);
+        oids.push(rev(dir, "HEAD"));
+    }
+    let c1 = oids[0];
+    let c3_culprit = oids[2];
+    let c5 = oids[4];
+
+    let loc = RepoLocation::discover(dir).unwrap();
+    let (handle, mut rx) = EngineSupervisor::start(loc, false).unwrap();
+
+    let start = run_git_op(
+        &handle,
+        &mut rx,
+        jbgit_core::GitOp::BisectStart {
+            bad: Some(c5.to_string()),
+            good: vec![c1.to_string()],
+        },
+    )
+    .await;
+    assert!(start.success, "bisect start failed: {start:?}");
+
+    let snap = fetch_snapshot(&handle, &mut rx).await;
+    assert_eq!(snap.state, RepositoryState::Bisect);
+    let info = snap.bisect.as_ref().expect("bisect info must be populated");
+    assert!(
+        info.remaining_revisions.is_some_and(|r| r >= 1),
+        "expected remaining_revisions >= 1, got {info:?}"
+    );
+    assert!(info.remaining_steps.is_some(), "expected remaining_steps");
+
+    for _ in 0..6 {
+        let current = fs::read_to_string(dir.join("app.txt")).unwrap();
+        let is_good = !current.contains("BUG");
+        let step = run_git_op(
+            &handle,
+            &mut rx,
+            jbgit_core::GitOp::BisectMark {
+                good: is_good,
+                rev: None,
+            },
+        )
+        .await;
+        assert!(step.success, "bisect mark failed: {step:?}");
+        let log_out = String::from_utf8_lossy(&git_output(dir, &["bisect", "log"]).stdout)
+            .to_string();
+        if log_out.contains("first bad commit") {
+            assert!(
+                log_out.contains(&c3_culprit.to_string()),
+                "expected culprit {c3_culprit} in bisect log:\n{log_out}"
+            );
+            break;
+        }
+    }
+    let final_log = String::from_utf8_lossy(&git_output(dir, &["bisect", "log"]).stdout).to_string();
+    assert!(
+        final_log.contains(&format!("first bad commit: [{c3_culprit}]")),
+        "bisect must identify commit 3 ({c3_culprit}) as first bad commit:\n{final_log}"
+    );
+
+    let reset = run_git_op(&handle, &mut rx, jbgit_core::GitOp::BisectReset).await;
+    assert!(reset.success, "bisect reset failed: {reset:?}");
+    let after = fetch_snapshot(&handle, &mut rx).await;
+    assert_eq!(after.state, RepositoryState::Clean);
+    assert!(after.bisect.is_none());
+    assert_eq!(after.head_branch.as_deref(), Some("main"));
+    assert_eq!(after.head_oid, Some(c5));
+}
+
+#[tokio::test]
+async fn submodule_gitlink_stage_unstage_discard_and_commit_update() {
+    let tmp = TempDir::new().unwrap();
+    let sub_origin = tmp.path().join("sub-origin");
+    let main_dir = tmp.path().join("main");
+    fs::create_dir_all(&sub_origin).unwrap();
+    fs::create_dir_all(&main_dir).unwrap();
+
+    git(&sub_origin, &["init", "-b", "main"]);
+    git(&sub_origin, &["config", "user.name", "Tester"]);
+    git(&sub_origin, &["config", "user.email", "tester@example.com"]);
+    git(&sub_origin, &["config", "commit.gpgsign", "false"]);
+    fs::write(sub_origin.join("lib.txt"), "v1\n").unwrap();
+    git(&sub_origin, &["add", "."]);
+    git(&sub_origin, &["commit", "-m", "sub v1"]);
+    let sub_v1 = rev(&sub_origin, "HEAD");
+
+    git(&main_dir, &["init", "-b", "main"]);
+    git(&main_dir, &["config", "user.name", "Tester"]);
+    git(&main_dir, &["config", "user.email", "tester@example.com"]);
+    git(&main_dir, &["config", "commit.gpgsign", "false"]);
+    fs::write(main_dir.join("README.md"), "root\n").unwrap();
+    git(&main_dir, &["add", "."]);
+    git(&main_dir, &["commit", "-m", "root init"]);
+
+    git(
+        &main_dir,
+        &[
+            "-c",
+            "protocol.file.allow=always",
+            "submodule",
+            "add",
+            sub_origin.to_str().unwrap(),
+            "deps/sub",
+        ],
+    );
+    git(&main_dir, &["commit", "-m", "add submodule"]);
+
+    // Advance submodule HEAD to a new commit.
+    let sub_work = main_dir.join("deps/sub");
+    git(&sub_work, &["config", "user.name", "Tester"]);
+    git(&sub_work, &["config", "user.email", "tester@example.com"]);
+    git(&sub_work, &["config", "commit.gpgsign", "false"]);
+    fs::write(sub_work.join("lib.txt"), "v2\n").unwrap();
+    git(&sub_work, &["add", "lib.txt"]);
+    git(&sub_work, &["commit", "-m", "sub v2"]);
+    let sub_v2 = rev(&sub_work, "HEAD");
+    assert_ne!(sub_v1, sub_v2);
+
+    let loc = RepoLocation::discover(&main_dir).unwrap();
+    let (handle, mut rx) = EngineSupervisor::start(loc, false).unwrap();
+
+    // 1. Stage submodule gitlink -> index records sub_v2.
+    let _ = handle.dispatch(TaskRequest::StageTargets {
+        targets: vec![stage_target(
+            "deps/sub",
+            StageNodeKind::Unstaged,
+            FileStatusKind::Modified,
+        )],
+    });
+    wait_stage_mutation(&mut rx).await;
+    let idx_staged = String::from_utf8_lossy(
+        &git_output(&main_dir, &["ls-files", "--stage", "deps/sub"]).stdout,
+    )
+    .to_string();
+    assert!(idx_staged.contains(&sub_v2.to_string()), "{idx_staged}");
+
+    // 2. Unstage submodule gitlink -> index reverts to sub_v1.
+    let _ = handle.dispatch(TaskRequest::UnstageTargets {
+        targets: vec![stage_target(
+            "deps/sub",
+            StageNodeKind::Staged,
+            FileStatusKind::Modified,
+        )],
+    });
+    wait_stage_mutation(&mut rx).await;
+    let idx_unstaged = String::from_utf8_lossy(
+        &git_output(&main_dir, &["ls-files", "--stage", "deps/sub"]).stdout,
+    )
+    .to_string();
+    assert!(idx_unstaged.contains(&sub_v1.to_string()), "{idx_unstaged}");
+
+    // 3. Discard submodule gitlink change -> submodule HEAD returns to sub_v1.
+    let _ = handle.dispatch(TaskRequest::DiscardTargets {
+        targets: vec![stage_target(
+            "deps/sub",
+            StageNodeKind::Unstaged,
+            FileStatusKind::Modified,
+        )],
+    });
+    wait_stage_mutation(&mut rx).await;
+    assert_eq!(rev(&sub_work, "HEAD"), sub_v1);
+
+    // 4. Advance submodule again, stage gitlink, and commit pointer update.
+    git(&sub_work, &["checkout", &sub_v2.to_string()]);
+    let _ = handle.dispatch(TaskRequest::StageTargets {
+        targets: vec![stage_target(
+            "deps/sub",
+            StageNodeKind::Unstaged,
+            FileStatusKind::Modified,
+        )],
+    });
+    wait_stage_mutation(&mut rx).await;
+
+    let commit_out = exec_commit(
+        &handle,
+        &mut rx,
+        1,
+        CommitRequest {
+            message: "chore: bump deps/sub".into(),
+            run_hooks: false,
+            ..Default::default()
+        },
+    )
+    .await;
+    assert!(commit_out.success, "commit failed: {commit_out:?}");
+
+    let head_tree = String::from_utf8_lossy(
+        &git_output(&main_dir, &["ls-tree", "HEAD", "deps/sub"]).stdout,
+    )
+    .to_string();
+    assert!(
+        head_tree.contains(&sub_v2.to_string()),
+        "HEAD must point to updated submodule commit {sub_v2}, got: {head_tree}"
+    );
+}
+
+#[tokio::test]
+async fn worktree_add_copies_worktreeinclude_ignored_files() {
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path();
+    let dir = root.join("repo");
+    fs::create_dir_all(&dir).unwrap();
+
+    git(&dir, &["init", "-b", "main"]);
+    git(&dir, &["config", "user.name", "Tester"]);
+    git(&dir, &["config", "user.email", "tester@example.com"]);
+    git(&dir, &["config", "commit.gpgsign", "false"]);
+
+    fs::write(dir.join(".gitignore"), ".env\n.env.local\nsecrets/\nignored.log\n").unwrap();
+    fs::write(
+        dir.join(".worktreeinclude"),
+        "# Copy local env & secrets into new worktrees\n.env\nsecrets/\n!secrets/skip.txt\n",
+    )
+    .unwrap();
+    fs::write(dir.join("README.md"), "hello\n").unwrap();
+    git(&dir, &["add", "."]);
+    git(&dir, &["commit", "-m", "init"]);
+
+    // Ignored local files in main worktree
+    fs::write(dir.join(".env"), "API_KEY=local-dev\n").unwrap();
+    fs::write(dir.join("ignored.log"), "do not copy\n").unwrap();
+    fs::create_dir_all(dir.join("secrets")).unwrap();
+    fs::write(dir.join("secrets/token.txt"), "tok123\n").unwrap();
+    fs::write(dir.join("secrets/skip.txt"), "excluded\n").unwrap();
+
+    let loc = RepoLocation::discover(&dir).unwrap();
+    let (handle, mut rx) = EngineSupervisor::start(loc, false).unwrap();
+
+    let wt_dir = root.join("repo-feat");
+    let added = run_git_op(
+        &handle,
+        &mut rx,
+        jbgit_core::GitOp::AddWorktree {
+            path: wt_dir.clone(),
+            branch: jbgit_core::WorktreeBranch::New {
+                name: "feat".into(),
+                start: "main".into(),
+            },
+            force: false,
+        },
+    )
+    .await;
+    assert!(added.success, "AddWorktree failed: {added:?}");
+
+    assert_eq!(
+        fs::read_to_string(wt_dir.join(".env")).unwrap(),
+        "API_KEY=local-dev\n"
+    );
+    assert_eq!(
+        fs::read_to_string(wt_dir.join("secrets/token.txt")).unwrap(),
+        "tok123\n"
+    );
+    assert!(
+        !wt_dir.join("secrets/skip.txt").exists(),
+        "negated .worktreeinclude pattern must not be copied"
+    );
+    assert!(
+        !wt_dir.join("ignored.log").exists(),
+        "unmatched ignored file must not be copied"
+    );
 }

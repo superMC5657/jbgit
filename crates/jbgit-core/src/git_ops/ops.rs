@@ -864,6 +864,8 @@ pub enum GitOp {
         target: Oid,
         message: Option<String>,
         force: bool,
+        /// `-s` (GPG-signed tag).
+        sign: bool,
     },
     DeleteTag {
         name: String,
@@ -906,10 +908,11 @@ pub enum GitOp {
     FetchRemote {
         name: String,
     },
-    /// `git worktree add [-b <name>|--detach] -- <path> [<commit-ish>]`.
+    /// `git worktree add [--force] [-b <name>|--detach] -- <path> [<commit-ish>]`.
     AddWorktree {
         path: std::path::PathBuf,
         branch: crate::WorktreeBranch,
+        force: bool,
     },
     /// `git worktree remove [--force] -- <path>`.
     RemoveWorktree {
@@ -1050,7 +1053,24 @@ pub enum GitOp {
     AddToIgnore {
         patterns: Vec<String>,
         exclude_file: bool,
+        /// Optional relative path to a specific `.gitignore` (e.g. `sub/.gitignore`);
+        /// `None` uses `.git/info/exclude` when `exclude_file` is true or root `.gitignore`.
+        target_file: Option<std::path::PathBuf>,
     },
+    /// `git bisect start [<bad> [<good>...]]`.
+    BisectStart {
+        bad: Option<String>,
+        good: Vec<String>,
+    },
+    /// `git bisect good|bad [<rev>]`.
+    BisectMark {
+        good: bool,
+        rev: Option<String>,
+    },
+    /// `git bisect skip`.
+    BisectSkip,
+    /// `git bisect reset`.
+    BisectReset,
     DeleteFiles {
         paths: Vec<String>,
     },
@@ -1123,7 +1143,7 @@ impl GitOp {
                 }
             }
             Self::FetchRemote { name } => format!("Fetch '{name}'"),
-            Self::AddWorktree { path, branch } => match branch.branch_name() {
+            Self::AddWorktree { path, branch, .. } => match branch.branch_name() {
                 Some(b) => format!("New worktree '{}' on '{b}'", path.display()),
                 None => format!("New worktree '{}' (detached)", path.display()),
             },
@@ -1246,6 +1266,11 @@ impl GitOp {
             }
             Self::IntentToAdd { .. } => "Stage without content".to_string(),
             Self::AddToIgnore { .. } => "Add to ignore".to_string(),
+            Self::BisectStart { .. } => "Start bisect".to_string(),
+            Self::BisectMark { good: true, .. } => "Bisect good".to_string(),
+            Self::BisectMark { good: false, .. } => "Bisect bad".to_string(),
+            Self::BisectSkip => "Bisect skip".to_string(),
+            Self::BisectReset => "Bisect reset".to_string(),
             Self::DeleteFiles { paths } => format!("Delete {} file(s)", paths.len()),
             Self::CreatePatchFile { output, .. } => {
                 let name = output
@@ -1464,5 +1489,215 @@ mod clone_url_tests {
         assert_eq!(infer_clone_dir_name("   "), None);
         assert_eq!(infer_clone_dir_name("https://github.com/"), None);
         assert_eq!(infer_clone_dir_name("https://github.com/.git"), None);
+    }
+}
+
+/// Granularity of generated `.gitignore` / `.git/info/exclude` rules.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum IgnoreRuleKind {
+    /// Exact repo- or `.gitignore`-relative path (`/a/b.log`).
+    ExactPath,
+    /// Extension glob (`*.log`) derived from the file's extension.
+    Extension,
+    /// Immediate parent directory (`/a/`).
+    ParentDir,
+}
+
+/// Generates deduplicated `.gitignore` rules for `paths` at the requested
+/// [`IgnoreRuleKind`]. When `base_dir` is `Some("sub")` (for `sub/.gitignore`),
+/// leading `sub/` prefixes are stripped before formatting rooted patterns.
+pub fn build_ignore_patterns(
+    paths: &[String],
+    kind: IgnoreRuleKind,
+    base_dir: Option<&str>,
+) -> Vec<String> {
+    let base_prefix = base_dir
+        .map(|d| d.trim_matches(['/', '\\']).replace('\\', "/"))
+        .filter(|d| !d.is_empty());
+    let mut out: Vec<String> = Vec::new();
+    for raw in paths {
+        let norm = raw.trim().trim_start_matches(['/', '\\']).replace('\\', "/");
+        if norm.is_empty() {
+            continue;
+        }
+        let rel = if let Some(prefix) = &base_prefix {
+            norm.strip_prefix(prefix.as_str())
+                .and_then(|rest| rest.strip_prefix('/'))
+                .unwrap_or(&norm)
+        } else {
+            norm.as_str()
+        };
+        let pattern = match kind {
+            IgnoreRuleKind::ExactPath => Some(format!("/{rel}")),
+            IgnoreRuleKind::Extension => {
+                let file_name = rel.rsplit('/').next().unwrap_or(rel);
+                file_name
+                    .rsplit_once('.')
+                    .filter(|(stem, ext)| !stem.is_empty() && !ext.is_empty())
+                    .map(|(_, ext)| format!("*.{ext}"))
+            }
+            IgnoreRuleKind::ParentDir => rel
+                .rsplit_once('/')
+                .map(|(dir, _)| dir.trim_matches('/'))
+                .filter(|dir| !dir.is_empty())
+                .map(|dir| format!("/{dir}/")),
+        };
+        if let Some(pat) = pattern
+            && !out.contains(&pat)
+        {
+            out.push(pat);
+        }
+    }
+    out
+}
+
+/// Evaluates gitignore-style `.worktreeinclude` rules against `candidates`
+/// (repo-relative `/` paths), returning the subset of paths to copy into a
+/// newly created working tree. Supports comments (`#`), blank lines,
+/// negation (`!`), rooted (`/foo`), directory-prefix (`dir/`), and glob (`*`, `**`, `?`) rules.
+pub fn match_worktreeinclude_paths(patterns_text: &str, candidates: &[String]) -> Vec<String> {
+    struct Rule {
+        negated: bool,
+        dir_only: bool,
+        anchored: bool,
+        pattern: String,
+    }
+
+    let mut rules: Vec<Rule> = Vec::new();
+    for raw_line in patterns_text.lines() {
+        let line = raw_line.trim_end_matches('\r');
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        let (negated, rest) = match trimmed.strip_prefix('!') {
+            Some(r) => (true, r),
+            None => (false, trimmed),
+        };
+        let dir_only = rest.ends_with('/');
+        let anchored = rest.starts_with('/') || rest.trim_end_matches('/').contains('/');
+        let pat = rest.trim_matches('/').replace('\\', "/");
+        if pat.is_empty() {
+            continue;
+        }
+        rules.push(Rule {
+            negated,
+            dir_only,
+            anchored,
+            pattern: pat,
+        });
+    }
+
+    if rules.is_empty() {
+        return Vec::new();
+    }
+
+    let mut matched = Vec::new();
+    for cand in candidates {
+        let norm = cand
+            .trim()
+            .trim_start_matches(['/', '\\'])
+            .replace('\\', "/");
+        if norm.is_empty() {
+            continue;
+        }
+        let mut include = false;
+        for rule in &rules {
+            let hit = if rule.dir_only {
+                // Match any file inside a matching directory prefix.
+                if rule.anchored {
+                    norm.starts_with(&format!("{}/", rule.pattern))
+                        || crate::glob_match(&format!("{}/**", rule.pattern), &norm)
+                } else {
+                    norm.split('/')
+                        .take(norm.split('/').count().saturating_sub(1))
+                        .any(|seg| crate::glob_match(&rule.pattern, seg))
+                }
+            } else if rule.anchored {
+                crate::glob_match(&rule.pattern, &norm)
+                    || norm.starts_with(&format!("{}/", rule.pattern))
+            } else {
+                let basename = norm.rsplit('/').next().unwrap_or(&norm);
+                crate::glob_match(&rule.pattern, basename)
+                    || crate::glob_match(&rule.pattern, &norm)
+                    || norm
+                        .split('/')
+                        .take(norm.split('/').count().saturating_sub(1))
+                        .any(|seg| crate::glob_match(&rule.pattern, seg))
+            };
+            if hit {
+                include = !rule.negated;
+            }
+        }
+        if include {
+            matched.push(norm);
+        }
+    }
+    matched
+}
+
+#[cfg(test)]
+mod ergonomics_tests {
+    use super::*;
+
+    #[test]
+    fn build_ignore_patterns_supports_exact_extension_parent_and_nested_base() {
+        let paths = vec!["src/logs/app.log".to_string(), "src/logs/err.log".to_string()];
+        assert_eq!(
+            build_ignore_patterns(&paths, IgnoreRuleKind::ExactPath, None),
+            vec!["/src/logs/app.log", "/src/logs/err.log"]
+        );
+        assert_eq!(
+            build_ignore_patterns(&paths, IgnoreRuleKind::ExactPath, Some("src")),
+            vec!["/logs/app.log", "/logs/err.log"]
+        );
+        assert_eq!(
+            build_ignore_patterns(&paths, IgnoreRuleKind::Extension, None),
+            vec!["*.log"]
+        );
+        assert_eq!(
+            build_ignore_patterns(&paths, IgnoreRuleKind::ParentDir, None),
+            vec!["/src/logs/"]
+        );
+        assert_eq!(
+            build_ignore_patterns(&paths, IgnoreRuleKind::ParentDir, Some("src")),
+            vec!["/logs/"]
+        );
+        // Root-level file has no parent dir and dotfile without ext has no extension rule
+        assert!(build_ignore_patterns(&[".env".into()], IgnoreRuleKind::Extension, None).is_empty());
+        assert!(build_ignore_patterns(&[".env".into()], IgnoreRuleKind::ParentDir, None).is_empty());
+    }
+
+    #[test]
+    fn match_worktreeinclude_handles_globs_dirs_and_negations() {
+        let rules = r#"
+# Copy local env & secret overrides
+.env
+.env.*
+!.env.example
+config/local/
+*.local.json
+"#;
+        let candidates: Vec<String> = [
+            ".env",
+            ".env.local",
+            ".env.example",
+            "config/local/db.toml",
+            "packages/web/app.local.json",
+            "target/debug/app.exe",
+        ]
+        .into_iter()
+        .map(String::from)
+        .collect();
+        let matched = match_worktreeinclude_paths(rules, &candidates);
+        assert_eq!(
+            matched,
+            vec![
+                ".env",
+                ".env.local",
+                "config/local/db.toml",
+                "packages/web/app.local.json",
+            ]
+        );
     }
 }

@@ -259,23 +259,22 @@ fn submodule_stage_rows_block_mutations_and_render_diff_and_menus() {
         "submodule row must not render [+] hover button"
     );
 
-    // Selecting submodule and attempting Stage / Discard must emit zero mutations and show notice.
+    // Spec 13 #14: Submodule gitlinks support whole-entry Stage and Discard in the tree
+    // (while line-level staging in Diff remains strictly disabled below).
     ts.dispatch(Action::StageActionSelected);
     assert!(
-        ts.take_requests()
-            .into_iter()
-            .all(|(r, _)| !matches!(r, TaskRequest::StageTargets { .. }))
-    );
-    assert!(
-        ts.state()
-            .status_notice
-            .as_deref()
-            .is_some_and(|n| n.contains("read-only")),
-        "{:?}",
-        ts.state().status_notice
+        ts.take_requests().into_iter().any(|(r, _)| matches!(
+            r,
+            TaskRequest::StageTargets { targets } if targets.iter().any(|t| t.path == "libs/sub")
+        )),
+        "whole-entry Stage on submodule gitlink must dispatch StageTargets"
     );
     ts.dispatch(Action::DiscardPromptSelected);
-    assert!(ts.state().modal_stack.is_empty());
+    assert!(
+        !ts.state().modal_stack.is_empty(),
+        "Discard on submodule gitlink must open discard confirmation dialog"
+    );
+    ts.dispatch(Action::PopModal);
 
     // Deliver SubmoduleDiffInfo and verify read-only diff panel + blocked line-level actions.
     let diff = Arc::new(ThreeDocStageDiff {
@@ -343,7 +342,7 @@ fn submodule_stage_rows_block_mutations_and_render_diff_and_menus() {
         ts.state().status_notice
     );
 
-    // Right-click on submodule row provides Open Submodule in Switcher & Update Submodule, disables Stage.
+    // Right-click on submodule row provides Open Submodule in Switcher, Update Submodule, and whole-entry Stage.
     let (cx, cy) = ts
         .hit_center_of(
             |t| matches!(t, HitTarget::ChangesTreeNode { node_id, .. } if node_id.0 as usize == sub_row_idx),
@@ -355,7 +354,7 @@ fn submodule_stage_rows_block_mutations_and_render_diff_and_menus() {
         Some(ModalLayer::ContextMenu { .. })
     ));
     let (items, _, _) = super::top_menu(ts.state());
-    assert!(find_item(items, "Stage").disabled_reason.is_some());
+    assert_eq!(find_item(items, "Stage").disabled_reason, None);
     let open_sub = find_item(items, "Open Submodule in Switcher");
     assert_eq!(open_sub.disabled_reason, None);
     let open_actions = item_run_actions(open_sub);

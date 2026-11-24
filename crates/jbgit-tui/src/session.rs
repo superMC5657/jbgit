@@ -590,6 +590,11 @@ impl TuiSession {
         self.state.pending_clone_repo.take()
     }
 
+    /// Confirmed `[worktree] setup_command` `(worktree_path, command)` to run.
+    pub fn take_worktree_setup_request(&mut self) -> Option<(PathBuf, String)> {
+        self.state.pending_worktree_setup.take()
+    }
+
     /// Workdir of the bound repository.
     pub fn current_workdir(&self) -> PathBuf {
         self.state.current_workdir()

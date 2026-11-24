@@ -481,6 +481,14 @@ impl AppState {
                     }
                 }
             }
+            Action::DialogToggleSecondaryCheckbox => {
+                if let Some(ModalLayer::Dialog(d)) = self.modal_stack.last_mut()
+                    && let crate::dialogs::Dialog::Input(i) = d.as_mut()
+                    && let Some((_, on)) = i.secondary_checkbox.as_mut()
+                {
+                    *on = !*on;
+                }
+            }
             Action::PopupSetState { query, selected } => {
                 if let Some(top) = self.modal_stack.last_mut() {
                     top.set_popup_state(query, selected);

@@ -75,6 +75,7 @@ pub enum CommitOptionKind {
     Signoff,
     RunHooks,
     AllowEmpty,
+    GpgSign,
     AuthorToggle,
     AuthorInput,
     AuthorSuggestion,
@@ -97,6 +98,15 @@ pub enum OngoingButton {
     Continue,
     Skip,
     Abort,
+}
+
+/// Buttons of the active `git bisect` banner.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BisectButton {
+    Good,
+    Bad,
+    Skip,
+    Reset,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -346,6 +356,7 @@ pub enum HitTarget {
     DialogOption(usize),
     DialogButton(DialogButtonKind),
     DialogCheckbox,
+    DialogSecondaryCheckbox,
     BranchPopupRow(usize),
     BranchPopupStar(usize),
     /// Row of the `Configure Remotes…` modal.
@@ -387,6 +398,7 @@ pub enum HitTarget {
     BranchPopupFetch,
     BranchPopupSettings,
     OngoingBanner(OngoingButton),
+    BisectBanner(BisectButton),
     NotificationAction,
     NotificationDismiss,
     StashRow(usize),

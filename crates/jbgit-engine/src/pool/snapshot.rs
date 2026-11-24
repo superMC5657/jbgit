@@ -485,6 +485,11 @@ pub fn load_repo_snapshot_incremental_sync(
         let submodules = collect_submodules(repo, location);
         let has_lfs = detect_has_lfs(repo, location);
         let loaded_limit = max_commits.max(commits.len());
+        let bisect = if probe.state == jbgit_core::RepositoryState::Bisect {
+            Some(collect_bisect_info(repo))
+        } else {
+            None
+        };
 
         let cache = SnapshotCommitCache::build(
             commits.clone(),
@@ -504,6 +509,7 @@ pub fn load_repo_snapshot_incremental_sync(
                 git_dir: location.git_dir.clone(),
                 common_dir: location.common_dir.clone(),
                 state: probe.state,
+                bisect,
                 is_unborn_head: probe.is_unborn_head,
                 head_branch: probe.head_branch,
                 head_oid: probe.head_oid,
@@ -538,6 +544,46 @@ fn collect_tip_oids(head_oid: Option<Oid>, refs: &[RefInfo]) -> HashSet<Oid> {
         tips.insert(r.target_oid);
     }
     tips
+}
+
+/// Estimates remaining candidate revisions and binary-search steps during an
+/// active `git bisect` session from `refs/bisect/bad` and `refs/bisect/good-*`.
+fn collect_bisect_info(repo: &Repository) -> jbgit_core::BisectInfo {
+    let Ok(bad_oid) = repo.refname_to_id("refs/bisect/bad") else {
+        return jbgit_core::BisectInfo::default();
+    };
+    let mut good_oids = Vec::new();
+    if let Ok(refs) = repo.references_glob("refs/bisect/good-*") {
+        for r in refs.flatten() {
+            if let Some(oid) = r.target() {
+                good_oids.push(oid);
+            }
+        }
+    }
+    if good_oids.is_empty() {
+        return jbgit_core::BisectInfo::default();
+    }
+    let Ok(mut walk) = repo.revwalk() else {
+        return jbgit_core::BisectInfo::default();
+    };
+    if walk.push(bad_oid).is_err() {
+        return jbgit_core::BisectInfo::default();
+    }
+    for g in good_oids {
+        let _ = walk.hide(g);
+    }
+    // Exclude `bad` itself (already known bad) from remaining candidates.
+    let total = walk.take(10_000).filter_map(Result::ok).count();
+    let remaining_revs = total.saturating_sub(1);
+    let steps = if remaining_revs == 0 {
+        0
+    } else {
+        usize::try_from(remaining_revs.ilog2() + 1).unwrap_or(0)
+    };
+    jbgit_core::BisectInfo {
+        remaining_revisions: Some(remaining_revs),
+        remaining_steps: Some(steps),
+    }
 }
 
 fn detect_has_lfs(repo: &Repository, location: &RepoLocation) -> bool {

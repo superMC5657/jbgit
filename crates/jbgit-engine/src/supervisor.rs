@@ -1560,8 +1560,10 @@ fn spawn_execute_commit(ctx: &SupervisorContext, id: u64, request: CommitRequest
             })
             .await
             .unwrap_or_default();
+        let effective_gpg = request.gpg_sign.unwrap_or(precheck.gpg_sign);
         let use_cli = ((precheck.has_commit_hooks && request.run_hooks)
-            || precheck.gpg_sign
+            || effective_gpg
+            || request.gpg_sign.is_some()
             || precheck.has_sequencer_state)
             && cli_exec.is_some();
 

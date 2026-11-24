@@ -412,7 +412,7 @@ impl I18n {
                 &[("name", name)],
             ),
             GitOp::FetchRemote { name } => self.t_fmt("git_op.fetch_remote", &[("name", name)]),
-            GitOp::AddWorktree { path, branch } => {
+            GitOp::AddWorktree { path, branch, .. } => {
                 let p = path.display().to_string();
                 match branch.branch_name() {
                     Some(b) => self.t_fmt("git_op.add_worktree", &[("path", &p), ("branch", b)]),
@@ -568,6 +568,11 @@ impl I18n {
             }
             GitOp::IntentToAdd { .. } => self.t("git_op.intent_to_add").to_string(),
             GitOp::AddToIgnore { .. } => self.t("git_op.add_to_ignore").to_string(),
+            GitOp::BisectStart { .. } => self.t("git_op.bisect_start").to_string(),
+            GitOp::BisectMark { good: true, .. } => self.t("git_op.bisect_good").to_string(),
+            GitOp::BisectMark { good: false, .. } => self.t("git_op.bisect_bad").to_string(),
+            GitOp::BisectSkip => self.t("git_op.bisect_skip").to_string(),
+            GitOp::BisectReset => self.t("git_op.bisect_reset").to_string(),
             GitOp::DeleteFiles { paths } => {
                 let c = paths.len().to_string();
                 self.t_fmt("git_op.delete_files", &[("count", &c)])

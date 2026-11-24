@@ -722,6 +722,7 @@ fn route_mouse_right_down(col: u16, row: u16, state: &AppState) -> Vec<Action> {
             | HitTarget::DialogOption(_)
             | HitTarget::DialogButton(_)
             | HitTarget::DialogCheckbox
+            | HitTarget::DialogSecondaryCheckbox
             | HitTarget::ModalButton(_)
             | HitTarget::BranchPopupStar(_)
             | HitTarget::RemotesRow(_)

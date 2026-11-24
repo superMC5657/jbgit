@@ -420,6 +420,7 @@ fn stage_tree_menu_covers_expected_actions() {
         vec![GitOp::AddToIgnore {
             patterns: vec!["/notes.txt".into()],
             exclude_file: false,
+            target_file: None,
         }]
     );
     let _ = PaneId::CommitChangesTree;

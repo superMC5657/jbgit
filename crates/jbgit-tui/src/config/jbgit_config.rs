@@ -417,21 +417,25 @@ impl Default for PushSection {
     }
 }
 
-/// `[worktree]` — defaults of New Worktree (Spec 12 Issue 10).
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
-pub struct WorktreeSection {
-    /// Directory new working trees are created in (`<dir>/<repo>-<branch>`);
-    /// unset / empty = the main working tree's parent directory. `~/` expands.
-    #[serde(default)]
-    pub default_parent: Option<String>,
-}
-
 fn deserialize_opt_non_empty<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
 where
     D: Deserializer<'de>,
 {
     let raw = Option::<String>::deserialize(deserializer)?;
     Ok(raw.filter(|s| !s.trim().is_empty()))
+}
+
+/// `[worktree]` — defaults of New Worktree (Spec 12 Issue 10 / Spec 13 Issue 14).
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WorktreeSection {
+    /// Directory new working trees are created in (`<dir>/<repo>-<branch>`);
+    /// unset / empty = the main working tree's parent directory. `~/` expands.
+    #[serde(default)]
+    pub default_parent: Option<String>,
+    /// Optional shell/setup command offered to run after a new working tree is
+    /// created (prompted for confirmation, never executed silently).
+    #[serde(default, deserialize_with = "deserialize_opt_non_empty")]
+    pub setup_command: Option<String>,
 }
 
 /// `[git]` — external `git` CLI executable override (Spec 13 Issue 13).
@@ -1024,10 +1028,13 @@ impl JbgitConfig {
         {
             self.push.protected_branches = pb.clone();
         }
-        if let Some(wt) = &overlay.worktree
-            && let Some(dp) = &wt.default_parent
-        {
-            self.worktree.default_parent = Some(dp.clone()).filter(|p| !p.trim().is_empty());
+        if let Some(wt) = &overlay.worktree {
+            if let Some(dp) = &wt.default_parent {
+                self.worktree.default_parent = Some(dp.clone()).filter(|p| !p.trim().is_empty());
+            }
+            if let Some(sc) = &wt.setup_command {
+                self.worktree.setup_command = Some(sc.clone()).filter(|p| !p.trim().is_empty());
+            }
         }
         if let Some(up) = &overlay.update {
             if let Some(m) = up.mode {
@@ -1140,6 +1147,7 @@ pub struct UpdateSectionOverlay {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct WorktreeSectionOverlay {
     pub default_parent: Option<String>,
+    pub setup_command: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

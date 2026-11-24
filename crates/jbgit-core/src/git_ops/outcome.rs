@@ -36,8 +36,30 @@ pub enum GitFailure {
     PatchConflicts { paths: Vec<String> },
     /// `git cherry-pick` produced an empty commit (`--skip` / `--allow-empty` / `--abort`).
     EmptyCherryPick,
+    /// GPG / pinentry / secret-key signing failure (commit `-S` or signed tag `-s`).
+    GpgSignFailed { detail: String },
     /// Anything else (first meaningful stderr line).
     Other(String),
+}
+
+/// Returns `true` when Git output indicates a GPG / pinentry signing failure.
+pub fn is_gpg_sign_failure(text: &str) -> bool {
+    let lower = text.to_ascii_lowercase();
+    [
+        "gpg failed to sign the data",
+        "failed to write commit object",
+        "secret key not available",
+        "no secret key",
+        "gpg: signing failed",
+        "gpg: skipped",
+        "pinentry",
+        "cannot run gpg",
+        "could not run gpg",
+        "unable to sign the tag",
+        "gpg-agent",
+    ]
+    .iter()
+    .any(|needle| lower.contains(needle))
 }
 
 /// Classifies the combined stderr/stdout of a failed `git` step.
@@ -45,6 +67,23 @@ pub fn classify_failure(lines: &[String]) -> GitFailure {
     let joined = lines.join("\n");
     if is_authentication_failure(&joined) {
         return GitFailure::AuthenticationFailed;
+    }
+    if is_gpg_sign_failure(&joined) {
+        let first = lines
+            .iter()
+            .map(|l| l.trim())
+            .find(|l| {
+                let low = l.to_ascii_lowercase();
+                low.contains("gpg")
+                    || low.contains("pinentry")
+                    || low.contains("secret key")
+                    || low.starts_with("error:")
+                    || low.starts_with("fatal:")
+            })
+            .unwrap_or("gpg failed to sign the data");
+        return GitFailure::GpgSignFailed {
+            detail: crate::redact_urls_in(first),
+        };
     }
     if joined.contains("error: remote ") && joined.contains(" already exists") {
         return GitFailure::RemoteAlreadyExists;

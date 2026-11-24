@@ -62,8 +62,13 @@ const COMMIT_EDITOR_ACTIONS: [KeyAction; 5] = [
     KeyAction::CommitHistory,
 ];
 
-const ADVANCED_TOOL_ACTIONS: [(&KeyAction, &str); 8] = [
+const ADVANCED_TOOL_ACTIONS: [(&KeyAction, &str); 13] = [
     (&KeyAction::CloneRepository, "—"),
+    (&KeyAction::BisectGood, "—"),
+    (&KeyAction::BisectBad, "—"),
+    (&KeyAction::BisectSkip, "—"),
+    (&KeyAction::BisectReset, "—"),
+    (&KeyAction::CycleGpgSign, "—"),
     (&KeyAction::Palette, "—"),
     (&KeyAction::ToggleGlyphMode, "F12"),
     (&KeyAction::CycleGraphRenderer, "F8"),
@@ -395,6 +400,11 @@ pub fn is_action_applicable(run: &KeyAction, state: &AppState) -> bool {
                     .as_ref()
                     .is_some_and(|s| s.has_more_commits)
         }
+        KeyAction::BisectGood
+        | KeyAction::BisectBad
+        | KeyAction::BisectSkip
+        | KeyAction::BisectReset => state.is_bisecting(),
+        KeyAction::CycleGpgSign => state.active_tab == WorkspaceTab::Commit,
         KeyAction::GitStatusProbe => {
             state.active_tab == WorkspaceTab::Console
                 && state.focused_pane == PaneId::ConsoleCommandList
@@ -640,6 +650,17 @@ pub fn execute_action(run: &KeyAction, state: &AppState) -> Option<Vec<Action>> 
         }
         KeyAction::Unshallow => Some(vec![Action::PromptUnshallow]),
         KeyAction::LogLoadMore => Some(vec![Action::LoadMoreCommits]),
+        KeyAction::BisectGood => Some(vec![Action::RunGitOp(GitOp::BisectMark {
+            good: true,
+            rev: None,
+        })]),
+        KeyAction::BisectBad => Some(vec![Action::RunGitOp(GitOp::BisectMark {
+            good: false,
+            rev: None,
+        })]),
+        KeyAction::BisectSkip => Some(vec![Action::RunGitOp(GitOp::BisectSkip)]),
+        KeyAction::BisectReset => Some(vec![Action::RunGitOp(GitOp::BisectReset)]),
+        KeyAction::CycleGpgSign => Some(vec![Action::CommitCycleGpgSign]),
         KeyAction::Worktrees => Some(if !crate::worktrees_view::worktrees_supported(state) {
             vec![crate::worktrees_view::unsupported_notice(state)]
         } else if state.repo_snapshot.is_some() {

@@ -284,6 +284,7 @@ pub fn route_overlay_and_stash_click(
         HitTarget::DialogButton(DialogButtonKind::Cancel) => vec![Action::PopModal],
         HitTarget::DialogButton(DialogButtonKind::Fetch) => vec![Action::PullDialogFetch],
         HitTarget::DialogCheckbox => vec![Action::DialogToggleCheckbox],
+        HitTarget::DialogSecondaryCheckbox => vec![Action::DialogToggleSecondaryCheckbox],
         HitTarget::RepoSwitcherRow(row) => {
             let mut out = vec![Action::RepoSwitcherSetState {
                 query: match state.modal_stack.last() {
@@ -455,6 +456,22 @@ pub fn route_overlay_and_stash_click(
                 ],
                 depth: 0,
             }]
+        }
+        HitTarget::BisectBanner(btn) => {
+            use crate::hit_test::BisectButton;
+            let op = match btn {
+                BisectButton::Good => GitOp::BisectMark {
+                    good: true,
+                    rev: None,
+                },
+                BisectButton::Bad => GitOp::BisectMark {
+                    good: false,
+                    rev: None,
+                },
+                BisectButton::Skip => GitOp::BisectSkip,
+                BisectButton::Reset => GitOp::BisectReset,
+            };
+            vec![Action::RunGitOp(op)]
         }
         HitTarget::OngoingBanner(btn) => {
             let Some(kind) = state.ongoing_kind() else {

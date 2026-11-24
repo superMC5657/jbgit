@@ -145,9 +145,10 @@ jbgit 默认采用**零冲突统一键位（`preset = "default"`）**，并通�
 
 > 提示：
 > - **模板、合并消息与注释剥离**：支持自动载入 `commit.template` 以及 Merge/Squash/冲突恢复时的 `.git/MERGE_MSG` / `.git/SQUASH_MSG`；提交时无论 CLI (`--cleanup=strip`) 还是 `git2` 路径均按 `core.commentChar` 剥离注释行；正文超过 72 列的行会在编辑器内高亮提示，可按 `<Alt-q>` 或点击 `[72↺]` 一键重排。
-> - **提交选项与护栏**：选项栏支持 `Amend`、`Sign-off`、`Hooks`、`Empty`（`--allow-empty`）与 `Author`（输入时支持按最近提交者 `Tab`/`↑`/`↓` 自动补全）；未配置 `user.name`/`user.email` 时自动弹出「配置 Git 身份信息」对话框（支持本地/全局）并在保存后自动继续提交；`Undo Last Commit` / `Uncommit` 遇到合并提交或已推送至上游的 HEAD 时会弹出二次危险确认；`Commit & Push…` 提交成功后直接进入完整 Push 对话框。
+> - **提交选项与护栏**：选项栏支持 `Amend`、`Sign-off`、`Hooks`、`Empty`（`--allow-empty`）、`GPG` 三态签名开关（`Auto` 跟随仓库 `commit.gpgsign` / `-S` 强制签名 / `--no-gpg-sign` 跳过签名，可点击或经命令面板 `cycle_gpg_sign` 切换）与 `Author`（输入时支持按最近提交者 `Tab`/`↑`/`↓` 自动补全）；未配置 `user.name`/`user.email` 时自动弹出「配置 Git 身份信息」对话框（支持本地/全局）并在保存后自动继续提交；`Undo Last Commit` / `Uncommit` 遇到合并提交或已推送至上游的 HEAD 时会弹出二次危险确认；`Commit & Push…` 提交成功后直接进入完整 Push 对话框。
+> - **灵活 `.gitignore` / `.git/info/exclude`**：变更树右键菜单提供「添加忽略规则… (`Add to Ignore…`)」子菜单，可按精确路径、扩展名（`*.ext`）或父目录（`/<dir>/`）写入仓库根 `.gitignore`、最近祖先嵌套 `.gitignore` 或 `.git/info/exclude`，并可一键在 `$EDITOR` 中打开对应规则文件。
 > - 当仓库（含 linked worktree 共享的 `common_dir/hooks`）未配置提交类 Git Hooks 时，Commit 面板的 `Hooks` 复选框会置灰显示为 `Hooks (none)`；处于 Merge / Cherry-Pick / Revert / Rebase 状态时，提交会自动走原生 `git commit` CLI 以保留多父提交并清理 sequencer 状态文件。
-> - 符号链接（含悬空链接）与类型变更在变更树中支持整文件暂存/取消暂存，行级局部暂存自动禁用。
+> - 符号链接（含悬空链接）、类型变更与 Submodule gitlink 在变更树中支持整条暂存 / 取消暂存 / 放弃指针变更，行级局部暂存自动禁用。
 
 ### 统一差异对比 (Diff View — Log / Commit / Stash)
 
@@ -452,6 +453,8 @@ update_other_branches = true
 [worktree]
 # 新建 Worktree 的默认父目录（默认路径 <目录>/<仓库名>-<分支名>，分支名中的 / 换成 -）；留空 = 主工作区的父目录，支持 ~/
 default_parent = ""
+# 可选：新建 Worktree 成功后提示确认运行的初始化命令（如 "npm ci"）；留空禁用，jbgit 绝不静默执行
+setup_command = ""
 
 [git]
 # 自定义外部 git 可执行文件路径；留空 = 按 PATH → 平台常见安装目录自动探测（配置无效路径时启动即给出明确错误提示）
@@ -574,7 +577,7 @@ prepend_keymap = [
 
 | 作用域 | 可用 `run` 动作标识符 |
 | :--- | :--- |
-| `global` | `quit`, `help`, `context_menu`, `refresh`, `tab_commit`, `tab_log`, `tab_branches`, `tab_stash`, `tab_console`, `focus_next`, `focus_prev`, `toggle_branches_popup`, `toggle_branches_pane`, `git_fetch`, `git_pull`, `git_push`, `update_project`, `configure_remotes`, `switch_repository`, `clone_repository`, `worktrees`, `resolve_conflicts`, `update_submodules`, `unshallow`, `goto_revision`, `palette`, `toggle_glyph_mode`, `cycle_graph_renderer`, `git_status_probe`, `noop` |
+| `global` | `quit`, `help`, `context_menu`, `refresh`, `tab_commit`, `tab_log`, `tab_branches`, `tab_stash`, `tab_console`, `focus_next`, `focus_prev`, `toggle_branches_popup`, `toggle_branches_pane`, `git_fetch`, `git_pull`, `git_push`, `update_project`, `configure_remotes`, `switch_repository`, `clone_repository`, `worktrees`, `resolve_conflicts`, `update_submodules`, `unshallow`, `bisect_good`, `bisect_bad`, `bisect_skip`, `bisect_reset`, `cycle_gpg_sign`, `goto_revision`, `palette`, `toggle_glyph_mode`, `cycle_graph_renderer`, `git_status_probe`, `noop` |
 | `log` | `cursor_down`, `cursor_up`, `goto_top`, `goto_bottom`, `page_down_half`, `page_up_half`, `goto_revision`, `focus_filter`, `toggle_branches_pane`, `toggle_log_row_selection`, `compare_or_diff`, `swap_compare_direction`, `toggle_only_affected_changes`, `zoom_diff`, `copy_hash`, `copy_commit_message`, `copy_row_summary`, `checkout`, `new_branch`, `uncommit`, `reword`, `drop_commit`, `choose_parent`, `toggle_group`, `file_history`, `annotate`, `collapse_linear_branch`, `expand_linear_branch`, `collapse_all_linear_branches`, `expand_all_linear_branches`, `browse_revision`, `toggle_no_merges`, `toggle_linear_bek`, `log_speed_search`, `maximize_commit_message`, `open_reflog`, `log_load_more` |
 | `branch` | `branch_search`, `toggle_favorite`, `checkout`, `new_branch`, `rename_branch`, `delete_branch`, `navigate_branch`, `open_reflog` |
 | `commit` | `cursor_down`, `cursor_up`, `goto_top`, `goto_bottom`, `toggle_stage`, `stage_selection`, `unstage_selection`, `focus_commit_msg`, `commit`, `commit_and_push`, `toggle_amend`, `toggle_signoff`, `commit_history`, `select_all`, `discard_changes`, `toggle_group`, `edit_file`, `file_history`, `annotate`, `apply_patch`, `apply_patch_clipboard` |
@@ -610,8 +613,8 @@ jbgit 运行的所有 git 子进程都设置 `GIT_TERMINAL_PROMPT=0`，不会在
 1. jbgit 启动时创建一个**仅当前用户可访问**的本地通道（Windows：带当前用户 SID 专属 DACL 的命名管道，拒绝远程客户端；Unix：`$XDG_RUNTIME_DIR` 或临时目录下 `0700` 目录中的 `0600` socket；不使用 TCP 端口），并生成 32 字节随机会话令牌。
 2. 仅对联网命令（`fetch` / `pull` / `push` / `ls-remote`）设置 `GIT_ASKPASS`、`SSH_ASKPASS`（均指向当前 `jbgit` 可执行文件）、`SSH_ASKPASS_REQUIRE=force`、`JBGIT_ASKPASS_ADDR`、`JBGIT_ASKPASS_TOKEN`；本地命令不设置。
 3. git / ssh 以 `jbgit "<提示>"` 形式回调；该进程出示令牌连回会话（令牌不匹配立即断开），提示在 TUI 中以对话框显示。多个 git 进程同时请求时按先后顺序逐个显示。
-4. 提示含 `Password` / `passphrase` / `token` / `PIN` 时输入以 `•` 掩码显示，`<Tab>` 切换明文；支持粘贴；`<Ctrl-u>` 清空；`<Enter>` 发送；`<Esc>` 取消（askpass 以退出码 1 结束，git 随即失败）。单次提示 120 秒未回答自动取消。
-5. 认证失败（`Authentication failed`、`Permission denied (publickey)`、`could not read Username` 等）会弹出「身份验证失败」对话框，给出配置 credential helper（`git config --global credential.helper manager` 等）或 `ssh-add` 的指引。
+4. 提示含 `Password` / `passphrase` / `token` / `PIN` 时输入以 `•` 掩码显示，`<Tab>` 切换明文；支持粘贴；`<Ctrl-u>` 清空；`<Enter>` 发送；`<Esc>` 取消（askpass 以退出码 1 结束，git 随即失败）。遇到 OpenSSH 首次连接主机密钥确认提示（`Are you sure you want to continue connecting (yes/no/[fingerprint])?`）时，自动切换为**非掩码 SSH 主机密钥验证对话框**，完整换行展示服务器指纹原文并引导输入 `yes` / `no`。单次提示 120 秒未回答自动取消。
+5. 认证失败（`Authentication failed`、`Permission denied (publickey)`、`could not read Username` 等）会弹出「身份验证失败」对话框，给出配置 credential helper（`git config --global credential.helper manager` 等）或 `ssh-add` 的指引；GPG 签名提交或签发签名标签（Create Tag 对话框支持按 `<Ctrl-s>` 勾选 `Sign tag with GPG (-s)`）因 `gpg-agent` / `pinentry` 失败时，自动弹出包含排查建议的 **GPG 签名失败** 提示。
 
 **jbgit 不保存任何凭据**：输入值只在内存中（用后清零）转交给等待的 askpass 进程，不进入控制台、日志、草稿或任何文件；环境变量（含会话令牌）也从不在控制台显示。若你配置了 credential helper，git 会在认证成功后自行调用其 `store`，jbgit 不干预。
 
@@ -679,11 +682,14 @@ jbgit 同一时间只绑定**一个活动仓库**（多根同步模型不做，�
 | `y` | 复制路径 |
 | `<Esc>` / `q` | 关闭 |
 
-**新建 Worktree**：先选择检出方式——**从 HEAD 新建分支**（`-b <名称>`）、**已有分支**（只接受尚未在任何工作区检出的本地分支）、**游离 HEAD**（`--detach`）；再确认位置，默认 `<主工作区父目录>/<仓库名>-<分支名>`（由 `[worktree] default_parent` 改变父目录；已存在且非空的路径会被拒绝）。创建成功后通知栏 `<Alt-z>`「打开 '<名称>'」可立即切换过去。
+**新建 Worktree**：先选择检出方式——**从 HEAD 新建分支**（`-b <名称>`）、**已有分支**（只接受尚未在任何工作区检出的本地分支）、**游离 HEAD**（`--detach`）；再确认位置，默认 `<主工作区父目录>/<仓库名>-<分支名>`（由 `[worktree] default_parent` 改变父目录；已存在且非空的路径会被拒绝），并可按 `<Tab>` 勾选 `--force` 强制检出。创建成功后：
+- 若仓库根目录存在 `.worktreeinclude`（使用 gitignore 语法声明需复制到新 worktree 的被忽略本地文件，如 `.env`、`config/local/`），jbgit 会自动将匹配文件复制到新工作区（不覆盖已有文件）；
+- 若在 `jbgit.toml` 中配置了 `[worktree] setup_command`，创建成功后会弹出确认对话框（默认取消），经用户显式确认后才在新工作区目录中运行初始化命令；
+- 通知栏 `<Alt-z>`「打开 '<名称>'」可立即切换过去。
 
 其他入口：
 
-- 分支菜单（分支树 / 分支浮窗）：未被检出的本地分支提供 `New Worktree…`；已在其他 Worktree 检出的分支 Checkout 置灰并提供 `Open in Worktree '<name>'`。
+- 分支菜单（分支树 / 分支浮窗）：未被检出的本地分支提供 `New Worktree…`；远程分支提供 `New Worktree from '<remote>/<branch>'…` 直接基于远程分支创建新 Worktree；已在其他 Worktree 检出的分支 Checkout 置灰并提供 `Open in Worktree '<name>'`。
 - Log 提交右键菜单：`New Worktree from Here…`（从该提交新建分支或游离 HEAD）。
 - git 拒绝检出（`is already checked out at` / `is already used by worktree at`）时弹出「分支已在其他工作区检出」对话框，可一键打开该 Worktree。
 
@@ -770,9 +776,9 @@ jbgit 同一时间只绑定**一个活动仓库**（多根同步模型不做，�
    - `Commit Details` 面板通过 `git log -1 --format=%G?%x1f%GS%x1f%GK` 细分显示 8 种状态（`Good`、`GoodUnknownValidity (U)`、`Expired (X/Y)`、`Revoked (R)`、`CannotCheck (E)`、`Bad (B)`、`Unsigned (N)`、`Pending`），并展示签名者（`%GS`）与密钥 ID（`%GK`）。
    - `[⚙ Presentation]` → `Show Signature Column` 可选开启 Log 提交列表的签名图标列（默认关闭，仅对可视区提交批量验证），鼠标悬停图标弹出签名者与密钥详情提示。
 
-2. **Submodule 只读支持 (`Update Submodules`)**
-   - `[1 Commit]` 变更树将子模块标注为只读节点（展示 `[new commits]` / `[dirty workdir]` / `[uninitialized]` 徽标），禁用行级暂存、`[+]`/`[-]` 悬浮暂存及破坏性丢弃，右侧差异预览显示 `HEAD` / `Index` / `Working tree` 指向提交的 SHA。
-   - 右键菜单提供「在仓库切换器中打开子模块」及「更新子模块（`git submodule update --init --recursive`）」；工具集动作 `update_submodules` 可在命令面板中更新全部子模块。
+2. **Submodule gitlink 暂存与更新 (`Update Submodules`)**
+   - `[1 Commit]` 变更树为子模块展示 `[new commits]` / `[dirty workdir]` / `[uninitialized]` 徽标，右侧差异预览显示 `HEAD` / `Index` / `Working tree` 指向提交的 SHA；支持对子模块条目执行**整条暂存（`git add`）、取消暂存（`git reset`）与放弃指针变更**以正常提交子模块指针更新（仍禁止在右侧 Diff 做文本行级暂存）。
+   - 右键菜单亦提供「在仓库切换器中打开子模块」及「更新子模块（`git submodule update --init --recursive`）」；工具集动作 `update_submodules` 可在命令面板中更新全部子模块。
 
 3. **Git LFS 指针占位预览**
    - 检测 `.gitattributes` 中的 `filter=lfs` 规则（`RepoSnapshot.has_lfs` 与每文件 attribute 检查）；在 Log Diff、Stage Diff 及「按版本浏览仓库」遇到 LFS 指针文件时显示 `sha256` 前缀、字节大小与未下载提示，不触发 `git lfs smudge` 下载实体对象。
@@ -784,6 +790,10 @@ jbgit 同一时间只绑定**一个活动仓库**（多根同步模型不做，�
 5. **增量 Log 头部刷新与超 50k 提交渐进分页 (`LogLoadMore`)**
    - 常规提交、fetch 新增提交、分支快进、新建 tag、删除分支或小范围 reset/amend 触发 `RefsAndGraph` 刷新时，引擎对比新旧 ref tips，使用 `git2::Revwalk` 以旧 tips 为 `hide` 边界仅扫描新增差集，再通过 `VcsLogJoiner` 风格算法按拓扑序拼接到缓存的提交表头部并裁剪不可达孤立提交；若发生大规模历史改写、孤立分支或浅克隆加深/`unshallow`，则自动安全回退到全量加载。
    - 大仓库默认首屏加载 50,000 条提交，当仓库存在更早历史（`has_more_commits == true`）时，Log 副标题显示 `50000+`，提交表底端渲染可鼠标点击或用方向键/`G` 移入后按 `Enter` 触发的 `[Load More (+50,000 commits)…]` 虚拟尾行（也可通过 Log 右键菜单或命令目录动作 `log_load_more` 触发）；后台异步分页加载完成后无损保留当前滚动位置与选中提交 `Oid`。
+
+6. **交互式二分查找 (`Git Bisect`)**
+   - Log 提交右键菜单提供「从此处开始二分查找 (Bad)」与「标记为正常提交 (Bisect Good)」，支持先选 Bad 再选 Good 或在已开始的 Bisect 中随时标记历史提交。
+   - 仓库进入 `Bisect` 状态后，顶部橙色状态横幅实时估算剩余修订数与约需步数，并提供可点击的 `[Good]` / `[Bad]` / `[Skip]` / `[Reset]` 按钮；对应动作 `bisect_good` / `bisect_bad` / `bisect_skip` / `bisect_reset` 均已注册至 `CommandCatalog`（可在 `?` 命令面板执行或于 `keymap.toml` 自定义绑定）。
 
 ---
 

@@ -158,6 +158,8 @@ pub struct CommitWorkbench {
     signoff: bool,
     run_hooks: bool,
     allow_empty: bool,
+    /// `None` = follow repo `commit.gpgsign`, `Some(true)` = `-S`, `Some(false)` = `--no-gpg-sign`.
+    gpg_sign: Option<bool>,
     show_author_input: bool,
     author_input: String,
     editing_author: bool,
@@ -221,6 +223,7 @@ impl Default for CommitWorkbench {
             signoff: false,
             run_hooks: true,
             allow_empty: false,
+            gpg_sign: None,
             show_author_input: false,
             author_input: String::new(),
             editing_author: false,
@@ -400,6 +403,10 @@ impl CommitWorkbench {
 
     pub fn allow_empty(&self) -> bool {
         self.allow_empty
+    }
+
+    pub fn gpg_sign(&self) -> Option<bool> {
+        self.gpg_sign
     }
 
     pub fn show_author_input(&self) -> bool {
@@ -1707,7 +1714,11 @@ impl CommitWorkbench {
                         self.editor.set_text(&msg);
                     }
                     *ctx.status_notice = Some(outcome.summary.clone());
-                    let output = outcome.error_output.unwrap_or(outcome.summary);
+                    let mut output = outcome.error_output.unwrap_or(outcome.summary);
+                    if jbgit_core::is_gpg_sign_failure(&output) {
+                        output.push_str("\n\n");
+                        output.push_str(ctx.i18n.t("dialog.gpg_failed.hint"));
+                    }
                     ctx.modals.push(ModalLayer::HookError { output });
                 }
                 None
@@ -1821,34 +1832,27 @@ impl CommitWorkbench {
             }
             Action::StageActionSelected => {
                 if let Some(status) = self.status.clone() {
-                    let mut targets = self.collect_targets_for_action(
+                    let targets = self.collect_targets_for_action(
                         self.selected_idx,
                         &status,
                         StageNodeKind::can_stage,
                     );
-                    let had_targets = !targets.is_empty();
-                    targets.retain(|t| !t.is_submodule);
                     if !targets.is_empty() {
                         self.invalidate_paths(&targets);
                         let count_s = targets.len().to_string();
                         *ctx.status_notice =
                             Some(ctx.i18n.t_fmt("toast.staging_paths", &[("count", &count_s)]));
                         ctx.effects.push(Effect::StageTargets(targets));
-                    } else if had_targets {
-                        *ctx.status_notice =
-                            Some(ctx.i18n.t("toast.submodule_readonly").to_string());
                     }
                 }
             }
             Action::UnstageActionSelected => {
                 if let Some(status) = self.status.clone() {
-                    let mut targets = self.collect_targets_for_action(
+                    let targets = self.collect_targets_for_action(
                         self.selected_idx,
                         &status,
                         StageNodeKind::can_unstage,
                     );
-                    let had_targets = !targets.is_empty();
-                    targets.retain(|t| !t.is_submodule);
                     if !targets.is_empty() {
                         self.invalidate_paths(&targets);
                         let count_s = targets.len().to_string();
@@ -1857,9 +1861,6 @@ impl CommitWorkbench {
                                 .t_fmt("toast.unstaging_paths", &[("count", &count_s)]),
                         );
                         ctx.effects.push(Effect::UnstageTargets(targets));
-                    } else if had_targets {
-                        *ctx.status_notice =
-                            Some(ctx.i18n.t("toast.submodule_readonly").to_string());
                     }
                 }
             }
@@ -1871,13 +1872,11 @@ impl CommitWorkbench {
             }
             Action::DiscardPromptSelected => {
                 if let Some(status) = self.status.clone() {
-                    let mut targets = self.collect_targets_for_action(
+                    let targets = self.collect_targets_for_action(
                         self.selected_idx,
                         &status,
                         |k| matches!(k, StageNodeKind::Unstaged | StageNodeKind::Untracked),
                     );
-                    let had_targets = !targets.is_empty();
-                    targets.retain(|t| !t.is_submodule);
                     if !targets.is_empty() {
                         let count_s = targets.len().to_string();
                         let sample: String = targets
@@ -1904,9 +1903,6 @@ impl CommitWorkbench {
                                 vec![Action::DiscardTargetsConfirmed(targets)],
                             ),
                         ))));
-                    } else if had_targets {
-                        *ctx.status_notice =
-                            Some(ctx.i18n.t("toast.submodule_readonly").to_string());
                     }
                 }
             }
@@ -2425,6 +2421,13 @@ impl CommitWorkbench {
             Action::CommitToggleAllowEmpty => {
                 self.allow_empty = !self.allow_empty;
             }
+            Action::CommitCycleGpgSign => {
+                self.gpg_sign = match self.gpg_sign {
+                    None => Some(true),
+                    Some(true) => Some(false),
+                    Some(false) => None,
+                };
+            }
             Action::CommitToggleAuthorInput => {
                 self.show_author_input = !self.show_author_input;
                 self.editing_author = self.show_author_input;
@@ -2616,6 +2619,7 @@ impl CommitWorkbench {
                     and_push,
                     check_crlf: ctx.warn_crlf,
                     fix_autocrlf: false,
+                    gpg_sign: self.gpg_sign,
                 };
                 ctx.modals.push(ModalLayer::Dialog(Box::new(Dialog::Identity(
                     IdentityDialog::new(eff_name, eff_email, Some(pending)),
@@ -2637,6 +2641,7 @@ impl CommitWorkbench {
             and_push,
             check_crlf: ctx.warn_crlf,
             fix_autocrlf: false,
+            gpg_sign: self.gpg_sign,
         };
         ctx.effects.push(Effect::ExecuteCommit(req));
     }

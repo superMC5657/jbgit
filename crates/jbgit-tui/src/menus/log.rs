@@ -521,11 +521,60 @@ pub fn log_commit_menu_items(state: &AppState) -> Vec<ContextMenuItem> {
                         target: primary.oid,
                     },
                 )
-                .with_checkbox(i18n.t("dialog.new_tag.annotated_checkbox"), false),
+                .with_checkbox(i18n.t("dialog.new_tag.annotated_checkbox"), false)
+                .with_secondary_checkbox(i18n.t("dialog.new_tag.sign_checkbox"), false),
             )),
         )
         .icon("🏷")
         .enabled_if(single, need_single(new_tag_lbl)),
+    );
+    let bisect_bad_lbl = i18n.t("menu.log.bisect_start_bad");
+    items.push(
+        run(
+            bisect_bad_lbl,
+            None,
+            None,
+            op(if state.is_bisecting() {
+                GitOp::BisectMark {
+                    good: false,
+                    rev: Some(primary.oid.to_string()),
+                }
+            } else {
+                GitOp::BisectStart {
+                    bad: Some(primary.oid.to_string()),
+                    good: Vec::new(),
+                }
+            }),
+        )
+        .enabled_if(single, need_single(bisect_bad_lbl))
+        .enabled_if(
+            state.ongoing_kind().is_none(),
+            i18n.t("menu.log.finish_ongoing_first"),
+        ),
+    );
+    let bisect_good_lbl = i18n.t("menu.log.bisect_mark_good");
+    items.push(
+        run(
+            bisect_good_lbl,
+            None,
+            None,
+            op(if state.is_bisecting() {
+                GitOp::BisectMark {
+                    good: true,
+                    rev: Some(primary.oid.to_string()),
+                }
+            } else {
+                GitOp::BisectStart {
+                    bad: Some("HEAD".to_string()),
+                    good: vec![primary.oid.to_string()],
+                }
+            }),
+        )
+        .enabled_if(single, need_single(bisect_good_lbl))
+        .enabled_if(
+            state.ongoing_kind().is_none(),
+            i18n.t("menu.log.finish_ongoing_first"),
+        ),
     );
     items.push(ContextMenuItem::separator());
 

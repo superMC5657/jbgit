@@ -172,12 +172,19 @@ pub(crate) fn compile_simple_steps(op: &GitOp) -> Option<Vec<CompiledStep>> {
             target,
             message,
             force,
+            sign,
         } => {
             let mut args = vec!["tag".to_string()];
             if *force {
                 args.push("-f".to_string());
             }
-            if let Some(m) = message.as_ref().filter(|m| !m.trim().is_empty()) {
+            if *sign {
+                let msg = message
+                    .as_deref()
+                    .filter(|m| !m.trim().is_empty())
+                    .unwrap_or(name.as_str());
+                args.extend(["-s".to_string(), "-m".to_string(), msg.to_string()]);
+            } else if let Some(m) = message.as_ref().filter(|m| !m.trim().is_empty()) {
                 args.extend(["-a".to_string(), "-m".to_string(), m.clone()]);
             }
             args.extend(["--".to_string(), name.clone(), target.to_string()]);
@@ -239,9 +246,16 @@ pub(crate) fn compile_simple_steps(op: &GitOp) -> Option<Vec<CompiledStep>> {
         GitOp::FetchRemote { name } => {
             vec![CompiledStep::new(["fetch", "--prune", name.as_str()])]
         }
-        GitOp::AddWorktree { path, branch } => {
+        GitOp::AddWorktree {
+            path,
+            branch,
+            force,
+        } => {
             let path = path.to_string_lossy().into_owned();
             let mut args = vec!["worktree".to_string(), "add".to_string()];
+            if *force {
+                args.push("--force".to_string());
+            }
             let tail = match branch {
                 WorktreeBranch::Existing(name) => vec![path, name.clone()],
                 WorktreeBranch::New { name, start } => {
@@ -577,6 +591,29 @@ pub(crate) fn compile_simple_steps(op: &GitOp) -> Option<Vec<CompiledStep>> {
             "--progress",
             remote.as_str(),
         ])],
+        GitOp::BisectStart { bad, good } => {
+            let mut args = vec!["bisect".to_string(), "start".to_string()];
+            if let Some(b) = bad.as_deref().filter(|s| !s.trim().is_empty()) {
+                args.push(b.to_string());
+                args.extend(good.iter().cloned());
+            } else if !good.is_empty() {
+                args.push("HEAD".to_string());
+                args.extend(good.iter().cloned());
+            }
+            vec![CompiledStep::new(args)]
+        }
+        GitOp::BisectMark { good, rev } => {
+            let mut args = vec![
+                "bisect".to_string(),
+                if *good { "good" } else { "bad" }.to_string(),
+            ];
+            if let Some(r) = rev.as_deref().filter(|s| !s.trim().is_empty()) {
+                args.push(r.to_string());
+            }
+            vec![CompiledStep::new(args)]
+        }
+        GitOp::BisectSkip => vec![CompiledStep::new(["bisect", "skip"])],
+        GitOp::BisectReset => vec![CompiledStep::new(["bisect", "reset"])],
         GitOp::AcceptSide { .. }
         | GitOp::RewriteHistory { .. }
         | GitOp::ApplyPatch { .. }
@@ -1168,6 +1205,11 @@ impl<R: GitCliRunner> Runner<'_, R> {
                     let _ = std::fs::remove_dir_all(self.loc.git_dir.join("jbgit-rebase"));
                 }
             }
+            if res.outcome.success
+                && let GitOp::AddWorktree { path, .. } = &res.outcome.op
+            {
+                apply_worktreeinclude_sync(&self.loc.workdir, path);
+            }
             return res;
         }
         match op.clone() {
@@ -1283,8 +1325,15 @@ impl<R: GitCliRunner> Runner<'_, R> {
             GitOp::AddToIgnore {
                 patterns,
                 exclude_file,
+                target_file,
             } => {
-                let path = if exclude_file {
+                let path = if let Some(rel) = target_file {
+                    if rel.is_absolute() {
+                        rel
+                    } else {
+                        self.loc.workdir.join(rel)
+                    }
+                } else if exclude_file {
                     self.loc.common_dir.join("info").join("exclude")
                 } else {
                     self.loc.workdir.join(".gitignore")
@@ -2093,6 +2142,77 @@ fn sequence_editor_script(src: &Path) -> String {
     )
 }
 
+/// Copies ignored / untracked files matching `<src_workdir>/.worktreeinclude`
+/// into `dest_workdir` after `git worktree add` succeeds (never overwriting
+/// existing files in the newly created working tree).
+pub fn apply_worktreeinclude_sync(src_workdir: &std::path::Path, dest_workdir: &std::path::Path) -> Vec<String> {
+    let include_file = src_workdir.join(".worktreeinclude");
+    let Ok(rules_text) = std::fs::read_to_string(&include_file) else {
+        return Vec::new();
+    };
+    if rules_text.trim().is_empty() || !dest_workdir.is_dir() {
+        return Vec::new();
+    }
+
+    let mut candidates = Vec::new();
+    collect_worktreeinclude_candidates(src_workdir, src_workdir, 0, &mut candidates);
+    let matched = jbgit_core::match_worktreeinclude_paths(&rules_text, &candidates);
+    let mut copied = Vec::new();
+    for rel in matched {
+        let src = src_workdir.join(&rel);
+        let dst = dest_workdir.join(&rel);
+        if !src.is_file() || dst.exists() {
+            continue;
+        }
+        if let Some(parent) = dst.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        if std::fs::copy(&src, &dst).is_ok() {
+            copied.push(rel);
+        }
+    }
+    copied
+}
+
+fn collect_worktreeinclude_candidates(
+    root: &std::path::Path,
+    dir: &std::path::Path,
+    depth: usize,
+    out: &mut Vec<String>,
+) {
+    const MAX_DEPTH: usize = 8;
+    const MAX_FILES: usize = 10_000;
+    if depth > MAX_DEPTH || out.len() >= MAX_FILES {
+        return;
+    }
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        if out.len() >= MAX_FILES {
+            break;
+        }
+        let name = entry.file_name();
+        if name == ".git" || name == ".worktreeinclude" {
+            continue;
+        }
+        let path = entry.path();
+        let Ok(meta) = std::fs::symlink_metadata(&path) else {
+            continue;
+        };
+        if meta.file_type().is_symlink() {
+            continue;
+        }
+        if meta.is_dir() {
+            collect_worktreeinclude_candidates(root, &path, depth + 1, out);
+        } else if meta.is_file()
+            && let Ok(rel) = path.strip_prefix(root)
+        {
+            out.push(rel.to_string_lossy().replace('\\', "/"));
+        }
+    }
+}
+
 fn append_lines(path: &PathBuf, lines: &[String]) -> std::io::Result<()> {
     use std::io::Write;
     if let Some(parent) = path.parent() {
@@ -2249,6 +2369,7 @@ mod tests {
             compiled_args(&GitOp::AddWorktree {
                 path: PathBuf::from("/w/x"),
                 branch: WorktreeBranch::Existing("feature/x".into()),
+                force: false,
             }),
             v(&["worktree", "add", "--", "/w/x", "feature/x"])
         );
@@ -2259,6 +2380,7 @@ mod tests {
                     name: "y".into(),
                     start: "main".into(),
                 },
+                force: false,
             }),
             v(&["worktree", "add", "-b", "y", "--", "/w/y", "main"])
         );
@@ -2266,8 +2388,17 @@ mod tests {
             compiled_args(&GitOp::AddWorktree {
                 path: PathBuf::from("/w/z"),
                 branch: WorktreeBranch::Detached(oid),
+                force: false,
             }),
             v(&["worktree", "add", "--detach", "--", "/w/z", &oid.to_string()])
+        );
+        assert_eq!(
+            compiled_args(&GitOp::AddWorktree {
+                path: PathBuf::from("/w/f"),
+                branch: WorktreeBranch::Existing("feature/x".into()),
+                force: true,
+            }),
+            v(&["worktree", "add", "--force", "--", "/w/f", "feature/x"])
         );
         assert_eq!(
             compiled_args(&GitOp::RemoveWorktree {
@@ -2541,6 +2672,7 @@ mod tests {
             target: oid(1),
             message: None,
             force: true,
+            sign: false,
         };
         assert_eq!(
             compile_simple_steps(&tag_light).unwrap()[0].args,
@@ -2552,10 +2684,58 @@ mod tests {
             target: oid(1),
             message: Some("release".into()),
             force: false,
+            sign: false,
         };
         assert_eq!(
             compile_simple_steps(&tag_ann).unwrap()[0].args,
             vec!["tag", "-a", "-m", "release", "--", "v1.0", &oid(1).to_string()]
+        );
+
+        let tag_signed = GitOp::CreateTag {
+            name: "v2.0".into(),
+            target: oid(1),
+            message: None,
+            force: false,
+            sign: true,
+        };
+        assert_eq!(
+            compile_simple_steps(&tag_signed).unwrap()[0].args,
+            vec!["tag", "-s", "-m", "v2.0", "--", "v2.0", &oid(1).to_string()]
+        );
+
+        let bisect_start = GitOp::BisectStart {
+            bad: Some("HEAD".into()),
+            good: vec!["abc1234".into()],
+        };
+        assert_eq!(
+            compile_simple_steps(&bisect_start).unwrap()[0].args,
+            vec!["bisect", "start", "HEAD", "abc1234"]
+        );
+        assert_eq!(
+            compile_simple_steps(&GitOp::BisectMark {
+                good: true,
+                rev: None,
+            })
+            .unwrap()[0]
+                .args,
+            vec!["bisect", "good"]
+        );
+        assert_eq!(
+            compile_simple_steps(&GitOp::BisectMark {
+                good: false,
+                rev: Some("deadbeef".into()),
+            })
+            .unwrap()[0]
+                .args,
+            vec!["bisect", "bad", "deadbeef"]
+        );
+        assert_eq!(
+            compile_simple_steps(&GitOp::BisectSkip).unwrap()[0].args,
+            vec!["bisect", "skip"]
+        );
+        assert_eq!(
+            compile_simple_steps(&GitOp::BisectReset).unwrap()[0].args,
+            vec!["bisect", "reset"]
         );
 
         let tag_del = GitOp::DeleteTag {

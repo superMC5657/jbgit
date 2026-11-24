@@ -80,21 +80,21 @@ impl AppState {
         let front = self
             .credentials
             .front()
-            .map(|(id, r)| (id, r.prompt.clone(), r.masked));
+            .map(|(id, r)| (id, r.prompt.clone(), r.masked, r.host_key_confirm));
         let shown: Vec<u64> = self.modal_stack.iter().filter_map(credential_id).collect();
-        let want = front.as_ref().map(|(id, _, _)| *id);
+        let want = front.as_ref().map(|(id, _, _, _)| *id);
         if shown.iter().any(|id| Some(*id) != want) {
             self.modal_stack
                 .retain(|l| credential_id(l).is_none_or(|id| Some(id) == want));
             self.needs_redraw = true;
         }
-        if let Some((id, prompt, masked)) = front
+        if let Some((id, prompt, masked, host_key_confirm)) = front
             && !shown.contains(&id)
         {
             self.menu_hover = None;
             self.modal_stack
                 .push(ModalLayer::Dialog(Box::new(Dialog::Credential(
-                    CredentialDialog::new(id, prompt, masked),
+                    CredentialDialog::new(id, prompt, masked, host_key_confirm),
                 ))));
             self.status_notice = Some(self.i18n.t("toast.credentials_requested").into());
             self.needs_redraw = true;

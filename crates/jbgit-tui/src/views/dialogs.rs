@@ -549,11 +549,102 @@ fn render_credential(
     d: &CredentialDialog,
     z: u8,
 ) {
+    let shown = d.display_value();
+    if d.host_key_confirm {
+        // SSH host-key verification: display the full multi-line fingerprint
+        // text verbatim (unmasked) and guide the user to confirm `yes`/`no`.
+        let max_w = 78usize.min(screen.width.saturating_sub(4).max(32) as usize);
+        let wrap_w = max_w.saturating_sub(4).max(20);
+        let mut prompt_lines: Vec<String> = Vec::new();
+        for raw in d.prompt.lines() {
+            let trimmed = raw.trim_end();
+            if trimmed.is_empty() {
+                prompt_lines.push(String::new());
+                continue;
+            }
+            let mut cur = String::new();
+            for word in trimmed.split_inclusive(' ') {
+                if !cur.is_empty() && cur.width() + word.width() > wrap_w {
+                    prompt_lines.push(cur.trim_end().to_string());
+                    cur.clear();
+                }
+                cur.push_str(word);
+            }
+            if !cur.is_empty() {
+                prompt_lines.push(cur.trim_end().to_string());
+            }
+        }
+        if prompt_lines.is_empty() {
+            prompt_lines.push(d.prompt.clone());
+        }
+        let h = (prompt_lines.len() as u16 + 7)
+            .clamp(10, 18)
+            .min(screen.height.saturating_sub(2).max(8));
+        let rect = centered(screen, max_w as u16, h);
+        let title = ctx.t("dialog.credential.host_key_title").to_string();
+        let inner = frame_block(frame, screen, ctx, rect, &title, false, z);
+        let w = inner.width as usize;
+        let max_prompt_rows = inner.height.saturating_sub(5) as usize;
+        let mut lines: Vec<Line<'_>> = prompt_lines
+            .into_iter()
+            .take(max_prompt_rows)
+            .map(|l| {
+                Line::from(Span::styled(
+                    format!(" {}", truncate_to_width(&l, w.saturating_sub(2))),
+                    Style::default()
+                        .fg(ctx.theme.fg_primary)
+                        .add_modifier(Modifier::BOLD),
+                ))
+            })
+            .collect();
+        lines.push(Line::from(Span::styled(
+            format!(" {}▏", truncate_to_width(&shown, w.saturating_sub(4)))
+                + &" ".repeat(w.saturating_sub(shown.width() + 3)),
+            Style::default()
+                .fg(ctx.theme.fg_bright)
+                .bg(ctx.theme.bg_panel)
+                .add_modifier(Modifier::UNDERLINED),
+        )));
+        lines.push(Line::from(Span::styled(
+            format!(
+                " {}",
+                truncate_to_width(ctx.t("dialog.credential.hint_host_key"), w.saturating_sub(2))
+            ),
+            Style::default().fg(ctx.theme.fg_muted),
+        )));
+        frame.render_widget(Paragraph::new(lines), inner);
+        let by = inner.bottom().saturating_sub(1);
+        render_buttons(
+            frame,
+            ctx,
+            inner.x + 1,
+            by,
+            inner.right(),
+            &[
+                DialogButtonSpec {
+                    label: ctx.ok().into(),
+                    selected: true,
+                    enabled: true,
+                    danger: false,
+                    target: HitTarget::DialogButton(DialogButtonKind::Confirm),
+                },
+                DialogButtonSpec {
+                    label: ctx.cancel().into(),
+                    selected: false,
+                    enabled: true,
+                    danger: false,
+                    target: HitTarget::DialogButton(DialogButtonKind::Cancel),
+                },
+            ],
+            z,
+        );
+        return;
+    }
+
     let rect = centered(screen, 72, 10);
     let title = ctx.t("dialog.credential.title").to_string();
     let inner = frame_block(frame, screen, ctx, rect, &title, false, z);
     let w = inner.width as usize;
-    let shown = d.display_value();
     let hint_key = if !d.masked {
         "dialog.credential.hint_plain"
     } else if d.revealed {
@@ -1236,7 +1327,7 @@ fn render_input(
     d: &InputDialog,
     z: u8,
 ) {
-    let h = 8 + u16::from(d.checkbox.is_some());
+    let h = 8 + u16::from(d.checkbox.is_some()) + u16::from(d.secondary_checkbox.is_some());
     let rect = centered(screen, 64, h);
     let inner = frame_block(frame, screen, ctx, rect, &d.title, false, z);
     let w = inner.width as usize;
@@ -1265,6 +1356,7 @@ fn render_input(
             )),
         },
     ];
+    let mut next_cb_y = inner.y + 3;
     if let Some((label, on)) = &d.checkbox {
         lines.push(Line::from(Span::styled(
             format!(
@@ -1275,9 +1367,25 @@ fn render_input(
             Style::default().fg(ctx.theme.fg_primary),
         )));
         ctx.hit_registry.register(
-            Rect::new(inner.x, inner.y + 3, inner.width, 1),
+            Rect::new(inner.x, next_cb_y, inner.width, 1),
             z + 2,
             HitTarget::DialogCheckbox,
+        );
+        next_cb_y += 1;
+    }
+    if let Some((label, on)) = &d.secondary_checkbox {
+        lines.push(Line::from(Span::styled(
+            format!(
+                " [{}] {label}   ({})",
+                if *on { "x" } else { " " },
+                ctx.t("dialog.checkbox.ctrl_s_hint")
+            ),
+            Style::default().fg(ctx.theme.fg_primary),
+        )));
+        ctx.hit_registry.register(
+            Rect::new(inner.x, next_cb_y, inner.width, 1),
+            z + 2,
+            HitTarget::DialogSecondaryCheckbox,
         );
     }
     frame.render_widget(Paragraph::new(lines), inner);

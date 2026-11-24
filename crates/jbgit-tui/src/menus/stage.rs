@@ -133,8 +133,7 @@ pub fn stage_tree_menu_items(state: &AppState, idx: usize) -> Vec<ContextMenuIte
                     stage_sc.as_deref(),
                     vec![Action::StageActionSelected],
                 )
-                .icon("+")
-                .enabled_if(non_sub, sub_reason),
+                .icon("+"),
             );
             items.push(
                 run(
@@ -143,8 +142,7 @@ pub fn stage_tree_menu_items(state: &AppState, idx: usize) -> Vec<ContextMenuIte
                     discard_sc.as_deref(),
                     vec![Action::DiscardPromptSelected],
                 )
-                .icon("↶")
-                .enabled_if(non_sub, sub_reason),
+                .icon("↶"),
             );
         }
         if untracked {
@@ -168,8 +166,7 @@ pub fn stage_tree_menu_items(state: &AppState, idx: usize) -> Vec<ContextMenuIte
                     stage_sc.as_deref(),
                     vec![Action::UnstageActionSelected],
                 )
-                .icon("−")
-                .enabled_if(non_sub, sub_reason),
+                .icon("−"),
             );
         }
     }
@@ -193,7 +190,8 @@ pub fn stage_tree_menu_items(state: &AppState, idx: usize) -> Vec<ContextMenuIte
         ),
     );
     items.push(ContextMenuItem::separator());
-    let ignore_patterns: Vec<String> = paths.iter().map(|p| format!("/{p}")).collect();
+    let ignore_patterns =
+        jbgit_core::build_ignore_patterns(&paths, jbgit_core::IgnoreRuleKind::ExactPath, None);
     items.push(
         run(
             i18n.t("menu.stage.add_to_gitignore"),
@@ -202,6 +200,7 @@ pub fn stage_tree_menu_items(state: &AppState, idx: usize) -> Vec<ContextMenuIte
             op(GitOp::AddToIgnore {
                 patterns: ignore_patterns.clone(),
                 exclude_file: false,
+                target_file: None,
             }),
         )
         .enabled_if(untracked, i18n.t("menu.stage.only_untracked_ignore")),
@@ -212,12 +211,14 @@ pub fn stage_tree_menu_items(state: &AppState, idx: usize) -> Vec<ContextMenuIte
             Some('x'),
             None,
             op(GitOp::AddToIgnore {
-                patterns: ignore_patterns,
+                patterns: ignore_patterns.clone(),
                 exclude_file: true,
+                target_file: None,
             }),
         )
         .enabled_if(untracked, i18n.t("menu.stage.only_untracked_ignore")),
     );
+    items.push(build_flexible_ignore_submenu(state, &paths, untracked));
     items.push(
         run(
             i18n.t("menu.stage.show_diff"),
@@ -666,4 +667,147 @@ pub fn stage_hunk_menu_items(state: &AppState, hunk_idx: usize) -> Vec<ContextMe
     ];
     items.extend(stage_diff_common_items(state, side, path));
     items
+}
+
+/// Finds the nearest existing nested `.gitignore` in an ancestor directory of
+/// `rel_path` (excluding the repository root `.gitignore`), returning
+/// `(relative_dir, relative_gitignore_path)`.
+fn nearest_nested_gitignore(
+    workdir: &std::path::Path,
+    rel_path: &str,
+) -> Option<(String, std::path::PathBuf)> {
+    let norm = rel_path.trim().trim_start_matches(['/', '\\']).replace('\\', "/");
+    let mut cur = norm.as_str();
+    while let Some((parent, _)) = cur.rsplit_once('/') {
+        if parent.is_empty() {
+            break;
+        }
+        let rel_gi = std::path::PathBuf::from(parent).join(".gitignore");
+        if workdir.join(&rel_gi).is_file() {
+            return Some((parent.to_string(), rel_gi));
+        }
+        cur = parent;
+    }
+    None
+}
+
+/// Flexible `Add to Ignore…` submenu: exact path / extension (`*.ext`) /
+/// parent directory (`/<dir>/`) targeting root `.gitignore`, nearest nested
+/// `.gitignore` (when present), or `.git/info/exclude`, plus quick `$EDITOR`
+/// shortcuts for `.gitignore` and `.git/info/exclude`.
+fn build_flexible_ignore_submenu(
+    state: &AppState,
+    paths: &[String],
+    untracked: bool,
+) -> ContextMenuItem {
+    use jbgit_core::{IgnoreRuleKind, build_ignore_patterns};
+
+    let i18n = &state.i18n;
+    let workdir = state
+        .repo_snapshot
+        .as_ref()
+        .map(|s| s.workdir.as_path())
+        .unwrap_or_else(|| state.repo_path_display.as_path());
+    let exclude_path = state
+        .repo_snapshot
+        .as_ref()
+        .map(|s| s.common_dir.join("info").join("exclude"))
+        .unwrap_or_else(|| workdir.join(".git").join("info").join("exclude"));
+
+    let nested = paths
+        .first()
+        .and_then(|p| nearest_nested_gitignore(workdir, p));
+
+    let mut sub: Vec<ContextMenuItem> = Vec::new();
+    let reason = i18n.t("menu.stage.only_untracked_ignore");
+
+    let push_rule_group = |sub: &mut Vec<ContextMenuItem>,
+                           target_label: &str,
+                           exclude_file: bool,
+                           base_dir: Option<&str>,
+                           target_file: Option<std::path::PathBuf>| {
+        let exact = build_ignore_patterns(paths, IgnoreRuleKind::ExactPath, base_dir);
+        if let Some(sample) = exact.first() {
+            sub.push(
+                run(
+                    i18n.t_fmt(
+                        "menu.stage.ignore_rule_item",
+                        &[("pattern", sample), ("target", target_label)],
+                    ),
+                    None,
+                    None,
+                    op(GitOp::AddToIgnore {
+                        patterns: exact,
+                        exclude_file,
+                        target_file: target_file.clone(),
+                    }),
+                )
+                .enabled_if(untracked, reason),
+            );
+        }
+        let by_ext = build_ignore_patterns(paths, IgnoreRuleKind::Extension, base_dir);
+        if let Some(sample) = by_ext.first() {
+            sub.push(
+                run(
+                    i18n.t_fmt(
+                        "menu.stage.ignore_ext_item",
+                        &[("pattern", sample), ("target", target_label)],
+                    ),
+                    None,
+                    None,
+                    op(GitOp::AddToIgnore {
+                        patterns: by_ext,
+                        exclude_file,
+                        target_file: target_file.clone(),
+                    }),
+                )
+                .enabled_if(untracked, reason),
+            );
+        }
+        let by_dir = build_ignore_patterns(paths, IgnoreRuleKind::ParentDir, base_dir);
+        if let Some(sample) = by_dir.first() {
+            sub.push(
+                run(
+                    i18n.t_fmt(
+                        "menu.stage.ignore_dir_item",
+                        &[("pattern", sample), ("target", target_label)],
+                    ),
+                    None,
+                    None,
+                    op(GitOp::AddToIgnore {
+                        patterns: by_dir,
+                        exclude_file,
+                        target_file,
+                    }),
+                )
+                .enabled_if(untracked, reason),
+            );
+        }
+    };
+
+    push_rule_group(&mut sub, ".gitignore", false, None, None);
+    if let Some((nested_dir, nested_file)) = nested {
+        let label = format!("{nested_dir}/.gitignore");
+        sub.push(ContextMenuItem::separator());
+        push_rule_group(&mut sub, &label, false, Some(&nested_dir), Some(nested_file));
+    }
+    sub.push(ContextMenuItem::separator());
+    push_rule_group(&mut sub, ".git/info/exclude", true, None, None);
+    sub.push(ContextMenuItem::separator());
+    sub.push(run(
+        i18n.t("menu.stage.open_gitignore_editor"),
+        None,
+        None,
+        vec![Action::OpenExternalEditorFile(Some(".gitignore".to_string()))],
+    ));
+    sub.push(run(
+        i18n.t("menu.stage.open_exclude_editor"),
+        None,
+        None,
+        vec![Action::OpenExternalEditorFile(Some(
+            exclude_path.to_string_lossy().into_owned(),
+        ))],
+    ));
+
+    ContextMenuItem::submenu(i18n.t("menu.stage.ignore_more"), None, sub)
 }

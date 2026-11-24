@@ -264,6 +264,7 @@ pub(crate) fn route_stage_left_click(
             CommitOptionKind::Signoff => vec![Action::CommitToggleSignoff],
             CommitOptionKind::RunHooks => vec![Action::CommitToggleRunHooks],
             CommitOptionKind::AllowEmpty => vec![Action::CommitToggleAllowEmpty],
+            CommitOptionKind::GpgSign => vec![Action::CommitCycleGpgSign],
             CommitOptionKind::AuthorToggle => vec![Action::CommitToggleAuthorInput],
             CommitOptionKind::AuthorInput => vec![Action::CommitFocusAuthorInput],
             CommitOptionKind::AuthorSuggestion => vec![Action::CommitAuthorAcceptCompletion],

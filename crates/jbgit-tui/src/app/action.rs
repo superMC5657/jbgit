@@ -81,6 +81,7 @@ pub enum Action {
         confirm: bool,
     },
     DialogToggleCheckbox,
+    DialogToggleSecondaryCheckbox,
     PopupSetState {
         query: String,
         selected: usize,
@@ -300,6 +301,7 @@ pub enum Action {
     CommitToggleSignoff,
     CommitToggleRunHooks,
     CommitToggleAllowEmpty,
+    CommitCycleGpgSign,
     CommitToggleAuthorInput,
     CommitFocusAuthorInput,
     CommitAuthorChar(char),
@@ -505,6 +507,13 @@ pub enum Action {
     WorktreesOpenSelected,
     /// "New Worktree…" chooser (`None` = from HEAD, `Some` = Log commit).
     PromptNewWorktree { at: Option<jbgit_core::Oid> },
+    /// "New Worktree from '<remote>/<branch>'…" path prompt.
+    PromptNewWorktreeFromBranch(String),
+    /// Execute `[worktree] setup_command` inside the newly created worktree after confirmation.
+    RunWorktreeSetup {
+        worktree: std::path::PathBuf,
+        command: String,
+    },
     /// Show only `oids` in the Log (read-only Range chip, `GitUpdateInfoAsLog`).
     FilterLogByRange {
         label: String,

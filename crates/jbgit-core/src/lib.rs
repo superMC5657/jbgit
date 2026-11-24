@@ -60,14 +60,16 @@ pub use filter::{
     TextMatcher, UserFilter, UserMatcher, glob_match,
 };
 pub use git_ops::{
-    FastForward, FixupKind, GitFailure, GitOp, GitOpOutcome, MergeOptionConflict, MergeOptions,
-    OngoingKind, OngoingStep, PatchSource, PullOptionConflict, PullOptions, PushForce,
-    PushOutcomeSummary, PushTagMode, RebaseOptionError, RebaseOptions, RefNameError, ResetMode,
-    RewritePlan, SkippedBranch, SquashTodoPlan, StashEntry, TodoAction, TodoEntry, UpdateInfo,
-    UpdateMode, UpdatedRange, classify_failure, default_squash_messages, fuzzy_filter_paths,
-    fuzzy_indices, infer_clone_dir_name, is_protected_branch, matches_protected_branch_patterns,
-    parse_push_porcelain, parse_recent_checkouts, plan_squash_todo, render_todo,
-    sanitize_branch_name, sanitize_branch_name_on_typing, short_rev, validate_ref_name,
+    FastForward, FixupKind, GitFailure, GitOp, GitOpOutcome, IgnoreRuleKind, MergeOptionConflict,
+    MergeOptions, OngoingKind, OngoingStep, PatchSource, PullOptionConflict, PullOptions,
+    PushForce, PushOutcomeSummary, PushTagMode, RebaseOptionError, RebaseOptions, RefNameError,
+    ResetMode, RewritePlan, SkippedBranch, SquashTodoPlan, StashEntry, TodoAction, TodoEntry,
+    UpdateInfo, UpdateMode, UpdatedRange, build_ignore_patterns, classify_failure,
+    default_squash_messages, fuzzy_filter_paths, fuzzy_indices, infer_clone_dir_name,
+    is_gpg_sign_failure, is_protected_branch, match_worktreeinclude_paths,
+    matches_protected_branch_patterns, parse_push_porcelain, parse_recent_checkouts,
+    plan_squash_todo, render_todo, sanitize_branch_name, sanitize_branch_name_on_typing, short_rev,
+    validate_ref_name,
     validate_ref_name_typed,
 };
 pub use key_token::{KeyToken, KeyTokenError, KeyTokenKind, parse_key_token};
@@ -87,8 +89,9 @@ pub use refs::{
     group_refs_for_table, shorten_group_label, shorten_ref_name,
 };
 pub use repo::{
-    BranchCompareDirection, CleanupBranchCandidate, CommitSummary, RefInfo, RefKind, RefreshScope,
-    RemoteInfo, RepoSnapshot, RepositoryState, RewritePlanError, redact_url, redact_urls_in,
+    BisectInfo, BranchCompareDirection, CleanupBranchCandidate, CommitSummary, RefInfo, RefKind,
+    RefreshScope, RemoteInfo, RepoSnapshot, RepositoryState, RewritePlanError, redact_url,
+    redact_urls_in,
 };
 pub use stage::{
     AmendCommitPreview, FileStatusKind, StageEntry, StageNodeKind, StageStatusSnapshot,

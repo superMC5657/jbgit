@@ -5,6 +5,7 @@ mod diff_enhancements_tests;
 mod annotate_and_selection_history_tests;
 mod file_history_and_changes_tests;
 mod footer_and_keymap_tests;
+mod gpg_bisect_ergonomics_tests;
 mod graph_collapse_tests;
 mod log_highlighters_bek_reflog_tests;
 mod log_pagination_tests;
@@ -200,6 +201,7 @@ pub(super) fn make_snapshot(workdir: PathBuf, commits: Vec<CommitSummary>) -> Ar
         recent_branches: vec!["main".into()],
         stashes: Vec::new(),
         ongoing_onto: None,
+        bisect: None,
         remotes: Vec::new(),
         worktrees: Vec::new(),
         submodules: Vec::new(),

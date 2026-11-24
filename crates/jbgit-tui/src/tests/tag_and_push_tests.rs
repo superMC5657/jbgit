@@ -250,6 +250,7 @@ fn delete_tag_probes_remote_checkbox_restore_notification_and_tag_exists_overwri
             target: oid(12),
             message: Some("note".into()),
             force: false,
+            sign: false,
         },
         GitFailure::TagAlreadyExists,
     )));
@@ -262,6 +263,7 @@ fn delete_tag_probes_remote_checkbox_restore_notification_and_tag_exists_overwri
             target: oid(12),
             message: Some("note".into()),
             force: true,
+            sign: false,
         }]
     );
 

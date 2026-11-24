@@ -345,6 +345,15 @@ pub fn branch_menu_items(state: &AppState, name: &str, kind: RefKind) -> Vec<Con
                 )
                 .require(no_ongoing.clone()),
             );
+            items.push(
+                run(
+                    i18n.t_fmt("menu.branch.new_worktree_from", &[("name", &ellipsize(name, 24))]),
+                    Some('t'),
+                    None,
+                    vec![Action::PromptNewWorktreeFromBranch(name.to_string())],
+                )
+                .icon("⎇"),
+            );
             items.push(ContextMenuItem::separator());
             items.push(run(
                 i18n.t_fmt("menu.branch.compare_with", &[("cur", &ellipsize(&cur, 24))]),

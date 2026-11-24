@@ -85,6 +85,8 @@ protected_branches = ["main", "master"]
 [worktree]
 # 新建 Worktree 的默认父目录（路径为 <目录>/<仓库名>-<分支名>）；留空 = 主工作区的父目录，支持 ~/
 default_parent = ""
+# 新建 Worktree 成功后提示执行的可选初始化命令（如 "npm ci" 或 "cargo fetch"）；留空 = 不提示
+setup_command = ""
 
 [update]
 # Update Project（<A-u>）同步当前分支的方式："git-config"（遵循 branch.<name>.rebase / pull.rebase）| "merge" | "rebase"

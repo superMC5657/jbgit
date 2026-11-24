@@ -314,6 +314,27 @@ async fn main() -> Result<()> {
             });
         }
 
+        if let Some((wt_dir, setup_cmd)) = session.take_worktree_setup_request() {
+            tokio::spawn(async move {
+                let mut cmd = if cfg!(windows) {
+                    let mut c = tokio::process::Command::new("cmd");
+                    c.args(["/C", &setup_cmd]);
+                    c
+                } else {
+                    let mut c = tokio::process::Command::new("sh");
+                    c.args(["-c", &setup_cmd]);
+                    c
+                };
+                let _ = cmd
+                    .current_dir(&wt_dir)
+                    .stdin(std::process::Stdio::null())
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .status()
+                    .await;
+            });
+        }
+
         if let Some(target) = session.take_repo_switch_request() {
             switch_repository(&mut session, &mut repo, &mut host, &target).await;
         }

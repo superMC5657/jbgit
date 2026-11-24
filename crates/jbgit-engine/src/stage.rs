@@ -157,6 +157,8 @@ pub struct CommitRequest {
     pub check_crlf: bool,
     /// When `true`, set `git config core.autocrlf true` on the repository before committing.
     pub fix_autocrlf: bool,
+    /// `None` = follow repo `commit.gpgsign`, `Some(true)` = `-S`, `Some(false)` = `--no-gpg-sign`.
+    pub gpg_sign: Option<bool>,
 }
 
 /// Staged/commit-candidate text files containing CRLF (`\r\n`) when `core.autocrlf`
@@ -1183,16 +1185,101 @@ fn stage_symlink_entry(
     Ok(())
 }
 
+fn is_submodule_target(repo: &Repository, index: &git2::Index, rel: &Path, full: &Path, trimmed: &str) -> bool {
+    if trimmed.is_empty()
+        || !rel
+            .components()
+            .all(|c| matches!(c, std::path::Component::Normal(_)))
+    {
+        return false;
+    }
+    index.get_path(rel, 0).map(|e| e.mode) == Some(GIT_MODE_GITLINK)
+        || repo.find_submodule(trimmed).is_ok()
+        || (full.is_dir() && full.join(".git").exists())
+}
+
+fn stage_submodule_gitlink(
+    location: &RepoLocation,
+    repo: &Repository,
+    trimmed: &str,
+) -> Result<(), EngineError> {
+    if let Some(git) = crate::cli::cached_git_executable() {
+        let out = crate::cli::non_interactive_std_command(&git, Some(&location.workdir))
+            .args(["add", "--", trimmed])
+            .output()
+            .map_err(EngineError::Io)?;
+        if out.status.success() {
+            return Ok(());
+        }
+    }
+    let mut sub = repo.find_submodule(trimmed)?;
+    sub.add_to_index(true)?;
+    Ok(())
+}
+
+fn discard_submodule_gitlink(
+    location: &RepoLocation,
+    repo: &Repository,
+    trimmed: &str,
+) -> Result<(), EngineError> {
+    let git = crate::cli::cached_git_executable().unwrap_or_else(|| std::path::PathBuf::from("git"));
+    // First try `git submodule update -- <path>` which restores the index-recorded pointer commit.
+    let out = crate::cli::non_interactive_std_command(&git, Some(&location.workdir))
+        .args(["submodule", "update", "--", trimmed])
+        .output();
+    if let Ok(out) = out
+        && out.status.success()
+    {
+        return Ok(());
+    }
+    // Fallback: detach submodule HEAD directly to the recorded gitlink OID in index/HEAD.
+    let index = repo.index()?;
+    let target_oid = index
+        .get_path(Path::new(trimmed), 0)
+        .filter(|e| e.mode == GIT_MODE_GITLINK)
+        .map(|e| e.id)
+        .or_else(|| {
+            repo.head()
+                .ok()
+                .and_then(|h| h.peel_to_tree().ok())
+                .and_then(|t| t.get_path(Path::new(trimmed)).ok())
+                .map(|e| e.id())
+        });
+    if let Some(oid) = target_oid {
+        let sub_dir = location.workdir.join(trimmed);
+        let out = crate::cli::non_interactive_std_command(&git, Some(&sub_dir))
+            .args(["checkout", "--detach", &oid.to_string()])
+            .output()
+            .map_err(EngineError::Io)?;
+        if out.status.success() {
+            return Ok(());
+        }
+        let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
+        return Err(EngineError::Other(if stderr.is_empty() {
+            format!("Failed to discard submodule pointer '{trimmed}'")
+        } else {
+            stderr
+        }));
+    }
+    Ok(())
+}
+
 pub(crate) fn stage_targets_sync(
     location: &RepoLocation,
     targets: &[StageTarget],
 ) -> Result<(), EngineError> {
     with_thread_repo(&location.git_dir, |repo| {
         let mut index = repo.index()?;
+        let mut index_dirty = false;
+        let mut submodule_paths: Vec<String> = Vec::new();
         for t in targets {
             let trimmed = t.path.trim_end_matches(['/', '\\']);
             let rel = Path::new(trimmed);
             let full = location.workdir.join(rel);
+            if t.is_submodule || is_submodule_target(repo, &index, rel, &full, trimmed) {
+                submodule_paths.push(trimmed.to_string());
+                continue;
+            }
             match fs::symlink_metadata(&full) {
                 Ok(meta) if meta.file_type().is_symlink() => {
                     // Use libgit2 `add_path` when it preserves mode `0o120000`, otherwise
@@ -1203,16 +1290,20 @@ pub(crate) fn stage_targets_sync(
                     if !staged_as_symlink {
                         stage_symlink_entry(&mut index, rel, &full, trimmed)?;
                     }
+                    index_dirty = true;
                 }
                 Ok(meta) if meta.file_type().is_dir() => {
                     index.add_all([trimmed], IndexAddOption::DEFAULT, None)?;
+                    index_dirty = true;
                 }
                 Ok(_) => {
                     index.add_path(rel)?;
+                    index_dirty = true;
                 }
                 Err(_) => {
                     let _ = index.conflict_remove(rel);
                     let _ = index.remove_path(rel);
+                    index_dirty = true;
                 }
             }
             if let Some(old) = &t.old_path {
@@ -1221,10 +1312,17 @@ pub(crate) fn stage_targets_sync(
                 if fs::symlink_metadata(&old_full).is_err() {
                     let _ = index.conflict_remove(Path::new(old_trimmed));
                     let _ = index.remove_path(Path::new(old_trimmed));
+                    index_dirty = true;
                 }
             }
         }
-        index.write()?;
+        if index_dirty {
+            index.write()?;
+        }
+        drop(index);
+        for sub in submodule_paths {
+            stage_submodule_gitlink(location, repo, &sub)?;
+        }
         Ok(())
     })
 }
@@ -1382,15 +1480,24 @@ pub(crate) fn discard_targets_sync(
     targets: &[StageTarget],
 ) -> Result<(), EngineError> {
     with_thread_repo(&location.git_dir, |repo| {
+        let index = repo.index()?;
         let mut tracked_paths = Vec::new();
+        let mut submodule_paths = Vec::new();
         for t in targets {
-            if t.group_kind == StageNodeKind::Untracked || t.status_kind == FileStatusKind::Untracked
+            let trimmed = t.path.trim_end_matches(['/', '\\']);
+            let rel = Path::new(trimmed);
+            let full = location.workdir.join(rel);
+            if t.is_submodule || is_submodule_target(repo, &index, rel, &full, trimmed) {
+                submodule_paths.push(trimmed.to_string());
+            } else if t.group_kind == StageNodeKind::Untracked
+                || t.status_kind == FileStatusKind::Untracked
             {
                 safe_remove_untracked_path(&location.workdir, &t.path)?;
             } else {
                 tracked_paths.push(t.path.clone());
             }
         }
+        drop(index);
         if !tracked_paths.is_empty() {
             let mut index = repo.index()?;
             let mut opts = CheckoutBuilder::new();
@@ -1399,6 +1506,9 @@ pub(crate) fn discard_targets_sync(
                 opts.path(p);
             }
             repo.checkout_index(Some(&mut index), Some(&mut opts))?;
+        }
+        for sub in submodule_paths {
+            discard_submodule_gitlink(location, repo, &sub)?;
         }
         Ok(())
     })
@@ -1797,6 +1907,11 @@ pub(crate) fn build_commit_cli_args(req: &CommitRequest) -> (Vec<String>, Vec<u8
     if req.allow_empty {
         args.push("--allow-empty".to_string());
     }
+    match req.gpg_sign {
+        Some(true) => args.push("-S".to_string()),
+        Some(false) => args.push("--no-gpg-sign".to_string()),
+        None => {}
+    }
     if let Some(author) = &req.author_override
         && !author.trim().is_empty()
     {
@@ -2024,5 +2139,30 @@ mod tests {
             Some("unspecified"),
             Some("unspecified"),
         ));
+    }
+
+    #[test]
+    fn build_commit_cli_args_handles_gpg_sign_three_states() {
+        let base = CommitRequest {
+            message: "feat: test".into(),
+            run_hooks: true,
+            ..Default::default()
+        };
+        let (auto_args, _) = build_commit_cli_args(&base);
+        assert!(!auto_args.iter().any(|a| a == "-S" || a == "--no-gpg-sign"));
+
+        let (force_on, _) = build_commit_cli_args(&CommitRequest {
+            gpg_sign: Some(true),
+            ..base.clone()
+        });
+        assert!(force_on.iter().any(|a| a == "-S"));
+        assert!(!force_on.iter().any(|a| a == "--no-gpg-sign"));
+
+        let (force_off, _) = build_commit_cli_args(&CommitRequest {
+            gpg_sign: Some(false),
+            ..base
+        });
+        assert!(force_off.iter().any(|a| a == "--no-gpg-sign"));
+        assert!(!force_off.iter().any(|a| a == "-S"));
     }
 }

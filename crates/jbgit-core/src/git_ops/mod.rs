@@ -9,13 +9,14 @@ mod rebase;
 mod refs;
 
 pub use ops::{
-    FastForward, FixupKind, GitOp, MergeOptionConflict, MergeOptions, OngoingKind, OngoingStep,
-    PatchSource, PullOptionConflict, PullOptions, PushForce, PushTagMode, RebaseOptionError,
-    RebaseOptions, ResetMode, UpdateMode, infer_clone_dir_name, short_rev,
+    FastForward, FixupKind, GitOp, IgnoreRuleKind, MergeOptionConflict, MergeOptions, OngoingKind,
+    OngoingStep, PatchSource, PullOptionConflict, PullOptions, PushForce, PushTagMode,
+    RebaseOptionError, RebaseOptions, ResetMode, UpdateMode, build_ignore_patterns,
+    infer_clone_dir_name, match_worktreeinclude_paths, short_rev,
 };
 pub use outcome::{
     GitFailure, GitOpOutcome, PushOutcomeSummary, SkippedBranch, StashEntry, UpdateInfo,
-    UpdatedRange, classify_failure, parse_push_porcelain,
+    UpdatedRange, classify_failure, is_gpg_sign_failure, parse_push_porcelain,
 };
 pub use rebase::{
     RewritePlan, SquashTodoPlan, TodoAction, TodoEntry, default_squash_messages, plan_squash_todo,
@@ -171,6 +172,7 @@ mod tests {
         let add = GitOp::AddWorktree {
             path: "/w/x".into(),
             branch: crate::WorktreeBranch::Existing("x".into()),
+            force: false,
         };
         assert!(!add.is_network());
         assert_eq!(add.refresh_scope(), RefreshScope::RefsAndGraph);
@@ -208,6 +210,41 @@ mod tests {
             options: crate::ApplyOptions::with_mode(crate::ApplyMode::WorkingTree),
         };
         assert_eq!(clip.label(), "Apply patch from clipboard");
+    }
+
+    #[test]
+    fn gpg_sign_failure_and_bisect_op_classification() {
+        let lines = |s: &str| s.lines().map(str::to_string).collect::<Vec<_>>();
+        assert!(matches!(
+            classify_failure(&lines(
+                "gpg: signing failed: Inappropriate ioctl for device\nerror: gpg failed to sign the data\nfatal: failed to write commit object"
+            )),
+            GitFailure::GpgSignFailed { .. }
+        ));
+        assert!(matches!(
+            classify_failure(&lines("gpg: signing failed: No pinentry")),
+            GitFailure::GpgSignFailed { .. }
+        ));
+        assert!(matches!(
+            classify_failure(&lines("error: could not run gpg.")),
+            GitFailure::GpgSignFailed { .. }
+        ));
+        for op in [
+            GitOp::BisectStart {
+                bad: Some("HEAD".into()),
+                good: vec!["v1.0".into()],
+            },
+            GitOp::BisectMark {
+                good: true,
+                rev: None,
+            },
+            GitOp::BisectSkip,
+            GitOp::BisectReset,
+        ] {
+            assert!(!op.is_network());
+            assert!(!op.is_read_only());
+            assert_eq!(op.refresh_scope(), RefreshScope::All);
+        }
     }
 
     #[test]

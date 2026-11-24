@@ -90,9 +90,22 @@ impl fmt::Debug for AskpassEnv {
     }
 }
 
+/// Returns `true` when `prompt` is an OpenSSH first-connection host-key
+/// confirmation prompt (`Are you sure you want to continue connecting (yes/no/[fingerprint])?`).
+/// Such prompts must be displayed unmasked with the full fingerprint text.
+pub fn is_ssh_host_key_prompt(prompt: &str) -> bool {
+    let lower = prompt.to_ascii_lowercase();
+    lower.contains("are you sure you want to continue connecting")
+        || (lower.contains("authenticity of host") && lower.contains("fingerprint"))
+        || (lower.contains("host key") && lower.contains("(yes/no"))
+}
+
 /// Whether the answer to `prompt` should be masked while typed
 /// (`Password for …`, `Enter passphrase for key …`, tokens, PINs).
 pub fn is_secret_prompt(prompt: &str) -> bool {
+    if is_ssh_host_key_prompt(prompt) {
+        return false;
+    }
     let lower = prompt.to_ascii_lowercase();
     ["password", "passphrase", "token"]
         .iter()
@@ -120,17 +133,22 @@ pub fn client_invocation(args: &[String]) -> Option<&str> {
 pub struct AskpassRequest {
     pub prompt: String,
     pub masked: bool,
+    /// `true` when `prompt` is an OpenSSH host-key verification prompt (unmasked,
+    /// renders full multi-line fingerprint and guides `yes`/`no`).
+    pub host_key_confirm: bool,
     reply: oneshot::Sender<Option<Secret>>,
 }
 
 impl AskpassRequest {
     pub fn new(prompt: String) -> (Self, oneshot::Receiver<Option<Secret>>) {
         let (tx, rx) = oneshot::channel();
-        let masked = is_secret_prompt(&prompt);
+        let host_key_confirm = is_ssh_host_key_prompt(&prompt);
+        let masked = !host_key_confirm && is_secret_prompt(&prompt);
         (
             Self {
                 prompt,
                 masked,
+                host_key_confirm,
                 reply: tx,
             },
             rx,
@@ -684,6 +702,22 @@ mod tests {
         assert_eq!(get(ENV_TOKEN), Some("deadbeef"));
         assert!(ct_eq(b"abc", b"abc") && !ct_eq(b"abc", b"abd") && !ct_eq(b"ab", b"abc"));
         assert_eq!(random_hex(32).unwrap().len(), 64);
+    }
+
+    #[test]
+    fn ssh_host_key_prompt_is_detected_and_unmasked() {
+        let prompt = "The authenticity of host 'github.com (140.82.121.3)' can't be established.\n\
+ED25519 key fingerprint is SHA256:+DiY3wvvV6TuJJhbpZisF/zLDA0zPMSvHdkr4UvCOqU.\n\
+Are you sure you want to continue connecting (yes/no/[fingerprint])? ";
+        assert!(is_ssh_host_key_prompt(prompt));
+        assert!(!is_secret_prompt(prompt));
+        assert!(!is_ssh_host_key_prompt(
+            "Enter passphrase for key '/home/u/.ssh/id_ed25519': "
+        ));
+
+        let (req, _rx) = AskpassRequest::new(prompt.to_string());
+        assert!(req.host_key_confirm);
+        assert!(!req.masked);
     }
 
     async fn ask(addr: String, token: String, prompt: &'static str) -> io::Result<Option<Secret>> {

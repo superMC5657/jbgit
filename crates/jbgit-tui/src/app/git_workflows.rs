@@ -50,6 +50,11 @@ impl AppState {
             .and_then(|s| OngoingKind::from_state(&s.state))
     }
 
+    pub(crate) fn is_bisecting(&self) -> bool {
+        self.snapshot()
+            .is_some_and(|s| s.state == jbgit_core::RepositoryState::Bisect)
+    }
+
     pub(crate) fn conflicted_count(&self) -> usize {
         self.stage_workbench
             .status()
@@ -2591,6 +2596,7 @@ impl AppState {
                         target,
                         message,
                         force: false,
+                        sign,
                     } => {
                         self.push_dialog(Dialog::Choice(ChoiceDialog::confirm(
                             i18n.t("dialog.tag_exists.title"),
@@ -2602,6 +2608,7 @@ impl AppState {
                                 target: *target,
                                 message: message.clone(),
                                 force: true,
+                                sign: *sign,
                             })],
                         )));
                     }
@@ -2833,6 +2840,24 @@ impl AppState {
                 | GitFailure::UntrackedOverwritten { .. },
             ) => {
                 self.notify_error(i18n.t_fmt("toast.overwritten_notice", &[("label", &label)]));
+            }
+            Some(GitFailure::GpgSignFailed { detail }) => {
+                let mut body = vec![
+                    i18n.t_fmt("dialog.gpg_failed.body", &[("label", &label)]),
+                    detail.clone(),
+                    String::new(),
+                ];
+                body.extend(
+                    i18n.t("dialog.gpg_failed.hint")
+                        .lines()
+                        .map(ToString::to_string),
+                );
+                self.status_notice = Some(i18n.t_fmt("toast.gpg_failed", &[("label", &label)]));
+                self.push_dialog(Dialog::Choice(ChoiceDialog::buttons(
+                    i18n.t("dialog.gpg_failed.title"),
+                    body,
+                    vec![ChoiceOption::new(i18n.t("common.close"), Some('c'), Vec::new())],
+                )));
             }
             Some(GitFailure::AuthenticationFailed) => {
                 let body = vec![

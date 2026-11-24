@@ -98,6 +98,8 @@ pub struct AppState {
     pub(crate) pending_init_repo: Option<PathBuf>,
     /// Confirmed `git clone` request the host must execute and bind on success.
     pub(crate) pending_clone_repo: Option<jbgit_engine::CloneRequest>,
+    /// Confirmed `[worktree] setup_command` the host should run in the new worktree.
+    pub(crate) pending_worktree_setup: Option<(PathBuf, String)>,
     /// User-level most-recently-opened repositories.
     pub(crate) recent_repos: crate::repo_switcher::RecentRepos,
     /// Detected `git --version` (`None` = unknown; worktree gate assumes support).
@@ -228,6 +230,7 @@ impl AppState {
             pending_repo_switch: None,
             pending_init_repo: None,
             pending_clone_repo: None,
+            pending_worktree_setup: None,
             recent_repos: crate::repo_switcher::RecentRepos::in_memory(),
             git_version: None,
             git_info: None,

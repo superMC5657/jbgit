@@ -186,6 +186,37 @@ impl AppState {
                     effects.extend(self.dispatch(notice));
                 }
             }
+            Action::PromptNewWorktreeFromBranch(remote_ref) => {
+                if crate::worktrees_view::worktrees_supported(self) {
+                    let ctx = crate::worktrees_view::dialog_ctx(self);
+                    let short = remote_ref
+                        .split_once('/')
+                        .map_or(remote_ref.as_str(), |(_, b)| b)
+                        .to_string();
+                    let d = ctx.path_dialog(
+                        jbgit_core::WorktreeBranch::New {
+                            name: short,
+                            start: remote_ref.clone(),
+                        },
+                        &self.i18n,
+                    );
+                    self.push_modal(ModalLayer::Dialog(Box::new(d)));
+                } else {
+                    let notice = crate::worktrees_view::unsupported_notice(self);
+                    effects.extend(self.dispatch(notice));
+                }
+            }
+            Action::RunWorktreeSetup { worktree, command } => {
+                let name = worktree.file_name().map_or_else(
+                    || worktree.display().to_string(),
+                    |n| n.to_string_lossy().into(),
+                );
+                self.status_notice = Some(self.i18n.t_fmt(
+                    "toast.worktree_setup_running",
+                    &[("name", &name), ("cmd", command)],
+                ));
+                self.pending_worktree_setup = Some((worktree.clone(), command.clone()));
+            }
             _ => return false,
         }
         true
@@ -347,6 +378,38 @@ impl AppState {
                         vec![Action::SwitchRepository(path.clone())],
                     )),
                 });
+                if let Some(cmd) = self
+                    .config
+                    .jbgit
+                    .worktree
+                    .setup_command
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                {
+                    let cmd_s = cmd.to_string();
+                    let path_s = path.display().to_string();
+                    self.push_modal(ModalLayer::Dialog(Box::new(Dialog::Choice(
+                        ChoiceDialog::confirm_with_default(
+                            i18n.t("dialog.worktree_setup.title"),
+                            vec![
+                                i18n.t_fmt(
+                                    "dialog.worktree_setup.body",
+                                    &[("path", &path_s), ("cmd", &cmd_s)],
+                                ),
+                                i18n.t("dialog.worktree_setup.hint").to_string(),
+                            ],
+                            i18n.t("dialog.worktree_setup.run_btn"),
+                            i18n.cancel(),
+                            false,
+                            false,
+                            vec![Action::RunWorktreeSetup {
+                                worktree: path.clone(),
+                                command: cmd_s,
+                            }],
+                        ),
+                    ))));
+                }
             }
             GitOp::RemoveWorktree { path, .. } => {
                 self.status_notice = Some(i18n.t_fmt(

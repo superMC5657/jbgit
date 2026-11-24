@@ -458,11 +458,13 @@ fn render_commit_panel(
     let mut y = area.y;
     let bottom = area.bottom();
 
-    // Row 0: Commit options checkboxes + history + author toggle
+    // Row 0..N: Commit options checkboxes + GPG + history + author toggle
+    // (wraps onto 2 lines on narrow panes when enough vertical space is available)
     if y < bottom {
-        let opt_rect = Rect::new(area.x, y, area.width, 1);
-        render_commit_options_row(frame, opt_rect, sw, ctx);
-        y += 1;
+        let max_opt_rows = if bottom.saturating_sub(y) >= 6 { 2 } else { 1 };
+        let opt_rect = Rect::new(area.x, y, area.width, max_opt_rows);
+        let used = render_commit_options_row(frame, opt_rect, sw, ctx);
+        y += used;
     }
 
     // Optional Author override row
@@ -602,11 +604,7 @@ fn render_commit_options_row(
     area: Rect,
     sw: &crate::stage_view::CommitWorkbench,
     ctx: &mut RenderContext<'_>,
-) {
-    frame.render_widget(
-        Paragraph::new("").style(Style::default().bg(ctx.theme.bg_panel)),
-        area,
-    );
+) -> u16 {
     let chk = |on: bool| if on { "x" } else { " " };
     let has_hooks = sw.precheck().has_commit_hooks;
     let hooks_text = if has_hooks {
@@ -628,16 +626,35 @@ fn render_commit_options_row(
             CommitOptionKind::Signoff,
         ),
         (
+            format!(" [{}] {} ", chk(sw.allow_empty()), ctx.t("view.commit.allow_empty")),
+            sw.allow_empty(),
+            false,
+            CommitOptionKind::AllowEmpty,
+        ),
+        (
             hooks_text,
             has_hooks && sw.run_hooks(),
             !has_hooks,
             CommitOptionKind::RunHooks,
         ),
         (
-            format!(" [{}] {} ", chk(sw.allow_empty()), ctx.t("view.commit.allow_empty")),
-            sw.allow_empty(),
-            false,
-            CommitOptionKind::AllowEmpty,
+            {
+                let (mark, state_lbl) = match sw.gpg_sign() {
+                    Some(true) => ("x", ctx.t("view.commit.gpg_sign_on")),
+                    Some(false) => ("-", ctx.t("view.commit.gpg_sign_off")),
+                    None => {
+                        if sw.precheck().gpg_sign {
+                            ("·", ctx.t("view.commit.gpg_sign_auto_on"))
+                        } else {
+                            ("·", ctx.t("view.commit.gpg_sign_auto_off"))
+                        }
+                    }
+                };
+                format!(" [{mark}] {state_lbl} ")
+            },
+            sw.gpg_sign() == Some(true) || (sw.gpg_sign().is_none() && sw.precheck().gpg_sign),
+            sw.gpg_sign() == Some(false),
+            CommitOptionKind::GpgSign,
         ),
         (
             format!(" {} ", ctx.t("view.commit.author")),
@@ -654,13 +671,32 @@ fn render_commit_options_row(
         ),
     ];
 
+    let mut placements: Vec<(u16, u16, u16, String, bool, bool, CommitOptionKind)> = Vec::new();
     let mut x = area.x;
+    let mut row_off: u16 = 0;
     for (text, active, disabled, kind) in items {
         let w = text.width() as u16;
-        if x + w > area.right() {
-            break;
+        if x > area.x && x + w > area.right() {
+            if row_off + 1 < area.height {
+                row_off += 1;
+                x = area.x;
+            } else {
+                continue;
+            }
         }
-        let rect = Rect::new(x, area.y, w, 1);
+        if x + w > area.right() {
+            continue;
+        }
+        placements.push((x, area.y + row_off, w, text, active, disabled, kind));
+        x += w;
+    }
+    let used_rows = (row_off + 1).min(area.height.max(1));
+    frame.render_widget(
+        Paragraph::new("").style(Style::default().bg(ctx.theme.bg_panel)),
+        Rect::new(area.x, area.y, area.width, used_rows),
+    );
+    for (px, py, w, text, active, disabled, kind) in placements {
+        let rect = Rect::new(px, py, w, 1);
         let style = if disabled {
             Style::default()
                 .fg(ctx.theme.fg_muted)
@@ -678,8 +714,8 @@ fn render_commit_options_row(
         frame.render_widget(Paragraph::new(Span::styled(text, style)), rect);
         ctx.hit_registry
             .register(rect, 3, HitTarget::CommitOption(kind));
-        x += w + 1;
     }
+    used_rows
 }
 
 fn render_commit_message_editor(

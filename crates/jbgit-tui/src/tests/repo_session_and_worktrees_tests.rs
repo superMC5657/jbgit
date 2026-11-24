@@ -518,6 +518,7 @@ fn new_worktree_flow_defaults_path_and_offers_open() {
             name: "feature/login".into(),
             start: "HEAD".into(),
         },
+        force: false,
     };
     assert_eq!(ts.take_git_ops(), vec![add.clone()]);
 
@@ -564,6 +565,7 @@ fn new_worktree_flow_defaults_path_and_offers_open() {
         vec![GitOp::AddWorktree {
             path: root.path().join("jbgit-bugfix-unmerged"),
             branch: WorktreeBranch::Existing("bugfix/unmerged".into()),
+            force: false,
         }]
     );
 }
