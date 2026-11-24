@@ -745,3 +745,33 @@ fn prompt_push_empty_remotes_slash_remote_and_push_rejected_up_to() {
         ])]
     );
 }
+
+#[test]
+fn delete_remote_tag_dialog_uses_tag_copy_not_branch_in_zh_cn() {
+    let mut snap = snapshot();
+    snap.remotes = super::remote_infos(&["origin"]);
+    snap.refs.push(tag_ref("v1.0", 12));
+    let mut ts = TestSession::with_snapshot(snap);
+    ts.state_mut().i18n = std::sync::Arc::new(crate::i18n::I18n::load("zh-CN", None));
+
+    let items = crate::menus::branch_menu_items(ts.state(), "v1.0", RefKind::Tag);
+    let ContextMenuEntryKind::Action(actions) =
+        &find_item(&items, "删除 'origin' 上的标签").kind
+    else {
+        panic!("expected direct delete-remote-tag action item");
+    };
+    ts.dispatch_many(actions.clone());
+
+    match ts.state().modal_stack.last() {
+        Some(ModalLayer::Dialog(d)) => match d.as_ref() {
+            Dialog::Choice(c) => {
+                let body = c.body.join("\n");
+                assert!(body.contains("标签"), "expected 标签 in body: {body}");
+                assert!(body.contains("v1.0"), "expected v1.0 in body: {body}");
+                assert!(!body.contains("分支"), "must not mention 分支: {body}");
+            }
+            other => panic!("expected ChoiceDialog, got {other:?}"),
+        },
+        other => panic!("expected Dialog, got {other:?}"),
+    }
+}

@@ -143,6 +143,15 @@ fn encode_modified_token(
         }
         KeyTokenKind::Esc => Ok(b"\x1b".to_vec()),
         KeyTokenKind::Char(ch) => {
+            if ctrl
+                && (shift
+                    || !matches!(
+                        ch.to_ascii_lowercase(),
+                        'a'..='z' | '`' | '~' | '@' | ' ' | '[' | '\\' | ']' | '^' | '_'
+                    ))
+            {
+                return encode_ctrl_modified_char(ch, ctrl, alt, shift);
+            }
             let mut out = Vec::new();
             if alt {
                 out.push(0x1b);
@@ -156,7 +165,7 @@ fn encode_modified_token(
                     ']' => 0x1d,
                     '^' => 0x1e,
                     '_' => 0x1f,
-                    _ => bail!("unsupported Ctrl+{ch} combination"),
+                    _ => unreachable!(),
                 };
                 out.push(code);
             } else {
@@ -172,6 +181,60 @@ fn encode_modified_token(
         }
         other => bail!("unsupported modified key {other:?}"),
     }
+}
+
+#[cfg(windows)]
+fn encode_ctrl_modified_char(ch: char, ctrl: bool, alt: bool, shift: bool) -> Result<Vec<u8>> {
+    let vk: u16 = match ch {
+        ' ' => 0x20,
+        '0'..='9' => ch as u16,
+        'a'..='z' | 'A'..='Z' => ch.to_ascii_uppercase() as u16,
+        ')' => b'0' as u16,
+        '!' => b'1' as u16,
+        '@' => b'2' as u16,
+        '#' => b'3' as u16,
+        '$' => b'4' as u16,
+        '%' => b'5' as u16,
+        '^' => b'6' as u16,
+        '&' => b'7' as u16,
+        '*' => b'8' as u16,
+        '(' => b'9' as u16,
+        ';' | ':' => 0xBA,
+        '=' | '+' => 0xBB,
+        ',' | '<' => 0xBC,
+        '-' | '_' => 0xBD,
+        '.' | '>' => 0xBE,
+        '/' | '?' => 0xBF,
+        '`' | '~' => 0xC0,
+        '[' | '{' => 0xDB,
+        '\\' | '|' => 0xDC,
+        ']' | '}' => 0xDD,
+        '\'' | '"' => 0xDE,
+        _ => bail!("unsupported Ctrl+{ch} combination"),
+    };
+    let uc: u32 = if shift && ch.is_ascii_alphabetic() {
+        ch.to_ascii_uppercase() as u32
+    } else {
+        ch as u32
+    };
+    let ctrl_state: u16 = (if ctrl { 0x0008 } else { 0 })
+        | (if alt { 0x0002 } else { 0 })
+        | (if shift { 0x0010 } else { 0 });
+    Ok(format!("\x1b[{vk};0;{uc};1;{ctrl_state};1_\x1b[{vk};0;{uc};0;{ctrl_state};1_").into_bytes())
+}
+
+#[cfg(not(windows))]
+fn encode_ctrl_modified_char(ch: char, ctrl: bool, alt: bool, shift: bool) -> Result<Vec<u8>> {
+    if !ch.is_ascii() || ch.is_ascii_control() {
+        bail!("unsupported Ctrl+{ch} combination");
+    }
+    let xterm_mod = 1 + u8::from(shift) + (u8::from(alt) * 2) + (u8::from(ctrl) * 4);
+    let codepoint = if ch.is_ascii_alphabetic() {
+        ch.to_ascii_lowercase() as u32
+    } else {
+        ch as u32
+    };
+    Ok(format!("\x1b[{codepoint};{xterm_mod}u").into_bytes())
 }
 
 /// Encodes an SGR mouse press + release at 0-based `(col, row)`.
@@ -240,5 +303,50 @@ mod tests {
     #[test]
     fn encodes_sgr_hover_coordinates() {
         assert_eq!(encode_sgr_hover(10, 5), b"\x1b[<35;11;6M");
+    }
+
+    #[test]
+    fn encodes_ctrl_and_ctrl_shift_symbol_and_letter_chords() {
+        #[cfg(windows)]
+        {
+            assert_eq!(
+                encode_key("Ctrl+Shift+-").unwrap(),
+                b"\x1b[189;0;45;1;24;1_\x1b[189;0;45;0;24;1_"
+            );
+            assert_eq!(
+                encode_key("Ctrl+Shift+=").unwrap(),
+                b"\x1b[187;0;61;1;24;1_\x1b[187;0;61;0;24;1_"
+            );
+            assert_eq!(
+                encode_key("Ctrl+Shift++").unwrap(),
+                b"\x1b[187;0;43;1;24;1_\x1b[187;0;43;0;24;1_"
+            );
+            assert_eq!(
+                encode_key("Ctrl+Shift+_").unwrap(),
+                b"\x1b[189;0;95;1;24;1_\x1b[189;0;95;0;24;1_"
+            );
+            assert_eq!(
+                encode_key("Ctrl+Shift+K").unwrap(),
+                b"\x1b[75;0;75;1;24;1_\x1b[75;0;75;0;24;1_"
+            );
+            assert_eq!(
+                encode_key("Ctrl+-").unwrap(),
+                b"\x1b[189;0;45;1;8;1_\x1b[189;0;45;0;8;1_"
+            );
+            assert_eq!(
+                encode_key("Ctrl+=").unwrap(),
+                b"\x1b[187;0;61;1;8;1_\x1b[187;0;61;0;8;1_"
+            );
+        }
+        #[cfg(not(windows))]
+        {
+            assert_eq!(encode_key("Ctrl+Shift+-").unwrap(), b"\x1b[45;6u");
+            assert_eq!(encode_key("Ctrl+Shift+=").unwrap(), b"\x1b[61;6u");
+            assert_eq!(encode_key("Ctrl+Shift++").unwrap(), b"\x1b[43;6u");
+            assert_eq!(encode_key("Ctrl+Shift+_").unwrap(), b"\x1b[95;6u");
+            assert_eq!(encode_key("Ctrl+Shift+K").unwrap(), b"\x1b[107;6u");
+            assert_eq!(encode_key("Ctrl+-").unwrap(), b"\x1b[45;5u");
+            assert_eq!(encode_key("Ctrl+=").unwrap(), b"\x1b[61;5u");
+        }
     }
 }

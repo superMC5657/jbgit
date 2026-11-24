@@ -87,7 +87,11 @@ fn render_buttons(
 ) {
     let mut cx = x;
     for b in buttons {
-        let text = format!(" {} ", b.label);
+        let text = if b.selected && b.enabled {
+            format!("[{}]", b.label)
+        } else {
+            format!(" {} ", b.label)
+        };
         let w = text.width() as u16;
         if cx + w > max_right {
             break;

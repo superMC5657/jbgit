@@ -508,3 +508,26 @@ fn interactive_rebase_dialog_reorders_and_sets_actions() {
         Some(ModalLayer::Dialog(_))
     ));
 }
+
+#[test]
+fn choice_dialog_confirm_brackets_focused_button() {
+    let mut ts = TestSession::with_snapshot(snapshot());
+    ts.dispatch(Action::OpenDialog(Box::new(Dialog::Choice(
+        crate::dialogs::ChoiceDialog::confirm(
+            "Remove Worktree",
+            vec!["Remove this worktree?".into()],
+            "Remove",
+            "Cancel",
+            Vec::new(),
+        ),
+    ))));
+
+    let initial = screen_text(&ts.render(120, 40));
+    assert!(initial.contains("[Cancel]"), "{initial}");
+    assert!(!initial.contains("[Remove]"), "{initial}");
+
+    ts.send_key(KeyCode::Left, KeyModifiers::NONE);
+    let moved = screen_text(&ts.render(120, 40));
+    assert!(moved.contains("[Remove]"), "{moved}");
+    assert!(!moved.contains("[Cancel]"), "{moved}");
+}

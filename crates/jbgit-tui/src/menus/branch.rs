@@ -408,7 +408,7 @@ pub fn branch_menu_items(state: &AppState, name: &str, kind: RefKind) -> Vec<Con
                     i18n.t("menu.branch.delete_remote_tag_title"),
                     vec![
                         i18n.t_fmt(
-                            "menu.branch.delete_remote_prompt",
+                            "menu.branch.delete_remote_tag_prompt",
                             &[("short", name), ("remote", remote)],
                         ),
                         i18n.t("menu.branch.delete_remote_warn").into(),
