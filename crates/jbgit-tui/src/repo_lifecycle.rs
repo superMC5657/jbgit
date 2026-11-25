@@ -14,7 +14,7 @@ use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph};
+use ratatui::widgets::{Block, BorderType, Borders, Paragraph};
 use unicode_width::UnicodeWidthStr;
 
 use crate::app::{Action, AppState, ModalLayer, RenderContext};
@@ -483,7 +483,7 @@ pub fn render_welcome_modal(
         h,
     );
     draw_shadow(frame, screen, rect);
-    frame.render_widget(Clear, rect);
+    crate::views::clear_modal_overlay(frame, rect);
 
     let title = format!(" {} ", ctx.t("view.welcome.title"));
     let block = Block::default()
@@ -663,7 +663,7 @@ pub fn render_clone_repo_modal(
         h,
     );
     draw_shadow(frame, screen, rect);
-    frame.render_widget(Clear, rect);
+    crate::views::clear_modal_overlay(frame, rect);
 
     let title = format!(" {} ", ctx.t("dialog.clone.title"));
     let block = Block::default()

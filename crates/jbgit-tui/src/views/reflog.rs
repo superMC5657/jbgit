@@ -5,7 +5,7 @@ use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph};
+use ratatui::widgets::{Block, BorderType, Borders, Paragraph};
 use unicode_width::UnicodeWidthStr;
 
 use crate::app::{AppState, RenderContext, ScrollPane};
@@ -65,7 +65,7 @@ pub fn render_reflog_modal(
     );
 
     draw_shadow(frame, screen, rect);
-    frame.render_widget(Clear, rect);
+    crate::views::clear_modal_overlay(frame, rect);
 
     let count_s = match &rf.bundle {
         Some(b) if b.has_more => format!("{}+", b.entries.len()),

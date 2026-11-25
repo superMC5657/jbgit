@@ -9,7 +9,7 @@ use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph};
+use ratatui::widgets::{Block, BorderType, Borders, Paragraph};
 use unicode_width::UnicodeWidthStr;
 
 use crate::app::{Action, AppState, MenuParent, ModalLayer, RenderContext};
@@ -448,7 +448,7 @@ pub fn render_branches_popup(
     if rect.width < 10 || rect.height < 5 {
         return;
     }
-    frame.render_widget(Clear, rect);
+    crate::views::clear_modal_overlay(frame, rect);
     let g = ctx.glyph_mode.symbols();
     let repo = state
         .repo_snapshot

@@ -1477,6 +1477,35 @@ impl CommitWorkbench {
         self.mark_draft_dirty(now);
     }
 
+    /// Applies an engine-prepared commit message (`MERGE_MSG` / `SQUASH_MSG`) and tracks it
+    /// so it can be cleared automatically if the ongoing merge/cherry-pick/revert ends without
+    /// the user replacing it with a fresh manual message.
+    pub fn apply_prepared_message(&mut self, prepared: &str, now: Instant) {
+        self.apply_external_message(prepared, now);
+        self.last_loaded_prepared_msg = Some(self.editor.text());
+    }
+
+    /// Clears the auto-loaded `MERGE_MSG` / `SQUASH_MSG` from the commit editor if it has not
+    /// been replaced with a fresh manual commit message.
+    pub fn clear_stale_prepared_message(&mut self, now: Instant) {
+        let Some(prev_prepared) = self.last_loaded_prepared_msg.take() else {
+            return;
+        };
+        if self.amend {
+            if self.saved_draft.as_deref() == Some(prev_prepared.as_str()) {
+                self.saved_draft = None;
+                self.mark_draft_dirty(now);
+            }
+            return;
+        }
+        if self.editor.text() == prev_prepared {
+            self.editor.clear();
+            self.empty_message_error = false;
+            self.template_applied = false;
+            self.mark_draft_dirty(now);
+        }
+    }
+
     pub fn apply_syntax_highlighted(
         &mut self,
         key: StageDiffKey,
@@ -1730,24 +1759,30 @@ impl CommitWorkbench {
                 self.precheck_loaded = true;
                 if !self.amend {
                     if let Some(prepared) = self.precheck.prepared_message.clone() {
+                        let prepared_norm = prepared.replace("\r\n", "\n");
                         let editor_matches_prev_template = prev_template
                             .as_deref()
                             .is_some_and(|tpl| self.editor.text() == tpl);
+                        let editor_matches_prev_prepared = self
+                            .last_loaded_prepared_msg
+                            .as_deref()
+                            .is_some_and(|prev| self.editor.text() == prev);
                         let newly_entered_sequencer =
                             self.precheck.has_sequencer_state && !had_sequencer;
-                        if self.last_loaded_prepared_msg.as_ref() != Some(&prepared)
+                        if self.last_loaded_prepared_msg.as_deref() != Some(prepared_norm.as_str())
                             && (self.editor.is_empty()
                                 || editor_matches_prev_template
+                                || editor_matches_prev_prepared
                                 || self.editor_from_draft
                                 || newly_entered_sequencer)
                         {
                             self.editor.set_text(&prepared);
                             self.editor_from_draft = false;
                             self.empty_message_error = false;
-                            self.last_loaded_prepared_msg = Some(prepared);
+                            self.last_loaded_prepared_msg = Some(self.editor.text());
                         }
                     } else {
-                        self.last_loaded_prepared_msg = None;
+                        self.clear_stale_prepared_message(ctx.now);
                         if let Some(tpl) = self.precheck.commit_template.clone()
                             && self.editor.is_empty()
                             && !self.template_applied
@@ -1756,6 +1791,8 @@ impl CommitWorkbench {
                             self.template_applied = true;
                         }
                     }
+                } else if self.precheck.prepared_message.is_none() {
+                    self.clear_stale_prepared_message(ctx.now);
                 }
                 None
             }
@@ -2253,6 +2290,9 @@ impl CommitWorkbench {
             Action::StageDiffRollbackSelection => {
                 if let Some(key) = self.readonly_diff_notice_key() {
                     *ctx.status_notice = Some(ctx.i18n.t(key).to_string());
+                } else if self.current_diff.as_ref().is_some_and(|d| d.is_untracked()) {
+                    *ctx.status_notice =
+                        Some(ctx.i18n.t("toast.untracked_rollback_disabled").to_string());
                 } else if let Some(sel) = self.collect_selected_line_sets() {
                     self.apply_stage_diff_selection(StageDiffOp::Rollback, sel, ctx);
                 }
@@ -2346,6 +2386,9 @@ impl CommitWorkbench {
                     DiffHunkActionKind::Rollback => {
                         if let Some(key) = self.readonly_diff_notice_key() {
                             *ctx.status_notice = Some(ctx.i18n.t(key).to_string());
+                        } else if self.current_diff.as_ref().is_some_and(|d| d.is_untracked()) {
+                            *ctx.status_notice =
+                                Some(ctx.i18n.t("toast.untracked_rollback_disabled").to_string());
                         } else if let Some(sel) = self.collect_hunk_line_sets(hunk_idx) {
                             self.apply_stage_diff_selection(StageDiffOp::Rollback, sel, ctx);
                         }
@@ -2440,6 +2483,11 @@ impl CommitWorkbench {
                 });
             }
             StageDiffOp::Rollback if !sel.staged_side => {
+                if diff.is_untracked() {
+                    *ctx.status_notice =
+                        Some(ctx.i18n.t("toast.untracked_rollback_disabled").to_string());
+                    return;
+                }
                 let new_local = diff.tracker.rollback_lines(&sel);
                 self.rollback_undo_stack.push(RollbackUndoEntry {
                     path: diff.key.path.clone(),

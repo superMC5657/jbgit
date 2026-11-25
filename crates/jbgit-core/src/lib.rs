@@ -31,9 +31,10 @@ pub use commit_msg::{
 };
 pub use conflict::{
     ConflictBlock, ConflictChoice, ConflictDocument, ConflictPaneRow, ConflictParseOptions,
-    ConflictSegment, ConflictSideInfo, ConflictSidePresence, ConflictSideStatus, LoadedConflict,
-    SpecialConflictInfo, SpecialConflictKind, ThreeWayBlockKind, ThreeWayHunk,
-    conflict_side_statuses, is_reverse_conflict_state, three_way_merge_blocks,
+    ConflictRowPlaceholder, ConflictSegment, ConflictSideInfo, ConflictSidePresence,
+    ConflictSideStatus, LoadedConflict, SpecialConflictInfo, SpecialConflictKind,
+    ThreeWayBlockKind, ThreeWayHunk, conflict_side_statuses, is_reverse_conflict_state,
+    three_way_merge_blocks,
 };
 pub use console::{
     ConsoleLine, ConsoleLineSeverity, ConsoleStream, GitConsoleEntry, classify_console_line,

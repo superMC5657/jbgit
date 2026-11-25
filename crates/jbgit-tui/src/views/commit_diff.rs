@@ -395,11 +395,13 @@ pub fn render_stage_diff_workbench(
                         theme.status_added,
                         DiffHunkActionKind::Stage,
                     ));
-                    pills.push((
-                        state.i18n.t("view.commit.hunk_rollback_pill").to_string(),
-                        theme.status_conflicted,
-                        DiffHunkActionKind::Rollback,
-                    ));
+                    if !diff.is_untracked() {
+                        pills.push((
+                            state.i18n.t("view.commit.hunk_rollback_pill").to_string(),
+                            theme.status_conflicted,
+                            DiffHunkActionKind::Rollback,
+                        ));
+                    }
                 }
                 StageDiffSide::AmendCommit => {}
             }

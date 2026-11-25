@@ -16,22 +16,68 @@ use crate::views::{highlight_spans, truncate_to_width, wrap_text};
 
 use super::{muted_line, pad_label};
 
-fn person_line(label: &str, p: &PersonStamp, ctx: &RenderContext<'_>) -> Line<'static> {
-    Line::from(vec![
-        Span::styled(
-            pad_label(label, 10),
+fn person_line(
+    label: &str,
+    p: &PersonStamp,
+    width: usize,
+    ctx: &RenderContext<'_>,
+) -> Line<'static> {
+    let label_str = pad_label(label, 10);
+    let label_w = label_str.width();
+    let time_str = format!("  {}", format_absolute_time(p.time, true));
+    let time_w = time_str.width();
+    let email_str = format!(" <{}>", p.email);
+    let name_w = p.name.width();
+    let email_w = email_str.width();
+
+    let mut spans = vec![Span::styled(
+        label_str,
+        Style::default().fg(ctx.theme.fg_muted),
+    )];
+
+    // Elide email (then author name) before the timestamp so full `YYYY-MM-DD HH:MM`
+    // stays intact on narrow Details panes (e.g. 140x40).
+    let person_budget = width.saturating_sub(label_w + time_w);
+    if name_w + email_w <= person_budget {
+        spans.push(Span::styled(
+            p.name.clone(),
+            Style::default().fg(ctx.theme.fg_bright),
+        ));
+        spans.push(Span::styled(
+            email_str,
             Style::default().fg(ctx.theme.fg_muted),
-        ),
-        Span::styled(p.name.clone(), Style::default().fg(ctx.theme.fg_bright)),
-        Span::styled(
-            format!(" <{}>", p.email),
-            Style::default().fg(ctx.theme.fg_muted),
-        ),
-        Span::styled(
-            format!("  {}", format_absolute_time(p.time, true)),
-            Style::default().fg(ctx.theme.fg_primary),
-        ),
-    ])
+        ));
+    } else if name_w <= person_budget {
+        spans.push(Span::styled(
+            p.name.clone(),
+            Style::default().fg(ctx.theme.fg_bright),
+        ));
+        let rem = person_budget.saturating_sub(name_w);
+        if rem >= 6 {
+            let inner_email = truncate_to_width(&p.email, rem.saturating_sub(3));
+            spans.push(Span::styled(
+                format!(" <{inner_email}>"),
+                Style::default().fg(ctx.theme.fg_muted),
+            ));
+        }
+    } else if person_budget >= 3 {
+        spans.push(Span::styled(
+            truncate_to_width(&p.name, person_budget),
+            Style::default().fg(ctx.theme.fg_bright),
+        ));
+    } else {
+        spans.push(Span::styled(
+            truncate_to_width(&p.name, width.saturating_sub(label_w)),
+            Style::default().fg(ctx.theme.fg_bright),
+        ));
+        return Line::from(spans);
+    }
+
+    spans.push(Span::styled(
+        time_str,
+        Style::default().fg(ctx.theme.fg_primary),
+    ));
+    Line::from(spans)
 }
 
 /// Hit target attached to a details line at an x-offset range.
@@ -82,16 +128,19 @@ pub(super) fn render_commit_details(
                 .as_ref()
                 .and_then(|s| s.commits.iter().find(|c| c.oid == *oid))
         {
+            let full_sha = c.oid.to_string();
+            let shown_sha = if 11 + full_sha.width() <= area.width as usize {
+                full_sha
+            } else {
+                c.oid.short()
+            };
             let lines = vec![
                 Line::from(vec![
                     Span::styled(
                         pad_label(ctx.t("view.log_details.commit_label"), 10),
                         Style::default().fg(ctx.theme.fg_muted),
                     ),
-                    Span::styled(
-                        c.oid.to_string(),
-                        Style::default().fg(ctx.theme.fg_accent_link),
-                    ),
+                    Span::styled(shown_sha, Style::default().fg(ctx.theme.fg_accent_link)),
                 ]),
                 Line::from(""),
                 Line::from(Span::styled(
@@ -222,9 +271,31 @@ fn build_single_details(
     let theme = ctx.theme;
     let label = |s: &str| Span::styled(pad_label(s, 10), Style::default().fg(theme.fg_muted));
 
-    let sha = d.oid.to_string();
+    let full_sha = d.oid.to_string();
     let max_btn = format!(" [{}] ", ctx.t("view.log_details.maximize_msg_btn"));
     let max_btn_w = max_btn.width() as u16;
+    let effective_sig = state
+        .diff_caches
+        .signatures
+        .peek(&d.oid)
+        .unwrap_or(&d.signature);
+    let sig_badge = if effective_sig.status.is_signed() {
+        let (badge_key, _) = signature_badge_and_desc_keys(effective_sig.status);
+        let (_, pill_fg, pill_bg) = theme.signature_colors(effective_sig.status);
+        Some((ctx.t(badge_key).to_string(), pill_fg, pill_bg))
+    } else {
+        None
+    };
+    let sig_extra_w = sig_badge
+        .as_ref()
+        .map_or(0usize, |(txt, _, _)| 1 + txt.width());
+    // Fall back to short SHA when the 40-char hash + signature badge + `[⤢ Full]` button
+    // would overflow a narrow Details pane (e.g. 140x40).
+    let sha = if 11 + full_sha.width() + sig_extra_w + 1 + max_btn_w as usize <= width {
+        full_sha
+    } else {
+        d.oid.short()
+    };
     let mut sha_spans = vec![
         label(ctx.t("view.log_details.commit_label")),
         Span::styled(
@@ -234,16 +305,8 @@ fn build_single_details(
                 .add_modifier(Modifier::UNDERLINED),
         ),
     ];
-    let effective_sig = state
-        .diff_caches
-        .signatures
-        .peek(&d.oid)
-        .unwrap_or(&d.signature);
     let mut sha_used_w: u16 = 11 + sha.width() as u16;
-    if effective_sig.status.is_signed() {
-        let (badge_key, _) = signature_badge_and_desc_keys(effective_sig.status);
-        let (_, pill_fg, pill_bg) = theme.signature_colors(effective_sig.status);
-        let badge_txt = ctx.t(badge_key).to_string();
+    if let Some((badge_txt, pill_fg, pill_bg)) = sig_badge {
         sha_used_w = sha_used_w.saturating_add(1 + badge_txt.width() as u16);
         sha_spans.push(Span::raw(" "));
         sha_spans.push(Span::styled(
@@ -275,12 +338,23 @@ fn build_single_details(
     lines.push(Line::from(sha_spans));
 
     if d.same_author_and_committer() {
-        lines.push(person_line(ctx.t("view.log_details.author_label"), &d.author, ctx));
+        lines.push(person_line(
+            ctx.t("view.log_details.author_label"),
+            &d.author,
+            width,
+            ctx,
+        ));
     } else {
-        lines.push(person_line(ctx.t("view.log_details.author_label"), &d.author, ctx));
+        lines.push(person_line(
+            ctx.t("view.log_details.author_label"),
+            &d.author,
+            width,
+            ctx,
+        ));
         lines.push(person_line(
             ctx.t("view.log_details.committer_label"),
             &d.committer,
+            width,
             ctx,
         ));
     }

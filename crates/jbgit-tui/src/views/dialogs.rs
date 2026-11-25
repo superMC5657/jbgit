@@ -6,7 +6,7 @@ use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph, Wrap};
+use ratatui::widgets::{Block, BorderType, Borders, Paragraph, Wrap};
 use unicode_width::UnicodeWidthStr;
 
 use crate::app::{AppState, RenderContext, ScrollPane};
@@ -45,7 +45,7 @@ fn frame_block(
     z: u8,
 ) -> Rect {
     draw_shadow(frame, screen, rect);
-    frame.render_widget(Clear, rect);
+    crate::views::clear_modal_overlay(frame, rect);
     let accent = if danger {
         ctx.theme.status_conflicted
     } else {

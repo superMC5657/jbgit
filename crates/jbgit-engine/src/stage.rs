@@ -88,6 +88,11 @@ impl ThreeDocStageDiff {
         self.submodule.is_some() || self.lfs.is_some() || self.is_symlink_or_typechange()
     }
 
+    /// True when the file is untracked (absent from both `HEAD` and the index).
+    pub fn is_untracked(&self) -> bool {
+        !self.vcs_exists && !self.staged_exists
+    }
+
     pub fn as_file_diff(&self) -> FileDiff {
         FileDiff {
             key: FileDiffKey {

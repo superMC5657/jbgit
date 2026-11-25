@@ -262,6 +262,8 @@ pub enum HitTarget {
     FilterNoMergesToggle,
     FilterChip(FilterField),
     FilterClear(FilterField),
+    /// Overflow active-filter clear-all badge (`+N×`) shown on narrow viewports.
+    FilterClearAll,
     /// `×` of the read-only Range chip (Update Info "View").
     FilterRangeClear,
     FilterPresentation,

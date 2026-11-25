@@ -751,7 +751,7 @@ impl KeyAction {
             Self::CycleDiffDock => "view.footer.pill.dock",
             Self::ZoomDiff => "view.footer.pill.zoom",
             Self::StashNew => "view.footer.pill.stash_new",
-            Self::StashApply => "view.footer.pill.apply",
+            Self::StashApply => "view.footer.pill.stash_apply",
             Self::StashPop => "view.footer.pill.pop",
             Self::StashDrop => "view.footer.pill.drop",
             Self::StashBranch => "view.footer.pill.new_branch",

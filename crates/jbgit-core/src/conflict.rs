@@ -255,6 +255,22 @@ impl ConflictBlock {
     }
 }
 
+/// Semantic placeholder kind for synthetic status/prompt rows in the merged result pane
+/// so frontends can render localized text without parsing English strings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConflictRowPlaceholder {
+    FileWillBeDeleted,
+    DiscardedNeither,
+    Empty,
+    UnresolvedLeftOnly { block_num: usize },
+    UnresolvedRightOnly { block_num: usize },
+    UnresolvedBothSame { block_num: usize },
+    UnresolvedConflict { block_num: usize },
+    UnresolvedDeletedByTheirs { block_num: usize },
+    UnresolvedDeletedByOurs { block_num: usize },
+    UnresolvedBothDeleted { block_num: usize },
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConflictPaneRow {
     pub block_idx: Option<usize>,
@@ -263,6 +279,9 @@ pub struct ConflictPaneRow {
     pub merged: String,
     pub theirs: String,
     pub choice: Option<ConflictChoice>,
+    pub merged_placeholder: Option<ConflictRowPlaceholder>,
+    pub ours_deleted_placeholder: bool,
+    pub theirs_deleted_placeholder: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1020,6 +1039,9 @@ impl ConflictDocument {
                             merged: l.clone(),
                             theirs: l.clone(),
                             choice: None,
+                            merged_placeholder: None,
+                            ours_deleted_placeholder: false,
+                            theirs_deleted_placeholder: false,
                         });
                     }
                 }
@@ -1035,61 +1057,88 @@ impl ConflictDocument {
                             ConflictChoice::Unresolved | ConflictChoice::Custom(_)
                         ),
                     };
-                    let merged_lines = if choice_deletes {
-                        vec!["<File will be deleted>".to_string()]
+                    let (merged_lines, placeholder) = if choice_deletes {
+                        (
+                            vec!["<File will be deleted>".to_string()],
+                            Some(ConflictRowPlaceholder::FileWillBeDeleted),
+                        )
                     } else if b.choice == ConflictChoice::Neither {
-                        vec!["<Discarded (Neither)>".to_string()]
+                        (
+                            vec!["<Discarded (Neither)>".to_string()],
+                            Some(ConflictRowPlaceholder::DiscardedNeither),
+                        )
                     } else {
                         match b.resolved_lines() {
-                            Some(lines) if lines.is_empty() => {
-                                vec!["<Empty>".to_string()]
-                            }
-                            Some(lines) => lines,
+                            Some(lines) if lines.is_empty() => (
+                                vec!["<Empty>".to_string()],
+                                Some(ConflictRowPlaceholder::Empty),
+                            ),
+                            Some(lines) => (lines, None),
                             None => {
-                                let hint = match self.side_presence {
+                                let block_num = b.id + 1;
+                                let (hint, kind) = match self.side_presence {
                                     ConflictSidePresence::BothPresent => match b.kind {
-                                        ThreeWayBlockKind::LeftOnly => {
-                                            "Non-conflicting (Left): [a] Auto / [y] Ours"
-                                        }
-                                        ThreeWayBlockKind::RightOnly => {
-                                            "Non-conflicting (Right): [a] Auto / [t] Theirs"
-                                        }
-                                        ThreeWayBlockKind::BothSame => {
-                                            "Non-conflicting (Same): [a] Auto / [y] Keep"
-                                        }
+                                        ThreeWayBlockKind::LeftOnly => (
+                                            "Non-conflicting (Left): [a] Auto / [y] Ours",
+                                            ConflictRowPlaceholder::UnresolvedLeftOnly {
+                                                block_num,
+                                            },
+                                        ),
+                                        ThreeWayBlockKind::RightOnly => (
+                                            "Non-conflicting (Right): [a] Auto / [t] Theirs",
+                                            ConflictRowPlaceholder::UnresolvedRightOnly {
+                                                block_num,
+                                            },
+                                        ),
+                                        ThreeWayBlockKind::BothSame => (
+                                            "Non-conflicting (Same): [a] Auto / [y] Keep",
+                                            ConflictRowPlaceholder::UnresolvedBothSame {
+                                                block_num,
+                                            },
+                                        ),
                                         ThreeWayBlockKind::Unchanged
-                                        | ThreeWayBlockKind::Conflict => {
-                                            "choose [y] Ours / [t] Theirs / [d] Neither / [e] Edit"
-                                        }
+                                        | ThreeWayBlockKind::Conflict => (
+                                            "choose [y] Ours / [t] Theirs / [d] Neither / [e] Edit",
+                                            ConflictRowPlaceholder::UnresolvedConflict {
+                                                block_num,
+                                            },
+                                        ),
                                     },
-                                    ConflictSidePresence::DeletedByTheirs => {
-                                        "choose [y] Keep file / [t] Delete file"
-                                    }
-                                    ConflictSidePresence::DeletedByOurs => {
-                                        "choose [y] Delete file / [t] Keep file"
-                                    }
-                                    ConflictSidePresence::BothDeleted => {
-                                        "choose [y]/[t] Delete file"
-                                    }
+                                    ConflictSidePresence::DeletedByTheirs => (
+                                        "choose [y] Keep file / [t] Delete file",
+                                        ConflictRowPlaceholder::UnresolvedDeletedByTheirs {
+                                            block_num,
+                                        },
+                                    ),
+                                    ConflictSidePresence::DeletedByOurs => (
+                                        "choose [y] Delete file / [t] Keep file",
+                                        ConflictRowPlaceholder::UnresolvedDeletedByOurs {
+                                            block_num,
+                                        },
+                                    ),
+                                    ConflictSidePresence::BothDeleted => (
+                                        "choose [y]/[t] Delete file",
+                                        ConflictRowPlaceholder::UnresolvedBothDeleted { block_num },
+                                    ),
                                 };
-                                vec![format!("⚠ Block #{}: {hint}", b.id + 1)]
+                                (vec![format!("⚠ Block #{block_num}: {hint}")], Some(kind))
                             }
                         }
                     };
                     let max_len = b.pane_row_count(self.side_presence);
                     for i in 0..max_len {
-                        let ours = if i == 0
+                        let ours_deleted_placeholder = i == 0
                             && b.ours_lines.is_empty()
-                            && self.side_presence.ours_deleted()
-                        {
+                            && self.side_presence.ours_deleted();
+                        let ours = if ours_deleted_placeholder {
                             "<Deleted>".to_string()
                         } else {
                             b.ours_lines.get(i).cloned().unwrap_or_default()
                         };
-                        let theirs = if i == 0
+                        let theirs_deleted_placeholder = i == 0
                             && b.theirs_lines.is_empty()
-                            && self.side_presence.theirs_deleted()
-                        {
+                            && self.side_presence.theirs_deleted();
+                        let theirs = if theirs_deleted_placeholder {
                             "<Deleted>".to_string()
                         } else {
                             b.theirs_lines.get(i).cloned().unwrap_or_default()
@@ -1101,6 +1150,9 @@ impl ConflictDocument {
                             merged: merged_lines.get(i).cloned().unwrap_or_default(),
                             theirs,
                             choice: Some(b.choice.clone()),
+                            merged_placeholder: if i == 0 { placeholder } else { None },
+                            ours_deleted_placeholder,
+                            theirs_deleted_placeholder,
                         });
                     }
                 }

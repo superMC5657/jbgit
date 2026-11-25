@@ -11,7 +11,7 @@ use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph};
+use ratatui::widgets::{Block, BorderType, Borders, Paragraph};
 use serde::{Deserialize, Serialize};
 use unicode_width::UnicodeWidthStr;
 
@@ -564,7 +564,7 @@ pub fn render_repo_switcher_modal(
         h,
     );
     draw_shadow(frame, screen, rect);
-    frame.render_widget(Clear, rect);
+    crate::views::clear_modal_overlay(frame, rect);
     let current = state
         .repo_snapshot
         .as_ref()

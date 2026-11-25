@@ -184,10 +184,16 @@ fn render_notification_footer(
     };
     let action = n.action.as_ref().map(|(l, _)| format!(" [{l}] "));
     let dismiss = " ✕ ";
-    let right_w = action.as_ref().map_or(0, |a| a.width()) + dismiss.width() + 1;
+    let hint = state.i18n.t(if n.action.is_some() {
+        "view.header.notification_hint"
+    } else {
+        "view.header.notification_dismiss_hint"
+    });
+    let right_w =
+        action.as_ref().map_or(0, |a| a.width() + 1) + dismiss.width() + 1 + hint.width();
     let text = truncate_to_width(
         &format!(" {icon} {}", n.text),
-        (area.width as usize).saturating_sub(right_w + 1),
+        (area.width as usize).saturating_sub(right_w),
     );
     let mut spans = vec![Span::styled(text.clone(), Style::default().fg(color))];
     let mut x = area.x + text.width() as u16;
@@ -215,7 +221,7 @@ fn render_notification_footer(
         HitTarget::NotificationDismiss,
     );
     spans.push(Span::styled(
-        state.i18n.t("view.header.notification_hint"),
+        hint,
         Style::default().fg(ctx.theme.fg_muted),
     ));
     frame.render_widget(

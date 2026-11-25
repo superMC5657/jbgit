@@ -2,7 +2,7 @@ use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph};
+use ratatui::widgets::{Block, BorderType, Borders, Paragraph};
 use unicode_width::UnicodeWidthStr;
 
 use crate::app::{ContextMenuEntryKind, ContextMenuItem, MenuParent, RenderContext};
@@ -146,7 +146,7 @@ pub(super) fn render_context_menu(
 
     let rect = context_menu_rect(screen, anchor, parent, items);
     draw_shadow(frame, screen, rect);
-    frame.render_widget(Clear, rect);
+    crate::views::clear_modal_overlay(frame, rect);
 
     let block = Block::default()
         .borders(Borders::ALL)

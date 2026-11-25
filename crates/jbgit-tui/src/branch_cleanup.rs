@@ -9,7 +9,7 @@ use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph};
+use ratatui::widgets::{Block, BorderType, Borders, Paragraph};
 use unicode_width::UnicodeWidthStr;
 
 use crate::app::{Action, AppState, RenderContext, ScrollPane, ScrollViewport};
@@ -197,7 +197,7 @@ pub fn render_branch_cleanup(
     let list_rows = bc.rows.len().clamp(4, 14) as u16;
     let h = (list_rows + 7).min(screen.height.saturating_sub(2)).max(9);
     let area = centered_rect(screen, w, h);
-    frame.render_widget(Clear, area);
+    crate::views::clear_modal_overlay(frame, area);
     let title = ctx.t("dialog.cleanup_branches.title");
     let block = Block::default()
         .borders(Borders::ALL)

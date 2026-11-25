@@ -628,6 +628,11 @@ impl AppState {
                     top.set_popup_state(query, selected);
                 }
             }
+            Action::PopupSelectCandidate(selected) => {
+                if let Some(top) = self.modal_stack.last_mut() {
+                    top.select_popup_candidate(selected);
+                }
+            }
             Action::ContextMenuSetSelected { depth, idx } => {
                 if let Some(ModalLayer::ContextMenu {
                     depth: d,

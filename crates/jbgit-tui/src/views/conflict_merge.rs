@@ -2,12 +2,12 @@
 //! with optional syntax highlighting, intra-block word-diff, horizontal scrolling,
 //! expandable `:1` Base ancestor panel, and lightweight inline multi-line Result editing.
 
-use jbgit_core::{ConflictChoice, ThreeWayBlockKind, word_diff};
+use jbgit_core::{ConflictChoice, ConflictRowPlaceholder, ThreeWayBlockKind, word_diff};
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph};
+use ratatui::widgets::{Block, BorderType, Borders, Paragraph};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::app::{AppState, RenderContext};
@@ -149,7 +149,7 @@ pub fn render_conflict_merge_modal(
         height,
     );
     draw_shadow(frame, screen, rect);
-    frame.render_widget(Clear, rect);
+    crate::views::clear_modal_overlay(frame, rect);
 
     let Some(cm) = state.modal_stack.conflict_merge() else {
         return;
@@ -356,12 +356,78 @@ pub fn render_conflict_merge_modal(
             None => ctx.theme.fg_primary,
         };
         let marker = if is_active { "▎" } else { " " };
+        let ours_text: std::borrow::Cow<'_, str> = if row.ours_deleted_placeholder {
+            std::borrow::Cow::Borrowed(i18n.t("conflict_merge.placeholder_deleted_side"))
+        } else {
+            std::borrow::Cow::Borrowed(&row.ours)
+        };
+        let theirs_text: std::borrow::Cow<'_, str> = if row.theirs_deleted_placeholder {
+            std::borrow::Cow::Borrowed(i18n.t("conflict_merge.placeholder_deleted_side"))
+        } else {
+            std::borrow::Cow::Borrowed(&row.theirs)
+        };
+        let merged_text: std::borrow::Cow<'_, str> = match row.merged_placeholder {
+            Some(ConflictRowPlaceholder::FileWillBeDeleted) => {
+                std::borrow::Cow::Borrowed(i18n.t("conflict_merge.placeholder_file_deleted"))
+            }
+            Some(ConflictRowPlaceholder::DiscardedNeither) => {
+                std::borrow::Cow::Borrowed(i18n.t("conflict_merge.placeholder_discarded"))
+            }
+            Some(ConflictRowPlaceholder::Empty) => {
+                std::borrow::Cow::Borrowed(i18n.t("conflict_merge.placeholder_empty"))
+            }
+            Some(ConflictRowPlaceholder::UnresolvedLeftOnly { block_num }) => {
+                let n = block_num.to_string();
+                std::borrow::Cow::Owned(
+                    i18n.t_fmt("conflict_merge.placeholder_block_left_only", &[("num", &n)]),
+                )
+            }
+            Some(ConflictRowPlaceholder::UnresolvedRightOnly { block_num }) => {
+                let n = block_num.to_string();
+                std::borrow::Cow::Owned(
+                    i18n.t_fmt("conflict_merge.placeholder_block_right_only", &[("num", &n)]),
+                )
+            }
+            Some(ConflictRowPlaceholder::UnresolvedBothSame { block_num }) => {
+                let n = block_num.to_string();
+                std::borrow::Cow::Owned(
+                    i18n.t_fmt("conflict_merge.placeholder_block_both_same", &[("num", &n)]),
+                )
+            }
+            Some(ConflictRowPlaceholder::UnresolvedConflict { block_num }) => {
+                let n = block_num.to_string();
+                std::borrow::Cow::Owned(
+                    i18n.t_fmt("conflict_merge.placeholder_block_conflict", &[("num", &n)]),
+                )
+            }
+            Some(ConflictRowPlaceholder::UnresolvedDeletedByTheirs { block_num }) => {
+                let n = block_num.to_string();
+                std::borrow::Cow::Owned(i18n.t_fmt(
+                    "conflict_merge.placeholder_block_deleted_by_theirs",
+                    &[("num", &n)],
+                ))
+            }
+            Some(ConflictRowPlaceholder::UnresolvedDeletedByOurs { block_num }) => {
+                let n = block_num.to_string();
+                std::borrow::Cow::Owned(i18n.t_fmt(
+                    "conflict_merge.placeholder_block_deleted_by_ours",
+                    &[("num", &n)],
+                ))
+            }
+            Some(ConflictRowPlaceholder::UnresolvedBothDeleted { block_num }) => {
+                let n = block_num.to_string();
+                std::borrow::Cow::Owned(
+                    i18n.t_fmt("conflict_merge.placeholder_block_both_deleted", &[("num", &n)]),
+                )
+            }
+            None => std::borrow::Cow::Borrowed(&row.merged),
+        };
         let (ours_words, theirs_words) = if row.block_kind == Some(ThreeWayBlockKind::Conflict)
+            && !row.ours_deleted_placeholder
+            && !row.theirs_deleted_placeholder
             && !row.ours.is_empty()
             && !row.theirs.is_empty()
             && row.ours != row.theirs
-            && !row.ours.starts_with('<')
-            && !row.theirs.starts_with('<')
         {
             word_diff(&row.ours, &row.theirs)
         } else {
@@ -370,14 +436,14 @@ pub fn render_conflict_merge_modal(
 
         let mut line_spans = build_pane_spans(
             marker,
-            &row.ours,
+            &ours_text,
             &cm.path,
             cm.h_scroll,
             &ours_words,
             col_w,
             Style::default().fg(ctx.theme.fg_primary).bg(ours_bg),
             ctx.theme.diff_add_word_bg,
-            syntax_on,
+            syntax_on && !row.ours_deleted_placeholder,
             tab_size,
             true_color,
         );
@@ -387,14 +453,14 @@ pub fn render_conflict_merge_modal(
         ));
         line_spans.extend(build_pane_spans(
             " ",
-            &row.merged,
+            &merged_text,
             &cm.path,
             cm.h_scroll,
             &[],
             col_w,
             Style::default().fg(mid_fg).bg(mid_bg),
             ctx.theme.diff_add_word_bg,
-            syntax_on,
+            syntax_on && row.merged_placeholder.is_none(),
             tab_size,
             true_color,
         ));
@@ -404,14 +470,14 @@ pub fn render_conflict_merge_modal(
         ));
         line_spans.extend(build_pane_spans(
             " ",
-            &row.theirs,
+            &theirs_text,
             &cm.path,
             cm.h_scroll,
             &theirs_words,
             right_w,
             Style::default().fg(ctx.theme.fg_primary).bg(theirs_bg),
             ctx.theme.diff_del_word_bg,
-            syntax_on,
+            syntax_on && !row.theirs_deleted_placeholder,
             tab_size,
             true_color,
         ));

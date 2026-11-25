@@ -326,7 +326,24 @@ pub fn render_branches_pane(
                 } else {
                     node.label.clone()
                 };
+                let prefix_w: usize = spans.iter().map(|s| s.content.width()).sum();
+                let leaf_w = leaf_label.width();
                 spans.push(Span::styled(leaf_label, style));
+                let mut sync_spans: Vec<Span<'static>> = Vec::new();
+                if let Some((ahead, behind)) = node.ahead_behind {
+                    if ahead > 0 {
+                        sync_spans.push(Span::styled(
+                            format!(" {}{ahead}", glyphs.arrow_up),
+                            Style::default().fg(ctx.theme.status_added),
+                        ));
+                    }
+                    if behind > 0 {
+                        sync_spans.push(Span::styled(
+                            format!(" {}{behind}", glyphs.arrow_down),
+                            Style::default().fg(ctx.theme.fg_accent_link),
+                        ));
+                    }
+                }
                 if kind == RefKind::LocalBranch
                     && !node.is_current
                     && let Some(wt) = state
@@ -334,25 +351,26 @@ pub fn render_branches_pane(
                         .as_deref()
                         .and_then(|s| node.ref_name.as_deref().and_then(|n| s.worktree_of_branch(n)))
                 {
-                    right.push(Span::styled(
-                        format!(" ⎇ {}", truncate_to_width(&wt.name(), 18)),
-                        Style::default().fg(ctx.theme.status_modified),
-                    ));
-                }
-                if let Some((ahead, behind)) = node.ahead_behind {
-                    if ahead > 0 {
+                    let sync_w: usize = sync_spans.iter().map(|s| s.content.width()).sum();
+                    // Reserve space for indent + icon + at least 7 cols of the branch name
+                    // so the linked-worktree badge elides first instead of crushing the branch name.
+                    let min_left_w = prefix_w + leaf_w.min(7);
+                    let avail_for_wt = (row_rect.width as usize)
+                        .saturating_sub(min_left_w + sync_w + 1);
+                    if avail_for_wt >= 5 {
+                        let name_budget = (avail_for_wt - 3).min(18);
                         right.push(Span::styled(
-                            format!(" {}{ahead}", glyphs.arrow_up),
-                            Style::default().fg(ctx.theme.status_added),
+                            format!(" ⎇ {}", truncate_to_width(&wt.name(), name_budget)),
+                            Style::default().fg(ctx.theme.status_modified),
+                        ));
+                    } else if avail_for_wt >= 2 {
+                        right.push(Span::styled(
+                            " ⎇",
+                            Style::default().fg(ctx.theme.status_modified),
                         ));
                     }
-                    if behind > 0 {
-                        right.push(Span::styled(
-                            format!(" {}{behind}", glyphs.arrow_down),
-                            Style::default().fg(ctx.theme.fg_accent_link),
-                        ));
-                    }
                 }
+                right.extend(sync_spans);
             }
             _ => {}
         }

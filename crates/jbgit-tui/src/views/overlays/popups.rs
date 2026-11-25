@@ -3,7 +3,7 @@ use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
+use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 use unicode_width::UnicodeWidthStr;
 
 use crate::app::{AppState, PopupKind, RenderContext};
@@ -24,6 +24,7 @@ pub(super) fn render_floating_popup(
     kind: PopupKind,
     query: &str,
     selected: usize,
+    selection_touched: bool,
     z: u8,
 ) {
     if kind == PopupKind::BranchesQuickView {
@@ -67,7 +68,16 @@ pub(super) fn render_floating_popup(
             render_shortcuts_help_popup(frame, inner, state, ctx, query, selected, z);
         }
         PopupKind::FilterEditor(field) => {
-            render_filter_editor_popup(frame, inner, state, ctx, field, query, selected);
+            render_filter_editor_popup(
+                frame,
+                inner,
+                state,
+                ctx,
+                field,
+                query,
+                selected,
+                selection_touched,
+            );
         }
         PopupKind::GoToRevision => render_goto_revision_popup(frame, inner, state, ctx, query),
         PopupKind::ChooseParent => {
@@ -102,7 +112,7 @@ fn render_centered_popup_box(
         .saturating_add(screen.height.saturating_sub(height) / 2);
     let rect = Rect::new(x, y, width, height);
 
-    frame.render_widget(Clear, rect);
+    crate::views::clear_modal_overlay(frame, rect);
     let block = Block::default()
         .title(Span::styled(
             title,
@@ -386,6 +396,7 @@ fn render_shortcuts_help_popup(
     );
 }
 
+#[allow(clippy::too_many_arguments)]
 fn render_filter_editor_popup(
     frame: &mut Frame<'_>,
     inner: Rect,
@@ -394,6 +405,7 @@ fn render_filter_editor_popup(
     field: FilterField,
     query: &str,
     selected: usize,
+    selection_touched: bool,
 ) {
     let mut lines = vec![
         Line::from(vec![
@@ -432,7 +444,11 @@ fn render_filter_editor_popup(
     let start = sel.saturating_sub(room.saturating_sub(1));
     for (idx, s) in suggestions.iter().enumerate().skip(start).take(room) {
         let bg = if idx == sel {
-            ctx.theme.bg_selection_focused
+            if selection_touched || !query.is_empty() {
+                ctx.theme.bg_selection_focused
+            } else {
+                ctx.theme.bg_hover
+            }
         } else {
             ctx.theme.bg_elevated
         };

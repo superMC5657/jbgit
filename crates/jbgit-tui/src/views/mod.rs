@@ -527,6 +527,48 @@ pub(crate) fn render_toolbar<S: AsRef<str>, T: Copy>(
     x
 }
 
+/// Sanitizes double-width (e.g. CJK / emoji) background cells straddling the left
+/// or right edge of a floating overlay rectangle `rect`.
+///
+/// Without this, `ratatui`'s `Buffer::diff` emits a 2-column glyph at `(rect.x - 1, y)`
+/// and then skips `(rect.x, y)`, erasing the overlay's left border (`╭`/`│`).
+pub(crate) fn sanitize_overlay_edges(buf: &mut ratatui::buffer::Buffer, rect: Rect) {
+    let area = *buf.area();
+    let r = rect.intersection(area);
+    if r.is_empty() {
+        return;
+    }
+    if r.x > area.x {
+        let left_x = r.x - 1;
+        for y in r.y..r.bottom() {
+            if let Some(cell) = buf.cell_mut((left_x, y))
+                && cell.symbol().width() > 1
+            {
+                cell.set_char(' ');
+            }
+        }
+    }
+    if r.right() < area.right() {
+        let inner_right_x = r.right() - 1;
+        let outer_right_x = r.right();
+        for y in r.y..r.bottom() {
+            let clipped_wide = buf
+                .cell((inner_right_x, y))
+                .is_some_and(|c| c.symbol().width() > 1);
+            if clipped_wide && let Some(cell) = buf.cell_mut((outer_right_x, y)) {
+                cell.set_char(' ');
+            }
+        }
+    }
+}
+
+/// Clears `rect` for a floating modal/popup overlay after sanitizing any
+/// double-width background glyphs straddling its left or right border (`CS-6.7`).
+pub(crate) fn clear_modal_overlay(frame: &mut Frame<'_>, rect: Rect) {
+    sanitize_overlay_edges(frame.buffer_mut(), rect);
+    frame.render_widget(ratatui::widgets::Clear, rect);
+}
+
 /// Registers a clickable `ModalButton::Cancel` hit target for a right-aligned `[Esc]` hint inside `row_rect`.
 pub(crate) fn register_right_esc_cancel(
     ctx: &mut RenderContext<'_>,

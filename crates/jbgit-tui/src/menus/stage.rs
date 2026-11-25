@@ -565,6 +565,10 @@ pub fn stage_diff_menu_items(state: &AppState) -> Vec<ContextMenuItem> {
         .current_diff()
         .is_some_and(|d| d.is_line_staging_disabled())
         || state.stage_workbench.diff_whitespace() != jbgit_core::WhitespaceMode::Default;
+    let is_untracked = state
+        .stage_workbench
+        .current_diff()
+        .is_some_and(|d| d.is_untracked());
     let editable =
         matches!(side, Some(StageDiffSide::Staged | StageDiffSide::Unstaged)) && !is_readonly_type;
     let staged = side == Some(StageDiffSide::Staged);
@@ -613,7 +617,14 @@ pub fn stage_diff_menu_items(state: &AppState) -> Vec<ContextMenuItem> {
             rollback_sc.as_deref(),
             vec![Action::StageDiffRollbackSelection],
         )
-        .enabled_if(editable && !staged, i18n.t("menu.stage.only_unstaged_rollback")),
+        .enabled_if(
+            editable && !staged && !is_untracked,
+            if is_untracked {
+                i18n.t("menu.stage.untracked_no_rollback")
+            } else {
+                i18n.t("menu.stage.only_unstaged_rollback")
+            },
+        ),
         run(
             i18n.t("menu.stage.selection_history"),
             Some('h'),
@@ -639,6 +650,10 @@ pub fn stage_hunk_menu_items(state: &AppState, hunk_idx: usize) -> Vec<ContextMe
         .current_diff()
         .is_some_and(|d| d.is_line_staging_disabled())
         || state.stage_workbench.diff_whitespace() != jbgit_core::WhitespaceMode::Default;
+    let is_untracked = state
+        .stage_workbench
+        .current_diff()
+        .is_some_and(|d| d.is_untracked());
     let editable =
         matches!(side, Some(StageDiffSide::Staged | StageDiffSide::Unstaged)) && !is_readonly_type;
     let staged = side == Some(StageDiffSide::Staged);
@@ -687,8 +702,12 @@ pub fn stage_hunk_menu_items(state: &AppState, hunk_idx: usize) -> Vec<ContextMe
             )],
         )
         .enabled_if(
-            editable && !staged,
-            i18n.t("menu.stage.only_unstaged_hunk_rollback"),
+            editable && !staged && !is_untracked,
+            if is_untracked {
+                i18n.t("menu.stage.untracked_no_rollback")
+            } else {
+                i18n.t("menu.stage.only_unstaged_hunk_rollback")
+            },
         ),
         ContextMenuItem::separator(),
     ];

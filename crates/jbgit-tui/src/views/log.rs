@@ -367,9 +367,18 @@ fn render_filter_bar(
         true
     };
 
-    // Text box.
+    let any_chip_active = FilterField::ALL.iter().any(|&f| filter.field_active(f))
+        || filter.spec.no_merges
+        || filter.spec.range.is_some();
+
+    // Text box: stay slightly trimmer when unfocused & empty while chip filters are active
+    // so active chips always have room at 140x40–180x40.
     let text = &filter.spec.text;
-    let box_w = ((area.width as usize) / 3).clamp(10, 32);
+    let box_w = if text.query.is_empty() && !filter.editing_text && any_chip_active {
+        ((area.width as usize) / 4).clamp(10, 20)
+    } else {
+        ((area.width as usize) / 3).clamp(10, 32)
+    };
     let (content, fg) = if text.query.is_empty() && !filter.editing_text {
         (
             state.i18n.t("view.log.search_placeholder").to_string(),
@@ -467,11 +476,44 @@ fn render_filter_bar(
         );
     }
 
+    // Render active filter chips ahead of inactive `All` chips so active filters
+    // (Date, Paths, --no-merges, etc.) are never silently dropped on narrow panes.
+    let mut active_fields: Vec<FilterField> = Vec::new();
+    let mut inactive_fields: Vec<FilterField> = Vec::new();
     for field in FilterField::ALL {
-        let active = filter.field_active(field);
-        let mut label = if !active {
-            state.i18n.t("filter.all").to_string()
-        } else if field == FilterField::Date {
+        if filter.field_active(field) {
+            active_fields.push(field);
+        } else {
+            inactive_fields.push(field);
+        }
+    }
+
+    let nm_on = filter.spec.no_merges;
+    let nm_chip = format!(" [{}] ", state.i18n.t("filter.no_merges"));
+    let nm_active_style = Style::default()
+        .fg(theme.fg_bright)
+        .bg(theme.border_focused)
+        .add_modifier(Modifier::BOLD);
+    let nm_inactive_style = Style::default().fg(theme.fg_muted).bg(theme.bg_panel);
+
+    let total_active = active_fields.len() + usize::from(nm_on);
+    let mut processed_active = 0usize;
+    let mut hidden_active = 0usize;
+
+    let active_chip_style = Style::default()
+        .fg(theme.fg_accent_link)
+        .bg(theme.bg_panel);
+    let clear_style = Style::default().fg(theme.fg_muted).bg(theme.bg_panel);
+
+    for field in active_fields {
+        processed_active += 1;
+        let more_active_after = processed_active < total_active;
+        let overflow_reserve: u16 = if hidden_active > 0 || more_active_after {
+            6
+        } else {
+            0
+        };
+        let mut label = if field == FilterField::Date {
             state.i18n.format_date_filter_label(&filter.field_label(field))
         } else {
             filter.field_label(field)
@@ -480,61 +522,149 @@ fn render_filter_bar(
         {
             label.push('…');
         }
-        let chip = state.i18n.t_fmt(
+        let field_title = state.i18n.filter_field_title(field);
+        let full_chip = state.i18n.t_fmt(
             "filter.chip",
             &[
-                ("field", state.i18n.filter_field_title(field)),
+                ("field", field_title),
                 ("label", &truncate_to_width(&label, 18)),
             ],
         );
-        let style = Style::default()
-            .fg(if active {
-                theme.fg_accent_link
+        let avail_with_ovf = right.saturating_sub(x + reserve + overflow_reserve) as usize;
+        let avail_no_ovf = right.saturating_sub(x + reserve) as usize;
+        let budget = if !more_active_after && hidden_active == 0 {
+            avail_no_ovf
+        } else {
+            avail_with_ovf
+        };
+        let chip = if full_chip.width() < budget {
+            Some(full_chip)
+        } else {
+            let empty_chip =
+                state
+                    .i18n
+                    .t_fmt("filter.chip", &[("field", field_title), ("label", "")]);
+            let overhead = empty_chip.width() + 1;
+            if budget >= overhead + 3 {
+                Some(state.i18n.t_fmt(
+                    "filter.chip",
+                    &[
+                        ("field", field_title),
+                        ("label", &truncate_to_width(&label, budget - overhead)),
+                    ],
+                ))
             } else {
-                theme.fg_primary
-            })
-            .bg(theme.bg_panel);
+                None
+            }
+        };
+        if let Some(chip_text) = chip {
+            if put(
+                frame,
+                &mut x,
+                &chip_text,
+                active_chip_style,
+                Some(HitTarget::FilterChip(field)),
+                reserve + 1,
+            ) {
+                put(
+                    frame,
+                    &mut x,
+                    "×",
+                    clear_style,
+                    Some(HitTarget::FilterClear(field)),
+                    reserve,
+                );
+            } else {
+                hidden_active += 1;
+            }
+        } else {
+            hidden_active += 1;
+        }
+    }
+
+    if nm_on {
+        let ovf_res = if hidden_active > 0 { 6 } else { 0 };
+        if !put(
+            frame,
+            &mut x,
+            &nm_chip,
+            nm_active_style,
+            Some(HitTarget::FilterNoMergesToggle),
+            reserve + ovf_res,
+        ) {
+            hidden_active += 1;
+        }
+    }
+
+    if hidden_active > 0 {
+        let ovf_pill = format!(" +{hidden_active}× ");
+        put(
+            frame,
+            &mut x,
+            &ovf_pill,
+            nm_active_style,
+            Some(HitTarget::FilterClearAll),
+            reserve,
+        );
+    }
+
+    // Inactive chips fill remaining space; condense `Field: All ▾` -> `Field▾` when narrow
+    // so Date / Paths / --no-merges remain reachable at 140x40.
+    let all_label = state.i18n.t("filter.all");
+    let inactive_style = Style::default().fg(theme.fg_primary).bg(theme.bg_panel);
+    let full_inactive_w: usize = inactive_fields
+        .iter()
+        .map(|&field| {
+            state
+                .i18n
+                .t_fmt(
+                    "filter.chip",
+                    &[
+                        ("field", state.i18n.filter_field_title(field)),
+                        ("label", all_label),
+                    ],
+                )
+                .width()
+        })
+        .sum::<usize>()
+        + if nm_on { 0 } else { nm_chip.width() };
+    let avail_inactive = right.saturating_sub(x + reserve) as usize;
+    let condense_inactive = full_inactive_w > avail_inactive;
+
+    for field in inactive_fields {
+        let chip = if condense_inactive {
+            format!(" {}▾", state.i18n.filter_field_title(field))
+        } else {
+            state.i18n.t_fmt(
+                "filter.chip",
+                &[
+                    ("field", state.i18n.filter_field_title(field)),
+                    ("label", all_label),
+                ],
+            )
+        };
         if !put(
             frame,
             &mut x,
             &chip,
-            style,
+            inactive_style,
             Some(HitTarget::FilterChip(field)),
             reserve,
         ) {
             break;
         }
-        if active {
-            put(
-                frame,
-                &mut x,
-                "×",
-                Style::default().fg(theme.fg_muted).bg(theme.bg_panel),
-                Some(HitTarget::FilterClear(field)),
-                reserve,
-            );
-        }
     }
 
-    // `--no-merges` filter toggle chip (`NoMergesFilterAction`).
-    let nm_on = filter.spec.no_merges;
-    let nm_chip = format!(" [{}] ", state.i18n.t("filter.no_merges"));
-    let nm_style = if nm_on {
-        Style::default()
-            .fg(theme.fg_bright)
-            .bg(theme.border_focused)
-            .add_modifier(Modifier::BOLD)
-    } else {
-        Style::default().fg(theme.fg_muted).bg(theme.bg_panel)
-    };
-    put(
-        frame,
-        &mut x,
-        &nm_chip,
-        nm_style,
-        Some(HitTarget::FilterNoMergesToggle),
-        reserve,
-    );
+    if !nm_on {
+        put(
+            frame,
+            &mut x,
+            &nm_chip,
+            nm_inactive_style,
+            Some(HitTarget::FilterNoMergesToggle),
+            reserve,
+        );
+    }
 }
 
 fn render_commits_table(

@@ -2434,7 +2434,7 @@ impl AppState {
                 {
                     let msg = outcome.prepared_message.clone().unwrap_or_default();
                     let now = self.now();
-                    self.stage_workbench.apply_external_message(&msg, now);
+                    self.stage_workbench.apply_prepared_message(&msg, now);
                     effects.extend(self.dispatch(Action::SwitchTab(WorkspaceTab::Commit)));
                     let text = self
                         .i18n
@@ -2456,7 +2456,7 @@ impl AppState {
                 {
                     let msg = outcome.prepared_message.clone().unwrap_or_default();
                     let now = self.now();
-                    self.stage_workbench.apply_external_message(&msg, now);
+                    self.stage_workbench.apply_prepared_message(&msg, now);
                     effects.extend(self.dispatch(Action::SwitchTab(WorkspaceTab::Commit)));
                     let text = self
                         .i18n
@@ -2647,6 +2647,8 @@ impl AppState {
                             )),
                         });
                     } else {
+                        let now = self.now();
+                        self.stage_workbench.clear_stale_prepared_message(now);
                         self.pending_update_stash_restore = true;
                         self.restore_pending_update_stash(false, effects);
                     }

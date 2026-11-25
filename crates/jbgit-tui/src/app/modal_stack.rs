@@ -35,6 +35,9 @@ pub enum ModalLayer {
         field: FilterField,
         query: String,
         selected: usize,
+        /// Whether the user explicitly navigated suggestions via `Up`/`Down` or scroll,
+        /// so `Enter` applies the highlighted candidate instead of treating empty input as `All`.
+        selection_touched: bool,
     },
     /// Layer 2: `Ctrl+G` Go to Hash / Branch / Tag / `HEAD~N`.
     GoToRevision {
@@ -125,6 +128,7 @@ impl ModalLayer {
                 field,
                 query: initial_query,
                 selected: 0,
+                selection_touched: false,
             },
             PopupKind::GoToRevision => Self::GoToRevision {
                 query: initial_query,
@@ -142,12 +146,19 @@ impl ModalLayer {
         match self {
             Self::BranchesPopup { query, selected }
             | Self::ShortcutsHelp { query, selected }
-            | Self::FilterEditor {
-                query, selected, ..
-            }
             | Self::CommitHistory { query, selected } => {
                 *query = next_query;
                 *selected = next_selected;
+            }
+            Self::FilterEditor {
+                query,
+                selected,
+                selection_touched,
+                ..
+            } => {
+                *query = next_query;
+                *selected = next_selected;
+                *selection_touched = false;
             }
             Self::GoToRevision { query } => {
                 *query = next_query;
@@ -157,6 +168,37 @@ impl ModalLayer {
             }
             _ => {}
         }
+    }
+
+    pub fn select_popup_candidate(&mut self, next_selected: usize) {
+        match self {
+            Self::BranchesPopup { selected, .. }
+            | Self::ShortcutsHelp { selected, .. }
+            | Self::CommitHistory { selected, .. }
+            | Self::ChooseParent { selected }
+            | Self::ChooseChild { selected } => {
+                *selected = next_selected;
+            }
+            Self::FilterEditor {
+                selected,
+                selection_touched,
+                ..
+            } => {
+                *selected = next_selected;
+                *selection_touched = true;
+            }
+            _ => {}
+        }
+    }
+
+    pub fn filter_editor_selection_touched(&self) -> bool {
+        matches!(
+            self,
+            Self::FilterEditor {
+                selection_touched: true,
+                ..
+            }
+        )
     }
 
     pub fn popup_kind(&self) -> Option<PopupKind> {

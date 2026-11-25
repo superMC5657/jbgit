@@ -215,18 +215,42 @@ fn route_modal_key(key: KeyEvent, state: &AppState) -> Vec<Action> {
         | ModalLayer::CommitHistory { .. } => {
             let kind = top.popup_kind().expect("popup kind");
             let (query_ref, selected_val) = top.popup_query_and_selected().unwrap_or(("", 0));
+            let selection_touched = top.filter_editor_selection_touched();
             let query = query_ref.to_string();
             let selected = selected_val;
             match key.code {
                 KeyCode::Esc => vec![Action::PopModal],
                 KeyCode::Enter => match kind {
-                    PopupKind::FilterEditor(field) => vec![
-                        Action::PopModal,
-                        Action::ApplyFilterField {
-                            field,
-                            expr: query,
-                        },
-                    ],
+                    PopupKind::FilterEditor(field) => {
+                        let expr = if selection_touched {
+                            let snap = state.repo_snapshot.as_deref();
+                            let has_fav = !state
+                                .log
+                                .favorite_branch_names(state.repo_snapshot.as_ref())
+                                .is_empty();
+                            let hist = state.log.filter.history_for(field);
+                            let suggestions = filter_suggestions_with_context(
+                                field, snap, &query, has_fav, hist,
+                            );
+                            if let Some(s) =
+                                suggestions.get(selected.min(suggestions.len().saturating_sub(1)))
+                            {
+                                if query.trim().is_empty() {
+                                    s.clone()
+                                } else {
+                                    complete_last_token(&query, s).trim_end().to_string()
+                                }
+                            } else {
+                                query
+                            }
+                        } else {
+                            query
+                        };
+                        vec![
+                            Action::PopModal,
+                            Action::ApplyFilterField { field, expr },
+                        ]
+                    }
                     PopupKind::GoToRevision if key.modifiers.contains(KeyModifiers::ALT) => {
                         vec![Action::PopModal, Action::BrowseRevisionExpr(query)]
                     }
@@ -334,17 +358,15 @@ fn route_modal_key(key: KeyEvent, state: &AppState) -> Vec<Action> {
                 }
                 KeyCode::Up => {
                     let max_idx = popup_candidate_count(kind, &query, state).saturating_sub(1);
-                    vec![Action::PopupSetState {
-                        query,
-                        selected: selected.min(max_idx).saturating_sub(1),
-                    }]
+                    vec![Action::PopupSelectCandidate(
+                        selected.min(max_idx).saturating_sub(1),
+                    )]
                 }
                 KeyCode::Down => {
                     let max_idx = popup_candidate_count(kind, &query, state).saturating_sub(1);
-                    vec![Action::PopupSetState {
-                        query,
-                        selected: selected.saturating_add(1).min(max_idx),
-                    }]
+                    vec![Action::PopupSelectCandidate(
+                        selected.saturating_add(1).min(max_idx),
+                    )]
                 }
                 KeyCode::Char(ch)
                     if !key.modifiers.contains(KeyModifiers::CONTROL)

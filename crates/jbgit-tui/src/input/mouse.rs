@@ -274,10 +274,7 @@ fn route_mouse_scroll(col: u16, row: u16, delta: isize, state: &AppState) -> Vec
                         let step = delta / 3;
                         let next = (selected.min(max_idx) as isize + step)
                             .clamp(0, max_idx as isize) as usize;
-                        return vec![Action::PopupSetState {
-                            query: query_ref.to_string(),
-                            selected: next,
-                        }];
+                        return vec![Action::PopupSelectCandidate(next)];
                     }
                 }
                 Some(crate::app::ModalLayer::Dialog(d))
@@ -405,6 +402,7 @@ fn route_mouse_left_down(
             }]
         }
         HitTarget::FilterClear(field) => vec![Action::ClearFilterField(field)],
+        HitTarget::FilterClearAll => vec![Action::ClearAllFilters],
         HitTarget::FilterRangeClear => vec![Action::ClearRangeFilter],
         HitTarget::FilterRestoreDirHistory => vec![Action::RestorePreDirHistoryFilter],
         HitTarget::FilterPresentation => vec![Action::OpenContextMenu {

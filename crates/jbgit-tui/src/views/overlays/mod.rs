@@ -65,7 +65,18 @@ fn render_modal_layer(
         | ModalLayer::CommitHistory { .. } => {
             let kind = layer.popup_kind().expect("popup kind");
             let (query, selected) = layer.popup_query_and_selected().unwrap_or(("", 0));
-            popups::render_floating_popup(frame, screen, state, ctx, kind, query, selected, z);
+            let selection_touched = layer.filter_editor_selection_touched();
+            popups::render_floating_popup(
+                frame,
+                screen,
+                state,
+                ctx,
+                kind,
+                query,
+                selected,
+                selection_touched,
+                z,
+            );
         }
         ModalLayer::CommitMessage {
             oid,

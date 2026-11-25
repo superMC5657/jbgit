@@ -3,7 +3,7 @@ use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph};
+use ratatui::widgets::{Block, Borders, Paragraph};
 use unicode_width::UnicodeWidthStr;
 
 use crate::app::{AppState, RenderContext};
@@ -168,7 +168,7 @@ pub fn render_hover_tooltip(
     };
     let rect = Rect::new(x, y, width, height);
 
-    frame.render_widget(Clear, rect);
+    crate::views::clear_modal_overlay(frame, rect);
     let block = Block::default()
         .title(Span::styled(
             title,

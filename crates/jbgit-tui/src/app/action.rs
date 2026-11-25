@@ -88,6 +88,9 @@ pub enum Action {
         query: String,
         selected: usize,
     },
+    /// Navigates candidate highlight inside a popup without editing `query`
+    /// (marks `FilterEditor` selection as explicitly chosen so `Enter` applies it).
+    PopupSelectCandidate(usize),
     ContextMenuSetSelected {
         depth: u8,
         idx: usize,
@@ -158,7 +161,6 @@ pub enum Action {
         expr: String,
     },
     ClearFilterField(FilterField),
-    #[cfg_attr(not(test), allow(dead_code))]
     ClearAllFilters,
     TogglePresentation(PresentationToggle),
     SetGraphRenderer(crate::graph::GraphRendererMode),

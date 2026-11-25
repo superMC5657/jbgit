@@ -190,3 +190,8 @@ Hard-won engineering invariants for `jbgit`, distilled from production and audit
 - **Do:** Keep `en-US.toml` and `zh-CN.toml` at 100% key parity—including every `help.action.*` key—format parameterized templates via `t_fmt`, and derive or sync displayed shortcut hints from active keymaps. Verify no higher-priority scope shadows a lower-priority binding across `default`, `jetbrains`, and `vim` presets; keep context-menu mnemonics unique and avoid `'j'`/`'k'` (reserved for menu navigation). Annotate optional string config fields defaulting to `""` with `deserialize_opt_non_empty`, and keep `jbgit.default.toml` and `docs/manual.md` aligned with shipped bindings and feature gates.
 - **Don't:** Leave Chinese fallbacks in `en-US` help descriptions, render raw `{placeholder}` strings, hardcode drifted shortcut letters in locale text, or ship shadowed preset bindings.
 - **Why:** Guarantees consistent UX across locales, presets, and documentation, and catches regressions automatically in review and tests.
+
+### CS-6.7 Always clear floating overlays via `views::clear_modal_overlay`
+- **Do:** Call `crate::views::clear_modal_overlay(frame, rect)` before rendering any floating modal, popup, context menu, tooltip, or which-key overlay. It sanitizes double-width background glyphs (CJK/emoji) straddling `rect.x - 1` and `rect.right()` before invoking `Clear`.
+- **Don't:** Call `frame.render_widget(Clear, rect)` directly in modal or popup renderers.
+- **Why:** When a 2-column CJK character sits at `(rect.x - 1, y)`, `ratatui`'s `Buffer::diff` emits it and skips `(rect.x, y)`, erasing the overlay's left border (`╭`/`│`).

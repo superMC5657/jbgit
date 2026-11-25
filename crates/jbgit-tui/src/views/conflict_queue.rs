@@ -10,7 +10,7 @@ use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph};
+use ratatui::widgets::{Block, BorderType, Borders, Paragraph};
 use unicode_width::UnicodeWidthStr;
 
 use crate::app::{AppState, ConflictQueueState, RenderContext, ScrollPane};
@@ -48,7 +48,7 @@ pub fn render_conflict_queue_modal(
         height,
     );
     draw_shadow(frame, screen, rect);
-    frame.render_widget(Clear, rect);
+    crate::views::clear_modal_overlay(frame, rect);
 
     let i18n = &state.i18n;
     let unres_s = cq.unresolved_count().to_string();

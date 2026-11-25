@@ -8,7 +8,7 @@ use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph};
+use ratatui::widgets::{Block, BorderType, Borders, Paragraph};
 use unicode_width::UnicodeWidthStr;
 
 use crate::app::{Action, AppState, ModalLayer, RenderContext, ScrollPane, ScrollViewport};
@@ -211,7 +211,7 @@ pub fn render_remotes_modal(
     let list = remotes(state);
     let rect = remotes_modal_rect(screen, list.len().max(1));
     draw_shadow(frame, screen, rect);
-    frame.render_widget(Clear, rect);
+    crate::views::clear_modal_overlay(frame, rect);
     let title = format!(" {} ", ctx.t("view.remotes.title"));
     let block = Block::default()
         .title(Span::styled(
