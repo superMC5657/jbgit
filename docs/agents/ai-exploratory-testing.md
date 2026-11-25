@@ -14,17 +14,23 @@
 2. **Sweep scenarios (dual verification)**:
    Exercise every scenario in Section 3, plus `hover` and `resize` (`80x24`, `50x16`, `35x8`, `140x40`) stress checks.
    - **Session isolation**: Pass a unique `--session-dir` (for example `.pilot-full`, `.pilot-conflict`) per concurrent scenario or subagent.
+   - **No eyeballing coordinates (CJK wide-char safety)**: CJK glyphs occupy 2 terminal columns (while ASCII and NerdFont icons occupy 1), so counting character positions from plain `screen` output frequently misses targets. Prefer `click-text` / `rclick-text` / `hover-text` for labeled buttons, menu items, and pills (they error on ambiguous multi-matches unless `--row` or `--index` is specified and print `TARGET col=... row=... span=A..=B match=k/n`); whenever using raw `click` / `rclick` / `hover <col> <row>`, first verify the exact display columns via `find "<text>"` or `inspect-row <row>`.
    - **Dual verification**: After every state-mutating UI action, verify both terminal output (`screen`, `colors`, `inspect-row`, `clipboard`) and on-disk Git state (`git -C <repo> status` / `log` / `rev-parse`).
    - **Done when**: Every scenario and check in Section 3 is recorded as pass or finding.
 
-3. **Classify & report findings**:
-   Write all findings to `.pilot/qa-report.md` (create formal `.scratch/` tickets only when explicitly requested per [issue-tracker.md](./issue-tracker.md)):
+3. **Classify, verify & report findings (Anti-False-Positive Gates)**:
+   Write verified findings to `.pilot/qa-report.md` (create formal `.scratch/` tickets only when explicitly requested per [issue-tracker.md](./issue-tracker.md)):
    - **P0 (Blocker)**: Panic, crash, hang/freeze, silent data loss, credential leak, or corrupted Git state.
    - **P1 (Major)**: Broken core workflow, misleading or failing Git op, unreachable modal/control, or wrong repository mutation.
    - **P2 (Minor)**: Layout clipping, CJK truncation/border shift, wrong shortcut hint or stale status notice, hover/theme mismatch.
    - **P3 (Polish)**: Rough copy/translation or minor alignment glitches.
-   Include for each entry: severity + title, scenario + launch flags, exact `jbgit-pilot` command sequence, screen/`colors`/`git -C` evidence, and expected vs actual behavior.
-   **Done when**: `.pilot/qa-report.md` accounts for every issue from Step 2.
+   - **Mandatory verification before filing any finding**:
+     1. **Mouse / hover findings**: Confirm with `click-text` / `hover-text` or include `inspect-row <row>` / `find` proof that the clicked/hovered `(col, row)` actually landed inside the target's `SPAN cols=A..=B` (never report a backdrop click as a broken menu item).
+     2. **Disabled menu / wrong-target findings**: Run `inspect-row` on the focused tree/list to verify which row actually holds selection highlight (`bg=#2E436E`), rather than assuming selection from a preview pane.
+     3. **Scope / persistence / by-design check**: Before filing missing highlights, remembered options, or conditional controls as bugs, check [`docs/manual.md`](../manual.md) or the implementing source code to verify the behavior is not an intentional documented guard.
+     4. **P0 / P1 three-proof gate**: Every P0 or P1 finding **must** include (a) reproduction in a **fresh isolated `--session-dir`** (ruling out state carryover from earlier tests), (b) exact executed `git ...` command lines captured from `[4] Console` when a Git operation is involved, and (c) the offending source file/line or explicit note if the source path contradicts the observation. Unverified observations must be re-checked or downgraded rather than reported as P1.
+   Include for each entry: severity + title, scenario + launch flags, exact `jbgit-pilot` command sequence, screen/`colors`/`inspect-row`/`git -C` evidence, and expected vs actual behavior.
+   **Done when**: `.pilot/qa-report.md` accounts for every verified issue from Step 2 and passes all four gates above.
 
 4. **Fix & regression-lock loop** *(only when asked to fix)*:
    Fix root cause in `crates/` (per `CODING_STANDARDS.md`) → add fast `TestBackend`/engine regression test → re-verify in `jbgit-pilot` → pass `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets -- -D warnings`, and `cargo test --workspace --locked`.
@@ -46,7 +52,10 @@ Launch the server **with `IsDaemon: true`** (all runtime artifacts stay under `-
 .\target\debug\jbgit-pilot.exe screen
 .\target\debug\jbgit-pilot.exe key Ctrl+s                    # also: b, Down Down Enter, Shift+F10, F8, Alt+r
 .\target\debug\jbgit-pilot.exe type "fix: test commit"
-.\target\debug\jbgit-pilot.exe find "Commit"                 # returns 0-based (col, row)
+.\target\debug\jbgit-pilot.exe find "Commit"                 # returns 0-based (col, end_col, row)
+.\target\debug\jbgit-pilot.exe click-text "紧凑引用胶囊视图" [--row 5] [--index 0] [--ctrl] [--shift] [--alt]
+.\target\debug\jbgit-pilot.exe rclick-text "src/auth.rs" [--row 7] [--index 0]
+.\target\debug\jbgit-pilot.exe hover-text "分支▾" [--row 3] [--index 0]
 .\target\debug\jbgit-pilot.exe hover 12 1
 .\target\debug\jbgit-pilot.exe click 12 1 [--ctrl] [--shift] [--alt]
 .\target\debug\jbgit-pilot.exe rclick 45 5 [--ctrl] [--shift] [--alt]
@@ -60,10 +69,10 @@ Launch the server **with `IsDaemon: true`** (all runtime artifacts stay under `-
 
 ### `full` (default `--sandbox` / `--scenario full`)
 Multi-branch DAG (`main` ahead of `origin/main` by 3, `feature/login`, `feature/ui-cards` merge, `bugfix/scroll-edge`, remote-only `origin/feature/remote-only`, pushed tag `v0.1.0`, unpushed annotated tag `v0.2.0-rc1`), `feature/linear-chain` (5 commits), `feature/pull-me` (2 behind remote), `feature/diverged` (diverged from remote), `feature/cherry-source` (cherry-picked `feature/login` + `src/cherry_helper.rs`), renamed history (`src/legacy_auth.rs -> src/auth.rs`), nested `src/components/header.rs`, `.pilot/sample.patch` + `.pilot/conflict.patch` (paths exported in `ready.json`), 2 stashes (`wip: refactor stash test`, `wip: older stash`), `staged_partial.txt` (partially staged), `src/main.rs` (multi-hunk), `src/wide_lines.rs` (indent + ~170-col edit), `assets/logo.bin` (binary edit), `scratch_note.txt` (untracked), `debug_trace.log` (ignored).
-- **Log (`2`)**: Navigate (`j`/`k`), Diff Preview (`Ctrl+D`), Zoom Diff (`F4`, press `P` on `merge feature/ui-cards` to switch parent), click parent links, copy hash (`y` + `clipboard`), filters (text/regex/branch/user/date/path + `show_only_affected_changes`), context menu (`.`), non-contiguous `click --ctrl` comparison (`Compare Versions` + swap direction), Reflog modal, LinearBek toggle, My Commits / Cherry-Picked highlighters (`feature/cherry-source`).
+- **Log (`2`)**: Navigate (`j`/`k`), Diff Preview (`Ctrl+D`), Zoom Diff (`F4`, press `P` on `merge feature/ui-cards` to switch parent), click parent links, copy hash (`y` + `clipboard`), filters (text/regex/branch/user/date/path + `show_only_affected_changes`), context menu (`.`), non-contiguous `click --ctrl` comparison (`Compare Versions` + swap direction), Reflog modal, LinearBek toggle, My Commits / Cherry-Picked highlighters (checkout `feature/cherry-source` and filter to single non-current branch `feature/login` or `Compare with Current` — by design, `Already Cherry-Picked` only runs `git cherry` in single-branch filter or compare mode).
 - **Log Changes Tree & File History (`H`)**: Open `.` / `Shift+F10` / `rclick` on files & `src/components` (View/Zoom Diff `F4`, Compare with Local `l`, File/Directory History `h`/`H`, Filter Log by Path `f`, Get Version `g`, Copy Relative Path `c`, Copy File Patch `p` + `clipboard`). In File History on `src/auth.rs`, verify `← src/legacy_auth.rs`, toggle `--follow` (`f`), range diff (`Shift+Down`), Side-by-Side (`S`), Context (`w`), Zoom (`z`/`F4`), narrow vertical split (`resize 80 24`), `Enter` jump to Log, `Esc`.
 - **Commit / Stage (`1`) & Diff**: Stage/unstage (`Space`), folder expand/collapse, toggle Ignored (`debug_trace.log`), Diff pane (`Tab`), `[`/`]` hunk nav, hunk/line `Space`, visual mode (`v`), 3-way inspector (`i` on `staged_partial.txt`), rollback (`d`) + `Ctrl+Z`, commit editor (`c`), Amend (`A`), Sign-off (`Alt+s`), Commit (`Ctrl+S`) + `git log -1`/`status`. On `src/wide_lines.rs`, cycle whitespace modes, horizontal scroll vs soft-wrap, and inline diff search (`/`/`Ctrl+F`); on `assets/logo.bin`, verify non-LFS binary summary card.
-- **Branches (`b` / `Ctrl+~`), Pull/Rebase, Push (`P`), Update (`Alt+U`) & Remotes (`Alt+R`)**: Speed search, favorite (`Space`), submenu (`Enter`), checkout, create, rename (`F2`), delete (`d`/`Del`), two-branch compare; Pull & Rebase option dialogs; Merge options (`--no-ff`/`--ff-only`/`--squash`); Fetch `feature/pull-me` (`f` → `↓2`) & Pull (`p`); Push dialog on `main`/`feature/diverged` (outgoing commits, target edit, tags, `--force-with-lease`, Push Rejected retry); delete local/remote tags & push single tag; `Alt+U` Update Project; `Alt+R` remote CRUD.
+- **Branches (`b` / `Ctrl+~`), Pull/Rebase, Push (`P`), Update (`Alt+U`) & Remotes (`Alt+R`)**: Speed search, favorite (`Space`), submenu (`Enter`), checkout, create, rename (`F2`), delete (`d`/`Del`), two-branch compare; Pull & Rebase option dialogs; Merge options (`--no-ff`/`--ff-only`/`--squash`; note options persist per repo in `<common_dir>/jbgit-merge-options` by design); Fetch `feature/pull-me` (`f` → `↓2`) & Pull (`p`); Push dialog on `main`/`feature/diverged` (outgoing commits, target edit, tags, `--force-with-lease`, Push Rejected retry); delete local/remote tags & push single tag; `Alt+U` Update Project; `Alt+R` remote CRUD.
 - **Stash (`3`), Console (`4`), Annotate (`Alt+G`), Collapse, Patch (`Alt+P`) & Tree Browser (`Alt+T`)**: Stash inspect/apply (`a`)/pop (`o`)/branch (`B`)/drop (`d`)/clear (`C`); Console `p` probe, Output Detail (`Enter`), `gg`/`G`/`Ctrl+D`/`Ctrl+U` clamping & severity colors; Annotate diff (`d`)/whitespace (`w`)/moves (`m`)/prev rev (`p`)/`Enter`/line-range `H` (`git log -L`); collapse/expand `feature/linear-chain` (`Ctrl+Shift+-`/`=` or Vim `zc`/`zo`/`zM`/`zR`); apply `sample.patch` cleanly and verify `conflict.patch` surfaces check failure + `--3way`; browse revision tree via `Alt+T`.
 - **Hover & Resize Stress**: `hover` toolbar buttons/header pills; `resize` `80x24`, `50x16`, `35x8` (too-small guard), and back to `140x40` for panics, clipped modals, or CJK misalignment.
 

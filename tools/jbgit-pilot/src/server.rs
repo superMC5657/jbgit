@@ -10,13 +10,13 @@ use anyhow::{Context, Result, bail};
 use portable_pty::{CommandBuilder, PtySize, native_pty_system};
 
 use crate::keys::{encode_key, encode_sgr_click, encode_sgr_hover, encode_sgr_scroll};
-use crate::protocol::{CommandEnvelope, PilotAction, ResponseEnvelope};
+use crate::protocol::{CommandEnvelope, PilotAction, ResolvedTarget, ResponseEnvelope};
 use crate::sandbox::{
     PreparedSandbox, prepare_sandbox, write_custom_test_config, write_recent_repos,
 };
 use crate::screen::{
     Osc52ClipboardScanner, build_screen_resp, find_text_matches, inspect_row_spans,
-    make_error_resp, screen_has_content, summarize_palette,
+    make_error_resp, resolve_text_target, screen_has_content, summarize_palette,
 };
 
 pub use crate::sandbox::SandboxScenario;
@@ -326,27 +326,45 @@ fn handle_action(
             refresh_exit(child, exit_code);
             Ok(build_screen_resp(id, shared, *exit_code))
         }
-        PilotAction::TypeText { text, settle_ms } => {
-            let sent_at = Instant::now();
-            writer.write_all(text.as_bytes())?;
-            writer.flush()?;
-            wait_after_input(shared, sent_at, settle_ms, 2500);
-            refresh_exit(child, exit_code);
-            Ok(build_screen_resp(id, shared, *exit_code))
-        }
+        PilotAction::TypeText { text, settle_ms } => send_bytes_and_respond(
+            id,
+            text.as_bytes(),
+            settle_ms,
+            None,
+            writer,
+            shared,
+            child,
+            exit_code,
+        ),
         PilotAction::Click {
             pos,
             button,
             modifiers,
             settle_ms,
         } => {
-            let sent_at = Instant::now();
             let bytes = encode_sgr_click(pos.col, pos.row, button, modifiers);
-            writer.write_all(&bytes)?;
-            writer.flush()?;
-            wait_after_input(shared, sent_at, settle_ms, 2500);
-            refresh_exit(child, exit_code);
-            Ok(build_screen_resp(id, shared, *exit_code))
+            send_bytes_and_respond(
+                id, &bytes, settle_ms, None, writer, shared, child, exit_code,
+            )
+        }
+        PilotAction::ClickText {
+            target,
+            button,
+            modifiers,
+            settle_ms,
+        } => {
+            let resolved = resolve_text_target(shared, &target)?;
+            let bytes = encode_sgr_click(resolved.pos.col, resolved.pos.row, button, modifiers);
+            send_bytes_and_respond(
+                id,
+                &bytes,
+                settle_ms,
+                Some(resolved),
+                writer,
+                shared,
+                child,
+                exit_code,
+            )
         }
         PilotAction::Scroll {
             up,
@@ -354,22 +372,30 @@ fn handle_action(
             steps,
             settle_ms,
         } => {
-            let sent_at = Instant::now();
             let bytes = encode_sgr_scroll(pos.col, pos.row, up, steps);
-            writer.write_all(&bytes)?;
-            writer.flush()?;
-            wait_after_input(shared, sent_at, settle_ms, 2500);
-            refresh_exit(child, exit_code);
-            Ok(build_screen_resp(id, shared, *exit_code))
+            send_bytes_and_respond(
+                id, &bytes, settle_ms, None, writer, shared, child, exit_code,
+            )
         }
         PilotAction::Hover { pos, settle_ms } => {
-            let sent_at = Instant::now();
             let bytes = encode_sgr_hover(pos.col, pos.row);
-            writer.write_all(&bytes)?;
-            writer.flush()?;
-            wait_after_input(shared, sent_at, settle_ms, 2500);
-            refresh_exit(child, exit_code);
-            Ok(build_screen_resp(id, shared, *exit_code))
+            send_bytes_and_respond(
+                id, &bytes, settle_ms, None, writer, shared, child, exit_code,
+            )
+        }
+        PilotAction::HoverText { target, settle_ms } => {
+            let resolved = resolve_text_target(shared, &target)?;
+            let bytes = encode_sgr_hover(resolved.pos.col, resolved.pos.row);
+            send_bytes_and_respond(
+                id,
+                &bytes,
+                settle_ms,
+                Some(resolved),
+                writer,
+                shared,
+                child,
+                exit_code,
+            )
         }
         PilotAction::Clipboard => {
             let clip = shared
@@ -473,6 +499,27 @@ fn handle_action(
         Ok(r) => r,
         Err(e) => make_error_resp(id, e.to_string(), shared, *exit_code),
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn send_bytes_and_respond(
+    id: u64,
+    bytes: &[u8],
+    settle_ms: u64,
+    target: Option<ResolvedTarget>,
+    writer: &mut Box<dyn Write + Send>,
+    shared: &Arc<Mutex<SharedPtyState>>,
+    child: &mut Box<dyn portable_pty::Child + Send + Sync>,
+    exit_code: &mut Option<i32>,
+) -> Result<ResponseEnvelope> {
+    let sent_at = Instant::now();
+    writer.write_all(bytes)?;
+    writer.flush()?;
+    wait_after_input(shared, sent_at, settle_ms, 2500);
+    refresh_exit(child, exit_code);
+    let mut resp = build_screen_resp(id, shared, *exit_code);
+    resp.target = target;
+    Ok(resp)
 }
 
 fn refresh_exit(

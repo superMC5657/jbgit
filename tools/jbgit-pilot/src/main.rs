@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Result, bail};
 
 use crate::client::{print_response, send_action};
-use crate::protocol::{CellPos, MouseBtn, MouseModifiers, PilotAction};
+use crate::protocol::{CellPos, MouseBtn, MouseModifiers, PilotAction, TextTarget};
 use crate::server::{SandboxScenario, ServeOptions, run_serve};
 
 fn default_session_dir() -> PathBuf {
@@ -73,6 +73,9 @@ CLIENT COMMANDS:
   click <col> <row> [--button left|right|middle] [--ctrl] [--shift] [--alt] [--settle-ms 200]
   rclick <col> <row> [--ctrl] [--shift] [--alt] [--settle-ms 200]
   hover <col> <row> [--settle-ms 200]
+  click-text <needle> [--row <row>] [--index <n>] [--button left|right|middle] [--ctrl] [--shift] [--alt] [--settle-ms 200]
+  rclick-text <needle> [--row <row>] [--index <n>] [--ctrl] [--shift] [--alt] [--settle-ms 200]
+  hover-text <needle> [--row <row>] [--index <n>] [--settle-ms 200]
   scroll <up|down> <col> <row> [--steps 3] [--settle-ms 200]
   resize <cols> <rows> [--settle-ms 200]
   find <needle>
@@ -224,6 +227,16 @@ fn main() -> Result<()> {
             let action = parse_click_action(&args, &mut idx, MouseBtn::Right, false, "rclick")?;
             run_client(&session_dir, action, 6000)?;
         }
+        "click-text" => {
+            let action =
+                parse_click_text_action(&args, &mut idx, MouseBtn::Left, true, "click-text")?;
+            run_client(&session_dir, action, 6000)?;
+        }
+        "rclick-text" => {
+            let action =
+                parse_click_text_action(&args, &mut idx, MouseBtn::Right, false, "rclick-text")?;
+            run_client(&session_dir, action, 6000)?;
+        }
         "hover" => {
             let col: u16 = req_arg(&args, &mut idx, "col")?.parse()?;
             let row: u16 = req_arg(&args, &mut idx, "row")?.parse()?;
@@ -236,6 +249,10 @@ fn main() -> Result<()> {
                 },
                 6000,
             )?;
+        }
+        "hover-text" => {
+            let action = parse_hover_text_action(&args, &mut idx)?;
+            run_client(&session_dir, action, 6000)?;
         }
         "scroll" => {
             let dir = req_arg(&args, &mut idx, "up|down")?;
@@ -342,6 +359,64 @@ fn run_client(session_dir: &Path, action: PilotAction, timeout_ms: u64) -> Resul
     Ok(())
 }
 
+fn try_parse_text_target_flag(
+    args: &[String],
+    idx: &mut usize,
+    row: &mut Option<u16>,
+    index: &mut Option<usize>,
+) -> Result<bool> {
+    match args[*idx].as_str() {
+        "--row" => {
+            *idx += 1;
+            *row = Some(req_arg(args, idx, "--row")?.parse()?);
+            Ok(true)
+        }
+        "--index" => {
+            *idx += 1;
+            *index = Some(req_arg(args, idx, "--index")?.parse()?);
+            Ok(true)
+        }
+        _ => Ok(false),
+    }
+}
+
+fn try_parse_click_flag(
+    args: &[String],
+    idx: &mut usize,
+    allow_button: bool,
+    button: &mut MouseBtn,
+    modifiers: &mut MouseModifiers,
+) -> Result<bool> {
+    match args[*idx].as_str() {
+        "--button" if allow_button => {
+            *idx += 1;
+            *button = match req_arg(args, idx, "--button")?.as_str() {
+                "left" => MouseBtn::Left,
+                "right" => MouseBtn::Right,
+                "middle" => MouseBtn::Middle,
+                other => bail!("invalid button '{other}'"),
+            };
+            Ok(true)
+        }
+        "--ctrl" => {
+            *idx += 1;
+            modifiers.ctrl = true;
+            Ok(true)
+        }
+        "--shift" => {
+            *idx += 1;
+            modifiers.shift = true;
+            Ok(true)
+        }
+        "--alt" => {
+            *idx += 1;
+            modifiers.alt = true;
+            Ok(true)
+        }
+        _ => Ok(false),
+    }
+}
+
 fn parse_click_action(
     args: &[String],
     idx: &mut usize,
@@ -355,39 +430,76 @@ fn parse_click_action(
     let mut modifiers = MouseModifiers::default();
     let mut settle_ms = 200u64;
     while *idx < args.len() {
-        match args[*idx].as_str() {
-            "--button" if allow_button => {
-                *idx += 1;
-                button = match req_arg(args, idx, "--button")?.as_str() {
-                    "left" => MouseBtn::Left,
-                    "right" => MouseBtn::Right,
-                    "middle" => MouseBtn::Middle,
-                    other => bail!("invalid button '{other}'"),
-                };
-            }
-            "--ctrl" => {
-                *idx += 1;
-                modifiers.ctrl = true;
-            }
-            "--shift" => {
-                *idx += 1;
-                modifiers.shift = true;
-            }
-            "--alt" => {
-                *idx += 1;
-                modifiers.alt = true;
-            }
-            "--settle-ms" => {
-                *idx += 1;
-                settle_ms = req_arg(args, idx, "--settle-ms")?.parse()?;
-            }
-            other => bail!("unknown flag '{other}' for {cmd_name}"),
+        if try_parse_click_flag(args, idx, allow_button, &mut button, &mut modifiers)? {
+            continue;
         }
+        if args[*idx] == "--settle-ms" {
+            *idx += 1;
+            settle_ms = req_arg(args, idx, "--settle-ms")?.parse()?;
+            continue;
+        }
+        bail!("unknown flag '{}' for {cmd_name}", args[*idx]);
     }
     Ok(PilotAction::Click {
         pos: CellPos { col, row },
         button,
         modifiers,
+        settle_ms,
+    })
+}
+
+fn parse_click_text_action(
+    args: &[String],
+    idx: &mut usize,
+    default_button: MouseBtn,
+    allow_button: bool,
+    cmd_name: &str,
+) -> Result<PilotAction> {
+    let needle = req_arg(args, idx, "needle")?;
+    let mut row = None;
+    let mut index = None;
+    let mut button = default_button;
+    let mut modifiers = MouseModifiers::default();
+    let mut settle_ms = 200u64;
+    while *idx < args.len() {
+        if try_parse_text_target_flag(args, idx, &mut row, &mut index)?
+            || try_parse_click_flag(args, idx, allow_button, &mut button, &mut modifiers)?
+        {
+            continue;
+        }
+        if args[*idx] == "--settle-ms" {
+            *idx += 1;
+            settle_ms = req_arg(args, idx, "--settle-ms")?.parse()?;
+            continue;
+        }
+        bail!("unknown flag '{}' for {cmd_name}", args[*idx]);
+    }
+    Ok(PilotAction::ClickText {
+        target: TextTarget { needle, row, index },
+        button,
+        modifiers,
+        settle_ms,
+    })
+}
+
+fn parse_hover_text_action(args: &[String], idx: &mut usize) -> Result<PilotAction> {
+    let needle = req_arg(args, idx, "needle")?;
+    let mut row = None;
+    let mut index = None;
+    let mut settle_ms = 200u64;
+    while *idx < args.len() {
+        if try_parse_text_target_flag(args, idx, &mut row, &mut index)? {
+            continue;
+        }
+        if args[*idx] == "--settle-ms" {
+            *idx += 1;
+            settle_ms = req_arg(args, idx, "--settle-ms")?.parse()?;
+            continue;
+        }
+        bail!("unknown flag '{}' for hover-text", args[*idx]);
+    }
+    Ok(PilotAction::HoverText {
+        target: TextTarget { needle, row, index },
         settle_ms,
     })
 }
@@ -407,4 +519,122 @@ fn parse_opt_u64(args: &[String], mut idx: usize, flag: &str) -> Result<Option<u
         return Ok(Some(val));
     }
     Ok(None)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{parse_click_text_action, parse_hover_text_action};
+    use crate::protocol::{MouseBtn, MouseModifiers, PilotAction, TextTarget};
+
+    fn to_args(items: &[&str]) -> Vec<String> {
+        items.iter().map(|s| (*s).to_string()).collect()
+    }
+
+    #[test]
+    fn parse_click_text_defaults_and_full_flags() {
+        let args = to_args(&["紧凑引用胶囊视图"]);
+        let mut idx = 0;
+        let action =
+            parse_click_text_action(&args, &mut idx, MouseBtn::Left, true, "click-text").unwrap();
+        assert_eq!(
+            action,
+            PilotAction::ClickText {
+                target: TextTarget {
+                    needle: "紧凑引用胶囊视图".to_string(),
+                    row: None,
+                    index: None,
+                },
+                button: MouseBtn::Left,
+                modifiers: MouseModifiers::default(),
+                settle_ms: 200,
+            }
+        );
+
+        let args = to_args(&[
+            "Save",
+            "--ctrl",
+            "--row",
+            "5",
+            "--button",
+            "middle",
+            "--index",
+            "2",
+            "--shift",
+            "--alt",
+            "--settle-ms",
+            "350",
+        ]);
+        let mut idx = 0;
+        let action =
+            parse_click_text_action(&args, &mut idx, MouseBtn::Left, true, "click-text").unwrap();
+        assert_eq!(
+            action,
+            PilotAction::ClickText {
+                target: TextTarget {
+                    needle: "Save".to_string(),
+                    row: Some(5),
+                    index: Some(2),
+                },
+                button: MouseBtn::Middle,
+                modifiers: MouseModifiers {
+                    ctrl: true,
+                    shift: true,
+                    alt: true,
+                },
+                settle_ms: 350,
+            }
+        );
+    }
+
+    #[test]
+    fn parse_rclick_text_uses_right_button_and_rejects_button_override() {
+        let args = to_args(&["src/auth.rs", "--row", "7"]);
+        let mut idx = 0;
+        let action =
+            parse_click_text_action(&args, &mut idx, MouseBtn::Right, false, "rclick-text")
+                .unwrap();
+        assert_eq!(
+            action,
+            PilotAction::ClickText {
+                target: TextTarget {
+                    needle: "src/auth.rs".to_string(),
+                    row: Some(7),
+                    index: None,
+                },
+                button: MouseBtn::Right,
+                modifiers: MouseModifiers::default(),
+                settle_ms: 200,
+            }
+        );
+
+        let bad_args = to_args(&["src/auth.rs", "--button", "left"]);
+        let mut idx = 0;
+        let err =
+            parse_click_text_action(&bad_args, &mut idx, MouseBtn::Right, false, "rclick-text")
+                .unwrap_err();
+        assert!(err.to_string().contains("unknown flag '--button'"));
+    }
+
+    #[test]
+    fn parse_hover_text_parses_flags_and_rejects_unknown() {
+        let args = to_args(&["分支▾", "--row", "3", "--index", "1", "--settle-ms", "120"]);
+        let mut idx = 0;
+        let action = parse_hover_text_action(&args, &mut idx).unwrap();
+        assert_eq!(
+            action,
+            PilotAction::HoverText {
+                target: TextTarget {
+                    needle: "分支▾".to_string(),
+                    row: Some(3),
+                    index: Some(1),
+                },
+                settle_ms: 120,
+            }
+        );
+
+        let bad_args = to_args(&["分支▾", "--ctrl"]);
+        let mut idx = 0;
+        let err = parse_hover_text_action(&bad_args, &mut idx).unwrap_err();
+        assert!(err.to_string().contains("unknown flag '--ctrl'"));
+    }
 }

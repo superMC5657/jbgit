@@ -18,7 +18,26 @@ pub struct CommandEnvelope {
     pub action: PilotAction,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TextTarget {
+    pub needle: String,
+    #[serde(default)]
+    pub row: Option<u16>,
+    #[serde(default)]
+    pub index: Option<usize>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ResolvedTarget {
+    #[serde(flatten)]
+    pub pos: CellPos,
+    pub start_col: u16,
+    pub end_col: u16,
+    pub match_index: usize,
+    pub match_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum PilotAction {
     Screen {
@@ -40,6 +59,14 @@ pub enum PilotAction {
         modifiers: MouseModifiers,
         settle_ms: u64,
     },
+    ClickText {
+        #[serde(flatten)]
+        target: TextTarget,
+        button: MouseBtn,
+        #[serde(default)]
+        modifiers: MouseModifiers,
+        settle_ms: u64,
+    },
     Scroll {
         up: bool,
         #[serde(flatten)]
@@ -50,6 +77,11 @@ pub enum PilotAction {
     Hover {
         #[serde(flatten)]
         pos: CellPos,
+        settle_ms: u64,
+    },
+    HoverText {
+        #[serde(flatten)]
+        target: TextTarget,
         settle_ms: u64,
     },
     Clipboard,
@@ -72,7 +104,7 @@ pub enum PilotAction {
     Stop,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum MouseBtn {
     Left,
@@ -106,12 +138,16 @@ pub struct ResponseEnvelope {
     pub palette: Vec<ColorCount>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub clipboard: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target: Option<ResolvedTarget>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TextMatch {
     #[serde(flatten)]
     pub pos: CellPos,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub end_col: Option<u16>,
     pub line: String,
 }
 

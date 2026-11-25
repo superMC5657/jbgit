@@ -68,12 +68,30 @@ pub fn print_response(resp: &ResponseEnvelope) {
     if let Some(err) = &resp.error {
         eprintln!("ERROR: {err}");
     }
+    if let Some(target) = resp.target {
+        println!(
+            "TARGET col={} row={} span={}..={} match={}/{}",
+            target.pos.col,
+            target.pos.row,
+            target.start_col,
+            target.end_col,
+            target.match_index + 1,
+            target.match_count,
+        );
+    }
     if let Some(screen) = &resp.screen {
         println!("{screen}");
     }
     if !resp.matches.is_empty() {
         for m in &resp.matches {
-            println!("MATCH col={} row={} | {}", m.pos.col, m.pos.row, m.line);
+            if let Some(end_col) = m.end_col {
+                println!(
+                    "MATCH col={} end_col={} row={} | {}",
+                    m.pos.col, end_col, m.pos.row, m.line
+                );
+            } else {
+                println!("MATCH col={} row={} | {}", m.pos.col, m.pos.row, m.line);
+            }
         }
     }
     if !resp.row_spans.is_empty() {
