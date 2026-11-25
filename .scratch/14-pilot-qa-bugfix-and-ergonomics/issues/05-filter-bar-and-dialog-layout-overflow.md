@@ -1,6 +1,6 @@
 # 05: Log 筛选栏 140 列溢出治理、筛选弹窗 `Ctrl+U` 及新建 Worktree 弹窗宽度自适应
 
-Status: ready-for-agent
+Status: resolved
 Spec: [../spec.md](../spec.md)
 Milestone: M11 — Pilot QA 缺陷修复与体验加固
 Priority: P2
@@ -57,3 +57,7 @@ QA-Refs: `P2-06`, `P2-13`
 - 扩展 `crates/jbgit-tui/src/tests/pilot_findings_tests.rs:51-113`：在 `140x40` 下激活 `Branch = feature/linear-chain`，断言渲染文本同时包含 `路径` 与 `排除合并` 且两者均注册了有效 `HitTarget`；
 - 新增 `FilterEditor`（Author / Branch / Date / Paths）按键测试：输入 `@me` 后按 `Ctrl+u`，断言 `query` 清空为 `""`；
 - 新增 `render_input` `TestBackend` 测试：在 `140x40` 下以 `zh-CN` 和 `en-US` 渲染 `WorktreeCreate::path_dialog`，断言完整显示 `(Tab 切换)` / `(Tab)` 无截断；在 `50x16` 窄屏下断言仍保留 `({hint})` 且不越界。
+
+## Comments
+
+- **2026-11-25**: Resolved in `0cbafbf`; workspace gates (`fmt`, `clippy`, `test --workspace --locked`) and `jbgit-pilot` ConPTY E2E re-verification (`full` `P2-06`, `multi-repo` `P2-13`) passed.

@@ -1,6 +1,6 @@
 # 02: 暂存进度提示清理、`UD` 冲突重置与文件历史起始范围对齐
 
-Status: ready-for-agent
+Status: resolved
 Spec: [../spec.md](../spec.md)
 Milestone: M11 — Pilot QA 缺陷修复与体验加固
 Priority: P2
@@ -61,3 +61,7 @@ QA-Refs: `P2-01`, `P2-02`, `P2-05`
 - **TUI 会话测试（`P2-01`）**：触发 `StageActionSelected` / `UnstageActionSelected` 后注入 `StageStatusLoaded`，断言 `status_notice` 已清空；触发 `StageToggleShowIgnored` 后注入 `StageStatusLoaded`，断言 `has_active_tasks() == false`。
 - **真实仓库集成测试（`P2-02`，修复前必挂）**：构造 `UD` 冲突（`deleted_by_theirs.txt`）→ 分别经 `AcceptSide(ours=true)` 与 `AcceptSide(ours=false)` 解决 → 执行 `GitOp::UnresolveConflict` → 断言退出成功且 `git status --porcelain` 重新恢复为 `UD deleted_by_theirs.txt`，同时 `UU` 冲突重置不回归。
 - **TUI + Engine 测试（`P2-05`）**：从旧提交 `f08c17b` 打开 `FileHistory` 断言工具栏显示 `范围:f08c17b`（非 `范围:HEAD`）；切换菜单 `Current HEAD` 后断言 `start_oid == None` 且加载包含 `HEAD` 的全部提交。
+
+## Comments
+
+- **2026-11-25**: Resolved in `0fccbf6`; workspace gates (`fmt`, `clippy`, `test --workspace --locked`) and `jbgit-pilot` ConPTY E2E re-verification (`capabilities` `P2-01`, `conflict` `P2-02`, `full` `P2-05`) passed.

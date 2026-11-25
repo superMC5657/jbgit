@@ -1,6 +1,6 @@
 # 01: Windows Clone 路径 `\\?\` 前缀剥离与 `Unshallow` 提交图谱缓存失效修复
 
-Status: ready-for-agent
+Status: resolved
 Spec: [../spec.md](../spec.md)
 Milestone: M11 — Pilot QA 缺陷修复与体验加固
 Priority: P1
@@ -62,3 +62,7 @@ QA-Refs: `P1-01`, `P1-02`
 - **Pilot 端到端复验**：
   - `welcome` 场景按 `c` 输入 `sandbox-clone-src.git` → `Tab` → `Enter` 直接克隆成功；
   - `capabilities` 场景点击浅克隆边界 `完整拉取…` → `Enter` → 图谱自动更新为 `6 个提交` 且 `c73a0a6` 显示真实父提交。
+
+## Comments
+
+- **2026-11-25**: Resolved in `15d8358`; workspace gates (`fmt`, `clippy`, `test --workspace --locked`) and `jbgit-pilot` ConPTY E2E re-verification (`welcome` `P1-01`, `capabilities` `P1-02`) passed.

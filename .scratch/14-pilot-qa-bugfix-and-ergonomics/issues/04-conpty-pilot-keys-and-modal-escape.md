@@ -1,6 +1,6 @@
 # 04: `jbgit-pilot` Windows ConPTY 按键编码修复与模态 `Esc` 守卫对齐
 
-Status: ready-for-agent
+Status: resolved
 Spec: [../spec.md](../spec.md)
 Milestone: M11 — Pilot QA 缺陷修复与体验加固
 Priority: P2
@@ -64,3 +64,7 @@ QA-Refs: `P2-07`, `P2-11`, `P2-12`
   - 断言 `Esc`（含附带修饰键场景）稳定关闭 `Reflog`、`TreeBrowserSearch`、`TreeBrowser` 与 `Annotate`。
 - **Pilot ConPTY 端到端复验**：
   - `full` 场景下执行 `key "Ctrl+~"`、`key 'Ctrl+`'` 均打开分支浮窗；Push 弹窗执行 `key Ctrl+Enter` 触发推送；`Reflog` / `TreeBrowserSearch` / `Annotate` 执行 `key Esc` 全部立即关闭。
+
+## Comments
+
+- **2026-11-25**: Resolved in `45dc503`; workspace gates (`fmt`, `clippy`, `test --workspace --locked`) and `jbgit-pilot` ConPTY E2E re-verification (`full` `P2-07`, `P2-11`, `P2-12`) passed.

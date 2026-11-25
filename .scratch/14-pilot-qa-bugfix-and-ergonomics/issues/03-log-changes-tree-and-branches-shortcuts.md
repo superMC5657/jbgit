@@ -1,6 +1,6 @@
 # 03: Log 变更树与分支浮窗快捷键修复、目录菜单过滤及 Diff `Ctrl+F` 补齐
 
-Status: ready-for-agent
+Status: resolved
 Spec: [../spec.md](../spec.md)
 Milestone: M11 — Pilot QA 缺陷修复与体验加固
 Priority: P2
@@ -61,3 +61,7 @@ QA-Refs: `P2-03`, `P2-04`, `P2-08`, `P2-09`, `P2-10`
 - `LogChangesTree` 聚焦按键测试：选中文件按 `c` 写剪贴板相对路径、按 `l` 打开本地对比、按 `p` 复制补丁且**不**发出 `GitOp::Pull`；选中目录右键菜单仅含目录适用项；
 - `BranchesPopup` 按 `Space` 切换星标收藏；打开分支子菜单按 `F2` 打开重命名弹窗；
 - `[1] CommitDiffPreview` 及 `FileHistory`/`Annotate`/`Reflog` Diff 面板按 `Ctrl+f` 打开内联搜索条（扩展 `diff_enhancements_tests.rs:770`）。
+
+## Comments
+
+- **2026-11-25**: Resolved in `45dc503`; workspace gates (`fmt`, `clippy`, `test --workspace --locked`) and `jbgit-pilot` ConPTY E2E re-verification (`full` `P2-03`, `P2-04`, `P2-08`, `P2-09`, `P2-10`) passed.

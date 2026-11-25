@@ -1,6 +1,6 @@
 # 06: 弹窗校验时机、Welcome/Clone 状态去重、横幅/控制台排版与输入/菜单/回滚文案打磨
 
-Status: ready-for-agent
+Status: resolved
 Spec: [../spec.md](../spec.md)
 Milestone: M11 — Pilot QA 缺陷修复与体验加固
 Priority: P3
@@ -63,3 +63,7 @@ QA-Refs: `P3-01`, `P3-02`, `P3-03`, `P3-04`
 - `Welcome` 渲染测试：非 Git 目录下背景不出现 `加载中…` / `正在加载提交图谱…`；`CloneFinished(Err)` 渲染测试：报错行仅出现一次；
 - `Bisect` banner 与 `Console` 失败行 `TestBackend` 测试：断言 `[ Good Alt+Shift+G ]` / `[ 跳过 Alt+Shift+S ]` 尾空格对称、`✗1 git ...` 含分隔空格且行尾完整保留 `ms`；
 - `InputDialog` 按 `Ctrl+a` + `Backspace` 清空全部内容 / `Ctrl+a` + 输入替换全文；当前分支子菜单不含自指向操作；Diff 非 visual 模式按 `d` 回滚提示 `选中代码块`，visual 模式选行按 `d` 回滚提示 `选中行`。
+
+## Comments
+
+- **2026-11-25**: Resolved in `0cbafbf`; workspace gates (`fmt`, `clippy`, `test --workspace --locked`) and `jbgit-pilot` ConPTY E2E re-verification (`workflow` `P3-01`, `welcome` `P3-02`, `bisect`/`full` `P3-03`, `full` `P3-04`) passed.
