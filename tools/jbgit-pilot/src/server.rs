@@ -312,17 +312,15 @@ fn handle_action(
             Ok(build_screen_resp(id, shared, *exit_code))
         }
         PilotAction::Keys { keys, settle_ms } => {
-            let sent_at = Instant::now();
+            let mut sent_at = Instant::now();
             for (idx, k) in keys.iter().enumerate() {
                 let bytes = encode_key(k)?;
+                sent_at = Instant::now();
                 writer.write_all(&bytes)?;
                 writer.flush()?;
-                #[cfg(not(windows))]
                 if bytes == b"\x1b" && idx + 1 < keys.len() {
                     thread::sleep(Duration::from_millis(30));
                 }
-                #[cfg(windows)]
-                let _ = idx;
             }
             wait_after_input(shared, sent_at, settle_ms, 2500);
             refresh_exit(child, exit_code);

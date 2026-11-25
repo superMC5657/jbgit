@@ -175,6 +175,14 @@ fn current_context_rows(state: &AppState) -> Vec<HelpRow> {
             run: probe.action,
         });
     }
+    if let Some(copy_path) = structural.log_changes_copy_path_fallback {
+        out.push(HelpRow::Entry {
+            keys: copy_path.key,
+            desc: localized_action_desc(state, &KeyAction::CopyFilePath, None),
+            scope_tag: pane_title.to_string(),
+            run: copy_path.action,
+        });
+    }
 
     for scope in scopes_for_context(state) {
         if scope == KeymapScope::Global {
@@ -257,8 +265,16 @@ pub fn build_help_rows(state: &AppState, query: &str) -> Vec<HelpRow> {
         i18n.t("help.scope.commit"),
         false,
     );
-    let log_rows =
+    let mut log_rows =
         collect_merged_entries(state, &km.log.key_bindings, i18n.t("help.scope.log"), false);
+    if super::actions::is_plain_c_copy_file_path_fallback_active(state) {
+        log_rows.push(HelpRow::Entry {
+            keys: "c".to_string(),
+            desc: localized_action_desc(state, &KeyAction::CopyFilePath, None),
+            scope_tag: i18n.t("help.scope.log").to_string(),
+            run: Some(KeyAction::CopyFilePath),
+        });
+    }
     let branch_rows = collect_merged_entries(
         state,
         &km.branch.key_bindings,

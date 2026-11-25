@@ -93,6 +93,26 @@ pub fn activate_top_menu_item(state: &AppState, idx: usize) -> Vec<Action> {
     }
 }
 
+fn activate_menu_shortcut(
+    state: &AppState,
+    items: &[ContextMenuItem],
+    depth: u8,
+    target: &str,
+) -> Vec<Action> {
+    if let Some(idx) = items.iter().position(|i| {
+        !i.is_separator()
+            && i.shortcut
+                .as_deref()
+                .is_some_and(|s| s == target || s.split(" / ").any(|p| p == target))
+    }) {
+        let mut out = vec![Action::ContextMenuSetSelected { depth, idx }];
+        out.extend(activate_top_menu_item(state, idx));
+        out
+    } else {
+        Vec::new()
+    }
+}
+
 pub fn route_context_menu_key(key: KeyEvent, state: &AppState) -> Vec<Action> {
     let Some(ModalLayer::ContextMenu {
         items,
@@ -134,20 +154,7 @@ pub fn route_context_menu_key(key: KeyEvent, state: &AppState) -> Vec<Action> {
             }
         }
         KeyCode::Enter | KeyCode::Char(' ') => activate_top_menu_item(state, selected),
-        KeyCode::Delete => {
-            if let Some(idx) = items.iter().position(|i| {
-                !i.is_separator()
-                    && i.shortcut
-                        .as_deref()
-                        .is_some_and(|s| s == "Del" || s.split(" / ").any(|p| p == "Del"))
-            }) {
-                let mut out = vec![Action::ContextMenuSetSelected { depth, idx }];
-                out.extend(activate_top_menu_item(state, idx));
-                out
-            } else {
-                Vec::new()
-            }
-        }
+        KeyCode::Delete => activate_menu_shortcut(state, items, depth, "Del"),
         KeyCode::F(n)
             if (1..=12).contains(&n)
                 && !key.modifiers.contains(KeyModifiers::CONTROL)
@@ -155,18 +162,7 @@ pub fn route_context_menu_key(key: KeyEvent, state: &AppState) -> Vec<Action> {
                 && !key.modifiers.contains(KeyModifiers::SHIFT) =>
         {
             let target = format!("F{n}");
-            if let Some(idx) = items.iter().position(|i| {
-                !i.is_separator()
-                    && i.shortcut
-                        .as_deref()
-                        .is_some_and(|s| s == target || s.split(" / ").any(|p| p == target))
-            }) {
-                let mut out = vec![Action::ContextMenuSetSelected { depth, idx }];
-                out.extend(activate_top_menu_item(state, idx));
-                out
-            } else {
-                Vec::new()
-            }
+            activate_menu_shortcut(state, items, depth, &target)
         }
         KeyCode::Char(ch)
             if !key.modifiers.contains(KeyModifiers::CONTROL)
@@ -1227,6 +1223,16 @@ pub fn presentation_menu_items(state: &AppState) -> Vec<ContextMenuItem> {
             'f',
             None,
             PresentationToggle::FirstParentOnly,
+        ),
+        ContextMenuItem::run(
+            format!(
+                "{} {}",
+                check(state.log.filter.spec.no_merges),
+                i18n.t("filter.no_merges")
+            ),
+            Some('x'),
+            None,
+            vec![Action::ToggleNoMergesFilter],
         ),
         ContextMenuItem::separator(),
         item(

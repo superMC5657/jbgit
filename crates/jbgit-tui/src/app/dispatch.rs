@@ -569,40 +569,46 @@ impl AppState {
                                 cp.toggle(row);
                             }
                         }
-                        crate::dialogs::Dialog::NewBranch(nb) => match idx {
-                            0 => {
-                                nb.focused = crate::dialogs::NewBranchField::Checkout;
-                                nb.checkout = !nb.checkout;
+                        crate::dialogs::Dialog::NewBranch(nb) => {
+                            nb.selected_all = false;
+                            match idx {
+                                0 => {
+                                    nb.focused = crate::dialogs::NewBranchField::Checkout;
+                                    nb.checkout = !nb.checkout;
+                                }
+                                1 => {
+                                    nb.focused = crate::dialogs::NewBranchField::Overwrite;
+                                    nb.overwrite = !nb.overwrite;
+                                }
+                                2 => {
+                                    nb.focused = crate::dialogs::NewBranchField::Track;
+                                    nb.track = !nb.track;
+                                }
+                                3 => {
+                                    nb.focused = crate::dialogs::NewBranchField::AutoSanitize;
+                                    nb.auto_sanitize = !nb.auto_sanitize;
+                                }
+                                _ => {}
                             }
-                            1 => {
-                                nb.focused = crate::dialogs::NewBranchField::Overwrite;
-                                nb.overwrite = !nb.overwrite;
+                        }
+                        crate::dialogs::Dialog::StashPush(sp) => {
+                            sp.selected_all = false;
+                            match idx {
+                                0 => {
+                                    sp.focused = crate::dialogs::StashPushField::IncludeUntracked;
+                                    sp.include_untracked = !sp.include_untracked;
+                                }
+                                1 => {
+                                    sp.focused = crate::dialogs::StashPushField::KeepIndex;
+                                    sp.keep_index = !sp.keep_index;
+                                }
+                                2 if !sp.selected_paths.is_empty() => {
+                                    sp.focused = crate::dialogs::StashPushField::OnlySelected;
+                                    sp.only_selected = !sp.only_selected;
+                                }
+                                _ => {}
                             }
-                            2 => {
-                                nb.focused = crate::dialogs::NewBranchField::Track;
-                                nb.track = !nb.track;
-                            }
-                            3 => {
-                                nb.focused = crate::dialogs::NewBranchField::AutoSanitize;
-                                nb.auto_sanitize = !nb.auto_sanitize;
-                            }
-                            _ => {}
-                        },
-                        crate::dialogs::Dialog::StashPush(sp) => match idx {
-                            0 => {
-                                sp.focused = crate::dialogs::StashPushField::IncludeUntracked;
-                                sp.include_untracked = !sp.include_untracked;
-                            }
-                            1 => {
-                                sp.focused = crate::dialogs::StashPushField::KeepIndex;
-                                sp.keep_index = !sp.keep_index;
-                            }
-                            2 if !sp.selected_paths.is_empty() => {
-                                sp.focused = crate::dialogs::StashPushField::OnlySelected;
-                                sp.only_selected = !sp.only_selected;
-                            }
-                            _ => {}
-                        },
+                        }
                         _ => {}
                     }
                 }
@@ -627,6 +633,7 @@ impl AppState {
                         crate::dialogs::Dialog::Identity(id) => {
                             id.global = !id.global;
                             id.focused = crate::dialogs::IdentityField::Global;
+                            id.selected_all = false;
                         }
                         _ => {}
                     }
@@ -1193,32 +1200,9 @@ impl AppState {
             }
             Action::FileHistorySetBranchScope(scope) => {
                 if let Some(fh) = self.modal_stack.file_history_mut()
-                    && !fh.is_selection_history()
+                    && let Some(key) = fh.set_branch_scope(scope.clone())
                 {
-                    let clearing_pinned_head =
-                        matches!(scope, jbgit_core::HistoryBranchScope::CurrentHead)
-                            && fh.key.start_oid.is_some();
-                    let key = if fh.key.scope == *scope && clearing_pinned_head {
-                        fh.key.start_oid = None;
-                        fh.key.limit = jbgit_core::DEFAULT_FILE_HISTORY_LIMIT;
-                        fh.loading = true;
-                        fh.error = None;
-                        fh.anchor = None;
-                        fh.anchor_pinned = false;
-                        fh.pending_preserve_oid = None;
-                        fh.diff.scroll.reset();
-                        fh.diff.pending = None;
-                        fh.diff.requested = None;
-                        Some(fh.key.clone())
-                    } else {
-                        if matches!(scope, jbgit_core::HistoryBranchScope::CurrentHead) {
-                            fh.key.start_oid = None;
-                        }
-                        fh.set_branch_scope(scope.clone())
-                    };
-                    if let Some(key) = key {
-                        effects.push(Effect::RequestFileHistory(key));
-                    }
+                    effects.push(Effect::RequestFileHistory(key));
                 }
             }
             Action::FileHistoryLoadMore => {

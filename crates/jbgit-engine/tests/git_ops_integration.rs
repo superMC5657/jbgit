@@ -2211,3 +2211,112 @@ async fn unresolve_conflict_restores_ud_during_cherry_pick() {
         "modified-on-main\n"
     );
 }
+
+#[tokio::test]
+async fn unresolve_conflict_restores_libgit2_staged_uu_without_reuc_and_bracket_path() {
+    let dir = init_repo();
+    let d = dir.path();
+
+    let bracket_path = "app/[id]/page.tsx";
+    fs::create_dir_all(d.join("app/[id]")).unwrap();
+    commit_file(d, bracket_path, "base line\n", "base");
+    commit_file(d, "clean.txt", "unchanged\n", "clean base");
+
+    git(d, &["checkout", "-b", "feature"]);
+    commit_file(d, bracket_path, "feature line\n", "feature edit");
+
+    git(d, &["checkout", "main"]);
+    commit_file(d, bracket_path, "main line\n", "main edit");
+
+    let merge = run(
+        d,
+        GitOp::Merge {
+            rev: "feature".into(),
+            options: Default::default(),
+        },
+    )
+    .await;
+    assert!(!merge.success);
+    assert!(
+        git(d, &["status", "--porcelain", "--", bracket_path]).contains("UU app/[id]/page.tsx")
+    );
+
+    // Resolve the UU conflict via libgit2 (just like jbgit's Stage panel):
+    // `libgit2` does NOT write Git's `REUC` index extension, so plain `git checkout -m`
+    // exits 0 without restoring stages 1/2/3 unless our index check falls back.
+    fs::write(d.join(bracket_path), "resolved manually\n").unwrap();
+    {
+        let repo = git2::Repository::open(d).unwrap();
+        let mut idx = repo.index().unwrap();
+        idx.add_path(Path::new(bracket_path)).unwrap();
+        idx.write().unwrap();
+    }
+    assert!(
+        !git(d, &["status", "--porcelain"]).contains("UU"),
+        "file should be staged/resolved before unresolve"
+    );
+
+    let unresolve = run(
+        d,
+        GitOp::UnresolveConflict {
+            paths: vec![bracket_path.into()],
+        },
+    )
+    .await;
+    assert!(unresolve.success, "{unresolve:?}");
+    let st = git(d, &["status", "--porcelain"]);
+    assert!(
+        st.contains("UU app/[id]/page.tsx"),
+        "UU conflict with bracket path and no REUC must be restored, got: {st}"
+    );
+    let content = fs::read_to_string(d.join(bracket_path)).unwrap();
+    assert!(
+        content.contains("<<<<<<<") && content.contains(">>>>>>>"),
+        "expected conflict markers in worktree, got:\n{content}"
+    );
+}
+
+#[tokio::test]
+async fn unresolve_conflict_handles_revert_and_does_not_fabricate_clean_file_conflict() {
+    let dir = init_repo();
+    let d = dir.path();
+
+    commit_file(d, "a.txt", "v1\n", "c1");
+    commit_file(d, "a.txt", "v2\n", "c2");
+    let target_oid: Oid = git(d, &["rev-parse", "HEAD"]).trim().parse().unwrap();
+    commit_file(d, "a.txt", "v3\n", "c3");
+
+    let rev = run(
+        d,
+        GitOp::Revert {
+            oids: vec![target_oid],
+            no_commit: false,
+            mainline: None,
+        },
+    )
+    .await;
+    assert!(!rev.success);
+    assert!(git(d, &["status", "--porcelain"]).contains("UU a.txt"));
+
+    // Resolve via libgit2 (no REUC), then unresolve during active REVERT_HEAD.
+    fs::write(d.join("a.txt"), "manual revert resolution\n").unwrap();
+    {
+        let repo = git2::Repository::open(d).unwrap();
+        let mut idx = repo.index().unwrap();
+        idx.add_path(Path::new("a.txt")).unwrap();
+        idx.write().unwrap();
+    }
+    let unresolve = run(
+        d,
+        GitOp::UnresolveConflict {
+            paths: vec!["a.txt".into()],
+        },
+    )
+    .await;
+    assert!(unresolve.success, "{unresolve:?}");
+    let st = git(d, &["status", "--porcelain", "--", "a.txt"]);
+    assert!(
+        st.contains("UU a.txt"),
+        "expected UU restored during revert, got: {st}"
+    );
+}

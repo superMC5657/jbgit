@@ -51,6 +51,7 @@ pub struct NormalStructuralHints {
     pub leading: Option<StructuralHint>,
     pub after_primary: Option<StructuralHint>,
     pub console_probe_fallback: Option<StructuralHint>,
+    pub log_changes_copy_path_fallback: Option<StructuralHint>,
     pub help_trailing: Option<StructuralHint>,
 }
 
@@ -265,10 +266,25 @@ pub fn normal_structural_hints(state: &AppState) -> NormalStructuralHints {
         None
     };
 
+    let log_changes_copy_path_fallback = if state.active_tab == WorkspaceTab::Log
+        && state.focused_pane == PaneId::LogChangesTree
+        && !is_log_diff_zoomed(state)
+        && super::actions::is_plain_c_copy_file_path_fallback_active(state)
+    {
+        Some(StructuralHint {
+            key: "c".to_string(),
+            label: t("view.footer.pill.copy_file_path"),
+            action: Some(KeyAction::CopyFilePath),
+        })
+    } else {
+        None
+    };
+
     NormalStructuralHints {
         leading,
         after_primary,
         console_probe_fallback,
+        log_changes_copy_path_fallback,
         help_trailing,
     }
 }
@@ -463,7 +479,9 @@ pub fn is_action_applicable(run: &KeyAction, state: &AppState) -> bool {
         KeyAction::CopyFilePath
         | KeyAction::CopyFilePatch
         | KeyAction::CompareFileWithLocal => {
-            state.active_tab == WorkspaceTab::Log && state.focused_pane == PaneId::LogChangesTree
+            state.active_tab == WorkspaceTab::Log
+                && state.focused_pane == PaneId::LogChangesTree
+                && !is_log_diff_zoomed(state)
         }
         KeyAction::Checkout => {
             state.active_tab == WorkspaceTab::Log

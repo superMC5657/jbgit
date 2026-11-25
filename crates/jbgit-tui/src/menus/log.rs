@@ -1081,9 +1081,15 @@ pub fn log_change_menu_items(state: &AppState) -> Vec<ContextMenuItem> {
     let ann_sc = catalog::shortcut_for_action(state, &[KeymapScope::Log], &KeyAction::Annotate);
     let cmp_local_sc =
         catalog::shortcut_for_action(state, &[KeymapScope::Log], &KeyAction::CompareFileWithLocal);
-    let copy_path_sc =
-        catalog::shortcut_for_action(state, &[KeymapScope::Log], &KeyAction::CopyFilePath)
-            .or_else(|| Some("c".to_string()));
+    let copy_path_sc = catalog::shortcut_for_action(
+        state,
+        &[KeymapScope::Log, KeymapScope::Global],
+        &KeyAction::CopyFilePath,
+    )
+    .or_else(|| {
+        crate::keymap::actions::is_plain_c_copy_file_path_fallback_active(state)
+            .then(|| "c".to_string())
+    });
     let copy_patch_sc =
         catalog::shortcut_for_action(state, &[KeymapScope::Log], &KeyAction::CopyFilePatch);
 
@@ -1479,12 +1485,12 @@ pub fn file_history_scope_menu_items(state: &AppState) -> Vec<ContextMenuItem> {
     };
     let i18n = &state.i18n;
     let check = |on: bool, label: &str| format!("{} {label}", if on { "✓" } else { " " });
+    let head_oid = state.repo_snapshot.as_ref().and_then(|s| s.head_oid);
+    let is_unpinned_head = fh.key.scope == jbgit_core::HistoryBranchScope::CurrentHead
+        && fh.key.start_oid.is_none_or(|oid| Some(oid) == head_oid);
     let mut items = vec![
         run(
-            check(
-                fh.key.scope == jbgit_core::HistoryBranchScope::CurrentHead,
-                i18n.t("menu.file_history.scope_head"),
-            ),
+            check(is_unpinned_head, i18n.t("menu.file_history.scope_head")),
             Some('h'),
             None,
             vec![Action::FileHistorySetBranchScope(

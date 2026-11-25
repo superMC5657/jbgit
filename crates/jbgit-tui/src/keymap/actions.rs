@@ -152,6 +152,34 @@ where
     }
 }
 
+/// Whether the built-in plain `c` -> `CopyFilePath` fallback in `LogChangesTree`
+/// is active (i.e. `copy_file_path` is not explicitly bound in `[log]`/`[global]`
+/// and plain `c` has not been explicitly unbound via `noop` in those scopes).
+pub fn is_plain_c_copy_file_path_fallback_active(state: &AppState) -> bool {
+    let km = &state.config.keymap;
+    if km
+        .primary_key_for(
+            &[KeymapScope::Log, KeymapScope::Global],
+            &KeyAction::CopyFilePath,
+        )
+        .is_some()
+    {
+        return false;
+    }
+    let plain_c = KeyEvent::new(KeyCode::Char('c'), crossterm::event::KeyModifiers::NONE);
+    let explicitly_noop = [KeymapScope::Log, KeymapScope::Global]
+        .iter()
+        .any(|&scope| {
+            matches!(
+                match_bindings_filtered(km.bindings_for(scope), &[plain_c], |b| {
+                    matches!(b.run, KeyAction::Noop)
+                }),
+                MatchResult::Exact(_)
+            )
+        });
+    !explicitly_noop
+}
+
 /// Routes an incoming key through the user-configured keymap rules (pure read).
 pub fn route_dynamic_key(key: &KeyEvent, state: &AppState) -> Option<Vec<Action>> {
     if let Some(actions) = route_dynamic_inner(key, state, |_| true) {
@@ -159,24 +187,27 @@ pub fn route_dynamic_key(key: &KeyEvent, state: &AppState) -> Option<Vec<Action>
     }
     // `c` in `[log]` is bound to `checkout` (inapplicable in `LogChangesTree`); avoid duplicating
     // chord `"c"` in `[log]` while still dispatching `CopyFilePath` directly on plain `c` unless
-    // the user explicitly bound `copy_file_path` to another key.
+    // the user explicitly bound `copy_file_path` or unbound `c` with `noop`.
+    let expired = state
+        .pending_key_at
+        .is_some_and(|t| t.elapsed() > KEY_CHORD_WINDOW);
+    let active_pending_empty = expired || state.pending_keys.is_empty();
+    let had_pending = !state.pending_keys.is_empty();
     if state.active_tab == WorkspaceTab::Log
         && state.focused_pane == PaneId::LogChangesTree
-        && state.pending_keys.is_empty()
+        && !is_log_diff_zoomed(state)
+        && active_pending_empty
         && key.code == KeyCode::Char('c')
         && !key.modifiers.intersects(
             crossterm::event::KeyModifiers::CONTROL | crossterm::event::KeyModifiers::ALT,
         )
-        && state
-            .config
-            .keymap
-            .primary_key_for(
-                &[KeymapScope::Log, KeymapScope::Global],
-                &KeyAction::CopyFilePath,
-            )
-            .is_none()
+        && is_plain_c_copy_file_path_fallback_active(state)
     {
-        return execute_action(&KeyAction::CopyFilePath, state);
+        let mut actions = execute_action(&KeyAction::CopyFilePath, state)?;
+        if had_pending {
+            actions.insert(0, Action::ClearPendingKeySequence);
+        }
+        return Some(actions);
     }
     None
 }

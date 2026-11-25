@@ -2148,6 +2148,56 @@ pub enum DialogKey {
     Actions(Vec<Action>),
 }
 
+fn edit_single_line_key(
+    value: &mut String,
+    selected_all: &mut bool,
+    code: KeyCode,
+    ctrl: bool,
+    alt: bool,
+    plain: bool,
+) -> Option<DialogKey> {
+    match code {
+        KeyCode::Char('a' | 'A') if ctrl && !alt => {
+            *selected_all = !value.is_empty();
+            Some(DialogKey::Redraw)
+        }
+        KeyCode::Left | KeyCode::Right | KeyCode::Home | KeyCode::End if *selected_all => {
+            *selected_all = false;
+            Some(DialogKey::Redraw)
+        }
+        KeyCode::Backspace => {
+            if *selected_all {
+                value.clear();
+                *selected_all = false;
+            } else {
+                value.pop();
+            }
+            Some(DialogKey::Redraw)
+        }
+        KeyCode::Delete => {
+            if *selected_all {
+                value.clear();
+                *selected_all = false;
+            }
+            Some(DialogKey::Redraw)
+        }
+        KeyCode::Char('u' | 'U') if ctrl && !alt => {
+            value.clear();
+            *selected_all = false;
+            Some(DialogKey::Redraw)
+        }
+        KeyCode::Char(c) if plain && !c.is_control() => {
+            if *selected_all {
+                value.clear();
+                *selected_all = false;
+            }
+            value.push(c);
+            Some(DialogKey::Redraw)
+        }
+        _ => None,
+    }
+}
+
 pub fn route_dialog_key(dialog: &mut Dialog, key: &KeyEvent, i18n: &I18n) -> DialogKey {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     let alt = key.modifiers.contains(KeyModifiers::ALT);
@@ -2164,7 +2214,7 @@ pub fn route_dialog_key(dialog: &mut Dialog, key: &KeyEvent, i18n: &I18n) -> Dia
     match dialog {
         Dialog::Credential(d) => match key.code {
             KeyCode::Enter => DialogKey::Confirm,
-            KeyCode::Char('a' | 'A') if ctrl => {
+            KeyCode::Char('a' | 'A') if ctrl && !alt => {
                 d.selected_all = !d.value.is_empty();
                 DialogKey::Redraw
             }
@@ -2186,7 +2236,7 @@ pub fn route_dialog_key(dialog: &mut Dialog, key: &KeyEvent, i18n: &I18n) -> Dia
                 }
                 DialogKey::Redraw
             }
-            KeyCode::Char('u') if ctrl => {
+            KeyCode::Char('u' | 'U') if ctrl && !alt => {
                 d.clear();
                 DialogKey::Redraw
             }
@@ -2226,85 +2276,23 @@ pub fn route_dialog_key(dialog: &mut Dialog, key: &KeyEvent, i18n: &I18n) -> Dia
                 d.selected_all = false;
                 DialogKey::Redraw
             }
-            KeyCode::Char('a' | 'A') if ctrl => {
-                d.selected_all = match d.focused {
-                    IdentityField::Name => !d.name.is_empty(),
-                    IdentityField::Email => !d.email.is_empty(),
-                    IdentityField::Global => false,
-                };
-                DialogKey::Redraw
-            }
-            KeyCode::Left | KeyCode::Right | KeyCode::Home | KeyCode::End if d.selected_all => {
-                d.selected_all = false;
-                DialogKey::Redraw
-            }
             KeyCode::Char(' ') if d.focused == IdentityField::Global => {
                 d.global = !d.global;
                 DialogKey::Redraw
             }
-            KeyCode::Backspace => {
-                match d.focused {
-                    IdentityField::Name => {
-                        if d.selected_all {
-                            d.name.clear();
-                            d.selected_all = false;
-                        } else {
-                            d.name.pop();
-                        }
-                    }
-                    IdentityField::Email => {
-                        if d.selected_all {
-                            d.email.clear();
-                            d.selected_all = false;
-                        } else {
-                            d.email.pop();
-                        }
-                    }
-                    IdentityField::Global => {}
+            code => {
+                let target = match d.focused {
+                    IdentityField::Name => Some(&mut d.name),
+                    IdentityField::Email => Some(&mut d.email),
+                    IdentityField::Global => None,
+                };
+                if let Some(buf) = target {
+                    edit_single_line_key(buf, &mut d.selected_all, code, ctrl, alt, plain)
+                        .unwrap_or(DialogKey::None)
+                } else {
+                    DialogKey::None
                 }
-                DialogKey::Redraw
             }
-            KeyCode::Delete => {
-                if d.selected_all {
-                    match d.focused {
-                        IdentityField::Name => d.name.clear(),
-                        IdentityField::Email => d.email.clear(),
-                        IdentityField::Global => {}
-                    }
-                    d.selected_all = false;
-                }
-                DialogKey::Redraw
-            }
-            KeyCode::Char('u') if ctrl => {
-                match d.focused {
-                    IdentityField::Name => d.name.clear(),
-                    IdentityField::Email => d.email.clear(),
-                    IdentityField::Global => {}
-                }
-                d.selected_all = false;
-                DialogKey::Redraw
-            }
-            KeyCode::Char(c) if plain && !c.is_control() => {
-                match d.focused {
-                    IdentityField::Name => {
-                        if d.selected_all {
-                            d.name.clear();
-                            d.selected_all = false;
-                        }
-                        d.name.push(c);
-                    }
-                    IdentityField::Email => {
-                        if d.selected_all {
-                            d.email.clear();
-                            d.selected_all = false;
-                        }
-                        d.email.push(c);
-                    }
-                    IdentityField::Global => {}
-                }
-                DialogKey::Redraw
-            }
-            _ => DialogKey::None,
         },
         Dialog::NewBranch(d) => match key.code {
             KeyCode::Enter => DialogKey::Confirm,
@@ -2318,7 +2306,7 @@ pub fn route_dialog_key(dialog: &mut Dialog, key: &KeyEvent, i18n: &I18n) -> Dia
                 d.selected_all = false;
                 DialogKey::Redraw
             }
-            KeyCode::Char('a' | 'A') if ctrl && d.focused == NewBranchField::Name => {
+            KeyCode::Char('a' | 'A') if ctrl && !alt && d.focused == NewBranchField::Name => {
                 d.selected_all = !d.value.is_empty();
                 DialogKey::Redraw
             }
@@ -2370,7 +2358,7 @@ pub fn route_dialog_key(dialog: &mut Dialog, key: &KeyEvent, i18n: &I18n) -> Dia
                 }
                 DialogKey::Redraw
             }
-            KeyCode::Char('u') if ctrl && d.focused == NewBranchField::Name => {
+            KeyCode::Char('u' | 'U') if ctrl && !alt && d.focused == NewBranchField::Name => {
                 d.value.clear();
                 d.selected_all = false;
                 DialogKey::Redraw
@@ -2389,16 +2377,6 @@ pub fn route_dialog_key(dialog: &mut Dialog, key: &KeyEvent, i18n: &I18n) -> Dia
             }
             KeyCode::BackTab | KeyCode::Up => {
                 d.move_focus(-1);
-                DialogKey::Redraw
-            }
-            KeyCode::Char('a' | 'A') if ctrl && d.focused == StashPushField::Message => {
-                d.selected_all = !d.message.is_empty();
-                DialogKey::Redraw
-            }
-            KeyCode::Left | KeyCode::Right | KeyCode::Home | KeyCode::End
-                if d.focused == StashPushField::Message && d.selected_all =>
-            {
-                d.selected_all = false;
                 DialogKey::Redraw
             }
             KeyCode::Char('u') if alt => {
@@ -2422,70 +2400,14 @@ pub fn route_dialog_key(dialog: &mut Dialog, key: &KeyEvent, i18n: &I18n) -> Dia
                 }
                 DialogKey::Redraw
             }
-            KeyCode::Backspace if d.focused == StashPushField::Message => {
-                if d.selected_all {
-                    d.message.clear();
-                    d.selected_all = false;
-                } else {
-                    d.message.pop();
-                }
-                DialogKey::Redraw
-            }
-            KeyCode::Delete if d.focused == StashPushField::Message => {
-                if d.selected_all {
-                    d.message.clear();
-                    d.selected_all = false;
-                }
-                DialogKey::Redraw
-            }
-            KeyCode::Char('u') if ctrl && d.focused == StashPushField::Message => {
-                d.message.clear();
-                d.selected_all = false;
-                DialogKey::Redraw
-            }
-            KeyCode::Char(c)
-                if plain && !c.is_control() && d.focused == StashPushField::Message =>
-            {
-                if d.selected_all {
-                    d.message.clear();
-                    d.selected_all = false;
-                }
-                d.message.push(c);
-                DialogKey::Redraw
+            code if d.focused == StashPushField::Message => {
+                edit_single_line_key(&mut d.message, &mut d.selected_all, code, ctrl, alt, plain)
+                    .unwrap_or(DialogKey::None)
             }
             _ => DialogKey::None,
         },
         Dialog::Input(d) => match key.code {
             KeyCode::Enter => DialogKey::Confirm,
-            KeyCode::Char('a' | 'A') if ctrl => {
-                d.selected_all = !d.value.is_empty();
-                DialogKey::Redraw
-            }
-            KeyCode::Left | KeyCode::Right | KeyCode::Home | KeyCode::End if d.selected_all => {
-                d.selected_all = false;
-                DialogKey::Redraw
-            }
-            KeyCode::Backspace => {
-                if d.selected_all {
-                    d.value.clear();
-                    d.selected_all = false;
-                } else {
-                    d.value.pop();
-                }
-                DialogKey::Redraw
-            }
-            KeyCode::Delete => {
-                if d.selected_all {
-                    d.value.clear();
-                    d.selected_all = false;
-                }
-                DialogKey::Redraw
-            }
-            KeyCode::Char('u') if ctrl => {
-                d.value.clear();
-                d.selected_all = false;
-                DialogKey::Redraw
-            }
             KeyCode::Char('s') if ctrl || alt => {
                 if let Some((_, on)) = d.secondary_checkbox.as_mut() {
                     *on = !*on;
@@ -2515,15 +2437,8 @@ pub fn route_dialog_key(dialog: &mut Dialog, key: &KeyEvent, i18n: &I18n) -> Dia
                 }
                 DialogKey::Redraw
             }
-            KeyCode::Char(c) if plain && !c.is_control() => {
-                if d.selected_all {
-                    d.value.clear();
-                    d.selected_all = false;
-                }
-                d.value.push(c);
-                DialogKey::Redraw
-            }
-            _ => DialogKey::None,
+            code => edit_single_line_key(&mut d.value, &mut d.selected_all, code, ctrl, alt, plain)
+                .unwrap_or(DialogKey::None),
         },
         Dialog::Choice(d) => {
             let len = d.options.len().max(1);

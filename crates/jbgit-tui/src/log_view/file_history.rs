@@ -491,10 +491,16 @@ impl FileHistoryState {
     }
 
     pub fn set_branch_scope(&mut self, scope: HistoryBranchScope) -> Option<FileHistoryKey> {
-        if self.is_selection_history() || self.key.scope == scope {
+        if self.is_selection_history() {
+            return None;
+        }
+        let clearing_pinned_head =
+            matches!(scope, HistoryBranchScope::CurrentHead) && self.key.start_oid.is_some();
+        if self.key.scope == scope && !clearing_pinned_head {
             return None;
         }
         self.key.scope = scope;
+        self.key.start_oid = None;
         self.key.limit = DEFAULT_FILE_HISTORY_LIMIT;
         self.loading = true;
         self.error = None;

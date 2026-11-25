@@ -38,18 +38,18 @@ QA-Refs: `P2-01`, `P2-02`, `P2-05`
 
 ## 2. 任务清单
 
-- [ ] **清理暂存瞬态提示与 `loading_snapshot` 状态（`P2-01`）**：
+- [x] **清理暂存瞬态提示与 `loading_snapshot` 状态（`P2-01`）**：
   - 在 `StageWorkbench` 记录是否存在待完成的 transient stage notice（或引入明确标志 `pending_stage_notice: bool`），当 `StageActionSelected` / `UnstageActionSelected` / `StageAllTracked` 写入 `toast.staging_*` / `toast.unstaging_*` 时置 `true`；
   - 在 `EngineEvent::StageStatusLoaded`（`workbench.rs:1690-1696`）接收最新 epoch 后：若 `pending_stage_notice` 为 `true` 且当前 `status_notice` 仍为该瞬态提示，则清空 `*ctx.status_notice = None`（或替换为简短完成态）并复位 `pending_stage_notice = false`；
   - 在 `StageToggleShowIgnored`（`workbench.rs:1958`）不要借用 `loading_snapshot`（改用独立的 `loading_stage_status: bool` 纳入 `has_active_tasks()` 并在 `StageStatusLoaded` 复位，或在 `StageStatusLoaded` 清除对应的 stage loading 状态）。
-- [ ] **支持 Delete/Modify（`UD`/`DU`/`DD`/`AA`）冲突的无损重置（`P2-02`）**：
+- [x] **支持 Delete/Modify（`UD`/`DU`/`DD`/`AA`）冲突的无损重置（`P2-02`）**：
   - 将 `GitOp::UnresolveConflict` 的执行从纯 `compile_simple_steps` 升级为 `run_unresolve_conflict`（仿照 `run_accept_side` 的 `plan_accept_side` 模式）：
     1. 读取当前仓库进行中状态（`HEAD` + `MERGE_HEAD` / `CHERRY_PICK_HEAD` / `REVERT_HEAD` / `rebase-merge/stopped-sha` / `rebase-apply/original-commit`），解析语义 `ours_commit` / `theirs_commit`（注意 rebase/cherry-pick/revert 时三方基点分别为 `theirs^` 或 `merge_base(ours, theirs)`）；
     2. 对每个 path 查询 `(base_entry, ours_entry, theirs_entry)`：
        - 若三方均存在（标准 `UU`）且当前在索引中存在 stage 0，可直接走 `git checkout -m -- <path>`；
        - 若任一侧缺失（`UD`/`DU`/`AA` 等）或 `git checkout -m` 不可用，通过 `git update-index --index-info` 显式写入清除 stage 0（`0 0000... <path>`）并重建存在的 stage 1（base）/ stage 2（ours）/ stage 3（theirs）条目，同时将工作区文件恢复为对应存留侧内容（如 `UD` 恢复 `ours` 文件内容，避免 `git rm` 后工作区缺失文件）；
     3. 同步更新 `zh-CN.toml` / `en-US.toml:1417`（`toast.conflict_already_resolved_hint`）文案中过窄的 `git checkout -m` 描述（可选）。
-- [ ] **统一 FileHistory 工具栏范围标签与起始提交（`P2-05`）**：
+- [x] **统一 FileHistory 工具栏范围标签与起始提交（`P2-05`）**：
   - 方案（推荐，保留「查看截至选中提交的文件历史」能力同时消除误导）：
     - 当 `fh.key.scope == HistoryBranchScope::CurrentHead` 且 `let Some(oid) = fh.key.start_oid`（且该 `oid` 不等于当前 `HEAD`）时，工具栏按钮显示短哈希 `范围:{short_oid}`（如 `范围:f08c17b`）并高亮表示非 `HEAD` 范围；
     - 当用户在范围下拉菜单中显式点击 `Current HEAD`（`FileHistorySetBranchScope(HistoryBranchScope::CurrentHead)`）时，清空 `fh.key.start_oid = None` 并重新拉取，使其真正切换到完整 `HEAD` 历史（4 条含 `2f7ed7c`）。

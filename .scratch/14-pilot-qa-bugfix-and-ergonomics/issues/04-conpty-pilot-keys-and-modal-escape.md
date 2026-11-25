@@ -40,14 +40,14 @@ QA-Refs: `P2-07`, `P2-11`, `P2-12`
 
 ## 2. 任务清单
 
-- [ ] **修复 `tools/jbgit-pilot/src/keys.rs` Windows ConPTY 按键编码**：
+- [x] **修复 `tools/jbgit-pilot/src/keys.rs` Windows ConPTY 按键编码**：
   - `P2-07`（`keys.rs:149, 161`）：从传统 `0x00` C0 分支移除 ``'`'`` 与 `'~'`，使其走 `encode_ctrl_modified_char`（Windows 输出 `VK_OEM_3` Win32 Input Mode，Unix 输出 CSI `u` `\x1b[96;5u` / `\x1b[126;5u`）；
   - `P2-11`（`keys.rs:134-142`）：在 `#[cfg(windows)]` 下将带 `ctrl`（或 `shift`）的 `Enter` 编码为 Win32 Input Mode `\x1b[13;0;13;1;{ctrl_state};1_\x1b[13;0;13;0;{ctrl_state};1_`；在 `#[cfg(not(windows))]` 保留 CSI `u`；
   - `P2-12`（`keys.rs:47, 143`）：在 `#[cfg(windows)]` 下将 `KeyTokenKind::Esc` 编码为 Win32 Input Mode `\x1b[27;0;27;1;{ctrl_state};1_\x1b[27;0;27;0;{ctrl_state};1_`（`VK_ESCAPE = 27`），消除 ConPTY 裸 `0x1b` 解析歧义。
-- [ ] **修复 `tools/jbgit-pilot/src/server.rs` 多键刷新与停止序列**：
+- [x] **修复 `tools/jbgit-pilot/src/server.rs` 多键刷新与停止序列**：
   - `server.rs:316-320`：在 `PilotAction::Keys` 循环中逐键 `flush()`；在 `#[cfg(not(windows))]` 下若裸 `0x1b` 后还有后续按键，插入约 30ms 间隔防止被误拼为 `Alt+<next>`；
   - `server.rs:441`（`PilotAction::Stop`）：改用 `encode_key("Esc")` 代替裸字节 `b"\x1b"`。
-- [ ] **`jbgit-tui` 防御性对齐与提示完善**：
+- [x] **`jbgit-tui` 防御性对齐与提示完善**：
   - `crates/jbgit-tui/src/input/keyboard.rs:1381`：将 `KeyCode::Esc => vec![Action::CloseReflog]` 拆出 `if !ctrl && !alt` 守卫；
   - `crates/jbgit-tui/src/tree_browser.rs:694-703`：在 `CONTROL | ALT` 分支前无条件响应 `KeyCode::Esc => vec![Action::PopModal]`；
   - `crates/jbgit-tui/src/i18n/locales/{zh-CN,en-US}.toml:601`：将 `dialog.push_full.hint` 的 `Ctrl+Enter` 更新为 `Ctrl/Alt+Enter`（与 `dialog.message.hint` 及 `keyboard.rs:1286` 保持一致，方便不支持 CSI `u` 的 Unix 终端用户）。

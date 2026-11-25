@@ -42,11 +42,11 @@ QA-Refs: `P1-01`, `P1-02`
 
 ## 2. 任务清单
 
-- [ ] **统一剥离 Windows `\\?\` 前缀（`P1-01`）**：
+- [x] **统一剥离 Windows `\\?\` 前缀（`P1-01`）**：
   - 将 `strip_verbatim_prefix` / `strip_verbatim_prefix_str`（`crates/jbgit-engine/src/probe.rs:61-82`）提升为 `pub`（或下沉到 `jbgit-core` 供 `engine` 与 `tui` 共享）；
   - 在 `crates/jbgit-tui/src/session.rs:903-906` 对 `resolved_dir` 应用 `strip_verbatim_prefix`；
   - 在 `crates/jbgit-tui/src/repo_lifecycle.rs` 的 `default_clone_base_dir`（`:322`）及 `CloneDialogState::build_request`（`:286-294`）对 `target_dir` 同样做兜底剥离，确保无论路径来自启动目录、当前仓库父目录还是用户粘贴，传给 `git clone` 的都不含 `\\?\`。
-- [ ] **浅克隆状态变化时驱逐线程本地 `Repository` 并禁用提交缓存复用（`P1-02`）**：
+- [x] **浅克隆状态变化时驱逐线程本地 `Repository` 并禁用提交缓存复用（`P1-02`）**：
   - 在 `crates/jbgit-engine/src/pool/worker_pool.rs` 增加 `evict_thread_repo(git_dir: &Path)` 或 `with_fresh_thread_repo(git_dir: &Path, f)`（也可在 `THREAD_REPOS` 中随 `Repository` 一并记录上次打开时的 `shallow_fingerprint: Option<Vec<u8>>`，当磁盘 `<common_dir|git_dir>/shallow` 存在性或内容发生变化时自动移除旧 `Repository` 并重新 `Repository::open(git_dir)`，从而惠及全部 worker 线程上的 `revwalk`、`find_commit`、`details` 查询！）；
   - 在 `crates/jbgit-engine/src/pool/snapshot.rs:468-471` 与 `:1070`：当 `previous` 存在且 `probe.is_shallow != prev.is_shallow || shallow_fingerprint != prev.shallow_fingerprint` 时，强制 `reuse = None`（并在 `collect_commits_with_reuse` 签名/过滤中双保险校验），确保旧浅边界提交重新读取完整 `parents`；
   - 检查 `crates/jbgit-engine/src/details/`（提交详情加载）若同样通过 `with_thread_repo` 读取 `commit.parent_ids()`，依赖上述 `THREAD_REPOS` 按 shallow 指纹自动重开即可一并修复详情页 `父提交 (根提交)`。

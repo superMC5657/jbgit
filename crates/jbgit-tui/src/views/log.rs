@@ -408,33 +408,43 @@ fn render_filter_bar(
     // so active chips and condensed inactive triggers (`路径▾`, `[排除合并]`) remain reachable at 140x40.
     let text = &filter.spec.text;
     let usable_w = area.width.saturating_sub(reserve) as usize;
-    let box_w = if text.query.is_empty() && !filter.editing_text && any_chip_active {
-        let base_w = ((area.width as usize) / 4).clamp(10, 20);
-        let active_desired_w: usize = active_fields
-            .iter()
-            .map(|&field| {
-                let field_title = state.i18n.filter_field_title(field);
-                let empty_w = state
-                    .i18n
-                    .t_fmt("filter.chip", &[("field", field_title), ("label", "")])
-                    .width();
-                let label_w = if field == FilterField::Date {
-                    state
+    let box_w = if text.query.is_empty() && !filter.editing_text {
+        if any_chip_active {
+            let base_w = ((area.width as usize) / 4).clamp(10, 20);
+            let active_desired_w: usize = active_fields
+                .iter()
+                .map(|&field| {
+                    let field_title = state.i18n.filter_field_title(field);
+                    let empty_w = state
                         .i18n
-                        .format_date_filter_label(&filter.field_label(field))
-                        .width()
-                } else {
-                    filter.field_label(field).width()
-                };
-                empty_w + 1 + label_w.min(14)
-            })
-            .sum::<usize>()
-            + if nm_on { nm_chip_compact.width() } else { 0 };
-        let needed = 8 + active_desired_w + min_inactive_compact;
-        if usable_w < base_w + needed {
-            usable_w.saturating_sub(needed).clamp(8, 12)
+                        .t_fmt("filter.chip", &[("field", field_title), ("label", "")])
+                        .width();
+                    let label_w = if field == FilterField::Date {
+                        state
+                            .i18n
+                            .format_date_filter_label(&filter.field_label(field))
+                            .width()
+                    } else {
+                        filter.field_label(field).width()
+                    };
+                    empty_w + 1 + label_w.min(14)
+                })
+                .sum::<usize>()
+                + if nm_on { nm_chip_compact.width() } else { 0 };
+            let needed = 8 + active_desired_w + min_inactive_compact;
+            if usable_w < base_w + needed {
+                usable_w.saturating_sub(needed).clamp(8, 12)
+            } else {
+                base_w
+            }
         } else {
-            base_w
+            let base_w = ((area.width as usize) / 3).clamp(10, 32);
+            let needed = 8 + min_inactive_tight;
+            if usable_w < base_w + needed {
+                usable_w.saturating_sub(needed).clamp(10, base_w)
+            } else {
+                base_w
+            }
         }
     } else {
         ((area.width as usize) / 3).clamp(10, 32)
@@ -592,6 +602,7 @@ fn render_filter_bar(
         // (`路径▾`, `[排除合并]`, etc.) stay visible at 140x40 while preserving at least
         // 8 cols of readable label before falling back to prioritizing the active chip.
         let desired_label = label.width().min(18);
+        let min_label_needed = desired_label.clamp(1, 3);
         let max_label_cap = if !more_active_after && hidden_active == 0 {
             let after_compact = budget.saturating_sub(min_inactive_compact + overhead);
             let after_tight = budget.saturating_sub(min_inactive_tight + overhead);
@@ -607,7 +618,7 @@ fn render_filter_bar(
         } else {
             18
         };
-        let chip = if max_label_cap >= 3 && budget >= overhead + 3 {
+        let chip = if max_label_cap >= min_label_needed && budget >= overhead + min_label_needed {
             let effective_cap = max_label_cap.min(budget.saturating_sub(overhead));
             Some(state.i18n.t_fmt(
                 "filter.chip",
@@ -657,6 +668,13 @@ fn render_filter_bar(
             frame,
             &mut x,
             &nm_chip_compact,
+            nm_active_style,
+            Some(HitTarget::FilterNoMergesToggle),
+            reserve + ovf_res,
+        ) || put(
+            frame,
+            &mut x,
+            &nm_chip_tight,
             nm_active_style,
             Some(HitTarget::FilterNoMergesToggle),
             reserve + ovf_res,

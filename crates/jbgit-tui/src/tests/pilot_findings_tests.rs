@@ -962,3 +962,253 @@ fn stage_diff_rollback_toast_distinguishes_hunk_from_visual_line_selection() {
         "visual selection rollback must use line wording `选中行`, got: {lines_notice:?}"
     );
 }
+
+/// Code-review regression: active filter chips with 1-2 col labels (`v1`, `a`, `王`)
+/// must NOT vanish into `+1×` on normal/wide screens; idle `en-US` at 140x40 must keep
+/// `[No Merges]` visible; and `⚙` Presentation menu must expose `ToggleNoMergesFilter`.
+#[test]
+fn log_filter_bar_renders_short_active_chips_en_us_idle_no_merges_and_gear_menu_entry() {
+    for short_branch in ["a", "v1", "王"] {
+        let mut ts = zh_session_with_snapshot(snapshot());
+        ts.dispatch(Action::SwitchTab(WorkspaceTab::Log));
+        ts.dispatch(Action::ApplyFilterField {
+            field: FilterField::Branch,
+            expr: short_branch.into(),
+        });
+        let buf = ts.render(140, 40);
+        let row3 = rendered_row(&buf, 3);
+        assert!(
+            row3.contains(short_branch) && !row3.contains("+1×"),
+            "1-2 col active branch `{short_branch}` must render directly (not `+1×`), row3={row3:?}"
+        );
+    }
+
+    // Idle en-US at 140x40 must keep `[No Merges]` visible and clickable.
+    let mut ts_en = TestSession::with_snapshot(snapshot());
+    ts_en.state_mut().i18n = Arc::new(I18n::load("en-US", None));
+    ts_en.dispatch(Action::SwitchTab(WorkspaceTab::Log));
+    let buf_en = ts_en.render(140, 40);
+    let row3_en = rendered_row(&buf_en, 3);
+    assert!(
+        row3_en.contains("No Merges"),
+        "idle en-US 140x40 filter bar must keep `No Merges` visible, row3={row3_en:?}"
+    );
+    assert!(
+        ts_en
+            .hit_center_of(|t| matches!(t, HitTarget::FilterNoMergesToggle))
+            .is_some(),
+        "idle en-US 140x40 must register FilterNoMergesToggle hit target"
+    );
+
+    // Narrow 80x24 fallback: `⚙` Presentation menu must contain `ToggleNoMergesFilter`.
+    let pres_items = crate::input::presentation_menu_items(ts_en.state());
+    assert!(
+        pres_items.iter().any(|item| matches!(
+            &item.kind,
+            crate::app::ContextMenuEntryKind::Action(actions)
+                if actions.iter().any(|a| matches!(a, Action::ToggleNoMergesFilter))
+        )),
+        "`⚙` presentation menu must include Action::ToggleNoMergesFilter for narrow viewports"
+    );
+}
+
+/// Code-review regression (P1-02): viewing a shallow boundary commit BEFORE `Unshallow`
+/// caches `parents: []` in `diff_caches.details`; when `RepoSnapshotLoaded` flips
+/// `is_shallow: true -> false`, cached details must be evicted and immediately re-requested.
+#[test]
+fn unshallow_snapshot_evicts_cached_commit_details_and_rerequests() {
+    let mut shallow_snap = snapshot();
+    shallow_snap.is_shallow = true;
+    let boundary_oid = shallow_snap.commits[0].oid;
+    let details_key = DetailsKey::commits(vec![boundary_oid], 0);
+    let stamp = PersonStamp {
+        name: "Dev".into(),
+        email: "dev@example.com".into(),
+        time: 1_700_000_000,
+        offset_minutes: 0,
+    };
+
+    let mut ts = zh_session_with_snapshot(shallow_snap.clone());
+    ts.state_mut()
+        .diff_caches
+        .insert_details(Arc::new(CommitChangesBundle {
+            key: details_key.clone(),
+            details: vec![CommitDetails {
+                oid: boundary_oid,
+                parents: Vec::new(),
+                author: stamp.clone(),
+                committer: stamp,
+                message: "boundary".into(),
+                signature: CommitSignature::default(),
+            }],
+            changes: Vec::new(),
+        }));
+    ts.state_mut().log.details.changes.current_key = Some(details_key.clone());
+    assert!(ts.state().diff_caches.peek_details(&details_key).is_some());
+
+    let mut full_snap = shallow_snap;
+    full_snap.is_shallow = false;
+    let effects = ts
+        .state_mut()
+        .apply_engine_event(EngineEvent::RepoSnapshotLoaded {
+            snapshot: Arc::new(full_snap),
+            epoch: 2,
+        });
+
+    assert!(
+        ts.state().diff_caches.peek_details(&details_key).is_none(),
+        "shallow->unshallow transition must evict stale CommitChangesBundle from diff_caches"
+    );
+    assert!(
+        effects.iter().any(|e| matches!(
+            e,
+            crate::app::Effect::RequestCommitDetails {
+                slot: jbgit_core::RequestSlotId::LogCommitDetails,
+                key,
+            } if *key == details_key
+        )),
+        "expected immediate RequestCommitDetails for currently viewed boundary commit, got: {effects:?}"
+    );
+}
+
+/// Code-review regression (P2-03 & CS-6.6): `c -> CopyFilePath` must not leak when
+/// Log diff is zoomed, must appear in `?` Help, and must respect explicit `c -> noop`.
+#[test]
+fn copy_file_path_respects_zoomed_diff_noop_and_appears_in_help() {
+    use crate::keymap::help::{HelpRow, build_help_rows};
+    use crate::keymap::{KeyAction, actions::route_dynamic_key};
+
+    let mut ts = zh_session_with_snapshot(snapshot());
+    ts.dispatch(Action::SwitchTab(WorkspaceTab::Log));
+    ts.dispatch(Action::FocusPane(jbgit_core::PaneId::LogChangesTree));
+
+    // Appears in `?` Help under default keymap.
+    let rows = build_help_rows(ts.state(), "");
+    assert!(
+        rows.iter().any(|r| matches!(
+            r,
+            HelpRow::Entry {
+                run: Some(KeyAction::CopyFilePath),
+                ..
+            }
+        )),
+        "CopyFilePath must be discoverable in `?` Help / Command Palette"
+    );
+
+    // Must not fire when Log diff is zoomed fullscreen.
+    ts.state_mut().log.details.diff.zoomed = true;
+    let key_c = crossterm::event::KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE);
+    assert!(
+        route_dynamic_key(&key_c, ts.state()).is_none(),
+        "plain `c` must not trigger CopyFilePath while Log diff is zoomed"
+    );
+    assert!(
+        !crate::keymap::catalog::is_action_applicable(&KeyAction::CopyFilePath, ts.state()),
+        "CopyFilePath must not be applicable while Log diff is zoomed"
+    );
+
+    // Explicit `c -> noop` in `[log]` must disable both routing and context menu hint.
+    ts.state_mut().log.details.diff.zoomed = false;
+    let noop_binding: crate::config::keymap_config::KeyBindingConfig = toml::from_str(
+        r#"on = ["c"]
+run = "noop""#,
+    )
+    .unwrap();
+    ts.state_mut()
+        .config
+        .keymap
+        .log
+        .key_bindings
+        .push(noop_binding);
+    assert!(
+        !crate::keymap::actions::is_plain_c_copy_file_path_fallback_active(ts.state()),
+        "explicit `c -> noop` in [log] must suppress plain `c` CopyFilePath fallback"
+    );
+    assert!(route_dynamic_key(&key_c, ts.state()).is_none());
+}
+
+/// Code-review regression (P2-05): FileHistory scope dropdown must not show `✓` on
+/// `Current HEAD` while pinned to an older `start_oid`.
+#[test]
+fn file_history_scope_menu_unchecks_current_head_when_pinned_to_old_commit() {
+    let snap = snapshot();
+    let head_oid = snap.commits[0].oid;
+    let old_oid = oid(0x99);
+    assert_ne!(head_oid, old_oid);
+
+    let mut ts = zh_session_with_snapshot(snap);
+    ts.dispatch(Action::OpenFileHistory {
+        path: "src/app.rs".into(),
+        start_oid: Some(old_oid),
+        follow_renames: true,
+        line_range: None,
+    });
+    let items_pinned = crate::menus::file_history_scope_menu_items(ts.state());
+    assert!(
+        !items_pinned[0].label.starts_with('✓'),
+        "pinned old start_oid must NOT check Current HEAD in dropdown, got: {:?}",
+        items_pinned[0].label
+    );
+
+    ts.dispatch(Action::FileHistorySetBranchScope(
+        jbgit_core::HistoryBranchScope::CurrentHead,
+    ));
+    let items_head = crate::menus::file_history_scope_menu_items(ts.state());
+    assert!(
+        items_head[0].label.starts_with('✓'),
+        "after switching to Current HEAD, dropdown must check Current HEAD, got: {:?}",
+        items_head[0].label
+    );
+}
+
+/// Code-review regression (P3-02 & P3-04a): CloneDialogState supports `Ctrl+a` select-all
+/// replacement/clear and renders multi-line `CloneFinished(Err)` without losing `fatal:`.
+#[test]
+fn clone_dialog_supports_ctrl_a_select_all_and_multiline_error_rendering() {
+    let mut ts = zh_session_with_snapshot(snapshot());
+    let mut cd = crate::repo_lifecycle::CloneDialogState::new(PathBuf::from("C:/ws"));
+    cd.url = "https://example.com/old.git".into();
+    ts.state_mut()
+        .modal_stack
+        .push(ModalLayer::CloneRepo(Box::new(cd)));
+
+    // Ctrl+a then Backspace clears the entire URL field.
+    ts.send_key(KeyCode::Char('a'), KeyModifiers::CONTROL);
+    match ts.state().modal_stack.last() {
+        Some(ModalLayer::CloneRepo(cd)) => assert!(cd.selected_all),
+        other => panic!("expected CloneRepo modal, got {other:?}"),
+    }
+    ts.send_key(KeyCode::Backspace, KeyModifiers::NONE);
+    match ts.state().modal_stack.last() {
+        Some(ModalLayer::CloneRepo(cd)) => {
+            assert_eq!(cd.url, "");
+            assert!(!cd.selected_all);
+        }
+        other => panic!("expected CloneRepo modal, got {other:?}"),
+    }
+
+    // Multi-line git clone stderr must render the `fatal:` line cleanly without duplication.
+    if let Some(ModalLayer::CloneRepo(cd)) = ts.state_mut().modal_stack.last_mut() {
+        cd.cloning = true;
+        cd.push_progress("Cloning into 'dest'...".into());
+        cd.push_progress("fatal: repository 'https://example.com/missing.git' not found".into());
+    }
+    ts.state_mut()
+        .apply_ui_async_event(crate::app::UiAsyncEvent::CloneFinished(Err(
+            "Cloning into 'dest'...\nfatal: repository 'https://example.com/missing.git' not found"
+                .into(),
+        )));
+    let buf = ts.render(100, 30);
+    let screen = rendered_screen(&buf);
+    let modal_body = screen.lines().skip(1).collect::<Vec<_>>().join("\n");
+    assert_eq!(
+        modal_body.matches("fatal: repository").count(),
+        1,
+        "multi-line clone error must display `fatal:` line once inside modal:\n{screen}"
+    );
+    assert_eq!(
+        modal_body.matches("Cloning into 'dest'...").count(),
+        1,
+        "multi-line clone error must display context line once without duplicating progress:\n{screen}"
+    );
+}

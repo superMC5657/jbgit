@@ -37,19 +37,19 @@ QA-Refs: `P2-03`, `P2-04`, `P2-08`, `P2-09`, `P2-10`
 
 ## 2. 任务清单
 
-- [ ] **为 `LogChangesTree` 绑定直达文件快捷键并阻断 `p` 穿透到全局 Pull（`P2-03`）**：
+- [x] **为 `LogChangesTree` 绑定直达文件快捷键并阻断 `p` 穿透到全局 Pull（`P2-03`）**：
   - 在 `keymap/mod.rs` 和 `keymap/catalog.rs` 新增 3 个类型化 `KeyAction`：`CopyFilePath`、`CopyFilePatch`、`CompareFileWithLocal`，`is_action_applicable` 仅在 `active_tab == WorkspaceTab::Log && focused_pane == PaneId::LogChangesTree` 时为 `true`（内部复用 `log_change_menu_items` 相同的单提交与文件行守卫，目录行按 `c` 复制目录相对路径、按 `p`/`l` 安全忽略而非穿透全局 `GitPull`）；
   - 在 `default.toml` `[log]` 段绑定 `c -> copy_file_path`、`p -> copy_file_patch`、`l -> compare_file_with_local`，并在 `menus/log.rs:log_change_menu_items` 通过 `catalog::shortcut_for_action(...)` 动态展示快捷键；
   - 补齐 `zh-CN.toml` / `en-US.toml` 的 `help.action.*` 与 `view.footer.pill.*` 条目，并在 `keymap/mod.rs:1566-1575`（`presets_have_zero_unintended_keymap_shadowing_conflicts`）为 `(PaneId::LogChangesTree, KeyAction::GitPull)` 登记显式有意遮蔽白名单。
-- [ ] **目录上下文菜单移除文件专属操作与空分隔线（`P2-04`）**：
+- [x] **目录上下文菜单移除文件专属操作与空分隔线（`P2-04`）**：
   - 在 `crates/jbgit-tui/src/menus/log.rs:1086-1249` 用 `if is_file { ... }` 包裹 `toggle_diff`、`fullscreen_diff`、`compare_local`、`restore_version`、`open_editor`、`copy_patch` 及其专属分隔线；目录行保留 `show_dir_history`、`filter_by_path`、可选 `only_affected`/`swap` 与 `copy_path`。
   - 同步更新 `crates/jbgit-tui/src/tests/file_history_and_changes_tests.rs:166-194` 断言目录行菜单不包含这些文件专属项。
-- [ ] **分支速查浮窗支持 `Space` 切换收藏（`P2-08`）**：
+- [x] **分支速查浮窗支持 `Space` 切换收藏（`P2-08`）**：
   - 在 `crates/jbgit-tui/src/branches_popup.rs:route_branches_popup_key` 增加 `KeyCode::Char(' ') if !ctrl && !alt` 分支：当选中项为 `PopupRow::Branch(b)` 且 `b.kind != RefKind::Tag` 时派发 `Action::ToggleFavoriteRef { full, short }`；
   - 可选优化：在 `Action::ToggleFavoriteRef`（`app/git_workflows.rs:241-254`）切换收藏后，若 `BranchesPopup` 打开则按 `full_ref` 重新定位 `selected` 光标，避免切换后高亮跳位。
-- [ ] **上下文菜单支持功能键 `F1`–`F12` 快捷键分发（`P2-09`）**：
+- [x] **上下文菜单支持功能键 `F1`–`F12` 快捷键分发（`P2-09`）**：
   - 在 `crates/jbgit-tui/src/input/menus.rs:route_context_menu_key`（紧邻 `KeyCode::Delete`）添加 `KeyCode::F(n)` 分支（无 Ctrl/Alt/Shift 修饰），匹配当前菜单项 `i.shortcut` 等于或以 `" / "` 分隔包含 `format!("F{n}")` 的项并激活（同时修复分支子菜单 `F2` 重命名、Log 菜单 `F2` Reword 与 `F4` 全屏 Diff）。
-- [ ] **为 Diff 面板及模态 Diff 视图补齐 `Ctrl+F` 内联搜索（`P2-10`）**：
+- [x] **为 Diff 面板及模态 Diff 视图补齐 `Ctrl+F` 内联搜索（`P2-10`）**：
   - 在 `crates/jbgit-tui/src/config/defaults/keymaps/default.toml:165` `[diff]` 增加 `{ on = [ "<C-f>" ], run = "diff_search", desc = "在差异视图内搜索文本" }`；
   - 在 `input/keyboard.rs` 的 `route_file_history_key`（`:868`）、`route_annotate_key`（`:1084`）和 `route_reflog_key`（`:1414`）中当 Diff 区域聚焦时同样接受 `Ctrl+f` 触发 `DiffSearchOpen`。
 

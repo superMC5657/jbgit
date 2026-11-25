@@ -131,7 +131,7 @@ where
             },
             |ev| {
                 if let CliStreamEvent::Output { line, .. } = ev {
-                    on_line(line);
+                    on_line(jbgit_core::redact_urls_in(&line));
                 }
             },
         )

@@ -97,9 +97,12 @@ pub enum CloneDialogAction {
     SetFocus(CloneField),
     NextField,
     PrevField,
+    SelectAll,
+    DeselectAll,
     InsertChar(char),
     Paste(String),
     Backspace,
+    Delete,
     ClearField,
     ToggleSubmodules,
 }
@@ -116,6 +119,7 @@ pub struct CloneDialogState {
     pub depth: String,
     pub recurse_submodules: bool,
     pub focus: CloneField,
+    pub selected_all: bool,
     pub error: Option<String>,
     pub cloning: bool,
     pub progress_lines: Vec<String>,
@@ -131,6 +135,7 @@ impl CloneDialogState {
             depth: String::new(),
             recurse_submodules: false,
             focus: CloneField::Url,
+            selected_all: false,
             error: None,
             cloning: false,
             progress_lines: Vec::new(),
@@ -170,12 +175,26 @@ impl CloneDialogState {
         match act {
             CloneDialogAction::SetFocus(field) => {
                 self.focus = field;
+                self.selected_all = false;
             }
             CloneDialogAction::NextField => {
                 self.focus = self.focus.next();
+                self.selected_all = false;
             }
             CloneDialogAction::PrevField => {
                 self.focus = self.focus.prev();
+                self.selected_all = false;
+            }
+            CloneDialogAction::SelectAll => {
+                self.selected_all = match self.focus {
+                    CloneField::Url => !self.url.is_empty(),
+                    CloneField::TargetDir => !self.target_dir.is_empty(),
+                    CloneField::Depth => !self.depth.is_empty(),
+                    CloneField::RecurseSubmodules => false,
+                };
+            }
+            CloneDialogAction::DeselectAll => {
+                self.selected_all = false;
             }
             CloneDialogAction::InsertChar(c) => {
                 if c.is_control() {
@@ -183,15 +202,27 @@ impl CloneDialogState {
                 }
                 match self.focus {
                     CloneField::Url => {
+                        if self.selected_all {
+                            self.url.clear();
+                            self.selected_all = false;
+                        }
                         self.url.push(c);
                         self.sync_inferred_target_dir();
                     }
                     CloneField::TargetDir => {
+                        if self.selected_all {
+                            self.target_dir.clear();
+                            self.selected_all = false;
+                        }
                         self.dir_edited = true;
                         self.target_dir.push(c);
                     }
                     CloneField::Depth => {
                         if c.is_ascii_digit() {
+                            if self.selected_all {
+                                self.depth.clear();
+                                self.selected_all = false;
+                            }
                             self.depth.push(c);
                         }
                     }
@@ -209,16 +240,29 @@ impl CloneDialogState {
                 }
                 match self.focus {
                     CloneField::Url => {
+                        if self.selected_all {
+                            self.url.clear();
+                            self.selected_all = false;
+                        }
                         self.url.push_str(clean.trim());
                         self.sync_inferred_target_dir();
                     }
                     CloneField::TargetDir => {
+                        if self.selected_all {
+                            self.target_dir.clear();
+                            self.selected_all = false;
+                        }
                         self.dir_edited = true;
                         self.target_dir.push_str(&clean);
                     }
                     CloneField::Depth => {
-                        for c in clean.chars().filter(char::is_ascii_digit) {
-                            self.depth.push(c);
+                        let digits: String = clean.chars().filter(char::is_ascii_digit).collect();
+                        if !digits.is_empty() {
+                            if self.selected_all {
+                                self.depth.clear();
+                                self.selected_all = false;
+                            }
+                            self.depth.push_str(&digits);
                         }
                     }
                     CloneField::RecurseSubmodules => {}
@@ -226,33 +270,71 @@ impl CloneDialogState {
             }
             CloneDialogAction::Backspace => match self.focus {
                 CloneField::Url => {
-                    self.url.pop();
+                    if self.selected_all {
+                        self.url.clear();
+                        self.selected_all = false;
+                    } else {
+                        self.url.pop();
+                    }
                     self.sync_inferred_target_dir();
                 }
                 CloneField::TargetDir => {
                     self.dir_edited = true;
-                    self.target_dir.pop();
+                    if self.selected_all {
+                        self.target_dir.clear();
+                        self.selected_all = false;
+                    } else {
+                        self.target_dir.pop();
+                    }
                 }
                 CloneField::Depth => {
-                    self.depth.pop();
+                    if self.selected_all {
+                        self.depth.clear();
+                        self.selected_all = false;
+                    } else {
+                        self.depth.pop();
+                    }
                 }
                 CloneField::RecurseSubmodules => {}
             },
-            CloneDialogAction::ClearField => match self.focus {
-                CloneField::Url => {
-                    self.url.clear();
-                    self.sync_inferred_target_dir();
+            CloneDialogAction::Delete => {
+                if self.selected_all {
+                    self.selected_all = false;
+                    match self.focus {
+                        CloneField::Url => {
+                            self.url.clear();
+                            self.sync_inferred_target_dir();
+                        }
+                        CloneField::TargetDir => {
+                            self.dir_edited = true;
+                            self.target_dir.clear();
+                        }
+                        CloneField::Depth => {
+                            self.depth.clear();
+                        }
+                        CloneField::RecurseSubmodules => {}
+                    }
                 }
-                CloneField::TargetDir => {
-                    self.dir_edited = true;
-                    self.target_dir.clear();
+            }
+            CloneDialogAction::ClearField => {
+                self.selected_all = false;
+                match self.focus {
+                    CloneField::Url => {
+                        self.url.clear();
+                        self.sync_inferred_target_dir();
+                    }
+                    CloneField::TargetDir => {
+                        self.dir_edited = true;
+                        self.target_dir.clear();
+                    }
+                    CloneField::Depth => {
+                        self.depth.clear();
+                    }
+                    CloneField::RecurseSubmodules => {}
                 }
-                CloneField::Depth => {
-                    self.depth.clear();
-                }
-                CloneField::RecurseSubmodules => {}
-            },
+            }
             CloneDialogAction::ToggleSubmodules => {
+                self.selected_all = false;
                 self.recurse_submodules = !self.recurse_submodules;
             }
         }
@@ -444,8 +526,17 @@ pub fn route_clone_repo_key(key: &KeyEvent, state: &AppState) -> Vec<Action> {
             vec![Action::CloneRepoUpdate(CloneDialogAction::PrevField)]
         }
         KeyCode::Enter => vec![Action::CloneRepoSubmit],
-        KeyCode::Char('u') if ctrl => vec![Action::CloneRepoUpdate(CloneDialogAction::ClearField)],
+        KeyCode::Char('a' | 'A') if ctrl && !alt => {
+            vec![Action::CloneRepoUpdate(CloneDialogAction::SelectAll)]
+        }
+        KeyCode::Left | KeyCode::Right | KeyCode::Home | KeyCode::End if cd.selected_all => {
+            vec![Action::CloneRepoUpdate(CloneDialogAction::DeselectAll)]
+        }
+        KeyCode::Char('u' | 'U') if ctrl && !alt => {
+            vec![Action::CloneRepoUpdate(CloneDialogAction::ClearField)]
+        }
         KeyCode::Backspace => vec![Action::CloneRepoUpdate(CloneDialogAction::Backspace)],
+        KeyCode::Delete => vec![Action::CloneRepoUpdate(CloneDialogAction::Delete)],
         KeyCode::Char(' ') if cd.focus == CloneField::RecurseSubmodules && !ctrl && !alt => {
             vec![Action::CloneRepoUpdate(CloneDialogAction::ToggleSubmodules)]
         }
@@ -653,7 +744,16 @@ pub fn render_clone_repo_modal(
         return;
     }
     let show_progress = cd.cloning || !cd.progress_lines.is_empty();
-    let desired_h: u16 = if show_progress { 20 } else { 15 };
+    let err_line_count = cd
+        .error
+        .as_deref()
+        .map(|e| e.lines().filter(|l| !l.trim().is_empty()).count().min(4))
+        .unwrap_or(0);
+    let desired_h: u16 = if show_progress {
+        20
+    } else {
+        15 + err_line_count.saturating_sub(1) as u16
+    };
     let w = screen
         .width
         .saturating_sub(4)
@@ -733,10 +833,23 @@ pub fn render_clone_repo_modal(
                 Style::default().fg(ctx.theme.fg_muted),
             ))
         } else {
-            let mut spans = vec![Span::styled(
-                format!(" {}", truncate_to_width(value, input_budget)),
-                Style::default().fg(ctx.theme.fg_bright),
-            )];
+            let shown_val = truncate_to_width(value, input_budget);
+            let mut spans = if focused && cd.selected_all && !shown_val.is_empty() {
+                vec![
+                    Span::styled(" ", Style::default().fg(ctx.theme.fg_bright)),
+                    Span::styled(
+                        shown_val,
+                        Style::default()
+                            .fg(ctx.theme.fg_bright)
+                            .bg(ctx.theme.border_focused),
+                    ),
+                ]
+            } else {
+                vec![Span::styled(
+                    format!(" {shown_val}"),
+                    Style::default().fg(ctx.theme.fg_bright),
+                )]
+            };
             if focused {
                 spans.push(Span::styled(
                     "▏",
@@ -832,16 +945,25 @@ pub fn render_clone_repo_modal(
     if let Some(err) = &cd.error
         && y + 2 < inner.bottom()
     {
-        frame.render_widget(
-            Paragraph::new(Span::styled(
-                truncate_to_width(&format!(" {err}"), width),
-                Style::default()
-                    .fg(ctx.theme.status_conflicted)
-                    .add_modifier(Modifier::BOLD),
-            )),
-            Rect::new(inner.x, y, inner.width, 1),
-        );
-        y += 1;
+        let err_lines: Vec<&str> = err
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty())
+            .collect();
+        let max_err_rows = (inner.bottom().saturating_sub(y + 2) as usize).min(4);
+        let skip = err_lines.len().saturating_sub(max_err_rows);
+        for line in err_lines.into_iter().skip(skip).take(max_err_rows) {
+            frame.render_widget(
+                Paragraph::new(Span::styled(
+                    truncate_to_width(&format!(" {line}"), width),
+                    Style::default()
+                        .fg(ctx.theme.status_conflicted)
+                        .add_modifier(Modifier::BOLD),
+                )),
+                Rect::new(inner.x, y, inner.width, 1),
+            );
+            y += 1;
+        }
     }
 
     if show_progress && y + 2 < inner.bottom() {

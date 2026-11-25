@@ -2700,6 +2700,7 @@ impl AppState {
                     });
                 }
                 GitOp::Unshallow { remote } => {
+                    self.invalidate_shallow_caches(effects);
                     self.status_notice = Some(
                         self.i18n
                             .t_fmt("toast.unshallow_done", &[("remote", remote)]),

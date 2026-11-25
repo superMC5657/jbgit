@@ -39,31 +39,12 @@ pub(crate) fn read_shallow_fingerprint(git_dir: &Path, common_dir: &Path) -> Opt
     None
 }
 
-fn resolve_common_dir_hint(git_dir: &Path) -> PathBuf {
-    if let Ok(raw) = std::fs::read_to_string(git_dir.join("commondir")) {
-        let trimmed = raw.trim();
-        if !trimmed.is_empty() {
-            let p = Path::new(trimmed);
-            return if p.is_absolute() {
-                p.to_path_buf()
-            } else {
-                git_dir.join(p)
-            };
-        }
-    }
-    git_dir.to_path_buf()
-}
-
 fn open_cached_repo(git_dir: &Path) -> Result<CachedThreadRepo, EngineError> {
-    let common_hint = resolve_common_dir_hint(git_dir);
-    let pre_fingerprint = read_shallow_fingerprint(git_dir, &common_hint);
     let repo = Repository::open(git_dir)?;
     let common_dir = repo.commondir().to_path_buf();
-    let shallow_fingerprint = if common_dir == common_hint {
-        pre_fingerprint
-    } else {
-        read_shallow_fingerprint(git_dir, &common_dir)
-    };
+    // `git2::Repository` loads `shallow_grafts` lazily on first revwalk/lookup,
+    // so capturing the fingerprint right after `open()` precedes graft loading.
+    let shallow_fingerprint = read_shallow_fingerprint(git_dir, &common_dir);
     Ok(CachedThreadRepo {
         repo,
         common_dir,
@@ -91,17 +72,9 @@ where
         if let Some(cached) = map.get(git_dir) {
             let current_shallow = read_shallow_fingerprint(git_dir, &cached.common_dir);
             if current_shallow != cached.shallow_fingerprint {
-                let common_dir = cached.common_dir.clone();
                 map.remove(git_dir);
-                let repo = Repository::open(git_dir)?;
-                map.insert(
-                    git_dir.to_path_buf(),
-                    CachedThreadRepo {
-                        repo,
-                        common_dir,
-                        shallow_fingerprint: current_shallow,
-                    },
-                );
+                let entry = open_cached_repo(git_dir)?;
+                map.insert(git_dir.to_path_buf(), entry);
             } else {
                 let reload_failed = !cached.repo.is_bare()
                     && cached

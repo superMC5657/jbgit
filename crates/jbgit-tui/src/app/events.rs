@@ -105,17 +105,21 @@ impl AppState {
                                 .collect();
                             cd.progress_lines.retain(|line| {
                                 let trimmed = line.trim();
-                                !trimmed.is_empty()
-                                    && !err_lines
-                                        .iter()
-                                        .any(|e| *e == trimmed || e.ends_with(trimmed))
+                                !trimmed.is_empty() && !err_lines.contains(&trimmed)
                             });
                             cd.error = Some(err.clone());
                             break;
                         }
                     }
-                    self.status_notice =
-                        Some(self.i18n.t_fmt("toast.repo_clone_failed", &[("err", &err)]));
+                    let toast_err = err
+                        .lines()
+                        .map(str::trim)
+                        .rfind(|l| !l.is_empty())
+                        .unwrap_or(err.trim());
+                    self.status_notice = Some(
+                        self.i18n
+                            .t_fmt("toast.repo_clone_failed", &[("err", toast_err)]),
+                    );
                     self.needs_redraw = true;
                 }
             },
@@ -305,8 +309,10 @@ impl AppState {
                 self.loading_snapshot = false;
                 self.loading_more_commits = false;
                 let prev_head = self.repo_snapshot.as_ref().and_then(|s| s.head_oid);
+                let prev_is_shallow = self.repo_snapshot.as_ref().map(|s| s.is_shallow);
                 let prev_ongoing = self.ongoing_kind();
                 let head_changed = prev_head.is_some() && prev_head != snapshot.head_oid;
+                let shallow_changed = prev_is_shallow.is_some_and(|was| was != snapshot.is_shallow);
                 if self.log.branches.settings_path.is_none()
                     && !snapshot.common_dir.as_os_str().is_empty()
                 {
@@ -328,7 +334,11 @@ impl AppState {
                         p.refresh_from_snapshot(&snapshot);
                     }
                 }
-                self.diff_caches.clear_blames();
+                if shallow_changed {
+                    self.invalidate_shallow_caches(&mut effects);
+                } else {
+                    self.diff_caches.clear_blames();
+                }
                 self.repo_snapshot = Some(snapshot);
                 self.apply_pending_remote_selection();
                 self.sync_open_push_dialog_remotes(&mut effects);
@@ -1005,6 +1015,27 @@ impl AppState {
                 r.details_requested = None;
                 r.diff_requested = None;
             }
+        }
+    }
+
+    /// Evicts cached commit details, file diffs, syntax highlights, and blames
+    /// when repository shallow boundaries change (e.g. `git fetch --unshallow`)
+    /// and immediately re-requests any actively viewed commit details.
+    pub(crate) fn invalidate_shallow_caches(&mut self, effects: &mut Vec<Effect>) {
+        self.diff_caches.clear_commit_caches();
+        self.log.details.pending = None;
+        self.log.details.diff.requested = None;
+        if let Some(key) = self.log.details.changes.current_key.clone() {
+            effects.push(Effect::RequestCommitDetails {
+                slot: RequestSlotId::LogCommitDetails,
+                key,
+            });
+        }
+        if let Some(fh) = self.modal_stack.file_history_mut() {
+            fh.diff.requested = None;
+        }
+        if let Some(ann) = self.modal_stack.annotate_mut() {
+            ann.diff.requested = None;
         }
     }
 

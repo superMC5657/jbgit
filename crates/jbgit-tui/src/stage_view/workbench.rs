@@ -34,7 +34,7 @@ use super::CommitMessageEditor;
 enum StageDiffOp {
     Stage,
     Unstage,
-    Rollback,
+    Rollback { whole_hunk: bool },
 }
 
 /// Narrow coordination context passed by [`crate::app::AppState`] into
@@ -2304,16 +2304,14 @@ impl CommitWorkbench {
                 if let Some(key) = self.readonly_diff_notice_key() {
                     *ctx.status_notice = Some(ctx.i18n.t(key).to_string());
                 } else if let Some(sel) = self.collect_selected_line_sets() {
-                    let whole_hunk = self.selected_visual_bounds().is_none();
-                    self.apply_stage_diff_selection(StageDiffOp::Stage, sel, whole_hunk, ctx);
+                    self.apply_stage_diff_selection(StageDiffOp::Stage, sel, ctx);
                 }
             }
             Action::StageDiffUnstageSelection => {
                 if let Some(key) = self.readonly_diff_notice_key() {
                     *ctx.status_notice = Some(ctx.i18n.t(key).to_string());
                 } else if let Some(sel) = self.collect_selected_line_sets() {
-                    let whole_hunk = self.selected_visual_bounds().is_none();
-                    self.apply_stage_diff_selection(StageDiffOp::Unstage, sel, whole_hunk, ctx);
+                    self.apply_stage_diff_selection(StageDiffOp::Unstage, sel, ctx);
                 }
             }
             Action::StageDiffRollbackSelection => {
@@ -2324,7 +2322,7 @@ impl CommitWorkbench {
                         Some(ctx.i18n.t("toast.untracked_rollback_disabled").to_string());
                 } else if let Some(sel) = self.collect_selected_line_sets() {
                     let whole_hunk = self.selected_visual_bounds().is_none();
-                    self.apply_stage_diff_selection(StageDiffOp::Rollback, sel, whole_hunk, ctx);
+                    self.apply_stage_diff_selection(StageDiffOp::Rollback { whole_hunk }, sel, ctx);
                 }
             }
             Action::StageDiffUndoRollback => {
@@ -2405,14 +2403,14 @@ impl CommitWorkbench {
                         if let Some(key) = self.readonly_diff_notice_key() {
                             *ctx.status_notice = Some(ctx.i18n.t(key).to_string());
                         } else if let Some(sel) = self.collect_hunk_line_sets(hunk_idx) {
-                            self.apply_stage_diff_selection(StageDiffOp::Stage, sel, true, ctx);
+                            self.apply_stage_diff_selection(StageDiffOp::Stage, sel, ctx);
                         }
                     }
                     DiffHunkActionKind::Unstage => {
                         if let Some(key) = self.readonly_diff_notice_key() {
                             *ctx.status_notice = Some(ctx.i18n.t(key).to_string());
                         } else if let Some(sel) = self.collect_hunk_line_sets(hunk_idx) {
-                            self.apply_stage_diff_selection(StageDiffOp::Unstage, sel, true, ctx);
+                            self.apply_stage_diff_selection(StageDiffOp::Unstage, sel, ctx);
                         }
                     }
                     DiffHunkActionKind::Rollback => {
@@ -2422,7 +2420,11 @@ impl CommitWorkbench {
                             *ctx.status_notice =
                                 Some(ctx.i18n.t("toast.untracked_rollback_disabled").to_string());
                         } else if let Some(sel) = self.collect_hunk_line_sets(hunk_idx) {
-                            self.apply_stage_diff_selection(StageDiffOp::Rollback, sel, true, ctx);
+                            self.apply_stage_diff_selection(
+                                StageDiffOp::Rollback { whole_hunk: true },
+                                sel,
+                                ctx,
+                            );
                         }
                     }
                 }
@@ -2476,7 +2478,6 @@ impl CommitWorkbench {
         &mut self,
         op: StageDiffOp,
         sel: LineSelection,
-        whole_hunk: bool,
         ctx: &mut CommitContext<'_>,
     ) {
         let Some(diff) = self.current_diff.as_ref().cloned() else {
@@ -2515,7 +2516,7 @@ impl CommitWorkbench {
                     remove_from_index: remove,
                 });
             }
-            StageDiffOp::Rollback if !sel.staged_side => {
+            StageDiffOp::Rollback { whole_hunk } if !sel.staged_side => {
                 if diff.is_untracked() {
                     *ctx.status_notice =
                         Some(ctx.i18n.t("toast.untracked_rollback_disabled").to_string());

@@ -57,23 +57,61 @@ pub(crate) fn canonical_or_self(p: &Path) -> PathBuf {
     strip_verbatim_prefix(fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf()))
 }
 
-/// Strips a Windows verbatim path prefix (`\\?\` or `\\?\UNC\`) from `s` if present.
-pub fn strip_verbatim_prefix_str(s: &str) -> Option<String> {
-    if let Some(rest) = s.strip_prefix(r"\\?\") {
-        if rest.len() >= 4 && rest[..4].eq_ignore_ascii_case(r"UNC\") {
-            Some(format!(r"\\{}", &rest[4..]))
-        } else {
-            Some(rest.to_string())
-        }
-    } else {
-        None
-    }
+fn is_ascii_drive_prefix(s: &str) -> bool {
+    let bytes = s.as_bytes();
+    bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':'
 }
 
-/// Strips a Windows verbatim path prefix (`\\?\` or `\\?\UNC\`) from `p` when present.
+/// Strips a Windows verbatim path prefix (`\\?\`, `\\?\UNC\`, `//?/`, or
+/// `//?/UNC/`) from `s` when followed by a UNC share or ASCII drive prefix.
+///
+/// Device paths (e.g. `\\?\Volume{...}\...`, `\\?\GLOBALROOT\...`) and bare
+/// verbatim prefixes are left untouched (`None`).
+pub fn strip_verbatim_prefix_str(s: &str) -> Option<String> {
+    if let Some(rest) = s.strip_prefix(r"\\?\") {
+        if rest
+            .as_bytes()
+            .get(..4)
+            .is_some_and(|p| p.eq_ignore_ascii_case(br"UNC\") || p.eq_ignore_ascii_case(br"UNC/"))
+        {
+            return Some(format!(r"\\{}", &rest[4..]));
+        }
+        if is_ascii_drive_prefix(rest) {
+            return Some(rest.to_string());
+        }
+        return None;
+    }
+    if let Some(rest) = s.strip_prefix("//?/") {
+        if rest
+            .as_bytes()
+            .get(..4)
+            .is_some_and(|p| p.eq_ignore_ascii_case(b"UNC/") || p.eq_ignore_ascii_case(br"UNC\"))
+        {
+            return Some(format!("//{}", &rest[4..]));
+        }
+        if is_ascii_drive_prefix(rest) {
+            return Some(rest.to_string());
+        }
+        return None;
+    }
+    None
+}
+
+/// Strips a Windows verbatim path prefix (`\\?\`, `\\?\UNC\`, `//?/`, or
+/// `//?/UNC/`) from `p` on Windows when present and valid UTF-8.
+///
+/// Non-Windows platforms return `p` unchanged so literal relative paths
+/// starting with `\\?\` are never mutated.
+#[cfg(windows)]
 pub fn strip_verbatim_prefix(p: PathBuf) -> PathBuf {
-    let s = p.to_string_lossy();
-    strip_verbatim_prefix_str(&s).map_or(p, PathBuf::from)
+    p.to_str()
+        .and_then(strip_verbatim_prefix_str)
+        .map_or(p, PathBuf::from)
+}
+
+#[cfg(not(windows))]
+pub fn strip_verbatim_prefix(p: PathBuf) -> PathBuf {
+    p
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -267,20 +305,48 @@ mod tests {
             Some(r"\\server\share\repo")
         );
         assert_eq!(
+            strip_verbatim_prefix_str("//?/UNC/server/share/repo").as_deref(),
+            Some("//server/share/repo")
+        );
+        assert_eq!(
+            strip_verbatim_prefix_str("//?/unc/server/share/repo").as_deref(),
+            Some("//server/share/repo")
+        );
+        assert_eq!(
             strip_verbatim_prefix_str(r"\\?\C:\Users\dev\repo").as_deref(),
             Some(r"C:\Users\dev\repo")
         );
+        assert_eq!(
+            strip_verbatim_prefix_str("//?/C:/Users/dev/repo").as_deref(),
+            Some("C:/Users/dev/repo")
+        );
         assert_eq!(strip_verbatim_prefix_str(r"C:\Users\dev\repo"), None);
         assert_eq!(strip_verbatim_prefix_str("/var/repo"), None);
+        // Multi-byte UTF-8 after `\\?\` must not panic on char boundaries,
+        // and Windows device paths / bare prefixes must remain untouched.
+        assert_eq!(strip_verbatim_prefix_str(r"\\?\中文"), None);
+        assert_eq!(strip_verbatim_prefix_str("//?/中文"), None);
+        assert_eq!(
+            strip_verbatim_prefix_str(r"\\?\Volume{1234-5678}\foo"),
+            None
+        );
+        assert_eq!(strip_verbatim_prefix_str(r"\\?\"), None);
 
-        assert_eq!(
-            strip_verbatim_prefix(PathBuf::from(r"\\?\C:\Users\dev\repo")),
-            PathBuf::from(r"C:\Users\dev\repo")
-        );
-        assert_eq!(
-            strip_verbatim_prefix(PathBuf::from(r"\\?\UNC\server\share\repo")),
-            PathBuf::from(r"\\server\share\repo")
-        );
+        #[cfg(windows)]
+        {
+            assert_eq!(
+                strip_verbatim_prefix(PathBuf::from(r"\\?\C:\Users\dev\repo")),
+                PathBuf::from(r"C:\Users\dev\repo")
+            );
+            assert_eq!(
+                strip_verbatim_prefix(PathBuf::from(r"\\?\UNC\server\share\repo")),
+                PathBuf::from(r"\\server\share\repo")
+            );
+            assert_eq!(
+                strip_verbatim_prefix(PathBuf::from("//?/UNC/server/share/repo")),
+                PathBuf::from("//server/share/repo")
+            );
+        }
         assert_eq!(
             strip_verbatim_prefix(PathBuf::from("/var/repo")),
             PathBuf::from("/var/repo")

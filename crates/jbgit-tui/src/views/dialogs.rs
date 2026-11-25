@@ -604,6 +604,29 @@ fn render_identity(
     );
 }
 
+fn credential_input_line(
+    shown: &str,
+    w: usize,
+    selected_all: bool,
+    ctx: &RenderContext<'_>,
+) -> Line<'static> {
+    let shown_val = truncate_to_width(shown, w.saturating_sub(4));
+    let val_pad = " ".repeat(w.saturating_sub(shown_val.width() + 3));
+    let cred_base = Style::default()
+        .fg(ctx.theme.fg_bright)
+        .bg(ctx.theme.bg_panel)
+        .add_modifier(Modifier::UNDERLINED);
+    if selected_all && !shown_val.is_empty() {
+        Line::from(vec![
+            Span::styled(" ", cred_base),
+            Span::styled(shown_val, cred_base.bg(ctx.theme.bg_selection_focused)),
+            Span::styled(format!("▏{val_pad}"), cred_base),
+        ])
+    } else {
+        Line::from(Span::styled(format!(" {shown_val}▏{val_pad}"), cred_base))
+    }
+}
+
 fn render_credential(
     frame: &mut Frame<'_>,
     screen: Rect,
@@ -659,21 +682,7 @@ fn render_credential(
                 ))
             })
             .collect();
-        let shown_val = truncate_to_width(&shown, w.saturating_sub(4));
-        let val_pad = " ".repeat(w.saturating_sub(shown_val.width() + 3));
-        let cred_base = Style::default()
-            .fg(ctx.theme.fg_bright)
-            .bg(ctx.theme.bg_panel)
-            .add_modifier(Modifier::UNDERLINED);
-        lines.push(if d.selected_all && !shown_val.is_empty() {
-            Line::from(vec![
-                Span::styled(" ", cred_base),
-                Span::styled(shown_val, cred_base.bg(ctx.theme.bg_selection_focused)),
-                Span::styled(format!("▏{val_pad}"), cred_base),
-            ])
-        } else {
-            Line::from(Span::styled(format!(" {shown_val}▏{val_pad}"), cred_base))
-        });
+        lines.push(credential_input_line(&shown, w, d.selected_all, ctx));
         lines.push(Line::from(Span::styled(
             format!(
                 " {}",
@@ -724,21 +733,7 @@ fn render_credential(
     } else {
         "dialog.credential.hint_masked"
     };
-    let shown_val = truncate_to_width(&shown, w.saturating_sub(4));
-    let val_pad = " ".repeat(w.saturating_sub(shown_val.width() + 3));
-    let cred_base = Style::default()
-        .fg(ctx.theme.fg_bright)
-        .bg(ctx.theme.bg_panel)
-        .add_modifier(Modifier::UNDERLINED);
-    let cred_input_line = if d.selected_all && !shown_val.is_empty() {
-        Line::from(vec![
-            Span::styled(" ", cred_base),
-            Span::styled(shown_val, cred_base.bg(ctx.theme.bg_selection_focused)),
-            Span::styled(format!("▏{val_pad}"), cred_base),
-        ])
-    } else {
-        Line::from(Span::styled(format!(" {shown_val}▏{val_pad}"), cred_base))
-    };
+    let cred_input_line = credential_input_line(&shown, w, d.selected_all, ctx);
     let lines = vec![
         Line::from(Span::styled(
             format!(" {}", truncate_to_width(&d.prompt, w.saturating_sub(2))),

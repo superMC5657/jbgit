@@ -103,6 +103,15 @@ impl DiffCacheStore {
         self.blames.clear();
     }
 
+    /// Evicts cached commit details, file diffs, syntax highlights, and blames
+    /// when repository shallow boundaries change (e.g. `git fetch --unshallow`).
+    pub fn clear_commit_caches(&mut self) {
+        self.details.clear();
+        self.diffs.clear();
+        self.syntax.clear();
+        self.blames.clear();
+    }
+
     /// Evicts cached working-tree (`rev == None`) blame entries after local file edits.
     pub fn clear_worktree_blames(&mut self) {
         self.blames.retain(|k, _| k.rev.is_some());

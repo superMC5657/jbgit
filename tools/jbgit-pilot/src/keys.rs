@@ -37,6 +37,22 @@ pub fn encode_token(token: KeyToken) -> Result<Vec<u8>> {
     encode_modified_token(kind, ctrl, alt, shift)
 }
 
+fn encode_esc(ctrl: bool, alt: bool, shift: bool) -> Vec<u8> {
+    #[cfg(windows)]
+    {
+        encode_win32_input_key(27, 27, ctrl, alt, shift)
+    }
+    #[cfg(not(windows))]
+    {
+        if ctrl || alt || shift {
+            let xterm_mod = 1 + u8::from(shift) + (u8::from(alt) * 2) + (u8::from(ctrl) * 4);
+            format!("\x1b[27;{xterm_mod}u").into_bytes()
+        } else {
+            b"\x1b".to_vec()
+        }
+    }
+}
+
 fn encode_unmodified_named(kind: KeyTokenKind) -> Result<Vec<u8>> {
     Ok(match kind {
         KeyTokenKind::Char(ch) => {
@@ -44,16 +60,7 @@ fn encode_unmodified_named(kind: KeyTokenKind) -> Result<Vec<u8>> {
             ch.encode_utf8(&mut buf).as_bytes().to_vec()
         }
         KeyTokenKind::Enter => b"\r".to_vec(),
-        KeyTokenKind::Esc => {
-            #[cfg(windows)]
-            {
-                encode_win32_input_key(27, 27, false, false, false)
-            }
-            #[cfg(not(windows))]
-            {
-                b"\x1b".to_vec()
-            }
-        }
+        KeyTokenKind::Esc => encode_esc(false, false, false),
         KeyTokenKind::Tab => b"\t".to_vec(),
         KeyTokenKind::BackTab => b"\x1b[Z".to_vec(),
         KeyTokenKind::Backspace => vec![0x7f],
@@ -157,16 +164,7 @@ fn encode_modified_token(
                 Ok(b"\r".to_vec())
             }
         }
-        KeyTokenKind::Esc => {
-            #[cfg(windows)]
-            {
-                Ok(encode_win32_input_key(27, 27, ctrl, alt, shift))
-            }
-            #[cfg(not(windows))]
-            {
-                Ok(b"\x1b".to_vec())
-            }
-        }
+        KeyTokenKind::Esc => Ok(encode_esc(ctrl, alt, shift)),
         KeyTokenKind::Char(ch) => {
             if ctrl
                 && (shift
@@ -505,7 +503,7 @@ mod tests {
             assert_eq!(encode_key("Ctrl+Enter").unwrap(), b"\x1b[13;5u");
             assert_eq!(encode_key("Shift+Enter").unwrap(), b"\x1b[13;2u");
             assert_eq!(encode_key("Esc").unwrap(), b"\x1b");
-            assert_eq!(encode_key("Ctrl+Esc").unwrap(), b"\x1b");
+            assert_eq!(encode_key("Ctrl+Esc").unwrap(), b"\x1b[27;5u");
         }
     }
 }

@@ -39,18 +39,18 @@ QA-Refs: `P3-01`, `P3-02`, `P3-03`, `P3-04`
 
 ## 2. 任务清单
 
-- [ ] **延迟 `IdentityDialog` 校验报错展示（`P3-01`）**：
+- [x] **延迟 `IdentityDialog` 校验报错展示（`P3-01`）**：
   - 在 `IdentityDialog` 增加 `pub validation_shown: bool`（默认 `false`）；
   - 在 `Action::DialogConfirm`（`app/git_workflows.rs:178-217`）校验不通过时将 `validation_shown = true`（亦可在切换字段失焦或编辑输入后置 `true`）；
   - `views/dialogs.rs:509-518` 仅在 `d.validation_shown && err.is_some()` 时显示红色 `✕ {e}`，此前留空或显示柔和引导文案。
-- [ ] **清理 Welcome 非 Git 背景占位文案 & 去重 Clone 失败日志（`P3-02`）**：
+- [x] **清理 Welcome 非 Git 背景占位文案 & 去重 Clone 失败日志（`P3-02`）**：
   - 在 `AppState` 新增 `is_unattached_workspace(&self) -> bool`（`self.repo_error.is_some() || self.modal_stack.iter().any(|l| matches!(l, ModalLayer::Welcome(_)))`），供 `views/header.rs:154`（显示 `无仓库`）和 `views/log.rs:694-703`（抑制 `正在加载提交图谱…`）使用；
   - 在 `app/events.rs:97-108` 收到 `UiAsyncEvent::CloneFinished(Err(err))` 时，从 `cd.progress_lines` 剔除与 `err` 各非空行重复的条目，避免报错双份渲染。
-- [ ] **修正 Bisect 按钮间距与 Console 失败行宽度计算（`P3-03`）**：
+- [x] **修正 Bisect 按钮间距与 Console 失败行宽度计算（`P3-03`）**：
   - `views/banner.rs:129`：`Some(k) => format!(" {} {k} ", lbl.trim())`（或 `format!("{lbl} {k} ")`），保证 `[` 后与 `]` 前空格对称；
   - `views/console.rs:176`：改为 `format!(" ✗{code} ")`；
   - `views/console.rs:184-191`：先构造 `let ts = format!(" [{}]", entry.timestamp_label());`，用 `ts.width()` 替代魔数 `10` 计算 `reserved`。
-- [ ] **单行输入框 `Ctrl+a` 全选、隐藏自身分支自指向菜单项与区分 Hunk 回滚提示（`P3-04`）**：
+- [x] **单行输入框 `Ctrl+a` 全选、隐藏自身分支自指向菜单项与区分 Hunk 回滚提示（`P3-04`）**：
   - 为 `InputDialog`（并按需复用到 `NewBranch`/`Identity`/`Credential`/`StashPush`/`CloneDialogState`）增加 `selected_all: bool`：`Ctrl+a` 选中全文并在渲染时用 `bg_selection_focused` 高亮；全选态下按 `Backspace`/`Delete` 清空，输入或粘贴替换全文并取消全选；
   - 在 `menus/branch.rs:122-237` 将 `checkout_and_rebase`、`compare_with`、`rebase_onto`、`merge_into`、`merge_options_item` 改为 `if !is_current { ... }` 省略（注意不留多余分隔线），并同步更新 `crates/jbgit-tui/src/tests/context_menu_tests.rs:648-667`；
   - 在 `zh-CN.toml` / `en-US.toml:1437` 新增 `toast.rolled_back_hunk`（`已回滚 {path} 中的选中代码块 (Ctrl+Z 撤销)` / `Rolled back hunk in {path} (Ctrl+Z to undo)`），在 `workbench.rs:2300, 2398, 2506` 区分整块回滚（非 visual 模式 `d` 或 hunk 按钮）与选区行回滚，注意在清除 `visual_anchor_row` 之前判定 `whole_hunk`。

@@ -38,15 +38,15 @@ QA-Refs: `P2-06`, `P2-13`
 
 ## 2. 任务清单
 
-- [ ] **动态预算分配修复 Log 筛选栏 `140x40` 溢出（`P2-06a`）**：
+- [x] **动态预算分配修复 Log 筛选栏 `140x40` 溢出（`P2-06a`）**：
   - 在 `crates/jbgit-tui/src/views/log.rs:render_filter_bar` 中，绘制激活 chip 前先计算剩余未激活触发器所需的紧凑最小宽度（压缩后的各 `" {title}▾"` + 紧凑版排除合并按钮，如 `condense_inactive` 时去首尾多余空格 `"[排除合并]"` / `"[No Merges]"`）；
   - 当存在激活 chip 且空间偏紧时：
     1. 未聚焦空搜索框允许进一步收缩（如 `clamp(8, 12)`）；
     2. 激活 chip 的标签截断上限根据 `available - reserved_inactive` 动态计算（保留可读最小宽度如 `8` 列，而非固定 `18` 列），确保 `140x40` 下单个长分支筛选激活时 `作者▾`、`日期▾`、`路径▾`、`[排除合并]` 全部可见且可点击；
   - 若极窄视口（如 `80x24`）下仍放不下，将 `排除合并` 等入口同时保证在 `⚙` 齿轮菜单中可达。
-- [ ] **为 `FilterEditor` / `GoToRevision` / `CommitHistory` 弹窗补齐 `Ctrl+U` 清空（`P2-06b`）**：
+- [x] **为 `FilterEditor` / `GoToRevision` / `CommitHistory` 弹窗补齐 `Ctrl+U` 清空（`P2-06b`）**：
   - 在 `crates/jbgit-tui/src/input/keyboard.rs:354` 附近增加 `KeyCode::Char('u') if ctrl && !matches!(kind, PopupKind::ChooseParent | PopupKind::ChooseChild)` 分支，派发 `Action::PopupSetState { query: String::new(), selected: 0 }`。
-- [ ] **使 `render_input` 宽度随内容自适应并安全截断复选框文案（`P2-13`）**：
+- [x] **使 `render_input` 宽度随内容自适应并安全截断复选框文案（`P2-13`）**：
   - 在 `crates/jbgit-tui/src/views/dialogs.rs:1367-1435` 动态计算弹窗宽度：`width = 64.max(title_w).max(prompt_w).max(checkbox_w).max(secondary_checkbox_w) + 4`，传入 `centered(screen, width, h)`（内部自动夹紧至 `screen.width - 2`）；
   - 当终端本身较窄导致仍超过 `inner.width` 时，仿照 `render_choice`（`:1503-1507`）用 `truncate_to_width` 截断复选框正文并完整保留末尾 `({hint})` 提示，确保不贴边裁剪提示语。
 

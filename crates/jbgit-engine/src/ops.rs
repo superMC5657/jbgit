@@ -1073,17 +1073,18 @@ struct UnresolveConflictPlan {
     /// Standard `UU` paths currently resolved at stage 0 (or non-ongoing fallback)
     /// that can run `git checkout -m -- <paths>` directly.
     direct_checkout_m: Vec<String>,
-    /// Stage records mirroring `direct_checkout_m` when all of them come from an
-    /// active conflict state, used as fallback if `REUC` is missing in the index.
-    direct_checkout_m_fallback: Vec<UnresolveIndexRecord>,
+    /// Per-path fallback records `(raw_path, record)` for `direct_checkout_m` entries
+    /// backed by an active conflict state, used when `git checkout -m` fails or exits 0
+    /// without restoring conflict stages because `REUC` is absent (e.g. after libgit2 staging).
+    direct_checkout_m_fallback: Vec<(String, UnresolveIndexRecord)>,
     /// Index stage records to rewrite via `git update-index -z --index-info`.
     index_records: Vec<UnresolveIndexRecord>,
     /// Paths whose stages (`1`/`2`/`3` or `2`/`3`) were written via `update-index`
     /// and now need `git checkout -m -- <paths>` to recreate conflict markers.
     post_update_checkout_m: Vec<String>,
-    /// Paths (`UD` / `AU`) whose surviving stage-2 blob should be checked out to worktree.
+    /// Paths (`UD`) whose surviving stage-2 blob should be checked out to worktree.
     checkout_stage2: Vec<String>,
-    /// Paths (`DU` / `UA`) whose surviving stage-3 blob should be checked out to worktree.
+    /// Paths (`DU`) whose surviving stage-3 blob should be checked out to worktree.
     checkout_stage3: Vec<String>,
     /// Paths (`DD`) that should be removed from the worktree after restoring stage 1.
     remove_worktree: Vec<String>,
@@ -1095,12 +1096,39 @@ fn read_git_oid_file(path: &Path) -> Option<git2::Oid> {
     git2::Oid::from_str(line).ok()
 }
 
+fn read_sequencer_mainline_index(git_dir: &Path) -> usize {
+    let Ok(raw) = std::fs::read_to_string(git_dir.join("sequencer").join("opts")) else {
+        return 0;
+    };
+    for line in raw.lines() {
+        let trimmed = line.trim();
+        if let Some(rest) = trimmed.strip_prefix("mainline")
+            && let Some(val) = rest.trim_start().strip_prefix('=')
+            && let Ok(n) = val.trim().parse::<usize>()
+            && n >= 1
+        {
+            return n - 1;
+        }
+    }
+    0
+}
+
 fn commit_tree(repo: &git2::Repository, oid: git2::Oid) -> Option<git2::Tree<'_>> {
     repo.find_commit(oid).ok()?.tree().ok()
 }
 
-fn first_parent_tree(repo: &git2::Repository, oid: git2::Oid) -> Option<git2::Tree<'_>> {
-    repo.find_commit(oid).ok()?.parent(0).ok()?.tree().ok()
+fn parent_tree(
+    repo: &git2::Repository,
+    oid: git2::Oid,
+    parent_idx: usize,
+) -> Option<git2::Tree<'_>> {
+    let commit = repo.find_commit(oid).ok()?;
+    commit
+        .parent(parent_idx)
+        .or_else(|_| commit.parent(0))
+        .ok()?
+        .tree()
+        .ok()
 }
 
 type OngoingConflictTrees<'repo> = (
@@ -1110,7 +1138,7 @@ type OngoingConflictTrees<'repo> = (
 );
 
 /// Resolves `(base_tree, stage2_ours_tree, stage3_theirs_tree)` for the currently
-/// active conflict-producing Git operation (Merge, Rebase, Cherry-Pick, or Revert).
+/// active conflict-producing Git operation (Merge, Cherry-Pick, Revert, or Rebase).
 fn resolve_ongoing_conflict_trees(repo: &git2::Repository) -> Option<OngoingConflictTrees<'_>> {
     let git_dir = repo.path();
     let head_oid = repo.head().ok().and_then(|h| h.target())?;
@@ -1125,6 +1153,24 @@ fn resolve_ongoing_conflict_trees(repo: &git2::Repository) -> Option<OngoingConf
         return Some((base_tree, ours_tree, theirs_tree));
     }
 
+    // Check CHERRY_PICK_HEAD / REVERT_HEAD before rebase-merge/stopped-sha so an
+    // inner cherry-pick or revert started while paused in `rebase -i` resolves cleanly.
+    if let Some(cp_head) = read_git_oid_file(&git_dir.join("CHERRY_PICK_HEAD")) {
+        let mainline_idx = read_sequencer_mainline_index(git_dir);
+        let ours_tree = commit_tree(repo, head_oid);
+        let theirs_tree = commit_tree(repo, cp_head);
+        let base_tree = parent_tree(repo, cp_head, mainline_idx);
+        return Some((base_tree, ours_tree, theirs_tree));
+    }
+
+    if let Some(rev_head) = read_git_oid_file(&git_dir.join("REVERT_HEAD")) {
+        let mainline_idx = read_sequencer_mainline_index(git_dir);
+        let ours_tree = commit_tree(repo, head_oid);
+        let base_tree = commit_tree(repo, rev_head);
+        let theirs_tree = parent_tree(repo, rev_head, mainline_idx);
+        return Some((base_tree, ours_tree, theirs_tree));
+    }
+
     if let Some(rebase_commit) =
         read_git_oid_file(&git_dir.join("rebase-merge").join("stopped-sha"))
             .or_else(|| read_git_oid_file(&git_dir.join("rebase-apply").join("original-commit")))
@@ -1132,21 +1178,7 @@ fn resolve_ongoing_conflict_trees(repo: &git2::Repository) -> Option<OngoingConf
     {
         let ours_tree = commit_tree(repo, head_oid);
         let theirs_tree = commit_tree(repo, rebase_commit);
-        let base_tree = first_parent_tree(repo, rebase_commit);
-        return Some((base_tree, ours_tree, theirs_tree));
-    }
-
-    if let Some(cp_head) = read_git_oid_file(&git_dir.join("CHERRY_PICK_HEAD")) {
-        let ours_tree = commit_tree(repo, head_oid);
-        let theirs_tree = commit_tree(repo, cp_head);
-        let base_tree = first_parent_tree(repo, cp_head);
-        return Some((base_tree, ours_tree, theirs_tree));
-    }
-
-    if let Some(rev_head) = read_git_oid_file(&git_dir.join("REVERT_HEAD")) {
-        let ours_tree = commit_tree(repo, head_oid);
-        let base_tree = commit_tree(repo, rev_head);
-        let theirs_tree = first_parent_tree(repo, rev_head);
+        let base_tree = parent_tree(repo, rebase_commit, 0);
         return Some((base_tree, ours_tree, theirs_tree));
     }
 
@@ -1164,8 +1196,13 @@ fn lookup_tree_entry(tree: Option<&git2::Tree<'_>>, norm_path: &str) -> Option<C
     }
 }
 
+fn path_has_conflict_stage(idx: &git2::Index, norm_path: &str) -> bool {
+    let p = Path::new(norm_path);
+    idx.get_path(p, 1).is_some() || idx.get_path(p, 2).is_some() || idx.get_path(p, 3).is_some()
+}
+
 /// Inspects the active Git operation's `(base, ours, theirs)` trees and the current
-/// index to plan conflict restoration across `UU`, `AA`, `UD`, `DU`, `DD`, `AU`, `UA`.
+/// index to plan conflict restoration across `UU`, `AA`, `UD`, `DU`, `DD`.
 fn plan_unresolve_conflict(git_dir: &Path, paths: &[String]) -> UnresolveConflictPlan {
     let Ok(repo) = git2::Repository::open(git_dir) else {
         return UnresolveConflictPlan {
@@ -1188,11 +1225,6 @@ fn plan_unresolve_conflict(git_dir: &Path, paths: &[String]) -> UnresolveConflic
         let ours = lookup_tree_entry(ours_tree.as_ref(), &norm);
         let theirs = lookup_tree_entry(theirs_tree.as_ref(), &norm);
 
-        if base.is_none() && ours.is_none() && theirs.is_none() {
-            plan.direct_checkout_m.push(p.clone());
-            continue;
-        }
-
         let has_gitlink = [&base, &ours, &theirs].iter().any(|e| {
             e.as_ref()
                 .is_some_and(|i| i.mode == jbgit_core::GIT_MODE_GITLINK)
@@ -1201,66 +1233,100 @@ fn plan_unresolve_conflict(git_dir: &Path, paths: &[String]) -> UnresolveConflic
             .as_ref()
             .is_some_and(|idx| idx.get_path(Path::new(&norm), 0).is_some());
 
-        match (&base, &ours, &theirs) {
-            (Some(_), Some(_), Some(_)) if !has_gitlink && has_stage0 => {
-                plan.direct_checkout_m.push(p.clone());
-                plan.direct_checkout_m_fallback.push(UnresolveIndexRecord {
-                    path: norm,
-                    base,
-                    ours,
-                    theirs,
-                });
+        enum ActionKind {
+            DirectOnly,
+            DirectWithFallback,
+            PostCheckoutM,
+            CheckoutStage2,
+            CheckoutStage3,
+            RemoveWorktree,
+        }
+
+        // Only synthesize multi-stage entries when the sides genuinely diverged;
+        // clean merges/deletes/one-sided additions defer to `git checkout -m`.
+        let kind = match (&base, &ours, &theirs) {
+            (Some(b), Some(o), Some(t)) if o != t && b != o && b != t => {
+                if !has_gitlink && has_stage0 {
+                    ActionKind::DirectWithFallback
+                } else {
+                    ActionKind::PostCheckoutM
+                }
             }
-            (_, Some(_), Some(_)) => {
-                plan.index_records.push(UnresolveIndexRecord {
-                    path: norm,
-                    base,
-                    ours,
-                    theirs,
-                });
+            (None, Some(o), Some(t)) if o != t => ActionKind::PostCheckoutM,
+            (Some(b), Some(o), None) if b != o => ActionKind::CheckoutStage2,
+            (Some(b), None, Some(t)) if b != t => ActionKind::CheckoutStage3,
+            (Some(_), None, None) => ActionKind::RemoveWorktree,
+            _ => ActionKind::DirectOnly,
+        };
+
+        let make_record = || UnresolveIndexRecord {
+            path: norm.clone(),
+            base: base.clone(),
+            ours: ours.clone(),
+            theirs: theirs.clone(),
+        };
+
+        match kind {
+            ActionKind::DirectOnly => plan.direct_checkout_m.push(p.clone()),
+            ActionKind::DirectWithFallback => {
+                plan.direct_checkout_m.push(p.clone());
+                plan.direct_checkout_m_fallback
+                    .push((p.clone(), make_record()));
+            }
+            ActionKind::PostCheckoutM => {
+                plan.index_records.push(make_record());
                 if !has_gitlink {
                     plan.post_update_checkout_m.push(p.clone());
                 }
             }
-            (_, Some(_), None) => {
-                plan.index_records.push(UnresolveIndexRecord {
-                    path: norm.clone(),
-                    base,
-                    ours,
-                    theirs,
-                });
+            ActionKind::CheckoutStage2 => {
+                plan.index_records.push(make_record());
                 if !has_gitlink {
                     plan.checkout_stage2.push(norm);
                 }
             }
-            (_, None, Some(_)) => {
-                plan.index_records.push(UnresolveIndexRecord {
-                    path: norm.clone(),
-                    base,
-                    ours,
-                    theirs,
-                });
+            ActionKind::CheckoutStage3 => {
+                plan.index_records.push(make_record());
                 if !has_gitlink {
                     plan.checkout_stage3.push(norm);
                 }
             }
-            (Some(_), None, None) => {
-                plan.index_records.push(UnresolveIndexRecord {
-                    path: norm.clone(),
-                    base,
-                    ours,
-                    theirs,
-                });
-                plan.remove_worktree.push(norm);
+            ActionKind::RemoveWorktree => {
+                plan.index_records.push(make_record());
+                if !has_gitlink {
+                    plan.remove_worktree.push(norm);
+                }
             }
-            (None, None, None) => unreachable!(),
         }
     }
     plan
 }
 
 fn compile_checkout_m_step(paths: &[String]) -> CompiledStep {
-    CompiledStep::with_pathspecs(vec!["checkout".to_string(), "-m".to_string()], paths)
+    CompiledStep::with_pathspecs(
+        vec![
+            "--literal-pathspecs".to_string(),
+            "checkout".to_string(),
+            "-m".to_string(),
+        ],
+        paths,
+    )
+}
+
+fn compile_checkout_stage_step(stage: u8, paths: &[String]) -> CompiledStep {
+    let mut payload = Vec::new();
+    for p in paths {
+        payload.extend_from_slice(p.as_bytes());
+        payload.push(0);
+    }
+    CompiledStep::new([
+        "checkout-index",
+        "-f",
+        &format!("--stage={stage}"),
+        "-z",
+        "--stdin",
+    ])
+    .with_stdin(payload)
 }
 
 fn compile_unresolve_index_steps(plan: &UnresolveConflictPlan) -> Vec<CompiledStep> {
@@ -1290,26 +1356,10 @@ fn compile_unresolve_index_steps(plan: &UnresolveConflictPlan) -> Vec<CompiledSt
         steps.push(compile_checkout_m_step(&plan.post_update_checkout_m));
     }
     if !plan.checkout_stage2.is_empty() {
-        let mut payload = Vec::new();
-        for p in &plan.checkout_stage2 {
-            payload.extend_from_slice(p.as_bytes());
-            payload.push(0);
-        }
-        steps.push(
-            CompiledStep::new(["checkout-index", "-f", "--stage=2", "-z", "--stdin"])
-                .with_stdin(payload),
-        );
+        steps.push(compile_checkout_stage_step(2, &plan.checkout_stage2));
     }
     if !plan.checkout_stage3.is_empty() {
-        let mut payload = Vec::new();
-        for p in &plan.checkout_stage3 {
-            payload.extend_from_slice(p.as_bytes());
-            payload.push(0);
-        }
-        steps.push(
-            CompiledStep::new(["checkout-index", "-f", "--stage=3", "-z", "--stdin"])
-                .with_stdin(payload),
-        );
+        steps.push(compile_checkout_stage_step(3, &plan.checkout_stage3));
     }
     steps
 }
@@ -1738,25 +1788,59 @@ impl<R: GitCliRunner> Runner<'_, R> {
                 index_lock: None,
             };
         }
-        let mut plan = plan_unresolve_conflict(&self.loc.git_dir, &paths);
+        let git_dir_for_plan = self.loc.git_dir.clone();
+        let paths_for_plan = paths.clone();
+        let mut plan = tokio::task::spawn_blocking(move || {
+            plan_unresolve_conflict(&git_dir_for_plan, &paths_for_plan)
+        })
+        .await
+        .unwrap_or_else(|_| UnresolveConflictPlan {
+            direct_checkout_m: paths,
+            ..Default::default()
+        });
         let mut outcome = GitOpOutcome::ok(op.clone());
 
         if !plan.direct_checkout_m.is_empty() {
             let step = compile_checkout_m_step(&plan.direct_checkout_m);
             let res = self.step(&step, false).await;
+            let fallback_entries = std::mem::take(&mut plan.direct_checkout_m_fallback);
             if res.ok() {
                 outcome.stderr.extend(res.stderr);
                 outcome.stdout = res.stdout;
+                // When a `UU` file was resolved via libgit2 (no `REUC` index extension),
+                // `git checkout -m` silently exits 0 without recreating stages 1/2/3.
+                // Verify the reloaded index and fall back per-path for any still-resolved path.
+                if !fallback_entries.is_empty() {
+                    let git_dir_check = self.loc.git_dir.clone();
+                    let still_resolved = tokio::task::spawn_blocking(move || {
+                        let Ok(repo) = git2::Repository::open(&git_dir_check) else {
+                            return Vec::new();
+                        };
+                        let Ok(idx) = repo.index() else {
+                            return Vec::new();
+                        };
+                        fallback_entries
+                            .into_iter()
+                            .filter(|(_, rec)| !path_has_conflict_stage(&idx, &rec.path))
+                            .collect::<Vec<_>>()
+                    })
+                    .await
+                    .unwrap_or_default();
+                    for (raw_path, rec) in still_resolved {
+                        plan.post_update_checkout_m.push(raw_path);
+                        plan.index_records.push(rec);
+                    }
+                }
             } else if res.index_lock.is_none()
-                && !plan.direct_checkout_m_fallback.is_empty()
-                && plan.direct_checkout_m_fallback.len() == plan.direct_checkout_m.len()
+                && !fallback_entries.is_empty()
+                && fallback_entries.len() == plan.direct_checkout_m.len()
             {
-                // `git checkout -m` failed (e.g. `REUC` extension absent from index);
-                // fall back to rebuilding stages 1/2/3 via `update-index` + `checkout -m`.
-                plan.post_update_checkout_m
-                    .append(&mut plan.direct_checkout_m);
-                plan.index_records
-                    .append(&mut plan.direct_checkout_m_fallback);
+                // `git checkout -m` failed on all fallback-backed paths (e.g. `REUC` absent);
+                // rebuild stages 1/2/3 via `update-index` + `checkout -m`.
+                for (raw_path, rec) in fallback_entries {
+                    plan.post_update_checkout_m.push(raw_path);
+                    plan.index_records.push(rec);
+                }
             } else {
                 outcome.stderr.extend(res.stderr.iter().cloned());
                 outcome.stdout = res.stdout.clone();
@@ -1789,9 +1873,7 @@ impl<R: GitCliRunner> Runner<'_, R> {
             let to_remove = plan.remove_worktree;
             let removed = tokio::task::spawn_blocking(move || -> Result<(), String> {
                 for p in &to_remove {
-                    if workdir.join(p).symlink_metadata().is_ok()
-                        && let Err(e) = crate::stage::safe_remove_untracked_path(&workdir, p)
-                    {
+                    if let Err(e) = crate::stage::safe_remove_untracked_path(&workdir, p) {
                         return Err(format!("{p}: {e}"));
                     }
                 }
