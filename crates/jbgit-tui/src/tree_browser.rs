@@ -691,6 +691,10 @@ pub fn route_tree_browser_key(key: &KeyEvent, state: &AppState) -> Vec<Action> {
         };
     }
 
+    if key.code == KeyCode::Esc {
+        return vec![Action::PopModal];
+    }
+
     if key
         .modifiers
         .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
@@ -702,7 +706,7 @@ pub fn route_tree_browser_key(key: &KeyEvent, state: &AppState) -> Vec<Action> {
         };
     }
     match key.code {
-        KeyCode::Esc | KeyCode::Char('q') => vec![Action::PopModal],
+        KeyCode::Char('q') => vec![Action::PopModal],
         KeyCode::Char('/') => vec![tb(TreeBrowserAction::OpenSearch)],
         KeyCode::Char(' ') => vec![tb(TreeBrowserAction::ToggleMultiSelect)],
         KeyCode::Down | KeyCode::Char('j') => vec![tb(TreeBrowserAction::Move(1))],

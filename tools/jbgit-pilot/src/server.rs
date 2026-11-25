@@ -313,11 +313,17 @@ fn handle_action(
         }
         PilotAction::Keys { keys, settle_ms } => {
             let sent_at = Instant::now();
-            for k in &keys {
+            for (idx, k) in keys.iter().enumerate() {
                 let bytes = encode_key(k)?;
                 writer.write_all(&bytes)?;
+                writer.flush()?;
+                #[cfg(not(windows))]
+                if bytes == b"\x1b" && idx + 1 < keys.len() {
+                    thread::sleep(Duration::from_millis(30));
+                }
+                #[cfg(windows)]
+                let _ = idx;
             }
-            writer.flush()?;
             wait_after_input(shared, sent_at, settle_ms, 2500);
             refresh_exit(child, exit_code);
             Ok(build_screen_resp(id, shared, *exit_code))
@@ -438,7 +444,8 @@ fn handle_action(
         }
         PilotAction::Stop => {
             if exit_code.is_none() {
-                for seq in [b"\x1b".as_slice(), b"\x1b".as_slice(), b"q".as_slice()] {
+                let esc = encode_key("Esc").unwrap_or_else(|_| b"\x1b".to_vec());
+                for seq in [esc.as_slice(), esc.as_slice(), b"q".as_slice()] {
                     let _ = writer.write_all(seq);
                     let _ = writer.flush();
                     thread::sleep(Duration::from_millis(80));

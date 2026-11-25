@@ -988,3 +988,30 @@ fn push_rejected_warns_when_rebase_range_contains_merge_commits() {
         other => panic!("expected Dialog, got {other:?}"),
     }
 }
+
+#[test]
+fn push_dialog_ctrl_enter_and_alt_enter_both_confirm_push() {
+    for mods in [KeyModifiers::CONTROL, KeyModifiers::ALT] {
+        let mut snap = snapshot();
+        snap.remotes = super::remote_infos(&["origin"]);
+        let mut ts = TestSession::with_snapshot(snap);
+        let _ = ts.take_requests();
+
+        ts.dispatch(Action::PromptPush {
+            branch: "main".into(),
+            up_to: None,
+        });
+        assert!(ts.state().modal_stack.push_dialog().is_some());
+
+        // Move focus away from Commits (e.g. to Files) so plain Enter would NOT push,
+        // proving Ctrl+Enter and Alt+Enter both trigger Action::PushConfirm globally in the dialog.
+        ts.send_key(KeyCode::Tab, KeyModifiers::NONE);
+        ts.send_key(KeyCode::Enter, mods);
+        let ops = ts.take_git_ops();
+        assert!(
+            ops.iter()
+                .any(|op| matches!(op, GitOp::Push { branch, remote, .. } if branch == "main" && remote == "origin")),
+            "modifiers={mods:?} + Enter must trigger GitOp::Push, got {ops:?}"
+        );
+    }
+}

@@ -44,7 +44,16 @@ fn encode_unmodified_named(kind: KeyTokenKind) -> Result<Vec<u8>> {
             ch.encode_utf8(&mut buf).as_bytes().to_vec()
         }
         KeyTokenKind::Enter => b"\r".to_vec(),
-        KeyTokenKind::Esc => b"\x1b".to_vec(),
+        KeyTokenKind::Esc => {
+            #[cfg(windows)]
+            {
+                encode_win32_input_key(27, 27, false, false, false)
+            }
+            #[cfg(not(windows))]
+            {
+                b"\x1b".to_vec()
+            }
+        }
         KeyTokenKind::Tab => b"\t".to_vec(),
         KeyTokenKind::BackTab => b"\x1b[Z".to_vec(),
         KeyTokenKind::Backspace => vec![0x7f],
@@ -132,21 +141,38 @@ fn encode_modified_token(
             }
         }
         KeyTokenKind::Enter => {
-            if ctrl {
-                Ok(b"\x1b[13;5u".to_vec())
-            } else if alt {
+            if ctrl || shift {
+                #[cfg(windows)]
+                {
+                    return Ok(encode_win32_input_key(13, 13, ctrl, alt, shift));
+                }
+                #[cfg(not(windows))]
+                {
+                    return Ok(format!("\x1b[13;{xterm_mod}u").into_bytes());
+                }
+            }
+            if alt {
                 Ok(b"\x1b\r".to_vec())
             } else {
                 Ok(b"\r".to_vec())
             }
         }
-        KeyTokenKind::Esc => Ok(b"\x1b".to_vec()),
+        KeyTokenKind::Esc => {
+            #[cfg(windows)]
+            {
+                Ok(encode_win32_input_key(27, 27, ctrl, alt, shift))
+            }
+            #[cfg(not(windows))]
+            {
+                Ok(b"\x1b".to_vec())
+            }
+        }
         KeyTokenKind::Char(ch) => {
             if ctrl
                 && (shift
                     || !matches!(
                         ch.to_ascii_lowercase(),
-                        'a'..='z' | '`' | '~' | '@' | ' ' | '[' | '\\' | ']' | '^' | '_'
+                        'a'..='z' | '@' | ' ' | '[' | '\\' | ']' | '^' | '_'
                     ))
             {
                 return encode_ctrl_modified_char(ch, ctrl, alt, shift);
@@ -158,7 +184,7 @@ fn encode_modified_token(
             if ctrl {
                 let code = match ch.to_ascii_lowercase() {
                     'a'..='z' => (ch.to_ascii_lowercase() as u8) - b'a' + 1,
-                    '`' | '~' | '@' | ' ' => 0x00,
+                    '@' | ' ' => 0x00,
                     '[' => 0x1b,
                     '\\' => 0x1c,
                     ']' => 0x1d,
@@ -176,6 +202,14 @@ fn encode_modified_token(
         }
         other => bail!("unsupported modified key {other:?}"),
     }
+}
+
+#[cfg(windows)]
+fn encode_win32_input_key(vk: u16, uc: u32, ctrl: bool, alt: bool, shift: bool) -> Vec<u8> {
+    let ctrl_state: u16 = (if ctrl { 0x0008 } else { 0 })
+        | (if alt { 0x0002 } else { 0 })
+        | (if shift { 0x0010 } else { 0 });
+    format!("\x1b[{vk};0;{uc};1;{ctrl_state};1_\x1b[{vk};0;{uc};0;{ctrl_state};1_").into_bytes()
 }
 
 #[cfg(windows)]
@@ -212,13 +246,7 @@ fn encode_ctrl_modified_char(ch: char, ctrl: bool, alt: bool, shift: bool) -> Re
     } else {
         ch as u32
     };
-    let ctrl_state: u16 = (if ctrl { 0x0008 } else { 0 })
-        | (if alt { 0x0002 } else { 0 })
-        | (if shift { 0x0010 } else { 0 });
-    Ok(
-        format!("\x1b[{vk};0;{uc};1;{ctrl_state};1_\x1b[{vk};0;{uc};0;{ctrl_state};1_")
-            .into_bytes(),
-    )
+    Ok(encode_win32_input_key(vk, uc, ctrl, alt, shift))
 }
 
 #[cfg(not(windows))]
@@ -295,16 +323,30 @@ mod tests {
     fn matches_keymap_toml_tokens_without_ambiguity() {
         assert_eq!(encode_key("<CR>").unwrap(), b"\r");
         assert_eq!(encode_key("<Enter>").unwrap(), b"\r");
-        assert_eq!(encode_key("<Esc>").unwrap(), b"\x1b");
         assert_eq!(encode_key("<Space>").unwrap(), b" ");
         assert_eq!(encode_key("<BackTab>").unwrap(), b"\x1b[Z");
         assert_eq!(encode_key("<S-Tab>").unwrap(), b"\x1b[Z");
-        assert_eq!(encode_key("<C-Enter>").unwrap(), b"\x1b[13;5u");
         assert_eq!(encode_key("<A-1>").unwrap(), b"\x1b1");
         assert_eq!(encode_key("<F8>").unwrap(), b"\x1b[19~");
         assert_eq!(encode_key("G").unwrap(), b"G");
         assert_eq!(encode_key("<S-g>").unwrap(), b"G");
         assert_eq!(encode_key("?").unwrap(), b"?");
+        #[cfg(windows)]
+        {
+            assert_eq!(
+                encode_key("<Esc>").unwrap(),
+                b"\x1b[27;0;27;1;0;1_\x1b[27;0;27;0;0;1_"
+            );
+            assert_eq!(
+                encode_key("<C-Enter>").unwrap(),
+                b"\x1b[13;0;13;1;8;1_\x1b[13;0;13;0;8;1_"
+            );
+        }
+        #[cfg(not(windows))]
+        {
+            assert_eq!(encode_key("<Esc>").unwrap(), b"\x1b");
+            assert_eq!(encode_key("<C-Enter>").unwrap(), b"\x1b[13;5u");
+        }
     }
 
     #[test]
@@ -424,6 +466,46 @@ mod tests {
             assert_eq!(encode_key("Ctrl+Shift+K").unwrap(), b"\x1b[107;6u");
             assert_eq!(encode_key("Ctrl+-").unwrap(), b"\x1b[45;5u");
             assert_eq!(encode_key("Ctrl+=").unwrap(), b"\x1b[61;5u");
+        }
+    }
+
+    #[test]
+    fn encodes_conpty_ctrl_backtick_tilde_enter_and_esc() {
+        #[cfg(windows)]
+        {
+            assert_eq!(
+                encode_key("Ctrl+`").unwrap(),
+                b"\x1b[192;0;96;1;8;1_\x1b[192;0;96;0;8;1_"
+            );
+            assert_eq!(
+                encode_key("Ctrl+~").unwrap(),
+                b"\x1b[192;0;126;1;8;1_\x1b[192;0;126;0;8;1_"
+            );
+            assert_eq!(
+                encode_key("Ctrl+Enter").unwrap(),
+                b"\x1b[13;0;13;1;8;1_\x1b[13;0;13;0;8;1_"
+            );
+            assert_eq!(
+                encode_key("Shift+Enter").unwrap(),
+                b"\x1b[13;0;13;1;16;1_\x1b[13;0;13;0;16;1_"
+            );
+            assert_eq!(
+                encode_key("Esc").unwrap(),
+                b"\x1b[27;0;27;1;0;1_\x1b[27;0;27;0;0;1_"
+            );
+            assert_eq!(
+                encode_key("Ctrl+Esc").unwrap(),
+                b"\x1b[27;0;27;1;8;1_\x1b[27;0;27;0;8;1_"
+            );
+        }
+        #[cfg(not(windows))]
+        {
+            assert_eq!(encode_key("Ctrl+`").unwrap(), b"\x1b[96;5u");
+            assert_eq!(encode_key("Ctrl+~").unwrap(), b"\x1b[126;5u");
+            assert_eq!(encode_key("Ctrl+Enter").unwrap(), b"\x1b[13;5u");
+            assert_eq!(encode_key("Shift+Enter").unwrap(), b"\x1b[13;2u");
+            assert_eq!(encode_key("Esc").unwrap(), b"\x1b");
+            assert_eq!(encode_key("Ctrl+Esc").unwrap(), b"\x1b");
         }
     }
 }

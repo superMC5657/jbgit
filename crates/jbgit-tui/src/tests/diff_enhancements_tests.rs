@@ -770,6 +770,10 @@ fn diff_new_keybindings_resolve_without_shadowing_across_all_presets() {
             KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE),
             KeyAction::DiffSearch,
         ),
+        (
+            KeyEvent::new(KeyCode::Char('f'), KeyModifiers::CONTROL),
+            KeyAction::DiffSearch,
+        ),
     ];
     let search_only: &[(KeyEvent, KeyAction)] = &[
         (
@@ -997,5 +1001,70 @@ fn file_history_diff_supports_search_whitespace_and_wrap_without_breaking_commit
             .diff
             .whitespace,
         WhitespaceMode::IgnoreChange
+    );
+
+    // Ctrl+F also opens inline diff search when File History diff is focused.
+    ts.send_key(KeyCode::Char('f'), KeyModifiers::CONTROL);
+    assert!(
+        ts.state()
+            .modal_stack
+            .file_history()
+            .unwrap()
+            .diff
+            .search
+            .editing,
+        "Ctrl+F in File History diff should open inline search"
+    );
+    ts.send_key(KeyCode::Esc, KeyModifiers::NONE);
+}
+
+#[test]
+fn ctrl_f_opens_inline_diff_search_in_commit_diff_annotate_and_reflog() {
+    let mut ts = TestSession::with_snapshot(snapshot());
+
+    // 1. [1] CommitDiffPreview: Ctrl+F opens stage diff inline search.
+    ts.dispatch(Action::SwitchTab(WorkspaceTab::Commit));
+    ts.dispatch(Action::FocusPane(PaneId::CommitDiffPreview));
+    ts.send_key(KeyCode::Char('f'), KeyModifiers::CONTROL);
+    assert!(
+        ts.state().stage_workbench.diff_search().editing,
+        "Ctrl+F in CommitDiffPreview should open inline diff search"
+    );
+    ts.send_key(KeyCode::Esc, KeyModifiers::NONE);
+    assert!(!ts.state().stage_workbench.diff_search().active);
+
+    // 2. Modal Annotate: Ctrl+F opens diff search when diff pane is focused.
+    ts.dispatch(Action::OpenAnnotate {
+        path: "src/app.rs".into(),
+        rev: Some(oid(12)),
+    });
+    if let Some(ann) = ts.state_mut().modal_stack.annotate_mut() {
+        ann.show_diff = true;
+        ann.focus = crate::log_view::AnnotateFocus::Diff;
+    }
+    ts.send_key(KeyCode::Char('f'), KeyModifiers::CONTROL);
+    assert!(
+        ts.state()
+            .modal_stack
+            .annotate()
+            .unwrap()
+            .diff
+            .search
+            .editing,
+        "Ctrl+F in Annotate diff should open inline diff search"
+    );
+    ts.send_key(KeyCode::Esc, KeyModifiers::NONE);
+    ts.send_key(KeyCode::Esc, KeyModifiers::NONE);
+    assert!(ts.state().modal_stack.annotate().is_none());
+
+    // 3. Modal Reflog: Ctrl+F opens diff search when diff pane is focused.
+    ts.dispatch(Action::OpenReflog("HEAD".into()));
+    if let Some(rf) = ts.state_mut().modal_stack.reflog_mut() {
+        rf.focus = crate::log_view::ReflogFocus::Diff;
+    }
+    ts.send_key(KeyCode::Char('f'), KeyModifiers::CONTROL);
+    assert!(
+        ts.state().modal_stack.reflog().unwrap().diff.search.editing,
+        "Ctrl+F in Reflog diff should open inline diff search"
     );
 }

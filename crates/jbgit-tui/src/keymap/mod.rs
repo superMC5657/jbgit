@@ -85,6 +85,9 @@ pub enum KeyAction {
     CopyHash,
     CopyCommitMessage,
     CopyRowSummary,
+    CopyFilePath,
+    CopyFilePatch,
+    CompareFileWithLocal,
     Checkout,
     NewBranch,
     ChooseParent,
@@ -215,6 +218,9 @@ impl KeyAction {
             "copy_hash" => Self::CopyHash,
             "copy_commit_message" => Self::CopyCommitMessage,
             "copy_row_summary" => Self::CopyRowSummary,
+            "copy_file_path" => Self::CopyFilePath,
+            "copy_file_patch" => Self::CopyFilePatch,
+            "compare_file_with_local" => Self::CompareFileWithLocal,
             "checkout" => Self::Checkout,
             "new_branch" => Self::NewBranch,
             "choose_parent" => Self::ChooseParent,
@@ -338,6 +344,9 @@ impl KeyAction {
             Self::CopyHash => "copy_hash",
             Self::CopyCommitMessage => "copy_commit_message",
             Self::CopyRowSummary => "copy_row_summary",
+            Self::CopyFilePath => "copy_file_path",
+            Self::CopyFilePatch => "copy_file_patch",
+            Self::CompareFileWithLocal => "compare_file_with_local",
             Self::Checkout => "checkout",
             Self::NewBranch => "new_branch",
             Self::ChooseParent => "choose_parent",
@@ -458,6 +467,9 @@ impl KeyAction {
             Self::CopyHash,
             Self::CopyCommitMessage,
             Self::CopyRowSummary,
+            Self::CopyFilePath,
+            Self::CopyFilePatch,
+            Self::CompareFileWithLocal,
             Self::Checkout,
             Self::NewBranch,
             Self::ChooseParent,
@@ -580,6 +592,9 @@ impl KeyAction {
                 | Self::CopyHash
                 | Self::CopyCommitMessage
                 | Self::CopyRowSummary
+                | Self::CopyFilePath
+                | Self::CopyFilePatch
+                | Self::CompareFileWithLocal
                 | Self::Checkout
                 | Self::NewBranch
                 | Self::ChooseParent
@@ -704,6 +719,9 @@ impl KeyAction {
             Self::CopyHash => "view.footer.pill.copy_hash",
             Self::CopyCommitMessage => "view.footer.pill.copy_message",
             Self::CopyRowSummary => "view.footer.pill.copy_summary",
+            Self::CopyFilePath => "view.footer.pill.copy_file_path",
+            Self::CopyFilePatch => "view.footer.pill.copy_file_patch",
+            Self::CompareFileWithLocal => "view.footer.pill.compare_file_with_local",
             Self::Checkout => "view.footer.pill.checkout",
             Self::NewBranch => "view.footer.pill.new_branch",
             Self::ChooseParent => "view.footer.pill.parent",
@@ -1573,6 +1591,11 @@ prepend_keymap = [
                     {
                         continue;
                     }
+                    // Explicit intentional shadowing: in `LogChangesTree`, `p` copies the selected
+                    // file's patch instead of falling through to global `p -> git_pull`.
+                    if pane == PaneId::LogChangesTree && *action == KeyAction::GitPull {
+                        continue;
+                    }
                     let mut reachable = false;
                     for &scope in &scopes {
                         for b in state.config.keymap.bindings_for(scope) {
@@ -1644,6 +1667,34 @@ prepend_keymap = [
                 matches!(check_scopes(&[alt_m], &state), MatchResult::Exact(b) if b.run == KeyAction::ChooseParent),
                 "Zoomed diff Alt+M must resolve to ChooseParent in {preset:?}"
             );
+
+            // P2-03: LogChangesTree `c`/`p`/`l` resolve to file actions without falling through to GitPull.
+            state.active_tab = WorkspaceTab::Log;
+            state.focused_pane = PaneId::LogChangesTree;
+            state.log.details.diff_preview = false;
+            state.log.details.diff.zoomed = false;
+            assert!(
+                route_dynamic_key(
+                    &KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE),
+                    &state
+                )
+                .is_some(),
+                "LogChangesTree 'c' must be handled by CopyFilePath in {preset:?}"
+            );
+            assert!(
+                matches!(
+                    check_scopes(&[KeyEvent::new(KeyCode::Char('p'), KeyModifiers::NONE)], &state),
+                    MatchResult::Exact(b) if b.run == KeyAction::CopyFilePatch
+                ),
+                "LogChangesTree 'p' must resolve to CopyFilePatch (not GitPull) in {preset:?}"
+            );
+            assert!(
+                matches!(
+                    check_scopes(&[KeyEvent::new(KeyCode::Char('l'), KeyModifiers::NONE)], &state),
+                    MatchResult::Exact(b) if b.run == KeyAction::CompareFileWithLocal
+                ),
+                "LogChangesTree 'l' must resolve to CompareFileWithLocal in {preset:?}"
+            );
         }
     }
 
@@ -1680,5 +1731,23 @@ prepend_keymap = [
                 "expected Notice on precondition error for {action:?}, got {emitted:?}"
             );
         }
+    }
+
+    #[test]
+    fn ctrl_backtick_and_tilde_match_with_or_without_shift_modifier() {
+        let backtick = KeyStroke::parse("<C-`>").expect("parse <C-`>");
+        let tilde = KeyStroke::parse("<C-~>").expect("parse <C-~>");
+        assert!(backtick.matches(&KeyEvent::new(KeyCode::Char('`'), KeyModifiers::CONTROL)));
+        assert!(backtick.matches(&KeyEvent::new(
+            KeyCode::Char('`'),
+            KeyModifiers::CONTROL | KeyModifiers::SHIFT
+        )));
+        assert!(tilde.matches(&KeyEvent::new(KeyCode::Char('~'), KeyModifiers::CONTROL)));
+        assert!(tilde.matches(&KeyEvent::new(
+            KeyCode::Char('~'),
+            KeyModifiers::CONTROL | KeyModifiers::SHIFT
+        )));
+        assert!(!backtick.matches(&KeyEvent::new(KeyCode::Char('`'), KeyModifiers::NONE)));
+        assert!(!tilde.matches(&KeyEvent::new(KeyCode::Char('~'), KeyModifiers::NONE)));
     }
 }

@@ -533,3 +533,147 @@ fn choice_dialog_confirm_brackets_focused_button() {
     assert!(moved.contains("[Remove]"), "{moved}");
     assert!(!moved.contains("[Cancel]"), "{moved}");
 }
+
+#[test]
+fn branches_popup_space_toggles_favorite_and_submenu_f2_opens_rename_dialog() {
+    let mut ts = TestSession::with_snapshot(snapshot());
+    let _ = ts.render(140, 40);
+
+    // Open BranchesPopup and locate local branch `bugfix/unmerged`.
+    ts.dispatch(Action::OpenBranchesPopup {
+        query: String::new(),
+    });
+    let rows = crate::branches_popup::build_popup_rows(ts.state(), "");
+    let feat_idx = rows
+        .iter()
+        .position(|r| {
+            matches!(
+                r,
+                crate::branches_popup::PopupRow::Branch(b)
+                    if b.name == "bugfix/unmerged" && b.kind == jbgit_core::RefKind::LocalBranch
+            )
+        })
+        .expect("bugfix/unmerged row in BranchesPopup");
+    ts.dispatch(Action::PopupSetState {
+        query: String::new(),
+        selected: feat_idx,
+    });
+    assert!(
+        !ts.state()
+            .log
+            .branches
+            .settings
+            .favorites
+            .is_favorite("refs/heads/bugfix/unmerged", "bugfix/unmerged")
+    );
+
+    // Pressing Space toggles favorite ON and keeps selection on `bugfix/unmerged`.
+    ts.send_key(KeyCode::Char(' '), KeyModifiers::NONE);
+    assert!(
+        ts.state()
+            .log
+            .branches
+            .settings
+            .favorites
+            .is_favorite("refs/heads/bugfix/unmerged", "bugfix/unmerged"),
+        "Space in BranchesPopup must favorite the selected branch"
+    );
+    let selected_after_fav = match ts.state().modal_stack.last() {
+        Some(ModalLayer::BranchesPopup { selected, .. }) => *selected,
+        other => panic!("expected BranchesPopup to remain open, got {other:?}"),
+    };
+    let rows_after_fav = crate::branches_popup::build_popup_rows(ts.state(), "");
+    assert!(
+        matches!(
+            rows_after_fav.get(selected_after_fav),
+            Some(crate::branches_popup::PopupRow::Branch(b))
+                if b.full_ref == "refs/heads/bugfix/unmerged"
+        ),
+        "selection should follow favorited branch in BranchesPopup"
+    );
+
+    // Pressing Space again toggles favorite OFF.
+    ts.send_key(KeyCode::Char(' '), KeyModifiers::NONE);
+    assert!(
+        !ts.state()
+            .log
+            .branches
+            .settings
+            .favorites
+            .is_favorite("refs/heads/bugfix/unmerged", "bugfix/unmerged"),
+        "second Space in BranchesPopup must unfavorite the selected branch"
+    );
+
+    // Pressing Enter opens the branch action submenu; pressing F2 triggers Rename dialog.
+    ts.send_key(KeyCode::Enter, KeyModifiers::NONE);
+    assert!(
+        matches!(
+            ts.state().modal_stack.last(),
+            Some(ModalLayer::ContextMenu { .. })
+        ),
+        "Enter on branch row in BranchesPopup should open submenu"
+    );
+    ts.send_key(KeyCode::F(2), KeyModifiers::NONE);
+    assert!(
+        matches!(
+            ts.state().modal_stack.last(),
+            Some(ModalLayer::Dialog(d)) if matches!(
+                d.as_ref(),
+                Dialog::Input(inp) if matches!(
+                    inp.intent,
+                    crate::dialogs::InputIntent::RenameBranch { ref old } if old == "bugfix/unmerged"
+                )
+            )
+        ),
+        "F2 inside branch submenu must open RenameBranch dialog, got {:?}",
+        ts.state().modal_stack.last()
+    );
+}
+
+#[test]
+fn escape_closes_reflog_tree_browser_search_tree_browser_and_annotate_even_with_modifiers() {
+    let mut ts = TestSession::with_snapshot(snapshot());
+
+    // 1. Reflog closes on plain Esc and modified Esc.
+    for mods in [KeyModifiers::NONE, KeyModifiers::CONTROL, KeyModifiers::ALT] {
+        ts.dispatch(Action::OpenReflog("HEAD".into()));
+        assert!(ts.state().modal_stack.reflog().is_some());
+        ts.send_key(KeyCode::Esc, mods);
+        assert!(
+            ts.state().modal_stack.reflog().is_none(),
+            "Reflog must close on Esc with modifiers={mods:?}"
+        );
+    }
+
+    // 2. TreeBrowserSearch closes search first, then TreeBrowser closes on plain & modified Esc.
+    for mods in [KeyModifiers::NONE, KeyModifiers::CONTROL, KeyModifiers::ALT] {
+        ts.dispatch(Action::OpenTreeBrowser { oid: oid(12) });
+        assert!(ts.state().modal_stack.tree_browser().is_some());
+        ts.send_key(KeyCode::Char('/'), KeyModifiers::NONE);
+        assert!(ts.state().modal_stack.tree_browser().unwrap().search_open);
+        ts.send_key(KeyCode::Esc, mods);
+        assert!(
+            !ts.state().modal_stack.tree_browser().unwrap().search_open,
+            "TreeBrowserSearch must close on Esc with modifiers={mods:?}"
+        );
+        ts.send_key(KeyCode::Esc, mods);
+        assert!(
+            ts.state().modal_stack.tree_browser().is_none(),
+            "TreeBrowser must close on Esc with modifiers={mods:?}"
+        );
+    }
+
+    // 3. Annotate closes on plain Esc and modified Esc.
+    for mods in [KeyModifiers::NONE, KeyModifiers::CONTROL, KeyModifiers::ALT] {
+        ts.dispatch(Action::OpenAnnotate {
+            path: "src/app.rs".into(),
+            rev: Some(oid(12)),
+        });
+        assert!(ts.state().modal_stack.annotate().is_some());
+        ts.send_key(KeyCode::Esc, mods);
+        assert!(
+            ts.state().modal_stack.annotate().is_none(),
+            "Annotate must close on Esc with modifiers={mods:?}"
+        );
+    }
+}

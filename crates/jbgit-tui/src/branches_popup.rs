@@ -400,6 +400,15 @@ pub fn route_branches_popup_key(key: &KeyEvent, state: &AppState) -> Vec<Action>
             }]
         }
         KeyCode::Enter | KeyCode::Right => activate_row(state, &query, selected),
+        KeyCode::Char(' ') if !ctrl && !alt => match rows.get(selected) {
+            Some(PopupRow::Branch(b)) if b.kind != RefKind::Tag => {
+                vec![Action::ToggleFavoriteRef {
+                    full: b.full_ref.clone(),
+                    short: b.short.clone(),
+                }]
+            }
+            _ => Vec::new(),
+        },
         KeyCode::Char('f') if alt => {
             vec![Action::PopModal, Action::RunGitOp(jbgit_core::GitOp::Fetch)]
         }

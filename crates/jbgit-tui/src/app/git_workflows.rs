@@ -243,6 +243,36 @@ impl AppState {
                 self.log.branches.save_settings();
                 let snap = self.repo_snapshot.clone();
                 self.log.branches.sync_model(snap.as_ref(), true);
+                let popup_reselect =
+                    self.modal_stack
+                        .iter()
+                        .enumerate()
+                        .rev()
+                        .find_map(|(i, layer)| {
+                            if let ModalLayer::BranchesPopup { query, selected } = layer {
+                                Some((i, query.clone(), *selected))
+                            } else {
+                                None
+                            }
+                        });
+                if let Some((layer_idx, query, old_selected)) = popup_reselect {
+                    let rows = crate::branches_popup::build_popup_rows(self, &query);
+                    if let Some((new_idx, _)) = rows
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, r)| {
+                            matches!(
+                                r,
+                                crate::branches_popup::PopupRow::Branch(b) if b.full_ref == *full
+                            )
+                        })
+                        .min_by_key(|(idx, _)| idx.abs_diff(old_selected))
+                        && let Some(ModalLayer::BranchesPopup { selected, .. }) =
+                            self.modal_stack.iter_mut().nth(layer_idx)
+                    {
+                        *selected = new_idx;
+                    }
+                }
                 self.status_notice = Some(self.i18n.t_fmt(
                     if on {
                         "toast.favorite_added"

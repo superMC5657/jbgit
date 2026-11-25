@@ -148,6 +148,26 @@ pub fn route_context_menu_key(key: KeyEvent, state: &AppState) -> Vec<Action> {
                 Vec::new()
             }
         }
+        KeyCode::F(n)
+            if (1..=12).contains(&n)
+                && !key.modifiers.contains(KeyModifiers::CONTROL)
+                && !key.modifiers.contains(KeyModifiers::ALT)
+                && !key.modifiers.contains(KeyModifiers::SHIFT) =>
+        {
+            let target = format!("F{n}");
+            if let Some(idx) = items.iter().position(|i| {
+                !i.is_separator()
+                    && i.shortcut
+                        .as_deref()
+                        .is_some_and(|s| s == target || s.split(" / ").any(|p| p == target))
+            }) {
+                let mut out = vec![Action::ContextMenuSetSelected { depth, idx }];
+                out.extend(activate_top_menu_item(state, idx));
+                out
+            } else {
+                Vec::new()
+            }
+        }
         KeyCode::Char(ch)
             if !key.modifiers.contains(KeyModifiers::CONTROL)
                 && !key.modifiers.contains(KeyModifiers::ALT) =>

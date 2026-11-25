@@ -163,7 +163,8 @@ fn log_changes_context_menu_right_click_keyboard_dot_and_enablement() {
     );
     ts.dispatch(Action::PopModal);
 
-    // 4. Directory row via keyboard `.` in PaneId::LogChangesTree.
+    // 4. Directory row via keyboard `.` in PaneId::LogChangesTree hides file-only items
+    // and avoids leading/trailing/consecutive separators.
     ts.dispatch(Action::FocusPane(PaneId::LogChangesTree));
     ts.dispatch(Action::ChangesSelect(ChangesHost::Log, dir_idx));
     ts.send_key(KeyCode::Char('.'), KeyModifiers::NONE);
@@ -176,22 +177,94 @@ fn log_changes_context_menu_right_click_keyboard_dot_and_enablement() {
     assert!(menu_item_by_label(&items, "Copy Relative Path").is_enabled());
     for file_only in [
         "Toggle Diff Preview",
+        "Full-Screen Diff",
         "Compare with Local",
         "Get Version",
         "Open in External Editor",
         "Copy Patch of File",
     ] {
-        let item = menu_item_by_label(&items, file_only);
         assert!(
-            !item.is_enabled(),
-            "{file_only} must be disabled on directory row"
-        );
-        assert_eq!(
-            item.disabled_reason.as_deref(),
-            Some(ts.state().i18n.t("menu.log_change.need_file"))
+            !items.iter().any(|i| i.label.contains(file_only)),
+            "{file_only} must be hidden on directory row, got: {items:?}"
         );
     }
+    assert!(
+        !items.first().is_some_and(|i| i.is_separator()),
+        "directory menu must not start with separator"
+    );
+    assert!(
+        !items.last().is_some_and(|i| i.is_separator()),
+        "directory menu must not end with separator"
+    );
+    assert!(
+        !items
+            .windows(2)
+            .any(|w| w[0].is_separator() && w[1].is_separator()),
+        "directory menu must not contain consecutive separators"
+    );
     ts.dispatch(Action::PopModal);
+
+    // 4b. Direct keyboard shortcuts in LogChangesTree (`c`/`p`/`l`) for file & directory rows.
+    // On directory row: `c` copies directory path, `p`/`l` are safely ignored without GitOp::Pull.
+    let _ = ts.take_requests();
+    ts.dispatch(Action::FocusPane(PaneId::LogChangesTree));
+    ts.dispatch(Action::ChangesSelect(ChangesHost::Log, dir_idx));
+    ts.send_key(KeyCode::Char('c'), KeyModifiers::NONE);
+    assert!(
+        ts.state()
+            .status_notice
+            .as_deref()
+            .is_some_and(|n| n.contains("dir with space")),
+        "pressing 'c' on directory row should copy directory relative path: {:?}",
+        ts.state().status_notice
+    );
+    ts.send_key(KeyCode::Char('p'), KeyModifiers::NONE);
+    ts.send_key(KeyCode::Char('l'), KeyModifiers::NONE);
+    assert!(
+        ts.take_git_ops().is_empty(),
+        "pressing 'p'/'l' on directory row must not trigger Pull or any GitOp"
+    );
+
+    // On file row: `c` copies file path, `p` copies file patch (NOT Pull), `l` compares with local.
+    let file_idx = rows
+        .iter()
+        .position(|r| {
+            matches!(r.kind, ChangeRowKind::File { .. }) && r.key == "dir with space/a.rs"
+        })
+        .expect("file row for dir with space/a.rs");
+    ts.dispatch(Action::ChangesSelect(ChangesHost::Log, file_idx));
+    ts.send_key(KeyCode::Char('c'), KeyModifiers::NONE);
+    assert!(
+        ts.state()
+            .status_notice
+            .as_deref()
+            .is_some_and(|n| n.contains("dir with space/a.rs")),
+        "pressing 'c' on file row should copy file relative path: {:?}",
+        ts.state().status_notice
+    );
+    ts.send_key(KeyCode::Char('p'), KeyModifiers::NONE);
+    let ops = ts.take_git_ops();
+    assert_eq!(
+        ops,
+        vec![GitOp::PatchToClipboard {
+            source: jbgit_core::PatchSource::CommitFile {
+                oid: c2,
+                path: "dir with space/a.rs".into(),
+            },
+            reverse: false,
+        }],
+        "pressing 'p' on file row must copy file patch and never emit GitOp::Pull"
+    );
+    let _ = ts.take_requests();
+    ts.send_key(KeyCode::Char('l'), KeyModifiers::NONE);
+    assert!(
+        ts.take_requests().iter().any(|(req, _)| matches!(
+            req,
+            TaskRequest::LoadFileDiff { key, .. } if key.path == "dir with space/a.rs"
+        )) || ts.state().log.details.diff_preview,
+        "pressing 'l' on file row should trigger CompareFileWithLocal"
+    );
+    ts.state_mut().log.details.diff_preview = false;
 
     // 5. Multi-commit selection disables single-commit operations.
     ts.dispatch(Action::FocusPane(PaneId::LogCommitTable));
@@ -1293,6 +1366,56 @@ fn directory_context_menu_starts_on_enabled_item_and_disabled_mnemonic_updates_f
         "footer must not show disabled Toggle Diff Preview on open: {footer}"
     );
 
+    // Directory menu hides file-only items (`Copy Patch of File`, `Toggle Diff Preview`, etc.).
+    assert!(
+        !items.iter().any(|i| i.label == "Copy Patch of File"),
+        "directory menu must hide file-only Copy Patch of File"
+    );
+    ts.dispatch(Action::PopModal);
+
+    // On a multi-commit selection file row, disabled mnemonic (`p` -> Copy Patch of File) updates footer.
+    ts.dispatch(Action::FocusPane(PaneId::LogCommitTable));
+    ts.dispatch(Action::SelectLogRow(0));
+    ts.dispatch(Action::ExtendLogSelectionTo(1));
+    let key_multi = DetailsKey::commits(vec![c2, c1], 0);
+    let bundle_multi = Arc::new(CommitChangesBundle {
+        key: key_multi,
+        details: vec![
+            make_details(c1, vec![], "init"),
+            make_details(c2, vec![c1], "mod"),
+        ],
+        changes: vec![FileChange {
+            kind: FileStatusKind::Modified,
+            path: "src/components/a.rs".into(),
+            old_path: None,
+            is_binary: false,
+            additions: 1,
+            deletions: 0,
+            exists_in_workdir: true,
+            old_oid: None,
+            new_oid: None,
+        }],
+    });
+    ts.deliver_engine_event(EngineEvent::CommitDetailsLoaded {
+        slot: jbgit_core::RequestSlotId::LogCommitDetails,
+        bundle: bundle_multi,
+        epoch: 2,
+    });
+    let _ = ts.render(140, 40);
+    let multi_rows = ts
+        .state()
+        .log
+        .details
+        .change_rows(&ts.state().diff_caches)
+        .to_vec();
+    let file_idx = multi_rows
+        .iter()
+        .position(|r| matches!(r.kind, ChangeRowKind::File { .. }))
+        .expect("file row");
+    ts.dispatch(Action::FocusPane(PaneId::LogChangesTree));
+    ts.dispatch(Action::ChangesSelect(ChangesHost::Log, file_idx));
+    ts.send_key(KeyCode::Char('.'), KeyModifiers::NONE);
+
     ts.send_key(KeyCode::Char('p'), KeyModifiers::NONE);
     let (items, selected) = match ts.state().modal_stack.last() {
         Some(ModalLayer::ContextMenu {
@@ -1305,8 +1428,12 @@ fn directory_context_menu_starts_on_enabled_item_and_disabled_mnemonic_updates_f
     let footer = (0..buf.area.width)
         .map(|x| buf[(x, 39)].symbol())
         .collect::<String>();
+    let expected_reason = format!(
+        "Copy Patch of File: {}",
+        ts.state().i18n.t("menu.log_change.need_single_commit")
+    );
     assert!(
-        footer.contains("Copy Patch of File: Select a file"),
+        footer.contains(&expected_reason),
         "footer must show disabled item's own reason, got: {footer}"
     );
 }

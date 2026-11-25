@@ -460,6 +460,11 @@ pub fn is_action_applicable(run: &KeyAction, state: &AppState) -> bool {
             is_diff_focused(state) && is_diff_search_active(state)
         }
 
+        KeyAction::CopyFilePath
+        | KeyAction::CopyFilePatch
+        | KeyAction::CompareFileWithLocal => {
+            state.active_tab == WorkspaceTab::Log && state.focused_pane == PaneId::LogChangesTree
+        }
         KeyAction::Checkout => {
             state.active_tab == WorkspaceTab::Log
                 && matches!(
@@ -900,6 +905,55 @@ pub fn execute_action(run: &KeyAction, state: &AppState) -> Option<Vec<Action>> 
         }
         KeyAction::CopyCommitMessage => Some(notice_on_err(commit_copy_message(state))),
         KeyAction::CopyRowSummary => Some(notice_on_err(commit_copy_row_summary(state))),
+        KeyAction::CopyFilePath => {
+            let Some((row_path, _, _)) = selected_log_change(state) else {
+                return Some(Vec::new());
+            };
+            Some(vec![Action::CopyText(row_path)])
+        }
+        KeyAction::CopyFilePatch => {
+            let Some((row_path, is_file, single_oid)) = selected_log_change(state) else {
+                return Some(Vec::new());
+            };
+            if !is_file {
+                return Some(Vec::new());
+            }
+            let Some(oid) = single_oid else {
+                return Some(vec![Action::Notice(
+                    state
+                        .i18n
+                        .t("menu.log_change.need_single_commit")
+                        .to_string(),
+                )]);
+            };
+            Some(op(GitOp::PatchToClipboard {
+                source: jbgit_core::PatchSource::CommitFile {
+                    oid,
+                    path: row_path,
+                },
+                reverse: false,
+            }))
+        }
+        KeyAction::CompareFileWithLocal => {
+            let Some((row_path, is_file, single_oid)) = selected_log_change(state) else {
+                return Some(Vec::new());
+            };
+            if !is_file {
+                return Some(Vec::new());
+            }
+            let Some(target) = single_oid else {
+                return Some(vec![Action::Notice(
+                    state
+                        .i18n
+                        .t("menu.log_change.need_single_commit")
+                        .to_string(),
+                )]);
+            };
+            Some(vec![Action::CompareFileWithLocal {
+                target,
+                path: row_path,
+            }])
+        }
         KeyAction::Checkout => {
             if state.focused_pane == PaneId::LogBranchesTree {
                 selected_branch_command(state, &KeyAction::Checkout)
@@ -1174,6 +1228,21 @@ pub fn execute_action(run: &KeyAction, state: &AppState) -> Option<Vec<Action>> 
 
 fn op(o: GitOp) -> Vec<Action> {
     vec![Action::RunGitOp(o)]
+}
+
+fn selected_log_change(state: &AppState) -> Option<(String, bool, Option<Oid>)> {
+    let bundle = state.log.details.current_bundle(&state.diff_caches)?;
+    let rows = state.log.details.change_rows(&state.diff_caches);
+    let row = rows.get(state.log.details.changes.selected)?;
+    let file_change = match row.kind {
+        ChangeRowKind::File { change_idx } => bundle.changes.get(change_idx),
+        ChangeRowKind::Dir { .. } => None,
+    };
+    let is_file = file_change.is_some();
+    let row_path = file_change.map_or_else(|| row.key.clone(), |c| c.path.clone());
+    let single_oid = (bundle.key.mode == DetailsMode::Commits && bundle.key.oids.len() == 1)
+        .then(|| bundle.key.oids[0]);
+    Some((row_path, is_file, single_oid))
 }
 
 /// Copies the full commit message (subject + body) of selected Log commit(s).

@@ -1079,51 +1079,51 @@ pub fn log_change_menu_items(state: &AppState) -> Vec<ContextMenuItem> {
     );
     let hist_sc = catalog::shortcut_for_action(state, &[KeymapScope::Log], &KeyAction::FileHistory);
     let ann_sc = catalog::shortcut_for_action(state, &[KeymapScope::Log], &KeyAction::Annotate);
+    let cmp_local_sc =
+        catalog::shortcut_for_action(state, &[KeymapScope::Log], &KeyAction::CompareFileWithLocal);
+    let copy_path_sc =
+        catalog::shortcut_for_action(state, &[KeymapScope::Log], &KeyAction::CopyFilePath)
+            .or_else(|| Some("c".to_string()));
+    let copy_patch_sc =
+        catalog::shortcut_for_action(state, &[KeymapScope::Log], &KeyAction::CopyFilePatch);
 
-    let need_file = i18n.t("menu.log_change.need_file");
     let need_single = i18n.t("menu.log_change.need_single_commit");
 
     let mut items = Vec::new();
 
-    // ── View & compare ──
-    items.push(
-        run(
+    // ── View & compare (file-only) ──
+    if is_file {
+        items.push(run(
             i18n.t("menu.log_change.toggle_diff"),
             Some('d'),
             diff_sc.as_deref(),
             vec![Action::ToggleDiffPreview],
-        )
-        .enabled_if(is_file, need_file),
-    );
-    items.push(
-        run(
+        ));
+        items.push(run(
             i18n.t("menu.log_change.fullscreen_diff"),
             Some('z'),
             zoom_sc.as_deref(),
             vec![Action::ZoomDiff(true)],
-        )
-        .enabled_if(is_file, need_file),
-    );
-    let cmp_local_actions = single_oid
-        .filter(|_| is_file)
-        .map(|target| {
-            vec![Action::CompareFileWithLocal {
-                target,
-                path: row_path.clone(),
-            }]
-        })
-        .unwrap_or_default();
-    items.push(
-        run(
-            i18n.t("menu.log_change.compare_local"),
-            Some('l'),
-            None,
-            cmp_local_actions,
-        )
-        .enabled_if(is_file, need_file)
-        .enabled_if(single_oid.is_some(), need_single),
-    );
-    items.push(ContextMenuItem::separator());
+        ));
+        let cmp_local_actions = single_oid
+            .map(|target| {
+                vec![Action::CompareFileWithLocal {
+                    target,
+                    path: row_path.clone(),
+                }]
+            })
+            .unwrap_or_default();
+        items.push(
+            run(
+                i18n.t("menu.log_change.compare_local"),
+                Some('l'),
+                cmp_local_sc.as_deref(),
+                cmp_local_actions,
+            )
+            .enabled_if(single_oid.is_some(), need_single),
+        );
+        items.push(ContextMenuItem::separator());
+    }
 
     // ── History & filter ──
     if is_file {
@@ -1166,85 +1166,86 @@ pub fn log_change_menu_items(state: &AppState) -> Vec<ContextMenuItem> {
     }
     items.push(ContextMenuItem::separator());
 
-    // ── Restore & edit ──
-    let restore_actions = match single_oid {
-        Some(oid) if is_file && !is_deleted => {
-            let short = oid.short();
-            let body_lines: Vec<String> = i18n
-                .t_fmt(
-                    "dialog.restore_file.body",
-                    &[("path", &row_path), ("short", &short)],
-                )
-                .split('\n')
-                .map(str::to_string)
-                .collect();
-            dialog(Dialog::Choice(ChoiceDialog::confirm(
-                i18n.t("dialog.restore_file.title"),
-                body_lines,
-                i18n.t("dialog.restore_file.confirm_btn"),
-                i18n.cancel(),
-                op(GitOp::CheckoutPaths {
-                    rev: oid.to_string(),
-                    paths: vec![row_path.clone()],
-                }),
-            )))
-        }
-        _ => Vec::new(),
-    };
-    items.push(
-        run(
-            i18n.t("menu.log_change.restore_version"),
-            Some('g'),
-            None,
-            restore_actions,
-        )
-        .enabled_if(is_file, need_file)
-        .enabled_if(single_oid.is_some(), need_single)
-        .enabled_if(
-            !is_deleted,
-            i18n.t("menu.log_change.cannot_restore_deleted"),
-        )
-        .require(no_ongoing),
-    );
-    items.push(
-        run(
-            i18n.t("menu.log_change.open_editor"),
-            Some('e'),
-            None,
-            vec![Action::OpenExternalEditorFile(Some(row_path.clone()))],
-        )
-        .enabled_if(is_file, need_file)
-        .enabled_if(exists_in_workdir, i18n.t("menu.log_change.not_in_workdir")),
-    );
-    items.push(ContextMenuItem::separator());
+    // ── Restore & edit (file-only) ──
+    if is_file {
+        let restore_actions = match single_oid {
+            Some(oid) if !is_deleted => {
+                let short = oid.short();
+                let body_lines: Vec<String> = i18n
+                    .t_fmt(
+                        "dialog.restore_file.body",
+                        &[("path", &row_path), ("short", &short)],
+                    )
+                    .split('\n')
+                    .map(str::to_string)
+                    .collect();
+                dialog(Dialog::Choice(ChoiceDialog::confirm(
+                    i18n.t("dialog.restore_file.title"),
+                    body_lines,
+                    i18n.t("dialog.restore_file.confirm_btn"),
+                    i18n.cancel(),
+                    op(GitOp::CheckoutPaths {
+                        rev: oid.to_string(),
+                        paths: vec![row_path.clone()],
+                    }),
+                )))
+            }
+            _ => Vec::new(),
+        };
+        items.push(
+            run(
+                i18n.t("menu.log_change.restore_version"),
+                Some('g'),
+                None,
+                restore_actions,
+            )
+            .enabled_if(single_oid.is_some(), need_single)
+            .enabled_if(
+                !is_deleted,
+                i18n.t("menu.log_change.cannot_restore_deleted"),
+            )
+            .require(no_ongoing),
+        );
+        items.push(
+            run(
+                i18n.t("menu.log_change.open_editor"),
+                Some('e'),
+                None,
+                vec![Action::OpenExternalEditorFile(Some(row_path.clone()))],
+            )
+            .enabled_if(exists_in_workdir, i18n.t("menu.log_change.not_in_workdir")),
+        );
+        items.push(ContextMenuItem::separator());
+    }
 
     // ── Clipboard ──
     items.push(run(
         i18n.t("menu.log_change.copy_path"),
         Some('c'),
-        None,
+        copy_path_sc.as_deref(),
         vec![Action::CopyText(row_path.clone())],
     ));
-    let patch_actions = match single_oid {
-        Some(oid) if is_file => op(GitOp::PatchToClipboard {
-            source: PatchSource::CommitFile {
-                oid,
-                path: row_path,
-            },
-            reverse: false,
-        }),
-        _ => Vec::new(),
-    };
-    items.push(
-        run(
-            i18n.t("menu.log_change.copy_patch"),
-            Some('p'),
-            None,
-            patch_actions,
-        )
-        .enabled_if(is_file, need_file)
-        .enabled_if(single_oid.is_some(), need_single),
-    );
+    if is_file {
+        let patch_actions = match single_oid {
+            Some(oid) => op(GitOp::PatchToClipboard {
+                source: PatchSource::CommitFile {
+                    oid,
+                    path: row_path,
+                },
+                reverse: false,
+            }),
+            None => Vec::new(),
+        };
+        items.push(
+            run(
+                i18n.t("menu.log_change.copy_patch"),
+                Some('p'),
+                copy_patch_sc.as_deref(),
+                patch_actions,
+            )
+            .enabled_if(single_oid.is_some(), need_single),
+        );
+    }
 
     items
 }

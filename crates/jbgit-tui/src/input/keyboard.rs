@@ -874,6 +874,14 @@ fn route_file_history_key(key: &KeyEvent, state: &AppState) -> Vec<Action> {
             prefix.push(Action::FileHistoryAnnotate);
             return prefix;
         }
+        if key.modifiers.contains(KeyModifiers::CONTROL)
+            && !key.modifiers.contains(KeyModifiers::ALT)
+            && matches!(key.code, KeyCode::Char('f' | 'F'))
+            && diff_focused
+        {
+            prefix.push(Action::DiffSearchOpen(DiffScope::FileHistory));
+            return prefix;
+        }
         match key.code {
             KeyCode::Esc => prefix.push(Action::FileHistoryEscape),
             KeyCode::Tab | KeyCode::BackTab => prefix.push(Action::FileHistoryToggleFocus),
@@ -1085,6 +1093,9 @@ fn route_annotate_key(key: &KeyEvent, state: &AppState) -> Vec<Action> {
         let a = match key.code {
             KeyCode::Esc => Some(Action::AnnotateEscape),
             KeyCode::Tab | KeyCode::BackTab => Some(Action::AnnotateToggleFocus),
+            KeyCode::Char('f' | 'F') if ctrl && !alt && diff_focused => {
+                Some(Action::DiffSearchOpen(DiffScope::Annotate))
+            }
             KeyCode::Char('g') if ctrl => Some(Action::AnnotateGotoLineStart),
             KeyCode::Char('d') if ctrl => Some(if diff_focused {
                 Action::DiffScroll(DiffScope::Annotate, 10)
@@ -1378,7 +1389,8 @@ fn route_reflog_key(key: &KeyEvent, state: &AppState) -> Vec<Action> {
     let shift = key.modifiers.contains(KeyModifiers::SHIFT);
     match key.code {
         KeyCode::Esc if rf.diff.search.active => vec![Action::DiffSearchClose(DiffScope::Reflog)],
-        KeyCode::Esc | KeyCode::Char('q') if !ctrl && !alt => vec![Action::CloseReflog],
+        KeyCode::Esc => vec![Action::CloseReflog],
+        KeyCode::Char('q') if !ctrl && !alt => vec![Action::CloseReflog],
         KeyCode::Tab => vec![Action::ReflogCycleFocus(false)],
         KeyCode::BackTab => vec![Action::ReflogCycleFocus(true)],
         KeyCode::Char('j') | KeyCode::Down => match rf.focus {
@@ -1412,6 +1424,9 @@ fn route_reflog_key(key: &KeyEvent, state: &AppState) -> Vec<Action> {
             ReflogFocus::Diff => vec![Action::ReflogDiffScroll(crate::app::SCROLL_GOTO_BOTTOM)],
         },
         KeyCode::Char('/') if !ctrl && !alt && rf.focus == ReflogFocus::Diff => {
+            vec![Action::DiffSearchOpen(DiffScope::Reflog)]
+        }
+        KeyCode::Char('f' | 'F') if ctrl && !alt && rf.focus == ReflogFocus::Diff => {
             vec![Action::DiffSearchOpen(DiffScope::Reflog)]
         }
         KeyCode::Char('n')

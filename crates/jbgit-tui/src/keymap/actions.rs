@@ -154,7 +154,31 @@ where
 
 /// Routes an incoming key through the user-configured keymap rules (pure read).
 pub fn route_dynamic_key(key: &KeyEvent, state: &AppState) -> Option<Vec<Action>> {
-    route_dynamic_inner(key, state, |_| true)
+    if let Some(actions) = route_dynamic_inner(key, state, |_| true) {
+        return Some(actions);
+    }
+    // `c` in `[log]` is bound to `checkout` (inapplicable in `LogChangesTree`); avoid duplicating
+    // chord `"c"` in `[log]` while still dispatching `CopyFilePath` directly on plain `c` unless
+    // the user explicitly bound `copy_file_path` to another key.
+    if state.active_tab == WorkspaceTab::Log
+        && state.focused_pane == PaneId::LogChangesTree
+        && state.pending_keys.is_empty()
+        && key.code == KeyCode::Char('c')
+        && !key.modifiers.intersects(
+            crossterm::event::KeyModifiers::CONTROL | crossterm::event::KeyModifiers::ALT,
+        )
+        && state
+            .config
+            .keymap
+            .primary_key_for(
+                &[KeymapScope::Log, KeymapScope::Global],
+                &KeyAction::CopyFilePath,
+            )
+            .is_none()
+    {
+        return execute_action(&KeyAction::CopyFilePath, state);
+    }
+    None
 }
 
 /// Routes only non-typing modifier/function/tab chords when inside `CommitMessageEditor`
