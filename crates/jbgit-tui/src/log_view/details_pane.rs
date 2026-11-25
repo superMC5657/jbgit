@@ -7,9 +7,9 @@ use jbgit_core::{
 };
 
 use crate::app::ScrollViewport;
-pub use crate::diff_session::{ChangesTreeSession, DiffCacheStore, DiffSession};
 #[cfg(test)]
 pub use crate::diff_session::{ChangesExpandState, DETAILS_CACHE_CAPACITY};
+pub use crate::diff_session::{ChangesTreeSession, DiffCacheStore, DiffSession};
 
 /// Debounce between a selection change and the details request.
 pub const DETAILS_DEBOUNCE: Duration = Duration::from_millis(30);
@@ -145,10 +145,13 @@ impl DetailsPaneState {
     }
 
     pub fn next_deadline(&self) -> Option<Instant> {
-        [self.pending.as_ref().map(|(_, at)| *at), self.diff.next_deadline()]
-            .into_iter()
-            .flatten()
-            .min()
+        [
+            self.pending.as_ref().map(|(_, at)| *at),
+            self.diff.next_deadline(),
+        ]
+        .into_iter()
+        .flatten()
+        .min()
     }
 
     pub fn reset_containing(&mut self) {

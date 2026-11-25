@@ -302,12 +302,7 @@ where
                     text: doc_before.display_text(b_idx),
                     word_ranges: Vec::new(),
                 });
-                meta.push(on_line(
-                    DiffLineKind::Deleted,
-                    Some(b_idx),
-                    None,
-                    Some(b),
-                ));
+                meta.push(on_line(DiffLineKind::Deleted, Some(b_idx), None, Some(b)));
                 if b_idx + 1 == doc_before.len()
                     && doc_before.lines[b_idx].ending == LineEnding::None
                 {
@@ -334,14 +329,8 @@ where
                     text: doc_after.display_text(a_idx),
                     word_ranges: Vec::new(),
                 });
-                meta.push(on_line(
-                    DiffLineKind::Added,
-                    None,
-                    Some(a_idx),
-                    Some(b),
-                ));
-                if a_idx + 1 == doc_after.len()
-                    && doc_after.lines[a_idx].ending == LineEnding::None
+                meta.push(on_line(DiffLineKind::Added, None, Some(a_idx), Some(b)));
+                if a_idx + 1 == doc_after.len() && doc_after.lines[a_idx].ending == LineEnding::None
                 {
                     lines.push(DiffLine {
                         kind: DiffLineKind::NoNewline,
@@ -511,10 +500,18 @@ pub fn compute_diff_blocks_with_whitespace(
     let doc_before = SlicedDocument::from_bytes(before);
     let doc_after = SlicedDocument::from_bytes(after);
     let norm_before: Vec<Vec<u8>> = (0..doc_before.len())
-        .map(|i| whitespace.normalize_line(doc_before.line_content(i)).into_owned())
+        .map(|i| {
+            whitespace
+                .normalize_line(doc_before.line_content(i))
+                .into_owned()
+        })
         .collect();
     let norm_after: Vec<Vec<u8>> = (0..doc_after.len())
-        .map(|i| whitespace.normalize_line(doc_after.line_content(i)).into_owned())
+        .map(|i| {
+            whitespace
+                .normalize_line(doc_after.line_content(i))
+                .into_owned()
+        })
         .collect();
     if norm_before == norm_after {
         return Vec::new();
@@ -725,7 +722,12 @@ pub struct StageLineTracker {
 
 impl StageLineTracker {
     pub fn new(vcs_bytes: &[u8], staged_bytes: &[u8], local_bytes: &[u8]) -> Self {
-        Self::new_with_whitespace(vcs_bytes, staged_bytes, local_bytes, WhitespaceMode::Default)
+        Self::new_with_whitespace(
+            vcs_bytes,
+            staged_bytes,
+            local_bytes,
+            WhitespaceMode::Default,
+        )
     }
 
     pub fn new_with_whitespace(
@@ -737,7 +739,8 @@ impl StageLineTracker {
         let vcs_doc = SlicedDocument::from_bytes(vcs_bytes);
         let staged_doc = SlicedDocument::from_bytes(staged_bytes);
         let local_doc = SlicedDocument::from_bytes(local_bytes);
-        let staged_blocks = compute_diff_blocks_with_whitespace(vcs_bytes, staged_bytes, whitespace);
+        let staged_blocks =
+            compute_diff_blocks_with_whitespace(vcs_bytes, staged_bytes, whitespace);
         let unstaged_blocks =
             compute_diff_blocks_with_whitespace(staged_bytes, local_bytes, whitespace);
         let ranges = merge_stage_blocks(&staged_blocks, &unstaged_blocks);
@@ -1013,9 +1016,9 @@ impl StageLineTracker {
                     let cur_after = after_idx.unwrap_or(0);
                     let pivot_line = if staged_side { cur_after } else { cur_before };
                     let sr_idx = self.range_for_staged_line(pivot_line);
-                    let mark = sr_idx
-                        .and_then(|idx| self.ranges.get(idx))
-                        .map_or(LineGutterMark::None, |sr| {
+                    let mark = sr_idx.and_then(|idx| self.ranges.get(idx)).map_or(
+                        LineGutterMark::None,
+                        |sr| {
                             if sr.has_staged && sr.has_unstaged {
                                 LineGutterMark::Both
                             } else if sr.has_staged {
@@ -1023,7 +1026,8 @@ impl StageLineTracker {
                             } else {
                                 LineGutterMark::None
                             }
-                        });
+                        },
+                    );
                     StageDiffLineMeta {
                         before_idx,
                         after_idx,
@@ -1039,24 +1043,22 @@ impl StageLineTracker {
                     } else {
                         self.range_for_staged_line(b_idx)
                     };
-                    let mark = sr_idx
-                        .and_then(|idx| self.ranges.get(idx))
-                        .map_or(
-                            if staged_side {
+                    let mark = sr_idx.and_then(|idx| self.ranges.get(idx)).map_or(
+                        if staged_side {
+                            LineGutterMark::Staged(DiffLineKind::Deleted)
+                        } else {
+                            LineGutterMark::Unstaged(DiffLineKind::Deleted)
+                        },
+                        |sr| {
+                            if sr.has_staged && sr.has_unstaged {
+                                LineGutterMark::Both
+                            } else if staged_side {
                                 LineGutterMark::Staged(DiffLineKind::Deleted)
                             } else {
                                 LineGutterMark::Unstaged(DiffLineKind::Deleted)
-                            },
-                            |sr| {
-                                if sr.has_staged && sr.has_unstaged {
-                                    LineGutterMark::Both
-                                } else if staged_side {
-                                    LineGutterMark::Staged(DiffLineKind::Deleted)
-                                } else {
-                                    LineGutterMark::Unstaged(DiffLineKind::Deleted)
-                                }
-                            },
-                        );
+                            }
+                        },
+                    );
                     StageDiffLineMeta {
                         before_idx,
                         after_idx: None,
@@ -1078,24 +1080,22 @@ impl StageLineTracker {
                     } else {
                         DiffLineKind::Added
                     };
-                    let mark = sr_idx
-                        .and_then(|idx| self.ranges.get(idx))
-                        .map_or(
-                            if staged_side {
+                    let mark = sr_idx.and_then(|idx| self.ranges.get(idx)).map_or(
+                        if staged_side {
+                            LineGutterMark::Staged(mark_kind)
+                        } else {
+                            LineGutterMark::Unstaged(mark_kind)
+                        },
+                        |sr| {
+                            if sr.has_staged && sr.has_unstaged {
+                                LineGutterMark::Both
+                            } else if staged_side {
                                 LineGutterMark::Staged(mark_kind)
                             } else {
                                 LineGutterMark::Unstaged(mark_kind)
-                            },
-                            |sr| {
-                                if sr.has_staged && sr.has_unstaged {
-                                    LineGutterMark::Both
-                                } else if staged_side {
-                                    LineGutterMark::Staged(mark_kind)
-                                } else {
-                                    LineGutterMark::Unstaged(mark_kind)
-                                }
-                            },
-                        );
+                            }
+                        },
+                    );
                     StageDiffLineMeta {
                         before_idx: None,
                         after_idx,
@@ -1254,8 +1254,8 @@ mod tests {
 
     fn doc_strategy() -> impl Strategy<Value = Vec<u8>> {
         let line_strat = prop::sample::select(vec![
-            "alpha", "beta", "gamma", "delta", "epsilon", "zeta", "eta", "theta", "iota",
-            "kappa", "lambda", "mu",
+            "alpha", "beta", "gamma", "delta", "epsilon", "zeta", "eta", "theta", "iota", "kappa",
+            "lambda", "mu",
         ]);
         let ending_strat = prop::sample::select(vec!["\n", "\r\n"]);
         (
@@ -1376,7 +1376,9 @@ mod tests {
             if i % 10 == 2 {
                 // pure insertion in staged + replacement in local every 10 lines -> ~1000 hunks
                 staged.extend_from_slice(format!("line {i:05} staged_edit\n").as_bytes());
-                local.extend_from_slice(format!("line {i:05} local_a\nline {i:05} local_b{nl}").as_bytes());
+                local.extend_from_slice(
+                    format!("line {i:05} local_a\nline {i:05} local_b{nl}").as_bytes(),
+                );
             } else if i % 10 == 7 {
                 // deleted in staged
                 local.extend_from_slice(format!("line {i:05} restored{nl}").as_bytes());
@@ -1394,7 +1396,11 @@ mod tests {
         assert_eq!(SlicedDocument::from_bytes(&local).to_bytes(), local);
 
         let tracker = StageLineTracker::new(&vcs, &staged, &local);
-        assert!(tracker.ranges.len() >= 1_000, "got {} ranges", tracker.ranges.len());
+        assert!(
+            tracker.ranges.len() >= 1_000,
+            "got {} ranges",
+            tracker.ranges.len()
+        );
 
         for l in 0..=tracker.staged_doc.len() {
             let linear = tracker.ranges.iter().position(|r| {
@@ -1404,7 +1410,11 @@ mod tests {
                     r.staged_range.contains(&l)
                 }
             });
-            assert_eq!(tracker.range_for_staged_line(l), linear, "staged mismatch at {l}");
+            assert_eq!(
+                tracker.range_for_staged_line(l),
+                linear,
+                "staged mismatch at {l}"
+            );
         }
         for l in 0..=tracker.local_doc.len() {
             let linear = tracker.ranges.iter().position(|r| {
@@ -1414,7 +1424,11 @@ mod tests {
                     r.local_range.contains(&l)
                 }
             });
-            assert_eq!(tracker.range_for_local_line(l), linear, "local mismatch at {l}");
+            assert_eq!(
+                tracker.range_for_local_line(l),
+                linear,
+                "local mismatch at {l}"
+            );
         }
     }
 
@@ -1427,13 +1441,28 @@ mod tests {
         // Real semantic edit PLUS indentation change — raw display text must keep original spaces.
         let real_and_ws = b"fn demo() {\n    let x = 1;  \n  let y = 99;\n}\n";
 
-        assert!(!compute_diff_blocks_with_whitespace(base, indent_only, WhitespaceMode::Default).is_empty());
-        assert!(compute_diff_blocks_with_whitespace(base, indent_only, WhitespaceMode::IgnoreChange).is_empty());
-        assert!(compute_diff_blocks_with_whitespace(base, indent_only, WhitespaceMode::IgnoreAll).is_empty());
+        assert!(
+            !compute_diff_blocks_with_whitespace(base, indent_only, WhitespaceMode::Default)
+                .is_empty()
+        );
+        assert!(
+            compute_diff_blocks_with_whitespace(base, indent_only, WhitespaceMode::IgnoreChange)
+                .is_empty()
+        );
+        assert!(
+            compute_diff_blocks_with_whitespace(base, indent_only, WhitespaceMode::IgnoreAll)
+                .is_empty()
+        );
 
         // `y = 2` vs `y=2`: IgnoreChange still sees a difference, IgnoreAll collapses it.
-        assert!(!compute_diff_blocks_with_whitespace(base, added_spaces, WhitespaceMode::IgnoreChange).is_empty());
-        assert!(compute_diff_blocks_with_whitespace(base, added_spaces, WhitespaceMode::IgnoreAll).is_empty());
+        assert!(
+            !compute_diff_blocks_with_whitespace(base, added_spaces, WhitespaceMode::IgnoreChange)
+                .is_empty()
+        );
+        assert!(
+            compute_diff_blocks_with_whitespace(base, added_spaces, WhitespaceMode::IgnoreAll)
+                .is_empty()
+        );
 
         // Real edit with whitespace-only neighbor: only line 3 is diffed under IgnoreChange,
         // and displayed context/added lines preserve original raw text!

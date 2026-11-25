@@ -429,9 +429,9 @@ impl KeymapConfig {
         match &preset {
             KeymapPreset::Default => {}
             KeymapPreset::Jetbrains => {
-                if let Ok(ov) =
-                    toml::from_str::<KeymapConfigOverlay>(crate::config::BUILTIN_KEYMAP_JETBRAINS_TOML)
-                {
+                if let Ok(ov) = toml::from_str::<KeymapConfigOverlay>(
+                    crate::config::BUILTIN_KEYMAP_JETBRAINS_TOML,
+                ) {
                     cfg.apply_preset_overlay(&ov);
                 }
                 cfg.preset = KeymapPreset::Jetbrains;
@@ -567,7 +567,11 @@ impl KeymapConfig {
         out
     }
 
-    pub fn primary_editor_key_for(&self, scopes: &[KeymapScope], run: &KeyAction) -> Option<String> {
+    pub fn primary_editor_key_for(
+        &self,
+        scopes: &[KeymapScope],
+        run: &KeyAction,
+    ) -> Option<String> {
         self.editor_keys_for(scopes, run).into_iter().next()
     }
 

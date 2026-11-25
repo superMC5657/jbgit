@@ -147,7 +147,9 @@ fn multi_repo_siblings(dir: &Path) -> (PathBuf, PathBuf) {
 }
 
 fn capabilities_sub_repo(dir: &Path) -> PathBuf {
-    dir.parent().unwrap_or(Path::new(".")).join("sandbox-sub.git")
+    dir.parent()
+        .unwrap_or(Path::new("."))
+        .join("sandbox-sub.git")
 }
 
 fn askpass_http_root(dir: &Path) -> PathBuf {
@@ -287,7 +289,10 @@ fn init_multi_repo_scenario(dir: &Path, wt_dir: &Path, b_dir: &Path) -> Result<(
     init_basic_scenario(dir)?;
     let wt = wt_dir.to_string_lossy().into_owned();
     run_git(dir, &["worktree", "add", &wt, "feature/ui-test"])?;
-    fs::write(wt_dir.join("WORKTREE_NOTE.md"), "edited only in the worktree\n")?;
+    fs::write(
+        wt_dir.join("WORKTREE_NOTE.md"),
+        "edited only in the worktree\n",
+    )?;
 
     init_git_repo(b_dir, "develop")?;
     fs::write(b_dir.join("b.txt"), "repository B\n")?;
@@ -303,10 +308,7 @@ pub fn write_recent_repos(cfg_dir: &Path, repos: &[PathBuf]) -> Result<()> {
     fs::create_dir_all(cfg_dir)?;
     let mut body = String::new();
     for (i, repo) in repos.iter().enumerate() {
-        let name = repo
-            .file_name()
-            .and_then(|s| s.to_str())
-            .unwrap_or("repo");
+        let name = repo.file_name().and_then(|s| s.to_str()).unwrap_or("repo");
         // TOML literal string: no escaping of Windows backslashes needed.
         let path = repo.to_string_lossy();
         body.push_str(&format!(
@@ -319,7 +321,10 @@ pub fn write_recent_repos(cfg_dir: &Path, repos: &[PathBuf]) -> Result<()> {
 }
 
 fn init_basic_scenario(dir: &Path) -> Result<()> {
-    fs::write(dir.join("README.md"), "# jbgit QA Sandbox\n\nline 1\nline 2\n")?;
+    fs::write(
+        dir.join("README.md"),
+        "# jbgit QA Sandbox\n\nline 1\nline 2\n",
+    )?;
     run_git(dir, &["add", "README.md"])?;
     run_git(dir, &["commit", "-m", "initial commit"])?;
 
@@ -390,7 +395,10 @@ fn init_full_scenario(dir: &Path, remote_dir: &Path) -> Result<(PathBuf, PathBuf
     for i in 1..=30 {
         src_lines.push(format!("fn step_{i:02}() {{ println!(\"step {i}\"); }}"));
     }
-    fs::write(dir.join("src/main.rs"), format!("{}\n", src_lines.join("\n")))?;
+    fs::write(
+        dir.join("src/main.rs"),
+        format!("{}\n", src_lines.join("\n")),
+    )?;
     fs::write(
         dir.join("src/legacy_auth.rs"),
         "pub fn verify_user(user: &str) -> bool {\n    !user.is_empty()\n}\n",
@@ -400,7 +408,10 @@ fn init_full_scenario(dir: &Path, remote_dir: &Path) -> Result<(PathBuf, PathBuf
         "pub fn title() -> &'static str { \"jbgit\" }\n",
     )?;
     fs::write(dir.join(".gitignore"), "*.log\n")?;
-    fs::write(dir.join("staged_partial.txt"), "alpha\nbeta\ngamma\ndelta\n")?;
+    fs::write(
+        dir.join("staged_partial.txt"),
+        "alpha\nbeta\ngamma\ndelta\n",
+    )?;
     run_git(dir, &["add", "."])?;
     run_git(dir, &["commit", "-m", "initial project scaffold"])?;
     run_git(dir, &["tag", "v0.1.0"])?;
@@ -409,7 +420,10 @@ fn init_full_scenario(dir: &Path, remote_dir: &Path) -> Result<(PathBuf, PathBuf
         dir.join("src/legacy_auth.rs"),
         "pub fn verify_user(user: &str) -> bool {\n    !user.is_empty()\n}\n\npub fn token_ttl() -> u64 {\n    3600\n}\n",
     )?;
-    run_git(dir, &["commit", "-am", "feat: add token_ttl to legacy_auth"])?;
+    run_git(
+        dir,
+        &["commit", "-am", "feat: add token_ttl to legacy_auth"],
+    )?;
     run_git(dir, &["mv", "src/legacy_auth.rs", "src/auth.rs"])?;
     run_git(
         dir,
@@ -453,7 +467,10 @@ fn init_full_scenario(dir: &Path, remote_dir: &Path) -> Result<(PathBuf, PathBuf
 
     run_git(dir, &["checkout", "-b", "feature/linear-chain"])?;
     for step in 1..=5 {
-        fs::write(dir.join("linear_chain.txt"), format!("linear step {step}\n"))?;
+        fs::write(
+            dir.join("linear_chain.txt"),
+            format!("linear step {step}\n"),
+        )?;
         run_git(dir, &["add", "linear_chain.txt"])?;
         run_git(
             dir,
@@ -553,7 +570,11 @@ fn init_full_scenario(dir: &Path, remote_dir: &Path) -> Result<(PathBuf, PathBuf
     )?;
     run_git(
         dir,
-        &["commit", "-am", "feat: refine auth, header, and README on main"],
+        &[
+            "commit",
+            "-am",
+            "feat: refine auth, header, and README on main",
+        ],
     )?;
     run_git(
         dir,
@@ -588,7 +609,10 @@ fn init_full_scenario(dir: &Path, remote_dir: &Path) -> Result<(PathBuf, PathBuf
 
     src_lines[1] = "fn step_02() { println!(\"step 2 modified hunk A\"); }".to_string();
     src_lines[26] = "fn step_27() { println!(\"step 27 modified hunk B\"); }".to_string();
-    fs::write(dir.join("src/main.rs"), format!("{}\n", src_lines.join("\n")))?;
+    fs::write(
+        dir.join("src/main.rs"),
+        format!("{}\n", src_lines.join("\n")),
+    )?;
 
     fs::write(dir.join("scratch_note.txt"), "untracked qa file\n")?;
     fs::write(dir.join("debug_trace.log"), "ignored debug log\n")?;
@@ -623,7 +647,10 @@ fn init_capabilities_scenario(dir: &Path, remote_dir: &Path) -> Result<()> {
     );
     fs::write(seed_dir.join("assets/model.bin"), lfs_v1)?;
     run_git_no_lfs(&seed_dir, &["add", ".gitattributes", "assets/model.bin"])?;
-    run_git(&seed_dir, &["commit", "-m", "feat: track model.bin with LFS"])?;
+    run_git(
+        &seed_dir,
+        &["commit", "-m", "feat: track model.bin with LFS"],
+    )?;
 
     fs::create_dir_all(seed_dir.join("src"))?;
     fs::write(
@@ -945,14 +972,21 @@ mod tests {
             .current_dir(dir)
             .output()
             .unwrap();
-        assert!(ok.status.success(), "{}", String::from_utf8_lossy(&ok.stderr));
+        assert!(
+            ok.status.success(),
+            "{}",
+            String::from_utf8_lossy(&ok.stderr)
+        );
 
         let fail = Command::new("git")
             .args(["apply", "--check", &conflict_patch.to_string_lossy()])
             .current_dir(dir)
             .output()
             .unwrap();
-        assert!(!fail.status.success(), "expected conflict.patch to fail check");
+        assert!(
+            !fail.status.success(),
+            "expected conflict.patch to fail check"
+        );
 
         let three_way_check = Command::new("git")
             .args([
@@ -1026,8 +1060,7 @@ mod tests {
             "raw: {head_sig_line:?}"
         );
 
-        let parent_sig_line =
-            git_out(dir, &["log", "-1", "HEAD~1", "--format=%G?%x1f%GS%x1f%GK"]);
+        let parent_sig_line = git_out(dir, &["log", "-1", "HEAD~1", "--format=%G?%x1f%GS%x1f%GK"]);
         let parent_sig = jbgit_core::CommitSignature::parse_single_format_line(&parent_sig_line);
         assert_eq!(
             parent_sig.status,
@@ -1050,7 +1083,10 @@ mod tests {
         let origin = git_out(dir, &["remote", "get-url", "origin"]);
         assert_eq!(origin.trim(), url);
         let http_root = askpass_http_root(dir);
-        let receive = git_out(&http_root.join("repo.git"), &["config", "--get", "http.receivepack"]);
+        let receive = git_out(
+            &http_root.join("repo.git"),
+            &["config", "--get", "http.receivepack"],
+        );
         assert_eq!(receive.trim(), "true");
     }
 }

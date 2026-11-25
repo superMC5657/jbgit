@@ -129,11 +129,7 @@ pub fn render_push_dialog_modal(
     render_bottom_bar(frame, bottom_rect, state, pd, ctx, z + 2);
 }
 
-fn pane_block<'a>(
-    ctx: &RenderContext<'_>,
-    title: &str,
-    focused: bool,
-) -> Block<'a> {
+fn pane_block<'a>(ctx: &RenderContext<'_>, title: &str, focused: bool) -> Block<'a> {
     Block::default()
         .title(Span::styled(
             format!(" {title} "),
@@ -236,7 +232,10 @@ fn render_target_pane(
         );
         frame.render_widget(
             Paragraph::new(Span::styled(
-                format!("{input_text}{}", " ".repeat(w.saturating_sub(input_text.width()))),
+                format!(
+                    "{input_text}{}",
+                    " ".repeat(w.saturating_sub(input_text.width()))
+                ),
                 Style::default()
                     .fg(ctx.theme.fg_bright)
                     .bg(ctx.theme.bg_selection_focused),
@@ -431,7 +430,11 @@ fn render_commits_pane(
     if pd.loading {
         frame.render_widget(
             Paragraph::new(Span::styled(
-                format!(" {} {}", state.spinner_char(), ctx.t("dialog.push_full.loading_outgoing")),
+                format!(
+                    " {} {}",
+                    state.spinner_char(),
+                    ctx.t("dialog.push_full.loading_outgoing")
+                ),
                 Style::default().fg(ctx.theme.fg_muted),
             )),
             inner,
@@ -465,11 +468,7 @@ fn render_commits_pane(
     let mut vp = pd.commit_scroll;
     vp.ensure_visible(selected, commits.len(), h);
     let scroll = vp.offset();
-    ctx.record_scroll_bound(
-        ScrollPane::PushCommits,
-        h,
-        commits.len().saturating_sub(h),
-    );
+    ctx.record_scroll_bound(ScrollPane::PushCommits, h, commits.len().saturating_sub(h));
     let w = inner.width as usize;
 
     for (vis, (idx, c)) in commits.iter().enumerate().skip(scroll).take(h).enumerate() {
@@ -484,10 +483,7 @@ fn render_commits_pane(
                 format!("{} ", truncate_to_width(&c.author_name, 14)),
                 Style::default().fg(ctx.theme.fg_muted),
             ),
-            Span::styled(
-                format!("{rel} "),
-                Style::default().fg(ctx.theme.fg_muted),
-            ),
+            Span::styled(format!("{rel} "), Style::default().fg(ctx.theme.fg_muted)),
         ];
         let right_w: usize = right.iter().map(|s| s.content.width()).sum();
         let subj_w = w.saturating_sub(short.width() + right_w + 3);
@@ -575,7 +571,11 @@ fn render_files_pane(
         } else {
             frame.render_widget(
                 Paragraph::new(Span::styled(
-                    format!(" {} {}", state.spinner_char(), ctx.t("view.log_details.loading_diff")),
+                    format!(
+                        " {} {}",
+                        state.spinner_char(),
+                        ctx.t("view.log_details.loading_diff")
+                    ),
                     Style::default().fg(ctx.theme.fg_muted),
                 )),
                 body_rect,
@@ -625,11 +625,7 @@ fn render_files_pane(
     let mut vp = pd.file_scroll;
     vp.ensure_visible(selected, changes.len(), h);
     let scroll = vp.offset();
-    ctx.record_scroll_bound(
-        ScrollPane::PushFiles,
-        h,
-        changes.len().saturating_sub(h),
-    );
+    ctx.record_scroll_bound(ScrollPane::PushFiles, h, changes.len().saturating_sub(h));
     let w = inner.width as usize;
 
     for (vis, (idx, ch)) in changes.iter().enumerate().skip(scroll).take(h).enumerate() {
@@ -844,8 +840,11 @@ fn render_bottom_bar(
             };
             let pr = Rect::new(bx, btn_y, push_w, 1);
             frame.render_widget(Paragraph::new(Span::styled(push_text, push_style)), pr);
-            ctx.hit_registry
-                .register(pr, z + 1, HitTarget::PushActionButton(PushActionButtonKind::Confirm));
+            ctx.hit_registry.register(
+                pr,
+                z + 1,
+                HitTarget::PushActionButton(PushActionButtonKind::Confirm),
+            );
             bx += push_w + 2;
         }
         let cancel_text = format!(" {} ", ctx.cancel());
@@ -861,8 +860,11 @@ fn render_bottom_bar(
                 )),
                 cr,
             );
-            ctx.hit_registry
-                .register(cr, z + 1, HitTarget::PushActionButton(PushActionButtonKind::Cancel));
+            ctx.hit_registry.register(
+                cr,
+                z + 1,
+                HitTarget::PushActionButton(PushActionButtonKind::Cancel),
+            );
         }
     }
 }

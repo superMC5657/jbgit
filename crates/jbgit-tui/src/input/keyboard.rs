@@ -173,7 +173,9 @@ fn route_modal_key(key: KeyEvent, state: &AppState) -> Vec<Action> {
             KeyCode::PageDown => vec![Action::ScrollCommitMessageModal(10)],
             KeyCode::PageUp => vec![Action::ScrollCommitMessageModal(-10)],
             KeyCode::Home | KeyCode::Char('g') => {
-                vec![Action::ScrollCommitMessageModal(crate::app::SCROLL_GOTO_TOP)]
+                vec![Action::ScrollCommitMessageModal(
+                    crate::app::SCROLL_GOTO_TOP,
+                )]
             }
             KeyCode::End | KeyCode::Char('G') => {
                 vec![Action::ScrollCommitMessageModal(
@@ -229,9 +231,8 @@ fn route_modal_key(key: KeyEvent, state: &AppState) -> Vec<Action> {
                                 .favorite_branch_names(state.repo_snapshot.as_ref())
                                 .is_empty();
                             let hist = state.log.filter.history_for(field);
-                            let suggestions = filter_suggestions_with_context(
-                                field, snap, &query, has_fav, hist,
-                            );
+                            let suggestions =
+                                filter_suggestions_with_context(field, snap, &query, has_fav, hist);
                             if let Some(s) =
                                 suggestions.get(selected.min(suggestions.len().saturating_sub(1)))
                             {
@@ -246,10 +247,7 @@ fn route_modal_key(key: KeyEvent, state: &AppState) -> Vec<Action> {
                         } else {
                             query
                         };
-                        vec![
-                            Action::PopModal,
-                            Action::ApplyFilterField { field, expr },
-                        ]
+                        vec![Action::PopModal, Action::ApplyFilterField { field, expr }]
                     }
                     PopupKind::GoToRevision if key.modifiers.contains(KeyModifiers::ALT) => {
                         vec![Action::PopModal, Action::BrowseRevisionExpr(query)]
@@ -262,7 +260,10 @@ fn route_modal_key(key: KeyEvent, state: &AppState) -> Vec<Action> {
                         if count == 0 {
                             vec![Action::PopModal]
                         } else {
-                            vec![Action::PopModal, Action::GoToParent(selected.min(count - 1))]
+                            vec![
+                                Action::PopModal,
+                                Action::GoToParent(selected.min(count - 1)),
+                            ]
                         }
                     }
                     PopupKind::ChooseChild => {
@@ -289,7 +290,9 @@ fn route_modal_key(key: KeyEvent, state: &AppState) -> Vec<Action> {
                             })
                             .map(|(i, _)| i)
                             .collect();
-                        if let Some(&idx) = matching.get(selected.min(matching.len().saturating_sub(1))) {
+                        if let Some(&idx) =
+                            matching.get(selected.min(matching.len().saturating_sub(1)))
+                        {
                             vec![Action::PopModal, Action::CommitApplyHistory(idx)]
                         } else {
                             vec![Action::PopModal]
@@ -494,9 +497,7 @@ fn route_pane_fallback_key(key: KeyEvent, state: &AppState) -> Vec<Action> {
             KeyCode::Esc if state.log.branch_compare.is_some() => {
                 vec![Action::CloseBranchCompare]
             }
-            KeyCode::Char('T')
-                if !ctrl && !alt && state.log.branch_compare.is_some() =>
-            {
+            KeyCode::Char('T') if !ctrl && !alt && state.log.branch_compare.is_some() => {
                 vec![Action::ToggleBranchCompareTreeDiff]
             }
             KeyCode::Esc if state.log.filter.saved_before_dir_history.is_some() => {
@@ -521,7 +522,9 @@ fn route_pane_fallback_key(key: KeyEvent, state: &AppState) -> Vec<Action> {
                     .get(state.log.details.changes.selected)
                     .map(|r| (matches!(r.kind, ChangeRowKind::Dir { .. }), r.expanded));
                 match row {
-                    Some((true, expanded)) => vec![Action::ChangesExpand(ChangesHost::Log, !expanded)],
+                    Some((true, expanded)) => {
+                        vec![Action::ChangesExpand(ChangesHost::Log, !expanded)]
+                    }
                     Some((false, _)) => {
                         let mut acts = Vec::new();
                         if !state.log.details.diff_preview {
@@ -537,8 +540,12 @@ fn route_pane_fallback_key(key: KeyEvent, state: &AppState) -> Vec<Action> {
             KeyCode::Char('v') if !ctrl && !alt => {
                 vec![Action::ChangesToggleGroupByDir(ChangesHost::Log)]
             }
-            KeyCode::Char('e') if !ctrl && !alt => vec![Action::ChangesExpandAll(ChangesHost::Log, true)],
-            KeyCode::Char('E') if !ctrl && !alt => vec![Action::ChangesExpandAll(ChangesHost::Log, false)],
+            KeyCode::Char('e') if !ctrl && !alt => {
+                vec![Action::ChangesExpandAll(ChangesHost::Log, true)]
+            }
+            KeyCode::Char('E') if !ctrl && !alt => {
+                vec![Action::ChangesExpandAll(ChangesHost::Log, false)]
+            }
             _ => Vec::new(),
         },
         PaneId::LogDetailsDiff if state.log.details.diff_preview => {
@@ -581,7 +588,9 @@ fn route_pane_fallback_key(key: KeyEvent, state: &AppState) -> Vec<Action> {
             }
         }
         PaneId::CommitChangesTree => route_commit_changes_tree_key(&key, state),
-        PaneId::CommitDiffPreview => crate::input_stage::route_commit_diff_fallback_key(&key, state),
+        PaneId::CommitDiffPreview => {
+            crate::input_stage::route_commit_diff_fallback_key(&key, state)
+        }
         PaneId::StashList | PaneId::StashDiffPreview => route_stash_fallback_key(&key, state),
         _ => Vec::new(),
     }
@@ -678,8 +687,14 @@ fn route_diff_zoomed_fallback(key: &KeyEvent, page: isize, search_active: bool) 
         KeyCode::PageUp => vec![Action::DiffScroll(DiffScope::Log, -page)],
         KeyCode::Left if shift => vec![Action::DiffScrollHoriz(DiffScope::Log, -16)],
         KeyCode::Right if shift => vec![Action::DiffScrollHoriz(DiffScope::Log, 16)],
-        KeyCode::Home => vec![Action::DiffScroll(DiffScope::Log, crate::app::SCROLL_GOTO_TOP)],
-        KeyCode::End => vec![Action::DiffScroll(DiffScope::Log, crate::app::SCROLL_GOTO_BOTTOM)],
+        KeyCode::Home => vec![Action::DiffScroll(
+            DiffScope::Log,
+            crate::app::SCROLL_GOTO_TOP,
+        )],
+        KeyCode::End => vec![Action::DiffScroll(
+            DiffScope::Log,
+            crate::app::SCROLL_GOTO_BOTTOM,
+        )],
         KeyCode::Char('P') => vec![Action::SwitchMergeParent],
         KeyCode::Enter if ctrl => vec![Action::ZoomDiff(false)],
         KeyCode::Esc if search_active => vec![Action::DiffSearchClose(DiffScope::Log)],
@@ -759,7 +774,8 @@ fn route_log_priority_key(key: &KeyEvent, state: &AppState) -> Option<Vec<Action
 
     if state.focused_pane == PaneId::LogBranchesTree {
         let active_search = state.log.branches.searching;
-        let speed_active = state.config.keymap.tree_speed_search && !state.log.branches.query.is_empty();
+        let speed_active =
+            state.config.keymap.tree_speed_search && !state.log.branches.query.is_empty();
         if active_search {
             match key.code {
                 KeyCode::Enter => return Some(vec![Action::BranchesSearchDone]),
@@ -803,7 +819,9 @@ fn route_file_history_key(key: &KeyEvent, state: &AppState) -> Vec<Action> {
             KeyCode::PageUp => vec![Action::FileHistoryBlobScroll(-15)],
             KeyCode::Home => vec![Action::FileHistoryBlobScroll(crate::app::SCROLL_GOTO_TOP)],
             KeyCode::End | KeyCode::Char('G') => {
-                vec![Action::FileHistoryBlobScroll(crate::app::SCROLL_GOTO_BOTTOM)]
+                vec![Action::FileHistoryBlobScroll(
+                    crate::app::SCROLL_GOTO_BOTTOM,
+                )]
             }
             _ => Vec::new(),
         };
@@ -833,22 +851,25 @@ fn route_file_history_key(key: &KeyEvent, state: &AppState) -> Vec<Action> {
         };
     }
     let had_pending_g = fh.pending_g.is_some();
-    let pending_g = fh
-        .pending_g
-        .is_some_and(|t| state.now().saturating_duration_since(t) <= crate::log_view::FILE_HISTORY_G_WINDOW);
+    let pending_g = fh.pending_g.is_some_and(|t| {
+        state.now().saturating_duration_since(t) <= crate::log_view::FILE_HISTORY_G_WINDOW
+    });
     let diff_zoomed = fh.diff.zoomed;
     let diff_focused = fh.focus == crate::log_view::FileHistoryFocus::Diff || diff_zoomed;
-    let affected_focused =
-        fh.focus == crate::log_view::FileHistoryFocus::AffectedFiles && fh.show_affected_files && !diff_zoomed;
+    let affected_focused = fh.focus == crate::log_view::FileHistoryFocus::AffectedFiles
+        && fh.show_affected_files
+        && !diff_zoomed;
 
     let mut prefix = Vec::new();
     if had_pending_g {
         prefix.push(Action::FileHistorySetPendingG(None));
     }
 
-    if key.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) {
-        if key.modifiers.contains(KeyModifiers::ALT)
-            && matches!(key.code, KeyCode::Char('g' | 'G'))
+    if key
+        .modifiers
+        .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+    {
+        if key.modifiers.contains(KeyModifiers::ALT) && matches!(key.code, KeyCode::Char('g' | 'G'))
         {
             prefix.push(Action::FileHistoryAnnotate);
             return prefix;
@@ -1047,9 +1068,9 @@ fn route_annotate_key(key: &KeyEvent, state: &AppState) -> Vec<Action> {
     }
 
     let had_pending_g = ann.pending_g.is_some();
-    let pending_g = ann
-        .pending_g
-        .is_some_and(|t| state.now().saturating_duration_since(t) <= crate::log_view::FILE_HISTORY_G_WINDOW);
+    let pending_g = ann.pending_g.is_some_and(|t| {
+        state.now().saturating_duration_since(t) <= crate::log_view::FILE_HISTORY_G_WINDOW
+    });
     let diff_focused = ann.focus == crate::log_view::AnnotateFocus::Diff && ann.show_diff;
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     let alt = key.modifiers.contains(KeyModifiers::ALT);
@@ -1123,9 +1144,7 @@ fn route_annotate_key(key: &KeyEvent, state: &AppState) -> Vec<Action> {
             KeyCode::Char('b') if diff_focused => {
                 Some(Action::DiffCycleWhitespace(DiffScope::Annotate))
             }
-            KeyCode::Char('/') if diff_focused => {
-                Some(Action::DiffSearchOpen(DiffScope::Annotate))
-            }
+            KeyCode::Char('/') if diff_focused => Some(Action::DiffSearchOpen(DiffScope::Annotate)),
             KeyCode::Char('n') if diff_focused && ann.diff.search.active => {
                 Some(Action::DiffSearchJump(DiffScope::Annotate, 1))
             }
@@ -1134,17 +1153,25 @@ fn route_annotate_key(key: &KeyEvent, state: &AppState) -> Vec<Action> {
             }
             KeyCode::Left | KeyCode::Char('h') if diff_focused => Some(Action::DiffScrollHoriz(
                 DiffScope::Annotate,
-                if shift { -16 } else { -crate::diff_session::DIFF_HORIZ_SCROLL_STEP },
+                if shift {
+                    -16
+                } else {
+                    -crate::diff_session::DIFF_HORIZ_SCROLL_STEP
+                },
             )),
             KeyCode::Right | KeyCode::Char('l') if diff_focused => Some(Action::DiffScrollHoriz(
                 DiffScope::Annotate,
-                if shift { 16 } else { crate::diff_session::DIFF_HORIZ_SCROLL_STEP },
+                if shift {
+                    16
+                } else {
+                    crate::diff_session::DIFF_HORIZ_SCROLL_STEP
+                },
             )),
             KeyCode::Char('[') => Some(Action::DiffJumpHunk(DiffScope::Annotate, -1)),
             KeyCode::Char(']') => Some(Action::DiffJumpHunk(DiffScope::Annotate, 1)),
             KeyCode::F(10) if shift => {
-            let line_idx = ann.cursor;
-            let anchor = state
+                let line_idx = ann.cursor;
+                let anchor = state
                 .hit_registry
                 .find(|t| matches!(t, HitTarget::AnnotateLine { line_idx: idx } if *idx == line_idx))
                 .map(|r| {
@@ -1157,14 +1184,14 @@ fn route_annotate_key(key: &KeyEvent, state: &AppState) -> Vec<Action> {
                         state.terminal_area.y + 5,
                     )
                 });
-            Some(Action::OpenContextMenuForTarget {
-                target: HitTarget::AnnotateLine { line_idx },
-                anchor,
-            })
-        }
-        KeyCode::Char('.') | KeyCode::Menu => {
-            let line_idx = ann.cursor;
-            let anchor = state
+                Some(Action::OpenContextMenuForTarget {
+                    target: HitTarget::AnnotateLine { line_idx },
+                    anchor,
+                })
+            }
+            KeyCode::Char('.') | KeyCode::Menu => {
+                let line_idx = ann.cursor;
+                let anchor = state
                 .hit_registry
                 .find(|t| matches!(t, HitTarget::AnnotateLine { line_idx: idx } if *idx == line_idx))
                 .map(|r| {
@@ -1177,41 +1204,41 @@ fn route_annotate_key(key: &KeyEvent, state: &AppState) -> Vec<Action> {
                         state.terminal_area.y + 5,
                     )
                 });
-            Some(Action::OpenContextMenuForTarget {
-                target: HitTarget::AnnotateLine { line_idx },
-                anchor,
-            })
-        }
-        KeyCode::Up if shift && !diff_focused => Some(Action::AnnotateMoveExtend(-1)),
-        KeyCode::Down if shift && !diff_focused => Some(Action::AnnotateMoveExtend(1)),
-        KeyCode::Down | KeyCode::Char('j') if diff_focused => {
-            Some(Action::DiffScroll(DiffScope::Annotate, 1))
-        }
-        KeyCode::Up | KeyCode::Char('k') if diff_focused => {
-            Some(Action::DiffScroll(DiffScope::Annotate, -1))
-        }
-        KeyCode::PageDown if diff_focused => Some(Action::DiffScroll(DiffScope::Annotate, 10)),
-        KeyCode::PageUp if diff_focused => Some(Action::DiffScroll(DiffScope::Annotate, -10)),
-        KeyCode::Home if diff_focused => Some(Action::DiffScroll(
-            DiffScope::Annotate,
-            crate::app::SCROLL_GOTO_TOP,
-        )),
-        KeyCode::End | KeyCode::Char('G') if diff_focused => Some(Action::DiffScroll(
-            DiffScope::Annotate,
-            crate::app::SCROLL_GOTO_BOTTOM,
-        )),
-        KeyCode::Down | KeyCode::Char('j') => Some(Action::AnnotateMove(1)),
-        KeyCode::Up | KeyCode::Char('k') => Some(Action::AnnotateMove(-1)),
-        KeyCode::PageDown => Some(Action::AnnotateMove(10)),
-        KeyCode::PageUp => Some(Action::AnnotateMove(-10)),
-        KeyCode::Home => Some(Action::AnnotateSelectLine {
-            line_idx: 0,
-            extend: shift || ann.visual_anchor.is_some(),
-        }),
-        KeyCode::End | KeyCode::Char('G') => Some(Action::AnnotateSelectLine {
-            line_idx: usize::MAX,
-            extend: ann.visual_anchor.is_some(),
-        }),
+                Some(Action::OpenContextMenuForTarget {
+                    target: HitTarget::AnnotateLine { line_idx },
+                    anchor,
+                })
+            }
+            KeyCode::Up if shift && !diff_focused => Some(Action::AnnotateMoveExtend(-1)),
+            KeyCode::Down if shift && !diff_focused => Some(Action::AnnotateMoveExtend(1)),
+            KeyCode::Down | KeyCode::Char('j') if diff_focused => {
+                Some(Action::DiffScroll(DiffScope::Annotate, 1))
+            }
+            KeyCode::Up | KeyCode::Char('k') if diff_focused => {
+                Some(Action::DiffScroll(DiffScope::Annotate, -1))
+            }
+            KeyCode::PageDown if diff_focused => Some(Action::DiffScroll(DiffScope::Annotate, 10)),
+            KeyCode::PageUp if diff_focused => Some(Action::DiffScroll(DiffScope::Annotate, -10)),
+            KeyCode::Home if diff_focused => Some(Action::DiffScroll(
+                DiffScope::Annotate,
+                crate::app::SCROLL_GOTO_TOP,
+            )),
+            KeyCode::End | KeyCode::Char('G') if diff_focused => Some(Action::DiffScroll(
+                DiffScope::Annotate,
+                crate::app::SCROLL_GOTO_BOTTOM,
+            )),
+            KeyCode::Down | KeyCode::Char('j') => Some(Action::AnnotateMove(1)),
+            KeyCode::Up | KeyCode::Char('k') => Some(Action::AnnotateMove(-1)),
+            KeyCode::PageDown => Some(Action::AnnotateMove(10)),
+            KeyCode::PageUp => Some(Action::AnnotateMove(-10)),
+            KeyCode::Home => Some(Action::AnnotateSelectLine {
+                line_idx: 0,
+                extend: shift || ann.visual_anchor.is_some(),
+            }),
+            KeyCode::End | KeyCode::Char('G') => Some(Action::AnnotateSelectLine {
+                line_idx: usize::MAX,
+                extend: ann.visual_anchor.is_some(),
+            }),
             _ => None,
         }
     };
@@ -1387,10 +1414,14 @@ fn route_reflog_key(key: &KeyEvent, state: &AppState) -> Vec<Action> {
         KeyCode::Char('/') if !ctrl && !alt && rf.focus == ReflogFocus::Diff => {
             vec![Action::DiffSearchOpen(DiffScope::Reflog)]
         }
-        KeyCode::Char('n') if !ctrl && !alt && rf.focus == ReflogFocus::Diff && rf.diff.search.active => {
+        KeyCode::Char('n')
+            if !ctrl && !alt && rf.focus == ReflogFocus::Diff && rf.diff.search.active =>
+        {
             vec![Action::DiffSearchJump(DiffScope::Reflog, 1)]
         }
-        KeyCode::Char('N') if !ctrl && !alt && rf.focus == ReflogFocus::Diff && rf.diff.search.active => {
+        KeyCode::Char('N')
+            if !ctrl && !alt && rf.focus == ReflogFocus::Diff && rf.diff.search.active =>
+        {
             vec![Action::DiffSearchJump(DiffScope::Reflog, -1)]
         }
         KeyCode::Char('h') | KeyCode::Left if !ctrl && !alt && rf.focus == ReflogFocus::Diff => {

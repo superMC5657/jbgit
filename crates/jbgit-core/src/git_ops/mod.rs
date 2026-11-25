@@ -116,7 +116,11 @@ mod tests {
             "fatal: could not read Username for 'https://h': terminal prompts disabled",
             "fatal: could not read Password for 'https://u@h': No such device or address",
         ] {
-            assert_eq!(classify_failure(&line(msg)), GitFailure::AuthenticationFailed, "{msg}");
+            assert_eq!(
+                classify_failure(&line(msg)),
+                GitFailure::AuthenticationFailed,
+                "{msg}"
+            );
         }
         assert_eq!(
             classify_failure(&line("error: remote fork already exists.")),
@@ -136,11 +140,15 @@ mod tests {
             path: path.into(),
         };
         assert_eq!(
-            classify_failure(&line("fatal: 'feature/x' is already checked out at '/w/wt-x'")),
+            classify_failure(&line(
+                "fatal: 'feature/x' is already checked out at '/w/wt-x'"
+            )),
             expect("feature/x", "/w/wt-x")
         );
         assert_eq!(
-            classify_failure(&line("fatal: 'dev' is already used by worktree at 'C:/w/dev'")),
+            classify_failure(&line(
+                "fatal: 'dev' is already used by worktree at 'C:/w/dev'"
+            )),
             expect("dev", "C:/w/dev")
         );
         assert_eq!(
@@ -249,7 +257,9 @@ mod tests {
 
     #[test]
     fn remote_ops_are_classified_for_network_and_refresh() {
-        let fetch_one = GitOp::FetchRemote { name: "fork".into() };
+        let fetch_one = GitOp::FetchRemote {
+            name: "fork".into(),
+        };
         assert!(fetch_one.is_network());
         assert!(
             GitOp::Smart(Box::new(GitOp::Pull {
@@ -257,16 +267,31 @@ mod tests {
             }))
             .is_network()
         );
-        assert!(GitOp::Sequence(vec![GitOp::Fetch, GitOp::Checkout {
-            target: "x".into(),
-            detach: false
-        }])
-        .is_network());
+        assert!(
+            GitOp::Sequence(vec![
+                GitOp::Fetch,
+                GitOp::Checkout {
+                    target: "x".into(),
+                    detach: false
+                }
+            ])
+            .is_network()
+        );
         for local in [
-            GitOp::AddRemote { name: "f".into(), url: "u".into() },
-            GitOp::RenameRemote { old: "f".into(), new: "g".into() },
+            GitOp::AddRemote {
+                name: "f".into(),
+                url: "u".into(),
+            },
+            GitOp::RenameRemote {
+                old: "f".into(),
+                new: "g".into(),
+            },
             GitOp::RemoveRemote { name: "f".into() },
-            GitOp::SetRemoteUrl { name: "f".into(), url: "u".into(), push: true },
+            GitOp::SetRemoteUrl {
+                name: "f".into(),
+                url: "u".into(),
+                push: true,
+            },
         ] {
             assert!(!local.is_network(), "{}", local.label());
             assert_eq!(local.refresh_scope(), RefreshScope::RefsAndGraph);
@@ -321,9 +346,10 @@ mod tests {
 
         // Explicit no_verify = true emits `--no-verify`.
         let no_verify_text = render_todo(&todo, true, |i| format!("'/tmp/m{i}'"));
-        assert!(no_verify_text.contains(
-            "exec git commit --amend --only --allow-empty --no-verify -F '/tmp/m1'"
-        ));
+        assert!(
+            no_verify_text
+                .contains("exec git commit --amend --only --allow-empty --no-verify -F '/tmp/m1'")
+        );
     }
 
     #[test]
@@ -417,7 +443,10 @@ mod tests {
             },
             push.clone(),
         ]);
-        assert!(seq.label().contains("Fetch → Rebase onto 'origin/main' → Push"));
+        assert!(
+            seq.label()
+                .contains("Fetch → Rebase onto 'origin/main' → Push")
+        );
         assert_eq!(seq.refresh_scope(), RefreshScope::All);
 
         assert_eq!(
@@ -432,9 +461,7 @@ mod tests {
             GitFailure::TagAlreadyExists
         );
         assert_eq!(
-            classify_failure(&[
-                " ! [rejected]        main -> main (non-fast-forward)".into(),
-            ]),
+            classify_failure(&[" ! [rejected]        main -> main (non-fast-forward)".into(),]),
             GitFailure::PushRejected
         );
 
@@ -449,14 +476,12 @@ mod tests {
         assert_eq!(parsed.pushed_tags, 2);
         assert!(!parsed.branch_up_to_date);
 
-        let parsed_ff = parse_push_porcelain(&[
-            " \trefs/heads/main:refs/heads/main\t0123abc..4567def".into(),
-        ]);
+        let parsed_ff =
+            parse_push_porcelain(&[" \trefs/heads/main:refs/heads/main\t0123abc..4567def".into()]);
         assert_eq!(parsed_ff.commit_range.as_deref(), Some("0123abc..4567def"));
 
-        let parsed_up = parse_push_porcelain(&[
-            "=\trefs/heads/main:refs/heads/main\t[up to date]".into(),
-        ]);
+        let parsed_up =
+            parse_push_porcelain(&["=\trefs/heads/main:refs/heads/main\t[up to date]".into()]);
         assert!(parsed_up.branch_up_to_date);
 
         let patterns = vec!["main".into(), "release/*".into()];
@@ -579,10 +604,19 @@ mod tests {
                 ..o.clone()
             }
         );
-        assert_eq!(MergeOptions::from_remembered("garbage\nff=bogus\n"), MergeOptions::default());
-        assert_eq!(o.summary(), "--no-ff --no-commit -s ort -X theirs --allow-unrelated-histories -m");
+        assert_eq!(
+            MergeOptions::from_remembered("garbage\nff=bogus\n"),
+            MergeOptions::default()
+        );
+        assert_eq!(
+            o.summary(),
+            "--no-ff --no-commit -s ort -X theirs --allow-unrelated-histories -m"
+        );
         assert_eq!(MergeOptions::default().summary(), "");
-        assert_eq!(FastForward::Default.next().next().next(), FastForward::Default);
+        assert_eq!(
+            FastForward::Default.next().next().next(),
+            FastForward::Default
+        );
         assert_eq!(FastForward::NoFf.prev(), FastForward::Default);
     }
 
@@ -627,9 +661,16 @@ mod tests {
         assert_eq!(set_up.refresh_scope(), RefreshScope::RefsAndGraph);
 
         assert_eq!(UpdateMode::from_pull_rebase(None), UpdateMode::Merge);
-        assert_eq!(UpdateMode::from_pull_rebase(Some("false")), UpdateMode::Merge);
+        assert_eq!(
+            UpdateMode::from_pull_rebase(Some("false")),
+            UpdateMode::Merge
+        );
         for v in ["true", "merges", "interactive", "TRUE"] {
-            assert_eq!(UpdateMode::from_pull_rebase(Some(v)), UpdateMode::Rebase, "{v}");
+            assert_eq!(
+                UpdateMode::from_pull_rebase(Some(v)),
+                UpdateMode::Rebase,
+                "{v}"
+            );
         }
 
         assert_eq!(
@@ -649,7 +690,10 @@ mod tests {
             before: oid(1),
             after: oid(2),
         });
-        assert_eq!(info.range_label(), format!("{}..{}", oid(1).short(), oid(2).short()));
+        assert_eq!(
+            info.range_label(),
+            format!("{}..{}", oid(1).short(), oid(2).short())
+        );
         info.ranges.push(UpdatedRange {
             branch: "dev".into(),
             before: oid(3),
@@ -744,12 +788,30 @@ mod tests {
             PullOptionConflict::SquashFfOnly,
         );
 
-        assert_eq!(PullOptionConflict::RebaseSquash.flags(), ("--rebase", "--squash"));
-        assert_eq!(PullOptionConflict::RebaseNoFf.flags(), ("--rebase", "--no-ff"));
-        assert_eq!(PullOptionConflict::RebaseFfOnly.flags(), ("--rebase", "--ff-only"));
-        assert_eq!(PullOptionConflict::RebaseNoCommit.flags(), ("--rebase", "--no-commit"));
-        assert_eq!(PullOptionConflict::SquashNoFf.flags(), ("--squash", "--no-ff"));
-        assert_eq!(PullOptionConflict::SquashFfOnly.flags(), ("--squash", "--ff-only"));
+        assert_eq!(
+            PullOptionConflict::RebaseSquash.flags(),
+            ("--rebase", "--squash")
+        );
+        assert_eq!(
+            PullOptionConflict::RebaseNoFf.flags(),
+            ("--rebase", "--no-ff")
+        );
+        assert_eq!(
+            PullOptionConflict::RebaseFfOnly.flags(),
+            ("--rebase", "--ff-only")
+        );
+        assert_eq!(
+            PullOptionConflict::RebaseNoCommit.flags(),
+            ("--rebase", "--no-commit")
+        );
+        assert_eq!(
+            PullOptionConflict::SquashNoFf.flags(),
+            ("--squash", "--no-ff")
+        );
+        assert_eq!(
+            PullOptionConflict::SquashFfOnly.flags(),
+            ("--squash", "--ff-only")
+        );
 
         let saved_src = PullOptions {
             remote: Some("upstream".into()),
@@ -813,7 +875,9 @@ mod tests {
                 ..Default::default()
             }
             .validate(v237),
-            Err(RebaseOptionError::UpdateRefsUnsupported(GitVersion::new(2, 37, 0)))
+            Err(RebaseOptionError::UpdateRefsUnsupported(GitVersion::new(
+                2, 37, 0
+            )))
         );
         assert_eq!(
             RebaseOptions {
@@ -831,7 +895,9 @@ mod tests {
                 ..Default::default()
             }
             .validate(v217),
-            Err(RebaseOptionError::RebaseMergesUnsupported(GitVersion::new(2, 17, 0)))
+            Err(RebaseOptionError::RebaseMergesUnsupported(GitVersion::new(
+                2, 17, 0
+            )))
         );
 
         let full = RebaseOptions {
@@ -896,7 +962,13 @@ mod tests {
                 TodoEntry::pick(oid(4), "c4"),
                 TodoEntry::pick(oid(5), "c5"),
             ],
-            messages: vec!["m1".into(), "m2".into(), "m3".into(), "m4".into(), "m5".into()],
+            messages: vec![
+                "m1".into(),
+                "m2".into(),
+                "m3".into(),
+                "m4".into(),
+                "m5".into(),
+            ],
         };
         let sq = plan_squash_todo(&plan, &[oid(2), oid(4)]).expect("non-contiguous squash");
         assert!(sq.reordered);
@@ -924,15 +996,28 @@ mod tests {
     #[test]
     fn branch_name_sanitizer_empty_cherry_pick_and_issue_06_ops() {
         // Real-time space -> `_` and invalid char stripping (GitRefNameValidator).
-        assert_eq!(sanitize_branch_name_on_typing("feat my branch", "_"), "feat_my_branch");
-        assert_eq!(sanitize_branch_name_on_typing("--..//a..b~^:?*\"[\\@{c", "_"), "a.bc");
-        assert_eq!(sanitize_branch_name_on_typing("a//b/.c/d./e", "_"), "a/b/c/d/e");
+        assert_eq!(
+            sanitize_branch_name_on_typing("feat my branch", "_"),
+            "feat_my_branch"
+        );
+        assert_eq!(
+            sanitize_branch_name_on_typing("--..//a..b~^:?*\"[\\@{c", "_"),
+            "a.bc"
+        );
+        assert_eq!(
+            sanitize_branch_name_on_typing("a//b/.c/d./e", "_"),
+            "a/b/c/d/e"
+        );
         assert_eq!(sanitize_branch_name("feat/foo.lock.", "_"), "feat/foo");
-        assert_eq!(sanitize_branch_name("my   topic / sub/", "_"), "my_topic_/_sub");
+        assert_eq!(
+            sanitize_branch_name("my   topic / sub/", "_"),
+            "my_topic_/_sub"
+        );
 
         // EmptyCherryPick stderr classification.
         let empty_lines = vec![
-            "The previous cherry-pick is now empty, possibly due to conflict resolution.".to_string(),
+            "The previous cherry-pick is now empty, possibly due to conflict resolution."
+                .to_string(),
             "If you wish to commit it anyway, use:".to_string(),
             "    git commit --allow-empty".to_string(),
             "Otherwise, please use 'git cherry-pick --skip'".to_string(),

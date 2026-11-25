@@ -7,7 +7,11 @@ use anyhow::{Context, Result, bail};
 
 use crate::protocol::{CommandEnvelope, PilotAction, ResponseEnvelope};
 
-pub fn send_action(session_dir: &Path, action: PilotAction, timeout_ms: u64) -> Result<ResponseEnvelope> {
+pub fn send_action(
+    session_dir: &Path,
+    action: PilotAction,
+    timeout_ms: u64,
+) -> Result<ResponseEnvelope> {
     let ready_path = session_dir.join("ready.json");
     let starting_path = session_dir.join("starting.json");
     let cmd_path = session_dir.join("cmd.json");

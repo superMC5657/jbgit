@@ -41,11 +41,11 @@ pub use console::{
 };
 pub use details::{
     BinaryDiffInfo, BlameBundle, BlameCommit, BlameKey, BlameLine, BlameOptions, ChangeRowKind,
-    ChangeTreeRow, CommitChangesBundle, CommitDetails, CommitSignature,
-    DEFAULT_FILE_HISTORY_LIMIT, DetailsKey, DetailsMode, DiffContext, DiffHunk, DiffLine,
-    DiffLineKind, EAGER_WORD_DIFF_PAIR_BUDGET, FileChange, FileDiff, FileDiffKey,
-    FileHistoryBundle, FileHistoryEntry, FileHistoryKey, FileModeChange, GIT_MODE_EXECUTABLE,
-    GIT_MODE_GITLINK, GIT_MODE_REGULAR, GIT_MODE_SYMLINK, HistoryBranchScope, LfsDiff, LfsPointer,
+    ChangeTreeRow, CommitChangesBundle, CommitDetails, CommitSignature, DEFAULT_FILE_HISTORY_LIMIT,
+    DetailsKey, DetailsMode, DiffContext, DiffHunk, DiffLine, DiffLineKind,
+    EAGER_WORD_DIFF_PAIR_BUDGET, FileChange, FileDiff, FileDiffKey, FileHistoryBundle,
+    FileHistoryEntry, FileHistoryKey, FileModeChange, GIT_MODE_EXECUTABLE, GIT_MODE_GITLINK,
+    GIT_MODE_REGULAR, GIT_MODE_SYMLINK, HistoryBranchScope, LfsDiff, LfsPointer,
     MAX_DIFF_FILE_BYTES, MAX_OUTGOING_COMMITS, MAX_SELECTION_HISTORY_LINES,
     MAX_WORD_DIFF_LINE_BYTES, MessageLineKind, MoveDetection, NO_NEWLINE_LINE_TEXT, OutgoingBundle,
     OutgoingKey, PersonStamp, SideBySideRow, SignatureStatus, WhitespaceMode, apply_word_diff,
@@ -54,11 +54,12 @@ pub use details::{
     has_lfs_filter_in_gitattributes, issue_ref_ranges, paired_line_in_hunk, parse_lfs_pointer,
     parse_unified_patch_hunks, side_by_side_rows, word_diff,
 };
-pub use epoch::{EpochToken, RequestEpoch, RequestSlot, RequestSlotId, RequestSlotTable, SlotRegistry};
+pub use epoch::{
+    EpochToken, RequestEpoch, RequestSlot, RequestSlotId, RequestSlotTable, SlotRegistry,
+};
 pub use filter::{
     BranchFilter, DateFilter, FilterError, LogFilterSpec, PathFilter, RangeFilter, RepoUser,
-    TextFilter,
-    TextMatcher, UserFilter, UserMatcher, glob_match,
+    TextFilter, TextMatcher, UserFilter, UserMatcher, glob_match,
 };
 pub use git_ops::{
     FastForward, FixupKind, GitFailure, GitOp, GitOpOutcome, IgnoreRuleKind, MergeOptionConflict,
@@ -70,8 +71,7 @@ pub use git_ops::{
     is_gpg_sign_failure, is_protected_branch, match_worktreeinclude_paths,
     matches_protected_branch_patterns, parse_push_porcelain, parse_recent_checkouts,
     plan_squash_todo, render_todo, sanitize_branch_name, sanitize_branch_name_on_typing, short_rev,
-    validate_ref_name,
-    validate_ref_name_typed,
+    validate_ref_name, validate_ref_name_typed,
 };
 pub use key_token::{KeyToken, KeyTokenError, KeyTokenKind, parse_key_token};
 pub use lru::LruCache;

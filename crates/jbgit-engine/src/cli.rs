@@ -220,7 +220,9 @@ impl GitCliExecutor {
 
         let mut child = cmd.spawn()?;
         #[cfg(windows)]
-        let _job_guard = child.raw_handle().and_then(win_job::WindowsJobGuard::assign);
+        let _job_guard = child
+            .raw_handle()
+            .and_then(win_job::WindowsJobGuard::assign);
 
         // Write stdin concurrently with reading stdout/stderr to avoid OS pipe buffer deadlocks.
         let stdin_writer = AbortOnDrop(
@@ -617,9 +619,7 @@ static CACHED_GIT_BINARY: RwLock<Option<CachedGitBinary>> = RwLock::new(None);
 /// Updates the process-wide `[git] executable` override (empty or `None` reverts
 /// to automatic detection) and invalidates cached binary detection.
 pub fn set_configured_git_executable(path: Option<String>) {
-    let normalized = path
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty());
+    let normalized = path.map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
     if let Ok(mut slot) = CONFIGURED_GIT_EXECUTABLE.write() {
         *slot = normalized;
     }
@@ -1052,7 +1052,10 @@ mod tests {
             _ = next_cr_or_lf_segment(&mut reader, &mut state) => false,
             _ = notify_rx => true,
         };
-        assert!(cancelled, "oneshot branch should cancel partial stderr read");
+        assert!(
+            cancelled,
+            "oneshot branch should cancel partial stderr read"
+        );
         assert!(
             !state.buf.is_empty(),
             "partial stderr bytes must remain preserved in external state"
@@ -1072,7 +1075,11 @@ mod tests {
                 overwrites_prev: false,
             }
         );
-        assert!(next_cr_or_lf_segment(&mut reader, &mut state).await.is_none());
+        assert!(
+            next_cr_or_lf_segment(&mut reader, &mut state)
+                .await
+                .is_none()
+        );
     }
 
     #[tokio::test]
@@ -1089,7 +1096,10 @@ mod tests {
         drop(guard);
         tokio::time::sleep(std::time::Duration::from_millis(30)).await;
         assert!(
-            matches!(rx.try_recv(), Err(tokio::sync::oneshot::error::TryRecvError::Closed)),
+            matches!(
+                rx.try_recv(),
+                Err(tokio::sync::oneshot::error::TryRecvError::Closed)
+            ),
             "AbortOnDrop must abort spawned writer task"
         );
 
@@ -1105,9 +1115,8 @@ mod tests {
                 .stderr(Stdio::null())
                 .creation_flags(0x0800_0000);
             let mut child = cmd.spawn().expect("spawn git sleep");
-            let job = win_job::WindowsJobGuard::assign(
-                child.raw_handle().expect("windows raw handle"),
-            );
+            let job =
+                win_job::WindowsJobGuard::assign(child.raw_handle().expect("windows raw handle"));
             assert!(
                 job.is_some(),
                 "WindowsJobGuard::assign must succeed (validates Win32 struct layout)"

@@ -320,13 +320,11 @@ impl ChangesTreeSession {
                 return Arc::clone(&cached.rows);
             }
         }
-        let rows: Arc<[ChangeTreeRow]> = build_change_rows_filtered(
-            &bundle.changes,
-            self.group_by_dir,
-            &self.collapsed,
-            |c| self.matches_affected_filter(c),
-        )
-        .into();
+        let rows: Arc<[ChangeTreeRow]> =
+            build_change_rows_filtered(&bundle.changes, self.group_by_dir, &self.collapsed, |c| {
+                self.matches_affected_filter(c)
+            })
+            .into();
         *self.cached_change_rows.borrow_mut() = Some(CachedChangeRows {
             bundle: Arc::clone(bundle),
             group_by_dir: self.group_by_dir,
@@ -348,13 +346,11 @@ impl ChangesTreeSession {
                 return Some(Arc::clone(&cached.rows));
             }
         }
-        let rows: Arc<[ChangeTreeRow]> = build_change_rows_filtered(
-            &bundle.changes,
-            true,
-            &FxHashSet::default(),
-            |c| self.matches_affected_filter(c),
-        )
-        .into();
+        let rows: Arc<[ChangeTreeRow]> =
+            build_change_rows_filtered(&bundle.changes, true, &FxHashSet::default(), |c| {
+                self.matches_affected_filter(c)
+            })
+            .into();
         *self.cached_all_change_rows.borrow_mut() = Some(CachedAllChangeRows {
             bundle: Arc::clone(bundle),
             affected_filter: self.affected_filter.clone(),
@@ -524,10 +520,9 @@ impl ChangesTreeSession {
             }
         }
         let rows = self.change_rows(store);
-        if let Some(pos) = rows
-            .iter()
-            .position(|r| matches!(r.kind, ChangeRowKind::File { change_idx } if change_idx == target_idx))
-        {
+        if let Some(pos) = rows.iter().position(
+            |r| matches!(r.kind, ChangeRowKind::File { change_idx } if change_idx == target_idx),
+        ) {
             self.selected = pos;
             true
         } else {
@@ -832,11 +827,7 @@ impl DiffSession {
         Self::from_prefs(context, WhitespaceMode::Default, false)
     }
 
-    pub fn from_prefs(
-        context: DiffContext,
-        whitespace: WhitespaceMode,
-        soft_wrap: bool,
-    ) -> Self {
+    pub fn from_prefs(context: DiffContext, whitespace: WhitespaceMode, soft_wrap: bool) -> Self {
         Self {
             side_by_side: false,
             context,
@@ -875,7 +866,12 @@ impl DiffSession {
         self.rows_cache.rows_for(diff, self.side_by_side)
     }
 
-    pub fn visual_row_offset_of(&self, diff: &Arc<FileDiff>, row_idx: usize, tab_size: usize) -> usize {
+    pub fn visual_row_offset_of(
+        &self,
+        diff: &Arc<FileDiff>,
+        row_idx: usize,
+        tab_size: usize,
+    ) -> usize {
         if !self.soft_wrap {
             return row_idx;
         }

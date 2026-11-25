@@ -31,13 +31,18 @@ pub fn log_commit_menu_items(state: &AppState) -> Vec<ContextMenuItem> {
     let cur = branch.clone().unwrap_or_else(|| "HEAD".into());
     let no_ongoing = state.require_no_ongoing();
     let i18n = &state.i18n;
-    let checkout_sc = catalog::shortcut_for_action(state, &[KeymapScope::Log], &KeyAction::Checkout);
-    let compare_sc = catalog::shortcut_for_action(state, &[KeymapScope::Log], &KeyAction::CompareOrDiff);
-    let uncommit_sc = catalog::shortcut_for_action(state, &[KeymapScope::Log], &KeyAction::Uncommit);
+    let checkout_sc =
+        catalog::shortcut_for_action(state, &[KeymapScope::Log], &KeyAction::Checkout);
+    let compare_sc =
+        catalog::shortcut_for_action(state, &[KeymapScope::Log], &KeyAction::CompareOrDiff);
+    let uncommit_sc =
+        catalog::shortcut_for_action(state, &[KeymapScope::Log], &KeyAction::Uncommit);
     let reword_sc = catalog::shortcut_for_action(state, &[KeymapScope::Log], &KeyAction::Reword);
-    let new_branch_sc = catalog::shortcut_for_action(state, &[KeymapScope::Log], &KeyAction::NewBranch);
+    let new_branch_sc =
+        catalog::shortcut_for_action(state, &[KeymapScope::Log], &KeyAction::NewBranch);
     let copy_sc = catalog::shortcut_for_action(state, &[KeymapScope::Log], &KeyAction::CopyHash);
-    let goto_sc = catalog::shortcut_for_action(state, &[KeymapScope::Log], &KeyAction::GotoRevision);
+    let goto_sc =
+        catalog::shortcut_for_action(state, &[KeymapScope::Log], &KeyAction::GotoRevision);
     let need_single = |what: &str| i18n.t_fmt("menu.log.need_single", &[("what", what)]);
     let mut items = Vec::new();
 
@@ -335,8 +340,7 @@ pub fn log_commit_menu_items(state: &AppState) -> Vec<ContextMenuItem> {
         .enabled_if(in_head_primary, i18n.t("menu.log.push_not_in_head"))
         .require(no_ongoing.clone())
     } else {
-        run(fixup_only_lbl, None, None, Vec::new())
-            .enabled_if(false, need_single(fixup_only_lbl))
+        run(fixup_only_lbl, None, None, Vec::new()).enabled_if(false, need_single(fixup_only_lbl))
     };
     items.push(fixup_only);
     let squash_only_lbl = i18n.t("menu.log.squash_commit");
@@ -356,8 +360,7 @@ pub fn log_commit_menu_items(state: &AppState) -> Vec<ContextMenuItem> {
         .enabled_if(in_head_primary, i18n.t("menu.log.push_not_in_head"))
         .require(no_ongoing.clone())
     } else {
-        run(squash_only_lbl, None, None, Vec::new())
-            .enabled_if(false, need_single(squash_only_lbl))
+        run(squash_only_lbl, None, None, Vec::new()).enabled_if(false, need_single(squash_only_lbl))
     };
     items.push(squash_only);
     let fixup_lbl = i18n.t("menu.log.fixup");
@@ -392,8 +395,9 @@ pub fn log_commit_menu_items(state: &AppState) -> Vec<ContextMenuItem> {
                 plan.messages,
             ))),
         ),
-        Ok(_) => run(rebase_lbl, Some('i'), None, Vec::new())
-            .enabled_if(false, need_single(rebase_lbl)),
+        Ok(_) => {
+            run(rebase_lbl, Some('i'), None, Vec::new()).enabled_if(false, need_single(rebase_lbl))
+        }
         Err(e) => run(rebase_lbl, Some('i'), None, Vec::new()).enabled_if(false, e),
     };
     items.push(interactive);
@@ -411,10 +415,7 @@ pub fn log_commit_menu_items(state: &AppState) -> Vec<ContextMenuItem> {
             }),
         )
         .enabled_if(branch.is_some(), i18n.t("menu.log.detached_no_branch"))
-        .enabled_if(
-            !in_head_primary,
-            i18n.t("menu.log.rebase_commit_in_head"),
-        )
+        .enabled_if(!in_head_primary, i18n.t("menu.log.rebase_commit_in_head"))
         .require(no_ongoing.clone())
     } else {
         run(rebase_onto_lbl.clone(), None, None, Vec::new())
@@ -566,7 +567,10 @@ pub fn log_commit_menu_items(state: &AppState) -> Vec<ContextMenuItem> {
             i18n.t("dialog.bisect_start.title"),
             vec![i18n.t_fmt(
                 "dialog.bisect_start.body_bad",
-                &[("short", &short), ("subject", &ellipsize(&primary.subject, 48))],
+                &[
+                    ("short", &short),
+                    ("subject", &ellipsize(&primary.subject, 48)),
+                ],
             )],
             i18n.t("dialog.bisect_start.confirm_btn"),
             i18n.cancel(),
@@ -599,7 +603,10 @@ pub fn log_commit_menu_items(state: &AppState) -> Vec<ContextMenuItem> {
             i18n.t("dialog.bisect_start.title"),
             vec![i18n.t_fmt(
                 "dialog.bisect_start.body_good",
-                &[("short", &short), ("subject", &ellipsize(&primary.subject, 48))],
+                &[
+                    ("short", &short),
+                    ("subject", &ellipsize(&primary.subject, 48)),
+                ],
             )],
             i18n.t("dialog.bisect_start.confirm_btn"),
             i18n.cancel(),
@@ -697,7 +704,12 @@ pub fn log_commit_menu_items(state: &AppState) -> Vec<ContextMenuItem> {
             initial_query: String::new(),
         }],
     ));
-    items.push(run(i18n.t("menu.log.go_to_child"), None, Some("←"), vec![Action::GoToChild]));
+    items.push(run(
+        i18n.t("menu.log.go_to_child"),
+        None,
+        Some("←"),
+        vec![Action::GoToChild],
+    ));
     items.push(run(
         i18n.t("menu.log.go_to_parent"),
         None,
@@ -707,8 +719,12 @@ pub fn log_commit_menu_items(state: &AppState) -> Vec<ContextMenuItem> {
     items.push(run(
         i18n.t("menu.log.maximize_commit_message"),
         None,
-        catalog::shortcut_for_action(state, &[KeymapScope::Log], &KeyAction::MaximizeCommitMessage)
-            .as_deref(),
+        catalog::shortcut_for_action(
+            state,
+            &[KeymapScope::Log],
+            &KeyAction::MaximizeCommitMessage,
+        )
+        .as_deref(),
         vec![Action::OpenCommitMessageModal],
     ));
     items.push(run(
@@ -818,7 +834,8 @@ fn squash_item(state: &AppState, oids: &[Oid]) -> ContextMenuItem {
 
 fn drop_item(state: &AppState, oids: &[Oid]) -> ContextMenuItem {
     let i18n = &state.i18n;
-    let drop_sc = catalog::all_shortcuts_for_action(state, &[KeymapScope::Log], &KeyAction::DropCommit);
+    let drop_sc =
+        catalog::all_shortcuts_for_action(state, &[KeymapScope::Log], &KeyAction::DropCommit);
     let count_s = oids.len().to_string();
     let label = if oids.len() > 1 {
         i18n.t_fmt("menu.log.drop_many", &[("count", &count_s)])
@@ -841,10 +858,14 @@ fn drop_item(state: &AppState, oids: &[Oid]) -> ContextMenuItem {
 /// Right-click on the Log diff preview.
 pub fn log_diff_menu_items(state: &AppState) -> Vec<ContextMenuItem> {
     let i18n = &state.i18n;
-    let sbs_sc = catalog::shortcut_for_action(state, &[KeymapScope::Diff], &KeyAction::ToggleSideBySide);
-    let ctx_sc = catalog::shortcut_for_action(state, &[KeymapScope::Diff], &KeyAction::CycleDiffContext);
-    let ws_sc = catalog::shortcut_for_action(state, &[KeymapScope::Diff], &KeyAction::CycleDiffWhitespace);
-    let wrap_sc = catalog::shortcut_for_action(state, &[KeymapScope::Diff], &KeyAction::ToggleDiffSoftWrap);
+    let sbs_sc =
+        catalog::shortcut_for_action(state, &[KeymapScope::Diff], &KeyAction::ToggleSideBySide);
+    let ctx_sc =
+        catalog::shortcut_for_action(state, &[KeymapScope::Diff], &KeyAction::CycleDiffContext);
+    let ws_sc =
+        catalog::shortcut_for_action(state, &[KeymapScope::Diff], &KeyAction::CycleDiffWhitespace);
+    let wrap_sc =
+        catalog::shortcut_for_action(state, &[KeymapScope::Diff], &KeyAction::ToggleDiffSoftWrap);
     let zoom_sc = catalog::shortcut_for_action(state, &[KeymapScope::Diff], &KeyAction::ZoomDiff);
     let ann_sc = catalog::shortcut_for_action(state, &[KeymapScope::Log], &KeyAction::Annotate);
     let selected_change = state.log.details.selected_change(&state.diff_caches);
@@ -884,8 +905,14 @@ pub fn log_diff_menu_items(state: &AppState) -> Vec<ContextMenuItem> {
             ann_actions,
         )
         .enabled_if(change.is_some(), i18n.t("menu.log_change.need_file"))
-        .enabled_if(single_oid.is_some(), i18n.t("menu.log_change.need_single_commit"))
-        .enabled_if(!is_deleted, i18n.t("menu.log_change.cannot_annotate_deleted")),
+        .enabled_if(
+            single_oid.is_some(),
+            i18n.t("menu.log_change.need_single_commit"),
+        )
+        .enabled_if(
+            !is_deleted,
+            i18n.t("menu.log_change.cannot_annotate_deleted"),
+        ),
         run(
             i18n.t("menu.log.toggle_side_by_side"),
             Some('s'),
@@ -924,7 +951,10 @@ pub fn log_diff_menu_items(state: &AppState) -> Vec<ContextMenuItem> {
                 })
                 .unwrap_or_default(),
         )
-        .enabled_if(patch_source.is_some(), i18n.t("menu.log.copy_patch_need_file")),
+        .enabled_if(
+            patch_source.is_some(),
+            i18n.t("menu.log.copy_patch_need_file"),
+        ),
         run(
             i18n.t("menu.log.fullscreen_diff"),
             Some('z'),
@@ -964,7 +994,11 @@ pub fn log_change_menu_items(state: &AppState) -> Vec<ContextMenuItem> {
             &KeyAction::ToggleOnlyAffectedChanges,
         );
         run(
-            format!("{} {}", check, i18n.t("presentation.show_only_affected_changes")),
+            format!(
+                "{} {}",
+                check,
+                i18n.t("presentation.show_only_affected_changes")
+            ),
             None,
             sc.as_deref(),
             vec![Action::TogglePresentation(
@@ -1036,7 +1070,8 @@ pub fn log_change_menu_items(state: &AppState) -> Vec<ContextMenuItem> {
         };
 
     let i18n = &state.i18n;
-    let diff_sc = catalog::shortcut_for_action(state, &[KeymapScope::Log], &KeyAction::CompareOrDiff);
+    let diff_sc =
+        catalog::shortcut_for_action(state, &[KeymapScope::Log], &KeyAction::CompareOrDiff);
     let zoom_sc = catalog::shortcut_for_action(
         state,
         &[KeymapScope::Log, KeymapScope::Diff],
@@ -1165,7 +1200,10 @@ pub fn log_change_menu_items(state: &AppState) -> Vec<ContextMenuItem> {
         )
         .enabled_if(is_file, need_file)
         .enabled_if(single_oid.is_some(), need_single)
-        .enabled_if(!is_deleted, i18n.t("menu.log_change.cannot_restore_deleted"))
+        .enabled_if(
+            !is_deleted,
+            i18n.t("menu.log_change.cannot_restore_deleted"),
+        )
         .require(no_ongoing),
     );
     items.push(
@@ -1400,10 +1438,7 @@ pub fn file_history_menu_items(state: &AppState) -> Vec<ContextMenuItem> {
         ),
         ContextMenuItem::separator(),
         run(
-            check(
-                is_marked,
-                i18n.t("menu.file_history.mark_for_compare"),
-            ),
+            check(is_marked, i18n.t("menu.file_history.mark_for_compare")),
             Some('m'),
             Some("Space"),
             vec![Action::FileHistoryToggleMarkAnchor],
@@ -1423,7 +1458,10 @@ pub fn file_history_menu_items(state: &AppState) -> Vec<ContextMenuItem> {
             Some("b"),
             vec![Action::FileHistoryAnnotate],
         )
-        .enabled_if(!is_deleted, i18n.t("menu.log_change.cannot_annotate_deleted")),
+        .enabled_if(
+            !is_deleted,
+            i18n.t("menu.log_change.cannot_annotate_deleted"),
+        ),
         run(
             i18n.t("menu.file_history.locate_log"),
             Some('o'),

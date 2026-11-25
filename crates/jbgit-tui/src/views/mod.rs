@@ -98,8 +98,7 @@ pub fn render_app(frame: &mut Frame<'_>, state: &mut AppState) {
         state.hover_target.as_ref(),
     );
     let footer_h = footer_plan.height;
-    let banner_h = banner_raw
-        .min(area.height.saturating_sub(header_h + tabs_h + footer_h + 4));
+    let banner_h = banner_raw.min(area.height.saturating_sub(header_h + tabs_h + footer_h + 4));
     let body_h = area
         .height
         .saturating_sub(header_h)
@@ -479,7 +478,9 @@ pub fn fit_left_right_spans(
             break;
         }
     }
-    spans.push(Span::raw(" ".repeat(avail.saturating_sub(used) + right_pad)));
+    spans.push(Span::raw(
+        " ".repeat(avail.saturating_sub(used) + right_pad),
+    ));
     spans.extend(right);
     spans
 }
@@ -579,12 +580,7 @@ pub(crate) fn register_right_esc_cancel(
     let esc_w = esc_label.width() as u16;
     if row_rect.width >= esc_w {
         ctx.hit_registry.register(
-            Rect::new(
-                row_rect.right().saturating_sub(esc_w),
-                row_rect.y,
-                esc_w,
-                1,
-            ),
+            Rect::new(row_rect.right().saturating_sub(esc_w), row_rect.y, esc_w, 1),
             z,
             HitTarget::ModalButton(jbgit_core::ModalButton::Cancel),
         );

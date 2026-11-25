@@ -9,7 +9,9 @@ use jbgit_engine::CommitRequest;
 
 use crate::dialogs::Dialog;
 use crate::hit_test::{DiffHunkActionKind, HitTarget};
-use crate::log_view::{AnnotateFocus, FileHistoryFocus, FilterField, PresentationToggle, PushDialogFocus};
+use crate::log_view::{
+    AnnotateFocus, FileHistoryFocus, FilterField, PresentationToggle, PushDialogFocus,
+};
 
 use super::{ContextMenuItem, DragState, EditorMoveKind, MenuParent, PopupKind};
 
@@ -521,7 +523,9 @@ pub enum Action {
     /// Open the selected working tree (double-click).
     WorktreesOpenSelected,
     /// "New Worktree…" chooser (`None` = from HEAD, `Some` = Log commit).
-    PromptNewWorktree { at: Option<jbgit_core::Oid> },
+    PromptNewWorktree {
+        at: Option<jbgit_core::Oid>,
+    },
     /// "New Worktree from '<remote>/<branch>'…" path prompt.
     PromptNewWorktreeFromBranch(String),
     /// Execute `[worktree] setup_command` inside the newly created worktree after confirmation.

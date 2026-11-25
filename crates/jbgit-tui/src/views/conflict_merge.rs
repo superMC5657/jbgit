@@ -121,10 +121,7 @@ fn build_pane_spans(
     );
     let rendered_w: usize = content_spans.iter().map(|s| s.content.width()).sum();
     if rendered_w < content_w {
-        content_spans.push(Span::styled(
-            " ".repeat(content_w - rendered_w),
-            base_style,
-        ));
+        content_spans.push(Span::styled(" ".repeat(content_w - rendered_w), base_style));
     }
     spans.extend(content_spans);
     spans
@@ -323,7 +320,11 @@ pub fn render_conflict_merge_modal(
             .block_kind
             .is_some_and(ThreeWayBlockKind::is_non_conflicting_change);
         let (ours_bg, mid_bg, theirs_bg) = match &row.choice {
-            None => (ctx.theme.bg_canvas, ctx.theme.bg_canvas, ctx.theme.bg_canvas),
+            None => (
+                ctx.theme.bg_canvas,
+                ctx.theme.bg_canvas,
+                ctx.theme.bg_canvas,
+            ),
             Some(ConflictChoice::Unresolved) => {
                 let hi = if is_active {
                     ctx.theme.bg_selection_focused
@@ -384,9 +385,10 @@ pub fn render_conflict_merge_modal(
             }
             Some(ConflictRowPlaceholder::UnresolvedRightOnly { block_num }) => {
                 let n = block_num.to_string();
-                std::borrow::Cow::Owned(
-                    i18n.t_fmt("conflict_merge.placeholder_block_right_only", &[("num", &n)]),
-                )
+                std::borrow::Cow::Owned(i18n.t_fmt(
+                    "conflict_merge.placeholder_block_right_only",
+                    &[("num", &n)],
+                ))
             }
             Some(ConflictRowPlaceholder::UnresolvedBothSame { block_num }) => {
                 let n = block_num.to_string();
@@ -416,9 +418,10 @@ pub fn render_conflict_merge_modal(
             }
             Some(ConflictRowPlaceholder::UnresolvedBothDeleted { block_num }) => {
                 let n = block_num.to_string();
-                std::borrow::Cow::Owned(
-                    i18n.t_fmt("conflict_merge.placeholder_block_both_deleted", &[("num", &n)]),
-                )
+                std::borrow::Cow::Owned(i18n.t_fmt(
+                    "conflict_merge.placeholder_block_both_deleted",
+                    &[("num", &n)],
+                ))
             }
             None => std::borrow::Cow::Borrowed(&row.merged),
         };
@@ -643,7 +646,10 @@ pub fn render_conflict_merge_modal(
         i18n.t("conflict_merge.btn_save")
     };
     let auto_n = doc.non_conflicting_unresolved_count();
-    let auto_label = i18n.t_fmt("conflict_merge.btn_apply_auto", &[("count", &auto_n.to_string())]);
+    let auto_label = i18n.t_fmt(
+        "conflict_merge.btn_apply_auto",
+        &[("count", &auto_n.to_string())],
+    );
     let buttons: Vec<(String, ConflictMergeButtonKind, bool)> = if doc.is_delete_modify() {
         vec![
             (
@@ -674,7 +680,11 @@ pub fn render_conflict_merge_modal(
                 ConflictMergeButtonKind::Mergetool,
                 false,
             ),
-            (save_label.to_string(), ConflictMergeButtonKind::SaveAndStage, true),
+            (
+                save_label.to_string(),
+                ConflictMergeButtonKind::SaveAndStage,
+                true,
+            ),
             (
                 i18n.t("conflict_merge.btn_close").to_string(),
                 ConflictMergeButtonKind::Cancel,
@@ -684,7 +694,11 @@ pub fn render_conflict_merge_modal(
     } else {
         let mut btns = Vec::new();
         if auto_n > 0 {
-            btns.push((auto_label, ConflictMergeButtonKind::ApplyNonConflicting, false));
+            btns.push((
+                auto_label,
+                ConflictMergeButtonKind::ApplyNonConflicting,
+                false,
+            ));
         }
         btns.push((
             i18n.t("conflict_merge.btn_ours").to_string(),

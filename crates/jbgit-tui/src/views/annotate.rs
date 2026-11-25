@@ -109,7 +109,12 @@ pub fn render_annotate_modal(
     let toolbar_rect = Rect::new(inner.x, inner.y, inner.width, 1);
     let footer_rect = Rect::new(inner.x, inner.bottom().saturating_sub(1), inner.width, 1);
     let detail_h = if inner.height >= 8 { 2u16 } else { 0u16 };
-    let detail_rect = Rect::new(inner.x, footer_rect.y.saturating_sub(detail_h), inner.width, detail_h);
+    let detail_rect = Rect::new(
+        inner.x,
+        footer_rect.y.saturating_sub(detail_h),
+        inner.width,
+        detail_h,
+    );
     let content_h = detail_rect.y.saturating_sub(inner.y + 1);
     let content = Rect::new(inner.x, inner.y + 1, inner.width, content_h);
 
@@ -247,8 +252,7 @@ fn render_code_pane(
         Paragraph::new("").style(Style::default().bg(ctx.theme.bg_canvas)),
         area,
     );
-    ctx.hit_registry
-        .register(area, z, HitTarget::AnnotateArea);
+    ctx.hit_registry.register(area, z, HitTarget::AnnotateArea);
 
     let vh = area.height as usize;
     if let Some(err) = &ann.error {
@@ -395,10 +399,7 @@ fn render_code_pane(
                 } else {
                     accent_color
                 };
-                spans.push(Span::styled(
-                    meta_text,
-                    Style::default().fg(meta_fg).bg(bg),
-                ));
+                spans.push(Span::styled(meta_text, Style::default().fg(meta_fg).bg(bg)));
             }
         }
 
@@ -440,8 +441,11 @@ fn render_code_pane(
             Paragraph::new(Line::from(spans)).style(Style::default().bg(bg)),
             row_rect,
         );
-        ctx.hit_registry
-            .register(row_rect, z + 1, HitTarget::AnnotateLine { line_idx: row_idx });
+        ctx.hit_registry.register(
+            row_rect,
+            z + 1,
+            HitTarget::AnnotateLine { line_idx: row_idx },
+        );
     }
 }
 
@@ -510,10 +514,9 @@ fn render_commit_details_pane(
     }
     let hdr_rect = Rect::new(area.x, area.y, area.width, 1);
     let hdr_label = match ann.selected_line() {
-        Some(line) if !line.oid.is_zero() => ctx.t_fmt(
-            "view.annotate.details_title",
-            &[("oid", &line.oid.short())],
-        ),
+        Some(line) if !line.oid.is_zero() => {
+            ctx.t_fmt("view.annotate.details_title", &[("oid", &line.oid.short())])
+        }
         _ => ctx.t("view.annotate.btn_details").to_string(),
     };
     frame.render_widget(
@@ -530,7 +533,12 @@ fn render_commit_details_pane(
         hdr_rect,
     );
 
-    let body = Rect::new(area.x, area.y + 1, area.width, area.height.saturating_sub(1));
+    let body = Rect::new(
+        area.x,
+        area.y + 1,
+        area.width,
+        area.height.saturating_sub(1),
+    );
     frame.render_widget(
         Paragraph::new("").style(Style::default().bg(ctx.theme.bg_canvas)),
         body,
@@ -646,8 +654,9 @@ fn render_inline_diff_pane(
 
     let head_oid = state.repo_snapshot.as_ref().and_then(|s| s.head_oid);
     let header_label = match ann.selected_line() {
-        Some(line) if line.oid.is_zero() => ctx
-            .t_fmt("view.annotate.diff_uncommitted", &[("path", &ann.key.path)]),
+        Some(line) if line.oid.is_zero() => {
+            ctx.t_fmt("view.annotate.diff_uncommitted", &[("path", &ann.key.path)])
+        }
         Some(line) => {
             let p = if line.orig_path.is_empty() {
                 &ann.key.path
@@ -678,7 +687,12 @@ fn render_inline_diff_pane(
         hdr_rect,
     );
 
-    let body = Rect::new(area.x, area.y + 1, area.width, area.height.saturating_sub(1));
+    let body = Rect::new(
+        area.x,
+        area.y + 1,
+        area.width,
+        area.height.saturating_sub(1),
+    );
     frame.render_widget(
         Paragraph::new("").style(Style::default().bg(ctx.theme.bg_canvas)),
         body,
@@ -689,7 +703,10 @@ fn render_inline_diff_pane(
         ctx.record_scroll_bound(ScrollPane::AnnotateDiff, h, 0);
         frame.render_widget(
             Paragraph::new(Span::styled(
-                truncate_to_width(ctx.t("view.log_details.select_file_diff"), body.width as usize),
+                truncate_to_width(
+                    ctx.t("view.log_details.select_file_diff"),
+                    body.width as usize,
+                ),
                 Style::default().fg(ctx.theme.fg_muted),
             )),
             Rect::new(body.x, body.y, body.width, 1),
@@ -767,7 +784,10 @@ fn render_detail_strip(
     if line.oid.is_zero() {
         let line1 = ctx.t_fmt(
             "view.annotate.detail_uncommitted",
-            &[("line", &line.final_line.to_string()), ("path", &ann.key.path)],
+            &[
+                ("line", &line.final_line.to_string()),
+                ("path", &ann.key.path),
+            ],
         );
         frame.render_widget(
             Paragraph::new(Line::from(Span::styled(

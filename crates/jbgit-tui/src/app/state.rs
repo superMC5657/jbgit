@@ -211,9 +211,7 @@ impl AppState {
             log,
             active_tab,
             focused_pane,
-            splitters: SplitterState::with_default_ratios(
-                config.jbgit.layout.splitter_defaults(),
-            ),
+            splitters: SplitterState::with_default_ratios(config.jbgit.layout.splitter_defaults()),
             splitter_containers: FxHashMap::default(),
             terminal_area: Rect::ZERO,
             modal_stack: ModalStack::new(),
@@ -306,8 +304,10 @@ impl AppState {
             info.version_string.trim()
         };
         Some((
-            self.i18n
-                .t_fmt("git.executable_summary", &[("version", ver), ("path", &path)]),
+            self.i18n.t_fmt(
+                "git.executable_summary",
+                &[("version", ver), ("path", &path)],
+            ),
             false,
         ))
     }
@@ -395,10 +395,9 @@ impl AppState {
                 self.stage_workbench.scroll_diff(delta);
             }
             ScrollPane::FileHistoryDiff => {
-                let fallback = self
-                    .modal_stack
-                    .file_history()
-                    .map_or(usize::MAX, |fh| fh.fallback_diff_max_scroll(&self.diff_caches));
+                let fallback = self.modal_stack.file_history().map_or(usize::MAX, |fh| {
+                    fh.fallback_diff_max_scroll(&self.diff_caches)
+                });
                 if let Some(fh) = self.modal_stack.file_history_mut() {
                     fh.diff.scroll.scroll_by(delta, fallback);
                 }
@@ -533,16 +532,24 @@ impl AppState {
                     self.console.bind_output_bound(viewport_h, max_scroll);
                 }
                 ScrollPane::LogDiff => {
-                    self.log.details.diff.scroll.bind_bound(viewport_h, max_scroll);
+                    self.log
+                        .details
+                        .diff
+                        .scroll
+                        .bind_bound(viewport_h, max_scroll);
                 }
                 ScrollPane::LogDetails => {
-                    self.log.details.details_scroll.bind_bound(viewport_h, max_scroll);
+                    self.log
+                        .details
+                        .details_scroll
+                        .bind_bound(viewport_h, max_scroll);
                 }
                 ScrollPane::StashDiff => {
                     self.stash.bind_diff_viewport(viewport_h, max_scroll);
                 }
                 ScrollPane::StageDiff => {
-                    self.stage_workbench.bind_diff_viewport(viewport_h, max_scroll);
+                    self.stage_workbench
+                        .bind_diff_viewport(viewport_h, max_scroll);
                 }
                 ScrollPane::FileHistoryDiff => {
                     if let Some(fh) = self.modal_stack.file_history_mut() {
@@ -657,10 +664,7 @@ impl AppState {
                     }
                 }
                 ScrollPane::Remotes => {
-                    let total = self
-                        .repo_snapshot
-                        .as_deref()
-                        .map_or(0, |s| s.remotes.len());
+                    let total = self.repo_snapshot.as_deref().map_or(0, |s| s.remotes.len());
                     if let Some(rs) = self.modal_stack.remotes_mut() {
                         rs.scroll.ensure_visible(rs.selected, total, viewport_h);
                     }
@@ -863,11 +867,7 @@ impl AppState {
         }
     }
 
-    pub(crate) fn schedule_file_syntax(
-        &mut self,
-        diff: Arc<FileDiff>,
-        effects: &mut Vec<Effect>,
-    ) {
+    pub(crate) fn schedule_file_syntax(&mut self, diff: Arc<FileDiff>, effects: &mut Vec<Effect>) {
         if !self.config.jbgit.diff.syntax_highlight
             || diff.is_binary
             || diff.is_too_large

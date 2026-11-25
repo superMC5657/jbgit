@@ -17,8 +17,7 @@ use crate::hit_test::HitTarget;
 use crate::views::overlays::context_menu_rect;
 
 use super::{
-    TestSession, find_item, local, menu_item_idx, oid, row_text, screen_text, snapshot,
-    top_menu,
+    TestSession, find_item, local, menu_item_idx, oid, row_text, screen_text, snapshot, top_menu,
 };
 
 #[test]
@@ -194,9 +193,7 @@ fn hover_opens_submenu_after_delay_and_keyboard_trigger_anchors_on_selection() {
     // Keyboard trigger (Shift+F10) opens the same commit menu at the selected row.
     ts.dispatch(Action::SelectLogRow(2));
     let _ = ts.render(140, 40);
-    let row = ts.region_of(|t| {
-        matches!(t, HitTarget::CommitTableRow { visible_row: 2, .. })
-    });
+    let row = ts.region_of(|t| matches!(t, HitTarget::CommitTableRow { visible_row: 2, .. }));
     ts.send_key(KeyCode::F(10), KeyModifiers::SHIFT);
     let Some(ModalLayer::ContextMenu { anchor, items, .. }) = ts.state().modal_stack.last() else {
         panic!("keyboard menu")
@@ -223,7 +220,11 @@ fn hover_opens_submenu_after_delay_and_keyboard_trigger_anchors_on_selection() {
     ts.send_mouse(MouseEventKind::Moved, r.x + 2, r.y);
     let hover = ts.state().menu_hover.expect("hover timer armed");
     assert!(hover.due > ts.now());
-    assert_eq!(ts.state().modal_stack.len(), 1, "not opened before the delay");
+    assert_eq!(
+        ts.state().modal_stack.len(),
+        1,
+        "not opened before the delay"
+    );
     ts.advance_by(Duration::from_millis(200));
     let (sub, _, depth) = top_menu(ts.state());
     assert_eq!(depth, 1);
@@ -251,7 +252,9 @@ fn hover_opens_submenu_after_delay_and_keyboard_trigger_anchors_on_selection() {
     // of a commit already on HEAD) are not.
     let buf = ts.render(140, 40);
     let cell_at = |label: &str, offset: u16| {
-        let y = (0..40).find(|&y| row_text(&buf, y).contains(label)).unwrap();
+        let y = (0..40)
+            .find(|&y| row_text(&buf, y).contains(label))
+            .unwrap();
         let line = row_text(&buf, y);
         let x = line[..line.find(label).unwrap()].chars().count() as u16;
         buf[(x + offset, y)].clone()
@@ -430,15 +433,21 @@ fn stage_tree_menu_covers_expected_actions() {
 fn non_contiguous_squash_disabled_and_hunk_menu_respects_diff_side() {
     let mut ts = TestSession::with_snapshot(snapshot());
     ts.dispatch_many([Action::SelectLogRow(2), Action::ExtendLogSelectionTo(2)]);
-    ts.state_mut().stage_workbench.set_diff_key_for_test(Some(StageDiffKey {
-        path: "src/lib.rs".into(),
-        old_path: None,
-        side: StageDiffSide::Staged,
-        context: DiffContext::Three,
-        whitespace: jbgit_core::WhitespaceMode::Default,
-    }));
+    ts.state_mut()
+        .stage_workbench
+        .set_diff_key_for_test(Some(StageDiffKey {
+            path: "src/lib.rs".into(),
+            old_path: None,
+            side: StageDiffSide::Staged,
+            context: DiffContext::Three,
+            whitespace: jbgit_core::WhitespaceMode::Default,
+        }));
     let staged_hunk = crate::menus::stage_hunk_menu_items(ts.state(), 0);
-    assert!(find_item(&staged_hunk, "Stage Hunk").disabled_reason.is_some());
+    assert!(
+        find_item(&staged_hunk, "Stage Hunk")
+            .disabled_reason
+            .is_some()
+    );
     assert!(find_item(&staged_hunk, "Unstage Hunk").is_enabled());
     assert!(
         find_item(&staged_hunk, "Rollback Hunk")
@@ -446,13 +455,15 @@ fn non_contiguous_squash_disabled_and_hunk_menu_respects_diff_side() {
             .is_some()
     );
 
-    ts.state_mut().stage_workbench.set_diff_key_for_test(Some(StageDiffKey {
-        path: "src/lib.rs".into(),
-        old_path: None,
-        side: StageDiffSide::Unstaged,
-        context: DiffContext::Three,
-        whitespace: jbgit_core::WhitespaceMode::Default,
-    }));
+    ts.state_mut()
+        .stage_workbench
+        .set_diff_key_for_test(Some(StageDiffKey {
+            path: "src/lib.rs".into(),
+            old_path: None,
+            side: StageDiffSide::Unstaged,
+            context: DiffContext::Three,
+            whitespace: jbgit_core::WhitespaceMode::Default,
+        }));
     let unstaged_hunk = crate::menus::stage_hunk_menu_items(ts.state(), 0);
     assert!(find_item(&unstaged_hunk, "Stage Hunk").is_enabled());
     assert!(
@@ -662,9 +673,18 @@ fn p0_detached_head_branch_menu_disables_destructive_and_invalid_ops() {
         !items.iter().any(|i| i.label.contains("Favorite")),
         "detached HEAD must not offer Mark as Favorite"
     );
-    assert!(crate::keymap::catalog::branch_checkout(ts.state(), "HEAD", jbgit_core::RefKind::Head).is_err());
-    assert!(crate::keymap::catalog::branch_rename(ts.state(), "HEAD", jbgit_core::RefKind::Head).is_err());
-    assert!(crate::keymap::catalog::branch_delete(ts.state(), "HEAD", jbgit_core::RefKind::Head).is_err());
+    assert!(
+        crate::keymap::catalog::branch_checkout(ts.state(), "HEAD", jbgit_core::RefKind::Head)
+            .is_err()
+    );
+    assert!(
+        crate::keymap::catalog::branch_rename(ts.state(), "HEAD", jbgit_core::RefKind::Head)
+            .is_err()
+    );
+    assert!(
+        crate::keymap::catalog::branch_delete(ts.state(), "HEAD", jbgit_core::RefKind::Head)
+            .is_err()
+    );
 }
 
 #[test]
@@ -750,7 +770,9 @@ fn p0_right_click_stage_diff_line_preserves_inside_and_resets_outside_visual_bou
     let local = b"a1\nb1\nc1\nd1\ne1\nf1\ng1\nh1\ni1\nj1\nk1\nl1\n";
     let tracker = jbgit_core::StageLineTracker::new(vcs, vcs, local);
     let (hunks, is_truncated) = tracker.build_interactive_hunks(false, DiffContext::Three, 20_000);
-    ts.state_mut().stage_workbench.set_diff_key_for_test(Some(key.clone()));
+    ts.state_mut()
+        .stage_workbench
+        .set_diff_key_for_test(Some(key.clone()));
     let epoch = ts
         .state()
         .request_slots
@@ -790,7 +812,10 @@ fn p0_right_click_stage_diff_line_preserves_inside_and_resets_outside_visual_bou
         row_idx: 10,
         extend: true,
     });
-    assert_eq!(ts.state().stage_workbench.selected_visual_bounds(), Some((5, 10)));
+    assert_eq!(
+        ts.state().stage_workbench.selected_visual_bounds(),
+        Some((5, 10))
+    );
 
     // Right-click inside bounds (row 7): preserves visual selection without StageDiffSelectLine.
     let inside = crate::input::preselect_actions_for_menu_target(
@@ -798,7 +823,10 @@ fn p0_right_click_stage_diff_line_preserves_inside_and_resets_outside_visual_bou
         ts.state(),
     );
     assert!(
-        matches!(inside.as_slice(), [Action::FocusPane(PaneId::CommitDiffPreview)]),
+        matches!(
+            inside.as_slice(),
+            [Action::FocusPane(PaneId::CommitDiffPreview)]
+        ),
         "inside visual bounds must not emit StageDiffSelectLine: {inside:?}"
     );
 
@@ -824,8 +852,8 @@ fn p0_right_click_stage_diff_line_preserves_inside_and_resets_outside_visual_bou
 
 #[test]
 fn p1_p2_ux_regressions_menus_mouse_paste_popups_and_ignore_filter() {
-    use std::collections::HashSet;
     use crossterm::event::{Event, KeyEvent};
+    use std::collections::HashSet;
 
     // 1. P1-10: No duplicate Favorite in BranchTreeNode, and no dead ('j'/'k') or colliding mnemonics.
     let mut snap = snapshot();
@@ -859,23 +887,39 @@ fn p1_p2_ux_regressions_menus_mouse_paste_popups_and_ignore_filter() {
         }
     };
 
-    assert_clean_mnemonics("log_commit", &crate::menus::log_commit_menu_items(ts.state()));
-    assert_clean_mnemonics("presentation", &crate::input::presentation_menu_items(ts.state()));
+    assert_clean_mnemonics(
+        "log_commit",
+        &crate::menus::log_commit_menu_items(ts.state()),
+    );
+    assert_clean_mnemonics(
+        "presentation",
+        &crate::input::presentation_menu_items(ts.state()),
+    );
     assert_clean_mnemonics(
         "branch_local",
         &crate::menus::branch_menu_items(ts.state(), "main", jbgit_core::RefKind::LocalBranch),
     );
     assert_clean_mnemonics(
         "branch_remote",
-        &crate::menus::branch_menu_items(ts.state(), "origin/main", jbgit_core::RefKind::RemoteBranch),
+        &crate::menus::branch_menu_items(
+            ts.state(),
+            "origin/main",
+            jbgit_core::RefKind::RemoteBranch,
+        ),
     );
     assert_clean_mnemonics(
         "branch_tag",
         &crate::menus::branch_menu_items(ts.state(), "v1.0", jbgit_core::RefKind::Tag),
     );
-    assert_clean_mnemonics("stage_diff", &crate::menus::stage_diff_menu_items(ts.state()));
+    assert_clean_mnemonics(
+        "stage_diff",
+        &crate::menus::stage_diff_menu_items(ts.state()),
+    );
     assert_clean_mnemonics("stash", &crate::menus::stash_menu_items(ts.state()));
-    assert_clean_mnemonics("stash_file", &crate::menus::stash_file_menu_items(ts.state()));
+    assert_clean_mnemonics(
+        "stash_file",
+        &crate::menus::stash_file_menu_items(ts.state()),
+    );
 
     // Check BranchTreeNode on a local branch leaf: only ONE Favorite item and zero collisions.
     let leaf_row = ts
@@ -931,8 +975,7 @@ fn p1_p2_ux_regressions_menus_mouse_paste_popups_and_ignore_filter() {
         "paste must be gated when branch search and tree_speed_search are off: {paste_actions:?}"
     );
     ts.state_mut().log.branches.searching = true;
-    let paste_active =
-        crate::input::route_terminal_event(&Event::Paste("feat".into()), ts.state());
+    let paste_active = crate::input::route_terminal_event(&Event::Paste("feat".into()), ts.state());
     assert_eq!(paste_active.len(), 4);
     ts.state_mut().log.branches.searching = false;
 
@@ -1017,7 +1060,10 @@ fn p1_p2_ux_regressions_menus_mouse_paste_popups_and_ignore_filter() {
         Some(ModalLayer::ShortcutsHelp { selected, .. }) => *selected,
         _ => panic!("expected ShortcutsHelp"),
     };
-    assert!(after_sel > before_sel, "ShortcutsHelp wheel should advance selection");
+    assert!(
+        after_sel > before_sel,
+        "ShortcutsHelp wheel should advance selection"
+    );
     ts.dispatch(Action::PopModal);
 
     // 5. P2-1: Floating popup `Down` is clamped so `Enter` still selects the last candidate.
@@ -1084,26 +1130,30 @@ fn p1_p2_ux_regressions_menus_mouse_paste_popups_and_ignore_filter() {
     );
 
     // P1-11(a): annotate_stage_diff rejects untracked file.
-    ts.state_mut().stage_workbench.set_diff_key_for_test(Some(StageDiffKey {
-        path: "untracked.tmp".into(),
-        old_path: None,
-        side: StageDiffSide::Unstaged,
-        context: DiffContext::Three,
-        whitespace: jbgit_core::WhitespaceMode::Default,
-    }));
+    ts.state_mut()
+        .stage_workbench
+        .set_diff_key_for_test(Some(StageDiffKey {
+            path: "untracked.tmp".into(),
+            old_path: None,
+            side: StageDiffSide::Unstaged,
+            context: DiffContext::Three,
+            whitespace: jbgit_core::WhitespaceMode::Default,
+        }));
     assert!(
         crate::keymap::catalog::annotate_stage_diff(ts.state(), Some("untracked.tmp")).is_err(),
         "untracked file in CommitDiffPreview must not be annotatable"
     );
 
     // P1-11(b): AmendCommit diff disables Create Patch and Copy Patch.
-    ts.state_mut().stage_workbench.set_diff_key_for_test(Some(StageDiffKey {
-        path: "tracked.rs".into(),
-        old_path: None,
-        side: StageDiffSide::AmendCommit,
-        context: DiffContext::Three,
-        whitespace: jbgit_core::WhitespaceMode::Default,
-    }));
+    ts.state_mut()
+        .stage_workbench
+        .set_diff_key_for_test(Some(StageDiffKey {
+            path: "tracked.rs".into(),
+            old_path: None,
+            side: StageDiffSide::AmendCommit,
+            context: DiffContext::Three,
+            whitespace: jbgit_core::WhitespaceMode::Default,
+        }));
     let amend_diff_menu = crate::menus::stage_diff_menu_items(ts.state());
     assert!(!find_item(&amend_diff_menu, "Create Patch").is_enabled());
     assert!(!find_item(&amend_diff_menu, "Copy Patch").is_enabled());
@@ -1170,7 +1220,9 @@ fn p1_p2_ux_regressions_menus_mouse_paste_popups_and_ignore_filter() {
         jbgit_core::RefKind::RemoteBranch,
     );
     assert!(
-        !remote_menu_old_git.iter().any(|i| i.label.contains("Worktree")),
+        !remote_menu_old_git
+            .iter()
+            .any(|i| i.label.contains("Worktree")),
         "Remote branch New Worktree must be hidden on git < 2.17"
     );
 }

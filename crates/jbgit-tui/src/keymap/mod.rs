@@ -830,10 +830,7 @@ impl KeyStroke {
     pub fn is_editor_chord(&self) -> bool {
         self.ctrl
             || self.alt
-            || matches!(
-                self.code,
-                KeyCode::Tab | KeyCode::BackTab | KeyCode::F(_)
-            )
+            || matches!(self.code, KeyCode::Tab | KeyCode::BackTab | KeyCode::F(_))
     }
 
     pub fn matches(&self, event: &KeyEvent) -> bool {
@@ -1075,7 +1072,10 @@ mod tests {
         // Ctrl+Shift+K must stay distinct from Ctrl+K.
         let k_csk = KeyStroke::parse("<C-S-k>").unwrap();
         let k_ck = KeyStroke::parse("<C-k>").unwrap();
-        let ev_csk = KeyEvent::new(KeyCode::Char('K'), KeyModifiers::CONTROL | KeyModifiers::SHIFT);
+        let ev_csk = KeyEvent::new(
+            KeyCode::Char('K'),
+            KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+        );
         let ev_ck = KeyEvent::new(KeyCode::Char('k'), KeyModifiers::CONTROL);
         assert!(k_csk.matches(&ev_csk));
         assert!(!k_ck.matches(&ev_csk));
@@ -1137,7 +1137,10 @@ mod tests {
         // 2. Default routing: multi-key sequence "g" then "g" + Which-Key completions
         let ev_g = KeyEvent::new(KeyCode::Char('g'), KeyModifiers::NONE);
         let first = route_dynamic_key(&ev_g, &state).expect("prefix action");
-        assert!(matches!(first.as_slice(), [Action::SetPendingKeySequence(_)]));
+        assert!(matches!(
+            first.as_slice(),
+            [Action::SetPendingKeySequence(_)]
+        ));
         for a in first {
             state.dispatch(a);
         }
@@ -1148,7 +1151,10 @@ mod tests {
         let second = route_dynamic_key(&ev_g, &state).expect("exact sequence");
         assert!(matches!(
             second.as_slice(),
-            [Action::ClearPendingKeySequence, Action::LogEdge { bottom: false }]
+            [
+                Action::ClearPendingKeySequence,
+                Action::LogEdge { bottom: false }
+            ]
         ));
         for a in second {
             state.dispatch(a);
@@ -1156,14 +1162,20 @@ mod tests {
 
         // 2b. Esc cancels pending chord cleanly
         let first_esc = route_dynamic_key(&ev_g, &state).expect("prefix");
-        assert!(matches!(first_esc.as_slice(), [Action::SetPendingKeySequence(_)]));
+        assert!(matches!(
+            first_esc.as_slice(),
+            [Action::SetPendingKeySequence(_)]
+        ));
         for a in first_esc {
             state.dispatch(a);
         }
         assert!(!state.pending_keys.is_empty());
         let cancel = route_dynamic_key(&KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), &state)
             .expect("cancel");
-        assert!(matches!(cancel.as_slice(), [Action::ClearPendingKeySequence]));
+        assert!(matches!(
+            cancel.as_slice(),
+            [Action::ClearPendingKeySequence]
+        ));
         for a in cancel {
             state.dispatch(a);
         }
@@ -1197,7 +1209,10 @@ mod tests {
         state.active_tab = WorkspaceTab::Commit;
         state.focused_pane = PaneId::CommitDiffPreview;
         let actions_r_diff = route_dynamic_key(&ev_r, &state);
-        assert!(matches!(actions_r_diff.as_deref(), Some([Action::RefreshAll])));
+        assert!(matches!(
+            actions_r_diff.as_deref(),
+            Some([Action::RefreshAll])
+        ));
         let ev_d = KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE);
         let actions_d_diff = route_dynamic_key(&ev_d, &state);
         assert!(matches!(
@@ -1360,15 +1375,24 @@ prepend_keymap = [
             .collect();
         assert!(list_ctx.iter().any(|r| matches!(
             r,
-            HelpRow::Entry { run: Some(KeyAction::GitStatusProbe), .. }
+            HelpRow::Entry {
+                run: Some(KeyAction::GitStatusProbe),
+                ..
+            }
         )));
         assert!(list_ctx.iter().any(|r| matches!(
             r,
-            HelpRow::Entry { run: Some(KeyAction::CursorDown), .. }
+            HelpRow::Entry {
+                run: Some(KeyAction::CursorDown),
+                ..
+            }
         )));
         assert!(list_ctx.iter().any(|r| matches!(
             r,
-            HelpRow::Entry { run: Some(KeyAction::GotoTop), .. }
+            HelpRow::Entry {
+                run: Some(KeyAction::GotoTop),
+                ..
+            }
         )));
 
         state.focused_pane = PaneId::ConsoleOutputDetail;
@@ -1389,15 +1413,24 @@ prepend_keymap = [
             .collect();
         assert!(!detail_ctx.iter().any(|r| matches!(
             r,
-            HelpRow::Entry { run: Some(KeyAction::GitStatusProbe), .. }
+            HelpRow::Entry {
+                run: Some(KeyAction::GitStatusProbe),
+                ..
+            }
         )));
         assert!(detail_ctx.iter().any(|r| matches!(
             r,
-            HelpRow::Entry { run: Some(KeyAction::CursorDown), .. }
+            HelpRow::Entry {
+                run: Some(KeyAction::CursorDown),
+                ..
+            }
         )));
         assert!(detail_ctx.iter().any(|r| matches!(
             r,
-            HelpRow::Entry { run: Some(KeyAction::PageDownHalf), .. }
+            HelpRow::Entry {
+                run: Some(KeyAction::PageDownHalf),
+                ..
+            }
         )));
         assert!(detail_ctx.iter().any(|r| matches!(
             r,
@@ -1479,12 +1512,32 @@ prepend_keymap = [
             (WorkspaceTab::Log, PaneId::LogDetailsDiff, false, false),
             (WorkspaceTab::Log, PaneId::LogDetailsDiff, true, false),
             (WorkspaceTab::Log, PaneId::LogDetailsDiff, true, true),
-            (WorkspaceTab::Commit, PaneId::CommitChangesTree, false, false),
-            (WorkspaceTab::Commit, PaneId::CommitDiffPreview, false, false),
+            (
+                WorkspaceTab::Commit,
+                PaneId::CommitChangesTree,
+                false,
+                false,
+            ),
+            (
+                WorkspaceTab::Commit,
+                PaneId::CommitDiffPreview,
+                false,
+                false,
+            ),
             (WorkspaceTab::Stash, PaneId::StashList, false, false),
             (WorkspaceTab::Stash, PaneId::StashDiffPreview, false, false),
-            (WorkspaceTab::Console, PaneId::ConsoleCommandList, false, false),
-            (WorkspaceTab::Console, PaneId::ConsoleOutputDetail, false, false),
+            (
+                WorkspaceTab::Console,
+                PaneId::ConsoleCommandList,
+                false,
+                false,
+            ),
+            (
+                WorkspaceTab::Console,
+                PaneId::ConsoleOutputDetail,
+                false,
+                false,
+            ),
         ];
 
         for preset in &presets {
@@ -1604,9 +1657,15 @@ prepend_keymap = [
         state.focused_pane = PaneId::LogCommitTable;
 
         let msg_err = catalog::commit_copy_message(&state).unwrap_err();
-        assert!(!msg_err.contains("{what}"), "unformatted placeholder: {msg_err}");
+        assert!(
+            !msg_err.contains("{what}"),
+            "unformatted placeholder: {msg_err}"
+        );
         let sum_err = catalog::commit_copy_row_summary(&state).unwrap_err();
-        assert!(!sum_err.contains("{what}"), "unformatted placeholder: {sum_err}");
+        assert!(
+            !sum_err.contains("{what}"),
+            "unformatted placeholder: {sum_err}"
+        );
 
         // P2-2: Precondition errors from keyboard catalog actions must emit Action::Notice, not None.
         for action in [

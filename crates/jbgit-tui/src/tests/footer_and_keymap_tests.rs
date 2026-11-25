@@ -16,9 +16,7 @@ use crate::input::route_terminal_event;
 use crate::keymap::KeyAction;
 use crate::keymap::help::{HelpRow, build_help_rows};
 
-use super::{
-    TestSession, find_item, oid, row_text, screen_text, snapshot,
-};
+use super::{TestSession, find_item, oid, row_text, screen_text, snapshot};
 
 #[test]
 fn dynamic_footer_tracks_focus_and_keymap_overrides() {
@@ -111,7 +109,10 @@ prepend_keymap = [
     assert!(commit_diff_footer.contains("Stage"), "{commit_diff_footer}");
     assert!(commit_diff_footer.contains("Hunk"), "{commit_diff_footer}");
     assert!(commit_diff_footer.contains("Esc"), "{commit_diff_footer}");
-    assert!(!commit_diff_footer.contains("Context"), "{commit_diff_footer}");
+    assert!(
+        !commit_diff_footer.contains("Context"),
+        "{commit_diff_footer}"
+    );
 
     // 4. CommitMessageEditor shows Commit / Amend / Esc without rare `Sign-off`
     ts.dispatch(Action::FocusPane(PaneId::CommitMessageEditor));
@@ -214,7 +215,10 @@ fn jetbrains_tree_speed_search_preserves_context_menu_dot_and_vim_diff_menu_show
 
     ts.send_key(KeyCode::Char('.'), KeyModifiers::NONE);
     assert!(
-        matches!(ts.state().modal_stack.last(), Some(ModalLayer::ContextMenu { .. })),
+        matches!(
+            ts.state().modal_stack.last(),
+            Some(ModalLayer::ContextMenu { .. })
+        ),
         "expected context menu on '.' under jetbrains preset"
     );
     ts.dispatch(Action::PopContextMenus);
@@ -226,11 +230,15 @@ fn jetbrains_tree_speed_search_preserves_context_menu_dot_and_vim_diff_menu_show
     ts.state_mut().config.keymap = KeymapConfig::for_preset(KeymapPreset::Vim);
     let diff_menu = crate::menus::stage_diff_menu_items(ts.state());
     assert_eq!(
-        find_item(&diff_menu, "Stage Hunk or Lines").shortcut.as_deref(),
+        find_item(&diff_menu, "Stage Hunk or Lines")
+            .shortcut
+            .as_deref(),
         Some("s")
     );
     assert_eq!(
-        find_item(&diff_menu, "Unstage Hunk or Lines").shortcut.as_deref(),
+        find_item(&diff_menu, "Unstage Hunk or Lines")
+            .shortcut
+            .as_deref(),
         Some("u")
     );
 }
@@ -278,11 +286,7 @@ fn zh_cn_reset_dialog_and_collapsed_branches_stripe_align_cjk_widths() {
         splitter_containers: None,
     };
     term.draw(|frame| {
-        crate::views::log_branches::render_branches_stripe(
-            frame,
-            Rect::new(0, 0, 2, 6),
-            &mut ctx,
-        );
+        crate::views::log_branches::render_branches_stripe(frame, Rect::new(0, 0, 2, 6), &mut ctx);
     })
     .unwrap();
     let buf = term.backend().buffer();
@@ -296,13 +300,15 @@ fn footer_and_help_respect_amend_readonly_author_edit_speed_search_and_console_d
     let mut ts = TestSession::with_snapshot(snapshot());
     ts.dispatch(Action::SwitchTab(WorkspaceTab::Commit));
     ts.dispatch(Action::FocusPane(PaneId::CommitDiffPreview));
-    ts.state_mut().stage_workbench.set_diff_key_for_test(Some(StageDiffKey {
-        path: "a.rs".into(),
-        old_path: None,
-        side: StageDiffSide::AmendCommit,
-        context: jbgit_core::DiffContext::Three,
-        whitespace: jbgit_core::WhitespaceMode::Default,
-    }));
+    ts.state_mut()
+        .stage_workbench
+        .set_diff_key_for_test(Some(StageDiffKey {
+            path: "a.rs".into(),
+            old_path: None,
+            side: StageDiffSide::AmendCommit,
+            context: jbgit_core::DiffContext::Three,
+            whitespace: jbgit_core::WhitespaceMode::Default,
+        }));
     let buf = ts.render(160, 40);
     let amend_footer = row_text(&buf, 39);
     assert!(amend_footer.contains("Hunk"), "{amend_footer}");
@@ -443,7 +449,11 @@ key_bindings = [
 "#,
     )
     .unwrap();
-    ts_reordered.state_mut().config.keymap.merge_overlay(&reorder_ov);
+    ts_reordered
+        .state_mut()
+        .config
+        .keymap
+        .merge_overlay(&reorder_ov);
     let buf = ts_reordered.render(160, 30);
     let reordered_footer = row_text(&buf, 29);
     let copy_pos = reordered_footer.find("Copy hash").expect(&reordered_footer);
@@ -464,7 +474,10 @@ fn footer_overflow_single_line_multiline_and_hidden() {
     let row_last = row_text(&buf, 23);
     assert!(row_last.contains("Filter"), "{row_last}");
     assert!(row_last.contains("Help"), "{row_last}");
-    assert!(row_last.contains(" +"), "expected +N overflow badge: {row_last}");
+    assert!(
+        row_last.contains(" +"),
+        "expected +N overflow badge: {row_last}"
+    );
     assert!(!row_last.contains("Parent"), "{row_last}");
     assert!(!row_last.contains("Refresh"), "{row_last}");
 
@@ -475,7 +488,10 @@ fn footer_overflow_single_line_multiline_and_hidden() {
     let row_23 = row_text(&buf, 23);
     assert!(row_22.contains("Filter"), "{row_22}");
     assert!(row_22.contains("Diff"), "{row_22}");
-    assert!(!row_22.contains("Help"), "Help must sit on bottom row: {row_22}");
+    assert!(
+        !row_22.contains("Help"),
+        "Help must sit on bottom row: {row_22}"
+    );
     assert!(row_23.contains("Help"), "{row_23}");
     assert!(row_23.contains("Copy hash"), "{row_23}");
     assert!(row_23.contains("Go to"), "{row_23}");
@@ -492,7 +508,10 @@ fn footer_overflow_single_line_multiline_and_hidden() {
     );
     assert!(combined_footer.contains("Refresh"), "{combined_footer}");
     assert!(combined_footer.contains("Help"), "{combined_footer}");
-    assert!(!combined_footer.contains(" +"), "unexpected +N when all fit: {combined_footer}");
+    assert!(
+        !combined_footer.contains(" +"),
+        "unexpected +N when all fit: {combined_footer}"
+    );
 
     // 4. Hidden footer (footer_max_lines = 0): no key hints on row 23, but notifications still render
     ts.state_mut().config.keymap.footer_max_lines = 0;
@@ -538,7 +557,10 @@ prepend_keymap = [
     let buf = ts.render(160, 40);
     let diff_footer = row_text(&buf, 39);
     assert!(!diff_footer.contains("Dock"), "{diff_footer}");
-    assert!(!diff_footer.contains("Parent"), "shadowed log key leaked: {diff_footer}");
+    assert!(
+        !diff_footer.contains("Parent"),
+        "shadowed log key leaked: {diff_footer}"
+    );
 }
 
 #[test]
@@ -551,8 +573,14 @@ fn footer_console_probe_vim_diff_noop_append_and_which_key_non_overlap() {
     console_ts.dispatch(Action::FocusPane(PaneId::ConsoleCommandList));
     let buf = console_ts.render(160, 30);
     let default_console_footer = row_text(&buf, 29);
-    assert!(default_console_footer.contains(" p  Status"), "{default_console_footer}");
-    assert!(!default_console_footer.contains("Pull"), "{default_console_footer}");
+    assert!(
+        default_console_footer.contains(" p  Status"),
+        "{default_console_footer}"
+    );
+    assert!(
+        !default_console_footer.contains("Pull"),
+        "{default_console_footer}"
+    );
 
     let probe_ov: KeymapConfigOverlay = toml::from_str(
         r#"
@@ -563,11 +591,21 @@ prepend_keymap = [
 "#,
     )
     .unwrap();
-    console_ts.state_mut().config.keymap.merge_overlay(&probe_ov);
+    console_ts
+        .state_mut()
+        .config
+        .keymap
+        .merge_overlay(&probe_ov);
     let buf = console_ts.render(160, 30);
     let custom_console_footer = row_text(&buf, 29);
-    assert!(custom_console_footer.contains(" g s  Status"), "{custom_console_footer}");
-    assert!(custom_console_footer.contains(" p  Pull"), "{custom_console_footer}");
+    assert!(
+        custom_console_footer.contains(" g s  Status"),
+        "{custom_console_footer}"
+    );
+    assert!(
+        custom_console_footer.contains(" p  Pull"),
+        "{custom_console_footer}"
+    );
 
     // 2. Vim CommitDiffPreview shows `s Stage` and `u Unstage` without duplicate `Space Stage`
     let mut vim_ts = TestSession::with_snapshot(snapshot());
@@ -578,7 +616,11 @@ prepend_keymap = [
     let vim_diff_footer = row_text(&buf, 29);
     assert!(vim_diff_footer.contains(" s  Stage"), "{vim_diff_footer}");
     assert!(vim_diff_footer.contains(" u  Unstage"), "{vim_diff_footer}");
-    assert_eq!(vim_diff_footer.matches("Stage").count(), 1, "{vim_diff_footer}");
+    assert_eq!(
+        vim_diff_footer.matches("Stage").count(),
+        1,
+        "{vim_diff_footer}"
+    );
     let space_actions = route_terminal_event(
         &Event::Key(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE)),
         vim_ts.state(),
@@ -623,13 +665,20 @@ append_keymap = [
 "#,
     )
     .unwrap();
-    append_ts.state_mut().config.keymap.merge_overlay(&append_ov);
+    append_ts
+        .state_mut()
+        .config
+        .keymap
+        .merge_overlay(&append_ov);
     let buf = append_ts.render(200, 30);
     let append_footer = row_text(&buf, 29);
     let new_branch_pos = append_footer.find("Branch").expect(&append_footer);
     let copy_pos = append_footer.find(" y  Copy hash").expect(&append_footer);
     let goto_pos = append_footer.find("Go to").expect(&append_footer);
-    assert!(new_branch_pos < copy_pos && copy_pos < goto_pos, "{append_footer}");
+    assert!(
+        new_branch_pos < copy_pos && copy_pos < goto_pos,
+        "{append_footer}"
+    );
 
     // 5. Which-Key popup with footer_max_lines = 2 does NOT overwrite either footer row.
     let mut wk_ts = TestSession::with_snapshot(snapshot());
@@ -641,8 +690,14 @@ append_keymap = [
     let buf = wk_ts.render(80, 24);
     let row_22 = row_text(&buf, 22);
     let row_23 = row_text(&buf, 23);
-    assert!(row_22.contains("Filter") && row_22.contains("Copy hash"), "{row_22}");
-    assert!(row_23.contains("Go to") && row_23.contains("Help"), "{row_23}");
+    assert!(
+        row_22.contains("Filter") && row_22.contains("Copy hash"),
+        "{row_22}"
+    );
+    assert!(
+        row_23.contains("Go to") && row_23.contains("Help"),
+        "{row_23}"
+    );
     let above_footer = (0..22)
         .map(|y| row_text(&buf, y))
         .collect::<Vec<_>>()
@@ -691,7 +746,10 @@ fn stash_braces_popup_interior_click_esc_button_and_new_branch_shortcut() {
         body_rect.y + 1,
     );
     assert!(
-        matches!(ts.state().modal_stack.last(), Some(ModalLayer::ShortcutsHelp { .. })),
+        matches!(
+            ts.state().modal_stack.last(),
+            Some(ModalLayer::ShortcutsHelp { .. })
+        ),
         "clicking inside ShortcutsHelp must not close it"
     );
     let esc_rect = ts.region_of(|t| matches!(t, HitTarget::ModalButton(ModalButton::Cancel)));
@@ -722,7 +780,10 @@ prepend_keymap = [
     bp_ts.send_key(KeyCode::Char('b'), KeyModifiers::NONE);
     let buf = bp_ts.render(140, 40);
     let screen = screen_text(&buf);
-    assert!(screen.contains("F7"), "popup should show F7 hint:\n{screen}");
+    assert!(
+        screen.contains("F7"),
+        "popup should show F7 hint:\n{screen}"
+    );
 
     bp_ts.send_mouse(MouseEventKind::Down(MouseButton::Left), 130, 20);
     assert!(
@@ -733,7 +794,10 @@ prepend_keymap = [
     bp_ts.send_key(KeyCode::Char('b'), KeyModifiers::NONE);
     bp_ts.send_key(KeyCode::F(7), KeyModifiers::NONE);
     assert!(
-        matches!(bp_ts.state().modal_stack.last(), Some(ModalLayer::Dialog(_))),
+        matches!(
+            bp_ts.state().modal_stack.last(),
+            Some(ModalLayer::Dialog(_))
+        ),
         "pressing F7 in BranchesQuickView should open NewBranch dialog: {:?}",
         bp_ts.state().modal_stack
     );
@@ -754,7 +818,11 @@ prepend_keymap = [
 "#,
     )
     .unwrap();
-    shadow_ts.state_mut().config.keymap.merge_overlay(&shadow_ov);
+    shadow_ts
+        .state_mut()
+        .config
+        .keymap
+        .merge_overlay(&shadow_ov);
     shadow_ts.send_key(KeyCode::Char('b'), KeyModifiers::NONE);
     let buf = shadow_ts.render(140, 40);
     let shadow_screen = screen_text(&buf);
@@ -772,7 +840,10 @@ prepend_keymap = [
     );
     shadow_ts.send_key(KeyCode::F(7), KeyModifiers::NONE);
     assert!(
-        !matches!(shadow_ts.state().modal_stack.last(), Some(ModalLayer::Dialog(_))),
+        !matches!(
+            shadow_ts.state().modal_stack.last(),
+            Some(ModalLayer::Dialog(_))
+        ),
         "shadowed F7 must not open NewBranch dialog: {:?}",
         shadow_ts.state().modal_stack
     );
@@ -789,7 +860,11 @@ prepend_keymap = [
 "#,
     )
     .unwrap();
-    unbind_ts.state_mut().config.keymap.merge_overlay(&unbind_ov);
+    unbind_ts
+        .state_mut()
+        .config
+        .keymap
+        .merge_overlay(&unbind_ov);
     unbind_ts.send_key(KeyCode::Char('b'), KeyModifiers::NONE);
     let buf = unbind_ts.render(140, 40);
     let unbind_screen = screen_text(&buf);
@@ -802,7 +877,10 @@ prepend_keymap = [
         KeyModifiers::CONTROL | KeyModifiers::ALT,
     );
     assert!(
-        !matches!(unbind_ts.state().modal_stack.last(), Some(ModalLayer::Dialog(_))),
+        !matches!(
+            unbind_ts.state().modal_stack.last(),
+            Some(ModalLayer::Dialog(_))
+        ),
         "unbound Ctrl+Alt+N must not open NewBranch dialog: {:?}",
         unbind_ts.state().modal_stack
     );
@@ -826,7 +904,10 @@ prepend_keymap = [
         crit_body.y + 1,
     );
     assert!(
-        matches!(crit_ts.state().modal_stack.last(), Some(ModalLayer::Dialog(_))),
+        matches!(
+            crit_ts.state().modal_stack.last(),
+            Some(ModalLayer::Dialog(_))
+        ),
         "clicking inside ChoiceDialog must not close it"
     );
     let crit_cancel = crit_ts.region_of(|t| matches!(t, HitTarget::DialogOption(1)));
@@ -939,19 +1020,12 @@ fn command_catalog_keyboard_resolution_is_locale_and_mnemonic_independent_and_ro
     // Branch-tree commands resolve identically across locales without scanning menu mnemonics.
     en.dispatch(Action::FocusPane(PaneId::LogBranchesTree));
     zh.dispatch(Action::FocusPane(PaneId::LogBranchesTree));
-    if let Some(feature_row) = en
-        .state()
-        .log
-        .branches
-        .rows
-        .iter()
-        .position(|r| {
-            en.state().log.branches.model.nodes[r.node]
-                .ref_name
-                .as_deref()
-                == Some("feature")
-        })
-    {
+    if let Some(feature_row) = en.state().log.branches.rows.iter().position(|r| {
+        en.state().log.branches.model.nodes[r.node]
+            .ref_name
+            .as_deref()
+            == Some("feature")
+    }) {
         en.dispatch(Action::SelectBranchRow(feature_row));
         zh.dispatch(Action::SelectBranchRow(feature_row));
         for act in [
@@ -1241,5 +1315,8 @@ fn commit_message_editor_shows_prominent_edit_mode_and_esc_exit_indicators() {
     assert!(ruler_zh.replace(' ', "").contains("编辑中"), "{ruler_zh}");
     let footer_zh = row_text(&buf_zh, 39);
     assert!(footer_zh.contains("Esc"), "{footer_zh}");
-    assert!(footer_zh.replace(' ', "").contains("退出编辑"), "{footer_zh}");
+    assert!(
+        footer_zh.replace(' ', "").contains("退出编辑"),
+        "{footer_zh}"
+    );
 }

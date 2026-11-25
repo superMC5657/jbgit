@@ -30,11 +30,7 @@ pub fn render_top_header(
         .unwrap_or("jbgit");
 
     let repo_hovered = ctx.hover_target == Some(&HitTarget::HeaderRepoName);
-    let repo_bg = if repo_hovered {
-        ctx.theme.bg_hover
-    } else {
-        bg
-    };
+    let repo_bg = if repo_hovered { ctx.theme.bg_hover } else { bg };
     let caret_fg = if repo_hovered {
         ctx.theme.fg_bright
     } else {
@@ -85,9 +81,10 @@ pub fn render_top_header(
                 Some((c, t)) => {
                     let c_s = c.to_string();
                     let t_s = t.to_string();
-                    state
-                        .i18n
-                        .t_fmt("banner.header_rebasing_progress", &[("cur", &c_s), ("total", &t_s)])
+                    state.i18n.t_fmt(
+                        "banner.header_rebasing_progress",
+                        &[("cur", &c_s), ("total", &t_s)],
+                    )
                 }
                 None => state.i18n.t("banner.header_rebasing").to_string(),
             }),
@@ -374,14 +371,15 @@ fn localized_state_banner(
     st: &jbgit_core::RepositoryState,
     i18n: &crate::i18n::I18n,
 ) -> Option<String> {
-    let format_rebase = |prefix: &str, progress: Option<(usize, usize)>, branch: Option<&str>| {
-        match (branch, progress) {
+    let format_rebase =
+        |prefix: &str, progress: Option<(usize, usize)>, branch: Option<&str>| match (
+            branch, progress,
+        ) {
             (Some(b), Some((cur, total))) => format!("{prefix} {b} ({cur}/{total})"),
             (Some(b), None) => format!("{prefix} {b}"),
             (None, Some((cur, total))) => format!("{prefix} ({cur}/{total})"),
             (None, None) => prefix.to_string(),
-        }
-    };
+        };
     match st {
         jbgit_core::RepositoryState::Clean => None,
         jbgit_core::RepositoryState::Detached => Some(i18n.t("ongoing.state_detached").to_string()),

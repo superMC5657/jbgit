@@ -3,9 +3,9 @@ use std::sync::Arc;
 
 use crossterm::event::{KeyCode, KeyModifiers, MouseButton, MouseEventKind};
 use jbgit_core::{
-    CommitChangesBundle, CommitDetails, CommitSignature, ConflictDocument, DetailsKey,
-    DiffContext, FileStatusKind, PersonStamp, StageEntry, StageLineTracker, StageStatusSnapshot,
-    WhitespaceMode, WorktreeInfo, WorkspaceTab,
+    CommitChangesBundle, CommitDetails, CommitSignature, ConflictDocument, DetailsKey, DiffContext,
+    FileStatusKind, PersonStamp, StageEntry, StageLineTracker, StageStatusSnapshot, WhitespaceMode,
+    WorkspaceTab, WorktreeInfo,
 };
 use jbgit_engine::{
     CommitPrecheckInfo, EngineEvent, StageDiffKey, StageDiffSide, TaskRequest, ThreeDocStageDiff,
@@ -77,7 +77,11 @@ fn log_filter_bar_prioritizes_active_chips_and_condenses_inactive_at_140x40() {
     let clear_pos = ts
         .hit_center_of(|t| matches!(t, HitTarget::FilterClear(FilterField::Paths)))
         .expect("active Paths filter must expose clickable clear button");
-    ts.send_mouse(MouseEventKind::Down(MouseButton::Left), clear_pos.0, clear_pos.1);
+    ts.send_mouse(
+        MouseEventKind::Down(MouseButton::Left),
+        clear_pos.0,
+        clear_pos.1,
+    );
     assert!(
         !ts.state().log.filter.field_active(FilterField::Paths),
         "clicking Paths clear button must clear active path filter"

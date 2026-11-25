@@ -171,7 +171,10 @@ impl RemoteInfo {
 
     /// Fetch URL with credentials masked (empty when unset).
     pub fn display_fetch_url(&self) -> String {
-        self.fetch_url.as_deref().map(redact_url).unwrap_or_default()
+        self.fetch_url
+            .as_deref()
+            .map(redact_url)
+            .unwrap_or_default()
     }
 
     /// Explicit push URL with credentials masked (`None` when not configured).
@@ -505,8 +508,7 @@ impl RepoSnapshot {
     }
 
     fn walk_ancestors(&self, start: Oid, target: Option<Oid>) -> (HashSet<Oid>, bool) {
-        let idx: HashMap<Oid, &CommitSummary> =
-            self.commits.iter().map(|c| (c.oid, c)).collect();
+        let idx: HashMap<Oid, &CommitSummary> = self.commits.iter().map(|c| (c.oid, c)).collect();
         Self::walk_ancestors_with_index(&idx, start, target)
     }
 
@@ -585,8 +587,7 @@ impl RepoSnapshot {
         extra_protected: &[String],
     ) -> Vec<CleanupBranchCandidate> {
         let base_oid = self.resolve_revision(base_ref).or(self.head_oid);
-        let idx: HashMap<Oid, &CommitSummary> =
-            self.commits.iter().map(|c| (c.oid, c)).collect();
+        let idx: HashMap<Oid, &CommitSummary> = self.commits.iter().map(|c| (c.oid, c)).collect();
         let base_reachable = base_oid.map(|b| Self::walk_ancestors_with_index(&idx, b, None).0);
         let head_reachable = if self.head_oid == base_oid {
             None
@@ -648,8 +649,7 @@ impl RepoSnapshot {
     /// is a merge commit (`parents.len() > 1`). Used to warn before rebasing a
     /// branch containing merge commits onto a diverged remote.
     pub fn has_merge_commits_in_range(&self, base: Oid, tip: Oid) -> bool {
-        let idx: HashMap<Oid, &CommitSummary> =
-            self.commits.iter().map(|c| (c.oid, c)).collect();
+        let idx: HashMap<Oid, &CommitSummary> = self.commits.iter().map(|c| (c.oid, c)).collect();
         let excluded = self.reachable_from(base);
         let tip_reachable = self.reachable_from(tip);
         tip_reachable
@@ -663,9 +663,10 @@ impl RepoSnapshot {
         let Some(up) = branch.upstream.as_deref() else {
             return false;
         };
-        !self.refs.iter().any(|r| {
-            matches!(r.kind, RefKind::RemoteBranch | RefKind::LocalBranch) && r.name == up
-        })
+        !self
+            .refs
+            .iter()
+            .any(|r| matches!(r.kind, RefKind::RemoteBranch | RefKind::LocalBranch) && r.name == up)
     }
 
     /// Remote-tracking ref matching `<remote>/<remote_branch>`.
@@ -679,8 +680,7 @@ impl RepoSnapshot {
     /// Typed error version of [`Self::plan_rewrite`] for localized UI messages.
     pub fn plan_rewrite_typed(&self, oldest: Oid) -> Result<RewritePlan, RewritePlanError> {
         let head = self.head_oid.ok_or(RewritePlanError::NoCommits)?;
-        let idx: HashMap<Oid, &CommitSummary> =
-            self.commits.iter().map(|c| (c.oid, c)).collect();
+        let idx: HashMap<Oid, &CommitSummary> = self.commits.iter().map(|c| (c.oid, c)).collect();
         let mut chain: Vec<&CommitSummary> = Vec::new();
         let mut cur = head;
         loop {
@@ -692,10 +692,7 @@ impl RepoSnapshot {
             if cur == oldest {
                 break;
             }
-            cur = *c
-                .parents
-                .first()
-                .ok_or(RewritePlanError::NotReachable)?;
+            cur = *c.parents.first().ok_or(RewritePlanError::NotReachable)?;
             if chain.len() > 5000 {
                 return Err(RewritePlanError::NotReachable);
             }
@@ -948,14 +945,20 @@ mod tests {
 
     #[test]
     fn redacts_url_passwords_only() {
-        assert_eq!(redact_url("https://u:secret@h/x.git"), "https://u:***@h/x.git");
+        assert_eq!(
+            redact_url("https://u:secret@h/x.git"),
+            "https://u:***@h/x.git"
+        );
         assert_eq!(
             redact_url("https://u:p%40ss@host:8443/a/b?x=1"),
             "https://u:***@host:8443/a/b?x=1"
         );
         assert_eq!(redact_url("https://token@h/x.git"), "https://token@h/x.git");
         assert_eq!(redact_url("ssh://git@h:22/x.git"), "ssh://git@h:22/x.git");
-        assert_eq!(redact_url("git@github.com:o/r.git"), "git@github.com:o/r.git");
+        assert_eq!(
+            redact_url("git@github.com:o/r.git"),
+            "git@github.com:o/r.git"
+        );
         assert_eq!(redact_url("/srv/repos/x.git"), "/srv/repos/x.git");
         assert_eq!(redact_url("https://h/x@y.git"), "https://h/x@y.git");
         assert_eq!(
@@ -991,7 +994,10 @@ mod tests {
         snap.remotes.clear();
         assert_eq!(snap.default_remote(), None);
         assert_eq!(snap.remote_of_tracking("origin/feat/x"), Some("origin"));
-        assert_eq!(snap.split_tracking("origin/feat/x"), Some(("origin", "feat/x")));
+        assert_eq!(
+            snap.split_tracking("origin/feat/x"),
+            Some(("origin", "feat/x"))
+        );
 
         snap.remotes = vec![remote("team"), remote("team/upstream")];
         assert_eq!(
@@ -1042,13 +1048,7 @@ mod tests {
         };
         // Graph: 1 <- 2 <- 4 (merge of 2 and 3), 1 <- 3, 1 <- 5 (remote)
         let snap = RepoSnapshot {
-            commits: vec![
-                c(5, &[1]),
-                c(4, &[2, 3]),
-                c(3, &[1]),
-                c(2, &[1]),
-                c(1, &[]),
-            ],
+            commits: vec![c(5, &[1]), c(4, &[2, 3]), c(3, &[1]), c(2, &[1]), c(1, &[])],
             ..Default::default()
         };
         assert!(snap.has_merge_commits_in_range(oid(5), oid(4)));
@@ -1082,13 +1082,7 @@ mod tests {
         let snap = RepoSnapshot {
             head_branch: Some("main".into()),
             head_oid: Some(oid(3)),
-            commits: vec![
-                c(5, &[1]),
-                c(4, &[1]),
-                c(3, &[2]),
-                c(2, &[1]),
-                c(1, &[]),
-            ],
+            commits: vec![c(5, &[1]), c(4, &[1]), c(3, &[2]), c(2, &[1]), c(1, &[])],
             refs: vec![
                 local("main", 3, true, Some("origin/main")),
                 local("merged_gone", 2, false, Some("origin/merged_gone")),
@@ -1127,7 +1121,10 @@ mod tests {
 
         // Exclusive commits & symmetric compare between main (3) and unmerged_live (5)
         let exc = snap.exclusive_commits(oid(3), oid(5), 10);
-        assert_eq!(exc.iter().map(|c| c.oid).collect::<Vec<_>>(), vec![oid(3), oid(2)]);
+        assert_eq!(
+            exc.iter().map(|c| c.oid).collect::<Vec<_>>(),
+            vec![oid(3), oid(2)]
+        );
         assert_eq!(
             snap.compare_branch_oids(oid(3), oid(5), BranchCompareDirection::OnlyRight),
             vec![oid(5)]

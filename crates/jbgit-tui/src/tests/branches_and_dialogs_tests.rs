@@ -14,9 +14,7 @@ use crate::dialogs::Dialog;
 use crate::hit_test::{HitTarget, OngoingButton};
 use crate::views::overlays::context_menu_rect;
 
-use super::{
-    TestSession, find_item, local, oid, row_text, screen_text, snapshot, top_menu,
-};
+use super::{TestSession, find_item, local, oid, row_text, screen_text, snapshot, top_menu};
 
 #[test]
 fn branches_popup_fuzzy_search_highlights_and_opens_branch_actions() {

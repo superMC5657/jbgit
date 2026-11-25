@@ -116,10 +116,7 @@ impl AppState {
             Action::OpenCloneRepo { base_dir } => {
                 let base = crate::repo_lifecycle::default_clone_base_dir(self, base_dir.as_deref());
                 self.modal_stack.retain(|l| {
-                    !matches!(
-                        l,
-                        ModalLayer::ContextMenu { .. } | ModalLayer::CloneRepo(_)
-                    )
+                    !matches!(l, ModalLayer::ContextMenu { .. } | ModalLayer::CloneRepo(_))
                 });
                 self.blur_active_pane(false);
                 self.push_modal(ModalLayer::CloneRepo(Box::new(
@@ -144,9 +141,8 @@ impl AppState {
                             cd.cloning = true;
                             cd.progress_lines.clear();
                             let dest = req.target_dir.display().to_string();
-                            self.status_notice = Some(
-                                i18n.t_fmt("toast.repo_cloning", &[("path", &dest)]),
-                            );
+                            self.status_notice =
+                                Some(i18n.t_fmt("toast.repo_cloning", &[("path", &dest)]));
                             started = Some(req);
                         }
                         Err(msg) => {

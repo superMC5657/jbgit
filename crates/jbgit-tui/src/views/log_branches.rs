@@ -62,9 +62,10 @@ pub fn render_branches_pane(
         .repo_snapshot
         .as_ref()
         .map(|s| {
-            state
-                .i18n
-                .t_fmt("view.branches.refs_count", &[("count", &s.refs.len().to_string())])
+            state.i18n.t_fmt(
+                "view.branches.refs_count",
+                &[("count", &s.refs.len().to_string())],
+            )
         })
         .unwrap_or_default();
     let body = render_pane_frame(frame, area, PaneId::LogBranchesTree, &sub, ctx);
@@ -346,17 +347,18 @@ pub fn render_branches_pane(
                 }
                 if kind == RefKind::LocalBranch
                     && !node.is_current
-                    && let Some(wt) = state
-                        .repo_snapshot
-                        .as_deref()
-                        .and_then(|s| node.ref_name.as_deref().and_then(|n| s.worktree_of_branch(n)))
+                    && let Some(wt) = state.repo_snapshot.as_deref().and_then(|s| {
+                        node.ref_name
+                            .as_deref()
+                            .and_then(|n| s.worktree_of_branch(n))
+                    })
                 {
                     let sync_w: usize = sync_spans.iter().map(|s| s.content.width()).sum();
                     // Reserve space for indent + icon + at least 7 cols of the branch name
                     // so the linked-worktree badge elides first instead of crushing the branch name.
                     let min_left_w = prefix_w + leaf_w.min(7);
-                    let avail_for_wt = (row_rect.width as usize)
-                        .saturating_sub(min_left_w + sync_w + 1);
+                    let avail_for_wt =
+                        (row_rect.width as usize).saturating_sub(min_left_w + sync_w + 1);
                     if avail_for_wt >= 5 {
                         let name_budget = (avail_for_wt - 3).min(18);
                         right.push(Span::styled(

@@ -224,7 +224,10 @@ fn rotate(p: Pt, center: Pt, cos: f32, sin: f32, len: f32) -> Pt {
     let d = tx.hypot(ty).max(f32::EPSILON);
     let sx = len * tx / d;
     let sy = len * ty / d;
-    Pt(sx * cos - sy * sin + center.0, sx * sin + sy * cos + center.1)
+    Pt(
+        sx * cos - sy * sin + center.0,
+        sx * sin + sy * cos + center.1,
+    )
 }
 
 /// Appends dash sub-segments along `start -> end` matching `BasicStroke` with

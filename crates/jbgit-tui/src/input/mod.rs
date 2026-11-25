@@ -36,8 +36,7 @@ fn route_paste(text: &str, state: &AppState) -> Vec<Action> {
         return vec![Action::ModalPaste(text.to_string())];
     }
 
-    if state.active_tab == WorkspaceTab::Commit
-        && state.focused_pane == PaneId::CommitMessageEditor
+    if state.active_tab == WorkspaceTab::Commit && state.focused_pane == PaneId::CommitMessageEditor
     {
         if state.stage_workbench.editing_author() {
             return text

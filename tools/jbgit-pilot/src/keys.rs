@@ -23,9 +23,8 @@ pub fn encode_token(token: KeyToken) -> Result<Vec<u8>> {
 
     // Plain unmodified key (including standalone shifted uppercase letters like `G`
     // and normalized `BackTab`).
-    let is_plain_char = !ctrl
-        && !alt
-        && matches!(kind, KeyTokenKind::Char(c) if !shift || c.is_ascii_uppercase());
+    let is_plain_char =
+        !ctrl && !alt && matches!(kind, KeyTokenKind::Char(c) if !shift || c.is_ascii_uppercase());
     if is_plain_char && let KeyTokenKind::Char(ch) = kind {
         let mut buf = [0u8; 4];
         return Ok(ch.encode_utf8(&mut buf).as_bytes().to_vec());
@@ -169,11 +168,7 @@ fn encode_modified_token(
                 };
                 out.push(code);
             } else {
-                let final_ch = if shift {
-                    ch.to_ascii_uppercase()
-                } else {
-                    ch
-                };
+                let final_ch = if shift { ch.to_ascii_uppercase() } else { ch };
                 let mut buf = [0u8; 4];
                 out.extend_from_slice(final_ch.encode_utf8(&mut buf).as_bytes());
             }
@@ -220,7 +215,10 @@ fn encode_ctrl_modified_char(ch: char, ctrl: bool, alt: bool, shift: bool) -> Re
     let ctrl_state: u16 = (if ctrl { 0x0008 } else { 0 })
         | (if alt { 0x0002 } else { 0 })
         | (if shift { 0x0010 } else { 0 });
-    Ok(format!("\x1b[{vk};0;{uc};1;{ctrl_state};1_\x1b[{vk};0;{uc};0;{ctrl_state};1_").into_bytes())
+    Ok(
+        format!("\x1b[{vk};0;{uc};1;{ctrl_state};1_\x1b[{vk};0;{uc};0;{ctrl_state};1_")
+            .into_bytes(),
+    )
 }
 
 #[cfg(not(windows))]

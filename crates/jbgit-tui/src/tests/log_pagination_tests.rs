@@ -51,11 +51,9 @@ fn load_more_virtual_row_renders_clicks_enters_and_wires_command_catalog() {
         &crate::keymap::KeyAction::LogLoadMore,
         ts.state()
     ));
-    let catalog_actions = crate::keymap::catalog::execute_action(
-        &crate::keymap::KeyAction::LogLoadMore,
-        ts.state(),
-    )
-    .expect("LogLoadMore produces actions");
+    let catalog_actions =
+        crate::keymap::catalog::execute_action(&crate::keymap::KeyAction::LogLoadMore, ts.state())
+            .expect("LogLoadMore produces actions");
     assert!(
         matches!(catalog_actions.as_slice(), [Action::LoadMoreCommits]),
         "unexpected catalog actions: {catalog_actions:?}"
@@ -95,7 +93,9 @@ fn load_more_virtual_row_renders_clicks_enters_and_wires_command_catalog() {
     );
 
     // Deliver the next page (10 commits, still has_more = true) on the current RepoSnapshot epoch.
-    let latest_epoch = ts.engine.latest_epoch(jbgit_core::RequestSlotId::RepoSnapshot);
+    let latest_epoch = ts
+        .engine
+        .latest_epoch(jbgit_core::RequestSlotId::RepoSnapshot);
     ts.deliver_engine_event(EngineEvent::RepoSnapshotLoaded {
         snapshot: Arc::new(paginated_snapshot(10, 10, true)),
         epoch: latest_epoch,
@@ -160,7 +160,9 @@ fn load_more_preserves_scroll_offset_and_selected_oid_losslessly() {
 
     // Trigger LoadMore and deliver 20-commit snapshot whose top 10 commits are identical.
     ts.dispatch(Action::LoadMoreCommits);
-    let epoch = ts.engine.latest_epoch(jbgit_core::RequestSlotId::RepoSnapshot);
+    let epoch = ts
+        .engine
+        .latest_epoch(jbgit_core::RequestSlotId::RepoSnapshot);
 
     // Build 20-commit snapshot preserving the exact top 10 OIDs (oid(10)..=oid(1))
     // followed by 10 older commits (oid(20)..=oid(11)).
@@ -220,7 +222,8 @@ fn load_more_preserves_scroll_offset_and_selected_oid_losslessly() {
         "selected commit OID must be preserved across LoadMore"
     );
     assert_eq!(
-        ts.state().log.graph.scroll_offset, scroll_before,
+        ts.state().log.graph.scroll_offset,
+        scroll_before,
         "viewport scroll_offset must be preserved losslessly across LoadMore"
     );
 }
@@ -239,7 +242,9 @@ fn enter_on_virtual_load_more_lands_on_first_new_commit_without_jumping_to_top()
 
     // Press Enter to load more commits.
     ts.send_key(KeyCode::Enter, KeyModifiers::NONE);
-    let epoch = ts.engine.latest_epoch(jbgit_core::RequestSlotId::RepoSnapshot);
+    let epoch = ts
+        .engine
+        .latest_epoch(jbgit_core::RequestSlotId::RepoSnapshot);
     ts.deliver_engine_event(EngineEvent::RepoSnapshotLoaded {
         snapshot: Arc::new(paginated_snapshot(20, 20, false)),
         epoch,
@@ -247,11 +252,13 @@ fn enter_on_virtual_load_more_lands_on_first_new_commit_without_jumping_to_top()
 
     assert_eq!(ts.state().log.graph.visible_count(), 20);
     assert_eq!(
-        ts.state().log.graph.selected_idx, 10,
+        ts.state().log.graph.selected_idx,
+        10,
         "cursor should advance to the first newly loaded commit rather than resetting to row 0"
     );
     assert_eq!(
-        ts.state().log.graph.scroll_offset, 6,
+        ts.state().log.graph.scroll_offset,
+        6,
         "scroll_offset should remain anchored where the user pressed Enter"
     );
 }

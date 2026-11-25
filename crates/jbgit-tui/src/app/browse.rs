@@ -336,10 +336,8 @@ impl AppState {
                 ));
             }
             Err(err) => {
-                self.status_notice = Some(
-                    self.i18n
-                        .t_fmt("view.tree.export_err", &[("error", &err)]),
-                );
+                self.status_notice =
+                    Some(self.i18n.t_fmt("view.tree.export_err", &[("error", &err)]));
             }
         }
     }

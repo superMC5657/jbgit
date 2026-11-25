@@ -87,18 +87,16 @@ fn log_changes_context_menu_right_click_keyboard_dot_and_enablement() {
     });
     let _ = ts.render(140, 40);
 
-    let rows = ts
-        .state()
-        .log
-        .details
-        .change_rows(&ts.state().diff_caches);
+    let rows = ts.state().log.details.change_rows(&ts.state().diff_caches);
     let dir_idx = rows
         .iter()
         .position(|r| matches!(r.kind, ChangeRowKind::Dir { .. }) && r.key == "dir with space")
         .expect("dir row");
     let present_idx = rows
         .iter()
-        .position(|r| matches!(r.kind, ChangeRowKind::File { .. }) && r.key == "dir with space/a.rs")
+        .position(|r| {
+            matches!(r.kind, ChangeRowKind::File { .. }) && r.key == "dir with space/a.rs"
+        })
         .expect("present file row");
     let gone_idx = rows
         .iter()
@@ -184,7 +182,10 @@ fn log_changes_context_menu_right_click_keyboard_dot_and_enablement() {
         "Copy Patch of File",
     ] {
         let item = menu_item_by_label(&items, file_only);
-        assert!(!item.is_enabled(), "{file_only} must be disabled on directory row");
+        assert!(
+            !item.is_enabled(),
+            "{file_only} must be disabled on directory row"
+        );
         assert_eq!(
             item.disabled_reason.as_deref(),
             Some(ts.state().i18n.t("menu.log_change.need_file"))
@@ -199,7 +200,10 @@ fn log_changes_context_menu_right_click_keyboard_dot_and_enablement() {
     let key_multi = DetailsKey::commits(vec![c2, c1], 0);
     let bundle_multi = Arc::new(CommitChangesBundle {
         key: key_multi,
-        details: vec![make_details(c1, vec![], "init"), make_details(c2, vec![c1], "mod")],
+        details: vec![
+            make_details(c1, vec![], "init"),
+            make_details(c2, vec![c1], "mod"),
+        ],
         changes: vec![FileChange {
             kind: FileStatusKind::Modified,
             path: "dir with space/a.rs".into(),
@@ -227,7 +231,10 @@ fn log_changes_context_menu_right_click_keyboard_dot_and_enablement() {
     };
     for single_only in ["Compare with Local", "Get Version", "Copy Patch of File"] {
         let item = menu_item_by_label(&items, single_only);
-        assert!(!item.is_enabled(), "{single_only} must be disabled for multi-commit");
+        assert!(
+            !item.is_enabled(),
+            "{single_only} must be disabled for multi-commit"
+        );
         assert_eq!(
             item.disabled_reason.as_deref(),
             Some(ts.state().i18n.t("menu.log_change.need_single_commit"))
@@ -750,8 +757,14 @@ fn file_history_modal_end_to_end_renames_compare_navigation_and_scroll() {
     let wide = super::screen_text(&ts.render(140, 40));
     assert!(wide.contains("← old_name.rs"));
     assert!(wide.contains("@ mid_name.rs") || wide.contains("← mid_name.rs"));
-    assert!(wide.contains("Alice"), "author should render at 140x40:\n{wide}");
-    assert!(wide.contains("2023-"), "commit date should render at 140x40:\n{wide}");
+    assert!(
+        wide.contains("Alice"),
+        "author should render at 140x40:\n{wide}"
+    );
+    assert!(
+        wide.contains("2023-"),
+        "commit date should render at 140x40:\n{wide}"
+    );
     assert!(
         ts.hit_center_of(|t| matches!(t, HitTarget::FileHistoryRow { idx: 0 }))
             .is_some()
@@ -774,7 +787,14 @@ fn file_history_modal_end_to_end_renames_compare_navigation_and_scroll() {
 
     let _ = ts.take_requests();
     ts.send_key(KeyCode::Char('f'), KeyModifiers::NONE);
-    assert!(!ts.state().modal_stack.file_history().unwrap().key.follow_renames);
+    assert!(
+        !ts.state()
+            .modal_stack
+            .file_history()
+            .unwrap()
+            .key
+            .follow_renames
+    );
     let reqs = ts.take_requests();
     assert!(reqs.iter().any(|(r, _)| matches!(
         r,
@@ -851,7 +871,13 @@ fn file_history_modal_end_to_end_renames_compare_navigation_and_scroll() {
 
     // `[` / `]` hunk jumping inside FileHistory modal works cleanly.
     assert_eq!(
-        ts.state().modal_stack.file_history().unwrap().diff.scroll.offset(),
+        ts.state()
+            .modal_stack
+            .file_history()
+            .unwrap()
+            .diff
+            .scroll
+            .offset(),
         0
     );
     ts.send_key(KeyCode::Char(']'), KeyModifiers::NONE);
@@ -869,7 +895,13 @@ fn file_history_modal_end_to_end_renames_compare_navigation_and_scroll() {
     );
     ts.send_key(KeyCode::Char('['), KeyModifiers::NONE);
     assert_eq!(
-        ts.state().modal_stack.file_history().unwrap().diff.scroll.offset(),
+        ts.state()
+            .modal_stack
+            .file_history()
+            .unwrap()
+            .diff
+            .scroll
+            .offset(),
         0,
         "'[' must jump back to first hunk"
     );
@@ -882,18 +914,36 @@ fn file_history_modal_end_to_end_renames_compare_navigation_and_scroll() {
     ts.send_key(KeyCode::End, KeyModifiers::NONE);
     ts.send_key(KeyCode::Down, KeyModifiers::NONE);
     assert_eq!(
-        ts.state().modal_stack.file_history().unwrap().diff.scroll.offset(),
+        ts.state()
+            .modal_stack
+            .file_history()
+            .unwrap()
+            .diff
+            .scroll
+            .offset(),
         max_scroll
     );
     ts.send_key(KeyCode::Up, KeyModifiers::NONE);
     assert_eq!(
-        ts.state().modal_stack.file_history().unwrap().diff.scroll.offset(),
+        ts.state()
+            .modal_stack
+            .file_history()
+            .unwrap()
+            .diff
+            .scroll
+            .offset(),
         max_scroll.saturating_sub(1)
     );
     ts.send_key(KeyCode::Char('g'), KeyModifiers::NONE);
     ts.send_key(KeyCode::Char('g'), KeyModifiers::NONE);
     assert_eq!(
-        ts.state().modal_stack.file_history().unwrap().diff.scroll.offset(),
+        ts.state()
+            .modal_stack
+            .file_history()
+            .unwrap()
+            .diff
+            .scroll
+            .offset(),
         0
     );
 
@@ -1175,7 +1225,10 @@ fn directory_context_menu_starts_on_enabled_item_and_disabled_mnemonic_updates_f
     let c2 = oid_n(2);
     let snap = (*make_snapshot(
         workdir,
-        vec![make_commit(2, vec![c1], "mod"), make_commit(1, vec![], "init")],
+        vec![
+            make_commit(2, vec![c1], "mod"),
+            make_commit(1, vec![], "init"),
+        ],
     ))
     .clone();
     let mut ts = TestSession::with_snapshot(snap);
@@ -1260,7 +1313,7 @@ fn directory_context_menu_starts_on_enabled_item_and_disabled_mnemonic_updates_f
 
 #[test]
 fn file_history_context_menu_repo_version_affected_files_scope_pagination_search_space_and_dir_restore()
-{
+ {
     use jbgit_core::{
         CommitDetails, DEFAULT_FILE_HISTORY_LIMIT, HistoryBranchScope, PatchSource, PersonStamp,
         RequestSlotId, TreeBlob, TreeBlobContent, TreeBlobKey,
@@ -1407,7 +1460,10 @@ fn file_history_context_menu_repo_version_affected_files_scope_pagination_search
         depth: 0,
         idx: copy_idx,
     });
-    assert_eq!(ts.clipboard().last().map(String::as_str), Some(c3.to_string().as_str()));
+    assert_eq!(
+        ts.clipboard().last().map(String::as_str),
+        Some(c3.to_string().as_str())
+    );
 
     // Copy Patch ('p') dispatches declarative GitOp::PatchToClipboard
     let _ = ts.take_requests();
@@ -1475,7 +1531,13 @@ fn file_history_context_menu_repo_version_affected_files_scope_pagination_search
         .join("\n");
     assert!(rendered.contains("repo_version_marker"));
     ts.send_key(KeyCode::Esc, KeyModifiers::NONE);
-    assert!(!ts.state().modal_stack.file_history().unwrap().show_repo_version);
+    assert!(
+        !ts.state()
+            .modal_stack
+            .file_history()
+            .unwrap()
+            .show_repo_version
+    );
 
     // 5. Toggle Commit Details ('i') and Show All Affected Files ('a') without leaving modal
     ts.send_key(KeyCode::Char('i'), KeyModifiers::NONE);
@@ -1553,8 +1615,20 @@ fn file_history_context_menu_repo_version_affected_files_scope_pagination_search
     // Close affected files & commit details via Esc (twice)
     ts.send_key(KeyCode::Esc, KeyModifiers::NONE);
     ts.send_key(KeyCode::Esc, KeyModifiers::NONE);
-    assert!(!ts.state().modal_stack.file_history().unwrap().show_affected_files);
-    assert!(!ts.state().modal_stack.file_history().unwrap().show_commit_details);
+    assert!(
+        !ts.state()
+            .modal_stack
+            .file_history()
+            .unwrap()
+            .show_affected_files
+    );
+    assert!(
+        !ts.state()
+            .modal_stack
+            .file_history()
+            .unwrap()
+            .show_commit_details
+    );
 
     // 6. Inline '/' fuzzy search on Commits list
     ts.send_key(KeyCode::Char('/'), KeyModifiers::NONE);

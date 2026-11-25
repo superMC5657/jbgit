@@ -504,10 +504,9 @@ pub fn route_repo_switcher_key(key: &KeyEvent, state: &AppState) -> Vec<Action> 
             Action::PopModal,
             Action::OpenDialog(Box::new(open_path_dialog(&state.i18n))),
         ],
-        KeyCode::Char('l') if ctrl => vec![
-            Action::PopModal,
-            Action::OpenCloneRepo { base_dir: None },
-        ],
+        KeyCode::Char('l') if ctrl => {
+            vec![Action::PopModal, Action::OpenCloneRepo { base_dir: None }]
+        }
         KeyCode::Char('u') if ctrl => set(String::new(), 0),
         KeyCode::Up => set(query, sel.saturating_sub(1)),
         KeyCode::Char('p') if ctrl => set(query, sel.saturating_sub(1)),
@@ -622,10 +621,7 @@ pub fn render_repo_switcher_modal(
         let mut display_rows = Vec::with_capacity(total_rows);
         let mut inserted_sep = false;
         for (row, &idx) in vis.iter().enumerate() {
-            if show_divider
-                && !inserted_sep
-                && rs.items[idx].source == SwitcherSource::Recent
-            {
+            if show_divider && !inserted_sep && rs.items[idx].source == SwitcherSource::Recent {
                 display_rows.push(DisplayRow::Separator);
                 inserted_sep = true;
             }
@@ -807,7 +803,10 @@ mod tests {
         let wt_repo = tmp.path().join("modules").join("all2api-feat");
         let wt_sub = wt_repo.join("third_party").join("qoder2api");
 
-        std::fs::create_dir_all(main_repo.join(".git/modules/third_party/qoder2api/modules/vendor/inner")).unwrap();
+        std::fs::create_dir_all(
+            main_repo.join(".git/modules/third_party/qoder2api/modules/vendor/inner"),
+        )
+        .unwrap();
         std::fs::create_dir_all(main_repo.join(".git/worktrees/feat/modules/qoder2api")).unwrap();
         std::fs::create_dir_all(&sub_repo).unwrap();
         std::fs::create_dir_all(&nested_sub).unwrap();
@@ -870,9 +869,15 @@ mod tests {
             }
         );
 
-        assert_eq!(standalone_recent_target(&main_repo), Some(main_repo.clone()));
+        assert_eq!(
+            standalone_recent_target(&main_repo),
+            Some(main_repo.clone())
+        );
         assert_eq!(standalone_recent_target(&sub_repo), Some(main_repo.clone()));
-        assert_eq!(standalone_recent_target(&nested_sub), Some(main_repo.clone()));
+        assert_eq!(
+            standalone_recent_target(&nested_sub),
+            Some(main_repo.clone())
+        );
         assert_eq!(standalone_recent_target(&wt_repo), Some(main_repo.clone()));
         assert_eq!(standalone_recent_target(&wt_sub), Some(main_repo.clone()));
 

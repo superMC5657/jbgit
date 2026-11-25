@@ -54,8 +54,7 @@ impl SnapshotCommitCache {
         load_commit_bodies: bool,
     ) -> Self {
         let oid_to_index = reuse_index.unwrap_or_else(|| {
-            let mut map =
-                FxHashMap::with_capacity_and_hasher(commits.len(), Default::default());
+            let mut map = FxHashMap::with_capacity_and_hasher(commits.len(), Default::default());
             for (idx, c) in commits.iter().enumerate() {
                 map.entry(c.oid).or_insert(idx);
             }
@@ -131,9 +130,15 @@ fn resolve_rebase_replayed_label(
     git_dir: &Path,
 ) -> Option<String> {
     match state {
-        jbgit_core::RepositoryState::Rebase { branch: Some(b), .. }
-        | jbgit_core::RepositoryState::RebaseInteractive { branch: Some(b), .. }
-        | jbgit_core::RepositoryState::RebaseMerge { branch: Some(b), .. } => {
+        jbgit_core::RepositoryState::Rebase {
+            branch: Some(b), ..
+        }
+        | jbgit_core::RepositoryState::RebaseInteractive {
+            branch: Some(b), ..
+        }
+        | jbgit_core::RepositoryState::RebaseMerge {
+            branch: Some(b), ..
+        } => {
             return Some(b.clone());
         }
         _ => {}
@@ -219,12 +224,8 @@ pub(crate) fn load_conflict_document_sync(
             (raw_our, raw_their)
         };
 
-        let ours_info = yours_entry
-            .as_ref()
-            .map(|e| side_info_from_entry(repo, e));
-        let theirs_info = theirs_entry
-            .as_ref()
-            .map(|e| side_info_from_entry(repo, e));
+        let ours_info = yours_entry.as_ref().map(|e| side_info_from_entry(repo, e));
+        let theirs_info = theirs_entry.as_ref().map(|e| side_info_from_entry(repo, e));
         let special_ours_label = replayed_label
             .clone()
             .unwrap_or_else(|| if is_reversed { "replayed" } else { "HEAD" }.to_string());
@@ -460,7 +461,8 @@ pub fn load_repo_snapshot_incremental_sync(
                 prev,
             )?
         {
-            let idx = (kind == SnapshotLoadKind::IncrementalNoOp).then(|| prev.oid_to_index.clone());
+            let idx =
+                (kind == SnapshotLoadKind::IncrementalNoOp).then(|| prev.oid_to_index.clone());
             (commits, has_more, kind, idx)
         } else {
             let reuse = match mode {
@@ -707,7 +709,10 @@ fn collect_remotes(repo: &Repository) -> Vec<RemoteInfo> {
         .map(|name| {
             let (fetch_url, push_url, push_refspecs) = match repo.find_remote(name) {
                 Ok(r) => (
-                    r.url().ok().filter(|u| !u.is_empty()).map(ToString::to_string),
+                    r.url()
+                        .ok()
+                        .filter(|u| !u.is_empty())
+                        .map(ToString::to_string),
                     r.pushurl()
                         .ok()
                         .flatten()

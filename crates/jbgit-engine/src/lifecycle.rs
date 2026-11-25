@@ -71,7 +71,9 @@ where
     F: FnMut(String) + Send,
 {
     if req.url.trim().is_empty() {
-        return Err(EngineError::Other("Repository URL cannot be empty".to_string()));
+        return Err(EngineError::Other(
+            "Repository URL cannot be empty".to_string(),
+        ));
     }
     if req.target_dir.as_os_str().is_empty() {
         return Err(EngineError::Other(

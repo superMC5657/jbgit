@@ -15,7 +15,9 @@ pub use jbgit_config::{
     JbgitConfig, JbgitConfigOverlay, KeymapSection, KeymapSectionOverlay, LanguagePref,
     LayoutSection, PairRatio, ThemeFlavor, TripleRatio,
 };
-pub use keymap_config::{KeyBindingConfig, KeymapConfig, KeymapConfigOverlay, KeymapPreset, KeymapScope};
+pub use keymap_config::{
+    KeyBindingConfig, KeymapConfig, KeymapConfigOverlay, KeymapPreset, KeymapScope,
+};
 pub use theme_config::{
     GlyphsSection, GraphThemeSection, PaletteSection, RefStyleConfig, RefsSection, ThemeConfig,
     ThemeConfigOverlay, ThemeFlavorData, TrackColorConfig,
@@ -26,8 +28,7 @@ pub const DEFAULT_JBGIT_TOML: &str = include_str!("defaults/jbgit.default.toml")
 pub const BUILTIN_THEME_DARCULA_TOML: &str = include_str!("defaults/themes/darcula.toml");
 pub const BUILTIN_THEME_CATPPUCCIN_MOCHA_TOML: &str =
     include_str!("defaults/themes/catppuccin-mocha.toml");
-pub const BUILTIN_THEME_GRUVBOX_DARK_TOML: &str =
-    include_str!("defaults/themes/gruvbox-dark.toml");
+pub const BUILTIN_THEME_GRUVBOX_DARK_TOML: &str = include_str!("defaults/themes/gruvbox-dark.toml");
 
 pub const BUILTIN_KEYMAP_DEFAULT_TOML: &str = include_str!("defaults/keymaps/default.toml");
 pub const BUILTIN_KEYMAP_JETBRAINS_TOML: &str = include_str!("defaults/keymaps/jetbrains.toml");
@@ -97,7 +98,11 @@ impl AppConfig {
         if let Some(tss) = jbgit.keymap.tree_speed_search {
             keymap.tree_speed_search = tss;
         }
-        Self { jbgit, theme, keymap }
+        Self {
+            jbgit,
+            theme,
+            keymap,
+        }
     }
 
     /// Loads the configuration with layered precedence:
@@ -131,7 +136,12 @@ impl AppConfig {
             let mut jbgit_km_tss: Option<bool> = None;
 
             let mut apply_jbgit = |ov: &JbgitConfigOverlay| {
-                if ov.general.as_ref().and_then(|g| g.flavor.as_ref()).is_some() {
+                if ov
+                    .general
+                    .as_ref()
+                    .and_then(|g| g.flavor.as_ref())
+                    .is_some()
+                {
                     flags.jbgit_flavor_set = true;
                 }
                 if ov.graph.as_ref().and_then(|g| g.glyph_mode).is_some() {
@@ -257,7 +267,12 @@ impl AppConfig {
         let mut flags = OverlayFlags::default();
         if allow_config_toml_alias {
             load_toml_overlay::<JbgitConfigOverlay>(&dir.join("config.toml"), |ov| {
-                if ov.general.as_ref().and_then(|g| g.flavor.as_ref()).is_some() {
+                if ov
+                    .general
+                    .as_ref()
+                    .and_then(|g| g.flavor.as_ref())
+                    .is_some()
+                {
                     flags.jbgit_flavor_set = true;
                 }
                 if ov.graph.as_ref().and_then(|g| g.glyph_mode).is_some() {
@@ -267,7 +282,12 @@ impl AppConfig {
             });
         }
         load_toml_overlay::<JbgitConfigOverlay>(&dir.join("jbgit.toml"), |ov| {
-            if ov.general.as_ref().and_then(|g| g.flavor.as_ref()).is_some() {
+            if ov
+                .general
+                .as_ref()
+                .and_then(|g| g.flavor.as_ref())
+                .is_some()
+            {
                 flags.jbgit_flavor_set = true;
             }
             if ov.graph.as_ref().and_then(|g| g.glyph_mode).is_some() {
@@ -309,9 +329,9 @@ impl AppConfig {
             Some("theme" | "theme.toml" | "themes/darcula" | "themes/darcula.toml" | "darcula") => {
                 BUILTIN_THEME_DARCULA_TOML
             }
-            Some("themes/catppuccin-mocha" | "themes/catppuccin-mocha.toml" | "catppuccin-mocha") => {
-                BUILTIN_THEME_CATPPUCCIN_MOCHA_TOML
-            }
+            Some(
+                "themes/catppuccin-mocha" | "themes/catppuccin-mocha.toml" | "catppuccin-mocha",
+            ) => BUILTIN_THEME_CATPPUCCIN_MOCHA_TOML,
             Some("themes/gruvbox-dark" | "themes/gruvbox-dark.toml" | "gruvbox-dark") => {
                 BUILTIN_THEME_GRUVBOX_DARK_TOML
             }
@@ -392,8 +412,8 @@ impl AppConfig {
         let path = jbgit_dir.join("jbgit.toml");
 
         let mut root = if path.is_file() {
-            let existing = fs::read_to_string(&path)
-                .with_context(|| format!("Failed to read {:?}", path))?;
+            let existing =
+                fs::read_to_string(&path).with_context(|| format!("Failed to read {:?}", path))?;
             existing
                 .parse::<toml::Table>()
                 .unwrap_or_else(|_| toml::Table::new())
@@ -466,7 +486,10 @@ load_commit_bodies = false
         cfg.jbgit.merge_overlay(&perf_ov);
         let engine_cfg = cfg.jbgit.performance.to_engine_config();
         assert_eq!(engine_cfg.large_index_entries, 5000);
-        assert_eq!(engine_cfg.worktree_renames, jbgit_engine::StatusScanMode::Never);
+        assert_eq!(
+            engine_cfg.worktree_renames,
+            jbgit_engine::StatusScanMode::Never
+        );
         assert_eq!(
             engine_cfg.recurse_untracked_dirs,
             jbgit_engine::StatusScanMode::Auto
@@ -606,7 +629,10 @@ default_tab = "branches"
         assert_eq!(cfg.jbgit.layout.stash_preview_ratio.weights(), [1, 2]);
         assert_eq!(cfg.jbgit.layout.console_ratio.weights(), [2, 3]);
         assert_eq!(cfg.jbgit.layout.file_history_ratio.weights(), [2, 3]);
-        assert_eq!(cfg.jbgit.layout.file_history_vertical_ratio.weights(), [2, 3]);
+        assert_eq!(
+            cfg.jbgit.layout.file_history_vertical_ratio.weights(),
+            [2, 3]
+        );
 
         let overlay_toml = r#"
 [layout]
@@ -631,7 +657,10 @@ file_history_vertical_ratio = [1, 2]
         assert_eq!(cfg.jbgit.layout.commit_left_ratio.weights(), [4, 1]);
         assert_eq!(cfg.jbgit.layout.stash_preview_ratio.weights(), [2, 3]);
         assert_eq!(cfg.jbgit.layout.file_history_ratio.weights(), [1, 3]);
-        assert_eq!(cfg.jbgit.layout.file_history_vertical_ratio.weights(), [1, 2]);
+        assert_eq!(
+            cfg.jbgit.layout.file_history_vertical_ratio.weights(),
+            [1, 2]
+        );
         // Unspecified ratios keep defaults
         assert_eq!(cfg.jbgit.layout.stash_ratio.weights(), [2, 3]);
         assert_eq!(cfg.jbgit.layout.console_ratio.weights(), [2, 3]);
@@ -948,11 +977,21 @@ prepend_keymap = [
         let ov: KeymapConfigOverlay = toml::from_str(ov_toml).unwrap();
         cfg.keymap.merge_overlay(&ov);
 
-        let global_refresh = cfg.keymap.all_keys_for(&[KeymapScope::Global], &KeyAction::Refresh);
-        assert!(!global_refresh.contains(&"r".to_string()), "{global_refresh:?}");
-        assert!(global_refresh.contains(&"F5".to_string()), "{global_refresh:?}");
+        let global_refresh = cfg
+            .keymap
+            .all_keys_for(&[KeymapScope::Global], &KeyAction::Refresh);
+        assert!(
+            !global_refresh.contains(&"r".to_string()),
+            "{global_refresh:?}"
+        );
+        assert!(
+            global_refresh.contains(&"F5".to_string()),
+            "{global_refresh:?}"
+        );
 
-        let log_down = cfg.keymap.all_keys_for(&[KeymapScope::Log], &KeyAction::CursorDown);
+        let log_down = cfg
+            .keymap
+            .all_keys_for(&[KeymapScope::Log], &KeyAction::CursorDown);
         assert!(!log_down.contains(&"↓".to_string()), "{log_down:?}");
         assert!(log_down.contains(&"j".to_string()), "{log_down:?}");
 
@@ -1285,9 +1324,7 @@ prepend_keymap = [
         // 5. Vim [diff] marks <Space> -> ToggleStage as show_hint = Some(false) while keeping it bound
         let vim = KeymapConfig::for_preset(KeymapPreset::Vim);
         assert!(vim.diff.key_bindings.iter().any(|b| {
-            b.run == KeyAction::ToggleStage
-                && b.on == ["<Space>"]
-                && b.show_hint == Some(false)
+            b.run == KeyAction::ToggleStage && b.on == ["<Space>"] && b.show_hint == Some(false)
         }));
         assert!(vim.diff.key_bindings.iter().any(|b| {
             b.run == KeyAction::StageSelection && b.on == ["s"] && b.show_hint == Some(true)
@@ -1365,7 +1402,11 @@ gutter_width = 4
             &default_cfg.console,
         ] {
             for b in &list.key_bindings {
-                assert!(!matches!(b.run, KeyAction::Unknown(_)), "unknown: {:?}", b.run);
+                assert!(
+                    !matches!(b.run, KeyAction::Unknown(_)),
+                    "unknown: {:?}",
+                    b.run
+                );
             }
         }
 
@@ -1417,7 +1458,8 @@ gutter_width = 4
         assert_eq!(loaded.theme.palette, defaults.theme.palette);
         assert_eq!(loaded.theme.refs, defaults.theme.refs);
         assert_eq!(loaded.theme.graph, defaults.theme.graph);
-        let loaded_pal = crate::theme::ThemePalette::from_config_with_truecolor(&loaded.theme, true);
+        let loaded_pal =
+            crate::theme::ThemePalette::from_config_with_truecolor(&loaded.theme, true);
         let default_pal =
             crate::theme::ThemePalette::from_config_with_truecolor(&defaults.theme, true);
         assert_eq!(loaded_pal.bg_canvas, default_pal.bg_canvas);
@@ -1505,13 +1547,17 @@ fg_primary = "#EEEEEE"
         )
         .unwrap();
 
-        let cfg = AppConfig::load_from_layers(&[(global_dir.path(), false), (repo_dir.path(), true)]);
+        let cfg =
+            AppConfig::load_from_layers(&[(global_dir.path(), false), (repo_dir.path(), true)]);
         let pal = crate::theme::ThemePalette::from_config_with_truecolor(&cfg.theme, true);
         assert_eq!(pal.bg_canvas, ratatui::style::Color::Rgb(0x11, 0x22, 0x33));
         assert_eq!(pal.bg_canvas_rgb, (0x11, 0x22, 0x33));
         assert_eq!(pal.bg_panel, ratatui::style::Color::Rgb(0x22, 0x33, 0x44));
         assert_eq!(pal.fg_primary, ratatui::style::Color::Rgb(0xEE, 0xEE, 0xEE));
-        assert_eq!(pal.ref_head.icon, ratatui::style::Color::Rgb(0xAA, 0xBB, 0xCC));
+        assert_eq!(
+            pal.ref_head.icon,
+            ratatui::style::Color::Rgb(0xAA, 0xBB, 0xCC)
+        );
         assert_eq!(pal.track_rgbs[0], ((0x12, 0x34, 0x56), (0x10, 0x20, 0x30)));
         // Non-overridden track 1 stays Darcula
         assert_eq!(pal.track_rgbs[1], ((0x57, 0xD1, 0x85), (0x37, 0x52, 0x39)));
@@ -1526,11 +1572,7 @@ border_focused = "#040506"
 "##,
         )
         .unwrap();
-        fs::write(
-            repo_dir.path().join("theme.toml"),
-            "flavor = \"ocean\"\n",
-        )
-        .unwrap();
+        fs::write(repo_dir.path().join("theme.toml"), "flavor = \"ocean\"\n").unwrap();
         let ocean_cfg =
             AppConfig::load_from_layers(&[(global_dir.path(), false), (repo_dir.path(), true)]);
         assert_eq!(
@@ -1713,10 +1755,12 @@ prepend_keymap = [
         let defaults = AppConfig::load_defaults();
         assert_eq!(defaults.jbgit.worktree.default_parent, None);
 
-        let parsed_empty: JbgitConfig = toml::from_str("[worktree]\ndefault_parent = \"\"\n").unwrap();
+        let parsed_empty: JbgitConfig =
+            toml::from_str("[worktree]\ndefault_parent = \"\"\n").unwrap();
         assert_eq!(parsed_empty.worktree.default_parent, None);
 
-        let parsed_ws: JbgitConfig = toml::from_str("[worktree]\ndefault_parent = \"   \"\n").unwrap();
+        let parsed_ws: JbgitConfig =
+            toml::from_str("[worktree]\ndefault_parent = \"   \"\n").unwrap();
         assert_eq!(parsed_ws.worktree.default_parent, None);
 
         let parsed_set: JbgitConfig =

@@ -180,9 +180,9 @@ impl VisibleGraph {
     ) -> Self {
         let can_collapse =
             !options.first_parent_only && (args.filter.is_none() || args.branch_only_filter);
-        let collapse = args.collapse.filter(|c| {
-            can_collapse && c.state.is_active() && !c.segments.is_empty()
-        });
+        let collapse = args
+            .collapse
+            .filter(|c| can_collapse && c.state.is_active() && !c.segments.is_empty());
         let flags = collapse.map(|c| {
             let mut f = c.state.collapsed_flags(c.segments);
             if let Some(filter) = args.filter {
@@ -1033,17 +1033,16 @@ mod tests {
             .map(|r| pg.linear.commit(vis.linear.perm_id(r)).oid)
             .collect();
         assert_eq!(oids, vec![oid(0), oid(4)]);
-        assert_eq!(vis.linear.down_edges(0)[0].edge_type, GraphEdgeType::Collapsed);
+        assert_eq!(
+            vis.linear.down_edges(0)[0].edge_type,
+            GraphEdgeType::Collapsed
+        );
     }
 
     #[test]
     fn first_parent_only_stops_at_unloaded_first_parent_without_following_second_parent() {
         // Merge M (0) has parents [unloaded 99, loaded 1]; 1 -> 2.
-        let commits = vec![
-            raw(0, &[99, 1], 30),
-            raw(1, &[2], 20),
-            raw(2, &[], 10),
-        ];
+        let commits = vec![raw(0, &[99, 1], 30), raw(1, &[2], 20), raw(2, &[], 10)];
         let refs = vec![branch_ref("main", 0)];
         let pg = PermanentGraph::build(&commits, &refs, Some(oid(0)));
 

@@ -83,7 +83,13 @@ pub struct AnnotateState {
 
 impl AnnotateState {
     pub fn new(key: BlameKey, diff_context: DiffContext, side_by_side: bool) -> Self {
-        Self::with_diff_prefs(key, diff_context, WhitespaceMode::Default, false, side_by_side)
+        Self::with_diff_prefs(
+            key,
+            diff_context,
+            WhitespaceMode::Default,
+            false,
+            side_by_side,
+        )
     }
 
     pub fn with_diff_prefs(
@@ -198,7 +204,11 @@ impl AnnotateState {
             return;
         }
         self.cursor = self.cursor.min(len - 1);
-        let vh = self.scroll.viewport_height().filter(|&h| h > 0).unwrap_or(24);
+        let vh = self
+            .scroll
+            .viewport_height()
+            .filter(|&h| h > 0)
+            .unwrap_or(24);
         self.scroll.ensure_visible(self.cursor, len, vh);
     }
 

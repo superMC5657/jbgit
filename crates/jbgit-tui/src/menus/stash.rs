@@ -35,7 +35,11 @@ fn stash_spec<'a>(state: &'a AppState, btn: StashButton) -> StashActionSpec<'a> 
         StashButton::Apply => StashActionSpec {
             label: i18n.t("menu.stash.apply"),
             mnemonic: 'a',
-            shortcut: catalog::shortcut_for_action(state, &[KeymapScope::Stash], &KeyAction::StashApply),
+            shortcut: catalog::shortcut_for_action(
+                state,
+                &[KeymapScope::Stash],
+                &KeyAction::StashApply,
+            ),
             disabled_reason: no_stash,
             actions: op(GitOp::StashApply {
                 index,
@@ -46,7 +50,11 @@ fn stash_spec<'a>(state: &'a AppState, btn: StashButton) -> StashActionSpec<'a> 
         StashButton::Pop => StashActionSpec {
             label: i18n.t("menu.stash.pop"),
             mnemonic: 'p',
-            shortcut: catalog::shortcut_for_action(state, &[KeymapScope::Stash], &KeyAction::StashPop),
+            shortcut: catalog::shortcut_for_action(
+                state,
+                &[KeymapScope::Stash],
+                &KeyAction::StashPop,
+            ),
             disabled_reason: no_stash,
             actions: op(GitOp::StashApply {
                 index,
@@ -57,11 +65,18 @@ fn stash_spec<'a>(state: &'a AppState, btn: StashButton) -> StashActionSpec<'a> 
         StashButton::Branch => StashActionSpec {
             label: i18n.t("menu.stash.branch_from_stash"),
             mnemonic: 'b',
-            shortcut: catalog::shortcut_for_action(state, &[KeymapScope::Stash], &KeyAction::StashBranch),
+            shortcut: catalog::shortcut_for_action(
+                state,
+                &[KeymapScope::Stash],
+                &KeyAction::StashBranch,
+            ),
             disabled_reason: no_stash,
             actions: dialog(Dialog::Input(InputDialog::new(
                 i18n.t("dialog.stash.unstash_title"),
-                i18n.t_fmt("dialog.stash.unstash_prompt", &[("label", &ellipsize(&label, 40))]),
+                i18n.t_fmt(
+                    "dialog.stash.unstash_prompt",
+                    &[("label", &ellipsize(&label, 40))],
+                ),
                 "",
                 InputValidation::RefName {
                     what: "Branch",
@@ -73,7 +88,11 @@ fn stash_spec<'a>(state: &'a AppState, btn: StashButton) -> StashActionSpec<'a> 
         StashButton::New => StashActionSpec {
             label: i18n.t("menu.stash.new_stash"),
             mnemonic: 'n',
-            shortcut: catalog::shortcut_for_action(state, &[KeymapScope::Stash], &KeyAction::StashNew),
+            shortcut: catalog::shortcut_for_action(
+                state,
+                &[KeymapScope::Stash],
+                &KeyAction::StashNew,
+            ),
             disabled_reason: None,
             actions: dialog(Dialog::StashPush(crate::dialogs::StashPushDialog::new(
                 "",
@@ -81,30 +100,36 @@ fn stash_spec<'a>(state: &'a AppState, btn: StashButton) -> StashActionSpec<'a> 
                 Vec::new(),
             ))),
         },
-        StashButton::Drop => {
-            StashActionSpec {
-                label: i18n.t("menu.stash.drop"),
-                mnemonic: 'd',
-                shortcut: catalog::all_shortcuts_for_action(state, &[KeymapScope::Stash], &KeyAction::StashDrop),
-                disabled_reason: no_stash,
-                actions: dialog(Dialog::Choice(ChoiceDialog::confirm(
-                    i18n.t("dialog.stash.drop_title"),
-                    vec![
-                        i18n.t_fmt("dialog.stash.drop_prompt", &[("label", &label)]),
-                        i18n.t("dialog.stash.drop_warn").into(),
-                    ],
-                    i18n.t("dialog.stash.drop_btn"),
-                    i18n.cancel(),
-                    op(GitOp::StashDrop { index }),
-                ))),
-            }
-        }
+        StashButton::Drop => StashActionSpec {
+            label: i18n.t("menu.stash.drop"),
+            mnemonic: 'd',
+            shortcut: catalog::all_shortcuts_for_action(
+                state,
+                &[KeymapScope::Stash],
+                &KeyAction::StashDrop,
+            ),
+            disabled_reason: no_stash,
+            actions: dialog(Dialog::Choice(ChoiceDialog::confirm(
+                i18n.t("dialog.stash.drop_title"),
+                vec![
+                    i18n.t_fmt("dialog.stash.drop_prompt", &[("label", &label)]),
+                    i18n.t("dialog.stash.drop_warn").into(),
+                ],
+                i18n.t("dialog.stash.drop_btn"),
+                i18n.cancel(),
+                op(GitOp::StashDrop { index }),
+            ))),
+        },
         StashButton::Clear => {
             let count_s = stashes.len().to_string();
             StashActionSpec {
                 label: i18n.t("menu.stash.clear_all"),
                 mnemonic: 'c',
-                shortcut: catalog::shortcut_for_action(state, &[KeymapScope::Stash], &KeyAction::StashClear),
+                shortcut: catalog::shortcut_for_action(
+                    state,
+                    &[KeymapScope::Stash],
+                    &KeyAction::StashClear,
+                ),
                 disabled_reason: stashes.is_empty().then(|| i18n.t("menu.stash.no_stashes")),
                 actions: dialog(Dialog::Choice(ChoiceDialog::confirm(
                     i18n.t("dialog.stash.clear_title"),

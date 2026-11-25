@@ -136,7 +136,10 @@ fn split_diff_horizontal_scroll_and_soft_wrap_cjk_safe() {
     assert!(ts.state().log.details.diff.horiz_scroll > 0);
     let scrolled = screen_text(&ts.render(140, 34));
     assert!(
-        scrolled.contains(&format!("Col +{}", ts.state().log.details.diff.horiz_scroll)),
+        scrolled.contains(&format!(
+            "Col +{}",
+            ts.state().log.details.diff.horiz_scroll
+        )),
         "expected Col +N indicator:\n{scrolled}"
     );
     assert!(
@@ -155,7 +158,10 @@ fn split_diff_horizontal_scroll_and_soft_wrap_cjk_safe() {
     assert_eq!(ts.state().log.details.diff.horiz_scroll, 0);
     let wrapped = screen_text(&ts.render(140, 34));
     assert!(!wrapped.contains("Col +"), "{wrapped}");
-    assert!(!wrapped.contains('…'), "soft wrap must not ellipsize:\n{wrapped}");
+    assert!(
+        !wrapped.contains('…'),
+        "soft wrap must not ellipsize:\n{wrapped}"
+    );
     let left_col: String = wrapped
         .lines()
         .filter_map(|l| l.split_once('│').map(|(a, _)| a.replace(' ', "")))
@@ -227,7 +233,10 @@ fn diff_inline_search_incremental_navigation_and_esc_priority() {
     assert_eq!(ts.state().log.details.diff.search.current, 0);
     let searching_screen = screen_text(&ts.render(140, 24));
     assert!(searching_screen.contains("[1/3]"), "{searching_screen}");
-    assert!(searching_screen.contains("targetword"), "{searching_screen}");
+    assert!(
+        searching_screen.contains("targetword"),
+        "{searching_screen}"
+    );
 
     // Confirm query with Enter -> editing stops, search remains active for n/N.
     ts.send_key(KeyCode::Enter, KeyModifiers::NONE);
@@ -458,7 +467,11 @@ fn diff_whitespace_mode_cycling_and_stage_partial_staging_guard() {
 
     // Context menu disables Stage Hunk / Stage Hunk or Lines.
     let hunk_menu = crate::menus::stage_hunk_menu_items(ts.state(), 0);
-    assert!(find_item(&hunk_menu, "Stage Hunk").disabled_reason.is_some());
+    assert!(
+        find_item(&hunk_menu, "Stage Hunk")
+            .disabled_reason
+            .is_some()
+    );
 
     // Attempting to stage selection emits no ApplyStageBuffer and sets status notice.
     let _ = ts.take_requests();
@@ -809,7 +822,10 @@ fn diff_new_keybindings_resolve_without_shadowing_across_all_presets() {
 
             // Global `b` (Branches popup) must NOT be shadowed by Diff whitespace toggle!
             if !zoomed {
-                let m_b = check_scopes(&[KeyEvent::new(KeyCode::Char('b'), KeyModifiers::NONE)], ts.state());
+                let m_b = check_scopes(
+                    &[KeyEvent::new(KeyCode::Char('b'), KeyModifiers::NONE)],
+                    ts.state(),
+                );
                 assert!(
                     matches!(m_b, MatchResult::Exact(b) if b.run == KeyAction::ToggleBranchesPopup),
                     "preset={preset:?} tab={tab:?} pane={pane:?}: `b` must remain ToggleBranchesPopup"
@@ -817,7 +833,10 @@ fn diff_new_keybindings_resolve_without_shadowing_across_all_presets() {
             }
             // Without an active diff search, `n` must NOT shadow Log `new_branch` or Stash `stash_new`!
             if !zoomed && tab == WorkspaceTab::Stash {
-                let m_n = check_scopes(&[KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE)], ts.state());
+                let m_n = check_scopes(
+                    &[KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE)],
+                    ts.state(),
+                );
                 assert!(
                     matches!(m_n, MatchResult::Exact(b) if b.run == KeyAction::StashNew),
                     "preset={preset:?}: `n` in Stash diff without active search must remain StashNew"
@@ -949,11 +968,26 @@ fn file_history_diff_supports_search_whitespace_and_wrap_without_breaking_commit
     // Esc closes search first without closing File History modal.
     ts.send_key(KeyCode::Esc, KeyModifiers::NONE);
     assert!(ts.state().modal_stack.file_history().is_some());
-    assert!(!ts.state().modal_stack.file_history().unwrap().diff.search.active);
+    assert!(
+        !ts.state()
+            .modal_stack
+            .file_history()
+            .unwrap()
+            .diff
+            .search
+            .active
+    );
 
     // Toggle soft wrap and cycle whitespace in File History diff.
     ts.send_key(KeyCode::Char('W'), KeyModifiers::SHIFT);
-    assert!(ts.state().modal_stack.file_history().unwrap().diff.soft_wrap);
+    assert!(
+        ts.state()
+            .modal_stack
+            .file_history()
+            .unwrap()
+            .diff
+            .soft_wrap
+    );
     ts.send_key(KeyCode::Char('b'), KeyModifiers::NONE);
     assert_eq!(
         ts.state()

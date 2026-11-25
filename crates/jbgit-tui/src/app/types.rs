@@ -183,8 +183,7 @@ impl<'a> RenderContext<'a> {
     }
 
     pub fn diff_context_label(&self, ctx: jbgit_core::DiffContext) -> &str {
-        self.i18n
-            .map_or(ctx.label(), |i| i.diff_context_label(ctx))
+        self.i18n.map_or(ctx.label(), |i| i.diff_context_label(ctx))
     }
 
     pub fn diff_whitespace_label(&self, mode: jbgit_core::WhitespaceMode) -> &str {
@@ -214,8 +213,7 @@ impl<'a> RenderContext<'a> {
     }
 
     pub fn diff_syntax_enabled(&self) -> bool {
-        self.config
-            .is_none_or(|c| c.jbgit.diff.syntax_highlight)
+        self.config.is_none_or(|c| c.jbgit.diff.syntax_highlight)
     }
 
     pub fn diff_tab_size(&self) -> usize {
@@ -270,7 +268,9 @@ impl ContextMenuItem {
     ) -> Self {
         match result {
             Ok(actions) => Self::run(label, mnemonic, shortcut, actions),
-            Err(reason) => Self::run(label, mnemonic, shortcut, Vec::new()).enabled_if(false, reason),
+            Err(reason) => {
+                Self::run(label, mnemonic, shortcut, Vec::new()).enabled_if(false, reason)
+            }
         }
     }
 
@@ -413,9 +413,7 @@ impl ConflictInlineEditor {
     }
 
     fn byte_idx_at_char(s: &str, char_idx: usize) -> usize {
-        s.char_indices()
-            .nth(char_idx)
-            .map_or(s.len(), |(b, _)| b)
+        s.char_indices().nth(char_idx).map_or(s.len(), |(b, _)| b)
     }
 
     pub fn insert_char(&mut self, ch: char) {
@@ -606,7 +604,8 @@ impl ConflictMergeState {
             return;
         };
         if let Some(viewport_h) = self.scroll.viewport_height() {
-            self.scroll.ensure_visible(first_row, total_rows, viewport_h);
+            self.scroll
+                .ensure_visible(first_row, total_rows, viewport_h);
         } else {
             self.scroll.set_offset(first_row);
         }

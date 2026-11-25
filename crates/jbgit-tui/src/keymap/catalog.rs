@@ -668,7 +668,9 @@ pub fn execute_action(run: &KeyAction, state: &AppState) -> Option<Vec<Action>> 
                     state.i18n.t("toast.no_submodules").to_string(),
                 )]);
             }
-            Some(vec![Action::RunGitOp(GitOp::SubmoduleUpdate { path: None })])
+            Some(vec![Action::RunGitOp(GitOp::SubmoduleUpdate {
+                path: None,
+            })])
         }
         KeyAction::Unshallow => Some(vec![Action::PromptUnshallow]),
         KeyAction::LogLoadMore => Some(vec![Action::LoadMoreCommits]),
@@ -919,13 +921,7 @@ pub fn execute_action(run: &KeyAction, state: &AppState) -> Option<Vec<Action>> 
                     ""
                 };
                 return Some(vec![Action::OpenDialog(Box::new(
-                    crate::dialogs::new_branch_dialog(
-                        name,
-                        name,
-                        existing,
-                        default,
-                        &state.i18n,
-                    ),
+                    crate::dialogs::new_branch_dialog(name, name, existing, default, &state.i18n),
                 ))]);
             }
             if state.active_tab == WorkspaceTab::Log
@@ -936,13 +932,7 @@ pub fn execute_action(run: &KeyAction, state: &AppState) -> Option<Vec<Action>> 
                 let short = commit.oid.short();
                 let existing = local_names(state);
                 return Some(vec![Action::OpenDialog(Box::new(
-                    crate::dialogs::new_branch_dialog(
-                        &oid_str,
-                        &short,
-                        existing,
-                        "",
-                        &state.i18n,
-                    ),
+                    crate::dialogs::new_branch_dialog(&oid_str, &short, existing, "", &state.i18n),
                 ))]);
             }
             Some(vec![Action::OpenDialog(Box::new(
@@ -1165,13 +1155,20 @@ pub fn execute_action(run: &KeyAction, state: &AppState) -> Option<Vec<Action>> 
 
         // ── Stash ──
         KeyAction::StashNew => Some(crate::menus::stash_button_actions(state, StashButton::New)),
-        KeyAction::StashApply => Some(crate::menus::stash_button_actions(state, StashButton::Apply)),
+        KeyAction::StashApply => Some(crate::menus::stash_button_actions(
+            state,
+            StashButton::Apply,
+        )),
         KeyAction::StashPop => Some(crate::menus::stash_button_actions(state, StashButton::Pop)),
         KeyAction::StashDrop => Some(crate::menus::stash_button_actions(state, StashButton::Drop)),
-        KeyAction::StashBranch => {
-            Some(crate::menus::stash_button_actions(state, StashButton::Branch))
-        }
-        KeyAction::StashClear => Some(crate::menus::stash_button_actions(state, StashButton::Clear)),
+        KeyAction::StashBranch => Some(crate::menus::stash_button_actions(
+            state,
+            StashButton::Branch,
+        )),
+        KeyAction::StashClear => Some(crate::menus::stash_button_actions(
+            state,
+            StashButton::Clear,
+        )),
     }
 }
 
@@ -1279,7 +1276,8 @@ pub fn all_shortcuts_for_action(
     action: &KeyAction,
 ) -> Option<String> {
     let active = super::actions::scopes_for_context(state);
-    let all = super::resolve::resolve_all_action_shortcuts(state, &active, preferred_scopes, action);
+    let all =
+        super::resolve::resolve_all_action_shortcuts(state, &active, preferred_scopes, action);
     if all.is_empty() {
         None
     } else {
@@ -1694,7 +1692,8 @@ pub fn annotate_selected_file(state: &AppState) -> Option<Vec<Action>> {
         && matches!(
             state.focused_pane,
             PaneId::CommitChangesTree | PaneId::CommitDiffPreview
-        ) {
+        )
+    {
         annotate_stage_entry(state)
     } else {
         return Some(Vec::new());
@@ -1756,8 +1755,8 @@ pub fn annotate_stage_entry_at(state: &AppState, idx: usize) -> CommandResult {
     };
     let untracked = group == Some(jbgit_core::StageNodeKind::Untracked)
         || entry.kind == FileStatusKind::Untracked;
-    let ignored = group == Some(jbgit_core::StageNodeKind::Ignored)
-        || entry.kind == FileStatusKind::Ignored;
+    let ignored =
+        group == Some(jbgit_core::StageNodeKind::Ignored) || entry.kind == FileStatusKind::Ignored;
     if untracked || ignored {
         return Err(i18n.t("menu.stage.only_tracked_history").into());
     }

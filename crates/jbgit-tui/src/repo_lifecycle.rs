@@ -324,11 +324,7 @@ pub fn default_clone_base_dir(state: &AppState, explicit: Option<&Path>) -> Path
         return dir.to_path_buf();
     }
     if let Some(snap) = state.repo_snapshot.as_ref() {
-        return snap
-            .workdir
-            .parent()
-            .unwrap_or(&snap.workdir)
-            .to_path_buf();
+        return snap.workdir.parent().unwrap_or(&snap.workdir).to_path_buf();
     }
     if state.repo_path_display.is_dir() {
         state.repo_path_display.clone()
@@ -339,11 +335,7 @@ pub fn default_clone_base_dir(state: &AppState, explicit: Option<&Path>) -> Path
 
 /// Builds the 3-choice CRLF pre-commit warning dialog (`Fix & Commit` /
 /// `Commit As Is` / `Don't warn again`).
-pub fn crlf_warning_dialog(
-    i18n: &I18n,
-    request: CommitRequest,
-    files: &[String],
-) -> Dialog {
+pub fn crlf_warning_dialog(i18n: &I18n, request: CommitRequest, files: &[String]) -> Dialog {
     let count_s = files.len().to_string();
     let mut body = vec![
         i18n.t_fmt("dialog.crlf.body", &[("count", &count_s)]),
@@ -472,9 +464,12 @@ pub fn render_welcome_modal(
         return;
     }
     let git_summary = state.git_executable_summary();
-    let extra_rows = u16::from(git_summary.is_some())
-        + u16::from(ws.initializing || ws.error.is_some());
-    let w = screen.width.saturating_sub(4).clamp(28.min(screen.width), 78);
+    let extra_rows =
+        u16::from(git_summary.is_some()) + u16::from(ws.initializing || ws.error.is_some());
+    let w = screen
+        .width
+        .saturating_sub(4)
+        .clamp(28.min(screen.width), 78);
     let h = (11 + extra_rows).min(screen.height.saturating_sub(2).max(10));
     let rect = Rect::new(
         screen.x + screen.width.saturating_sub(w) / 2,
@@ -654,7 +649,10 @@ pub fn render_clone_repo_modal(
     }
     let show_progress = cd.cloning || !cd.progress_lines.is_empty();
     let desired_h: u16 = if show_progress { 20 } else { 15 };
-    let w = screen.width.saturating_sub(4).clamp(32.min(screen.width), 86);
+    let w = screen
+        .width
+        .saturating_sub(4)
+        .clamp(32.min(screen.width), 86);
     let h = desired_h.min(screen.height.saturating_sub(2).max(12));
     let rect = Rect::new(
         screen.x + screen.width.saturating_sub(w) / 2,
@@ -754,7 +752,15 @@ pub fn render_clone_repo_modal(
 
     let url_label = ctx.t("dialog.clone.url_label").to_string();
     let url_ph = ctx.t("dialog.clone.url_placeholder").to_string();
-    render_text_field(frame, ctx, &mut y, &url_label, &cd.url, &url_ph, CloneField::Url);
+    render_text_field(
+        frame,
+        ctx,
+        &mut y,
+        &url_label,
+        &cd.url,
+        &url_ph,
+        CloneField::Url,
+    );
 
     let dir_label = ctx.t("dialog.clone.dir_label").to_string();
     let dir_ph = ctx.t("dialog.clone.dir_placeholder").to_string();
@@ -885,7 +891,10 @@ pub fn render_clone_repo_modal(
                 .bg(ctx.theme.bg_selection_focused)
                 .add_modifier(Modifier::BOLD)
         };
-        frame.render_widget(Paragraph::new(Span::styled(submit_lbl, submit_style)), submit_rect);
+        frame.render_widget(
+            Paragraph::new(Span::styled(submit_lbl, submit_style)),
+            submit_rect,
+        );
         frame.render_widget(
             Paragraph::new(Span::styled(
                 cancel_lbl,

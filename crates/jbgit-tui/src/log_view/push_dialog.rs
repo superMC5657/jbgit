@@ -96,9 +96,7 @@ impl PushDialogState {
     }
 
     pub fn remote(&self) -> &str {
-        self.remotes
-            .get(self.remote_idx)
-            .map_or("", String::as_str)
+        self.remotes.get(self.remote_idx).map_or("", String::as_str)
     }
 
     pub fn outgoing_key(&self) -> OutgoingKey {
@@ -175,7 +173,9 @@ impl PushDialogState {
         let mut scored: Vec<(u32, usize, String)> = ordered
             .into_iter()
             .enumerate()
-            .filter_map(|(pos, cand)| fuzzy_indices(&cand, query).map(|(score, _)| (score, pos, cand)))
+            .filter_map(|(pos, cand)| {
+                fuzzy_indices(&cand, query).map(|(score, _)| (score, pos, cand))
+            })
             .collect();
         scored.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
         scored.into_iter().map(|(_, _, c)| c).collect()
@@ -193,7 +193,8 @@ impl PushDialogState {
             .map(|err| match err {
                 jbgit_core::RefNameError::Empty => {
                     if self.is_detached() {
-                        i18n.t("dialog.push_full.detached_target_required").to_string()
+                        i18n.t("dialog.push_full.detached_target_required")
+                            .to_string()
                     } else {
                         i18n.t_fmt(
                             "validation.empty",

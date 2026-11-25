@@ -122,7 +122,11 @@ impl Git2WorkerPool {
         }
     }
 
-    pub(crate) async fn run_with<T, F>(&self, priority: TaskPriority, f: F) -> Result<T, EngineError>
+    pub(crate) async fn run_with<T, F>(
+        &self,
+        priority: TaskPriority,
+        f: F,
+    ) -> Result<T, EngineError>
     where
         T: Send + 'static,
         F: FnOnce() -> Result<T, EngineError> + Send + 'static,

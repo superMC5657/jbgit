@@ -10,9 +10,7 @@ pub use collapse::{
     CollapseInput, CollapseMode, CollapseState, LinearSegment, LinearSegments, MIN_SEGMENT_LEN,
     SegmentId,
 };
-pub use edges_in_row::{
-    BLOCK_SIZE, CACHE_SIZE, EdgesInRowCache, EdgesInRowGenerator, WALK_SIZE,
-};
+pub use edges_in_row::{BLOCK_SIZE, CACHE_SIZE, EdgesInRowCache, EdgesInRowGenerator, WALK_SIZE};
 pub use fixedbitset::FixedBitSet;
 pub use joiner::{JoinCommit, JoinError, JoinResult, join_commits, join_commits_indexed};
 pub use linear_bek::{

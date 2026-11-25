@@ -78,9 +78,7 @@ impl ReflogState {
     }
 
     pub fn entries(&self) -> &[ReflogEntry] {
-        self.bundle
-            .as_ref()
-            .map_or(&[], |b| b.entries.as_slice())
+        self.bundle.as_ref().map_or(&[], |b| b.entries.as_slice())
     }
 
     pub fn has_more(&self) -> bool {

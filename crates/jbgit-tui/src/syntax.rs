@@ -64,8 +64,8 @@ static ASSETS: OnceLock<SyntaxAssets> = OnceLock::new();
 fn assets() -> &'static SyntaxAssets {
     ASSETS.get_or_init(|| {
         let ss = SyntaxSet::load_defaults_newlines();
-        let theme = ThemeSet::load_from_reader(&mut Cursor::new(DARCULA_TM_THEME))
-            .unwrap_or_else(|_| {
+        let theme =
+            ThemeSet::load_from_reader(&mut Cursor::new(DARCULA_TM_THEME)).unwrap_or_else(|_| {
                 ThemeSet::load_defaults()
                     .themes
                     .into_values()
@@ -119,10 +119,7 @@ impl HighlightedDiff {
         Self::build_cancellable_hunks(&diff.key.path, diff.hunks.iter(), diff.hunks.len(), cancel)
     }
 
-    pub fn build_cancellable_stage(
-        diff: &ThreeDocStageDiff,
-        cancel: &AtomicBool,
-    ) -> Option<Self> {
+    pub fn build_cancellable_stage(diff: &ThreeDocStageDiff, cancel: &AtomicBool) -> Option<Self> {
         Self::build_cancellable_hunks(
             &diff.key.path,
             diff.hunks.iter().map(|h| &h.hunk),
@@ -830,12 +827,8 @@ impl<D> LazyWordDiffCache<D> {
         if cached.ranges.len() >= MAX_LAZY_WORD_DIFF_ENTRIES {
             cached.ranges.clear();
         }
-        cached
-            .ranges
-            .insert((hunk_idx, left_idx), Arc::clone(&lw));
-        cached
-            .ranges
-            .insert((hunk_idx, right_idx), Arc::clone(&rw));
+        cached.ranges.insert((hunk_idx, left_idx), Arc::clone(&lw));
+        cached.ranges.insert((hunk_idx, right_idx), Arc::clone(&rw));
         (lw, rw)
     }
 
@@ -975,7 +968,8 @@ mod tests {
         assert!(added.text.starts_with('\t'), "raw tab must be preserved");
         let word_bg = Color::Rgb(55, 102, 75);
 
-        for (tab_size, expected_prefix) in [(2, "  let val = omega;"), (8, "        let val = omega;")]
+        for (tab_size, expected_prefix) in
+            [(2, "  let val = omega;"), (8, "        let val = omega;")]
         {
             for tokens in [&[][..], hl.hunks[0][line_idx].as_slice()] {
                 let spans = render_diff_line_spans_with_tab(
@@ -1038,7 +1032,10 @@ mod tests {
         };
         let hl = HighlightedDiff::build_cancellable_file(&diff, &AtomicBool::new(false)).unwrap();
         assert!(hl.hunks[0][0].is_empty(), "25KB line must skip syntect");
-        assert!(!hl.hunks[0][1].is_empty(), "following normal line must still highlight");
+        assert!(
+            !hl.hunks[0][1].is_empty(),
+            "following normal line must still highlight"
+        );
 
         let cancelled = AtomicBool::new(true);
         assert!(HighlightedDiff::build_cancellable_file(&diff, &cancelled).is_none());
@@ -1160,17 +1157,16 @@ mod tests {
     fn highlighted_file_highlights_rust_skips_long_lines_and_cancels() {
         let long = "let a = 1;".repeat(400); // > 2048 bytes
         let content = format!("fn demo() {{\n{long}\n    let x = 42;\n");
-        let hl = HighlightedFile::build_cancellable(
-            "src/demo.rs",
-            &content,
-            4,
-            &AtomicBool::new(false),
-        )
-        .unwrap();
+        let hl =
+            HighlightedFile::build_cancellable("src/demo.rs", &content, 4, &AtomicBool::new(false))
+                .unwrap();
         assert_eq!(hl.lines.len(), 4);
         assert_eq!(hl.lines[0][0].fg, (0xCF, 0x8E, 0x6D)); // `fn`
         assert!(hl.lines[1].is_empty(), "long line must skip syntect");
-        assert!(!hl.lines[2].is_empty(), "normal line after long line highlights");
+        assert!(
+            !hl.lines[2].is_empty(),
+            "normal line after long line highlights"
+        );
         assert!(hl.lines[3].is_empty(), "trailing empty line preserved");
 
         let cancelled = AtomicBool::new(true);
@@ -1185,8 +1181,8 @@ mod tests {
         let word_bg = Color::Rgb(60, 90, 60);
         let search_style = Style::default().bg(Color::Rgb(120, 100, 30));
         let active_search_style = Style::default().bg(Color::Rgb(200, 150, 30));
-        let make_opts = |max_width, horiz_scroll, search_ranges, active_search_range| {
-            DiffLineRenderOptions {
+        let make_opts =
+            |max_width, horiz_scroll, search_ranges, active_search_range| DiffLineRenderOptions {
                 max_width,
                 tab_size: 4,
                 horiz_scroll,
@@ -1197,8 +1193,7 @@ mod tests {
                 search_style,
                 active_search_style,
                 true_color: true,
-            }
-        };
+            };
 
         // True tab-stop alignment:
         // "a\tx": 'a' at col 0..1 -> tab expands to 3 spaces (col 1..4) -> 'x' at col 4
@@ -1209,10 +1204,11 @@ mod tests {
         assert_eq!(s1, "a   x");
 
         // "中\tx": '中' at col 0..2 -> tab expands to 2 spaces (col 2..4) -> 'x' at col 4
-        let s2: String = render_diff_line_spans_opts("中\tx", &[], &[], make_opts(20, 0, &[], None))
-            .into_iter()
-            .map(|s| s.content.into_owned())
-            .collect();
+        let s2: String =
+            render_diff_line_spans_opts("中\tx", &[], &[], make_opts(20, 0, &[], None))
+                .into_iter()
+                .map(|s| s.content.into_owned())
+                .collect();
         assert_eq!(s2, "中  x");
         assert_eq!(line_display_width("中\tx", 4), 5);
 

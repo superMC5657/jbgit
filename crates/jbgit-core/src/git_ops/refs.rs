@@ -278,11 +278,7 @@ pub fn fuzzy_indices(haystack: &str, needle: &str) -> Option<(u32, Vec<u32>)> {
 
 /// Fuzzy-filters a slice of repository paths using a single reused `nucleo`
 /// matcher, returning up to `limit` best matches as `(path, matched_char_indices)`.
-pub fn fuzzy_filter_paths(
-    paths: &[String],
-    needle: &str,
-    limit: usize,
-) -> Vec<(String, Vec<u32>)> {
+pub fn fuzzy_filter_paths(paths: &[String], needle: &str, limit: usize) -> Vec<(String, Vec<u32>)> {
     let needle = needle.trim();
     if needle.is_empty() {
         return paths

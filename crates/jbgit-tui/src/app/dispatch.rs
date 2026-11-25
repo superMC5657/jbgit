@@ -27,12 +27,10 @@ impl AppState {
         }) = &next_target
         {
             let now = self.now();
-            if self.modal_stack.apply_menu_hover(
-                *menu_depth,
-                *item_idx,
-                now,
-                &mut self.menu_hover,
-            ) {
+            if self
+                .modal_stack
+                .apply_menu_hover(*menu_depth, *item_idx, now, &mut self.menu_hover)
+            {
                 changed = true;
             }
         }
@@ -48,9 +46,7 @@ impl AppState {
                 .hover_target
                 .as_ref()
                 .is_some_and(|t| t.has_visual_hover())
-                || next_target
-                    .as_ref()
-                    .is_some_and(|t| t.has_visual_hover());
+                || next_target.as_ref().is_some_and(|t| t.has_visual_hover());
             self.hover_target = next_target;
             changed |= visual_change;
         }
@@ -126,7 +122,10 @@ impl AppState {
                 effects.push(Effect::RefreshRepoAndStage);
             }
             Action::GoToParentSmart => {
-                let candidates = self.log.graph.parent_candidates(self.repo_snapshot.as_ref());
+                let candidates = self
+                    .log
+                    .graph
+                    .parent_candidates(self.repo_snapshot.as_ref());
                 if candidates.len() >= 2 {
                     self.push_modal(ModalLayer::ChooseParent { selected: 0 });
                 } else {
@@ -375,8 +374,7 @@ impl AppState {
                         }
                     }
                     ModalLayer::RepoSwitcher(rs) => {
-                        let clean: String =
-                            text.chars().filter(|c| !c.is_control()).collect();
+                        let clean: String = text.chars().filter(|c| !c.is_control()).collect();
                         if !clean.is_empty() {
                             rs.query.push_str(&clean);
                             rs.selected = 0;
@@ -438,9 +436,8 @@ impl AppState {
                             .filter(|c| *c != '\n' && *c != '\r' && !c.is_control())
                             .collect();
                         for ch in chars {
-                            effects.extend(
-                                self.dispatch(Action::DiffSearchChar(DiffScope::Push, ch)),
-                            );
+                            effects
+                                .extend(self.dispatch(Action::DiffSearchChar(DiffScope::Push, ch)));
                         }
                     }
                     ModalLayer::PushDialog(pd) if pd.editing_target => {
@@ -542,7 +539,8 @@ impl AppState {
                         crate::dialogs::Dialog::CreatePatch(cp) => {
                             let rows = crate::dialogs::CreatePatchRow::ALL;
                             let target = idx.min(rows.len() - 1);
-                            if cp.to_clipboard && rows[target] == crate::dialogs::CreatePatchRow::Path
+                            if cp.to_clipboard
+                                && rows[target] == crate::dialogs::CreatePatchRow::Path
                             {
                                 return effects;
                             }
@@ -885,7 +883,9 @@ impl AppState {
             other => {
                 let now = self.now();
                 let handled = self.console.dispatch(&other)
-                    || self.stash.dispatch(&other, &self.diff_caches, snap.as_deref())
+                    || self
+                        .stash
+                        .dispatch(&other, &self.diff_caches, snap.as_deref())
                     || {
                         let mut lctx = LogDispatchCtx {
                             snap: snap.as_ref(),
@@ -994,8 +994,7 @@ impl AppState {
             .and_then(|fh| fh.selected_entry())
             .map(|e| e.oid);
         if let Some(oid) = target_oid {
-            while self.modal_stack.file_history().is_some()
-                || self.modal_stack.annotate().is_some()
+            while self.modal_stack.file_history().is_some() || self.modal_stack.annotate().is_some()
             {
                 self.close_annotate();
                 self.close_file_history();
@@ -1029,11 +1028,7 @@ impl AppState {
         }
     }
 
-    fn dispatch_file_history_action(
-        &mut self,
-        action: &Action,
-        effects: &mut Vec<Effect>,
-    ) -> bool {
+    fn dispatch_file_history_action(&mut self, action: &Action, effects: &mut Vec<Effect>) -> bool {
         match action {
             Action::OpenFileHistory {
                 path,
@@ -1119,7 +1114,8 @@ impl AppState {
                         true,
                         vec![open_action],
                     );
-                    effects.extend(self.dispatch(Action::OpenDialog(Box::new(Dialog::Choice(dlg)))));
+                    effects
+                        .extend(self.dispatch(Action::OpenDialog(Box::new(Dialog::Choice(dlg)))));
                 } else {
                     effects.extend(self.dispatch(open_action));
                 }
@@ -1139,8 +1135,11 @@ impl AppState {
                     matches!(fh.key.scope, jbgit_core::HistoryBranchScope::AllBranches)
                 });
                 if all_branches {
-                    self.status_notice =
-                        Some(self.i18n.t("toast.file_history_follow_disabled_all").to_string());
+                    self.status_notice = Some(
+                        self.i18n
+                            .t("toast.file_history_follow_disabled_all")
+                            .to_string(),
+                    );
                 } else if let Some(fh) = self.modal_stack.file_history_mut()
                     && let Some(key) = fh.toggle_follow()
                 {
@@ -1148,7 +1147,11 @@ impl AppState {
                 }
             }
             Action::FileHistoryCycleBranchScope => {
-                if self.modal_stack.file_history().is_some_and(|fh| !fh.is_selection_history()) {
+                if self
+                    .modal_stack
+                    .file_history()
+                    .is_some_and(|fh| !fh.is_selection_history())
+                {
                     let anchor = self
                         .hit_registry
                         .find(|t| {
@@ -1160,12 +1163,7 @@ impl AppState {
                             )
                         })
                         .map(|r| (r.rect.x, r.rect.y.saturating_add(1)))
-                        .unwrap_or_else(|| {
-                            (
-                                self.terminal_area.x + 6,
-                                self.terminal_area.y + 4,
-                            )
-                        });
+                        .unwrap_or_else(|| (self.terminal_area.x + 6, self.terminal_area.y + 4));
                     effects.extend(self.dispatch(Action::OpenContextMenuForTarget {
                         target: crate::hit_test::HitTarget::FileHistoryToolbar(
                             crate::hit_test::FileHistoryToolbarButton::BranchScope,
@@ -1308,7 +1306,10 @@ impl AppState {
                     let short = oid.short();
                     let body_lines: Vec<String> = self
                         .i18n
-                        .t_fmt("dialog.restore_file.body", &[("path", &path), ("short", &short)])
+                        .t_fmt(
+                            "dialog.restore_file.body",
+                            &[("path", &path), ("short", &short)],
+                        )
                         .split('\n')
                         .map(str::to_string)
                         .collect();
@@ -1322,7 +1323,8 @@ impl AppState {
                             paths: vec![path],
                         })],
                     );
-                    effects.extend(self.dispatch(Action::OpenDialog(Box::new(Dialog::Choice(dlg)))));
+                    effects
+                        .extend(self.dispatch(Action::OpenDialog(Box::new(Dialog::Choice(dlg)))));
                 } else if self.modal_stack.file_history().is_some() {
                     self.status_notice =
                         Some(self.i18n.t("menu.log_change.deleted_in_commit").to_string());
@@ -1807,7 +1809,8 @@ impl AppState {
                         self.load_or_request_blame(new_key, effects);
                     }
                 } else if self.modal_stack.annotate().is_some() {
-                    self.status_notice = Some(self.i18n.t("toast.annotate_no_previous").to_string());
+                    self.status_notice =
+                        Some(self.i18n.t("toast.annotate_no_previous").to_string());
                 }
             }
             Action::AnnotateThisRev => {
@@ -1850,7 +1853,8 @@ impl AppState {
                         self.load_or_request_blame(new_key, effects);
                     }
                 } else if self.modal_stack.annotate().is_some() {
-                    self.status_notice = Some(self.i18n.t("toast.annotate_uncommitted").to_string());
+                    self.status_notice =
+                        Some(self.i18n.t("toast.annotate_uncommitted").to_string());
                 }
             }
             Action::AnnotateNavBack => {
@@ -2104,8 +2108,8 @@ impl AppState {
                 if let Some(pd) = self.modal_stack.push_dialog_mut() {
                     let len = pd.visible_commits().len();
                     if len > 0 {
-                        let next = (pd.selected_commit as isize + *delta)
-                            .clamp(0, len as isize - 1) as usize;
+                        let next = (pd.selected_commit as isize + *delta).clamp(0, len as isize - 1)
+                            as usize;
                         if next != pd.selected_commit {
                             pd.selected_commit = next;
                             if let Some(vh) = pd.commit_scroll.viewport_height() {
@@ -2145,8 +2149,8 @@ impl AppState {
                 if let Some(pd) = self.modal_stack.push_dialog_mut() {
                     let len = pd.selected_file_changes(&self.diff_caches).len();
                     if len > 0 {
-                        let next = (pd.selected_file as isize + *delta)
-                            .clamp(0, len as isize - 1) as usize;
+                        let next = (pd.selected_file as isize + *delta).clamp(0, len as isize - 1)
+                            as usize;
                         if next != pd.selected_file {
                             pd.selected_file = next;
                             if let Some(vh) = pd.file_scroll.viewport_height() {
@@ -2314,9 +2318,9 @@ impl AppState {
                 {
                     let len = pd.completion_candidates(snap.as_deref()).len();
                     if len > 0 {
-                        pd.completion_selected =
-                            (pd.completion_selected as isize + *delta).rem_euclid(len as isize)
-                                as usize;
+                        pd.completion_selected = (pd.completion_selected as isize + *delta)
+                            .rem_euclid(len as isize)
+                            as usize;
                     }
                 }
             }
@@ -2408,8 +2412,7 @@ impl AppState {
                     && pd.remotes.len() > 1
                 {
                     let len = pd.remotes.len();
-                    let next =
-                        (pd.remote_idx as isize + *delta).rem_euclid(len as isize) as usize;
+                    let next = (pd.remote_idx as isize + *delta).rem_euclid(len as isize) as usize;
                     if next != pd.remote_idx {
                         let prev_remote = pd.remote().to_string();
                         pd.remote_idx = next;
@@ -2536,8 +2539,11 @@ impl AppState {
             Action::PushToggleSetUpstream => {
                 if let Some(pd) = self.modal_stack.push_dialog_mut() {
                     if pd.is_detached() {
-                        self.status_notice =
-                            Some(self.i18n.t("dialog.push_full.detached_no_upstream").to_string());
+                        self.status_notice = Some(
+                            self.i18n
+                                .t("dialog.push_full.detached_no_upstream")
+                                .to_string(),
+                        );
                     } else {
                         pd.set_upstream = !pd.set_upstream;
                     }
@@ -2857,12 +2863,14 @@ impl AppState {
                     .and_then(|rf| rf.selected_entry().cloned())
                 {
                     self.modal_stack.close_reflog();
-                    effects.extend(self.dispatch(Action::RunGitOp(jbgit_core::GitOp::CherryPick {
-                        oids: vec![entry.oid],
-                        no_commit: false,
-                        record_origin: false,
-                        mainline: None,
-                    })));
+                    effects.extend(self.dispatch(Action::RunGitOp(
+                        jbgit_core::GitOp::CherryPick {
+                            oids: vec![entry.oid],
+                            no_commit: false,
+                            record_origin: false,
+                            mainline: None,
+                        },
+                    )));
                 }
             }
             Action::ReflogResetSelected => {
@@ -2876,12 +2884,8 @@ impl AppState {
                         .as_deref()
                         .and_then(|s| s.head_branch.clone())
                         .unwrap_or_else(|| "HEAD".to_string());
-                    let dlg = crate::dialogs::reset_dialog(
-                        entry.oid,
-                        &entry.message,
-                        &cur,
-                        &self.i18n,
-                    );
+                    let dlg =
+                        crate::dialogs::reset_dialog(entry.oid, &entry.message, &cur, &self.i18n);
                     self.push_modal(ModalLayer::Dialog(Box::new(dlg)));
                 }
             }

@@ -292,7 +292,9 @@ impl CommitMessageEditor {
     pub fn move_up(&mut self) {
         if self.cursor_line > 0 {
             self.cursor_line -= 1;
-            self.cursor_col = self.cursor_col.min(self.lines[self.cursor_line].chars().count());
+            self.cursor_col = self
+                .cursor_col
+                .min(self.lines[self.cursor_line].chars().count());
         }
         self.sync_scroll_to_cursor();
     }
@@ -300,7 +302,9 @@ impl CommitMessageEditor {
     pub fn move_down(&mut self) {
         if self.cursor_line + 1 < self.lines.len() {
             self.cursor_line += 1;
-            self.cursor_col = self.cursor_col.min(self.lines[self.cursor_line].chars().count());
+            self.cursor_col = self
+                .cursor_col
+                .min(self.lines[self.cursor_line].chars().count());
         }
         self.sync_scroll_to_cursor();
     }

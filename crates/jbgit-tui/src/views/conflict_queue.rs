@@ -194,17 +194,26 @@ pub fn render_conflict_queue_modal(
                         })
                         .bg(row_bg),
                 ),
-                Span::styled("│", Style::default().fg(ctx.theme.border_splitter).bg(row_bg)),
+                Span::styled(
+                    "│",
+                    Style::default().fg(ctx.theme.border_splitter).bg(row_bg),
+                ),
                 Span::styled(
                     pad(&yours_cell, side_w),
                     Style::default().fg(side_fg(entry.yours_status)).bg(row_bg),
                 ),
-                Span::styled("│", Style::default().fg(ctx.theme.border_splitter).bg(row_bg)),
+                Span::styled(
+                    "│",
+                    Style::default().fg(ctx.theme.border_splitter).bg(row_bg),
+                ),
                 Span::styled(
                     pad(&theirs_cell, side_w),
                     Style::default().fg(side_fg(entry.theirs_status)).bg(row_bg),
                 ),
-                Span::styled("│", Style::default().fg(ctx.theme.border_splitter).bg(row_bg)),
+                Span::styled(
+                    "│",
+                    Style::default().fg(ctx.theme.border_splitter).bg(row_bg),
+                ),
                 Span::styled(
                     pad(&status_cell, status_w),
                     Style::default()
@@ -231,7 +240,11 @@ pub fn render_conflict_queue_modal(
 
     let btn_y = inner.bottom().saturating_sub(1);
     let buttons = [
-        (i18n.t("conflict_queue.btn_merge"), ConflictQueueButtonKind::Merge, true),
+        (
+            i18n.t("conflict_queue.btn_merge"),
+            ConflictQueueButtonKind::Merge,
+            true,
+        ),
         (
             i18n.t("conflict_queue.btn_accept_yours"),
             ConflictQueueButtonKind::AcceptYours,

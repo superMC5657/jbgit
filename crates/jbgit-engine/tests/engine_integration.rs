@@ -470,21 +470,21 @@ async fn sibling_consumer_file_diff_slots_never_cancel_each_other() {
         path: "a.txt".into(),
         old_path: None,
         context: DiffContext::Three,
-            whitespace: jbgit_core::WhitespaceMode::Default,
+        whitespace: jbgit_core::WhitespaceMode::Default,
     };
     let key_b = FileDiffKey {
         details: DetailsKey::single(c2),
         path: "b.txt".into(),
         old_path: None,
         context: DiffContext::Three,
-            whitespace: jbgit_core::WhitespaceMode::Default,
+        whitespace: jbgit_core::WhitespaceMode::Default,
     };
     let key_c = FileDiffKey {
         details: DetailsKey::single(c2),
         path: "c.txt".into(),
         old_path: None,
         context: DiffContext::Three,
-            whitespace: jbgit_core::WhitespaceMode::Default,
+        whitespace: jbgit_core::WhitespaceMode::Default,
     };
 
     let e_log = handle.request_file_diff(RequestSlotId::LogFileDiff, key_a.clone());
@@ -897,7 +897,10 @@ async fn partial_stage_untracked_file_and_preserve_executable_mode() {
         .output()
         .unwrap();
     let ls_str = String::from_utf8_lossy(&ls_out.stdout);
-    assert!(ls_str.starts_with("100755 "), "expected 100755 mode: {ls_str}");
+    assert!(
+        ls_str.starts_with("100755 "),
+        "expected 100755 mode: {ls_str}"
+    );
 }
 
 #[tokio::test]
@@ -1026,7 +1029,10 @@ async fn commit_unborn_amend_undo_and_hooks_workflow() {
         )
         .await;
         assert!(!o1.success, "expected pre-commit hook to fail");
-        assert_eq!(o1.preserved_message.as_deref(), Some("feat: blocked by hook"));
+        assert_eq!(
+            o1.preserved_message.as_deref(),
+            Some("feat: blocked by hook")
+        );
         assert!(
             o1.error_output
                 .as_deref()
@@ -1174,7 +1180,7 @@ async fn file_history_follow_renames_cjk_diffs_and_supervisor_epoch_cancellation
                 path: entry.path_at_commit.clone(),
                 old_path: entry.old_path.clone(),
                 context: DiffContext::Three,
-            whitespace: jbgit_core::WhitespaceMode::Default,
+                whitespace: jbgit_core::WhitespaceMode::Default,
             },
             None,
         )
@@ -1412,7 +1418,10 @@ async fn fast_file_diff_paths_match_rename_add_delete_compare_local_and_multi_co
         None,
     )
     .await;
-    assert!(diff_ren.hunks.is_empty(), "identical rename has empty hunks");
+    assert!(
+        diff_ren.hunks.is_empty(),
+        "identical rename has empty hunks"
+    );
 
     let multi_key = DetailsKey::commits(vec![c3, c2], 0);
     let multi_bundle = fetch_commit_details(
@@ -1432,7 +1441,7 @@ async fn fast_file_diff_paths_match_rename_add_delete_compare_local_and_multi_co
         path: "keep.txt".into(),
         old_path: None,
         context: DiffContext::Three,
-            whitespace: jbgit_core::WhitespaceMode::Default,
+        whitespace: jbgit_core::WhitespaceMode::Default,
     };
     let via_oids = fetch_file_diff(
         &handle,
@@ -1442,14 +1451,8 @@ async fn fast_file_diff_paths_match_rename_add_delete_compare_local_and_multi_co
         Some((keep_change.old_oid, keep_change.new_oid)),
     )
     .await;
-    let via_fallback = fetch_file_diff(
-        &handle,
-        &mut rx,
-        RequestSlotId::LogFileDiff,
-        fkey,
-        None,
-    )
-    .await;
+    let via_fallback =
+        fetch_file_diff(&handle, &mut rx, RequestSlotId::LogFileDiff, fkey, None).await;
     assert_eq!(via_oids, via_fallback);
 
     fs::write(dir.join("keep.txt"), "one\ntwo_local\n").unwrap();
@@ -1641,11 +1644,10 @@ async fn real_tab_indented_files_preserve_raw_tabs_in_diffs_and_partial_staging(
     );
 
     let b = stage_diff.tracker.unstaged_blocks[0];
-    let new_staged = stage_diff.tracker.stage_lines(&LineSelection::from_iters(
-        false,
-        [b.start1],
-        [b.start2],
-    ));
+    let new_staged =
+        stage_diff
+            .tracker
+            .stage_lines(&LineSelection::from_iters(false, [b.start1], [b.start2]));
     assert!(
         new_staged.windows(5).any(|w| w == b"\tlet "),
         "partial stage buffer must retain raw tab bytes"
@@ -1725,7 +1727,11 @@ async fn blame_tracks_commits_moves_uncommitted_lines_and_guards() {
     git(dir, &["mv", "code.rs", "moved.rs"]);
     git(dir, &["commit", "-m", "c4: rename code.rs"]);
     let c4 = rev(dir, "HEAD");
-    fs::write(dir.join("moved.rs"), "line1_v1\nline2_v2\nline3_v3\nuncommitted\n").unwrap();
+    fs::write(
+        dir.join("moved.rs"),
+        "line1_v1\nline2_v2\nline3_v3\nuncommitted\n",
+    )
+    .unwrap();
 
     let moved_blame = fetch_blame(
         &handle,
@@ -1965,24 +1971,51 @@ async fn snapshot_lists_remotes_with_fetch_and_push_urls() {
     assert!(snap.remotes.is_empty());
     assert_eq!(snap.default_remote(), None);
 
-    git(dir, &["remote", "add", "zeta", "https://u:secret@example.com/z.git"]);
-    git(dir, &["remote", "add", "origin", "https://example.com/o.git"]);
-    git(dir, &["config", "remote.pushonly.pushurl", "ssh://git@example.com/p.git"]);
+    git(
+        dir,
+        &[
+            "remote",
+            "add",
+            "zeta",
+            "https://u:secret@example.com/z.git",
+        ],
+    );
+    git(
+        dir,
+        &["remote", "add", "origin", "https://example.com/o.git"],
+    );
+    git(
+        dir,
+        &[
+            "config",
+            "remote.pushonly.pushurl",
+            "ssh://git@example.com/p.git",
+        ],
+    );
     let snap = fetch_snapshot(&handle, &mut rx).await;
     let names: Vec<&str> = snap.remote_names().collect();
     assert_eq!(names, vec!["origin", "pushonly", "zeta"]);
     assert_eq!(snap.default_remote().as_deref(), Some("origin"));
 
     let zeta = snap.remote("zeta").unwrap();
-    assert_eq!(zeta.fetch_url.as_deref(), Some("https://u:secret@example.com/z.git"));
+    assert_eq!(
+        zeta.fetch_url.as_deref(),
+        Some("https://u:secret@example.com/z.git")
+    );
     assert_eq!(zeta.push_url, None);
     assert_eq!(zeta.display_fetch_url(), "https://u:***@example.com/z.git");
     assert!(!format!("{snap:?}").contains("secret"));
 
     let push_only = snap.remote("pushonly").unwrap();
     assert_eq!(push_only.fetch_url, None);
-    assert_eq!(push_only.push_url.as_deref(), Some("ssh://git@example.com/p.git"));
-    assert_eq!(push_only.effective_push_url(), Some("ssh://git@example.com/p.git"));
+    assert_eq!(
+        push_only.push_url.as_deref(),
+        Some("ssh://git@example.com/p.git")
+    );
+    assert_eq!(
+        push_only.effective_push_url(),
+        Some("ssh://git@example.com/p.git")
+    );
 }
 
 #[tokio::test]
@@ -2031,7 +2064,14 @@ async fn remote_lifecycle_add_fetch_rename_set_url_and_remove() {
     assert!(!dup.success);
     assert_eq!(dup.failure, Some(GitFailure::RemoteAlreadyExists));
 
-    let fetched = run_git_op(&handle, &mut rx, GitOp::FetchRemote { name: "fork".into() }).await;
+    let fetched = run_git_op(
+        &handle,
+        &mut rx,
+        GitOp::FetchRemote {
+            name: "fork".into(),
+        },
+    )
+    .await;
     assert!(fetched.success, "{fetched:?}");
     let snap = fetch_snapshot(&handle, &mut rx).await;
     let tracking: Vec<&str> = snap
@@ -2053,7 +2093,10 @@ async fn remote_lifecycle_add_fetch_rename_set_url_and_remove() {
     assert!(renamed.success, "{renamed:?}");
     let snap = fetch_snapshot(&handle, &mut rx).await;
     assert!(snap.remote("fork").is_none());
-    assert_eq!(snap.remote("mine").unwrap().fetch_url.as_deref(), Some(url.as_str()));
+    assert_eq!(
+        snap.remote("mine").unwrap().fetch_url.as_deref(),
+        Some(url.as_str())
+    );
     let tracking: Vec<&str> = snap
         .tracking_refs_of("mine")
         .iter()
@@ -2079,7 +2122,14 @@ async fn remote_lifecycle_add_fetch_rename_set_url_and_remove() {
     assert_eq!(mine.push_url.as_deref(), Some(push_url));
     assert_eq!(mine.fetch_url.as_deref(), Some(url.as_str()));
 
-    let removed = run_git_op(&handle, &mut rx, GitOp::RemoveRemote { name: "mine".into() }).await;
+    let removed = run_git_op(
+        &handle,
+        &mut rx,
+        GitOp::RemoveRemote {
+            name: "mine".into(),
+        },
+    )
+    .await;
     assert!(removed.success, "{removed:?}");
     let snap = fetch_snapshot(&handle, &mut rx).await;
     assert!(snap.remotes.is_empty());
@@ -2457,7 +2507,10 @@ async fn outgoing_commits_and_push_rejected_sequence_retry() {
     let follow_summary = parse_push_porcelain(&follow.stdout);
     assert_eq!(follow_summary.pushed_tags, 1, "{:?}", follow.stdout);
     assert!(follow_summary.commit_range.is_some());
-    assert_eq!(rev(bare_dir.path(), "refs/tags/v2.0^{}"), rev(dir_a, "HEAD"));
+    assert_eq!(
+        rev(bare_dir.path(), "refs/tags/v2.0^{}"),
+        rev(dir_a, "HEAD")
+    );
 }
 
 #[tokio::test]
@@ -2548,20 +2601,39 @@ async fn worktree_lifecycle_add_list_lock_remove_and_prune() {
     assert_eq!(snap.worktrees.len(), 4, "{:?}", snap.worktrees);
     assert!(snap.worktrees[0].is_main);
     assert!(snap.current_worktree().is_some_and(|w| w.is_main));
-    let feature = snap.worktree_of_branch("feature").expect("feature worktree");
+    let feature = snap
+        .worktree_of_branch("feature")
+        .expect("feature worktree");
     assert!(feature.is_at(&wt_feature.canonicalize().unwrap()));
-    assert_eq!(snap.worktree_of_branch("topic").map(|w| w.name()), Some("main-topic".into()));
-    let detached = snap.worktrees.iter().find(|w| w.name() == "main-detached").unwrap();
+    assert_eq!(
+        snap.worktree_of_branch("topic").map(|w| w.name()),
+        Some("main-topic".into())
+    );
+    let detached = snap
+        .worktrees
+        .iter()
+        .find(|w| w.name() == "main-detached")
+        .unwrap();
     assert!(detached.detached && detached.head == Some(head));
-    assert!(snap.worktree_of_branch("main").is_none(), "current worktree is not 'other'");
+    assert!(
+        snap.worktree_of_branch("main").is_none(),
+        "current worktree is not 'other'"
+    );
 
     // A snapshot loaded from the linked worktree sees itself as current.
     let wt_loc = RepoLocation::discover(&wt_feature).unwrap();
     let (wt_handle, mut wt_rx) = EngineSupervisor::start(wt_loc, false).unwrap();
     let wt_snap = fetch_snapshot(&wt_handle, &mut wt_rx).await;
     assert_eq!(wt_snap.head_branch.as_deref(), Some("feature"));
-    assert_eq!(wt_snap.current_worktree().and_then(|w| w.branch.clone()), Some("feature".into()));
-    assert!(wt_snap.worktree_of_branch("main").is_some_and(|w| w.is_main));
+    assert_eq!(
+        wt_snap.current_worktree().and_then(|w| w.branch.clone()),
+        Some("feature".into())
+    );
+    assert!(
+        wt_snap
+            .worktree_of_branch("main")
+            .is_some_and(|w| w.is_main)
+    );
     assert!(wt_handle.shutdown(Duration::from_secs(5)).await);
 
     // Lock → remove refused → unlock → remove.
@@ -2577,7 +2649,9 @@ async fn worktree_lifecycle_add_list_lock_remove_and_prune() {
     assert!(locked.success, "{locked:?}");
     let snap = fetch_snapshot(&handle, &mut rx).await;
     assert_eq!(
-        snap.worktree_of_branch("feature").and_then(|w| w.locked.clone()).as_deref(),
+        snap.worktree_of_branch("feature")
+            .and_then(|w| w.locked.clone())
+            .as_deref(),
         Some("on usb disk")
     );
     let refused = run_git_op(
@@ -2590,7 +2664,11 @@ async fn worktree_lifecycle_add_list_lock_remove_and_prune() {
     )
     .await;
     assert!(!refused.success);
-    assert_eq!(refused.failure, Some(GitFailure::WorktreeLocked), "{refused:?}");
+    assert_eq!(
+        refused.failure,
+        Some(GitFailure::WorktreeLocked),
+        "{refused:?}"
+    );
     let unlocked = run_git_op(
         &handle,
         &mut rx,
@@ -2628,7 +2706,11 @@ async fn worktree_lifecycle_add_list_lock_remove_and_prune() {
     // A deleted directory becomes prunable, then prune drops it.
     fs::remove_dir_all(&wt_new).unwrap();
     let snap = fetch_snapshot(&handle, &mut rx).await;
-    let topic = snap.worktrees.iter().find(|w| w.branch.as_deref() == Some("topic")).unwrap();
+    let topic = snap
+        .worktrees
+        .iter()
+        .find(|w| w.branch.as_deref() == Some("topic"))
+        .unwrap();
     assert!(topic.is_prunable(), "{topic:?}");
     let pruned = run_git_op(&handle, &mut rx, GitOp::PruneWorktrees).await;
     assert!(pruned.success, "{pruned:?}");
@@ -2682,7 +2764,9 @@ async fn check_patch(
         .dispatch(jbgit_engine::TaskRequest::CheckPatch { key: key.clone() })
         .expect("CheckPatch epoch");
     recv_matching(rx, |ev| match ev {
-        EngineEvent::ConsoleStarted(_) => panic!("read-only CheckPatch must not emit ConsoleStarted"),
+        EngineEvent::ConsoleStarted(_) => {
+            panic!("read-only CheckPatch must not emit ConsoleStarted")
+        }
         EngineEvent::PatchChecked { check, epoch: e } if e == epoch && check.key == key => {
             Some(check)
         }
@@ -2692,7 +2776,9 @@ async fn check_patch(
 }
 
 fn worktree_text(dir: &Path, rel: &str) -> String {
-    fs::read_to_string(dir.join(rel)).unwrap().replace("\r\n", "\n")
+    fs::read_to_string(dir.join(rel))
+        .unwrap()
+        .replace("\r\n", "\n")
 }
 
 #[tokio::test]
@@ -3031,7 +3117,10 @@ async fn commit_signatures_batch_verification_reports_unsigned_and_respects_epoc
         DetailsKey::single(c2),
     )
     .await;
-    assert_eq!(details.details[0].signature, jbgit_core::CommitSignature::unsigned());
+    assert_eq!(
+        details.details[0].signature,
+        jbgit_core::CommitSignature::unsigned()
+    );
 }
 
 #[tokio::test]
@@ -3144,11 +3233,14 @@ async fn lfs_gitattributes_and_pointer_placeholders_avoid_smudge() {
     let dir = TempDir::new().unwrap();
     let d = dir.path();
     git(d, &["init", "-b", "main"]);
-    fs::write(d.join(".gitattributes"), "*.bin filter=lfs diff=lfs merge=lfs -text\n").unwrap();
+    fs::write(
+        d.join(".gitattributes"),
+        "*.bin filter=lfs diff=lfs merge=lfs -text\n",
+    )
+    .unwrap();
     let hash1 = "1111111111111111111111111111111111111111111111111111111111111111";
-    let ptr1_bytes = format!(
-        "version https://git-lfs.github.com/spec/v1\noid sha256:{hash1}\nsize 1048576\n"
-    );
+    let ptr1_bytes =
+        format!("version https://git-lfs.github.com/spec/v1\noid sha256:{hash1}\nsize 1048576\n");
     fs::create_dir_all(d.join("assets")).unwrap();
     fs::write(d.join("assets/blob.bin"), &ptr1_bytes).unwrap();
     git(d, &["add", ".gitattributes", "assets/blob.bin"]);
@@ -3185,9 +3277,8 @@ async fn lfs_gitattributes_and_pointer_placeholders_avoid_smudge() {
     assert!(!diff.is_binary);
 
     let hash2 = "2222222222222222222222222222222222222222222222222222222222222222";
-    let ptr2_bytes = format!(
-        "version https://git-lfs.github.com/spec/v1\noid sha256:{hash2}\nsize 2097152\n"
-    );
+    let ptr2_bytes =
+        format!("version https://git-lfs.github.com/spec/v1\noid sha256:{hash2}\nsize 2097152\n");
     fs::write(d.join("assets/blob.bin"), &ptr2_bytes).unwrap();
     let stage_diff = fetch_stage_diff(
         &handle,
@@ -3325,7 +3416,11 @@ async fn sequential_stage_and_unstage_never_clobber_other_files_across_workers()
             vec!["aab", "bsa"],
             "cycle {cycle}: staging bsa must keep aab staged"
         );
-        assert_eq!(st.staged.len(), 2, "cycle {cycle}: UI stage snapshot after staging bsa");
+        assert_eq!(
+            st.staged.len(),
+            2,
+            "cycle {cycle}: UI stage snapshot after staging bsa"
+        );
 
         // 2. Stage `ca` -> expect {aab, bsa, ca} (must NOT unstage `bsa`!)
         let _ = handle.dispatch(TaskRequest::StageTargets {
@@ -3342,7 +3437,11 @@ async fn sequential_stage_and_unstage_never_clobber_other_files_across_workers()
             vec!["aab", "bsa", "ca"],
             "cycle {cycle}: staging ca must not revert bsa to unstaged"
         );
-        assert_eq!(st.staged.len(), 3, "cycle {cycle}: UI stage snapshot after staging ca");
+        assert_eq!(
+            st.staged.len(),
+            3,
+            "cycle {cycle}: UI stage snapshot after staging ca"
+        );
 
         // 3. Unstage `ca` -> expect {aab, bsa}
         let _ = handle.dispatch(TaskRequest::UnstageTargets {
@@ -3611,7 +3710,13 @@ async fn linked_worktree_detects_common_dir_pre_commit_hook_and_blocks_commit() 
 
     git(
         &main_dir,
-        &["worktree", "add", "-b", "wt-branch", wt_dir.to_str().unwrap()],
+        &[
+            "worktree",
+            "add",
+            "-b",
+            "wt-branch",
+            wt_dir.to_str().unwrap(),
+        ],
     );
 
     let main_loc = RepoLocation::discover(&main_dir).unwrap();
@@ -3730,7 +3835,10 @@ async fn dangling_symlink_stages_as_120000_and_rejects_partial_stage_buffer() {
         )
         .await;
         assert!(diff.is_symlink);
-        assert!(diff.local_exists, "dangling symlink must not be treated as Missing");
+        assert!(
+            diff.local_exists,
+            "dangling symlink must not be treated as Missing"
+        );
         assert_eq!(diff.local_bytes, b"nonexistent/target.txt");
         assert_eq!(diff.staged_bytes, b"nonexistent/target.txt");
         assert!(diff.mode_change.as_ref().is_some_and(|mc| mc.is_symlink));
@@ -3938,7 +4046,11 @@ async fn diff_surfaces_mode_only_permission_change_and_no_newline_at_eof() {
         DetailsKey::single(c2),
     )
     .await;
-    let script_change = bundle.changes.iter().find(|c| c.path == "script.sh").unwrap();
+    let script_change = bundle
+        .changes
+        .iter()
+        .find(|c| c.path == "script.sh")
+        .unwrap();
     let mode_file_diff = fetch_file_diff(
         &handle,
         &mut rx,
@@ -4112,7 +4224,11 @@ async fn diff_whitespace_modes_and_binary_metadata_work_for_commit_and_stage() {
     git(dir, &["commit", "-m", "initial"]);
 
     // Commit 2: pure indentation/trailing-space change in indent.rs + resized binary blob.bin
-    fs::write(dir.join("indent.rs"), "fn main() {\n    let   x = 1;   \n}\n").unwrap();
+    fs::write(
+        dir.join("indent.rs"),
+        "fn main() {\n    let   x = 1;   \n}\n",
+    )
+    .unwrap();
     let mut bin_v2 = vec![0xABu8; 15_155];
     bin_v2[0..4].copy_from_slice(&[0x89, b'P', b'N', b'G']);
     bin_v2[10] = 0x00;
@@ -4189,7 +4305,10 @@ async fn diff_whitespace_modes_and_binary_metadata_work_for_commit_and_stage() {
     assert!(info.old_oid.is_some());
     assert!(info.new_oid.is_some());
     assert_ne!(info.old_oid, info.new_oid);
-    assert_eq!(info.size_summary("(none)"), "12.4 KiB → 14.8 KiB (+2.4 KiB)");
+    assert_eq!(
+        info.size_summary("(none)"),
+        "12.4 KiB → 14.8 KiB (+2.4 KiB)"
+    );
 
     // 3. Stage Diff with IgnoreChange vs IgnoreAll (-w) on `let   x = 1;` vs `let x=1;`
     let stage_ws_b = fetch_stage_diff(
@@ -4282,7 +4401,8 @@ async fn commit_template_merge_msg_comment_char_cleanup_and_allow_empty() {
         &mut rx,
         1,
         CommitRequest {
-            message: "; ignore me\nfeat: first commit\n\n# markdown heading kept\n; trailing".into(),
+            message: "; ignore me\nfeat: first commit\n\n# markdown heading kept\n; trailing"
+                .into(),
             amend: false,
             signoff: false,
             run_hooks: true,
@@ -4368,9 +4488,10 @@ async fn commit_template_merge_msg_comment_char_cleanup_and_allow_empty() {
     )
     .await;
     assert!(res3.success, "merge commit failed: {res3:?}");
-    let merged_msg = String::from_utf8_lossy(&git_output(dir, &["log", "-1", "--pretty=%B"]).stdout)
-        .trim()
-        .to_string();
+    let merged_msg =
+        String::from_utf8_lossy(&git_output(dir, &["log", "-1", "--pretty=%B"]).stdout)
+            .trim()
+            .to_string();
     assert!(merged_msg.contains("Merge branch 'topic'"), "{merged_msg}");
     assert!(!merged_msg.contains("cli comment to strip"), "{merged_msg}");
 }
@@ -4421,9 +4542,10 @@ async fn set_identity_op_configures_repo_and_allows_commit() {
     )
     .await;
     assert!(res.success, "{res:?}");
-    let author = String::from_utf8_lossy(&git_output(dir, &["log", "-1", "--pretty=%an <%ae>"]).stdout)
-        .trim()
-        .to_string();
+    let author =
+        String::from_utf8_lossy(&git_output(dir, &["log", "-1", "--pretty=%an <%ae>"]).stdout)
+            .trim()
+            .to_string();
     assert_eq!(author, "Spec13 Identity <spec13@example.com>");
 }
 
@@ -4445,7 +4567,11 @@ async fn dirty_worktree_push_rejected_smart_rebase_retry_preserves_changes() {
     );
     git(
         dir_a,
-        &["config", "remote.origin.push", "refs/heads/feat/*:refs/heads/team/*"],
+        &[
+            "config",
+            "remote.origin.push",
+            "refs/heads/feat/*:refs/heads/team/*",
+        ],
     );
 
     fs::write(dir_a.join("base.txt"), "base\n").unwrap();
@@ -4491,7 +4617,10 @@ async fn dirty_worktree_push_rejected_smart_rebase_retry_preserves_changes() {
         _ => None,
     })
     .await;
-    assert_eq!(outgoing.remote_oid, Some(rev(dir_a, "refs/remotes/origin/main")));
+    assert_eq!(
+        outgoing.remote_oid,
+        Some(rev(dir_a, "refs/remotes/origin/main"))
+    );
 
     let push_main = GitOp::Push {
         branch: "main".into(),
@@ -4523,7 +4652,10 @@ async fn dirty_worktree_push_rejected_smart_rebase_retry_preserves_changes() {
         ]),
     )
     .await;
-    assert!(retry.success, "smart rebase & retry must succeed: {retry:?}");
+    assert!(
+        retry.success,
+        "smart rebase & retry must succeed: {retry:?}"
+    );
     assert_eq!(rev(bare_dir.path(), "refs/heads/main"), rev(dir_a, "HEAD"));
     assert!(dir_a.join("remote.txt").exists());
     assert_eq!(
@@ -4637,14 +4769,25 @@ async fn crlf_precommit_warning_and_fix_autocrlf_workflow() {
     git(dir, &["commit", "-m", "initial"]);
 
     // Configure .gitattributes covering *.auto and *.eol; stage CRLF text, binary, and attributed files.
-    fs::write(dir.join(".gitattributes"), "*.auto text=auto\n*.eol eol=crlf\n").unwrap();
+    fs::write(
+        dir.join(".gitattributes"),
+        "*.auto text=auto\n*.eol eol=crlf\n",
+    )
+    .unwrap();
     fs::write(dir.join("win.txt"), b"alpha\r\nbeta\r\n").unwrap();
     fs::write(dir.join("bin.dat"), b"PNG\0\r\ndata\r\n").unwrap();
     fs::write(dir.join("managed.auto"), b"line1\r\nline2\r\n").unwrap();
     fs::write(dir.join("explicit.eol"), b"line1\r\nline2\r\n").unwrap();
     git(
         dir,
-        &["add", ".gitattributes", "win.txt", "bin.dat", "managed.auto", "explicit.eol"],
+        &[
+            "add",
+            ".gitattributes",
+            "win.txt",
+            "bin.dat",
+            "managed.auto",
+            "explicit.eol",
+        ],
     );
 
     let loc = RepoLocation::discover(dir).unwrap();
@@ -4692,7 +4835,10 @@ async fn crlf_precommit_warning_and_fix_autocrlf_workflow() {
         _ => None,
     })
     .await;
-    assert!(commit_res.success, "expected commit to succeed: {commit_res:?}");
+    assert!(
+        commit_res.success,
+        "expected commit to succeed: {commit_res:?}"
+    );
 
     let autocrlf_out = git_output(dir, &["config", "--local", "--get", "core.autocrlf"]);
     assert!(autocrlf_out.status.success());
@@ -4762,7 +4908,12 @@ async fn apply_patch_depth_options_strip_directory_partial_include_and_reverse()
         directory: Some("sub".into()),
         include_paths: vec!["sub/a.txt".into()],
     };
-    let check = check_patch(&handle, &mut rx, PatchCheckKey::new(source.clone(), partial_opts.clone())).await;
+    let check = check_patch(
+        &handle,
+        &mut rx,
+        PatchCheckKey::new(source.clone(), partial_opts.clone()),
+    )
+    .await;
     assert!(check.applies(), "{check:?}");
     assert!(!check.has_index_headers);
     assert_eq!(check.files.len(), 1);
@@ -4790,7 +4941,12 @@ async fn apply_patch_depth_options_strip_directory_partial_include_and_reverse()
         reverse: true,
         ..partial_opts
     };
-    let rev_check = check_patch(&handle, &mut rx, PatchCheckKey::new(source.clone(), rev_opts.clone())).await;
+    let rev_check = check_patch(
+        &handle,
+        &mut rx,
+        PatchCheckKey::new(source.clone(), rev_opts.clone()),
+    )
+    .await;
     assert!(rev_check.applies(), "{rev_check:?}");
     let reverted = run_git_op(
         &handle,
@@ -4817,7 +4973,9 @@ async fn apply_patch_depth_options_strip_directory_partial_include_and_reverse()
 
 #[tokio::test]
 async fn create_patch_mixed_stage_untracked_and_tree_browser_index_export_dir_compare_restore() {
-    use jbgit_core::{ApplyMode, ApplyOptions, DetailsKey, GitOp, PatchInput, PatchSource, RequestSlotId};
+    use jbgit_core::{
+        ApplyMode, ApplyOptions, DetailsKey, GitOp, PatchInput, PatchSource, RequestSlotId,
+    };
 
     let tmp = TempDir::new().unwrap();
     let dir = tmp.path();
@@ -4902,7 +5060,10 @@ async fn create_patch_mixed_stage_untracked_and_tree_browser_index_export_dir_co
         _ => None,
     })
     .await;
-    assert!(paths.iter().any(|p| p == "deep/nested/file.rs"), "{paths:?}");
+    assert!(
+        paths.iter().any(|p| p == "deep/nested/file.rs"),
+        "{paths:?}"
+    );
 
     // 2. ExportTreeBlob writes raw binary bytes intact to external destination.
     let exported_bin = out_dir.path().join("exported.dat");
@@ -4945,10 +5106,9 @@ async fn create_patch_mixed_stage_untracked_and_tree_browser_index_export_dir_co
     .await;
     assert!(restore_wt.success, "{restore_wt:?}");
     assert_eq!(worktree_text(dir, "deep/nested/file.rs"), "fn v1() {}\n");
-    let index_after_wt = String::from_utf8_lossy(
-        &git_output(dir, &["show", ":deep/nested/file.rs"]).stdout,
-    )
-    .replace("\r\n", "\n");
+    let index_after_wt =
+        String::from_utf8_lossy(&git_output(dir, &["show", ":deep/nested/file.rs"]).stdout)
+            .replace("\r\n", "\n");
     assert_eq!(
         index_after_wt, "fn v2_local() {}\n",
         "--worktree restore must keep staged changes intact"
@@ -4967,10 +5127,9 @@ async fn create_patch_mixed_stage_untracked_and_tree_browser_index_export_dir_co
     )
     .await;
     assert!(restore_both.success, "{restore_both:?}");
-    let index_after_both = String::from_utf8_lossy(
-        &git_output(dir, &["show", ":deep/nested/file.rs"]).stdout,
-    )
-    .replace("\r\n", "\n");
+    let index_after_both =
+        String::from_utf8_lossy(&git_output(dir, &["show", ":deep/nested/file.rs"]).stdout)
+            .replace("\r\n", "\n");
     assert_eq!(index_after_both, "fn v1() {}\n");
 }
 
@@ -5024,7 +5183,11 @@ async fn file_history_branch_scopes_pagination_and_blame_move_and_commit_date() 
     let mut all_key = FileHistoryKey::new("shared.txt", None, true, None);
     all_key.scope = HistoryBranchScope::AllBranches;
     let all_hist = fetch_file_history(&handle, &mut rx, all_key).await;
-    let all_summaries: Vec<&str> = all_hist.entries.iter().map(|e| e.summary.as_str()).collect();
+    let all_summaries: Vec<&str> = all_hist
+        .entries
+        .iter()
+        .map(|e| e.summary.as_str())
+        .collect();
     assert!(
         all_summaries.contains(&"feat: touch shared.txt"),
         "AllBranches must include feature commit; got {all_summaries:?}"
@@ -5039,7 +5202,11 @@ async fn file_history_branch_scopes_pagination_and_blame_move_and_commit_date() 
     let mut feat_key = FileHistoryKey::new("shared.txt", None, true, None);
     feat_key.scope = HistoryBranchScope::Branch("feature".into());
     let feat_hist = fetch_file_history(&handle, &mut rx, feat_key).await;
-    let feat_summaries: Vec<&str> = feat_hist.entries.iter().map(|e| e.summary.as_str()).collect();
+    let feat_summaries: Vec<&str> = feat_hist
+        .entries
+        .iter()
+        .map(|e| e.summary.as_str())
+        .collect();
     assert_eq!(feat_summaries, vec!["feat: touch shared.txt", "c1: base"]);
 
     // 3. Pagination: limit=3 truncates at 3; increasing limit=10 loads all 6 on main without duplicates
@@ -5055,7 +5222,11 @@ async fn file_history_branch_scopes_pagination_and_blame_move_and_commit_date() 
     assert_eq!(page2.entries.len(), 6);
     assert!(!page2.truncated);
     let unique_oids: HashSet<Oid> = page2.entries.iter().map(|e| e.oid).collect();
-    assert_eq!(unique_oids.len(), 6, "pagination must never duplicate commits");
+    assert_eq!(
+        unique_oids.len(),
+        6,
+        "pagination must never duplicate commits"
+    );
 
     // 4. Blame parses distinct committer_time vs author.time and runs with MoveDetection::WithinFile (-M)
     let blame = fetch_blame(
@@ -5143,8 +5314,8 @@ async fn bisect_five_commits_locates_culprit_and_resets() {
         )
         .await;
         assert!(step.success, "bisect mark failed: {step:?}");
-        let log_out = String::from_utf8_lossy(&git_output(dir, &["bisect", "log"]).stdout)
-            .to_string();
+        let log_out =
+            String::from_utf8_lossy(&git_output(dir, &["bisect", "log"]).stdout).to_string();
         if log_out.contains("first bad commit") {
             assert!(
                 log_out.contains(&c3_culprit.to_string()),
@@ -5153,7 +5324,8 @@ async fn bisect_five_commits_locates_culprit_and_resets() {
             break;
         }
     }
-    let final_log = String::from_utf8_lossy(&git_output(dir, &["bisect", "log"]).stdout).to_string();
+    let final_log =
+        String::from_utf8_lossy(&git_output(dir, &["bisect", "log"]).stdout).to_string();
     assert!(
         final_log.contains(&format!("first bad commit: [{c3_culprit}]")),
         "bisect must identify commit 3 ({c3_culprit}) as first bad commit:\n{final_log}"
@@ -5285,10 +5457,9 @@ async fn submodule_gitlink_stage_unstage_discard_and_commit_update() {
     .await;
     assert!(commit_out.success, "commit failed: {commit_out:?}");
 
-    let head_tree = String::from_utf8_lossy(
-        &git_output(&main_dir, &["ls-tree", "HEAD", "deps/sub"]).stdout,
-    )
-    .to_string();
+    let head_tree =
+        String::from_utf8_lossy(&git_output(&main_dir, &["ls-tree", "HEAD", "deps/sub"]).stdout)
+            .to_string();
     assert!(
         head_tree.contains(&sub_v2.to_string()),
         "HEAD must point to updated submodule commit {sub_v2}, got: {head_tree}"
@@ -5307,7 +5478,11 @@ async fn worktree_add_copies_worktreeinclude_ignored_files() {
     git(&dir, &["config", "user.email", "tester@example.com"]);
     git(&dir, &["config", "commit.gpgsign", "false"]);
 
-    fs::write(dir.join(".gitignore"), ".env\n.env.local\nsecrets/\nignored.log\n").unwrap();
+    fs::write(
+        dir.join(".gitignore"),
+        ".env\n.env.local\nsecrets/\nignored.log\n",
+    )
+    .unwrap();
     fs::write(
         dir.join(".worktreeinclude"),
         "# Copy local env & secrets into new worktrees\n.env\nsecrets/\n!secrets/skip.txt\n",
@@ -5431,6 +5606,12 @@ async fn clone_repository_async_does_not_double_relative_subdir_paths() {
     };
     let res = jbgit_engine::clone_repository_async(req, None, None, |_| {}).await;
     let out = res.expect("clone should succeed");
-    assert!(out.join("hello.txt").is_file(), "cloned worktree missing at {out:?}");
-    assert!(!out.join("cloned_repo").exists(), "target path must not be doubled");
+    assert!(
+        out.join("hello.txt").is_file(),
+        "cloned worktree missing at {out:?}"
+    );
+    assert!(
+        !out.join("cloned_repo").exists(),
+        "target path must not be doubled"
+    );
 }

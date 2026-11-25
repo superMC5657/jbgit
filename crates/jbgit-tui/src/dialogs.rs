@@ -34,9 +34,13 @@ pub enum InputValidation {
     },
     /// New working-tree location: non-empty and not an existing file or
     /// non-empty directory (relative paths resolve against `base`).
-    NewPath { base: std::path::PathBuf },
+    NewPath {
+        base: std::path::PathBuf,
+    },
     /// Existing file (relative paths resolve against `base`); `Tab` completes.
-    ExistingFile { base: std::path::PathBuf },
+    ExistingFile {
+        base: std::path::PathBuf,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -136,9 +140,10 @@ impl WorktreeDialogCtx {
             WorktreeBranch::Detached(oid) => oid.short(),
         };
         let title = match &branch {
-            WorktreeBranch::Detached(oid) => {
-                i18n.t_fmt("dialog.worktree.path_title_detached", &[("rev", &oid.short())])
-            }
+            WorktreeBranch::Detached(oid) => i18n.t_fmt(
+                "dialog.worktree.path_title_detached",
+                &[("rev", &oid.short())],
+            ),
             _ => i18n.t_fmt("dialog.worktree.path_title", &[("branch", &label)]),
         };
         Dialog::Input(
@@ -249,8 +254,7 @@ impl InputDialog {
                 error_key,
             } => {
                 let v = self.value.trim();
-                (!candidates.iter().any(|c| c == v))
-                    .then(|| i18n.t_fmt(error_key, &[("name", v)]))
+                (!candidates.iter().any(|c| c == v)).then(|| i18n.t_fmt(error_key, &[("name", v)]))
             }
             InputValidation::ExistingFile { base } => {
                 let v = self.value.trim();
@@ -266,8 +270,8 @@ impl InputDialog {
                     return Some(i18n.t("common.cannot_be_empty").to_string());
                 }
                 let p = resolve_path(base, v);
-                let occupied = p.is_file()
-                    || std::fs::read_dir(&p).is_ok_and(|mut d| d.next().is_some());
+                let occupied =
+                    p.is_file() || std::fs::read_dir(&p).is_ok_and(|mut d| d.next().is_some());
                 occupied.then(|| i18n.t("dialog.worktree.path_exists").to_string())
             }
         }
@@ -387,15 +391,15 @@ impl InputDialog {
                     push: *push,
                 })]
             }
-            InputIntent::NewWorktreeBranch { start, ctx } => vec![Action::OpenDialog(Box::new(
-                ctx.path_dialog(
+            InputIntent::NewWorktreeBranch { start, ctx } => {
+                vec![Action::OpenDialog(Box::new(ctx.path_dialog(
                     WorktreeBranch::New {
                         name: value,
                         start: start.clone(),
                     },
                     i18n,
-                ),
-            ))],
+                )))]
+            }
             InputIntent::ExistingWorktreeBranch { ctx } => vec![Action::OpenDialog(Box::new(
                 ctx.path_dialog(WorktreeBranch::Existing(value), i18n),
             ))],
@@ -870,7 +874,10 @@ impl RebaseTodoDialog {
             .iter()
             .filter(|e| e.action.is_commit())
             .collect();
-        let first_kept = commits.iter().copied().find(|e| e.action != TodoAction::Drop);
+        let first_kept = commits
+            .iter()
+            .copied()
+            .find(|e| e.action != TodoAction::Drop);
         if let Some(e) = first_kept
             && matches!(e.action, TodoAction::Squash | TodoAction::Fixup)
         {
@@ -884,7 +891,10 @@ impl RebaseTodoDialog {
             .copied()
             .find(|e| e.action == TodoAction::Reword && e.message.is_none())
         {
-            return Some(i18n.t_fmt("dialog.rebase.err_reword_missing", &[("subject", &e.subject)]));
+            return Some(i18n.t_fmt(
+                "dialog.rebase.err_reword_missing",
+                &[("subject", &e.subject)],
+            ));
         }
         None
     }
@@ -964,7 +974,15 @@ impl MergeDialogRow {
 }
 
 /// `-s` choices offered by the dialog (empty = Git default).
-pub const MERGE_STRATEGIES: &[&str] = &["", "ort", "recursive", "resolve", "octopus", "ours", "subtree"];
+pub const MERGE_STRATEGIES: &[&str] = &[
+    "",
+    "ort",
+    "recursive",
+    "resolve",
+    "octopus",
+    "ours",
+    "subtree",
+];
 /// `-X` choices offered by the dialog (empty = none).
 pub const MERGE_STRATEGY_OPTIONS: &[&str] = &[
     "",
@@ -1048,8 +1066,11 @@ impl MergeDialog {
                 o.strategy = cycle_choice(MERGE_STRATEGIES, o.strategy.as_deref(), forward);
             }
             MergeDialogRow::StrategyOption => {
-                o.strategy_option =
-                    cycle_choice(MERGE_STRATEGY_OPTIONS, o.strategy_option.as_deref(), forward);
+                o.strategy_option = cycle_choice(
+                    MERGE_STRATEGY_OPTIONS,
+                    o.strategy_option.as_deref(),
+                    forward,
+                );
             }
             MergeDialogRow::Message => {}
         }
@@ -1285,15 +1306,13 @@ impl PullDialog {
             .map(|(r, _)| r.to_string())
             .or_else(|| snap.default_remote())
             .or_else(|| remotes.first().cloned());
-        let default_branch = upstream
-            .map(|(_, b)| b.to_string())
-            .or_else(|| {
-                let rem = default_remote.as_deref()?;
-                remote_branches
-                    .iter()
-                    .find(|(r, b)| r == rem && b == &current)
-                    .map(|(_, b)| b.clone())
-            });
+        let default_branch = upstream.map(|(_, b)| b.to_string()).or_else(|| {
+            let rem = default_remote.as_deref()?;
+            remote_branches
+                .iter()
+                .find(|(r, b)| r == rem && b == &current)
+                .map(|(_, b)| b.clone())
+        });
         Self {
             current,
             remotes,
@@ -1328,7 +1347,9 @@ impl PullDialog {
         self.remotes = snap.available_remotes();
         self.remote_branches = Self::collect_remote_branches(snap);
         if self.options.remote.is_none() {
-            self.options.remote = snap.default_remote().or_else(|| self.remotes.first().cloned());
+            self.options.remote = snap
+                .default_remote()
+                .or_else(|| self.remotes.first().cloned());
         }
     }
 
@@ -1668,20 +1689,25 @@ impl RebaseDialog {
     }
 
     pub fn error(&self, i18n: &I18n) -> Option<String> {
-        self.options.validate(self.git_version).err().map(|e| match e {
-            RebaseOptionError::MissingOnto => i18n.t("dialog.rebase_opts.err_missing_onto").into(),
-            RebaseOptionError::RootWithUpstream => {
-                i18n.t("dialog.rebase_opts.err_root_upstream").into()
-            }
-            RebaseOptionError::UpdateRefsUnsupported(v) => i18n.t_fmt(
-                "dialog.rebase_opts.err_update_refs_version",
-                &[("version", &v.to_string())],
-            ),
-            RebaseOptionError::RebaseMergesUnsupported(v) => i18n.t_fmt(
-                "dialog.rebase_opts.err_rebase_merges_version",
-                &[("version", &v.to_string())],
-            ),
-        })
+        self.options
+            .validate(self.git_version)
+            .err()
+            .map(|e| match e {
+                RebaseOptionError::MissingOnto => {
+                    i18n.t("dialog.rebase_opts.err_missing_onto").into()
+                }
+                RebaseOptionError::RootWithUpstream => {
+                    i18n.t("dialog.rebase_opts.err_root_upstream").into()
+                }
+                RebaseOptionError::UpdateRefsUnsupported(v) => i18n.t_fmt(
+                    "dialog.rebase_opts.err_update_refs_version",
+                    &[("version", &v.to_string())],
+                ),
+                RebaseOptionError::RebaseMergesUnsupported(v) => i18n.t_fmt(
+                    "dialog.rebase_opts.err_rebase_merges_version",
+                    &[("version", &v.to_string())],
+                ),
+            })
     }
 
     pub fn confirm_actions(&self) -> Vec<Action> {
@@ -1778,16 +1804,15 @@ impl CreatePatchDialog {
             })];
         }
         let dest = resolve_path(&self.base, &self.path);
-        let remember_dir = if dest.is_dir()
-            || self.path.trim().ends_with('/')
-            || self.path.trim().ends_with('\\')
-        {
-            dest.clone()
-        } else {
-            dest.parent()
-                .map(std::path::Path::to_path_buf)
-                .unwrap_or_else(|| self.base.clone())
-        };
+        let remember_dir =
+            if dest.is_dir() || self.path.trim().ends_with('/') || self.path.trim().ends_with('\\')
+            {
+                dest.clone()
+            } else {
+                dest.parent()
+                    .map(std::path::Path::to_path_buf)
+                    .unwrap_or_else(|| self.base.clone())
+            };
         vec![Action::ConfirmCreatePatchFile {
             source: self.source.clone(),
             output: dest,
@@ -2137,7 +2162,10 @@ pub fn route_dialog_key(dialog: &mut Dialog, key: &KeyEvent, i18n: &I18n) -> Dia
         },
         Dialog::Identity(d) => match key.code {
             KeyCode::Enter => {
-                if d.focused == IdentityField::Name && !d.name.trim().is_empty() && d.email.trim().is_empty() {
+                if d.focused == IdentityField::Name
+                    && !d.name.trim().is_empty()
+                    && d.email.trim().is_empty()
+                {
                     d.focused = IdentityField::Email;
                     DialogKey::Redraw
                 } else {
@@ -2275,7 +2303,9 @@ pub fn route_dialog_key(dialog: &mut Dialog, key: &KeyEvent, i18n: &I18n) -> Dia
                 d.message.clear();
                 DialogKey::Redraw
             }
-            KeyCode::Char(c) if plain && !c.is_control() && d.focused == StashPushField::Message => {
+            KeyCode::Char(c)
+                if plain && !c.is_control() && d.focused == StashPushField::Message =>
+            {
                 d.message.push(c);
                 DialogKey::Redraw
             }
@@ -2430,10 +2460,7 @@ pub fn route_dialog_key(dialog: &mut Dialog, key: &KeyEvent, i18n: &I18n) -> Dia
                 }
                 KeyCode::Char(c) if plain => {
                     let c = c.to_ascii_lowercase();
-                    match MergeDialogRow::ALL
-                        .iter()
-                        .position(|r| r.mnemonic() == c)
-                    {
+                    match MergeDialogRow::ALL.iter().position(|r| r.mnemonic() == c) {
                         Some(idx) => {
                             d.selected = idx;
                             let row = d.row();
@@ -2488,10 +2515,7 @@ pub fn route_dialog_key(dialog: &mut Dialog, key: &KeyEvent, i18n: &I18n) -> Dia
                 }
                 KeyCode::Char(c) if plain => {
                     let c = c.to_ascii_lowercase();
-                    match PullDialogRow::ALL
-                        .iter()
-                        .position(|r| r.mnemonic() == c)
-                    {
+                    match PullDialogRow::ALL.iter().position(|r| r.mnemonic() == c) {
                         Some(idx) => {
                             d.selected = idx;
                             let row = d.row();
@@ -2546,10 +2570,7 @@ pub fn route_dialog_key(dialog: &mut Dialog, key: &KeyEvent, i18n: &I18n) -> Dia
                 }
                 KeyCode::Char(c) if plain && !editing => {
                     let c = c.to_ascii_lowercase();
-                    match RebaseDialogRow::ALL
-                        .iter()
-                        .position(|r| r.mnemonic() == c)
-                    {
+                    match RebaseDialogRow::ALL.iter().position(|r| r.mnemonic() == c) {
                         Some(idx) => {
                             d.selected = idx;
                             let row = d.row();

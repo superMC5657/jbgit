@@ -113,7 +113,10 @@ fn load_reflog_sync_recovers_dropped_commit_after_reset_hard_and_paginates() {
     assert_eq!(bundle.entries[0].oid, first_oid);
     assert_eq!(bundle.entries[0].action, ReflogActionKind::Reset);
     assert!(
-        bundle.entries.iter().any(|e| e.oid == dropped_oid && e.action == ReflogActionKind::Commit),
+        bundle
+            .entries
+            .iter()
+            .any(|e| e.oid == dropped_oid && e.action == ReflogActionKind::Commit),
         "reflog must expose the dropped commit OID for recovery"
     );
 

@@ -46,7 +46,11 @@ impl AppState {
         match event {
             UiAsyncEvent::TaskStamped { .. } => unreachable!("unwrapped above"),
             UiAsyncEvent::ContainingBranches { oid, token, names } => {
-                if self.log.details.resolve_containing_branches(oid, &token, names) {
+                if self
+                    .log
+                    .details
+                    .resolve_containing_branches(oid, &token, names)
+                {
                     self.needs_redraw = true;
                 }
             }
@@ -65,10 +69,8 @@ impl AppState {
                         break;
                     }
                 }
-                self.status_notice = Some(
-                    self.i18n
-                        .t_fmt("toast.repo_init_failed", &[("err", &err)]),
-                );
+                self.status_notice =
+                    Some(self.i18n.t_fmt("toast.repo_init_failed", &[("err", &err)]));
                 self.needs_redraw = true;
             }
             UiAsyncEvent::CloneProgress(line) => {
@@ -86,10 +88,8 @@ impl AppState {
                         !matches!(l, ModalLayer::CloneRepo(_) | ModalLayer::Welcome(_))
                     });
                     let shown = dir.display().to_string();
-                    self.status_notice = Some(
-                        self.i18n
-                            .t_fmt("toast.repo_cloned", &[("path", &shown)]),
-                    );
+                    self.status_notice =
+                        Some(self.i18n.t_fmt("toast.repo_cloned", &[("path", &shown)]));
                     let auto_confirm = self.repo_snapshot.is_none();
                     self.request_repo_switch(&dir, auto_confirm);
                     self.needs_redraw = true;
@@ -102,10 +102,8 @@ impl AppState {
                             break;
                         }
                     }
-                    self.status_notice = Some(
-                        self.i18n
-                            .t_fmt("toast.repo_clone_failed", &[("err", &err)]),
-                    );
+                    self.status_notice =
+                        Some(self.i18n.t_fmt("toast.repo_clone_failed", &[("err", &err)]));
                     self.needs_redraw = true;
                 }
             },
@@ -161,10 +159,12 @@ impl AppState {
                 epoch,
                 highlighted,
             } => {
-                if self
-                    .stage_workbench
-                    .apply_syntax_highlighted(sk, epoch, highlighted, &mut self.stage_syntax)
-                {
+                if self.stage_workbench.apply_syntax_highlighted(
+                    sk,
+                    epoch,
+                    highlighted,
+                    &mut self.stage_syntax,
+                ) {
                     self.needs_redraw = true;
                 }
             }
@@ -173,7 +173,10 @@ impl AppState {
                 epoch,
                 highlighted,
             } => {
-                if !self.range_syntax.finish_cancelable(&(oid, path, range), epoch) {
+                if !self
+                    .range_syntax
+                    .finish_cancelable(&(oid, path, range), epoch)
+                {
                     return effects;
                 }
                 for layer in &mut self.modal_stack {
@@ -281,7 +284,10 @@ impl AppState {
 
         match event {
             EngineEvent::RepoSnapshotLoaded { snapshot, epoch } => {
-                if !self.request_slots.accept(RequestSlotId::RepoSnapshot, epoch) {
+                if !self
+                    .request_slots
+                    .accept(RequestSlotId::RepoSnapshot, epoch)
+                {
                     return effects;
                 }
                 self.loading_snapshot = false;
@@ -354,7 +360,8 @@ impl AppState {
                         pd.details_requested = None;
                     }
                     if pd.desired_details_key().as_ref() == Some(&bundle.key) {
-                        pd.selected_file = pd.selected_file.min(bundle.changes.len().saturating_sub(1));
+                        pd.selected_file =
+                            pd.selected_file.min(bundle.changes.len().saturating_sub(1));
                     }
                 }
                 let rebase_sync = slot == RequestSlotId::RebaseCommitDetails;
@@ -381,8 +388,10 @@ impl AppState {
                         rf.details_requested = None;
                     }
                     if rf.desired_details_key().as_ref() == Some(&bundle.key) {
-                        rf.changes.selected =
-                            rf.changes.selected.min(bundle.changes.len().saturating_sub(1));
+                        rf.changes.selected = rf
+                            .changes
+                            .selected
+                            .min(bundle.changes.len().saturating_sub(1));
                     }
                 }
                 if slot == RequestSlotId::AnnotateCommitDetails
@@ -398,8 +407,9 @@ impl AppState {
                         fh.details_requested = None;
                     }
                     if fh.desired_details_key().as_ref() == Some(&bundle.key) {
-                        fh.affected_selected =
-                            fh.affected_selected.min(bundle.changes.len().saturating_sub(1));
+                        fh.affected_selected = fh
+                            .affected_selected
+                            .min(bundle.changes.len().saturating_sub(1));
                     }
                 }
                 self.diff_caches.insert_details(bundle);
@@ -518,7 +528,11 @@ impl AppState {
                     _ => {}
                 }
                 let log_wants = self.log.details.diff_visible()
-                    && self.log.details.desired_diff_key(&self.diff_caches).as_ref()
+                    && self
+                        .log
+                        .details
+                        .desired_diff_key(&self.diff_caches)
+                        .as_ref()
                         == Some(&diff.key);
                 let stash_wants = self.active_tab == WorkspaceTab::Stash
                     && self.stash.diff_key(&self.diff_caches).as_ref() == Some(&diff.key);
@@ -593,16 +607,19 @@ impl AppState {
                 {
                     return effects;
                 }
-                let mut range_syntax_job: Option<(jbgit_core::Oid, (u32, u32), Arc<jbgit_core::FileDiff>)> = None;
+                let mut range_syntax_job: Option<(
+                    jbgit_core::Oid,
+                    (u32, u32),
+                    Arc<jbgit_core::FileDiff>,
+                )> = None;
                 let desired_after_load = if let Some(fh) = self.modal_stack.file_history_mut()
                     && fh.key == bundle.key
                 {
                     fh.on_bundle_loaded(bundle);
                     if fh.uses_range_patch() {
-                        if let (Some(range), Some(oid)) = (
-                            fh.key.line_range,
-                            fh.selected_entry().map(|e| e.oid),
-                        ) && let Some(diff) = fh.ensure_range_diff()
+                        if let (Some(range), Some(oid)) =
+                            (fh.key.line_range, fh.selected_entry().map(|e| e.oid))
+                            && let Some(diff) = fh.ensure_range_diff()
                         {
                             range_syntax_job = Some((oid, range, diff));
                         }
@@ -834,8 +851,8 @@ impl AppState {
                     .lines()
                     .map(ToString::to_string)
                     .collect();
-                self.push_modal(ModalLayer::Dialog(Box::new(
-                    Dialog::Choice(ChoiceDialog::confirm_with_default(
+                self.push_modal(ModalLayer::Dialog(Box::new(Dialog::Choice(
+                    ChoiceDialog::confirm_with_default(
                         self.i18n.t("dialog.index_lock.title"),
                         body,
                         self.i18n.t("common.retry"),
@@ -849,8 +866,8 @@ impl AppState {
                             is_read_only: retry_is_read_only,
                             refresh_after: retry_refresh_after,
                         }],
-                    )),
-                )));
+                    ),
+                ))));
             }
             EngineEvent::ExternalFsChanged(scope) => {
                 effects.push(Effect::RefreshScope(scope));

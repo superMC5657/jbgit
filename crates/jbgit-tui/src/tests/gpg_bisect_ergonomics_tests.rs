@@ -14,12 +14,9 @@ use jbgit_engine::{
 };
 
 use super::{
-    TestSession, item_run_actions, make_commit, make_snapshot, menu_item_by_label, oid,
-    screen_text,
+    TestSession, item_run_actions, make_commit, make_snapshot, menu_item_by_label, oid, screen_text,
 };
-use crate::app::{
-    Action, ContextMenuEntryKind, ModalLayer, UiAsyncEvent,
-};
+use crate::app::{Action, ContextMenuEntryKind, ModalLayer, UiAsyncEvent};
 use crate::config::{KeymapConfig, KeymapPreset};
 use crate::dialogs::Dialog;
 use crate::hit_test::{BisectButton, HitTarget};
@@ -50,7 +47,10 @@ fn bisect_banner_buttons_command_catalog_and_log_menu() {
     let mut ts = TestSession::with_snapshot(snapshot_with_bisect());
     let buf = ts.render(120, 30);
     let text = screen_text(&buf);
-    assert!(text.contains("BISECTING"), "banner missing BISECTING:\n{text}");
+    assert!(
+        text.contains("BISECTING"),
+        "banner missing BISECTING:\n{text}"
+    );
     assert!(
         text.contains("~2 step(s) left (3 rev(s))"),
         "banner missing bisect step estimate:\n{text}"
@@ -174,7 +174,8 @@ fn stage_flexible_ignore_submenu_offers_extension_dir_nested_and_editor() {
     std::fs::write(root.join("sub/.gitignore"), "# nested\n").unwrap();
     std::fs::write(root.join("sub/app.log"), "log line\n").unwrap();
 
-    let mut snap = (*make_snapshot(root.to_path_buf(), vec![make_commit(1, vec![], "init")])).clone();
+    let mut snap =
+        (*make_snapshot(root.to_path_buf(), vec![make_commit(1, vec![], "init")])).clone();
     snap.git_dir = root.join(".git");
     snap.common_dir = root.join(".git");
     let mut ts = TestSession::with_snapshot(snap);
@@ -196,7 +197,9 @@ fn stage_flexible_ignore_submenu_offers_extension_dir_nested_and_editor() {
         .stage_workbench
         .rows()
         .iter()
-        .position(|r| matches!(&r.kind, StageTreeRowKind::File { path, .. } if path == "sub/app.log"))
+        .position(
+            |r| matches!(&r.kind, StageTreeRowKind::File { path, .. } if path == "sub/app.log"),
+        )
         .expect("sub/app.log row");
     ts.state_mut().stage_workbench.select_row(row_idx);
 
@@ -546,7 +549,11 @@ fn worktree_remote_branch_menu_force_checkbox_and_setup_command_confirmation() {
 fn issue_14_keymaps_and_i18n_have_no_conflicts_across_all_presets() {
     use std::collections::HashMap;
 
-    for preset in [KeymapPreset::Default, KeymapPreset::Jetbrains, KeymapPreset::Vim] {
+    for preset in [
+        KeymapPreset::Default,
+        KeymapPreset::Jetbrains,
+        KeymapPreset::Vim,
+    ] {
         let km = KeymapConfig::for_preset(preset.clone());
         assert!(
             !km.global.key_bindings.is_empty(),

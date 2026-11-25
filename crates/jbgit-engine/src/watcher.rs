@@ -266,8 +266,8 @@ pub fn classify_git_meta_path(path: &Path, git_dir: &Path, common_dir: &Path) ->
     // Strip `git_dir` first because in linked worktrees `git_dir` lives inside `common_dir`
     // (`<common_dir>/worktrees/<name>`). Matching relative segments avoids false hits on
     // ancestor directories named `logs`, `objects`, or `refs`.
-    let Some(rel) =
-        strip_prefix_normalized(path, git_dir).or_else(|| strip_prefix_normalized(path, common_dir))
+    let Some(rel) = strip_prefix_normalized(path, git_dir)
+        .or_else(|| strip_prefix_normalized(path, common_dir))
     else {
         return RefreshScope::None;
     };
@@ -600,7 +600,11 @@ mod tests {
             RefreshScope::None
         );
         assert_eq!(
-            classify_git_meta_path(&common.join("refs").join("heads").join("main"), &wt_git, common),
+            classify_git_meta_path(
+                &common.join("refs").join("heads").join("main"),
+                &wt_git,
+                common
+            ),
             RefreshScope::RefsAndGraph
         );
         assert_eq!(

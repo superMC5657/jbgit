@@ -8,8 +8,8 @@ use std::sync::Arc;
 use crossterm::event::{KeyCode, KeyModifiers};
 use jbgit_core::{
     BranchCompareDirection, CommitChangesBundle, CommitDetails, DetailsKey, DetailsMode,
-    FileChange, FileStatusKind, GitFailure, GitOp, GitOpOutcome, OngoingKind, OngoingStep,
-    RefInfo, RefKind, RepoSnapshot, RequestSlotId, StageEntry, StageStatusSnapshot, StashEntry,
+    FileChange, FileStatusKind, GitFailure, GitOp, GitOpOutcome, OngoingKind, OngoingStep, RefInfo,
+    RefKind, RepoSnapshot, RequestSlotId, StageEntry, StageStatusSnapshot, StashEntry,
     WorkspaceTab,
 };
 use jbgit_engine::EngineEvent;
@@ -83,8 +83,7 @@ fn branch_cleanup_modal_untoggles_one_batch_deletes_and_restores_undo() {
 
     ts.dispatch(Action::OpenBranchCleanup);
     let initial_selected = {
-        let ModalLayer::BranchCleanup(bc) =
-            ts.state().modal_stack.last().expect("cleanup modal")
+        let ModalLayer::BranchCleanup(bc) = ts.state().modal_stack.last().expect("cleanup modal")
         else {
             panic!("expected BranchCleanup modal");
         };
@@ -118,7 +117,11 @@ fn branch_cleanup_modal_untoggles_one_batch_deletes_and_restores_undo() {
         panic!("expected GitOp::Sequence delete, got {ops:?}");
     };
     assert_eq!(del_ops.len(), initial_selected - 1);
-    assert!(del_ops.iter().all(|o| !matches!(o, GitOp::DeleteBranch { name, .. } if name == "feat/done-gone")));
+    assert!(
+        del_ops
+            .iter()
+            .all(|o| !matches!(o, GitOp::DeleteBranch { name, .. } if name == "feat/done-gone"))
+    );
 
     // Delivering success outcome surfaces batch Undo `[Restore N Branch(es)]` notification!
     ts.deliver_engine_event(EngineEvent::GitOpFinished(GitOpOutcome::ok(
@@ -132,9 +135,11 @@ fn branch_cleanup_modal_untoggles_one_batch_deletes_and_restores_undo() {
         panic!("expected batch restore Sequence, got {undo_ops:?}");
     };
     assert_eq!(restore_ops.len(), del_ops.len());
-    assert!(restore_ops
-        .iter()
-        .all(|o| matches!(o, GitOp::RestoreBranch { .. })));
+    assert!(
+        restore_ops
+            .iter()
+            .all(|o| matches!(o, GitOp::RestoreBranch { .. }))
+    );
 }
 
 #[test]
@@ -357,7 +362,10 @@ fn cherry_pick_revert_no_commit_mainline_picker_and_empty_cherry_pick_recovery()
     )));
     let text = screen_text(&ts.render(120, 36));
     assert!(text.contains("Empty Cherry-Pick"), "{text}");
-    assert!(text.contains("Skip") && text.contains("Allow Empty"), "{text}");
+    assert!(
+        text.contains("Skip") && text.contains("Allow Empty"),
+        "{text}"
+    );
     // Pressing 'e' chooses Allow Empty.
     ts.send_key(KeyCode::Char('e'), KeyModifiers::NONE);
     assert_eq!(ts.take_git_ops(), vec![GitOp::CherryPickAllowEmpty]);

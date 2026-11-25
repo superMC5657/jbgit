@@ -241,8 +241,12 @@ pub fn run_serve(opts: ServeOptions) -> Result<()> {
             let env: CommandEnvelope = match serde_json::from_str(&raw) {
                 Ok(v) => v,
                 Err(e) => {
-                    let resp =
-                        make_error_resp(0, format!("invalid command json: {e}"), &shared, exit_code);
+                    let resp = make_error_resp(
+                        0,
+                        format!("invalid command json: {e}"),
+                        &shared,
+                        exit_code,
+                    );
                     write_resp_atomic(&opts.session_dir, &resp_path, &resp)?;
                     continue;
                 }
@@ -486,20 +490,13 @@ fn wait_after_input(
     wait_quiet(shared, settle_ms, max_wait_ms);
 }
 
-fn wait_for_initial_paint(
-    shared: &Arc<Mutex<SharedPtyState>>,
-    settle_ms: u64,
-    max_wait_ms: u64,
-) {
+fn wait_for_initial_paint(shared: &Arc<Mutex<SharedPtyState>>, settle_ms: u64, max_wait_ms: u64) {
     let start = Instant::now();
     let max_wait = Duration::from_millis(max_wait_ms);
     loop {
         let (painted, eof) = {
             let g = shared.lock().unwrap();
-            (
-                screen_has_content(g.parser.screen(), g.cols, g.rows),
-                g.eof,
-            )
+            (screen_has_content(g.parser.screen(), g.cols, g.rows), g.eof)
         };
         if painted || eof || start.elapsed() >= max_wait {
             break;

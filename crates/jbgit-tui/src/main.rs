@@ -26,8 +26,20 @@ fn parse_cli_args() -> Option<PathBuf> {
     let cli_i18n = jbgit_tui::i18n::I18n::load_for_cli();
     match arg.as_str() {
         "-h" | "--help" => {
-            for k in ["cli.tagline", "cli.usage", "", "cli.options", "cli.opt_help", "cli.opt_print_default", "cli.opt_init_config"] {
-                if k.is_empty() { println!(); } else { println!("{}", cli_i18n.t(k)); }
+            for k in [
+                "cli.tagline",
+                "cli.usage",
+                "",
+                "cli.options",
+                "cli.opt_help",
+                "cli.opt_print_default",
+                "cli.opt_init_config",
+            ] {
+                if k.is_empty() {
+                    println!();
+                } else {
+                    println!("{}", cli_i18n.t(k));
+                }
             }
             None
         }
@@ -40,12 +52,22 @@ fn parse_cli_args() -> Option<PathBuf> {
                 Ok((dir, files)) => {
                     for (name, created) in files {
                         let path_s = format!("{:?}", dir.join(name));
-                        let key = if created { "cli.init_file_generated" } else { "cli.init_file_skipped" };
+                        let key = if created {
+                            "cli.init_file_generated"
+                        } else {
+                            "cli.init_file_skipped"
+                        };
                         println!("{}", cli_i18n.t_fmt(key, &[("path", &path_s)]));
                     }
-                    println!("{}", cli_i18n.t_fmt("cli.init_ok", &[("dir", &format!("{dir:?}"))]));
+                    println!(
+                        "{}",
+                        cli_i18n.t_fmt("cli.init_ok", &[("dir", &format!("{dir:?}"))])
+                    );
                 }
-                Err(e) => eprintln!("{}", cli_i18n.t_fmt("cli.init_err", &[("err", &e.to_string())])),
+                Err(e) => eprintln!(
+                    "{}",
+                    cli_i18n.t_fmt("cli.init_err", &[("err", &e.to_string())])
+                ),
             }
             None
         }
@@ -67,9 +89,7 @@ fn askpass_client_mode() -> Option<i32> {
 /// Starts this session's credential bridge. `JBGIT_ASKPASS_RESPONDER=cancel`
 /// or `=value:<text>` swaps the dialog for a deterministic responder
 /// (`jbgit-pilot` sandboxes / scripted QA).
-fn start_askpass(
-    ui_tx: tokio::sync::mpsc::UnboundedSender<SessionInput>,
-) -> Option<AskpassServer> {
+fn start_askpass(ui_tx: tokio::sync::mpsc::UnboundedSender<SessionInput>) -> Option<AskpassServer> {
     let responder: Arc<dyn AskpassResponder> =
         match std::env::var("JBGIT_ASKPASS_RESPONDER").ok().as_deref() {
             Some("cancel") => Arc::new(FixedResponder::cancelling()),
@@ -82,7 +102,8 @@ fn start_askpass(
                     while let Some(req) = rx.recv().await {
                         // Not generation-stamped: a prompt belongs to a live
                         // git process and is answered whatever repository is bound.
-                        if let Err(e) = ui_tx.send(SessionInput::UiAsync(UiAsyncEvent::Askpass(req)))
+                        if let Err(e) =
+                            ui_tx.send(SessionInput::UiAsync(UiAsyncEvent::Askpass(req)))
                             && let SessionInput::UiAsync(UiAsyncEvent::Askpass(req)) = e.0
                         {
                             req.respond(None);
@@ -155,7 +176,12 @@ async fn switch_repository(
     session.rebind(next_state, writes_finished);
     repo.generation = session.generation();
     if repo.handle.is_some() {
-        session.step_turn([SessionInput::Action(Action::RefreshAll)], Instant::now(), repo.backend(), host);
+        session.step_turn(
+            [SessionInput::Action(Action::RefreshAll)],
+            Instant::now(),
+            repo.backend(),
+            host,
+        );
     }
 }
 
@@ -176,7 +202,12 @@ async fn main() -> Result<()> {
 
     let mut host = ProdHost::new(Some(TerminalGuard::enter()?), ui_async_tx);
     if repo.handle.is_some() {
-        session.step_turn([SessionInput::Action(Action::RefreshAll)], Instant::now(), repo.backend(), &mut host);
+        session.step_turn(
+            [SessionInput::Action(Action::RefreshAll)],
+            Instant::now(),
+            repo.backend(),
+            &mut host,
+        );
     }
 
     let mut event_stream = EventStream::new();
@@ -298,19 +329,58 @@ async fn main() -> Result<()> {
                 let now = Instant::now();
                 if let Some(maybe_term) = poll_stream_ready(&mut event_stream).await {
                     match maybe_term {
-                        Some(Ok(ev)) => if session.ingest_into_batch(SessionInput::Terminal(ev), now, &mut batch_effects, &mut host, &mut report) { break; } else { continue; },
-                        Some(Err(_)) | None => { session.set_should_quit(true); break; }
+                        Some(Ok(ev)) => {
+                            if session.ingest_into_batch(
+                                SessionInput::Terminal(ev),
+                                now,
+                                &mut batch_effects,
+                                &mut host,
+                                &mut report,
+                            ) {
+                                break;
+                            } else {
+                                continue;
+                            }
+                        }
+                        Some(Err(_)) | None => {
+                            session.set_should_quit(true);
+                            break;
+                        }
                     }
                 }
                 if let Some(rx) = repo.events.as_mut() {
                     match rx.try_recv() {
-                        Ok(ev) => if session.ingest_into_batch(SessionInput::EngineFrom(generation, ev), now, &mut batch_effects, &mut host, &mut report) { break; } else { continue; },
-                        Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => repo.events = None,
+                        Ok(ev) => {
+                            if session.ingest_into_batch(
+                                SessionInput::EngineFrom(generation, ev),
+                                now,
+                                &mut batch_effects,
+                                &mut host,
+                                &mut report,
+                            ) {
+                                break;
+                            } else {
+                                continue;
+                            }
+                        }
+                        Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
+                            repo.events = None
+                        }
                         Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {}
                     }
                 }
                 match ui_async_rx.try_recv() {
-                    Ok(ui_input) => if session.ingest_into_batch(ui_input, now, &mut batch_effects, &mut host, &mut report) { break; },
+                    Ok(ui_input) => {
+                        if session.ingest_into_batch(
+                            ui_input,
+                            now,
+                            &mut batch_effects,
+                            &mut host,
+                            &mut report,
+                        ) {
+                            break;
+                        }
+                    }
                     Err(_) => break,
                 }
             }

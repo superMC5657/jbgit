@@ -1,8 +1,8 @@
+mod annotate_and_selection_history_tests;
 mod branch_cleanup_and_options_tests;
 mod branches_and_dialogs_tests;
 mod context_menu_tests;
 mod diff_enhancements_tests;
-mod annotate_and_selection_history_tests;
 mod file_history_and_changes_tests;
 mod footer_and_keymap_tests;
 mod gpg_bisect_ergonomics_tests;
@@ -297,12 +297,7 @@ impl TestSession {
         self.send_event(Event::Mouse(ev))
     }
 
-    pub(super) fn send_mouse(
-        &mut self,
-        kind: MouseEventKind,
-        col: u16,
-        row: u16,
-    ) -> TurnReport {
+    pub(super) fn send_mouse(&mut self, kind: MouseEventKind, col: u16, row: u16) -> TurnReport {
         self.send_event(Event::Mouse(MouseEvent {
             kind,
             column: col,
@@ -315,7 +310,10 @@ impl TestSession {
         self.step([SessionInput::Action(action)])
     }
 
-    pub(super) fn dispatch_many(&mut self, actions: impl IntoIterator<Item = Action>) -> TurnReport {
+    pub(super) fn dispatch_many(
+        &mut self,
+        actions: impl IntoIterator<Item = Action>,
+    ) -> TurnReport {
         self.step(actions.into_iter().map(SessionInput::Action))
     }
 
@@ -336,9 +334,7 @@ impl TestSession {
 
     pub(super) fn render(&mut self, w: u16, h: u16) -> Buffer {
         let mut terminal = Terminal::new(TestBackend::new(w, h)).unwrap();
-        terminal
-            .draw(|f| self.session.render(f))
-            .unwrap();
+        terminal.draw(|f| self.session.render(f)).unwrap();
         terminal.backend().buffer().clone()
     }
 

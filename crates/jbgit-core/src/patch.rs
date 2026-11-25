@@ -554,9 +554,8 @@ fn unquote_path(raw: &str) -> String {
                         && matches!(bytes[i + 2], b'0'..=b'7')
                         && matches!(bytes[i + 3], b'0'..=b'7') =>
                 {
-                    let val = ((d0 - b'0') << 6)
-                        | ((bytes[i + 2] - b'0') << 3)
-                        | (bytes[i + 3] - b'0');
+                    let val =
+                        ((d0 - b'0') << 6) | ((bytes[i + 2] - b'0') << 3) | (bytes[i + 3] - b'0');
                     out.push(val);
                     i += 4;
                 }
@@ -659,10 +658,7 @@ mod tests {
             apply_strip_and_directory("b/src/main.rs", 1, None),
             "src/main.rs"
         );
-        assert_eq!(
-            apply_strip_and_directory("only.txt", 5, Some("sub")),
-            ""
-        );
+        assert_eq!(apply_strip_and_directory("only.txt", 5, Some("sub")), "");
     }
 
     #[test]
@@ -721,7 +717,10 @@ new file mode 100644
         assert!(empty.contains("new file mode 100644"));
         assert!(!empty.contains("@@"));
 
-        assert_eq!(build_untracked_file_patch("bin.dat", b"\x00\x01\x02", false), None);
+        assert_eq!(
+            build_untracked_file_patch("bin.dat", b"\x00\x01\x02", false),
+            None
+        );
     }
 
     #[test]
@@ -764,9 +763,8 @@ index 1111111..2222222 100644
         assert_eq!(sections.len(), 1);
         assert_eq!(sections[0].path, "测试.txt");
 
-        let conflicts = parse_apply_conflicts(&[
-            "U \"dir/\\346\\265\\213\\350\\257\\225.txt\"".to_string(),
-        ]);
+        let conflicts =
+            parse_apply_conflicts(&["U \"dir/\\346\\265\\213\\350\\257\\225.txt\"".to_string()]);
         assert_eq!(conflicts, vec!["dir/测试.txt"]);
 
         assert_eq!(unquote_path("\"a\\tb\\nc\\\"d\\\\e\""), "a\tb\nc\"d\\e");

@@ -354,7 +354,10 @@ fn repo_switcher_lists_recent_worktrees_and_submodules_and_switches() {
     let text = screen_text(&ts.render(120, 30));
     assert!(text.contains("Switch Repository"), "{text}");
     assert!(text.contains("feature/dag-layout"), "{text}");
-    assert!(text.contains("────────"), "expected divider between local and recent:\n{text}");
+    assert!(
+        text.contains("────────"),
+        "expected divider between local and recent:\n{text}"
+    );
 
     // Type to filter, Enter switches.
     ts.type_str("feat");

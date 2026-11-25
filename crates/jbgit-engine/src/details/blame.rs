@@ -372,9 +372,11 @@ pub(crate) async fn load_blame_async(
 
     let loc_pre = location.clone();
     let key_pre = key.clone();
-    pool.run_epoch(crate::pool::TaskPriority::Interactive, token.clone(), move |_| {
-        precheck_blame_target(&loc_pre, &key_pre)
-    })
+    pool.run_epoch(
+        crate::pool::TaskPriority::Interactive,
+        token.clone(),
+        move |_| precheck_blame_target(&loc_pre, &key_pre),
+    )
     .await?;
     if token.is_stale() {
         return Err(EngineError::Cancelled);

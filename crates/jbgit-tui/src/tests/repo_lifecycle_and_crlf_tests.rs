@@ -27,7 +27,10 @@ async fn non_git_dir_opens_welcome_init_and_rebinds_to_workbench() {
     session.state_mut().i18n = Arc::new(I18n::load("en-US", None));
     assert!(repo.handle.is_none(), "non-Git dir starts detached");
     assert!(
-        matches!(session.state().modal_stack.last(), Some(ModalLayer::Welcome(_))),
+        matches!(
+            session.state().modal_stack.last(),
+            Some(ModalLayer::Welcome(_))
+        ),
         "expected Welcome modal in non-Git directory, got {:?}",
         session.state().modal_stack.last()
     );
@@ -36,9 +39,18 @@ async fn non_git_dir_opens_welcome_init_and_rebinds_to_workbench() {
     let mut terminal = Terminal::new(TestBackend::new(110, 30)).unwrap();
     terminal.draw(|f| session.render(f)).unwrap();
     let welcome_screen = screen_text(terminal.backend().buffer());
-    assert!(welcome_screen.contains("Welcome to jbgit"), "{welcome_screen}");
-    assert!(welcome_screen.contains("Initialize Git Repository"), "{welcome_screen}");
-    assert!(welcome_screen.contains("Clone Repository"), "{welcome_screen}");
+    assert!(
+        welcome_screen.contains("Welcome to jbgit"),
+        "{welcome_screen}"
+    );
+    assert!(
+        welcome_screen.contains("Initialize Git Repository"),
+        "{welcome_screen}"
+    );
+    assert!(
+        welcome_screen.contains("Clone Repository"),
+        "{welcome_screen}"
+    );
     assert!(welcome_screen.contains("Open Recent"), "{welcome_screen}");
 
     // Press Enter on the default selection (Initialize Git Repository).
@@ -161,8 +173,14 @@ fn clone_dialog_accessible_from_switcher_and_catalog_infers_dir_and_streams_prog
     let zh_buf = ts.render(100, 30);
     let zh_txt = screen_text(&zh_buf);
     let compact: String = zh_txt.chars().filter(|c| !c.is_whitespace()).collect();
-    assert!(compact.contains("[克隆]"), "CJK submit button clipped:\n{zh_txt}");
-    assert!(compact.contains("[取消]"), "CJK cancel button clipped:\n{zh_txt}");
+    assert!(
+        compact.contains("[克隆]"),
+        "CJK submit button clipped:\n{zh_txt}"
+    );
+    assert!(
+        compact.contains("[取消]"),
+        "CJK cancel button clipped:\n{zh_txt}"
+    );
     ts.state_mut().i18n = Arc::new(I18n::load("en-US", None));
 
     // 6. Deliver CloneFinished(Ok(dest)) -> closes modal and triggers pending_repo_switch
@@ -259,7 +277,10 @@ fn crlf_warning_dialog_supports_fix_as_is_and_dont_warn_again_persistence() {
     assert!(!ts.state().config.jbgit.commit.warn_crlf);
 
     let persisted_file = workdir.join(".jbgit").join("jbgit.toml");
-    assert!(persisted_file.is_file(), "expected .jbgit/jbgit.toml to be written");
+    assert!(
+        persisted_file.is_file(),
+        "expected .jbgit/jbgit.toml to be written"
+    );
     let reloaded = AppConfig::load(Some(&workdir));
     assert!(
         !reloaded.jbgit.commit.warn_crlf,
@@ -284,7 +305,10 @@ warn_crlf = false
     )
     .unwrap();
     cfg.jbgit.merge_overlay(&ov);
-    assert_eq!(cfg.jbgit.git.configured_executable(), Some("/custom/bin/git"));
+    assert_eq!(
+        cfg.jbgit.git.configured_executable(),
+        Some("/custom/bin/git")
+    );
     assert!(!cfg.jbgit.commit.warn_crlf);
 
     let mut ts = TestSession::with_snapshot(snapshot());
@@ -345,6 +369,9 @@ fn keymap_presets_have_no_conflicts_with_clone_repository() {
             }
         }
     }
-    assert_eq!(KeyAction::parse("clone_repository"), KeyAction::CloneRepository);
+    assert_eq!(
+        KeyAction::parse("clone_repository"),
+        KeyAction::CloneRepository
+    );
     assert_eq!(KeyAction::CloneRepository.as_str(), "clone_repository");
 }

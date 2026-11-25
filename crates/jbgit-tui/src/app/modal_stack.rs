@@ -19,15 +19,9 @@ use super::{
 #[derive(Debug)]
 pub enum ModalLayer {
     /// Layer 2: global Branches Quick-View & fuzzy speed-search popup.
-    BranchesPopup {
-        query: String,
-        selected: usize,
-    },
+    BranchesPopup { query: String, selected: usize },
     /// Layer 2: searchable & executable command/shortcut palette (`?`).
-    ShortcutsHelp {
-        query: String,
-        selected: usize,
-    },
+    ShortcutsHelp { query: String, selected: usize },
     /// Layer 2: Darcula / theme palette & glyph debug preview.
     PalettePreview,
     /// Layer 2: inline filter-bar dimension editor (`Branch` / `User` / `Date` / `Paths`).
@@ -40,17 +34,11 @@ pub enum ModalLayer {
         selection_touched: bool,
     },
     /// Layer 2: `Ctrl+G` Go to Hash / Branch / Tag / `HEAD~N`.
-    GoToRevision {
-        query: String,
-    },
+    GoToRevision { query: String },
     /// Layer 2: parent chooser for merge commits with ≥ 2 parents.
-    ChooseParent {
-        selected: usize,
-    },
+    ChooseParent { selected: usize },
     /// Layer 2: child chooser for branch-point commits with ≥ 2 visible children.
-    ChooseChild {
-        selected: usize,
-    },
+    ChooseChild { selected: usize },
     /// Layer 2: maximized scrollable full commit message modal.
     CommitMessage {
         oid: jbgit_core::Oid,
@@ -61,10 +49,7 @@ pub enum ModalLayer {
     /// Layer 2: Git Reflog browser & recovery modal (`git reflog show` + synced diff).
     Reflog(Box<ReflogState>),
     /// Layer 2: commit message history picker (`Ctrl+M` / `[🕘]`).
-    CommitHistory {
-        query: String,
-        selected: usize,
-    },
+    CommitHistory { query: String, selected: usize },
     /// Layer 2: self-contained single-file commit history modal (`--follow` + diff).
     FileHistory(Box<FileHistoryState>),
     /// Layer 2: self-contained per-line git blame / annotate viewer.
@@ -92,13 +77,9 @@ pub enum ModalLayer {
     /// Layer 2: multi-file conflict queue table (`Path | Yours | Theirs | Status`).
     ConflictQueue(Box<ConflictQueueState>),
     /// Layer 2: three-way hunk inspector (`HEAD / Staged / Worktree`).
-    ThreeWayInspector {
-        range_idx: Option<usize>,
-    },
+    ThreeWayInspector { range_idx: Option<usize> },
     /// Layer 2: hook or commit failure output modal.
-    HookError {
-        output: String,
-    },
+    HookError { output: String },
     /// Layer 3: right-click / keyboard context menu (supports cascading submenus via `depth`).
     ContextMenu {
         anchor: (u16, u16),
@@ -591,11 +572,9 @@ impl ModalStack {
         now: Instant,
         menu_hover: &mut Option<MenuHover>,
     ) -> bool {
-        let Some(pos) = self
-            .layers
-            .iter()
-            .rposition(|l| matches!(l, ModalLayer::ContextMenu { depth, .. } if *depth == menu_depth))
-        else {
+        let Some(pos) = self.layers.iter().rposition(
+            |l| matches!(l, ModalLayer::ContextMenu { depth, .. } if *depth == menu_depth),
+        ) else {
             return false;
         };
         if self.layers[pos + 1..]

@@ -130,12 +130,14 @@ impl GraphicsCapabilities {
     /// and `crossterm::terminal::window_size()`.
     pub fn detect() -> Self {
         let start = Instant::now();
-        let window = crossterm::terminal::window_size().ok().map(|w| WindowSizePx {
-            columns: w.columns,
-            rows: w.rows,
-            width_px: w.width,
-            height_px: w.height,
-        });
+        let window = crossterm::terminal::window_size()
+            .ok()
+            .map(|w| WindowSizePx {
+                columns: w.columns,
+                rows: w.rows,
+                width_px: w.width,
+                height_px: w.height,
+            });
         let tmux_passthrough = if std::env::var_os("TMUX").is_some() {
             Some(query_tmux_passthrough(HANDSHAKE_TIMEOUT))
         } else {
@@ -155,10 +157,7 @@ impl GraphicsCapabilities {
     /// Pure capability probe over an environment lookup and an optional
     /// [`WindowSizePx`].
     #[cfg_attr(not(test), allow(dead_code))]
-    pub fn from_probe(
-        env: impl Fn(&str) -> Option<String>,
-        window: Option<WindowSizePx>,
-    ) -> Self {
+    pub fn from_probe(env: impl Fn(&str) -> Option<String>, window: Option<WindowSizePx>) -> Self {
         Self::from_probe_with(env, window, None, |_, _| Some(Duration::ZERO))
     }
 

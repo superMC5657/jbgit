@@ -172,13 +172,17 @@ impl StashWorkbench {
             }
             Action::DiffSearchChar(DiffScope::Stash, ch) => {
                 self.diff.search.push_char(*ch);
-                let diff = self.diff_key(store).and_then(|k| store.peek_diff(&k).cloned());
+                let diff = self
+                    .diff_key(store)
+                    .and_then(|k| store.peek_diff(&k).cloned());
                 let tab = self.diff.tab_size();
                 self.diff.refresh_search(diff.as_ref(), tab);
             }
             Action::DiffSearchBackspace(DiffScope::Stash) => {
                 self.diff.search.backspace();
-                let diff = self.diff_key(store).and_then(|k| store.peek_diff(&k).cloned());
+                let diff = self
+                    .diff_key(store)
+                    .and_then(|k| store.peek_diff(&k).cloned());
                 let tab = self.diff.tab_size();
                 self.diff.refresh_search(diff.as_ref(), tab);
             }
@@ -192,7 +196,9 @@ impl StashWorkbench {
                 self.diff.search.close();
             }
             Action::DiffSearchJump(DiffScope::Stash, delta) => {
-                let diff = self.diff_key(store).and_then(|k| store.peek_diff(&k).cloned());
+                let diff = self
+                    .diff_key(store)
+                    .and_then(|k| store.peek_diff(&k).cloned());
                 let tab = self.diff.tab_size();
                 self.diff.jump_search(*delta, diff.as_ref(), tab);
             }

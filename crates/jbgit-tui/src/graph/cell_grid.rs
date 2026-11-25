@@ -568,12 +568,7 @@ mod tests {
         terminal
             .draw(|f| {
                 let area = Rect::new(0, 0, graph_width, h);
-                let mut ctx = RenderContext::minimal(
-                    &theme,
-                    GlyphMode::Unicode,
-                    &mgr,
-                    &mut hits,
-                );
+                let mut ctx = RenderContext::minimal(&theme, GlyphMode::Unicode, &mgr, &mut hits);
                 let slice = GraphViewportSlice {
                     rows: &slices,
                     area,

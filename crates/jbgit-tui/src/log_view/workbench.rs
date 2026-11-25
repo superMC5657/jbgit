@@ -340,13 +340,12 @@ impl LogWorkbench {
     }
 
     pub fn sync_affected_filter(&mut self) {
-        let next = if self.presentation.show_only_affected_changes
-            && !self.filter.spec.paths.is_empty()
-        {
-            Some(self.filter.spec.paths.clone())
-        } else {
-            None
-        };
+        let next =
+            if self.presentation.show_only_affected_changes && !self.filter.spec.paths.is_empty() {
+                Some(self.filter.spec.paths.clone())
+            } else {
+                None
+            };
         if self.details.changes.affected_filter != next {
             self.details.changes.affected_filter = next;
             self.details.changes.selected = 0;
@@ -403,7 +402,10 @@ impl LogWorkbench {
         let key = DetailsKey::compare_with_local_path(target, path_prefix);
         let t_s = target.short();
         *status_notice = Some(match key.path_prefix.as_deref() {
-            Some(dir) => i18n.t_fmt("toast.comparing_local_dir", &[("target", &t_s), ("dir", dir)]),
+            Some(dir) => i18n.t_fmt(
+                "toast.comparing_local_dir",
+                &[("target", &t_s), ("dir", dir)],
+            ),
             None => i18n.t_fmt("toast.comparing_local", &[("target", &t_s)]),
         });
         self.details.compare_override = Some(key);
@@ -713,7 +715,10 @@ impl LogWorkbench {
                 if p.show_signature_column {
                     self.sig_requested.clear();
                 }
-                ("presentation.show_signature_column", p.show_signature_column)
+                (
+                    "presentation.show_signature_column",
+                    p.show_signature_column,
+                )
             }
             PresentationToggle::RelativeDates => {
                 p.relative_dates = !p.relative_dates;
@@ -733,10 +738,10 @@ impl LogWorkbench {
         };
         let label = ctx.i18n.t(label_key);
         let state = ctx.i18n.on_off(on);
-        *ctx.status_notice = Some(
-            ctx.i18n
-                .t_fmt("toast.presentation_toggle", &[("label", label), ("state", state)]),
-        );
+        *ctx.status_notice = Some(ctx.i18n.t_fmt(
+            "toast.presentation_toggle",
+            &[("label", label), ("state", state)],
+        ));
         self.sync_affected_filter();
         self.ensure_graph_cache(ctx.snap, ctx.branch_colors, ctx.async_graph_enabled);
     }
@@ -1163,8 +1168,10 @@ impl LogWorkbench {
                 }
             }
             Action::FilterLogByRange { label, oids } => {
-                self.filter.spec.range =
-                    Some(jbgit_core::RangeFilter::new(label.clone(), oids.iter().copied()));
+                self.filter.spec.range = Some(jbgit_core::RangeFilter::new(
+                    label.clone(),
+                    oids.iter().copied(),
+                ));
                 self.on_filter_changed(
                     ctx.snap,
                     ctx.branch_colors,
@@ -1173,10 +1180,10 @@ impl LogWorkbench {
                     ctx.status_notice,
                 );
                 let n_s = oids.len().to_string();
-                *ctx.status_notice = Some(
-                    ctx.i18n
-                        .t_fmt("toast.range_filter_set", &[("label", label), ("count", &n_s)]),
-                );
+                *ctx.status_notice = Some(ctx.i18n.t_fmt(
+                    "toast.range_filter_set",
+                    &[("label", label), ("count", &n_s)],
+                ));
             }
             Action::ClearRangeFilter => {
                 let had_cmp = self.branch_compare.take().is_some();
@@ -1334,7 +1341,8 @@ impl LogWorkbench {
             Action::LogPage { half, down } => {
                 let vh = self.graph.last_viewport_h.max(2);
                 let step = if *half { vh / 2 } else { vh.saturating_sub(1) }.max(1) as isize;
-                self.graph.scroll_by(if *down { step } else { -step }, false);
+                self.graph
+                    .scroll_by(if *down { step } else { -step }, false);
             }
             Action::LogEdge { bottom } => {
                 let len = self.graph.navigable_row_count();
@@ -1369,8 +1377,7 @@ impl LogWorkbench {
                 match candidates.get(*idx) {
                     Some(&(row, _)) => self.graph.jump_to(ctx.snap, row, false),
                     None => {
-                        *ctx.status_notice =
-                            Some(ctx.i18n.t("toast.no_visible_child").to_string());
+                        *ctx.status_notice = Some(ctx.i18n.t("toast.no_visible_child").to_string());
                     }
                 }
             }
@@ -1386,10 +1393,11 @@ impl LogWorkbench {
                                     .t_fmt("toast.goto_ok", &[("expr", &expr), ("short", &short)]),
                             );
                         } else {
-                            *ctx.status_notice = Some(
-                                ctx.i18n
-                                    .t_fmt("toast.goto_hidden", &[("expr", &expr), ("short", &short)]),
-                            );
+                            *ctx.status_notice =
+                                Some(ctx.i18n.t_fmt(
+                                    "toast.goto_hidden",
+                                    &[("expr", &expr), ("short", &short)],
+                                ));
                         }
                     }
                     None => {
@@ -1478,12 +1486,7 @@ impl LogWorkbench {
                         .details
                         .selected_change(ctx.diff_caches)
                         .map(|c| c.path.clone());
-                    self.start_compare_versions(
-                        new_base,
-                        new_target,
-                        ctx.i18n,
-                        ctx.status_notice,
-                    );
+                    self.start_compare_versions(new_base, new_target, ctx.i18n, ctx.status_notice);
                     self.details.pending_select_path = keep_path;
                 } else if self.branch_compare.is_some() {
                     let _ = self.cycle_branch_compare_direction(
@@ -1768,10 +1771,13 @@ impl LogWorkbench {
                     push_row(row);
                 }
                 if !candidates.is_empty()
-                    && candidates.iter().any(|oid| !self.sig_requested.contains(oid))
+                    && candidates
+                        .iter()
+                        .any(|oid| !self.sig_requested.contains(oid))
                 {
                     self.sig_requested = candidates.clone();
-                    ctx.effects.push(Effect::RequestCommitSignatures(candidates));
+                    ctx.effects
+                        .push(Effect::RequestCommitSignatures(candidates));
                 }
             }
         }
@@ -1804,7 +1810,8 @@ impl LogWorkbench {
                     && !cached.is_too_large
                     && cached.lfs.is_none()
                     && !cached.hunks.is_empty()
-                    && let Some((epoch, cancel)) = ctx.file_syntax.begin_cancelable(cached.key.clone())
+                    && let Some((epoch, cancel)) =
+                        ctx.file_syntax.begin_cancelable(cached.key.clone())
                 {
                     ctx.effects.push(Effect::RequestSyntaxHighlight(SyntaxJob {
                         epoch,

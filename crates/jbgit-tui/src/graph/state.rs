@@ -95,7 +95,11 @@ impl CachedLogGraph {
     {
         let raw_commits: Vec<RawCommitNode> =
             snap.commits.iter().map(RawCommitNode::from).collect();
-        let permanent = Arc::new(PermanentGraph::build(&raw_commits, &snap.refs, snap.head_oid));
+        let permanent = Arc::new(PermanentGraph::build(
+            &raw_commits,
+            &snap.refs,
+            snap.head_oid,
+        ));
         let color_map = build_graph_color_map(&permanent, branch_colors);
         let head_nodes: Vec<_> = snap
             .head_oid
@@ -122,9 +126,13 @@ impl CachedLogGraph {
             },
         );
         let mut edges_cache = EdgesInRowCache::new(&visible.linear);
-        let recommended_tracks =
-            PrintElementGenerator::with_cache(&permanent, &visible, snap.head_oid, &mut edges_cache)
-                .recommended_track_width();
+        let recommended_tracks = PrintElementGenerator::with_cache(
+            &permanent,
+            &visible,
+            snap.head_oid,
+            &mut edges_cache,
+        )
+        .recommended_track_width();
         let (refs_by_oid, ref_kind_by_name) = build_ref_indices(&snap.refs);
 
         Self {
@@ -430,9 +438,7 @@ fn build_segments(permanent: &PermanentGraph, snap: &RepoSnapshot) -> LinearSegm
     LinearSegments::compute(&permanent.linear, &pinned)
 }
 
-fn build_ref_indices(
-    refs: &[RefInfo],
-) -> (FxHashMap<Oid, Vec<usize>>, FxHashMap<String, RefKind>) {
+fn build_ref_indices(refs: &[RefInfo]) -> (FxHashMap<Oid, Vec<usize>>, FxHashMap<String, RefKind>) {
     let mut by_oid: FxHashMap<Oid, Vec<usize>> = FxHashMap::default();
     let mut by_name: FxHashMap<String, RefKind> = FxHashMap::default();
     by_name.reserve(refs.len());
@@ -518,8 +524,12 @@ impl LogGraphJob {
         let base = match self.base {
             Some(b) => b,
             None => {
-                let raw_commits: Vec<RawCommitNode> =
-                    self.snapshot.commits.iter().map(RawCommitNode::from).collect();
+                let raw_commits: Vec<RawCommitNode> = self
+                    .snapshot
+                    .commits
+                    .iter()
+                    .map(RawCommitNode::from)
+                    .collect();
                 if self.token.is_stale() {
                     return None;
                 }
@@ -1461,7 +1471,10 @@ impl LogGraphState {
 
     /// Visible parent candidates of the currently selected commit in parent order
     /// (falling back to visible down-edges when filtered).
-    pub fn parent_candidates(&self, repo_snapshot: Option<&Arc<RepoSnapshot>>) -> Vec<(usize, Oid)> {
+    pub fn parent_candidates(
+        &self,
+        repo_snapshot: Option<&Arc<RepoSnapshot>>,
+    ) -> Vec<(usize, Oid)> {
         let Some(cached) = self.cached.as_ref() else {
             return Vec::new();
         };

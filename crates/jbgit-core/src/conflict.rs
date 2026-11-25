@@ -493,7 +493,10 @@ fn two_way_add_add_blocks(ours: &[String], theirs: &[String]) -> Vec<ThreeWayHun
     out
 }
 
-fn extract_marker_labels(worktree_text: &str, is_reversed: bool) -> (Option<String>, Option<String>) {
+fn extract_marker_labels(
+    worktree_text: &str,
+    is_reversed: bool,
+) -> (Option<String>, Option<String>) {
     let mut top = None;
     let mut bottom = None;
     for raw in worktree_text.lines() {
@@ -582,20 +585,27 @@ impl ConflictDocument {
             false
         };
 
-        let (marker_ours, marker_theirs) = extract_marker_labels(worktree_text, options.is_reversed);
-        let default_ours = options.default_ours_label.unwrap_or(if options.is_reversed {
-            "replayed"
-        } else {
-            "HEAD"
-        });
-        let default_theirs = options.default_theirs_label.unwrap_or(if options.is_reversed {
-            "onto"
-        } else {
-            "Incoming"
-        });
+        let (marker_ours, marker_theirs) =
+            extract_marker_labels(worktree_text, options.is_reversed);
+        let default_ours = options
+            .default_ours_label
+            .unwrap_or(if options.is_reversed {
+                "replayed"
+            } else {
+                "HEAD"
+            });
+        let default_theirs = options
+            .default_theirs_label
+            .unwrap_or(if options.is_reversed {
+                "onto"
+            } else {
+                "Incoming"
+            });
         let ours_label = marker_ours.unwrap_or_else(|| default_ours.to_string());
         let theirs_label = match marker_theirs {
-            Some(ref t) if options.is_reversed && t == "HEAD" && options.default_theirs_label.is_some() => {
+            Some(ref t)
+                if options.is_reversed && t == "HEAD" && options.default_theirs_label.is_some() =>
+            {
                 default_theirs.to_string()
             }
             Some(t) => t,
@@ -672,16 +682,20 @@ impl ConflictDocument {
         };
         let raw_lines = split_normalized_lines(worktree_text);
 
-        let default_ours = options.default_ours_label.unwrap_or(if options.is_reversed {
-            "replayed"
-        } else {
-            "HEAD"
-        });
-        let default_theirs = options.default_theirs_label.unwrap_or(if options.is_reversed {
-            "onto"
-        } else {
-            "Incoming"
-        });
+        let default_ours = options
+            .default_ours_label
+            .unwrap_or(if options.is_reversed {
+                "replayed"
+            } else {
+                "HEAD"
+            });
+        let default_theirs = options
+            .default_theirs_label
+            .unwrap_or(if options.is_reversed {
+                "onto"
+            } else {
+                "Incoming"
+            });
 
         let mut segments = Vec::new();
         let mut common = Vec::new();
@@ -729,35 +743,35 @@ impl ConflictDocument {
                         if !common.is_empty() {
                             segments.push(ConflictSegment::Common(std::mem::take(&mut common)));
                         }
-                        let (ours_label, theirs_label, ours_lines, theirs_lines) =
-                            if options.is_reversed {
-                                let ours_lbl = if bottom_label.is_empty() {
-                                    default_ours.to_string()
-                                } else {
-                                    bottom_label
-                                };
-                                let theirs_lbl = if top_label.is_empty()
-                                    || (top_label == "HEAD"
-                                        && options.default_theirs_label.is_some())
-                                {
-                                    default_theirs.to_string()
-                                } else {
-                                    top_label
-                                };
-                                (ours_lbl, theirs_lbl, bottom_lines, top_lines)
+                        let (ours_label, theirs_label, ours_lines, theirs_lines) = if options
+                            .is_reversed
+                        {
+                            let ours_lbl = if bottom_label.is_empty() {
+                                default_ours.to_string()
                             } else {
-                                let ours_lbl = if top_label.is_empty() {
-                                    default_ours.to_string()
-                                } else {
-                                    top_label
-                                };
-                                let theirs_lbl = if bottom_label.is_empty() {
-                                    default_theirs.to_string()
-                                } else {
-                                    bottom_label
-                                };
-                                (ours_lbl, theirs_lbl, top_lines, bottom_lines)
+                                bottom_label
                             };
+                            let theirs_lbl = if top_label.is_empty()
+                                || (top_label == "HEAD" && options.default_theirs_label.is_some())
+                            {
+                                default_theirs.to_string()
+                            } else {
+                                top_label
+                            };
+                            (ours_lbl, theirs_lbl, bottom_lines, top_lines)
+                        } else {
+                            let ours_lbl = if top_label.is_empty() {
+                                default_ours.to_string()
+                            } else {
+                                top_label
+                            };
+                            let theirs_lbl = if bottom_label.is_empty() {
+                                default_theirs.to_string()
+                            } else {
+                                bottom_label
+                            };
+                            (ours_lbl, theirs_lbl, top_lines, bottom_lines)
+                        };
                         segments.push(ConflictSegment::Conflict(ConflictBlock {
                             id: conflict_id,
                             kind: ThreeWayBlockKind::Conflict,
@@ -795,12 +809,22 @@ impl ConflictDocument {
             let split_lines = |s: Option<&str>| -> Vec<String> {
                 s.map(split_normalized_lines).unwrap_or_default()
             };
-            let fallback_ours_label = options
-                .default_ours_label
-                .unwrap_or(if options.is_reversed { "replayed" } else { "Ours" });
-            let fallback_theirs_label = options
-                .default_theirs_label
-                .unwrap_or(if options.is_reversed { "onto" } else { "Theirs" });
+            let fallback_ours_label =
+                options
+                    .default_ours_label
+                    .unwrap_or(if options.is_reversed {
+                        "replayed"
+                    } else {
+                        "Ours"
+                    });
+            let fallback_theirs_label =
+                options
+                    .default_theirs_label
+                    .unwrap_or(if options.is_reversed {
+                        "onto"
+                    } else {
+                        "Theirs"
+                    });
             segments.clear();
             segments.push(ConflictSegment::Conflict(ConflictBlock {
                 id: 0,
@@ -1048,9 +1072,7 @@ impl ConflictDocument {
                 ConflictSegment::Conflict(b) => {
                     let choice_deletes = match self.side_presence {
                         ConflictSidePresence::BothPresent => false,
-                        ConflictSidePresence::DeletedByTheirs => {
-                            b.choice == ConflictChoice::Theirs
-                        }
+                        ConflictSidePresence::DeletedByTheirs => b.choice == ConflictChoice::Theirs,
                         ConflictSidePresence::DeletedByOurs => b.choice == ConflictChoice::Ours,
                         ConflictSidePresence::BothDeleted => !matches!(
                             b.choice,
@@ -1127,9 +1149,8 @@ impl ConflictDocument {
                     };
                     let max_len = b.pane_row_count(self.side_presence);
                     for i in 0..max_len {
-                        let ours_deleted_placeholder = i == 0
-                            && b.ours_lines.is_empty()
-                            && self.side_presence.ours_deleted();
+                        let ours_deleted_placeholder =
+                            i == 0 && b.ours_lines.is_empty() && self.side_presence.ours_deleted();
                         let ours = if ours_deleted_placeholder {
                             "<Deleted>".to_string()
                         } else {
@@ -1295,8 +1316,14 @@ let y = 20;
             "fn a() {}\nlet x = 1;\nfn mid() {}\nlet y = 10;\nlet y = 20;\n"
         );
         let rows = doc.three_pane_rows();
-        assert!(rows.iter().any(|r| r.block_idx == Some(0) && r.ours == "let x = 1;"));
-        assert!(rows.iter().any(|r| r.block_idx == Some(1) && r.theirs == "let y = 20;"));
+        assert!(
+            rows.iter()
+                .any(|r| r.block_idx == Some(0) && r.ours == "let x = 1;")
+        );
+        assert!(
+            rows.iter()
+                .any(|r| r.block_idx == Some(1) && r.theirs == "let y = 20;")
+        );
     }
 
     #[test]
@@ -1439,7 +1466,10 @@ my replayed change
         for bid in 0..doc.conflict_count {
             let (first, total) = doc.block_first_row(bid).unwrap();
             assert_eq!(total, rows.len());
-            assert_eq!(rows.iter().position(|r| r.block_idx == Some(bid)), Some(first));
+            assert_eq!(
+                rows.iter().position(|r| r.block_idx == Some(bid)),
+                Some(first)
+            );
         }
     }
 
@@ -1515,7 +1545,10 @@ my replayed change
         assert_eq!(doc.first_unresolved_block(), Some(1));
 
         // Custom inline edit on block 1.
-        doc.set_choice(1, ConflictChoice::Custom(lines(&["c-custom-1", "c-custom-2"])));
+        doc.set_choice(
+            1,
+            ConflictChoice::Custom(lines(&["c-custom-1", "c-custom-2"])),
+        );
         assert_eq!(doc.unresolved_count(), 0);
         assert_eq!(
             doc.render_resolved(),
@@ -1576,7 +1609,10 @@ my replayed change
             },
         );
         assert_eq!(del_doc.side_presence, ConflictSidePresence::BothDeleted);
-        assert!(!del_doc.deletes_file(), "unresolved BothDeleted must not auto-delete");
+        assert!(
+            !del_doc.deletes_file(),
+            "unresolved BothDeleted must not auto-delete"
+        );
         del_doc.set_choice(0, ConflictChoice::Ours);
         assert!(del_doc.deletes_file());
         del_doc.set_choice(0, ConflictChoice::Custom(vec!["revived".into()]));
@@ -1632,7 +1668,10 @@ body from theirs
         let doc = ConflictDocument::parse("README.md", src, None, None);
         assert_eq!(doc.conflict_count, 1);
         let b = doc.block(0).unwrap();
-        assert_eq!(b.ours_lines, vec!["Title", "===============", "body from ours"]);
+        assert_eq!(
+            b.ours_lines,
+            vec!["Title", "===============", "body from ours"]
+        );
         assert_eq!(b.theirs_lines, vec!["body from theirs"]);
     }
 }

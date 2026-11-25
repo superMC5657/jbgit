@@ -91,7 +91,10 @@ fn render_row_text(screen: &vt100::Screen, row: u16, cols: u16) -> String {
     collect_row_text_and_cols(screen, row, cols).0
 }
 
-pub(crate) fn find_text_matches(shared: &Arc<Mutex<SharedPtyState>>, needle: &str) -> Vec<TextMatch> {
+pub(crate) fn find_text_matches(
+    shared: &Arc<Mutex<SharedPtyState>>,
+    needle: &str,
+) -> Vec<TextMatch> {
     let g = shared.lock().unwrap();
     let screen = g.parser.screen();
     let mut out = Vec::new();
@@ -121,10 +124,7 @@ fn fmt_color(c: vt100::Color) -> String {
     }
 }
 
-pub(crate) fn inspect_row_spans(
-    shared: &Arc<Mutex<SharedPtyState>>,
-    row: u16,
-) -> Vec<RowSpanInfo> {
+pub(crate) fn inspect_row_spans(shared: &Arc<Mutex<SharedPtyState>>, row: u16) -> Vec<RowSpanInfo> {
     let g = shared.lock().unwrap();
     if row >= g.rows {
         return Vec::new();
@@ -338,13 +338,12 @@ mod tests {
             Some("abc".to_string())
         );
         assert_eq!(
-            extract_latest_osc52_clipboard(b"noise\x1b]52;c;Zmlyc3Q=\x07more\x1b]52;c;c2Vjb25k\x1b\\"),
+            extract_latest_osc52_clipboard(
+                b"noise\x1b]52;c;Zmlyc3Q=\x07more\x1b]52;c;c2Vjb25k\x1b\\"
+            ),
             Some("second".to_string())
         );
-        assert_eq!(
-            extract_latest_osc52_clipboard(b"\x1b]52;c;?\x07"),
-            None
-        );
+        assert_eq!(extract_latest_osc52_clipboard(b"\x1b]52;c;?\x07"), None);
     }
 
     #[test]

@@ -24,8 +24,8 @@ use crate::error::EngineError;
 pub(crate) use blame::load_blame_async;
 #[cfg(test)]
 pub(crate) use blame::parse_blame_porcelain;
-pub use cherry_picked::load_cherry_picked_sync;
 pub(crate) use cherry_picked::load_cherry_picked_async;
+pub use cherry_picked::load_cherry_picked_sync;
 pub(crate) use commit_changes::{
     load_commit_details_sync, verify_commit_signature_sync, verify_commit_signatures_batch_sync,
 };
@@ -36,8 +36,8 @@ pub(crate) use file_history::{parse_file_history_z, parse_line_history};
 pub(crate) use outgoing::load_outgoing_sync;
 pub(crate) use patch::{apply_args, check_patch_async, resolve_patch_input};
 pub(crate) use path_matches::load_path_matches_sync;
-pub use reflog::load_reflog_sync;
 pub(crate) use reflog::load_reflog_async;
+pub use reflog::load_reflog_sync;
 pub(crate) use remote_tag::check_remote_tag_async;
 #[cfg(test)]
 pub(crate) use remote_tag::parse_ls_remote_tag_exists;
@@ -219,9 +219,7 @@ mod tests {
             )
             .as_bytes(),
         );
-        raw.extend_from_slice(
-            format!("\x1e{h2}\x1fAlice\x1f30\x1fmerge\x1f\x00").as_bytes(),
-        );
+        raw.extend_from_slice(format!("\x1e{h2}\x1fAlice\x1f30\x1fmerge\x1f\x00").as_bytes());
         raw.extend_from_slice(
             format!(
                 "\x1e{h3}\x1fAlice\x1f20\x1frename\x1f\x00\n:100644 100644 111 222 R092\x00old name.txt\x00sub/new name.bin\x001\t2\t\x00old name.txt\x00sub/new name.bin\x00"
@@ -271,9 +269,7 @@ mod tests {
             .as_bytes(),
         );
         raw.extend_from_slice(b"\xff\xfe\n");
-        raw.extend_from_slice(
-            format!("{h1} 3 3 1\n\tprintln!(\"still h1\");\n").as_bytes(),
-        );
+        raw.extend_from_slice(format!("{h1} 3 3 1\n\tprintln!(\"still h1\");\n").as_bytes());
         raw.extend_from_slice(
             format!(
                 "{h0} 4 4 1\nauthor Not Committed Yet\nauthor-mail <not.committed.yet>\nauthor-time 1700000300\nauthor-tz +0000\nsummary Version of file from working tree\nfilename dir with space/中文 文件.rs\n\t\n"
@@ -364,7 +360,8 @@ mod tests {
         ]
         .join("\n");
 
-        let (entries, truncated) = parse_line_history(raw.as_bytes(), "dir with space/中文 文件.rs", 3);
+        let (entries, truncated) =
+            parse_line_history(raw.as_bytes(), "dir with space/中文 文件.rs", 3);
         assert!(truncated);
         assert_eq!(entries.len(), 3);
 

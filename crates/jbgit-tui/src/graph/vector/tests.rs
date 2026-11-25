@@ -557,7 +557,10 @@ fn fold_marker_node_paints_a_hollow_ring() {
 
 #[test]
 fn fallback_cell_size_centers_track_axis_and_row_center_at_exact_half() {
-    let g = PaintGeometry::new(CellPixelSize::FALLBACK.width, CellPixelSize::FALLBACK.height);
+    let g = PaintGeometry::new(
+        CellPixelSize::FALLBACK.width,
+        CellPixelSize::FALLBACK.height,
+    );
     assert_eq!(
         g.track_x(0) + 0.5,
         f32::from(CellPixelSize::FALLBACK.width) / 2.0
@@ -588,10 +591,26 @@ fn vertical_edges_cross_row_boundaries_without_top_notch() {
         // Across the entire stroke width, Row 1 top (`y = h`) and bottom (`y = 2*h - 1`)
         // and Row 2 top (`y = 2*h`) must match cleanly with no top-boundary notch.
         for px_x in x - half..=x + half {
-            assert_eq!(pixel(&backend, px_x, h - 1), want, "cell {cell:?} x={px_x} row 0 bottom");
-            assert_eq!(pixel(&backend, px_x, h), want, "cell {cell:?} x={px_x} row 1 top");
-            assert_eq!(pixel(&backend, px_x, 2 * h - 1), want, "cell {cell:?} x={px_x} row 1 bottom");
-            assert_eq!(pixel(&backend, px_x, 2 * h), want, "cell {cell:?} x={px_x} row 2 top");
+            assert_eq!(
+                pixel(&backend, px_x, h - 1),
+                want,
+                "cell {cell:?} x={px_x} row 0 bottom"
+            );
+            assert_eq!(
+                pixel(&backend, px_x, h),
+                want,
+                "cell {cell:?} x={px_x} row 1 top"
+            );
+            assert_eq!(
+                pixel(&backend, px_x, 2 * h - 1),
+                want,
+                "cell {cell:?} x={px_x} row 1 bottom"
+            );
+            assert_eq!(
+                pixel(&backend, px_x, 2 * h),
+                want,
+                "cell {cell:?} x={px_x} row 2 top"
+            );
         }
     }
 }
@@ -624,8 +643,8 @@ fn golden_pngs_match_tiny_skia_output_pixel_for_pixel() {
         ),
     ];
 
-    let golden_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("src/graph/vector/golden");
+    let golden_dir =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/graph/vector/golden");
     let update = std::env::var_os("JBGIT_UPDATE_GOLDENS").is_some();
     if update {
         std::fs::create_dir_all(&golden_dir).unwrap();

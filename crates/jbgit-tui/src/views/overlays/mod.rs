@@ -133,9 +133,7 @@ fn render_modal_layer(
             crate::tree_browser::render_tree_browser(frame, screen, s, ctx, z);
         }
         ModalLayer::ConflictResolver(_) => {
-            crate::views::conflict_merge::render_conflict_merge_modal(
-                frame, screen, state, ctx, z,
-            );
+            crate::views::conflict_merge::render_conflict_merge_modal(frame, screen, state, ctx, z);
         }
         ModalLayer::ConflictQueue(cq) => {
             crate::views::conflict_queue::render_conflict_queue_modal(

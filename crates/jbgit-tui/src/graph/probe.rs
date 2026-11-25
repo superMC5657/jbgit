@@ -282,9 +282,7 @@ fn parse_wezterm_pane_object(obj: &str) -> WezTermPaneMetrics {
                 while i < bytes.len() && bytes[i].is_ascii_digit() {
                     i += 1;
                 }
-                if i == val_start
-                    || (i < bytes.len() && matches!(bytes[i], b'.' | b'e' | b'E'))
-                {
+                if i == val_start || (i < bytes.len() && matches!(bytes[i], b'.' | b'e' | b'E')) {
                     continue;
                 }
                 let Ok(val) = obj[val_start..i].parse::<u64>() else {

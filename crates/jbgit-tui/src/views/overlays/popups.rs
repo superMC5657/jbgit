@@ -51,7 +51,9 @@ pub(super) fn render_floating_popup(
         PopupKind::BranchesQuickView => format!(" {} ", ctx.t("view.branches_popup.title")),
         PopupKind::PalettePreview => ctx.t("popup.palette_title").to_string(),
         PopupKind::FilterEditor(field) => {
-            let field_name = ctx.i18n.map_or(field.title(), |i| i.filter_field_title(field));
+            let field_name = ctx
+                .i18n
+                .map_or(field.title(), |i| i.filter_field_title(field));
             ctx.t_fmt("popup.filter_by", &[("field", field_name)])
         }
         PopupKind::GoToRevision => ctx.t("popup.goto_title").to_string(),
@@ -126,7 +128,8 @@ fn render_centered_popup_box(
 
     let inner = block.inner(rect);
     frame.render_widget(block, rect);
-    ctx.hit_registry.register(rect, z + 1, HitTarget::DialogBody);
+    ctx.hit_registry
+        .register(rect, z + 1, HitTarget::DialogBody);
     inner
 }
 
@@ -173,7 +176,12 @@ fn render_shortcuts_help_popup(
     let div_rect = Rect::new(inner.x, inner.y + 1, inner.width, 1);
     let list_h = inner.height.saturating_sub(if has_git_row { 4 } else { 3 });
     let list_rect = Rect::new(inner.x, inner.y + 2, inner.width, list_h);
-    let git_rect = Rect::new(inner.x, inner.y + inner.height.saturating_sub(2), inner.width, 1);
+    let git_rect = Rect::new(
+        inner.x,
+        inner.y + inner.height.saturating_sub(2),
+        inner.width,
+        1,
+    );
     let foot_rect = Rect::new(inner.x, inner.y + inner.height - 1, inner.width, 1);
 
     let prompt_prefix = " > ";
@@ -385,7 +393,10 @@ fn render_shortcuts_help_popup(
     }
 
     let foot_line = Line::from(Span::styled(
-        truncate_display_width(&format!(" {}", ctx.t("help.footer_hint")), inner.width as usize),
+        truncate_display_width(
+            &format!(" {}", ctx.t("help.footer_hint")),
+            inner.width as usize,
+        ),
         Style::default()
             .fg(ctx.theme.fg_muted)
             .bg(ctx.theme.bg_panel),
@@ -418,7 +429,8 @@ fn render_filter_editor_popup(
         Line::from(Span::styled(
             format!(
                 " {}",
-                ctx.i18n.map_or(field.hint(), |i| i.filter_field_hint(field))
+                ctx.i18n
+                    .map_or(field.hint(), |i| i.filter_field_hint(field))
             ),
             Style::default().fg(ctx.theme.fg_muted),
         )),
@@ -529,7 +541,10 @@ fn render_choose_adjacent_popup(
 ) {
     let mut lines = Vec::new();
     let candidates: Vec<jbgit_core::Oid> = if is_parent {
-        let vis = state.log.graph.parent_candidates(state.repo_snapshot.as_ref());
+        let vis = state
+            .log
+            .graph
+            .parent_candidates(state.repo_snapshot.as_ref());
         if !vis.is_empty() {
             vis.into_iter().map(|(_, oid)| oid).collect()
         } else {
@@ -564,8 +579,8 @@ fn render_choose_adjacent_popup(
             if let Some(c) = commit {
                 let date = ctx.format_relative_time(c.timestamp, now);
                 let meta = format!("  {} · {}", c.author_name, date);
-                let subj_budget = (inner.width as usize)
-                    .saturating_sub(prefix.width() + meta.width() + 2);
+                let subj_budget =
+                    (inner.width as usize).saturating_sub(prefix.width() + meta.width() + 2);
                 let quoted_subj = format!("\"{}\"", truncate_to_width(&c.subject, subj_budget));
                 lines.push(
                     Line::from(vec![
@@ -620,7 +635,10 @@ pub(super) fn render_commit_message_modal(
     let short = oid.short();
     let title = ctx.t_fmt(
         "popup.commit_message_title",
-        &[("short", &short), ("subject", &truncate_to_width(subject, 48))],
+        &[
+            ("short", &short),
+            ("subject", &truncate_to_width(subject, 48)),
+        ],
     );
     let max_w = screen.width.saturating_sub(6).clamp(40, 100);
     let max_h = screen.height.saturating_sub(4).clamp(10, 36);
@@ -643,7 +661,9 @@ pub(super) fn render_commit_message_modal(
             jbgit_core::MessageLineKind::Subject => Style::default()
                 .fg(ctx.theme.fg_bright)
                 .add_modifier(Modifier::BOLD),
-            jbgit_core::MessageLineKind::Trailer => Style::default().fg(ctx.theme.ref_remote.pill_fg),
+            jbgit_core::MessageLineKind::Trailer => {
+                Style::default().fg(ctx.theme.ref_remote.pill_fg)
+            }
             jbgit_core::MessageLineKind::Body => Style::default().fg(ctx.theme.fg_primary),
         };
         if raw.is_empty() {
@@ -652,13 +672,10 @@ pub(super) fn render_commit_message_modal(
         }
         for chunk in crate::views::wrap_text(raw, width) {
             let line_idx = lines.len();
-            let (spans, line_hits) = crate::views::log_details::commit_details::render_body_chunk_with_links(
-                &chunk,
-                width,
-                base,
-                snap,
-                ctx.theme,
-            );
+            let (spans, line_hits) =
+                crate::views::log_details::commit_details::render_body_chunk_with_links(
+                    &chunk, width, base, snap, ctx.theme,
+                );
             for (hx, hw, target_oid) in line_hits {
                 hits.push((line_idx, hx, hw, target_oid));
             }
@@ -667,7 +684,11 @@ pub(super) fn render_commit_message_modal(
     }
 
     let max_scroll = lines.len().saturating_sub(body_h);
-    ctx.record_scroll_bound(crate::app::ScrollPane::CommitMessageModal, body_h, max_scroll);
+    ctx.record_scroll_bound(
+        crate::app::ScrollPane::CommitMessageModal,
+        body_h,
+        max_scroll,
+    );
     let off = scroll.min(max_scroll);
 
     for (vis_y, idx) in (off..lines.len()).take(body_h).enumerate() {
@@ -800,39 +821,40 @@ fn render_three_way_inspector_popup(
         let staged_word_ranges = compute_ranges(&staged_rows, &vcs_rows, &local_rows);
         let vcs_word_ranges = compute_ranges(&vcs_rows, &staged_rows, &local_rows);
 
-        let mut push_section = |title: &str,
-                                color: ratatui::style::Color,
-                                word_bg: ratatui::style::Color,
-                                rows: &[String],
-                                word_ranges: &[Vec<(usize, usize)>]| {
-            lines.push(Line::from(Span::styled(
-                format!(" ── {title} ──"),
-                Style::default().fg(color).add_modifier(Modifier::BOLD),
-            )));
-            if rows.is_empty() {
+        let mut push_section =
+            |title: &str,
+             color: ratatui::style::Color,
+             word_bg: ratatui::style::Color,
+             rows: &[String],
+             word_ranges: &[Vec<(usize, usize)>]| {
                 lines.push(Line::from(Span::styled(
-                    ctx.t("popup.three_way_empty").to_string(),
-                    Style::default().fg(ctx.theme.fg_muted),
+                    format!(" ── {title} ──"),
+                    Style::default().fg(color).add_modifier(Modifier::BOLD),
                 )));
-            } else {
-                let base = Style::default().fg(ctx.theme.fg_primary);
-                for (idx, r) in rows.iter().enumerate() {
-                    let wr = word_ranges.get(idx).map(Vec::as_slice).unwrap_or(&[]);
-                    let mut spans = vec![Span::raw("   ")];
-                    spans.extend(render_diff_line_spans_with_tab(
-                        r,
-                        &[],
-                        wr,
-                        max_w,
-                        ctx.diff_tab_size(),
-                        base,
-                        word_bg,
-                        ctx.theme.true_color,
-                    ));
-                    lines.push(Line::from(spans));
+                if rows.is_empty() {
+                    lines.push(Line::from(Span::styled(
+                        ctx.t("popup.three_way_empty").to_string(),
+                        Style::default().fg(ctx.theme.fg_muted),
+                    )));
+                } else {
+                    let base = Style::default().fg(ctx.theme.fg_primary);
+                    for (idx, r) in rows.iter().enumerate() {
+                        let wr = word_ranges.get(idx).map(Vec::as_slice).unwrap_or(&[]);
+                        let mut spans = vec![Span::raw("   ")];
+                        spans.extend(render_diff_line_spans_with_tab(
+                            r,
+                            &[],
+                            wr,
+                            max_w,
+                            ctx.diff_tab_size(),
+                            base,
+                            word_bg,
+                            ctx.theme.true_color,
+                        ));
+                        lines.push(Line::from(spans));
+                    }
                 }
-            }
-        };
+            };
         push_section(
             ctx.t("popup.three_way_worktree"),
             ctx.theme.status_added,

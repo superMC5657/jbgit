@@ -788,7 +788,13 @@ impl PatchSource {
     pub fn suggested_filename(&self, repo_name: &str) -> String {
         let safe_repo: String = repo_name
             .chars()
-            .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '-' })
+            .map(|c| {
+                if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                    c
+                } else {
+                    '-'
+                }
+            })
             .collect();
         let safe_repo = if safe_repo.is_empty() {
             "changes".to_string()
@@ -798,7 +804,11 @@ impl PatchSource {
         match self {
             Self::Commits { oids, .. } => match oids.as_slice() {
                 [one] => format!("{}.patch", one.short()),
-                [newest, ..] => format!("{safe_repo}-{}-commits-{}.patch", oids.len(), newest.short()),
+                [newest, ..] => format!(
+                    "{safe_repo}-{}-commits-{}.patch",
+                    oids.len(),
+                    newest.short()
+                ),
                 [] => format!("{safe_repo}.patch"),
             },
             Self::CommitFile { oid, path } => {
@@ -1161,9 +1171,11 @@ impl GitOp {
                 }
             }
             Self::Rebase { options } => {
-                let target = options
-                    .effective_onto()
-                    .unwrap_or(if options.root { "--root" } else { "HEAD" });
+                let target = options.effective_onto().unwrap_or(if options.root {
+                    "--root"
+                } else {
+                    "HEAD"
+                });
                 match options.effective_branch() {
                     Some(b) => format!("Rebase '{b}' onto '{target}'"),
                     None => format!("Rebase onto '{target}'"),
@@ -1212,11 +1224,7 @@ impl GitOp {
                 };
                 format!("Push '{branch}' → '{remote}/{target}'")
             }
-            Self::Sequence(ops) => ops
-                .iter()
-                .map(Self::label)
-                .collect::<Vec<_>>()
-                .join(" → "),
+            Self::Sequence(ops) => ops.iter().map(Self::label).collect::<Vec<_>>().join(" → "),
             Self::UpdateProject { .. } => "Update Project".to_string(),
             Self::SetIdentity { .. } => "Configure Git identity".to_string(),
             Self::SetUpstream { branch, upstream } => {
@@ -1272,14 +1280,14 @@ impl GitOp {
             Self::BisectReset => "Bisect reset".to_string(),
             Self::DeleteFiles { paths } => format!("Delete {} file(s)", paths.len()),
             Self::CreatePatchFile { output, .. } => {
-                let name = output
-                    .file_name()
-                    .map_or_else(|| output.display().to_string(), |n| n.to_string_lossy().into());
+                let name = output.file_name().map_or_else(
+                    || output.display().to_string(),
+                    |n| n.to_string_lossy().into(),
+                );
                 format!("Create patch '{name}'")
             }
             Self::PatchToClipboard { .. } => "Copy patch".to_string(),
-            Self::CheckoutPaths { rev, paths }
-            | Self::RestorePaths { rev, paths, .. } => {
+            Self::CheckoutPaths { rev, paths } | Self::RestorePaths { rev, paths, .. } => {
                 let short_rev = short_rev(rev);
                 if let [one] = paths.as_slice() {
                     format!("Restore '{one}' from {short_rev}")
@@ -1289,9 +1297,10 @@ impl GitOp {
             }
             Self::ApplyPatch { source, .. } => match source {
                 crate::PatchInput::File(path) => {
-                    let name = path
-                        .file_name()
-                        .map_or_else(|| path.display().to_string(), |n| n.to_string_lossy().into());
+                    let name = path.file_name().map_or_else(
+                        || path.display().to_string(),
+                        |n| n.to_string_lossy().into(),
+                    );
                     format!("Apply patch '{name}'")
                 }
                 crate::PatchInput::Clipboard => "Apply patch from clipboard".to_string(),
@@ -1411,9 +1420,8 @@ pub fn infer_clone_dir_name(url: &str) -> Option<String> {
         path.trim_end_matches('/')
     } else {
         // Distinguish Windows drive letter (`C:\...` / `C:/...`) from SCP-style `git@host:user/repo`.
-        let is_windows_drive = s.len() >= 2
-            && s.as_bytes()[0].is_ascii_alphabetic()
-            && s.as_bytes()[1] == b':';
+        let is_windows_drive =
+            s.len() >= 2 && s.as_bytes()[0].is_ascii_alphabetic() && s.as_bytes()[1] == b':';
         if !is_windows_drive
             && let Some((host, path)) = s.split_once(':')
             && !host.is_empty()
@@ -1428,9 +1436,7 @@ pub fn infer_clone_dir_name(url: &str) -> Option<String> {
     if path_part.is_empty() {
         return None;
     }
-    let last = path_part
-        .rsplit(['/', '\\'])
-        .find(|seg| !seg.is_empty())?;
+    let last = path_part.rsplit(['/', '\\']).find(|seg| !seg.is_empty())?;
     let last_bytes = last.as_bytes();
     let stripped = if last_bytes.len() >= 4
         && last_bytes[last_bytes.len() - 4..].eq_ignore_ascii_case(b".git")
@@ -1439,10 +1445,7 @@ pub fn infer_clone_dir_name(url: &str) -> Option<String> {
     } else {
         last
     };
-    if stripped.is_empty()
-        || stripped == "."
-        || stripped == ".."
-        || stripped.contains([':', '\0'])
+    if stripped.is_empty() || stripped == "." || stripped == ".." || stripped.contains([':', '\0'])
     {
         return None;
     }
@@ -1529,7 +1532,10 @@ pub fn build_ignore_patterns(
         .filter(|d| !d.is_empty());
     let mut out: Vec<String> = Vec::new();
     for raw in paths {
-        let norm = raw.trim().trim_start_matches(['/', '\\']).replace('\\', "/");
+        let norm = raw
+            .trim()
+            .trim_start_matches(['/', '\\'])
+            .replace('\\', "/");
         if norm.is_empty() {
             continue;
         }
@@ -1731,7 +1737,10 @@ mod ergonomics_tests {
 
     #[test]
     fn build_ignore_patterns_supports_exact_extension_parent_and_nested_base() {
-        let paths = vec!["src/logs/app.log".to_string(), "src/logs/err.log".to_string()];
+        let paths = vec![
+            "src/logs/app.log".to_string(),
+            "src/logs/err.log".to_string(),
+        ];
         assert_eq!(
             build_ignore_patterns(&paths, IgnoreRuleKind::ExactPath, None),
             vec!["/src/logs/app.log", "/src/logs/err.log"]
@@ -1753,8 +1762,12 @@ mod ergonomics_tests {
             vec!["/logs/"]
         );
         // Root-level file has no parent dir and dotfile without ext has no extension rule
-        assert!(build_ignore_patterns(&[".env".into()], IgnoreRuleKind::Extension, None).is_empty());
-        assert!(build_ignore_patterns(&[".env".into()], IgnoreRuleKind::ParentDir, None).is_empty());
+        assert!(
+            build_ignore_patterns(&[".env".into()], IgnoreRuleKind::Extension, None).is_empty()
+        );
+        assert!(
+            build_ignore_patterns(&[".env".into()], IgnoreRuleKind::ParentDir, None).is_empty()
+        );
     }
 
     #[test]
@@ -1823,7 +1836,10 @@ config/local/
 
     #[test]
     fn build_ignore_patterns_escapes_gitignore_glob_metacharacters() {
-        let paths = vec!["app/users/[id]/page.tsx".to_string(), "docs/what?.md".to_string()];
+        let paths = vec![
+            "app/users/[id]/page.tsx".to_string(),
+            "docs/what?.md".to_string(),
+        ];
         assert_eq!(
             build_ignore_patterns(&paths, IgnoreRuleKind::ExactPath, None),
             vec!["/app/users/\\[id\\]/page.tsx", "/docs/what\\?.md"]

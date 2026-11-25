@@ -3,8 +3,8 @@ use std::time::Duration;
 
 use crossterm::event::{KeyCode, KeyModifiers};
 use jbgit_core::{
-    GitFailure, GitOp, GitOpOutcome, OutgoingBundle, OutgoingKey, PushForce, PushTagMode,
-    RefInfo, RefKind, RepoSnapshot,
+    GitFailure, GitOp, GitOpOutcome, OutgoingBundle, OutgoingKey, PushForce, PushTagMode, RefInfo,
+    RefKind, RepoSnapshot,
 };
 use jbgit_engine::{EngineEvent, TaskRequest};
 
@@ -144,9 +144,7 @@ fn delete_tag_probes_remote_checkbox_restore_notification_and_tag_exists_overwri
         .take_requests()
         .into_iter()
         .find_map(|(req, ep)| match req {
-            TaskRequest::CheckRemoteTag { remote, tag }
-                if remote == "origin" && tag == "v1.0" =>
-            {
+            TaskRequest::CheckRemoteTag { remote, tag } if remote == "origin" && tag == "v1.0" => {
                 ep
             }
             _ => None,
@@ -345,7 +343,10 @@ fn push_dialog_preview_target_completion_up_to_protected_branches_and_retry() {
         TaskRequest::LoadCommitDetails { key, .. } if key.oids == vec![oid(12)]
     )));
     let loaded_text = screen_text(&ts.render(140, 36));
-    assert!(loaded_text.contains("Outgoing Commits (3)"), "{loaded_text}");
+    assert!(
+        loaded_text.contains("Outgoing Commits (3)"),
+        "{loaded_text}"
+    );
     assert!(loaded_text.contains("Changed Files"), "{loaded_text}");
     assert!(loaded_text.contains("Loading changes…"), "{loaded_text}");
     assert!(
@@ -621,7 +622,10 @@ fn push_dialog_preview_target_completion_up_to_protected_branches_and_retry() {
         .expect("push summary notification missing")
         .text
         .clone();
-    assert_eq!(summary_text, "Pushed 10 commit(s) to origin/main · 1 tag(s)");
+    assert_eq!(
+        summary_text,
+        "Pushed 10 commit(s) to origin/main · 1 tag(s)"
+    );
 }
 
 #[test]
@@ -653,8 +657,11 @@ fn prompt_push_empty_remotes_slash_remote_and_push_rejected_up_to() {
     assert!(pd.remotes.is_empty());
     assert!(!pd.loading);
     assert!(
-        pd.can_push(&ts.state().config.jbgit.push.protected_branches, &ts.state().i18n)
-            .is_err()
+        pd.can_push(
+            &ts.state().config.jbgit.push.protected_branches,
+            &ts.state().i18n
+        )
+        .is_err()
     );
     ts.send_key(KeyCode::Esc, KeyModifiers::NONE);
 
@@ -666,11 +673,11 @@ fn prompt_push_empty_remotes_slash_remote_and_push_rejected_up_to() {
         repo_name: "slash".into(),
         head_branch: Some("feat/demo".into()),
         head_oid: Some(oid(12)),
-        refs: vec![
-            slash_branch,
-            remote("team/upstream/feat/demo", 10),
+        refs: vec![slash_branch, remote("team/upstream/feat/demo", 10)],
+        commits: vec![
+            make_commit(12, vec![oid(10)], "tip"),
+            make_commit(10, vec![], "base"),
         ],
-        commits: vec![make_commit(12, vec![oid(10)], "tip"), make_commit(10, vec![], "base")],
         remotes: super::remote_infos(&["origin", "team/upstream"]),
         ..Default::default()
     };
@@ -775,8 +782,7 @@ fn delete_remote_tag_dialog_uses_tag_copy_not_branch_in_zh_cn() {
     ts.state_mut().i18n = std::sync::Arc::new(crate::i18n::I18n::load("zh-CN", None));
 
     let items = crate::menus::branch_menu_items(ts.state(), "v1.0", RefKind::Tag);
-    let ContextMenuEntryKind::Action(actions) =
-        &find_item(&items, "删除 'origin' 上的标签").kind
+    let ContextMenuEntryKind::Action(actions) = &find_item(&items, "删除 'origin' 上的标签").kind
     else {
         panic!("expected direct delete-remote-tag action item");
     };
@@ -874,7 +880,9 @@ fn detached_head_push_no_verify_pinned_lease_inline_define_remote_and_push_refsp
     // 2. Empty remotes renders inline `[+ Define Remote…]` and refreshes PushDialog once added.
     let mut no_remote_snap = snapshot();
     no_remote_snap.remotes.clear();
-    no_remote_snap.refs.retain(|r| r.kind != RefKind::RemoteBranch);
+    no_remote_snap
+        .refs
+        .retain(|r| r.kind != RefKind::RemoteBranch);
     for r in &mut no_remote_snap.refs {
         r.upstream = None;
     }
@@ -970,7 +978,10 @@ fn push_rejected_warns_when_rebase_range_contains_merge_commits() {
                     .iter()
                     .find(|o| o.label == "Rebase & Retry")
                     .expect("Rebase & Retry option");
-                assert!(rebase_opt.danger, "Rebase & Retry should be marked danger when merge commits exist");
+                assert!(
+                    rebase_opt.danger,
+                    "Rebase & Retry should be marked danger when merge commits exist"
+                );
             }
             other => panic!("expected ChoiceDialog, got {other:?}"),
         },

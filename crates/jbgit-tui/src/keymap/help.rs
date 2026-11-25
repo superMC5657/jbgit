@@ -257,12 +257,8 @@ pub fn build_help_rows(state: &AppState, query: &str) -> Vec<HelpRow> {
         i18n.t("help.scope.commit"),
         false,
     );
-    let log_rows = collect_merged_entries(
-        state,
-        &km.log.key_bindings,
-        i18n.t("help.scope.log"),
-        false,
-    );
+    let log_rows =
+        collect_merged_entries(state, &km.log.key_bindings, i18n.t("help.scope.log"), false);
     let branch_rows = collect_merged_entries(
         state,
         &km.branch.key_bindings,

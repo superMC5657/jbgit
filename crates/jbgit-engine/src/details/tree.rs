@@ -166,9 +166,13 @@ pub(crate) async fn load_tree_index_async(
     }
     let git = crate::cli::require_git_executable()?;
     let mut cmd = crate::cli::non_interactive_std_command(&git, Some(&loc.workdir));
-    cmd.arg("--git-dir")
-        .arg(&loc.git_dir)
-        .args(["ls-tree", "-r", "--name-only", "-z", &oid.to_string()]);
+    cmd.arg("--git-dir").arg(&loc.git_dir).args([
+        "ls-tree",
+        "-r",
+        "--name-only",
+        "-z",
+        &oid.to_string(),
+    ]);
     let output = super::run_git_output_cancellable(cmd, None, token).await?;
     if !output.status.success() {
         let err = String::from_utf8_lossy(&output.stderr).trim().to_string();

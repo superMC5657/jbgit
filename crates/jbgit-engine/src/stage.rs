@@ -199,9 +199,7 @@ pub fn gitattributes_handles_crlf(
 
 /// Returns `true` when `bytes` represents a non-binary, non-LFS text file containing `\r\n`.
 pub fn bytes_contain_crlf_text(bytes: &[u8]) -> bool {
-    if bytes.is_empty()
-        || jbgit_core::is_binary_bytes(bytes)
-        || parse_lfs_pointer(bytes).is_some()
+    if bytes.is_empty() || jbgit_core::is_binary_bytes(bytes) || parse_lfs_pointer(bytes).is_some()
     {
         return false;
     }
@@ -235,7 +233,8 @@ pub fn detect_crlf_commit_problem_sync(
         let head_tree = repo.head().ok().and_then(|h| h.peel_to_tree().ok());
         let mut staged_opts = DiffOptions::new();
         staged_opts.include_typechange(true);
-        let staged_diff = repo.diff_tree_to_index(head_tree.as_ref(), None, Some(&mut staged_opts))?;
+        let staged_diff =
+            repo.diff_tree_to_index(head_tree.as_ref(), None, Some(&mut staged_opts))?;
         for delta in staged_diff.deltas() {
             if matches!(
                 delta.status(),
@@ -255,8 +254,10 @@ pub fn detect_crlf_commit_problem_sync(
             wt_opts.include_typechange(true);
             let wt_diff = repo.diff_index_to_workdir(None, Some(&mut wt_opts))?;
             for delta in wt_diff.deltas() {
-                if matches!(delta.status(), Delta::Modified | Delta::Renamed | Delta::Copied)
-                    && let Some(path) = delta.new_file().path()
+                if matches!(
+                    delta.status(),
+                    Delta::Modified | Delta::Renamed | Delta::Copied
+                ) && let Some(path) = delta.new_file().path()
                 {
                     let p = path.to_string_lossy().replace('\\', "/");
                     if seen.insert(p.clone()) {
@@ -789,8 +790,12 @@ pub(crate) fn load_stage_file_diff_sync(
                 });
             }
 
-            let tracker =
-                StageLineTracker::new_with_whitespace(&vcs_bytes, &head_bytes, &head_bytes, key.whitespace);
+            let tracker = StageLineTracker::new_with_whitespace(
+                &vcs_bytes,
+                &head_bytes,
+                &head_bytes,
+                key.whitespace,
+            );
             if token.is_stale() {
                 return Err(EngineError::Cancelled);
             }
@@ -844,7 +849,8 @@ pub(crate) fn load_stage_file_diff_sync(
         let mode_change = if key.side == StageDiffSide::Staged {
             FileModeChange::from_modes(vcs_side.mode(), staged_side.mode())
         } else {
-            let eff_local_mode = effective_worktree_mode(repo, local_side.mode(), staged_side.mode());
+            let eff_local_mode =
+                effective_worktree_mode(repo, local_side.mode(), staged_side.mode());
             FileModeChange::from_modes(staged_side.mode(), eff_local_mode)
         };
         let is_symlink =
@@ -901,9 +907,15 @@ pub(crate) fn load_stage_file_diff_sync(
         let local_bytes = local_opt.unwrap_or_default();
 
         let (old_ptr, new_ptr) = if key.side == StageDiffSide::Staged {
-            (parse_lfs_pointer(&vcs_bytes), parse_lfs_pointer(&staged_bytes))
+            (
+                parse_lfs_pointer(&vcs_bytes),
+                parse_lfs_pointer(&staged_bytes),
+            )
         } else {
-            (parse_lfs_pointer(&staged_bytes), parse_lfs_pointer(&local_bytes))
+            (
+                parse_lfs_pointer(&staged_bytes),
+                parse_lfs_pointer(&local_bytes),
+            )
         };
         if old_ptr.is_some() || new_ptr.is_some() {
             return Ok(ThreeDocStageDiff {
@@ -1251,11 +1263,20 @@ fn stage_symlink_entry(
     };
     index.add_frombuffer(&entry, &target_bytes)?;
     // Ensure index reflects the symlink path cleanly if an older non-link entry existed.
-    debug_assert_eq!(index.get_path(rel, 0).map(|e| e.mode), Some(GIT_MODE_SYMLINK));
+    debug_assert_eq!(
+        index.get_path(rel, 0).map(|e| e.mode),
+        Some(GIT_MODE_SYMLINK)
+    );
     Ok(())
 }
 
-fn is_submodule_target(repo: &Repository, index: &git2::Index, rel: &Path, full: &Path, trimmed: &str) -> bool {
+fn is_submodule_target(
+    repo: &Repository,
+    index: &git2::Index,
+    rel: &Path,
+    full: &Path,
+    trimmed: &str,
+) -> bool {
     if trimmed.is_empty()
         || !rel
             .components()
@@ -1356,7 +1377,9 @@ fn git_add_literal_paths_sync(
         paths,
     );
     let mut cmd = crate::cli::non_interactive_std_write_command(&git, Some(&location.workdir));
-    cmd.args(&args).stdout(Stdio::piped()).stderr(Stdio::piped());
+    cmd.args(&args)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
     if stdin_payload.is_some() {
         cmd.stdin(Stdio::piped());
     }
@@ -1725,7 +1748,10 @@ fn remove_dir_no_follow(dir: &Path) -> std::io::Result<()> {
 
 /// Safely deletes an untracked file, symlink, or directory within `workdir` without
 /// ever traversing parent symlinks or following external links.
-pub(crate) fn safe_remove_untracked_path(workdir: &Path, rel_path: &str) -> Result<(), EngineError> {
+pub(crate) fn safe_remove_untracked_path(
+    workdir: &Path,
+    rel_path: &str,
+) -> Result<(), EngineError> {
     let trimmed = rel_path.trim_end_matches(['/', '\\']);
     if trimmed.is_empty() {
         return Err(EngineError::Other(
@@ -1874,7 +1900,9 @@ pub(crate) fn load_amend_preview_sync(
                 .old_file()
                 .path()
                 .map(|p| p.to_string_lossy().replace('\\', "/"))
-                .filter(|o| matches!(kind, FileStatusKind::Renamed | FileStatusKind::Copied) && *o != path);
+                .filter(|o| {
+                    matches!(kind, FileStatusKind::Renamed | FileStatusKind::Copied) && *o != path
+                });
             let exists_in_workdir = workdir.is_some_and(|w| w.join(&path).is_file());
             let opt_core = |id: git2::Oid| (!id.is_zero()).then(|| to_core_oid(id));
             files.push(FileChange {
@@ -1999,10 +2027,7 @@ pub fn probe_commit_precheck_sync(location: &RepoLocation) -> CommitPrecheckInfo
             || has_hook("commit-msg")
             || has_hook("post-commit");
 
-        let has_remote = repo
-            .remotes()
-            .map(|r| !r.is_empty())
-            .unwrap_or(false);
+        let has_remote = repo.remotes().map(|r| !r.is_empty()).unwrap_or(false);
 
         Ok(CommitPrecheckInfo {
             has_commit_hooks,
@@ -2167,7 +2192,10 @@ pub(crate) fn execute_commit_git2_sync(
         let tree = repo.find_tree(tree_oid)?;
 
         let oid = if let Some(head_commit) = amend_head {
-            let amend_author = if req.author_override.as_ref().is_some_and(|s| !s.trim().is_empty())
+            let amend_author = if req
+                .author_override
+                .as_ref()
+                .is_some_and(|s| !s.trim().is_empty())
             {
                 author
             } else {
@@ -2196,14 +2224,7 @@ pub(crate) fn execute_commit_git2_sync(
                 ));
             }
             let parent_refs: Vec<&Commit<'_>> = parent_commits.iter().collect();
-            repo.commit(
-                Some("HEAD"),
-                &author,
-                &committer,
-                &msg,
-                &tree,
-                &parent_refs,
-            )?
+            repo.commit(Some("HEAD"), &author, &committer, &msg, &tree, &parent_refs)?
         };
 
         let core_oid = to_core_oid(oid);
@@ -2553,15 +2574,19 @@ mod tests {
         let (dir, loc) = init_temp_repo();
         fs::write(dir.path().join("a.txt"), "one\n").unwrap();
         assert!(run_git_in(dir.path(), &["add", "a.txt"]).status.success());
-        assert!(run_git_in(dir.path(), &["commit", "-m", "root"]).status.success());
+        assert!(
+            run_git_in(dir.path(), &["commit", "-m", "root"])
+                .status
+                .success()
+        );
         assert!(
             run_git_in(dir.path(), &["checkout", "--detach", "HEAD"])
                 .status
                 .success()
         );
 
-        let err = undo_last_commit_sync(&loc)
-            .expect_err("must refuse undoing detached root commit");
+        let err =
+            undo_last_commit_sync(&loc).expect_err("must refuse undoing detached root commit");
         assert!(
             err.to_string().contains("detached"),
             "unexpected error: {err}"
@@ -2576,7 +2601,11 @@ mod tests {
     #[test]
     fn apply_stage_buffer_propagates_clean_filter_failure() {
         let (dir, loc) = init_temp_repo();
-        fs::write(dir.path().join(".gitattributes"), "*.secret filter=failfilt\n").unwrap();
+        fs::write(
+            dir.path().join(".gitattributes"),
+            "*.secret filter=failfilt\n",
+        )
+        .unwrap();
         assert!(
             run_git_in(dir.path(), &["config", "filter.failfilt.clean", "false"])
                 .status
@@ -2639,7 +2668,11 @@ mod tests {
         assert_eq!(staged_1.stdout, b"HELLO\n");
 
         // Commit initial version, then test `stage_all_tracked_sync`.
-        assert!(run_git_in(dir.path(), &["commit", "-m", "initial"]).status.success());
+        assert!(
+            run_git_in(dir.path(), &["commit", "-m", "initial"])
+                .status
+                .success()
+        );
         fs::write(dir.path().join("doc.clean"), "world\n").unwrap();
         stage_all_tracked_sync(&loc).expect("stage_all_tracked_sync");
         let staged_2 = run_git_in(dir.path(), &["show", ":doc.clean"]);
@@ -2693,7 +2726,11 @@ mod tests {
         );
 
         // Commit v1, modify to v2, stage v2, then unstage via `unstage_targets_sync`.
-        assert!(run_git_in(dir.path(), &["commit", "-m", "v1"]).status.success());
+        assert!(
+            run_git_in(dir.path(), &["commit", "-m", "v1"])
+                .status
+                .success()
+        );
         fs::write(&route_file, "export const v = 2;\n").unwrap();
         stage_targets_sync(
             &loc,
@@ -2752,7 +2789,11 @@ mod tests {
         let (dir, loc) = init_temp_repo();
         fs::write(dir.path().join("old.rs"), "fn original() {}\n").unwrap();
         assert!(run_git_in(dir.path(), &["add", "old.rs"]).status.success());
-        assert!(run_git_in(dir.path(), &["commit", "-m", "add old"]).status.success());
+        assert!(
+            run_git_in(dir.path(), &["commit", "-m", "add old"])
+                .status
+                .success()
+        );
 
         // Rename in worktree without staging.
         fs::rename(dir.path().join("old.rs"), dir.path().join("new.rs")).unwrap();
@@ -2790,8 +2831,16 @@ mod tests {
         let (dir, loc) = init_temp_repo();
         fs::write(dir.path().join("a.txt"), "a0\n").unwrap();
         fs::write(dir.path().join("b.txt"), "b0\n").unwrap();
-        assert!(run_git_in(dir.path(), &["add", "a.txt", "b.txt"]).status.success());
-        assert!(run_git_in(dir.path(), &["commit", "-m", "base"]).status.success());
+        assert!(
+            run_git_in(dir.path(), &["add", "a.txt", "b.txt"])
+                .status
+                .success()
+        );
+        assert!(
+            run_git_in(dir.path(), &["commit", "-m", "base"])
+                .status
+                .success()
+        );
 
         // Stage ONLY a.txt while leaving b.txt modified unstaged.
         fs::write(dir.path().join("a.txt"), "a1\n").unwrap();
@@ -2842,7 +2891,11 @@ mod tests {
         let (dir, loc) = init_temp_repo();
         let content = "line 1\nline 2\nline 3\nline 4\n";
         fs::write(dir.path().join("orig.txt"), content).unwrap();
-        assert!(run_git_in(dir.path(), &["add", "orig.txt"]).status.success());
+        assert!(
+            run_git_in(dir.path(), &["add", "orig.txt"])
+                .status
+                .success()
+        );
         fs::rename(dir.path().join("orig.txt"), dir.path().join("moved.txt")).unwrap();
 
         let repo = Repository::open(&loc.git_dir).unwrap();

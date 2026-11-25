@@ -144,11 +144,8 @@ fn render_command_list(
     }
 
     let visible_h = area.height as usize;
-    let (selected, offset) = list_viewport(
-        state.console.len(),
-        state.console.selected_idx(),
-        visible_h,
-    );
+    let (selected, offset) =
+        list_viewport(state.console.len(), state.console.selected_idx(), visible_h);
 
     let focused = ctx.focused_pane == PaneId::ConsoleCommandList;
 
@@ -246,7 +243,10 @@ fn render_command_output(
                 Style::default().fg(ctx.theme.fg_primary)
             };
             lines.push(Line::from(Span::styled(
-                format!(" {}", truncate_to_width(&summary, area.width.saturating_sub(1) as usize)),
+                format!(
+                    " {}",
+                    truncate_to_width(&summary, area.width.saturating_sub(1) as usize)
+                ),
                 style,
             )));
         }
@@ -280,9 +280,10 @@ fn render_command_output(
             let code_s = code.to_string();
             let ms = entry.duration_ms.unwrap_or_default().to_string();
             Span::styled(
-                state
-                    .i18n
-                    .t_fmt("view.console.exit_status", &[("code", &code_s), ("ms", &ms)]),
+                state.i18n.t_fmt(
+                    "view.console.exit_status",
+                    &[("code", &code_s), ("ms", &ms)],
+                ),
                 Style::default()
                     .fg(ctx.theme.status_conflicted)
                     .add_modifier(Modifier::BOLD),
@@ -451,12 +452,15 @@ mod tests {
 
         let full_text: Vec<String> = (0..buf.area.height).map(|y| row_text(&buf, y)).collect();
         let joined = full_text.join("\n");
-        assert!(!joined.contains("[stderr]"), "unexpected [stderr] in:\n{joined}");
+        assert!(
+            !joined.contains("[stderr]"),
+            "unexpected [stderr] in:\n{joined}"
+        );
 
         let (from_y, from_x) = find_row_containing(&buf, "From https://github.com/sxyazi/yazi")
             .expect("missing fetch From line");
-        let (range_y, range_x) = find_row_containing(&buf, "40a91421..d5e4beb6")
-            .expect("missing fetch ref range line");
+        let (range_y, range_x) =
+            find_row_containing(&buf, "40a91421..d5e4beb6").expect("missing fetch ref range line");
         let (create_y, create_x) = find_row_containing(&buf, "create mode 100644")
             .expect("missing merge create mode line");
 
@@ -535,7 +539,10 @@ mod tests {
             render_command_output(f, area, &state, ctx);
         });
         let last_row = row_text(&buf, 9);
-        assert!(last_row.contains("entry-29"), "expected last row to clamp to entry-29, got: {last_row}");
+        assert!(
+            last_row.contains("entry-29"),
+            "expected last row to clamp to entry-29, got: {last_row}"
+        );
         assert!(
             find_row_containing(&buf, "entry-00").is_none(),
             "expected early lines to be scrolled out of viewport"
@@ -561,7 +568,10 @@ mod tests {
         let theme = ThemePalette::darcula(true);
         let buf = render_output_with_theme(&state, &theme, 120, 20);
         let header_row = row_text(&buf, 0);
-        assert!(!header_row.contains('%'), "short output should not show percentage: {header_row}");
+        assert!(
+            !header_row.contains('%'),
+            "short output should not show percentage: {header_row}"
+        );
         for y in 1..buf.area.height {
             let sym = buf[(buf.area.width - 1, y)].symbol();
             assert_ne!(sym, "┃", "unexpected scrollbar thumb at row {y}");
@@ -590,14 +600,20 @@ mod tests {
         // At top -> 0% and thumb starts at top of output body (row 1).
         let buf_top = render_output_with_theme(&state, &theme, 120, 20);
         let header_top = row_text(&buf_top, 0);
-        assert!(header_top.contains("(0%)"), "expected (0%) in header: {header_top}");
+        assert!(
+            header_top.contains("(0%)"),
+            "expected (0%) in header: {header_top}"
+        );
         assert_eq!(buf_top[(119, 1)].symbol(), "┃");
 
         // At bottom -> 100% and thumb reaches bottom row (row 19).
         state.console.set_output_scroll_for_test(usize::MAX);
         let buf_bot = render_output_with_theme(&state, &theme, 120, 20);
         let header_bot = row_text(&buf_bot, 0);
-        assert!(header_bot.contains("(100%)"), "expected (100%) in header: {header_bot}");
+        assert!(
+            header_bot.contains("(100%)"),
+            "expected (100%) in header: {header_bot}"
+        );
         assert_eq!(buf_bot[(119, 19)].symbol(), "┃");
     }
 }

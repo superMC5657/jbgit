@@ -67,7 +67,9 @@ pub fn render_commit_tab(
         .status()
         .map_or(0, |s| s.total_changes());
     let total_s = total_changes.to_string();
-    let changes_sub = state.i18n.t_fmt("view.commit.files_count", &[("count", &total_s)]);
+    let changes_sub = state
+        .i18n
+        .t_fmt("view.commit.files_count", &[("count", &total_s)]);
     let changes_body = render_pane_frame(
         frame,
         left_split.first,
@@ -87,15 +89,14 @@ pub fn render_commit_tab(
             ctx,
         );
 
-        let staged_count = state
-            .stage_workbench
-            .status()
-            .map_or(0, |s| s.staged.len());
+        let staged_count = state.stage_workbench.status().map_or(0, |s| s.staged.len());
         let staged_s = staged_count.to_string();
         let commit_sub = if state.stage_workbench.amend() {
             state.i18n.t("view.commit.amend_head").to_string()
         } else {
-            state.i18n.t_fmt("view.commit.staged_count", &[("count", &staged_s)])
+            state
+                .i18n
+                .t_fmt("view.commit.staged_count", &[("count", &staged_s)])
         };
         let msg_body = render_pane_frame(
             frame,
@@ -300,11 +301,7 @@ fn render_stage_tree_pane(
                 ));
                 left.push(Span::styled(
                     row.label.clone(),
-                    Style::default().fg(if is_sel {
-                        ctx.theme.fg_bright
-                    } else {
-                        fg_kind
-                    }),
+                    Style::default().fg(if is_sel { ctx.theme.fg_bright } else { fg_kind }),
                 ));
                 if let Some(old) = old_path {
                     left.push(Span::styled(
@@ -454,7 +451,11 @@ fn render_stage_toolbar(
             !sw.diff_collapsed(),
             StageToolbarButton::ToggleDiff,
         ),
-        (" ⚙ ", sw.tree_opts().show_ignored, StageToolbarButton::Options),
+        (
+            " ⚙ ",
+            sw.tree_opts().show_ignored,
+            StageToolbarButton::Options,
+        ),
     ];
 
     render_toolbar(frame, area, ctx, 3, &buttons, HitTarget::StageToolbar);
@@ -573,7 +574,9 @@ fn render_commit_panel(
         if sw.commit_in_progress() {
             let spinner_s = state.spinner_char().to_string();
             let line = Line::from(Span::styled(
-                state.i18n.t_fmt("view.commit.running_hooks", &[("spinner", &spinner_s)]),
+                state
+                    .i18n
+                    .t_fmt("view.commit.running_hooks", &[("spinner", &spinner_s)]),
                 Style::default().fg(ctx.theme.border_focused),
             ));
             frame.render_widget(
@@ -603,7 +606,9 @@ fn render_commit_panel(
                 banner_rect,
             );
             if banner.can_undo && banner_rect.width >= undo_label.width() as u16 {
-                let ux = banner_rect.right().saturating_sub(undo_label.width() as u16);
+                let ux = banner_rect
+                    .right()
+                    .saturating_sub(undo_label.width() as u16);
                 ctx.hit_registry.register(
                     Rect::new(ux, banner_rect.y, undo_label.width() as u16, 1),
                     4,
@@ -629,19 +634,31 @@ fn render_commit_options_row(
     };
     let items = [
         (
-            format!(" [{}] {} ", chk(sw.amend()), ctx.t("view.commit.amend_checkbox")),
+            format!(
+                " [{}] {} ",
+                chk(sw.amend()),
+                ctx.t("view.commit.amend_checkbox")
+            ),
             sw.amend(),
             false,
             CommitOptionKind::Amend,
         ),
         (
-            format!(" [{}] {} ", chk(sw.signoff()), ctx.t("view.commit.sign_off")),
+            format!(
+                " [{}] {} ",
+                chk(sw.signoff()),
+                ctx.t("view.commit.sign_off")
+            ),
             sw.signoff(),
             false,
             CommitOptionKind::Signoff,
         ),
         (
-            format!(" [{}] {} ", chk(sw.allow_empty()), ctx.t("view.commit.allow_empty")),
+            format!(
+                " [{}] {} ",
+                chk(sw.allow_empty()),
+                ctx.t("view.commit.allow_empty")
+            ),
             sw.allow_empty(),
             false,
             CommitOptionKind::AllowEmpty,
@@ -801,9 +818,10 @@ fn render_commit_message_editor(
             }),
         ));
         let comment_char = sw.precheck().comment_char;
-        let has_overlong_body = ed.lines.iter().skip(1).any(|l| {
-            !l.starts_with(comment_char) && l.width() > jbgit_core::COMMIT_BODY_MAX_WIDTH
-        });
+        let has_overlong_body =
+            ed.lines.iter().skip(1).any(|l| {
+                !l.starts_with(comment_char) && l.width() > jbgit_core::COMMIT_BODY_MAX_WIDTH
+            });
         let reformat_btn = state.i18n.t("view.commit.reformat_btn").to_string();
         let subj_counter = format!("{subj_len}/50 ");
         let mut right = Vec::new();

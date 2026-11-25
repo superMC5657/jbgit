@@ -3,7 +3,9 @@ use std::path::Path;
 use std::time::Duration;
 
 use git2::{Repository, Signature, Time};
-use jbgit_core::graph::{DownTarget, PermanentLinearGraph, PermanentLinearGraphBuilder, RawCommitNode};
+use jbgit_core::graph::{
+    DownTarget, PermanentLinearGraph, PermanentLinearGraphBuilder, RawCommitNode,
+};
 use jbgit_core::{Oid, RequestEpoch};
 use jbgit_engine::{
     EngineBackend, EngineEvent, EngineSupervisor, RepoLocation, SnapshotLoadKind, SnapshotLoadMode,
@@ -36,8 +38,8 @@ fn write_commit(
     index.add_path(Path::new(file)).expect("add path");
     let tree_id = index.write_tree().expect("write tree");
     let tree = repo.find_tree(tree_id).expect("find tree");
-    let sig = Signature::new("Scale Dev", "scale@example.com", &Time::new(timestamp, 0))
-        .expect("sig");
+    let sig =
+        Signature::new("Scale Dev", "scale@example.com", &Time::new(timestamp, 0)).expect("sig");
     let parent_commits: Vec<git2::Commit<'_>> = parents
         .iter()
         .map(|&id| repo.find_commit(id).expect("parent commit"))
@@ -56,7 +58,10 @@ fn graph_edges(g: &PermanentLinearGraph) -> BTreeMap<Oid, (Vec<Oid>, BTreeSet<Oi
             .iter()
             .map(|&t| match t {
                 DownTarget::Loaded(p) => {
-                    assert!(p > id, "reverse topological invariant violated: {id} -> {p}");
+                    assert!(
+                        p > id,
+                        "reverse topological invariant violated: {id} -> {p}"
+                    );
                     g.commit(p).oid
                 }
                 DownTarget::Unloaded(_) => g.unloaded_oid(t).expect("unloaded oid"),
@@ -86,7 +91,10 @@ fn assert_equivalent_to_full(
     .expect("full snapshot");
     assert_eq!(full_kind, SnapshotLoadKind::Full);
 
-    let inc_raw: Vec<RawCommitNode> = incremental_commits.iter().map(RawCommitNode::from).collect();
+    let inc_raw: Vec<RawCommitNode> = incremental_commits
+        .iter()
+        .map(RawCommitNode::from)
+        .collect();
     let full_raw: Vec<RawCommitNode> = full_snap.commits.iter().map(RawCommitNode::from).collect();
     let inc_graph = PermanentLinearGraphBuilder::build(&inc_raw);
     let full_graph = PermanentLinearGraphBuilder::build(&full_raw);
@@ -101,9 +109,33 @@ fn assert_equivalent_to_full(
 #[test]
 fn incremental_refresh_matches_full_scan_across_git_mutations() {
     let (tmp, repo) = init_repo();
-    let c1 = write_commit(&repo, Some("HEAD"), "a.txt", "1\n", "c1", &[], 1_700_000_100);
-    let c2 = write_commit(&repo, Some("HEAD"), "a.txt", "2\n", "c2", &[c1], 1_700_000_200);
-    let c3 = write_commit(&repo, Some("HEAD"), "a.txt", "3\n", "c3", &[c2], 1_700_000_300);
+    let c1 = write_commit(
+        &repo,
+        Some("HEAD"),
+        "a.txt",
+        "1\n",
+        "c1",
+        &[],
+        1_700_000_100,
+    );
+    let c2 = write_commit(
+        &repo,
+        Some("HEAD"),
+        "a.txt",
+        "2\n",
+        "c2",
+        &[c1],
+        1_700_000_200,
+    );
+    let c3 = write_commit(
+        &repo,
+        Some("HEAD"),
+        "a.txt",
+        "3\n",
+        "c3",
+        &[c2],
+        1_700_000_300,
+    );
 
     let head_ref_name = repo.head().unwrap().name().unwrap().to_string();
     let loc = RepoLocation::discover(tmp.path()).expect("discover");
@@ -139,7 +171,15 @@ fn incremental_refresh_matches_full_scan_across_git_mutations() {
     cache = next_cache;
 
     // 3. Normal commit -> IncrementalJoined (+1, -0)
-    let c4 = write_commit(&repo, Some("HEAD"), "a.txt", "4\n", "c4", &[c3], 1_700_000_400);
+    let c4 = write_commit(
+        &repo,
+        Some("HEAD"),
+        "a.txt",
+        "4\n",
+        "c4",
+        &[c3],
+        1_700_000_400,
+    );
     let (snap_commit, _, next_cache, kind_commit) = load_repo_snapshot_incremental_sync(
         &loc,
         &epoch.issue(),
@@ -198,8 +238,10 @@ fn incremental_refresh_matches_full_scan_across_git_mutations() {
     cache = next_cache;
 
     // 5. Branch fast-forward (`feat` -> `m1`) + new tag on `c2`
-    repo.reference("refs/heads/feat", m1, true, "ff feat").unwrap();
-    repo.reference("refs/tags/v0.1", c2, true, "tag c2").unwrap();
+    repo.reference("refs/heads/feat", m1, true, "ff feat")
+        .unwrap();
+    repo.reference("refs/tags/v0.1", c2, true, "tag c2")
+        .unwrap();
     let (snap_ff, _, next_cache, kind_ff) = load_repo_snapshot_incremental_sync(
         &loc,
         &epoch.issue(),
@@ -294,7 +336,8 @@ fn incremental_refresh_matches_full_scan_across_git_mutations() {
         &[c3],
         1_700_000_700,
     );
-    repo.reference(&head_ref_name, r1, true, "force reset").unwrap();
+    repo.reference(&head_ref_name, r1, true, "force reset")
+        .unwrap();
     let (snap_rewrite, _, next_cache, kind_rewrite) = load_repo_snapshot_incremental_sync(
         &loc,
         &epoch.issue(),

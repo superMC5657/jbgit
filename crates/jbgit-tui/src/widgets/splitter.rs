@@ -394,7 +394,7 @@ mod tests {
             (SplitterId::LogDiffBottomVertical, 0.55),
             (SplitterId::CommitMainHorizontal, 0.25),
             (SplitterId::CommitLeftVertical, 0.75),
-            (SplitterId::StashMainHorizontal, 0.01),   // clamped to 0.05
+            (SplitterId::StashMainHorizontal, 0.01), // clamped to 0.05
             (SplitterId::StashPreviewVertical, 0.45),
             (SplitterId::ConsoleMainHorizontal, 0.99), // clamped to 0.90
             (SplitterId::FileHistoryHorizontal, 0.30),

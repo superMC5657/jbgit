@@ -81,9 +81,7 @@ impl TextFilter {
 
 impl TextMatcher {
     pub fn matches_commit(&self, oid: &Oid, subject: &str, body: &str) -> bool {
-        self.hash_prefixes
-            .iter()
-            .any(|p| oid.matches_hex_prefix(p))
+        self.hash_prefixes.iter().any(|p| oid.matches_hex_prefix(p))
             || self.re.is_match(subject)
             || (!body.is_empty() && self.re.is_match(body))
     }
@@ -216,14 +214,10 @@ impl BranchFilter {
         if self.ranges.is_empty() {
             match self.include.as_slice() {
                 [only] if is_concrete_other(only) => Some(only.as_str()),
-                [a, b]
-                    if Self::matches_current_branch(a, head_branch) && is_concrete_other(b) =>
-                {
+                [a, b] if Self::matches_current_branch(a, head_branch) && is_concrete_other(b) => {
                     Some(b.as_str())
                 }
-                [a, b]
-                    if Self::matches_current_branch(b, head_branch) && is_concrete_other(a) =>
-                {
+                [a, b] if Self::matches_current_branch(b, head_branch) && is_concrete_other(a) => {
                     Some(a.as_str())
                 }
                 _ => None,
@@ -322,8 +316,9 @@ impl BranchFilter {
         let mut start_heads: Vec<crate::graph::PermNodeId> = Vec::new();
         let mut mask = FixedBitSet::with_capacity(n);
 
-        let has_branch_rules =
-            !expanded.include.is_empty() || !expanded.exclude.is_empty() || expanded.ranges.is_empty();
+        let has_branch_rules = !expanded.include.is_empty()
+            || !expanded.exclude.is_empty()
+            || expanded.ranges.is_empty();
         if has_branch_rules {
             let heads: Vec<_> = expanded
                 .select_heads(
@@ -493,9 +488,7 @@ impl UserMatcher {
                 me.email.is_some_and(|e| e.eq_ignore_ascii_case(email))
                     || me.name.is_some_and(|n| n == name)
             }
-            UserToken::Fragment(t) => {
-                contains_lowercased(name, t) || contains_lowercased(email, t)
-            }
+            UserToken::Fragment(t) => contains_lowercased(name, t) || contains_lowercased(email, t),
         })
     }
 }
@@ -508,8 +501,7 @@ fn contains_lowercased(haystack: &str, needle_lower: &str) -> bool {
     }
     if haystack.is_ascii() && needle_lower.is_ascii() {
         let (h, n) = (haystack.as_bytes(), needle_lower.as_bytes());
-        return h.len() >= n.len()
-            && h.windows(n.len()).any(|w| w.eq_ignore_ascii_case(n));
+        return h.len() >= n.len() && h.windows(n.len()).any(|w| w.eq_ignore_ascii_case(n));
     }
     haystack.to_lowercase().contains(needle_lower)
 }
@@ -823,7 +815,9 @@ impl LogFilterSpec {
             all.insert_range(..);
             (all, None)
         } else {
-            let (mask, heads) = self.branch.compute_mask_and_heads(graph, snapshot, favorites);
+            let (mask, heads) = self
+                .branch
+                .compute_mask_and_heads(graph, snapshot, favorites);
             (mask, Some(heads))
         };
         if is_cancelled() {
@@ -1248,14 +1242,18 @@ mod tests {
     fn branch_range_and_favorites_and_no_merges_filter() {
         let (mut snap, _) = fixture();
         // Add a merge commit 7 merging main (3) and feature/a (5) for --no-merges testing.
-        snap.commits.insert(0, commit(7, &[3, 5], "Alice", 70, "merge feature/a"));
+        snap.commits
+            .insert(0, commit(7, &[3, 5], "Alice", 70, "merge feature/a"));
         snap.refs.push(branch("merged", 7));
         let raw: Vec<RawCommitNode> = snap.commits.iter().map(RawCommitNode::from).collect();
         let graph = PermanentLinearGraphBuilder::build(&raw);
 
         // fixture: main -> 3 -> 2 -> 1; feature/a -> 5 -> 4 -> 1
         let bf = BranchFilter::parse("main..feature/a");
-        assert_eq!(bf.ranges, vec![("main".to_string(), "feature/a".to_string())]);
+        assert_eq!(
+            bf.ranges,
+            vec![("main".to_string(), "feature/a".to_string())]
+        );
         assert_eq!(bf.label(), "main..feature/a");
         assert_eq!(bf.single_compared_branch(Some("main")), Some("feature/a"));
 
@@ -1281,13 +1279,9 @@ mod tests {
             ..Default::default()
         };
         let (fav_bits, _) = fav_spec
-            .compute_matches_with_favorites(
-                &graph,
-                &snap,
-                None,
-                &["feature/a".to_string()],
-                || false,
-            )
+            .compute_matches_with_favorites(&graph, &snap, None, &["feature/a".to_string()], || {
+                false
+            })
             .unwrap()
             .unwrap();
         let fav_bits = fav_bits.unwrap();

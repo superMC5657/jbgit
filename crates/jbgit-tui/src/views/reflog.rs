@@ -14,8 +14,8 @@ use crate::log_view::{ReflogFocus, ReflogState};
 use crate::views::log_details::{FileDiffRenderProps, render_file_diff_body};
 use crate::views::overlays::draw_shadow;
 use crate::views::{
-    fit_left_right_spans, list_viewport, render_splitter_divider_z, render_toolbar,
-    row_background, truncate_to_width,
+    fit_left_right_spans, list_viewport, render_splitter_divider_z, render_toolbar, row_background,
+    truncate_to_width,
 };
 
 fn action_badge_color(kind: ReflogActionKind, ctx: &RenderContext<'_>) -> Color {
@@ -186,10 +186,7 @@ pub fn render_reflog_modal(
 
     frame.render_widget(
         Paragraph::new(Span::styled(
-            truncate_to_width(
-                ctx.t("view.reflog.footer_hint"),
-                footer_rect.width as usize,
-            ),
+            truncate_to_width(ctx.t("view.reflog.footer_hint"), footer_rect.width as usize),
             Style::default().fg(ctx.theme.fg_muted),
         ))
         .style(Style::default().bg(ctx.theme.bg_panel)),
@@ -251,7 +248,12 @@ fn render_entries_pane(
         hdr_rect,
     );
 
-    let body = Rect::new(area.x, area.y + 1, area.width, area.height.saturating_sub(1));
+    let body = Rect::new(
+        area.x,
+        area.y + 1,
+        area.width,
+        area.height.saturating_sub(1),
+    );
     if body.height == 0 {
         return;
     }
@@ -323,7 +325,11 @@ fn render_entries_pane(
                 format!(" {} ", entry.selector),
                 Style::default()
                     .fg(ctx.theme.fg_accent_link)
-                    .add_modifier(if is_sel { Modifier::BOLD } else { Modifier::empty() }),
+                    .add_modifier(if is_sel {
+                        Modifier::BOLD
+                    } else {
+                        Modifier::empty()
+                    }),
             ),
             Span::styled(
                 format!("[{}] ", entry.action.badge()),
@@ -360,11 +366,9 @@ fn render_right_pane(
     if area.width == 0 || area.height == 0 {
         return;
     }
-    let split = state.splitters.split(
-        area,
-        SplitterId::ReflogRightVertical,
-        SplitAxis::Vertical,
-    );
+    let split = state
+        .splitters
+        .split(area, SplitterId::ReflogRightVertical, SplitAxis::Vertical);
     ctx.record_splitter_container(
         SplitterId::ReflogRightVertical,
         SplitAxis::Vertical,
@@ -437,7 +441,12 @@ fn render_changes_pane(
         hdr_rect,
     );
 
-    let body = Rect::new(area.x, area.y + 1, area.width, area.height.saturating_sub(1));
+    let body = Rect::new(
+        area.x,
+        area.y + 1,
+        area.width,
+        area.height.saturating_sub(1),
+    );
     if body.height == 0 {
         return;
     }
@@ -446,7 +455,9 @@ fn render_changes_pane(
         body,
     );
     if rows.is_empty() {
-        let msg = if rf.selected_entry().is_some() && rf.changes.current_bundle(&state.diff_caches).is_none() {
+        let msg = if rf.selected_entry().is_some()
+            && rf.changes.current_bundle(&state.diff_caches).is_none()
+        {
             ctx.t("common.loading")
         } else {
             ctx.t("view.log_details.no_changes")
@@ -462,10 +473,7 @@ fn render_changes_pane(
     }
 
     let (selected, offset) = list_viewport(rows.len(), rf.changes.selected, body.height as usize);
-    for (vis_y, idx) in (offset..rows.len())
-        .take(body.height as usize)
-        .enumerate()
-    {
+    for (vis_y, idx) in (offset..rows.len()).take(body.height as usize).enumerate() {
         let r = &rows[idx];
         let rect = Rect::new(body.x, body.y + vis_y as u16, body.width, 1);
         let row_target = HitTarget::ReflogChangeRow { idx };
@@ -490,7 +498,8 @@ fn render_changes_pane(
                     .changes
                     .current_bundle(&state.diff_caches)
                     .and_then(|b| b.changes.get(change_idx));
-                let status_col = change.map_or(ctx.theme.fg_primary, |c| ctx.theme.status_color(c.kind));
+                let status_col =
+                    change.map_or(ctx.theme.fg_primary, |c| ctx.theme.status_color(c.kind));
                 let badge = change.map_or('M', |c| c.kind.badge_char());
                 Line::from(vec![
                     Span::styled(format!(" {indent}"), Style::default().bg(bg)),
@@ -574,7 +583,12 @@ fn render_diff_pane(
         hdr_rect,
     );
 
-    let body = Rect::new(area.x, area.y + 1, area.width, area.height.saturating_sub(1));
+    let body = Rect::new(
+        area.x,
+        area.y + 1,
+        area.width,
+        area.height.saturating_sub(1),
+    );
     if body.height == 0 {
         return;
     }

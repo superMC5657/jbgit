@@ -4,9 +4,7 @@ use git2::{
     Delta, DiffFindOptions, DiffOptions, Repository, Status, StatusOptions, SubmoduleIgnore,
     SubmoduleStatus,
 };
-use jbgit_core::{
-    EpochToken, FileStatusKind, StageEntry, StageStatusSnapshot, SubmoduleState,
-};
+use jbgit_core::{EpochToken, FileStatusKind, StageEntry, StageStatusSnapshot, SubmoduleState};
 
 use crate::error::EngineError;
 use crate::probe::RepoLocation;
@@ -16,10 +14,7 @@ use super::worker_pool::with_thread_repo;
 
 /// Detects copied files in `HEAD -> index` (`Delta::Copied`) because `libgit2`'s
 /// `repo.statuses()` only detects renames and has no `INDEX_COPIED` status flag.
-fn detect_staged_copies(
-    repo: &Repository,
-    include_unmodified: bool,
-) -> HashMap<String, String> {
+fn detect_staged_copies(repo: &Repository, include_unmodified: bool) -> HashMap<String, String> {
     let mut copies = HashMap::new();
     let Ok(head) = repo.head() else {
         return copies;
@@ -162,7 +157,9 @@ pub fn load_stage_status_with_config_sync(
                         .new_file()
                         .path()
                         .map(|p| p.to_string_lossy().replace('\\', "/"));
-                    let path = new.or_else(|| old.clone()).unwrap_or_else(|| fallback_path.clone());
+                    let path = new
+                        .or_else(|| old.clone())
+                        .unwrap_or_else(|| fallback_path.clone());
                     let old_path = old.filter(|o| o != &path);
                     (path, old_path)
                 } else {
@@ -190,9 +187,11 @@ pub fn load_stage_status_with_config_sync(
                     old_path: None,
                     kind: FileStatusKind::Untracked,
                 });
-            } else if let Some(kind) = worktree_status_kind(st)
-                .or_else(|| entry.index_to_workdir().and_then(|d| delta_to_kind(d.status())))
-            {
+            } else if let Some(kind) = worktree_status_kind(st).or_else(|| {
+                entry
+                    .index_to_workdir()
+                    .and_then(|d| delta_to_kind(d.status()))
+            }) {
                 // Independently resolve worktree `new_file.path` vs index `old_file.path` so
                 // unstaged renames and dual-stage renames (`HEAD -> Index -> Workdir`) keep
                 // their true destination paths.
@@ -221,7 +220,8 @@ pub fn load_stage_status_with_config_sync(
 
         // Upgrade newly-added staged entries that match an existing HEAD file to `Copied`.
         if snap.staged.iter().any(|e| e.kind == FileStatusKind::Added) {
-            let copies = detect_staged_copies(repo, index_entries <= scan_config.large_index_entries);
+            let copies =
+                detect_staged_copies(repo, index_entries <= scan_config.large_index_entries);
             if !copies.is_empty() {
                 for entry in &mut snap.staged {
                     if entry.kind == FileStatusKind::Added

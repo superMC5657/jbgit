@@ -1064,10 +1064,7 @@ impl JbgitConfig {
                 (&mut self.layout.commit_ratio, lo.commit_ratio),
                 (&mut self.layout.commit_left_ratio, lo.commit_left_ratio),
                 (&mut self.layout.stash_ratio, lo.stash_ratio),
-                (
-                    &mut self.layout.stash_preview_ratio,
-                    lo.stash_preview_ratio,
-                ),
+                (&mut self.layout.stash_preview_ratio, lo.stash_preview_ratio),
                 (&mut self.layout.console_ratio, lo.console_ratio),
                 (&mut self.layout.file_history_ratio, lo.file_history_ratio),
                 (

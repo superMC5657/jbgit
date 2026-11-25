@@ -7,17 +7,12 @@ use jbgit_core::PaneId;
 use jbgit_engine::StageDiffSide;
 
 use crate::app::{Action, AppState, ContextMenuItem, DiffScope, EditorMoveKind, PopupKind};
-use crate::hit_test::{
-    CommitOptionKind, HitTarget, StageDiffToolbarButton, StageToolbarButton,
-};
+use crate::hit_test::{CommitOptionKind, HitTarget, StageDiffToolbarButton, StageToolbarButton};
 use crate::keymap::{KeyAction, catalog};
 
 const BRACKET_CHORD_WINDOW: Duration = Duration::from_millis(500);
 
-pub(crate) fn route_commit_priority_key(
-    key: &KeyEvent,
-    state: &AppState,
-) -> Option<Vec<Action>> {
+pub(crate) fn route_commit_priority_key(key: &KeyEvent, state: &AppState) -> Option<Vec<Action>> {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     let alt = key.modifiers.contains(KeyModifiers::ALT);
     let shift = key.modifiers.contains(KeyModifiers::SHIFT);
@@ -89,10 +84,7 @@ pub(crate) fn route_commit_diff_fallback_key(key: &KeyEvent, state: &AppState) -
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     let alt = key.modifiers.contains(KeyModifiers::ALT);
     let shift = key.modifiers.contains(KeyModifiers::SHIFT);
-    let side = state
-        .stage_workbench
-        .current_diff_key()
-        .map(|k| k.side);
+    let side = state.stage_workbench.current_diff_key().map(|k| k.side);
     let is_amend_ref = side == Some(StageDiffSide::AmendCommit);
 
     match key.code {
@@ -196,9 +188,7 @@ pub(crate) fn route_stage_left_click(
                 Action::FocusPane(PaneId::CommitChangesTree),
                 Action::SelectCommitStageRow(idx),
             ];
-            if is_double
-                && let Some(r) = state.stage_workbench.rows().get(idx)
-            {
+            if is_double && let Some(r) = state.stage_workbench.rows().get(idx) {
                 if r.is_container() {
                     actions.push(Action::StageToggleRow(idx));
                 } else {
@@ -281,13 +271,13 @@ pub(crate) fn route_stage_left_click(
     }
 }
 
-pub(crate) fn stage_tree_context_menu_items(
-    state: &AppState,
-    idx: usize,
-) -> Vec<ContextMenuItem> {
+pub(crate) fn stage_tree_context_menu_items(state: &AppState, idx: usize) -> Vec<ContextMenuItem> {
     let mut items = crate::menus::stage_tree_menu_items(state, idx);
-    let refresh_sc =
-        catalog::shortcut_for_action(state, &[crate::config::KeymapScope::Global], &KeyAction::Refresh);
+    let refresh_sc = catalog::shortcut_for_action(
+        state,
+        &[crate::config::KeymapScope::Global],
+        &KeyAction::Refresh,
+    );
     items.push(ContextMenuItem::separator());
     items.push(ContextMenuItem::submenu(
         state.i18n.t("menu.stage.view_options"),

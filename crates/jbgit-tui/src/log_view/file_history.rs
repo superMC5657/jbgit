@@ -255,7 +255,8 @@ impl FileHistoryState {
 
         let vis_len = self.visible_len();
         if let Some(oid) = prev_sel_oid
-            && let Some(pos) = (0..vis_len).find(|&i| self.visible_entry(i).is_some_and(|e| e.oid == oid))
+            && let Some(pos) =
+                (0..vis_len).find(|&i| self.visible_entry(i).is_some_and(|e| e.oid == oid))
         {
             self.selected = pos;
         } else {
@@ -365,8 +366,7 @@ impl FileHistoryState {
             Some(FileDiffKey {
                 details: DetailsKey::compare_with_local(cur.oid),
                 path: self.key.path.clone(),
-                old_path: (cur.path_at_commit != self.key.path)
-                    .then(|| cur.path_at_commit.clone()),
+                old_path: (cur.path_at_commit != self.key.path).then(|| cur.path_at_commit.clone()),
                 context: self.diff.context,
                 whitespace: self.diff.whitespace,
             })
@@ -475,8 +475,7 @@ impl FileHistoryState {
     }
 
     pub fn toggle_follow(&mut self) -> Option<FileHistoryKey> {
-        if self.is_selection_history()
-            || matches!(self.key.scope, HistoryBranchScope::AllBranches)
+        if self.is_selection_history() || matches!(self.key.scope, HistoryBranchScope::AllBranches)
         {
             return None;
         }

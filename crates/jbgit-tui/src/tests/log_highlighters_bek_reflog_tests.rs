@@ -78,13 +78,61 @@ fn merge_and_fork_snapshot() -> RepoSnapshot {
                 "Merge branch 'feat'",
                 &format!("Integrates feature work built on {ref_hash}\n\nMore details line."),
             ),
-            make_commit(8, &[9], "Bob", "bob@example.com", 95, "feat: add widget", ""),
+            make_commit(
+                8,
+                &[9],
+                "Bob",
+                "bob@example.com",
+                95,
+                "feat: add widget",
+                "",
+            ),
             make_commit(9, &[1], "Bob", "bob@example.com", 90, "feat: scaffold", ""),
-            make_commit(7, &[6], "Alice", "alice@example.com", 80, "main: polish", ""),
-            make_commit(6, &[5], "Alice", "alice@example.com", 70, "main: step 3", ""),
-            make_commit(5, &[4], "Alice", "alice@example.com", 60, "main: step 2", ""),
-            make_commit(4, &[1], "Alice", "alice@example.com", 50, "main: step 1", ""),
-            make_commit(1, &[], "Alice", "alice@example.com", 10, "initial commit", ""),
+            make_commit(
+                7,
+                &[6],
+                "Alice",
+                "alice@example.com",
+                80,
+                "main: polish",
+                "",
+            ),
+            make_commit(
+                6,
+                &[5],
+                "Alice",
+                "alice@example.com",
+                70,
+                "main: step 3",
+                "",
+            ),
+            make_commit(
+                5,
+                &[4],
+                "Alice",
+                "alice@example.com",
+                60,
+                "main: step 2",
+                "",
+            ),
+            make_commit(
+                4,
+                &[1],
+                "Alice",
+                "alice@example.com",
+                50,
+                "main: step 1",
+                "",
+            ),
+            make_commit(
+                1,
+                &[],
+                "Alice",
+                "alice@example.com",
+                10,
+                "initial commit",
+                "",
+            ),
         ],
         ..Default::default()
     }
@@ -104,7 +152,10 @@ fn reflog_modal_opens_previews_diff_and_creates_recovery_branch_on_historical_en
 
     // Press `R` in Log commit table -> opens Reflog modal & requests Reflog on its own slot.
     ts.send_key(KeyCode::Char('R'), KeyModifiers::NONE);
-    assert!(matches!(ts.state().modal_stack.last(), Some(ModalLayer::Reflog(_))));
+    assert!(matches!(
+        ts.state().modal_stack.last(),
+        Some(ModalLayer::Reflog(_))
+    ));
     let reqs = ts.take_requests();
     assert!(
         reqs.iter().any(|(r, _)| matches!(
@@ -178,7 +229,10 @@ fn reflog_modal_opens_previews_diff_and_creates_recovery_branch_on_historical_en
 
     // Press `n` -> opens New Branch dialog targeting `dropped_oid`, type name + Enter -> dispatches CheckoutNewBranch / CreateBranch!
     ts.send_key(KeyCode::Char('n'), KeyModifiers::NONE);
-    assert!(matches!(ts.state().modal_stack.last(), Some(ModalLayer::Dialog(_))));
+    assert!(matches!(
+        ts.state().modal_stack.last(),
+        Some(ModalLayer::Dialog(_))
+    ));
     ts.type_str("recover-lost");
     ts.send_key(KeyCode::Enter, KeyModifiers::NONE);
     let git_ops = ts.take_git_ops();
@@ -207,7 +261,10 @@ fn go_to_parent_and_go_to_child_open_numbered_picker_when_multiple_targets_exist
     // Pressing Right (`GoToParentSmart`) on a 2-parent merge commit opens ChooseParent picker.
     ts.send_key(KeyCode::Right, KeyModifiers::NONE);
     assert!(
-        matches!(ts.state().modal_stack.last(), Some(ModalLayer::ChooseParent { .. })),
+        matches!(
+            ts.state().modal_stack.last(),
+            Some(ModalLayer::ChooseParent { .. })
+        ),
         "GoToParent on 2-parent merge must open ChooseParent modal"
     );
     let buf = ts.render(140, 36);
@@ -241,7 +298,10 @@ fn go_to_parent_and_go_to_child_open_numbered_picker_when_multiple_targets_exist
     // Pressing Left (`GoToChild`) opens ChooseChild picker!
     ts.send_key(KeyCode::Left, KeyModifiers::NONE);
     assert!(
-        matches!(ts.state().modal_stack.last(), Some(ModalLayer::ChooseChild { .. })),
+        matches!(
+            ts.state().modal_stack.last(),
+            Some(ModalLayer::ChooseChild { .. })
+        ),
         "GoToChild on fork base with 2 visible children must open ChooseChild modal"
     );
     let buf = ts.render(140, 36);
@@ -305,13 +365,17 @@ fn highlighters_auto_suppress_and_cherry_picked_loads_on_own_slot() {
         branch: "feat".into(),
     };
     assert!(
-        reqs.iter()
-            .any(|(r, _)| matches!(r, TaskRequest::LoadCherryPicked { key } if *key == expected_key)),
+        reqs.iter().any(
+            |(r, _)| matches!(r, TaskRequest::LoadCherryPicked { key } if *key == expected_key)
+        ),
         "filtering to single non-current branch must dispatch LoadCherryPicked: {reqs:?}"
     );
 
     // Deliver CherryPickedLoaded -> marks oid(8) as already cherry-picked.
-    let cp_epoch = ts.state().request_slots.latest(RequestSlotId::LogCherryPicked);
+    let cp_epoch = ts
+        .state()
+        .request_slots
+        .latest(RequestSlotId::LogCherryPicked);
     let mut picked = HashSet::new();
     picked.insert(oid(8));
     ts.deliver_engine_event(EngineEvent::CherryPickedLoaded {
@@ -387,7 +451,14 @@ fn linear_bek_and_branch_only_collapse_and_no_merges_work_in_session() {
         expr: "main".into(),
     });
     assert!(
-        ts.state().log.graph.cached.as_ref().unwrap().visible.can_collapse,
+        ts.state()
+            .log
+            .graph
+            .cached
+            .as_ref()
+            .unwrap()
+            .visible
+            .can_collapse,
         "linear collapsing must remain permitted when only BranchFilter is active"
     );
     let before = ts.state().log.graph.visible_count();
@@ -400,7 +471,16 @@ fn linear_bek_and_branch_only_collapse_and_no_merges_work_in_session() {
     // Press `M` -> enables `--no-merges`, hides merge commit 10, and disables collapsing.
     ts.send_key(KeyCode::Char('M'), KeyModifiers::NONE);
     assert!(ts.state().log.filter.spec.no_merges);
-    assert!(!ts.state().log.graph.cached.as_ref().unwrap().visible.can_collapse);
+    assert!(
+        !ts.state()
+            .log
+            .graph
+            .cached
+            .as_ref()
+            .unwrap()
+            .visible
+            .can_collapse
+    );
     assert!(
         ts.state()
             .log
@@ -503,9 +583,15 @@ fn speed_search_filter_history_columns_body_hash_links_and_maximize_modal() {
     ts.dispatch(Action::ClearAllFilters);
 
     // 3. Author/Date columns & Align Labels toggles + [log] config overlay round-trip.
-    ts.dispatch(Action::TogglePresentation(PresentationToggle::ShowAuthorColumn));
-    ts.dispatch(Action::TogglePresentation(PresentationToggle::ShowDateColumn));
-    ts.dispatch(Action::TogglePresentation(PresentationToggle::AlignLabelsRight));
+    ts.dispatch(Action::TogglePresentation(
+        PresentationToggle::ShowAuthorColumn,
+    ));
+    ts.dispatch(Action::TogglePresentation(
+        PresentationToggle::ShowDateColumn,
+    ));
+    ts.dispatch(Action::TogglePresentation(
+        PresentationToggle::AlignLabelsRight,
+    ));
     assert!(!ts.state().log.presentation.show_author_column);
     assert!(!ts.state().log.presentation.show_date_column);
     assert!(ts.state().log.presentation.align_labels_right);
@@ -527,7 +613,10 @@ fn speed_search_filter_history_columns_body_hash_links_and_maximize_modal() {
     // 4. Commit Details clickable 7-char hash in body + Maximize Commit Message (`E`).
     ts.dispatch(Action::JumpToCommit(oid(10)));
     let details_key = DetailsKey::single(oid(10));
-    let details_epoch = ts.state().request_slots.latest(RequestSlotId::LogCommitDetails);
+    let details_epoch = ts
+        .state()
+        .request_slots
+        .latest(RequestSlotId::LogCommitDetails);
     let body_msg = format!(
         "Merge branch 'feat'\n\nIntegrates feature work built on {}\n\nMore details line.",
         oid(1).short()

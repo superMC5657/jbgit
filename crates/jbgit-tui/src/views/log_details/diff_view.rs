@@ -27,7 +27,10 @@ use crate::views::{fit_left_right_spans, render_pane_frame, render_toolbar, trun
 
 /// Shared base line style, word-diff highlight background, and prefix glyph
 /// reused by both Log/Stash/FileHistory diffs and Staging Workbench diffs.
-pub(crate) fn diff_line_style(theme: &ThemePalette, kind: DiffLineKind) -> (Style, Color, &'static str) {
+pub(crate) fn diff_line_style(
+    theme: &ThemePalette,
+    kind: DiffLineKind,
+) -> (Style, Color, &'static str) {
     match kind {
         DiffLineKind::Added => (
             Style::default().fg(theme.fg_primary).bg(theme.diff_add_bg),
@@ -201,11 +204,17 @@ pub(crate) fn render_diff_unified_wrapped_rows(
     gutter: Style,
 ) -> Vec<Vec<Span<'static>>> {
     let has_gutter = usize::from(input.leading_gutter.is_some());
-    let text_w = width.saturating_sub(DIFF_LINE_NUM_W * 2 + 3 + has_gutter).max(1);
+    let text_w = width
+        .saturating_sub(DIFF_LINE_NUM_W * 2 + 3 + has_gutter)
+        .max(1);
     let wr = input.custom_word_ranges.unwrap_or(&input.line.word_ranges);
     let opts = line_opts(&input, text_w, tab_size, 0, theme);
     let wrapped = wrap_diff_line_spans_opts(&input.line.text, input.tokens, wr, opts);
-    let blank_nums = format!("{} {} ", " ".repeat(DIFF_LINE_NUM_W), " ".repeat(DIFF_LINE_NUM_W));
+    let blank_nums = format!(
+        "{} {} ",
+        " ".repeat(DIFF_LINE_NUM_W),
+        " ".repeat(DIFF_LINE_NUM_W)
+    );
     let first_nums = format!(
         "{} {} ",
         format_lineno(input.line.old_lineno),
@@ -263,7 +272,10 @@ pub(crate) fn render_diff_side_cell(
             if let Some(g) = inp.leading_gutter.clone() {
                 spans.push(g);
             }
-            spans.push(Span::styled(format!("{} ", format_lineno(lineno(inp.line))), gutter));
+            spans.push(Span::styled(
+                format!("{} ", format_lineno(lineno(inp.line))),
+                gutter,
+            ));
             spans.push(Span::styled(inp.marker.to_string(), inp.base));
             let text_w = cell_w.saturating_sub(DIFF_LINE_NUM_W + 2 + g_cols);
             let wr = inp.custom_word_ranges.unwrap_or(&inp.line.word_ranges);
@@ -277,7 +289,10 @@ pub(crate) fn render_diff_side_cell(
             spans.extend(body);
         }
         None => {
-            spans.push(Span::styled(" ".repeat(DIFF_LINE_NUM_W + 1 + g_cols), gutter));
+            spans.push(Span::styled(
+                " ".repeat(DIFF_LINE_NUM_W + 1 + g_cols),
+                gutter,
+            ));
             spans.push(Span::styled(
                 " ".repeat(cell_w.saturating_sub(DIFF_LINE_NUM_W + 1 + g_cols)),
                 Style::default().bg(theme.bg_panel),
@@ -509,7 +524,9 @@ pub(crate) fn render_binary_diff_card(
             ),
             Span::styled(
                 size_summary,
-                Style::default().fg(delta_color).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(delta_color)
+                    .add_modifier(Modifier::BOLD),
             ),
         ]),
         Line::from(vec![
@@ -615,7 +632,10 @@ pub fn render_lfs_diff_placeholder(
                 format!(" {}: ", ctx.t("view.log_details.lfs_old")),
                 Style::default().fg(ctx.theme.fg_muted),
             ),
-            Span::styled(fmt_ptr(lfs.old.as_ref()), Style::default().fg(ctx.theme.fg_primary)),
+            Span::styled(
+                fmt_ptr(lfs.old.as_ref()),
+                Style::default().fg(ctx.theme.fg_primary),
+            ),
         ]),
         Line::from(vec![
             Span::styled(
@@ -760,7 +780,10 @@ pub fn render_file_diff_body(
             ctx.record_scroll_bound(scroll_pane, h, 0);
             if body.height > 1 {
                 let hint_rect = Rect::new(body.x, body.y + 1, body.width, body.height - 1);
-                frame.render_widget(muted_line(ctx, ctx.t("view.diff.mode_only_hint")), hint_rect);
+                frame.render_widget(
+                    muted_line(ctx, ctx.t("view.diff.mode_only_hint")),
+                    hint_rect,
+                );
             }
             return;
         }
@@ -896,8 +919,14 @@ pub fn render_file_diff_body(
                         active_sr,
                     );
                     let base = inp.base;
-                    let spans =
-                        render_diff_unified_spans(inp, width, tab_size, horiz_scroll, theme, gutter);
+                    let spans = render_diff_unified_spans(
+                        inp,
+                        width,
+                        tab_size,
+                        horiz_scroll,
+                        theme,
+                        gutter,
+                    );
                     Line::from(spans).style(base)
                 }
                 Some(DiffRow::Split(hh, left, right)) => {
@@ -1184,10 +1213,9 @@ pub fn render_diff_preview(
         ),
     ];
     if host == DiffHost::Log
-        && changes
-            .current_key
-            .as_ref()
-            .is_some_and(|k| k.mode == jbgit_core::DetailsMode::CompareVersions && k.oids.len() >= 2)
+        && changes.current_key.as_ref().is_some_and(|k| {
+            k.mode == jbgit_core::DetailsMode::CompareVersions && k.oids.len() >= 2
+        })
     {
         buttons.push((
             ctx.t("view.log_details.toolbar_swap").to_string(),
@@ -1262,7 +1290,8 @@ pub fn render_diff_preview(
         frame.render_widget(muted_line(ctx, msg), body);
         return;
     };
-    let desired_key = changes.desired_diff_key(caches, diff_session.context, diff_session.whitespace);
+    let desired_key =
+        changes.desired_diff_key(caches, diff_session.context, diff_session.whitespace);
     let Some(diff) = desired_key.as_ref().and_then(|k| caches.peek_diff(k)) else {
         ctx.record_scroll_bound(host.scroll_pane(), h, 0);
         if change.is_binary {
@@ -1278,7 +1307,10 @@ pub fn render_diff_preview(
                 frame.render_widget(muted_line(ctx, ctx.t("view.log_details.binary_diff")), body);
             }
         } else {
-            frame.render_widget(muted_line(ctx, ctx.t("view.log_details.loading_diff")), body);
+            frame.render_widget(
+                muted_line(ctx, ctx.t("view.log_details.loading_diff")),
+                body,
+            );
         }
         return;
     };

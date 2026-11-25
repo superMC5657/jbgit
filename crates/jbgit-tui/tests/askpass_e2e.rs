@@ -154,7 +154,10 @@ async fn repo_session_unbind_closes_askpass_server() {
     let after = tokio::task::spawn_blocking(move || request_credential(&addr, &token, "Password:"))
         .await
         .unwrap();
-    assert!(after.is_err(), "expected closed askpass channel after unbind, got {after:?}");
+    assert!(
+        after.is_err(),
+        "expected closed askpass channel after unbind, got {after:?}"
+    );
 }
 
 struct BasicAuthResponder {
@@ -189,7 +192,10 @@ impl AskpassResponder for BasicAuthResponder {
 }
 
 fn find_http_backend() -> PathBuf {
-    let out = Command::new("git").arg("--exec-path").output().expect("git --exec-path");
+    let out = Command::new("git")
+        .arg("--exec-path")
+        .output()
+        .expect("git --exec-path");
     assert!(out.status.success());
     let exec_dir = PathBuf::from(String::from_utf8_lossy(&out.stdout).trim());
     let bin = if cfg!(windows) {
@@ -202,7 +208,9 @@ fn find_http_backend() -> PathBuf {
     path
 }
 
-async fn read_http_request(stream: &mut TcpStream) -> Option<(String, String, Vec<(String, String)>, Vec<u8>)> {
+async fn read_http_request(
+    stream: &mut TcpStream,
+) -> Option<(String, String, Vec<(String, String)>, Vec<u8>)> {
     let mut buf = Vec::with_capacity(4096);
     let header_end = loop {
         if let Some(pos) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
@@ -248,7 +256,10 @@ async fn read_http_request(stream: &mut TcpStream) -> Option<(String, String, Ve
     }
 
     if expect_continue {
-        stream.write_all(b"HTTP/1.1 100 Continue\r\n\r\n").await.ok()?;
+        stream
+            .write_all(b"HTTP/1.1 100 Continue\r\n\r\n")
+            .await
+            .ok()?;
         stream.flush().await.ok()?;
     }
 
@@ -264,7 +275,10 @@ async fn read_http_request(stream: &mut TcpStream) -> Option<(String, String, Ve
                 }
                 rest.extend_from_slice(&tmp[..n]);
             }
-            let rel_crlf = rest[cursor..].windows(2).position(|w| w == b"\r\n").unwrap();
+            let rel_crlf = rest[cursor..]
+                .windows(2)
+                .position(|w| w == b"\r\n")
+                .unwrap();
             let size_line = String::from_utf8_lossy(&rest[cursor..cursor + rel_crlf]);
             let size_hex = size_line.split(';').next().unwrap_or("").trim();
             let size = usize::from_str_radix(size_hex, 16).ok()?;
@@ -346,21 +360,24 @@ async fn handle_http_conn(mut stream: TcpStream, project_root: PathBuf, backend:
         let _ = stdin.write_all(&body).await;
         drop(stdin);
     }
-    let out = child.wait_with_output().await.expect("git-http-backend output");
+    let out = child
+        .wait_with_output()
+        .await
+        .expect("git-http-backend output");
     assert!(
         out.status.success(),
         "git-http-backend failed: {}",
         String::from_utf8_lossy(&out.stderr)
     );
 
-    let (cgi_head, cgi_body) =
-        if let Some(p) = out.stdout.windows(4).position(|w| w == b"\r\n\r\n") {
-            (&out.stdout[..p], &out.stdout[p + 4..])
-        } else if let Some(p) = out.stdout.windows(2).position(|w| w == b"\n\n") {
-            (&out.stdout[..p], &out.stdout[p + 2..])
-        } else {
-            (&[][..], out.stdout.as_slice())
-        };
+    let (cgi_head, cgi_body) = if let Some(p) = out.stdout.windows(4).position(|w| w == b"\r\n\r\n")
+    {
+        (&out.stdout[..p], &out.stdout[p + 4..])
+    } else if let Some(p) = out.stdout.windows(2).position(|w| w == b"\n\n") {
+        (&out.stdout[..p], &out.stdout[p + 2..])
+    } else {
+        (&[][..], out.stdout.as_slice())
+    };
 
     let mut status_line = "200 OK".to_string();
     let mut resp_headers = Vec::new();

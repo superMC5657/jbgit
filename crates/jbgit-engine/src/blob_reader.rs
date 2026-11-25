@@ -27,9 +27,8 @@ pub(crate) fn path_has_lfs_filter(repo: &Repository, path: &str) -> bool {
 /// `index.add_frombuffer`.
 pub(crate) fn path_needs_git_clean_filter(repo: &Repository, path: &str, bytes: &[u8]) -> bool {
     let rel = Path::new(path);
-    let attr = |name: &str| {
-        AttrValue::from_string(repo.get_attr(rel, name, ATTR_FLAGS).ok().flatten())
-    };
+    let attr =
+        |name: &str| AttrValue::from_string(repo.get_attr(rel, name, ATTR_FLAGS).ok().flatten());
 
     if matches!(attr("filter"), AttrValue::String(s) if !s.is_empty()) {
         return true;
@@ -143,9 +142,9 @@ impl CheckedBlob {
 
     pub(crate) fn is_symlink(&self) -> bool {
         match self {
-            Self::Loaded { is_symlink, mode, .. } => {
-                *is_symlink || *mode == Some(GIT_MODE_SYMLINK)
-            }
+            Self::Loaded {
+                is_symlink, mode, ..
+            } => *is_symlink || *mode == Some(GIT_MODE_SYMLINK),
             Self::TooLarge { mode, .. } => *mode == Some(GIT_MODE_SYMLINK),
             Self::Missing => false,
         }
@@ -249,14 +248,11 @@ pub(crate) fn read_index_entry(repo: &Repository, rel_path: &str) -> (CheckedBlo
         return (CheckedBlob::Missing, false);
     };
     let path_obj = Path::new(rel_path);
-    let is_conflicted = index.has_conflicts()
-        && (1..=3).any(|stage| index.get_path(path_obj, stage).is_some());
+    let is_conflicted =
+        index.has_conflicts() && (1..=3).any(|stage| index.get_path(path_obj, stage).is_some());
 
     if let Some(entry) = index.get_path(path_obj, 0) {
-        return (
-            read_blob(repo, entry.id, Some(entry.mode)),
-            is_conflicted,
-        );
+        return (read_blob(repo, entry.id, Some(entry.mode)), is_conflicted);
     }
     (CheckedBlob::Missing, is_conflicted)
 }

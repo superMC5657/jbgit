@@ -96,7 +96,8 @@ impl ScrollViewport {
     }
 
     pub fn half_page_step(&self, fallback: isize) -> isize {
-        self.viewport_h.map_or(fallback, |h| (h / 2).max(1) as isize)
+        self.viewport_h
+            .map_or(fallback, |h| (h / 2).max(1) as isize)
     }
 }
 

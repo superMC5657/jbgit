@@ -81,9 +81,7 @@ pub fn load_path_matches_cli(
         &location.workdir
     };
     let mut cmd = non_interactive_std_command(git, Some(cwd));
-    cmd.args(&args)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null());
+    cmd.args(&args).stdout(Stdio::piped()).stderr(Stdio::null());
     let mut child = cmd.spawn()?;
     let stdout = child
         .stdout
@@ -314,8 +312,14 @@ mod tests {
             assert_eq!(cli, lib, "path set {set:?}");
         }
 
-        let b = load_path_matches_cli(&git_bin, &loc, &["b.txt".to_string()], &snapshot, &epoch.issue())
-            .unwrap();
+        let b = load_path_matches_cli(
+            &git_bin,
+            &loc,
+            &["b.txt".to_string()],
+            &snapshot,
+            &epoch.issue(),
+        )
+        .unwrap();
         assert!(!b.contains(&merge_treesame));
 
         let stale = epoch.issue();

@@ -137,11 +137,11 @@ pub fn render_banner(
             if (area.width as usize) >= full_w + text.width() + 4 {
                 full_buttons
             } else {
-            raw_buttons
-                .iter()
-                .map(|(lbl, btn, _)| ((*lbl).to_string(), *btn))
-                .collect()
-        };
+                raw_buttons
+                    .iter()
+                    .map(|(lbl, btn, _)| ((*lbl).to_string(), *btn))
+                    .collect()
+            };
         let buttons_w: usize = buttons.iter().map(|(l, _)| l.width() + 4).sum();
         let text_w = (area.width as usize).saturating_sub(buttons_w + 1);
         let shown = truncate_to_width(&format!(" {text}"), text_w);
@@ -175,8 +175,11 @@ pub fn render_banner(
             let w = label.width() as u16 + 2;
             spans.push(Span::styled(format!("[{label}]"), style));
             if x + w <= area.right() {
-                ctx.hit_registry
-                    .register(Rect::new(x, area.y, w, 1), 6, HitTarget::BisectBanner(btn));
+                ctx.hit_registry.register(
+                    Rect::new(x, area.y, w, 1),
+                    6,
+                    HitTarget::BisectBanner(btn),
+                );
             }
             x += w + 1;
             spans.push(Span::raw(" "));

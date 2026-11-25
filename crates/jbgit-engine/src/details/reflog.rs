@@ -1,6 +1,4 @@
-use jbgit_core::{
-    EpochToken, REFLOG_GIT_FORMAT, ReflogBundle, ReflogKey, parse_reflog_output,
-};
+use jbgit_core::{EpochToken, REFLOG_GIT_FORMAT, ReflogBundle, ReflogKey, parse_reflog_output};
 
 use crate::cli::non_interactive_std_command;
 use crate::error::EngineError;

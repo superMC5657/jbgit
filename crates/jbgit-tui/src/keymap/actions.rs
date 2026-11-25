@@ -8,9 +8,7 @@ use crate::app::{Action, AppState};
 use crate::config::keymap_config::{KeyBindingConfig, KeymapScope};
 
 pub use super::catalog::{execute_action, is_action_applicable};
-use super::{
-    KEY_CHORD_WINDOW, KeyAction, KeySequence, MatchResult, match_bindings_filtered,
-};
+use super::{KEY_CHORD_WINDOW, KeyAction, KeySequence, MatchResult, match_bindings_filtered};
 
 pub const DEFAULT_CONSOLE_PROBE_CHAR: char = 'p';
 
@@ -21,11 +19,7 @@ pub fn console_status_probe_key(keymap: &crate::config::KeymapConfig) -> String 
 }
 
 pub fn git_status_probe_action() -> Action {
-    Action::RunCliProbe(vec![
-        "status".into(),
-        "--short".into(),
-        "--branch".into(),
-    ])
+    Action::RunCliProbe(vec!["status".into(), "--short".into(), "--branch".into()])
 }
 
 pub fn is_branch_speed_search_char(c: char) -> bool {
@@ -169,10 +163,7 @@ pub fn route_editor_dynamic_key(key: &KeyEvent, state: &AppState) -> Option<Vec<
     if state.pending_keys.is_empty() {
         let is_chord = key.modifiers.intersects(
             crossterm::event::KeyModifiers::CONTROL | crossterm::event::KeyModifiers::ALT,
-        ) || matches!(
-            key.code,
-            KeyCode::Tab | KeyCode::BackTab | KeyCode::F(_)
-        );
+        ) || matches!(key.code, KeyCode::Tab | KeyCode::BackTab | KeyCode::F(_));
         if !is_chord {
             return None;
         }

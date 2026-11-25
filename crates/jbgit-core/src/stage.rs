@@ -791,7 +791,12 @@ mod tests {
         };
         snap.submodules.insert("libs/sub".into(), sub_state);
 
-        let rows = build_stage_tree_rows(&snap, None, StageTreeOptions::default(), &FxHashSet::default());
+        let rows = build_stage_tree_rows(
+            &snap,
+            None,
+            StageTreeOptions::default(),
+            &FxHashSet::default(),
+        );
         let sub_idx = rows
             .iter()
             .position(|r| r.key == "file:Unstaged:libs/sub")
@@ -799,12 +804,22 @@ mod tests {
         assert_eq!(rows[sub_idx].submodule(), Some(sub_state));
         assert!(rows[sub_idx].is_submodule());
 
-        let targets = collect_targets_under_row(&rows, sub_idx, &snap, UNTRACKED_COLLAPSE_THRESHOLD);
+        let targets =
+            collect_targets_under_row(&rows, sub_idx, &snap, UNTRACKED_COLLAPSE_THRESHOLD);
         assert_eq!(targets.len(), 1);
         assert!(targets[0].is_submodule);
 
-        let group_targets = collect_targets_under_row(&rows, 0, &snap, UNTRACKED_COLLAPSE_THRESHOLD);
-        assert!(group_targets.iter().any(|t| t.path == "libs/sub" && t.is_submodule));
-        assert!(group_targets.iter().any(|t| t.path == "src/lib.rs" && !t.is_submodule));
+        let group_targets =
+            collect_targets_under_row(&rows, 0, &snap, UNTRACKED_COLLAPSE_THRESHOLD);
+        assert!(
+            group_targets
+                .iter()
+                .any(|t| t.path == "libs/sub" && t.is_submodule)
+        );
+        assert!(
+            group_targets
+                .iter()
+                .any(|t| t.path == "src/lib.rs" && !t.is_submodule)
+        );
     }
 }

@@ -213,8 +213,11 @@ pub(super) fn render_commit_details(
         for hit in &hits {
             if hit.line_idx == idx && hit.x < area.width {
                 let w = hit.width.min(area.width - hit.x);
-                ctx.hit_registry
-                    .register(Rect::new(area.x + hit.x, rect.y, w, 1), 3, hit.target.clone());
+                ctx.hit_registry.register(
+                    Rect::new(area.x + hit.x, rect.y, w, 1),
+                    3,
+                    hit.target.clone(),
+                );
             }
         }
     }
@@ -330,9 +333,7 @@ fn build_single_details(
         });
         sha_spans.push(Span::styled(
             max_btn,
-            Style::default()
-                .fg(theme.fg_bright)
-                .bg(theme.bg_panel),
+            Style::default().fg(theme.fg_bright).bg(theme.bg_panel),
         ));
     }
     lines.push(Line::from(sha_spans));

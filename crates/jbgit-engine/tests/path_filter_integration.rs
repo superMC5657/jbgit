@@ -124,7 +124,10 @@ async fn path_filter_through_engine_handles_treesame_evil_merges_and_tags() {
         _ => None,
     })
     .await;
-    assert!(!b.contains(&merge_treesame), "TREESAME merge must be excluded");
+    assert!(
+        !b.contains(&merge_treesame),
+        "TREESAME merge must be excluded"
+    );
     assert!(b.contains(&tag_only), "tag-only history must be walked");
 
     let e_a = query(vec!["a.txt".into()]);
@@ -133,7 +136,10 @@ async fn path_filter_through_engine_handles_treesame_evil_merges_and_tags() {
         _ => None,
     })
     .await;
-    assert!(a.contains(&merge_evil), "evil merge differs from every parent");
+    assert!(
+        a.contains(&merge_evil),
+        "evil merge differs from every parent"
+    );
 
     let e_none = query(vec!["missing.txt".into()]);
     let none = recv_matching(&mut rx, |ev| match ev {

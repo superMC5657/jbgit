@@ -165,24 +165,15 @@ pub fn render_stage_diff_workbench(
                 ),
             ]),
             Line::from(vec![
-                Span::styled(
-                    " HEAD:    ",
-                    Style::default().fg(ctx.theme.fg_muted),
-                ),
+                Span::styled(" HEAD:    ", Style::default().fg(ctx.theme.fg_muted)),
                 Span::styled(head_s, Style::default().fg(ctx.theme.fg_primary)),
             ]),
             Line::from(vec![
-                Span::styled(
-                    " Index:   ",
-                    Style::default().fg(ctx.theme.fg_muted),
-                ),
+                Span::styled(" Index:   ", Style::default().fg(ctx.theme.fg_muted)),
                 Span::styled(idx_s, Style::default().fg(ctx.theme.fg_primary)),
             ]),
             Line::from(vec![
-                Span::styled(
-                    " Workdir: ",
-                    Style::default().fg(ctx.theme.fg_muted),
-                ),
+                Span::styled(" Workdir: ", Style::default().fg(ctx.theme.fg_muted)),
                 Span::styled(wd_s, Style::default().fg(ctx.theme.status_modified)),
             ]),
             Line::from(""),
@@ -300,15 +291,16 @@ pub fn render_stage_diff_workbench(
         }
     };
 
-    let line_style = |kind: DiffLineKind, row_selected: bool, is_cursor: bool| -> (Style, Color, &'static str) {
-        let (mut base, word_bg, marker) = diff_line_style(theme, kind);
-        if row_selected {
-            base = base.bg(theme.bg_selection_focused);
-        } else if is_cursor && focused {
-            base = base.bg(theme.bg_hover);
-        }
-        (base, word_bg, marker)
-    };
+    let line_style =
+        |kind: DiffLineKind, row_selected: bool, is_cursor: bool| -> (Style, Color, &'static str) {
+            let (mut base, word_bg, marker) = diff_line_style(theme, kind);
+            if row_selected {
+                base = base.bg(theme.bg_selection_focused);
+            } else if is_cursor && focused {
+                base = base.bg(theme.bg_hover);
+            }
+            (base, word_bg, marker)
+        };
 
     let gutter_bar = |mark: LineGutterMark, is_cursor: bool| -> Span<'static> {
         let (sym, fg) = match mark {
@@ -500,7 +492,9 @@ pub fn render_stage_diff_workbench(
                     let meta = diff.hunks[*hh].line_meta.get(*l);
                     let mark = meta.map_or(LineGutterMark::None, |m| m.gutter_mark);
                     let sr_idx = meta.and_then(|m| m.staged_range_idx);
-                    let lazy_wr = sw.word_diff_cache().unified_ranges(diff, *hh, *l, hunk_lines);
+                    let lazy_wr = sw
+                        .word_diff_cache()
+                        .unified_ranges(diff, *hh, *l, hunk_lines);
                     let (sr, active_sr) = sw.diff_search().ranges_for(row_idx, 0);
                     let style = line_style(hunk_lines[*l].kind, in_visual, is_cursor);
                     let inp = make_input(
@@ -716,7 +710,12 @@ pub fn render_stage_diff_workbench(
                 );
                 let base = inp.base;
                 let wrapped = render_diff_unified_wrapped_rows(inp, width, tab_size, theme, gutter);
-                for (offset, sub_spans) in wrapped.into_iter().skip(skip_sub).take(take_sub).enumerate() {
+                for (offset, sub_spans) in wrapped
+                    .into_iter()
+                    .skip(skip_sub)
+                    .take(take_sub)
+                    .enumerate()
+                {
                     let rect =
                         Rect::new(diff_area.x, diff_area.y + drawn as u16, diff_area.width, 1);
                     frame.render_widget(Paragraph::new(Line::from(sub_spans)).style(base), rect);

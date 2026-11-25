@@ -150,7 +150,8 @@ fn join_commits_impl<C: JoinCommit>(
         build_unsafe_part_saved_log(saved_log, unsafe_block_size, &remove_commits, first_block);
     let integrated_prefix = integrate_new_commits(unsafe_part, new_commits);
 
-    let mut result = Vec::with_capacity(integrated_prefix.len() + saved_log.len() - unsafe_block_size);
+    let mut result =
+        Vec::with_capacity(integrated_prefix.len() + saved_log.len() - unsafe_block_size);
     result.extend(integrated_prefix);
     result.extend_from_slice(&saved_log[unsafe_block_size..]);
 
@@ -412,7 +413,12 @@ fn integrate_new_commits<C: JoinCommit>(list: Vec<C>, new_commits: Vec<C>) -> Ve
                 continue;
             }
             let commit = stack.pop().expect("stack non-empty");
-            insert_indexed(commit, &prefix_min_ts, &parent_indexes, &mut inserted_by_index);
+            insert_indexed(
+                commit,
+                &prefix_min_ts,
+                &parent_indexes,
+                &mut inserted_by_index,
+            );
         }
     }
 
@@ -531,11 +537,7 @@ mod tests {
                         }
                     })
                     .collect();
-                let ups: BTreeSet<Oid> = g
-                    .up_nodes(id)
-                    .iter()
-                    .map(|&u| g.commit(u).oid)
-                    .collect();
+                let ups: BTreeSet<Oid> = g.up_nodes(id).iter().map(|&u| g.commit(u).oid).collect();
                 map.insert(c_oid, (downs, ups));
             }
             map
@@ -605,7 +607,10 @@ mod tests {
         // Verify commit 4 comes before its parent 2 despite clock skew.
         let pos4 = joined.commits.iter().position(|c| c.oid == oid(4)).unwrap();
         let pos2 = joined.commits.iter().position(|c| c.oid == oid(2)).unwrap();
-        assert!(pos4 < pos2, "child 4 must precede parent 2 despite clock skew");
+        assert!(
+            pos4 < pos2,
+            "child 4 must precede parent 2 despite clock skew"
+        );
         assert_graph_equivalent(
             &PermanentLinearGraphBuilder::build(&joined.commits),
             &PermanentLinearGraphBuilder::build(&full),
@@ -641,14 +646,8 @@ mod tests {
         );
 
         // Pure `git reset --hard HEAD~2` (no new commits, just moving ref back to 2).
-        let reset = join_commits_indexed(
-            &saved,
-            &index_map(&saved),
-            &refs(&[4]),
-            &[],
-            &refs(&[2]),
-        )
-        .unwrap();
+        let reset = join_commits_indexed(&saved, &index_map(&saved), &refs(&[4]), &[], &refs(&[2]))
+            .unwrap();
         assert_eq!(reset.added, 0);
         assert_eq!(reset.removed, 2);
         assert_eq!(
@@ -669,14 +668,9 @@ mod tests {
         ];
 
         // Delete feat (5): removes 5 and 4, keeps 3, 2, 1.
-        let del = join_commits_indexed(
-            &saved,
-            &index_map(&saved),
-            &refs(&[5, 3]),
-            &[],
-            &refs(&[3]),
-        )
-        .unwrap();
+        let del =
+            join_commits_indexed(&saved, &index_map(&saved), &refs(&[5, 3]), &[], &refs(&[3]))
+                .unwrap();
         assert_eq!(del.added, 0);
         assert_eq!(del.removed, 2);
         assert_eq!(
@@ -722,24 +716,15 @@ mod tests {
         assert_eq!(missing_parent.unwrap_err(), JoinError::NotEnoughData);
 
         // Rewrite past the unloaded boundary (delete ref 3 when 1 is unloaded) -> IllegalState.
-        let past_boundary = join_commits_indexed(
-            &saved,
-            &index_map(&saved),
-            &refs(&[3]),
-            &[],
-            &refs(&[]),
-        );
+        let past_boundary =
+            join_commits_indexed(&saved, &index_map(&saved), &refs(&[3]), &[], &refs(&[]));
         assert_eq!(past_boundary.unwrap_err(), JoinError::IllegalState);
     }
 
     #[test]
     fn graft_or_reshallow_parent_drop_past_index_zero_prunes_unreachable_ancestors() {
         // Saved log: 3 -> 2 -> 1 (single ref at 3).
-        let saved = vec![
-            node(3, &[2], 300),
-            node(2, &[1], 200),
-            node(1, &[], 100),
-        ];
+        let saved = vec![node(3, &[2], 300), node(2, &[1], 200), node(1, &[], 100)];
         // Refs unchanged ({3}), but commit 2 (at saved_log[1], idx > 0) dropped parent 1.
         let first_block = vec![node(3, &[2], 300), node(2, &[], 200)];
         let res = join_commits_indexed(
@@ -758,8 +743,7 @@ mod tests {
         assert!(res.commits[1].parents.is_empty());
 
         // Also verify the unindexed `join_commits` path.
-        let res_unindexed =
-            join_commits(&saved, &refs(&[3]), &first_block, &refs(&[3])).unwrap();
+        let res_unindexed = join_commits(&saved, &refs(&[3]), &first_block, &refs(&[3])).unwrap();
         assert_eq!(res_unindexed.removed, 1);
         assert_eq!(res_unindexed.commits, res.commits);
     }

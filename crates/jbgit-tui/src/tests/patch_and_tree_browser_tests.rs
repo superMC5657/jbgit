@@ -99,8 +99,14 @@ fn clipboard_patch_preflight_error_three_way_retry_apply_and_conflicts() {
             key: key3,
             files: vec![stat("f.txt", 1, 1, true), stat("sub/g.txt", 2, 0, false)],
             sections: vec![
-                section("f.txt", "diff --git a/f.txt b/f.txt\n@@ -1 +1 @@\n-old\n+new"),
-                section("sub/g.txt", "diff --git a/sub/g.txt b/sub/g.txt\n@@ -1 +1,3 @@\n+x\n+y"),
+                section(
+                    "f.txt",
+                    "diff --git a/f.txt b/f.txt\n@@ -1 +1 @@\n-old\n+new",
+                ),
+                section(
+                    "sub/g.txt",
+                    "diff --git a/sub/g.txt b/sub/g.txt\n@@ -1 +1,3 @@\n+x\n+y",
+                ),
             ],
             has_index_headers: true,
             error: None,
@@ -153,8 +159,14 @@ fn apply_patch_partial_checkbox_diff_preview_depth_options_and_plain_three_way_h
             key,
             files: vec![stat("a.rs", 2, 1, false), stat("b.rs", 3, 0, false)],
             sections: vec![
-                section("a.rs", "diff --git a/a.rs b/a.rs\n@@ -1 +1 @@\n-fn old() {}\n+fn new_a() {}"),
-                section("b.rs", "diff --git a/b.rs b/b.rs\n@@ -1 +1 @@\n+fn added_b() {}"),
+                section(
+                    "a.rs",
+                    "diff --git a/a.rs b/a.rs\n@@ -1 +1 @@\n-fn old() {}\n+fn new_a() {}",
+                ),
+                section(
+                    "b.rs",
+                    "diff --git a/b.rs b/b.rs\n@@ -1 +1 @@\n+fn added_b() {}",
+                ),
             ],
             has_index_headers: false,
             error: None,
@@ -175,8 +187,14 @@ fn apply_patch_partial_checkbox_diff_preview_depth_options_and_plain_three_way_h
             key: k_partial,
             files: vec![stat("b.rs", 3, 0, false)],
             sections: vec![
-                section("a.rs", "diff --git a/a.rs b/a.rs\n@@ -1 +1 @@\n-fn old() {}\n+fn new_a() {}"),
-                section("b.rs", "diff --git a/b.rs b/b.rs\n@@ -1 +1 @@\n+fn added_b() {}"),
+                section(
+                    "a.rs",
+                    "diff --git a/a.rs b/a.rs\n@@ -1 +1 @@\n-fn old() {}\n+fn new_a() {}",
+                ),
+                section(
+                    "b.rs",
+                    "diff --git a/b.rs b/b.rs\n@@ -1 +1 @@\n+fn added_b() {}",
+                ),
             ],
             has_index_headers: false,
             error: None,
@@ -260,10 +278,13 @@ fn create_patch_dialog_defaults_outside_repo_supports_reverse_and_mixed_stage_pa
     ts.send_key(KeyCode::Char(' '), KeyModifiers::NONE);
     ts.send_key(KeyCode::Enter, KeyModifiers::NONE);
     let ops = ts.take_git_ops();
-    assert!(matches!(
-        ops.as_slice(),
-        [GitOp::CreatePatchFile { reverse: true, output, .. }] if !output.starts_with(&repo_dir)
-    ), "unexpected ops: {ops:?}");
+    assert!(
+        matches!(
+            ops.as_slice(),
+            [GitOp::CreatePatchFile { reverse: true, output, .. }] if !output.starts_with(&repo_dir)
+        ),
+        "unexpected ops: {ops:?}"
+    );
 
     // 2. From Stage menu with Staged + Unstaged + Untracked files selected:
     ts.dispatch(Action::SwitchTab(WorkspaceTab::Commit));
@@ -487,7 +508,10 @@ fn tree_browser_lazy_loads_previews_files_and_runs_commands() {
 
     // `Y` copies file content to clipboard.
     ts.send_key(KeyCode::Char('Y'), KeyModifiers::SHIFT);
-    assert_eq!(ts.clipboard().last().map(String::as_str), Some("fn main() {}\n"));
+    assert_eq!(
+        ts.clipboard().last().map(String::as_str),
+        Some("fn main() {}\n")
+    );
 
     // Annotate opens above the browser; Esc returns to it.
     ts.send_key(KeyCode::Char('a'), KeyModifiers::NONE);
@@ -557,7 +581,10 @@ fn tree_browser_lazy_loads_previews_files_and_runs_commands() {
     assert_eq!(ts.state().focused_pane, PaneId::LogChangesTree);
     assert_eq!(
         ts.state().log.details.compare_override,
-        Some(DetailsKey::compare_with_local_path(head, Some("src".into())))
+        Some(DetailsKey::compare_with_local_path(
+            head,
+            Some("src".into())
+        ))
     );
 }
 

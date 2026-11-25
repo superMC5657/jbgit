@@ -102,10 +102,7 @@ fn starts_with_any_ignore_ascii_case(text: &str, prefixes: &[&str]) -> bool {
 
 /// Classifies a single Git console line into a semantic severity level based
 /// on its origin stream, leading prefix keywords, and command exit code.
-pub fn classify_console_line(
-    line: &ConsoleLine,
-    exit_code: Option<i32>,
-) -> ConsoleLineSeverity {
+pub fn classify_console_line(line: &ConsoleLine, exit_code: Option<i32>) -> ConsoleLineSeverity {
     let trimmed = line.text.trim_start();
     let error_prefixes = match line.stream {
         ConsoleStream::Stdout => STDOUT_ERROR_PREFIXES,
@@ -175,8 +172,14 @@ mod tests {
     #[test]
     fn warning_and_hint_prefixes_are_warning_case_insensitively() {
         let cases = [
-            (ConsoleStream::Stderr, "warning: pulling without specifying how to reconcile divergent branches"),
-            (ConsoleStream::Stderr, "  WARNING: LF will be replaced by CRLF"),
+            (
+                ConsoleStream::Stderr,
+                "warning: pulling without specifying how to reconcile divergent branches",
+            ),
+            (
+                ConsoleStream::Stderr,
+                "  WARNING: LF will be replaced by CRLF",
+            ),
             (ConsoleStream::Stderr, "hint: You can also pass --rebase"),
             (ConsoleStream::Stdout, "  Hint: see 'git help config'"),
             (ConsoleStream::Stdout, "warning: something on stdout"),
@@ -200,20 +203,44 @@ mod tests {
     #[test]
     fn explicit_error_indicators_on_stderr_and_stdout_are_error() {
         let error_cases = [
-            (ConsoleStream::Stderr, "fatal: Not possible to fast-forward, aborting."),
+            (
+                ConsoleStream::Stderr,
+                "fatal: Not possible to fast-forward, aborting.",
+            ),
             (ConsoleStream::Stderr, "  FATAL: repository not found"),
             (ConsoleStream::Stderr, "error: failed to push some refs"),
-            (ConsoleStream::Stderr, "remote: error: GH006: Protected branch update failed."),
+            (
+                ConsoleStream::Stderr,
+                "remote: error: GH006: Protected branch update failed.",
+            ),
             (ConsoleStream::Stderr, "cannot lock ref 'refs/heads/main'"),
-            (ConsoleStream::Stderr, "Could not read from remote repository."),
-            (ConsoleStream::Stderr, "unable to access 'https://example.com/': Could not resolve host"),
-            (ConsoleStream::Stderr, "refusing to pull unrelated histories"),
-            (ConsoleStream::Stderr, "cannot rebase: You have unstaged changes."),
+            (
+                ConsoleStream::Stderr,
+                "Could not read from remote repository.",
+            ),
+            (
+                ConsoleStream::Stderr,
+                "unable to access 'https://example.com/': Could not resolve host",
+            ),
+            (
+                ConsoleStream::Stderr,
+                "refusing to pull unrelated histories",
+            ),
+            (
+                ConsoleStream::Stderr,
+                "cannot rebase: You have unstaged changes.",
+            ),
             (ConsoleStream::Stderr, "conflict in file.rs"),
             (ConsoleStream::Stderr, "Interactive rebase already started"),
-            (ConsoleStream::Stderr, "The file will have its original line endings in your working directory"),
+            (
+                ConsoleStream::Stderr,
+                "The file will have its original line endings in your working directory",
+            ),
             (ConsoleStream::Stderr, "runnerw: CreateProcess failed"),
-            (ConsoleStream::Stdout, "CONFLICT (content): Merge conflict in src/main.rs"),
+            (
+                ConsoleStream::Stdout,
+                "CONFLICT (content): Merge conflict in src/main.rs",
+            ),
             (ConsoleStream::Stdout, "fatal: bad object HEAD"),
             (ConsoleStream::Stdout, "error: pathspec 'foo' did not match"),
         ];
@@ -260,7 +287,10 @@ mod tests {
         };
         assert!(!entry.has_output());
 
-        entry.push_line(ConsoleStream::Stderr, "From https://example.com/repo".into());
+        entry.push_line(
+            ConsoleStream::Stderr,
+            "From https://example.com/repo".into(),
+        );
         entry.push_line(
             ConsoleStream::Stderr,
             "   40a91421..d5e4beb6  main -> origin/main".into(),
@@ -299,16 +329,31 @@ mod tests {
             exit_code: None,
         };
 
-        entry.push_line(ConsoleStream::Stderr, "remote: Enumerating objects: 10, done.".into());
-        entry.push_line(ConsoleStream::Stderr, "Receiving objects:  10% (1/10)".into());
-        entry.push_line(ConsoleStream::Stderr, "\rReceiving objects:  50% (5/10)".into());
-        entry.push_line(ConsoleStream::Stderr, "\rReceiving objects: 100% (10/10), done.".into());
+        entry.push_line(
+            ConsoleStream::Stderr,
+            "remote: Enumerating objects: 10, done.".into(),
+        );
+        entry.push_line(
+            ConsoleStream::Stderr,
+            "Receiving objects:  10% (1/10)".into(),
+        );
+        entry.push_line(
+            ConsoleStream::Stderr,
+            "\rReceiving objects:  50% (5/10)".into(),
+        );
+        entry.push_line(
+            ConsoleStream::Stderr,
+            "\rReceiving objects: 100% (10/10), done.".into(),
+        );
         entry.push_line(ConsoleStream::Stderr, "\r".into());
 
         assert_eq!(
             entry.output_lines,
             vec![
-                line(ConsoleStream::Stderr, "remote: Enumerating objects: 10, done."),
+                line(
+                    ConsoleStream::Stderr,
+                    "remote: Enumerating objects: 10, done."
+                ),
                 line(
                     ConsoleStream::Stderr,
                     "Receiving objects: 100% (10/10), done."

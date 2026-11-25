@@ -482,11 +482,10 @@ pub fn route_overlay_and_stash_click(
                 OngoingButton::Resolve => vec![Action::OngoingResolve],
                 OngoingButton::Continue if state.conflicted_count() > 0 => {
                     let count_s = state.conflicted_count().to_string();
-                    vec![Action::Notice(
-                        state
-                            .i18n
-                            .t_fmt("toast.resolve_before_continue", &[("count", &count_s)]),
-                    )]
+                    vec![Action::Notice(state.i18n.t_fmt(
+                        "toast.resolve_before_continue",
+                        &[("count", &count_s)],
+                    ))]
                 }
                 OngoingButton::Continue => step(OngoingStep::Continue),
                 OngoingButton::Skip => step(OngoingStep::Skip),
@@ -621,7 +620,10 @@ pub fn route_overlay_and_stash_click(
             ConflictQueueButtonKind::Close => vec![Action::PopModal],
         },
         HitTarget::BranchCleanupRow(idx) => {
-            vec![Action::BranchCleanupSelect(*idx), Action::BranchCleanupToggle]
+            vec![
+                Action::BranchCleanupSelect(*idx),
+                Action::BranchCleanupToggle,
+            ]
         }
         HitTarget::BranchCleanupButton(btn) => match btn {
             crate::hit_test::BranchCleanupButtonKind::Delete => vec![Action::BranchCleanupConfirm],
@@ -826,9 +828,7 @@ pub(crate) fn build_menu_items_for_target(
     let items = match target {
         HitTarget::CommitTableRow { .. }
         | HitTarget::CommitSignatureCell { .. }
-        | HitTarget::GraphPrintElement { .. } => {
-            menus::log_commit_menu_items(state)
-        }
+        | HitTarget::GraphPrintElement { .. } => menus::log_commit_menu_items(state),
         HitTarget::CommitRefPill {
             visible_row,
             ref_name,
@@ -841,7 +841,9 @@ pub(crate) fn build_menu_items_for_target(
                 let short = short_of_row(state, *visible_row);
                 items.push(ContextMenuItem::separator());
                 items.push(ContextMenuItem::submenu(
-                    state.i18n.t_fmt("menu.log.commit_sub", &[("short", &short)]),
+                    state
+                        .i18n
+                        .t_fmt("menu.log.commit_sub", &[("short", &short)]),
                     Some('i'),
                     menus::log_commit_menu_items(state),
                 ));
@@ -877,7 +879,9 @@ pub(crate) fn build_menu_items_for_target(
         HitTarget::StageDiffLine { .. }
         | HitTarget::StageDiffGutter { .. }
         | HitTarget::Pane(PaneId::CommitDiffPreview) => menus::stage_diff_menu_items(state),
-        HitTarget::DiffHunkAction { hunk_idx, .. } => menus::stage_hunk_menu_items(state, *hunk_idx),
+        HitTarget::DiffHunkAction { hunk_idx, .. } => {
+            menus::stage_hunk_menu_items(state, *hunk_idx)
+        }
         HitTarget::DiffArea => menus::log_diff_menu_items(state),
         HitTarget::StashRow(_) | HitTarget::Pane(PaneId::StashList) => {
             menus::stash_menu_items(state)
@@ -898,9 +902,9 @@ pub(crate) fn build_menu_items_for_target(
         HitTarget::FileHistoryToolbar(crate::hit_test::FileHistoryToolbarButton::BranchScope) => {
             menus::file_history_scope_menu_items(state)
         }
-        HitTarget::AnnotateLine { .. }
-        | HitTarget::AnnotateArea
-        | HitTarget::AnnotateDiffArea => menus::annotate_menu_items(state),
+        HitTarget::AnnotateLine { .. } | HitTarget::AnnotateArea | HitTarget::AnnotateDiffArea => {
+            menus::annotate_menu_items(state)
+        }
         HitTarget::BranchTreeNode { row: idx, .. } => {
             let idx = *idx;
             let node = state
@@ -943,8 +947,11 @@ pub(crate) fn build_menu_items_for_target(
                 _ => Vec::new(),
             };
             let i18n = &state.i18n;
-            let nav_sc =
-                catalog::shortcut_for_action(state, &[KeymapScope::Branch], &KeyAction::NavigateBranch);
+            let nav_sc = catalog::shortcut_for_action(
+                state,
+                &[KeymapScope::Branch],
+                &KeyAction::NavigateBranch,
+            );
             let refresh_sc =
                 catalog::shortcut_for_action(state, &[KeymapScope::Global], &KeyAction::Refresh);
             items.push(ContextMenuItem::run(
@@ -1299,7 +1306,10 @@ pub fn presentation_menu_items(state: &AppState) -> Vec<ContextMenuItem> {
         ContextMenuItem::submenu(
             i18n.t_fmt(
                 "presentation.graph_renderer",
-                &[("mode", i18n.graph_renderer_label(state.log.graph_renderer.mode()))],
+                &[(
+                    "mode",
+                    i18n.graph_renderer_label(state.log.graph_renderer.mode()),
+                )],
             ),
             None,
             GraphRendererMode::ALL

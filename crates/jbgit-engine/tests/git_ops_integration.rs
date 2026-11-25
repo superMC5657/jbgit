@@ -414,7 +414,10 @@ async fn remote_checkout_tracks_and_branch_delete_can_be_restored() {
     )
     .await;
     assert!(out.success);
-    assert_eq!(snapshot(d).await.local_branch("topic").unwrap().target_oid, tip);
+    assert_eq!(
+        snapshot(d).await.local_branch("topic").unwrap().target_oid,
+        tip
+    );
     let recent = snapshot(d).await.recent_branches.clone();
     assert!(recent.contains(&"topic".to_string()), "{recent:?}");
 }
@@ -507,7 +510,8 @@ async fn reset_modes_stash_workflow_and_cherry_pick() {
     assert!(out.success, "{out:?}");
     assert_eq!(subjects(d)[0], "zed");
     assert!(
-        snapshot(d).await
+        snapshot(d)
+            .await
             .refs
             .iter()
             .any(|r| r.kind == RefKind::LocalBranch && r.name == "pick-target")
@@ -638,7 +642,10 @@ async fn root_commit_fixup_patch_compare_and_conflict_resolution() {
         _ => None,
     })
     .await;
-    assert_eq!(fs::read_to_string(d.join("root.txt")).unwrap(), "side-edit\n");
+    assert_eq!(
+        fs::read_to_string(d.join("root.txt")).unwrap(),
+        "side-edit\n"
+    );
     let porcelain = git(d, &["status", "--porcelain"]);
     assert!(porcelain.contains("M  root.txt"), "{porcelain}");
 
@@ -662,7 +669,10 @@ async fn root_commit_fixup_patch_compare_and_conflict_resolution() {
         fs::read_to_string(d.join("sub dir/note name.txt")).unwrap(),
         "old version\n"
     );
-    assert_eq!(fs::read_to_string(d.join("root.txt")).unwrap(), unrelated_before);
+    assert_eq!(
+        fs::read_to_string(d.join("root.txt")).unwrap(),
+        unrelated_before
+    );
 }
 
 fn configure_identity(dir: &Path) {
@@ -677,7 +687,10 @@ fn remote_fixture() -> (TempDir, TempDir, TempDir) {
     git(remote.path(), &["init", "--bare", "-b", "main"]);
     let tmp = init_repo();
     let d = tmp.path();
-    git(d, &["remote", "add", "origin", remote.path().to_str().unwrap()]);
+    git(
+        d,
+        &["remote", "add", "origin", remote.path().to_str().unwrap()],
+    );
     commit_file(d, "a.txt", "a\n", "init");
     commit_file(d, "shared.txt", "base\n", "shared");
     git(d, &["push", "-u", "origin", "main"]);
@@ -724,7 +737,10 @@ async fn merge_options_squash_no_commit_message_and_ff_only() {
     assert!(squash.success, "{squash:?}");
     assert_eq!(rev(d, "HEAD"), head);
     let staged = git(d, &["diff", "--cached", "--name-only"]);
-    assert!(staged.contains("f1.txt") && staged.contains("f2.txt"), "{staged}");
+    assert!(
+        staged.contains("f1.txt") && staged.contains("f2.txt"),
+        "{staged}"
+    );
     let msg = squash.prepared_message.expect("SQUASH_MSG prefill");
     assert!(msg.contains("Squashed commit"), "{msg}");
     assert!(msg.contains("feat two"), "{msg}");
@@ -742,7 +758,11 @@ async fn merge_options_squash_no_commit_message_and_ff_only() {
         ),
     )
     .await;
-    assert_eq!(ff_only.failure, Some(GitFailure::NotFastForward), "{ff_only:?}");
+    assert_eq!(
+        ff_only.failure,
+        Some(GitFailure::NotFastForward),
+        "{ff_only:?}"
+    );
     assert_eq!(rev(d, "HEAD"), head);
 
     // --no-ff --no-commit: MERGE_HEAD + MERGE_MSG, merge left uncommitted.
@@ -826,8 +846,14 @@ async fn update_project_fetches_merges_and_preserves_local_changes() {
     assert_eq!(info.ranges[0].before, before);
     assert_eq!(info.ranges[0].after, rev(d, "HEAD"));
     assert!(info.skipped.is_empty());
-    assert_eq!(fs::read_to_string(d.join("a.txt")).unwrap(), "a local edit\n");
-    assert_eq!(fs::read_to_string(d.join("scratch.txt")).unwrap(), "untracked\n");
+    assert_eq!(
+        fs::read_to_string(d.join("a.txt")).unwrap(),
+        "a local edit\n"
+    );
+    assert_eq!(
+        fs::read_to_string(d.join("scratch.txt")).unwrap(),
+        "untracked\n"
+    );
     assert!(d.join("r2.txt").exists());
     assert!(git(d, &["stash", "list"]).trim().is_empty());
 
@@ -1045,7 +1071,10 @@ async fn delete_modify_conflicts_resolve_via_git_rm_and_save_delete() {
         _ => None,
     })
     .await;
-    assert_eq!(doc_them.side_presence, ConflictSidePresence::DeletedByTheirs);
+    assert_eq!(
+        doc_them.side_presence,
+        ConflictSidePresence::DeletedByTheirs
+    );
 
     let e2 = handle.request_conflict_document("del_us.txt".into());
     let doc_us = recv_matching(&mut rx, |ev| match ev {
@@ -1183,7 +1212,9 @@ async fn binary_conflict_loads_special_conflict_descriptor_with_side_metadata() 
     let tmp = init_repo();
     let d = tmp.path();
     let base_bin = [0x89, b'P', b'N', b'G', 0x00, 0x01, 0x02, 0x03];
-    let side_bin = [0x89, b'P', b'N', b'G', 0x00, 0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x11];
+    let side_bin = [
+        0x89, b'P', b'N', b'G', 0x00, 0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x11,
+    ];
     let main_bin = [
         0x89, b'P', b'N', b'G', 0x00, 0x10, 0x20, 0x30, 0x40, 0x50, 0x60, 0x70, 0x80, 0x90, 0xA0,
         0xB0,
@@ -1227,8 +1258,14 @@ async fn binary_conflict_loads_special_conflict_descriptor_with_side_metadata() 
     assert_eq!(info.path, "asset.bin");
     assert_eq!(info.kind, SpecialConflictKind::Binary);
     assert!(!info.is_reversed);
-    assert_eq!(info.ours.as_ref().and_then(|s| s.size), Some(main_bin.len() as u64));
-    assert_eq!(info.theirs.as_ref().and_then(|s| s.size), Some(side_bin.len() as u64));
+    assert_eq!(
+        info.ours.as_ref().and_then(|s| s.size),
+        Some(main_bin.len() as u64)
+    );
+    assert_eq!(
+        info.theirs.as_ref().and_then(|s| s.size),
+        Some(side_bin.len() as u64)
+    );
 }
 
 #[tokio::test]
@@ -1323,7 +1360,11 @@ async fn submodule_gitlink_and_directory_conflicts_load_special_descriptors() {
         },
     )
     .await;
-    assert_eq!(merge_df.failure, Some(GitFailure::Conflicts), "{merge_df:?}");
+    assert_eq!(
+        merge_df.failure,
+        Some(GitFailure::Conflicts),
+        "{merge_df:?}"
+    );
 
     let e2 = handle.request_conflict_document("slot".into());
     let dir_info = recv_matching(&mut rx, |ev| match ev {
@@ -1424,16 +1465,16 @@ async fn pull_options_ff_only_fails_and_rebase_replays_on_diverged_remote() {
     git(bare.path(), &["init", "--bare", "-b", "main"]);
     let tmp = init_repo();
     let d = tmp.path();
-    git(d, &["remote", "add", "origin", bare.path().to_str().unwrap()]);
+    git(
+        d,
+        &["remote", "add", "origin", bare.path().to_str().unwrap()],
+    );
     commit_file(d, "base.txt", "base\n", "base");
     git(d, &["push", "-u", "origin", "main"]);
 
     // Second clone pushes a diverged commit on origin/main.
     let peer = TempDir::new().unwrap();
-    git(
-        peer.path(),
-        &["clone", bare.path().to_str().unwrap(), "."],
-    );
+    git(peer.path(), &["clone", bare.path().to_str().unwrap(), "."]);
     git(peer.path(), &["config", "user.name", "Peer"]);
     git(peer.path(), &["config", "user.email", "peer@example.com"]);
     commit_file(peer.path(), "remote.txt", "remote\n", "remote change");
@@ -1456,7 +1497,11 @@ async fn pull_options_ff_only_fails_and_rebase_replays_on_diverged_remote() {
     )
     .await;
     assert!(!ff_only.success);
-    assert_eq!(ff_only.failure, Some(GitFailure::NotFastForward), "{ff_only:?}");
+    assert_eq!(
+        ff_only.failure,
+        Some(GitFailure::NotFastForward),
+        "{ff_only:?}"
+    );
 
     // Pull with --rebase replays local commit linearly on top of remote change.
     let rebased = run(
@@ -1510,7 +1555,10 @@ async fn rebase_onto_upstream_with_update_refs_moves_stacked_branches() {
     )
     .await;
     assert!(res.success, "rebase --onto --update-refs failed: {res:?}");
-    assert_eq!(subjects(d), vec!["commit b", "commit a", "main advance", "base"]);
+    assert_eq!(
+        subjects(d),
+        vec!["commit b", "commit a", "main advance", "base"]
+    );
     // Stacked intermediate branch `stack-a` was automatically moved to the rewritten `commit a`!
     let new_stack_a = rev(d, "stack-a");
     assert_ne!(new_stack_a, old_stack_a);
@@ -1561,7 +1609,10 @@ async fn interactive_rebase_edit_pauses_amends_and_continues_preserving_subseque
         "expected RebaseInteractive, got {:?}",
         snap.state
     );
-    assert_eq!(OngoingKind::from_state(&snap.state), Some(OngoingKind::Rebase));
+    assert_eq!(
+        OngoingKind::from_state(&snap.state),
+        Some(OngoingKind::Rebase)
+    );
     // Message files for the following Reword step must still exist while paused.
     assert!(d.join(".git").join("jbgit-rebase").exists());
 
@@ -1675,7 +1726,10 @@ async fn set_unset_upstream_and_cleanup_merged_and_gone_branches() {
     let tmp = init_repo();
     let d = tmp.path();
     commit_file(d, "base.txt", "base\n", "base");
-    git(d, &["remote", "add", "origin", bare.path().to_str().unwrap()]);
+    git(
+        d,
+        &["remote", "add", "origin", bare.path().to_str().unwrap()],
+    );
     git(d, &["push", "-u", "origin", "main"]);
 
     // Create two feature branches, push them, merge one into main, delete remote of both.
@@ -1685,7 +1739,10 @@ async fn set_unset_upstream_and_cleanup_merged_and_gone_branches() {
     let merged_tip = rev(d, "HEAD");
 
     git(d, &["checkout", "main"]);
-    git(d, &["merge", "--no-ff", "-m", "merge feat/merged", "feat/merged"]);
+    git(
+        d,
+        &["merge", "--no-ff", "-m", "merge feat/merged", "feat/merged"],
+    );
 
     git(d, &["checkout", "-b", "feat/unmerged-gone"]);
     commit_file(d, "u.txt", "unmerged\n", "unmerged work");
@@ -1736,7 +1793,10 @@ async fn set_unset_upstream_and_cleanup_merged_and_gone_branches() {
     // Cleanup scan identifies merged (`feat/merged` + `local-track`) and `[gone]` (`feat/merged` + `feat/unmerged-gone`).
     let snap = snapshot(d).await;
     let cands = snap.scan_cleanup_branches("HEAD", &[]);
-    let merged_c = cands.iter().find(|c| c.name == "feat/merged").expect("feat/merged");
+    let merged_c = cands
+        .iter()
+        .find(|c| c.name == "feat/merged")
+        .expect("feat/merged");
     assert!(merged_c.merged_into_base && merged_c.upstream_gone);
     let gone_c = cands
         .iter()
@@ -1768,7 +1828,11 @@ async fn set_unset_upstream_and_cleanup_merged_and_gone_branches() {
     .await;
     assert!(restore.success, "{restore:?}");
     assert_eq!(
-        snapshot(d).await.local_branch("feat/merged").unwrap().target_oid,
+        snapshot(d)
+            .await
+            .local_branch("feat/merged")
+            .unwrap()
+            .target_oid,
         merged_tip
     );
 }
@@ -1796,7 +1860,11 @@ async fn cherry_pick_no_commit_revert_no_commit_and_empty_cherry_pick_recovery()
     )
     .await;
     assert!(cp_n.success, "{cp_n:?}");
-    assert_eq!(rev(d, "HEAD"), head_before, "cherry-pick -n must not move HEAD");
+    assert_eq!(
+        rev(d, "HEAD"),
+        head_before,
+        "cherry-pick -n must not move HEAD"
+    );
     assert_eq!(fs::read_to_string(d.join("b.txt")).unwrap(), "side-b\n");
     let st = git(d, &["status", "--porcelain"]);
     assert!(st.contains("A  b.txt"), "{st}");
@@ -1814,7 +1882,11 @@ async fn cherry_pick_no_commit_revert_no_commit_and_empty_cherry_pick_recovery()
     )
     .await;
     assert!(!cp_empty.success);
-    assert_eq!(cp_empty.failure, Some(GitFailure::EmptyCherryPick), "{cp_empty:?}");
+    assert_eq!(
+        cp_empty.failure,
+        Some(GitFailure::EmptyCherryPick),
+        "{cp_empty:?}"
+    );
 
     // Recover with AllowEmpty -> creates empty commit preserving subject "add b".
     let allow = run(d, GitOp::CherryPickAllowEmpty).await;
@@ -1895,5 +1967,8 @@ async fn stash_push_keep_index_apply_reinstate_index_and_checkout_single_file() 
     .await;
     assert!(single.success, "{single:?}");
     assert_eq!(fs::read_to_string(d.join("work.txt")).unwrap(), "work-v2\n");
-    assert_eq!(fs::read_to_string(d.join("staged.txt")).unwrap(), "base-s\n");
+    assert_eq!(
+        fs::read_to_string(d.join("staged.txt")).unwrap(),
+        "base-s\n"
+    );
 }

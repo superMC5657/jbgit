@@ -479,7 +479,10 @@ impl CommitWorkbench {
             .collect()
     }
 
-    pub fn active_author_suggestion(&self, snap: Option<&RepoSnapshot>) -> Option<(String, usize, usize)> {
+    pub fn active_author_suggestion(
+        &self,
+        snap: Option<&RepoSnapshot>,
+    ) -> Option<(String, usize, usize)> {
         let cands = self.author_candidates(snap);
         if cands.is_empty() {
             return None;
@@ -613,9 +616,8 @@ impl CommitWorkbench {
         if self.rows.is_empty() {
             self.selected_idx = 0;
         } else {
-            self.selected_idx =
-                (self.selected_idx as isize + delta).clamp(0, self.rows.len() as isize - 1)
-                    as usize;
+            self.selected_idx = (self.selected_idx as isize + delta)
+                .clamp(0, self.rows.len() as isize - 1) as usize;
         }
     }
 
@@ -820,7 +822,11 @@ impl CommitWorkbench {
     pub fn invalidate_diff_cache_for_path(&mut self, path: &str) {
         self.diff_cache.retain(|k, _| k.path != path);
         self.diff_syntax_cache.retain(|k, _| k.path != path);
-        if self.current_diff_key.as_ref().is_some_and(|k| k.path == path) {
+        if self
+            .current_diff_key
+            .as_ref()
+            .is_some_and(|k| k.path == path)
+        {
             self.current_diff = None;
             self.diff_syntax = None;
             self.requested_diff = None;
@@ -1256,9 +1262,7 @@ impl CommitWorkbench {
 
         let cursor = self.diff_cursor_row.min(rows.len() - 1);
         let hunk_idx = match rows[cursor] {
-            DiffRow::Header(h)
-            | DiffRow::Unified(h, _)
-            | DiffRow::Split(h, _, _) => h,
+            DiffRow::Header(h) | DiffRow::Unified(h, _) | DiffRow::Split(h, _, _) => h,
         };
         let hunk = diff.hunks.get(hunk_idx)?;
         for (l_idx, _) in hunk.hunk.lines.iter().enumerate() {
@@ -1424,7 +1428,8 @@ impl CommitWorkbench {
             !targets.iter().any(|t| {
                 t.path == e.path
                     || t.old_path.as_deref() == Some(e.path.as_str())
-                    || e.path.starts_with(&format!("{}/", t.path.trim_end_matches('/')))
+                    || e.path
+                        .starts_with(&format!("{}/", t.path.trim_end_matches('/')))
             })
         });
     }
@@ -1728,10 +1733,7 @@ impl CommitWorkbench {
                 if !request_slots.accept(RequestSlotId::AmendPreview, epoch) {
                     return None;
                 }
-                let prev_sha = self
-                    .amend_preview
-                    .as_ref()
-                    .map(|p| p.short_sha.clone());
+                let prev_sha = self.amend_preview.as_ref().map(|p| p.short_sha.clone());
                 let new_sha = preview.as_ref().map(|p| p.short_sha.clone());
                 let head_changed = prev_sha != new_sha;
                 if head_changed {
@@ -1954,7 +1956,8 @@ impl CommitWorkbench {
             Action::StageToggleShowIgnored => {
                 self.toggle_show_ignored();
                 *ctx.loading_snapshot = true;
-                ctx.effects.push(Effect::RefreshScope(RefreshScope::StageStatus));
+                ctx.effects
+                    .push(Effect::RefreshScope(RefreshScope::StageStatus));
             }
             Action::StageToggleDiffCollapsed => {
                 self.diff_collapsed = !self.diff_collapsed;
@@ -1972,8 +1975,10 @@ impl CommitWorkbench {
                     if !targets.is_empty() {
                         self.invalidate_paths(&targets);
                         let count_s = targets.len().to_string();
-                        *ctx.status_notice =
-                            Some(ctx.i18n.t_fmt("toast.staging_paths", &[("count", &count_s)]));
+                        *ctx.status_notice = Some(
+                            ctx.i18n
+                                .t_fmt("toast.staging_paths", &[("count", &count_s)]),
+                        );
                         ctx.effects.push(Effect::StageTargets(targets));
                     }
                 }
@@ -2004,11 +2009,10 @@ impl CommitWorkbench {
             }
             Action::DiscardPromptSelected => {
                 if let Some(status) = self.status.clone() {
-                    let targets = self.collect_targets_for_action(
-                        self.selected_idx,
-                        &status,
-                        |k| matches!(k, StageNodeKind::Unstaged | StageNodeKind::Untracked),
-                    );
+                    let targets =
+                        self.collect_targets_for_action(self.selected_idx, &status, |k| {
+                            matches!(k, StageNodeKind::Unstaged | StageNodeKind::Untracked)
+                        });
                     if !targets.is_empty() {
                         let count_s = targets.len().to_string();
                         let sample: String = targets
@@ -2144,11 +2148,11 @@ impl CommitWorkbench {
                     let cur = self.selected_idx;
                     let next_pos = match file_indices.iter().position(|&i| i == cur) {
                         Some(pos) => (pos as isize + *delta)
-                            .clamp(0, file_indices.len() as isize - 1) as usize,
-                        None if *delta >= 0 => file_indices
-                            .iter()
-                            .position(|&i| i > cur)
-                            .unwrap_or(0),
+                            .clamp(0, file_indices.len() as isize - 1)
+                            as usize,
+                        None if *delta >= 0 => {
+                            file_indices.iter().position(|&i| i > cur).unwrap_or(0)
+                        }
                         None => file_indices
                             .iter()
                             .rposition(|&i| i < cur)
@@ -2328,8 +2332,10 @@ impl CommitWorkbench {
                     }
                     self.invalidate_diff_cache_for_path(&entry.path);
                     self.pending_select_immediate = true;
-                    *ctx.status_notice =
-                        Some(ctx.i18n.t_fmt("toast.undid_rollback", &[("path", &entry.path)]));
+                    *ctx.status_notice = Some(
+                        ctx.i18n
+                            .t_fmt("toast.undid_rollback", &[("path", &entry.path)]),
+                    );
                     ctx.effects.push(Effect::WriteWorktreeBuffer {
                         path: entry.path,
                         new_local_bytes: entry.prev_local_bytes,
@@ -2639,7 +2645,8 @@ impl CommitWorkbench {
             Action::CommitAuthorCycleCompletion(delta) => {
                 let len = self.author_candidates(ctx.snap).len();
                 if len > 0 {
-                    let next = (self.author_completion_idx as isize + *delta).rem_euclid(len as isize);
+                    let next =
+                        (self.author_completion_idx as isize + *delta).rem_euclid(len as isize);
                     self.author_completion_idx = next as usize;
                 }
             }
@@ -2735,10 +2742,7 @@ impl CommitWorkbench {
         }
 
         let staged_empty = self.status.as_ref().is_none_or(|s| s.staged.is_empty());
-        let has_tracked_unstaged = self
-            .status
-            .as_ref()
-            .is_some_and(|s| !s.unstaged.is_empty());
+        let has_tracked_unstaged = self.status.as_ref().is_some_and(|s| !s.unstaged.is_empty());
 
         let author_override = self
             .show_author_input
@@ -2811,9 +2815,10 @@ impl CommitWorkbench {
                     fix_autocrlf: false,
                     gpg_sign: self.gpg_sign,
                 };
-                ctx.modals.push(ModalLayer::Dialog(Box::new(Dialog::Identity(
-                    IdentityDialog::new(eff_name, eff_email, Some(pending)),
-                ))));
+                ctx.modals
+                    .push(ModalLayer::Dialog(Box::new(Dialog::Identity(
+                        IdentityDialog::new(eff_name, eff_email, Some(pending)),
+                    ))));
                 return;
             }
         }
@@ -2845,9 +2850,7 @@ pub(crate) fn undo_head_warning_message(
 ) -> Option<String> {
     let snap = snap?;
     let head_oid = snap.head_oid?;
-    let is_merge = snap
-        .commit(&head_oid)
-        .is_some_and(|c| c.parents.len() > 1);
+    let is_merge = snap.commit(&head_oid).is_some_and(|c| c.parents.len() > 1);
     let pushed_upstream = snap
         .head_ref()
         .and_then(|r| r.upstream.as_deref())
@@ -2865,10 +2868,9 @@ pub(crate) fn undo_head_warning_message(
             &[("upstream", up)],
         )),
         (true, None) => Some(i18n.t("dialog.undo_commit.warn_merge").to_string()),
-        (false, Some(up)) => Some(i18n.t_fmt(
-            "dialog.undo_commit.warn_pushed",
-            &[("upstream", up)],
-        )),
+        (false, Some(up)) => {
+            Some(i18n.t_fmt("dialog.undo_commit.warn_pushed", &[("upstream", up)]))
+        }
         (false, None) => None,
     }
 }

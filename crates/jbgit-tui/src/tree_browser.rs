@@ -23,7 +23,9 @@ use ratatui::widgets::{Block, BorderType, Borders, Paragraph};
 use unicode_width::UnicodeWidthStr;
 
 use crate::app::{Action, AppState, ModalLayer, RenderContext, ScrollPane, ScrollViewport};
-use crate::dialogs::{ChoiceDialog, ChoiceOption, Dialog, InputDialog, InputIntent, InputValidation};
+use crate::dialogs::{
+    ChoiceDialog, ChoiceOption, Dialog, InputDialog, InputIntent, InputValidation,
+};
 use crate::hit_test::HitTarget;
 use crate::syntax::{HighlightedFile, render_diff_line_spans_with_tab};
 use crate::views::overlays::draw_shadow;
@@ -267,7 +269,8 @@ impl TreeBrowserState {
 
     fn sync_list_scroll(&mut self) {
         if let Some(vh) = self.scroll.viewport_height() {
-            self.scroll.ensure_visible(self.selected, self.rows.len(), vh);
+            self.scroll
+                .ensure_visible(self.selected, self.rows.len(), vh);
         }
     }
 
@@ -554,9 +557,7 @@ pub fn tree_command(state: &AppState, cmd: TreeCommand) -> Vec<Action> {
         }
         TreeCommand::ExportToFile => {
             if e.kind != TreeEntryKind::Blob {
-                return vec![Action::Notice(
-                    i18n.t("view.tree.export_file_only").into(),
-                )];
+                return vec![Action::Notice(i18n.t("view.tree.export_file_only").into())];
             }
             let workdir = state.current_workdir();
             let base = state
@@ -1048,16 +1049,17 @@ fn render_preview_pane(
     let width = area.width as usize;
     let muted = Style::default().fg(ctx.theme.fg_muted);
     let h = area.height as usize;
-    let placeholder = |frame: &mut Frame<'_>, ctx: &mut RenderContext<'_>, text: String, style: Style| {
-        ctx.record_scroll_bound(ScrollPane::TreeBrowserPreview, h, 0);
-        frame.render_widget(
-            Paragraph::new(Span::styled(
-                truncate_to_width(&format!(" {text}"), width),
-                style,
-            )),
-            Rect::new(area.x, area.y, area.width, 1),
-        );
-    };
+    let placeholder =
+        |frame: &mut Frame<'_>, ctx: &mut RenderContext<'_>, text: String, style: Style| {
+            ctx.record_scroll_bound(ScrollPane::TreeBrowserPreview, h, 0);
+            frame.render_widget(
+                Paragraph::new(Span::styled(
+                    truncate_to_width(&format!(" {text}"), width),
+                    style,
+                )),
+                Rect::new(area.x, area.y, area.width, 1),
+            );
+        };
     let Some(e) = s.selected_entry() else {
         ctx.record_scroll_bound(ScrollPane::TreeBrowserPreview, h, 0);
         return;

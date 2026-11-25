@@ -174,8 +174,14 @@ fn log_signature_column_requests_batch_and_renders_icons_and_tooltip() {
 
     let buf = ts.render(120, 30);
     let rendered = screen_text(&buf);
-    assert!(rendered.contains('✓'), "expected ✓ icon in Log:\n{rendered}");
-    assert!(rendered.contains('✕'), "expected ✕ icon in Log:\n{rendered}");
+    assert!(
+        rendered.contains('✓'),
+        "expected ✓ icon in Log:\n{rendered}"
+    );
+    assert!(
+        rendered.contains('✕'),
+        "expected ✕ icon in Log:\n{rendered}"
+    );
 
     // Hover over row 0's signature cell shows the signer + key tooltip.
     let (cx, cy) = ts
@@ -198,7 +204,10 @@ fn submodule_stage_rows_block_mutations_and_render_diff_and_menus() {
     ));
     snap.submodules = vec!["libs/sub".into()];
     let mut ts = TestSession::with_snapshot(snap);
-    assert!(is_action_applicable(&KeyAction::UpdateSubmodules, ts.state()));
+    assert!(is_action_applicable(
+        &KeyAction::UpdateSubmodules,
+        ts.state()
+    ));
     assert!(matches!(
         execute_action(&KeyAction::UpdateSubmodules, ts.state()).as_deref(),
         Some([Action::RunGitOp(GitOp::SubmoduleUpdate { path: None })])
@@ -252,7 +261,11 @@ fn submodule_stage_rows_block_mutations_and_render_diff_and_menus() {
     let sub_rect = ts.region_of(
         |t| matches!(t, HitTarget::ChangesTreeNode { node_id, .. } if node_id.0 as usize == sub_row_idx),
     );
-    ts.send_mouse(MouseEventKind::Moved, sub_rect.x + sub_rect.width - 2, sub_rect.y);
+    ts.send_mouse(
+        MouseEventKind::Moved,
+        sub_rect.x + sub_rect.width - 2,
+        sub_rect.y,
+    );
     let hovered_buf = ts.render(120, 30);
     assert!(
         !super::row_text(&hovered_buf, sub_rect.y).contains("[+]"),
@@ -366,7 +379,10 @@ fn submodule_stage_rows_block_mutations_and_render_diff_and_menus() {
         "{open_actions:?}"
     );
     let update_sub = find_item(items, "Update Submodule (--init --recursive)");
-    assert!(matches!(update_sub.kind, ContextMenuEntryKind::Action { .. }));
+    assert!(matches!(
+        update_sub.kind,
+        ContextMenuEntryKind::Action { .. }
+    ));
     let update_actions = item_run_actions(update_sub);
     assert!(
         matches!(
@@ -423,7 +439,10 @@ fn lfs_diffs_and_tree_browser_render_pointer_placeholders() {
         .iter()
         .position(|r| r.label == "blob.bin")
         .expect("blob.bin row in changes tree");
-    ts.dispatch(Action::ChangesSelect(crate::app::ChangesHost::Log, file_row));
+    ts.dispatch(Action::ChangesSelect(
+        crate::app::ChangesHost::Log,
+        file_row,
+    ));
     let diff_key = FileDiffKey {
         details: key,
         path: "assets/blob.bin".into(),
@@ -454,7 +473,10 @@ fn lfs_diffs_and_tree_browser_render_pointer_placeholders() {
             .max(1),
     });
     let log_screen = screen_text(&ts.render(160, 36));
-    assert!(log_screen.contains("Git LFS Object Pointer"), "{log_screen}");
+    assert!(
+        log_screen.contains("Git LFS Object Pointer"),
+        "{log_screen}"
+    );
     assert!(log_screen.contains("sha256:111111111111"), "{log_screen}");
     assert!(log_screen.contains("sha256:222222222222"), "{log_screen}");
     assert!(log_screen.contains("filter=lfs active"), "{log_screen}");
@@ -515,7 +537,10 @@ fn lfs_diffs_and_tree_browser_render_pointer_placeholders() {
         epoch: 2,
     });
     let stage_screen = screen_text(&ts.render(160, 36));
-    assert!(stage_screen.contains("Git LFS Object Pointer"), "{stage_screen}");
+    assert!(
+        stage_screen.contains("Git LFS Object Pointer"),
+        "{stage_screen}"
+    );
     assert!(
         stage_screen.contains("Line-level staging is disabled for LFS pointers"),
         "{stage_screen}"
@@ -584,19 +609,25 @@ fn lfs_diffs_and_tree_browser_render_pointer_placeholders() {
         epoch: blob_epoch,
     });
     let tree_screen = screen_text(&ts.render(140, 30));
-    assert!(tree_screen.contains("Git LFS pointer: sha256:111111111111"), "{tree_screen}");
+    assert!(
+        tree_screen.contains("Git LFS pointer: sha256:111111111111"),
+        "{tree_screen}"
+    );
     assert!(tree_screen.contains("1.0 MiB"), "{tree_screen}");
 }
 
 #[test]
 fn shallow_clone_renders_boundary_unshallow_button_popup_and_dialog() {
-    use crate::branches_popup::{PopupRow, build_popup_rows};
     use super::remote_infos;
+    use crate::branches_popup::{PopupRow, build_popup_rows};
 
     let mut full_snap = snapshot();
     full_snap.remotes = remote_infos(&["origin"]);
     let full_ts = TestSession::with_snapshot(full_snap.clone());
-    assert!(!is_action_applicable(&KeyAction::Unshallow, full_ts.state()));
+    assert!(!is_action_applicable(
+        &KeyAction::Unshallow,
+        full_ts.state()
+    ));
     assert!(!build_popup_rows(full_ts.state(), "").contains(&PopupRow::Unshallow));
 
     let mut shallow_snap = full_snap;
@@ -615,25 +646,31 @@ fn shallow_clone_renders_boundary_unshallow_button_popup_and_dialog() {
     let (bx, by) = ts
         .hit_center_of(|t| matches!(t, HitTarget::LogShallowUnshallow))
         .expect("LogShallowUnshallow pill hit region");
-    ts.send_mouse_event(super::left_click(bx, by, crossterm::event::KeyModifiers::NONE));
+    ts.send_mouse_event(super::left_click(
+        bx,
+        by,
+        crossterm::event::KeyModifiers::NONE,
+    ));
     assert!(matches!(
         ts.state().modal_stack.last(),
         Some(ModalLayer::Dialog(_))
     ));
-    ts.send_key(crossterm::event::KeyCode::Enter, crossterm::event::KeyModifiers::NONE);
+    ts.send_key(
+        crossterm::event::KeyCode::Enter,
+        crossterm::event::KeyModifiers::NONE,
+    );
     assert!(
-        ts.take_git_ops()
-            .into_iter()
-            .any(|op| op == GitOp::Unshallow { remote: "origin".into() }),
+        ts.take_git_ops().into_iter().any(|op| op
+            == GitOp::Unshallow {
+                remote: "origin".into()
+            }),
         "confirming unshallow must emit GitOp::Unshallow"
     );
 }
 
 #[test]
 fn commit_hooks_dimmed_when_absent_and_mode_symlink_no_newline_diffs_render() {
-    use jbgit_core::{
-        FileModeChange, GIT_MODE_EXECUTABLE, GIT_MODE_REGULAR, GIT_MODE_SYMLINK,
-    };
+    use jbgit_core::{FileModeChange, GIT_MODE_EXECUTABLE, GIT_MODE_REGULAR, GIT_MODE_SYMLINK};
     use jbgit_engine::CommitPrecheckInfo;
 
     let mut ts = seeded_log_session();
@@ -755,7 +792,10 @@ fn commit_hooks_dimmed_when_absent_and_mode_symlink_no_newline_diffs_render() {
         epoch: ep,
     });
     let mode_screen = screen_text(&ts.render(160, 36));
-    assert!(mode_screen.contains("mode 100644 → 100755"), "{mode_screen}");
+    assert!(
+        mode_screen.contains("mode 100644 → 100755"),
+        "{mode_screen}"
+    );
     assert!(
         !mode_screen.contains("No textual differences"),
         "pure mode change must not show 'No textual differences':\n{mode_screen}"
@@ -861,7 +901,10 @@ fn commit_hooks_dimmed_when_absent_and_mode_symlink_no_newline_diffs_render() {
         epoch: ep,
     });
     let sym_screen = screen_text(&ts.render(160, 36));
-    assert!(sym_screen.contains("symlink target (120000)"), "{sym_screen}");
+    assert!(
+        sym_screen.contains("symlink target (120000)"),
+        "{sym_screen}"
+    );
     let _ = ts.take_requests();
     ts.dispatch(Action::StageDiffUnstageSelection);
     assert!(

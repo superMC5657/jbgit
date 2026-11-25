@@ -17,6 +17,7 @@ pub use effects::execute_effects_with_host;
 pub use modal_stack::{ModalLayer, ModalStack};
 pub use scroll::ScrollViewport;
 pub use state::AppState;
+pub(crate) use types::initial_menu_selection;
 pub use types::{
     ClickRecord, ConflictInlineEditor, ConflictMergeState, ConflictQueueEntry, ConflictQueueState,
     ContainingBranchesJob, ContextMenuEntryKind, ContextMenuItem, DragState, EditorMoveKind,
@@ -24,7 +25,6 @@ pub use types::{
     SCROLL_GOTO_BOTTOM, SCROLL_GOTO_TOP, ScrollPane, SyntaxJob, SyntaxJobKey, SyntaxTarget,
     UiAsyncEvent, apply_scroll_delta,
 };
-pub(crate) use types::initial_menu_selection;
 
 /// Runs a fire-and-forget config/options persistence write off the UI event loop
 /// in production, and synchronously under `#[cfg(test)]` for deterministic tests.

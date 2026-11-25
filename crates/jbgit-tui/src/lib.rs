@@ -24,19 +24,19 @@ mod repo_switcher;
 pub mod session;
 mod stage_view;
 mod stash_view;
-mod tree_browser;
-mod worktrees_view;
 pub mod syntax;
 pub mod terminal;
 #[cfg(test)]
 mod tests;
 mod theme;
+mod tree_browser;
 mod views;
 mod widgets;
+mod worktrees_view;
 
 pub use app::{Action, AppState, Effect, UiAsyncEvent};
 pub use session::{
     MAX_COALESCE_EVENTS, ProdHost, RepoSession, SessionHost, SessionInput, TestHost, TuiSession,
-    TurnReport, UNBIND_WRITE_TIMEOUT, coalesce_effects, init_engine_and_session,
-    poll_stream_ready, recv_engine, spawn_wezterm_cell_probe,
+    TurnReport, UNBIND_WRITE_TIMEOUT, coalesce_effects, init_engine_and_session, poll_stream_ready,
+    recv_engine, spawn_wezterm_cell_probe,
 };

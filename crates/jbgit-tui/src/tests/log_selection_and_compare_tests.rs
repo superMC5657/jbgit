@@ -68,7 +68,10 @@ fn log_graph_state_non_contiguous_selection_state_machine_and_oid_reload() {
     assert_eq!(g.selection_count(), 2);
     g.toggle_row_selection(6, false);
     assert_eq!(g.selected_rows_vec(), vec![0, 3, 6]);
-    assert_eq!(g.selected_oids(Some(&base_snap)), vec![oid(12), oid(9), oid(6)]);
+    assert_eq!(
+        g.selected_oids(Some(&base_snap)),
+        vec![oid(12), oid(9), oid(6)]
+    );
 
     // Unchecking row 3 leaves {0, 6}.
     g.toggle_row_selection(3, false);
@@ -121,7 +124,11 @@ fn log_graph_state_non_contiguous_selection_state_machine_and_oid_reload() {
     assert_eq!(g.selected_rows_vec(), vec![1]);
     g.scroll_by(3, false);
     assert_eq!(g.selected_idx, 4);
-    assert_eq!(g.selected_rows_vec(), vec![1], "mark mode preserves row 1 while moving cursor");
+    assert_eq!(
+        g.selected_rows_vec(),
+        vec![1],
+        "mark mode preserves row 1 while moving cursor"
+    );
     g.toggle_row_selection(4, true);
     assert_eq!(g.selected_rows_vec(), vec![1, 4]);
     // Uncheck both rows cleanly exits mark mode.
@@ -273,9 +280,10 @@ fn non_contiguous_two_commit_compare_versions_and_swap_direction() {
         slot: RequestSlotId::LogCommitDetails,
         key: cmp_key.clone(),
     });
-    let bundle = match recv_event(&mut rx, &|e| {
-        matches!(e, EngineEvent::CommitDetailsLoaded { bundle, .. } if bundle.key == cmp_key)
-    }) {
+    let bundle = match recv_event(
+        &mut rx,
+        &|e| matches!(e, EngineEvent::CommitDetailsLoaded { bundle, .. } if bundle.key == cmp_key),
+    ) {
         EngineEvent::CommitDetailsLoaded { bundle, .. } => bundle,
         _ => unreachable!(),
     };
@@ -296,9 +304,10 @@ fn non_contiguous_two_commit_compare_versions_and_swap_direction() {
         key: file_diff_key.clone(),
         known_oids: None,
     });
-    let fdiff = match recv_event(&mut rx, &|e| {
-        matches!(e, EngineEvent::FileDiffLoaded { diff, .. } if diff.key == file_diff_key)
-    }) {
+    let fdiff = match recv_event(
+        &mut rx,
+        &|e| matches!(e, EngineEvent::FileDiffLoaded { diff, .. } if diff.key == file_diff_key),
+    ) {
         EngineEvent::FileDiffLoaded { diff, .. } => diff,
         _ => unreachable!(),
     };
@@ -322,8 +331,11 @@ fn non_contiguous_two_commit_compare_versions_and_swap_direction() {
     });
     let _ = ts.render(140, 35);
     assert!(
-        ts.hit_center_of(|t| matches!(t, HitTarget::ChangesToolbar(ChangesToolbarButton::SwapCompare)))
-            .is_some(),
+        ts.hit_center_of(|t| matches!(
+            t,
+            HitTarget::ChangesToolbar(ChangesToolbarButton::SwapCompare)
+        ))
+        .is_some(),
         "Changes toolbar should show Swap button in CompareVersions mode"
     );
     assert!(
@@ -350,9 +362,10 @@ fn non_contiguous_two_commit_compare_versions_and_swap_direction() {
         slot: RequestSlotId::LogCommitDetails,
         key: swapped_key.clone(),
     });
-    let swapped_bundle = match recv_event(&mut rx, &|e| {
-        matches!(e, EngineEvent::CommitDetailsLoaded { bundle, .. } if bundle.key == swapped_key)
-    }) {
+    let swapped_bundle = match recv_event(
+        &mut rx,
+        &|e| matches!(e, EngineEvent::CommitDetailsLoaded { bundle, .. } if bundle.key == swapped_key),
+    ) {
         EngineEvent::CommitDetailsLoaded { bundle, .. } => bundle,
         _ => unreachable!(),
     };
@@ -444,8 +457,9 @@ fn many_changes_guard_blocks_over_limit_and_loads_on_enter() {
         "{text}"
     );
     assert!(
-        text.contains(&format!("{over} commits selected (limit {MAX_AGGREGATED_COMMITS})"))
-            && text.contains("Enter or click to load aggregated changes"),
+        text.contains(&format!(
+            "{over} commits selected (limit {MAX_AGGREGATED_COMMITS})"
+        )) && text.contains("Enter or click to load aggregated changes"),
         "{text}"
     );
     assert!(
@@ -552,7 +566,10 @@ fn show_only_affected_changes_filters_tree_and_toggles_with_badge_key_and_config
     let buf_off = ts.render(140, 35);
     let txt_off = screen_text(&buf_off);
     assert!(!txt_off.contains("[Filtered: 1/2]"), "{txt_off}");
-    assert!(txt_off.contains("a.rs") && txt_off.contains("b.rs"), "{txt_off}");
+    assert!(
+        txt_off.contains("a.rs") && txt_off.contains("b.rs"),
+        "{txt_off}"
+    );
 
     // Pressing `a` toggles Show Only Affected Changes back ON.
     ts.dispatch(Action::FocusPane(PaneId::LogChangesTree));

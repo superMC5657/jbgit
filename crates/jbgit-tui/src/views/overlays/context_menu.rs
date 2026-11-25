@@ -208,8 +208,8 @@ pub(super) fn render_context_menu(
         let icon_w = if has_icons { 2 } else { 0 };
         let avail = (inner.width as usize).saturating_sub(right_label.width() + 3 + icon_w);
         let label = truncate_to_width(&item.label, avail);
-        let pad = (inner.width as usize)
-            .saturating_sub(label.width() + right_label.width() + 2 + icon_w);
+        let pad =
+            (inner.width as usize).saturating_sub(label.width() + right_label.width() + 2 + icon_w);
 
         let mut spans = vec![Span::raw(" ")];
         if has_icons {
@@ -262,7 +262,12 @@ pub(super) fn render_context_menu(
     if scroll + visible < items.len() {
         frame.render_widget(
             Paragraph::new(Span::styled("▾", arrow_style)),
-            Rect::new(rect.x + rect.width / 2, rect.bottom().saturating_sub(1), 1, 1),
+            Rect::new(
+                rect.x + rect.width / 2,
+                rect.bottom().saturating_sub(1),
+                1,
+                1,
+            ),
         );
     }
 }

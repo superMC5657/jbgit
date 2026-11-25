@@ -185,7 +185,11 @@ impl GraphThemeSection {
         if dst_tracks.len() < limit {
             dst_tracks.resize_with(limit, TrackColorConfig::default);
         }
-        for (dst, src) in dst_tracks.iter_mut().zip(src_tracks.iter()).take(TRACK_COUNT) {
+        for (dst, src) in dst_tracks
+            .iter_mut()
+            .zip(src_tracks.iter())
+            .take(TRACK_COUNT)
+        {
             dst.merge_from(src);
         }
     }

@@ -228,10 +228,7 @@ fn split_list_item(line: &str) -> Option<(&str, &str)> {
         let split = idx + 2;
         return Some((&line[..split], &line[split..]));
     }
-    let digits = after_ws
-        .bytes()
-        .take_while(|b| b.is_ascii_digit())
-        .count();
+    let digits = after_ws.bytes().take_while(|b| b.is_ascii_digit()).count();
     if digits > 0
         && let Some(punct) = after_ws.as_bytes().get(digits).copied()
         && matches!(punct, b'.' | b')')
@@ -337,7 +334,11 @@ pub fn resolve_push_refspec_target(branch: &str, refspecs: &[String]) -> Option<
     None
 }
 
-fn match_refspec_pattern<'a>(pattern: &str, full_src: &'a str, short_src: &'a str) -> Option<&'a str> {
+fn match_refspec_pattern<'a>(
+    pattern: &str,
+    full_src: &'a str,
+    short_src: &'a str,
+) -> Option<&'a str> {
     if let Some((pre, post)) = pattern.split_once('*') {
         if let Some(rest) = full_src.strip_prefix(pre)
             && let Some(mid) = rest.strip_suffix(post)
@@ -413,23 +414,38 @@ Signed-off-by: Very Long Developer Name With Long Domain <developer.name@very-lo
         assert!(lines[2].len() <= 72, "line[2]: {}", lines[2]);
         assert!(lines[3].len() <= 72, "line[3]: {}", lines[3]);
         // Bullet item wrapped with 2-space hanging indent
-        let bullet_idx = lines.iter().position(|l| l.starts_with("- This is a bullet")).unwrap();
+        let bullet_idx = lines
+            .iter()
+            .position(|l| l.starts_with("- This is a bullet"))
+            .unwrap();
         assert!(lines[bullet_idx].len() <= 72);
-        assert!(lines[bullet_idx + 1].starts_with("  "), "{}", lines[bullet_idx + 1]);
+        assert!(
+            lines[bullet_idx + 1].starts_with("  "),
+            "{}",
+            lines[bullet_idx + 1]
+        );
         assert!(lines[bullet_idx + 1].len() <= 72);
         // Code block, indented code, trailer, and comment preserved verbatim
         assert!(out.contains("let untouched_code_line_that_is_intentionally_much_longer_than_seventy_two_columns = 42;"));
         assert!(out.contains("    indented_code_line_that_is_also_longer_than_seventy_two_columns_should_stay_intact();"));
         assert!(out.contains("Signed-off-by: Very Long Developer Name With Long Domain <developer.name@very-long-organization-domain.example.com>"));
-        assert!(out.contains("# Comment line that is longer than seventy-two columns should also stay untouched"));
+        assert!(out.contains(
+            "# Comment line that is longer than seventy-two columns should also stay untouched"
+        ));
 
         // Prose line with a hyphen before `: ` must NOT be misclassified as a Git trailer; it must wrap.
         let prose_with_hyphen = "feat: subject\n\nNote on non-empty input: this prose body line contains a hyphen before the colon and exceeds seventy-two columns so it must wrap cleanly.";
         let wrapped_prose = reformat_commit_message(prose_with_hyphen, 72, '#');
         let prose_lines: Vec<&str> = wrapped_prose.lines().collect();
-        assert!(prose_lines.len() >= 4, "expected wrapped prose: {wrapped_prose}");
+        assert!(
+            prose_lines.len() >= 4,
+            "expected wrapped prose: {wrapped_prose}"
+        );
         for body_line in &prose_lines[2..] {
-            assert!(body_line.len() <= 72, "body line exceeded 72 cols: {body_line}");
+            assert!(
+                body_line.len() <= 72,
+                "body line exceeded 72 cols: {body_line}"
+            );
         }
     }
 

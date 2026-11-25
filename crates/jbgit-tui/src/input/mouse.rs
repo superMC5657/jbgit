@@ -201,14 +201,22 @@ fn route_mouse_scroll(col: u16, row: u16, delta: isize, state: &AppState) -> Vec
             }
             HitTarget::BranchPopupRow(_) | HitTarget::BranchPopupStar(_) => {
                 let key = KeyEvent::new(
-                    if delta > 0 { KeyCode::Down } else { KeyCode::Up },
+                    if delta > 0 {
+                        KeyCode::Down
+                    } else {
+                        KeyCode::Up
+                    },
                     KeyModifiers::NONE,
                 );
                 return crate::branches_popup::route_branches_popup_key(&key, state);
             }
             HitTarget::RepoSwitcherRow(_) => {
                 let key = KeyEvent::new(
-                    if delta > 0 { KeyCode::Down } else { KeyCode::Up },
+                    if delta > 0 {
+                        KeyCode::Down
+                    } else {
+                        KeyCode::Up
+                    },
                     KeyModifiers::NONE,
                 );
                 return crate::repo_switcher::route_repo_switcher_key(&key, state);
@@ -242,14 +250,22 @@ fn route_mouse_scroll(col: u16, row: u16, delta: isize, state: &AppState) -> Vec
                 }
                 Some(crate::app::ModalLayer::BranchesPopup { .. }) => {
                     let key = KeyEvent::new(
-                        if delta > 0 { KeyCode::Down } else { KeyCode::Up },
+                        if delta > 0 {
+                            KeyCode::Down
+                        } else {
+                            KeyCode::Up
+                        },
                         KeyModifiers::NONE,
                     );
                     return crate::branches_popup::route_branches_popup_key(&key, state);
                 }
                 Some(crate::app::ModalLayer::RepoSwitcher(_)) => {
                     let key = KeyEvent::new(
-                        if delta > 0 { KeyCode::Down } else { KeyCode::Up },
+                        if delta > 0 {
+                            KeyCode::Down
+                        } else {
+                            KeyCode::Up
+                        },
                         KeyModifiers::NONE,
                     );
                     return crate::repo_switcher::route_repo_switcher_key(&key, state);
@@ -267,7 +283,8 @@ fn route_mouse_scroll(col: u16, row: u16, delta: isize, state: &AppState) -> Vec
                     | crate::app::ModalLayer::ChooseChild { .. }),
                 ) => {
                     if let Some(kind) = top.popup_kind() {
-                        let (query_ref, selected) = top.popup_query_and_selected().unwrap_or(("", 0));
+                        let (query_ref, selected) =
+                            top.popup_query_and_selected().unwrap_or(("", 0));
                         let max_idx =
                             super::keyboard::popup_candidate_count(kind, query_ref, state)
                                 .saturating_sub(1);
@@ -277,16 +294,18 @@ fn route_mouse_scroll(col: u16, row: u16, delta: isize, state: &AppState) -> Vec
                         return vec![Action::PopupSelectCandidate(next)];
                     }
                 }
-                Some(crate::app::ModalLayer::Dialog(d))
-                    if matches!(d.as_ref(), crate::dialogs::Dialog::RebaseTodo(r) if r.show_diff) =>
+                Some(crate::app::ModalLayer::Dialog(d)) if matches!(d.as_ref(), crate::dialogs::Dialog::RebaseTodo(r) if r.show_diff) =>
                 {
                     return vec![Action::ScrollRebaseDiff(delta)];
                 }
-                Some(crate::app::ModalLayer::Dialog(d))
-                    if matches!(d.as_ref(), crate::dialogs::Dialog::RebaseTodo(r) if !r.show_diff) =>
+                Some(crate::app::ModalLayer::Dialog(d)) if matches!(d.as_ref(), crate::dialogs::Dialog::RebaseTodo(r) if !r.show_diff) =>
                 {
                     let key = KeyEvent::new(
-                        if delta > 0 { KeyCode::Down } else { KeyCode::Up },
+                        if delta > 0 {
+                            KeyCode::Down
+                        } else {
+                            KeyCode::Up
+                        },
                         KeyModifiers::NONE,
                     );
                     return vec![Action::DialogKey(key)];
@@ -430,7 +449,9 @@ fn route_mouse_left_down(
             ChangesToolbarButton::GroupByDir => {
                 vec![Action::ChangesToggleGroupByDir(ChangesHost::Log)]
             }
-            ChangesToolbarButton::ExpandAll => vec![Action::ChangesExpandAll(ChangesHost::Log, true)],
+            ChangesToolbarButton::ExpandAll => {
+                vec![Action::ChangesExpandAll(ChangesHost::Log, true)]
+            }
             ChangesToolbarButton::CollapseAll => {
                 vec![Action::ChangesExpandAll(ChangesHost::Log, false)]
             }
@@ -714,7 +735,9 @@ fn route_mouse_left_down(
         }
         HitTarget::ReflogToolbar(btn) => match btn {
             crate::hit_test::ReflogToolbarButton::Checkout => vec![Action::ReflogCheckoutSelected],
-            crate::hit_test::ReflogToolbarButton::NewBranch => vec![Action::ReflogNewBranchSelected],
+            crate::hit_test::ReflogToolbarButton::NewBranch => {
+                vec![Action::ReflogNewBranchSelected]
+            }
             crate::hit_test::ReflogToolbarButton::CherryPick => {
                 vec![Action::ReflogCherryPickSelected]
             }
@@ -787,7 +810,9 @@ fn route_mouse_left_down(
             actions
         }
         HitTarget::PushFileListArea | HitTarget::PushDiffArea => {
-            vec![Action::PushSetFocus(crate::log_view::PushDialogFocus::Files)]
+            vec![Action::PushSetFocus(
+                crate::log_view::PushDialogFocus::Files,
+            )]
         }
         HitTarget::PushDiffBackButton => vec![Action::PushToggleDiff],
         HitTarget::PushOption(opt) => match opt {

@@ -114,7 +114,8 @@ pub fn plan_footer_bar(
     }
     let cap = configured.min(max_height) as usize;
     let hints = collect_footer_hints(state);
-    let (rows, hidden) = layout_footer_pills(&hints.pills, hints.help.as_ref(), width as usize, cap);
+    let (rows, hidden) =
+        layout_footer_pills(&hints.pills, hints.help.as_ref(), width as usize, cap);
     let height = (rows.len() as u16).max(1).min(max_height);
     FooterRenderPlan {
         height,
@@ -189,8 +190,7 @@ fn render_notification_footer(
     } else {
         "view.header.notification_dismiss_hint"
     });
-    let right_w =
-        action.as_ref().map_or(0, |a| a.width() + 1) + dismiss.width() + 1 + hint.width();
+    let right_w = action.as_ref().map_or(0, |a| a.width() + 1) + dismiss.width() + 1 + hint.width();
     let text = truncate_to_width(
         &format!(" {icon} {}", n.text),
         (area.width as usize).saturating_sub(right_w),
@@ -214,16 +214,16 @@ fn render_notification_footer(
     }
     spans.push(Span::raw(" "));
     x += 1;
-    spans.push(Span::styled(dismiss, Style::default().fg(ctx.theme.fg_muted)));
+    spans.push(Span::styled(
+        dismiss,
+        Style::default().fg(ctx.theme.fg_muted),
+    ));
     ctx.hit_registry.register(
         Rect::new(x, area.y, dismiss.width() as u16, 1),
         6,
         HitTarget::NotificationDismiss,
     );
-    spans.push(Span::styled(
-        hint,
-        Style::default().fg(ctx.theme.fg_muted),
-    ));
+    spans.push(Span::styled(hint, Style::default().fg(ctx.theme.fg_muted)));
     frame.render_widget(
         Paragraph::new(Line::from(spans)).style(Style::default().bg(ctx.theme.bg_panel)),
         area,
@@ -295,11 +295,7 @@ impl FooterPill {
         }
     }
 
-    fn with_emphasized(
-        key: impl Into<String>,
-        label: impl Into<String>,
-        emphasized: bool,
-    ) -> Self {
+    fn with_emphasized(key: impl Into<String>, label: impl Into<String>, emphasized: bool) -> Self {
         Self {
             key: key.into(),
             label: label.into(),
@@ -667,7 +663,10 @@ fn layout_footer_pills(
         if is_last_allowed {
             let mut best_k = 0usize;
             for k in (0..=rem).rev() {
-                let used_k = 1 + (0..k).map(|j| pills[idx + j].display_width()).sum::<usize>();
+                let used_k = 1
+                    + (0..k)
+                        .map(|j| pills[idx + j].display_width())
+                        .sum::<usize>();
                 let hidden = rem - k;
                 if used_k + overflow_display_width(hidden) + help_w <= total_w {
                     best_k = k;
@@ -678,9 +677,10 @@ fn layout_footer_pills(
             return (rows, rem - best_k);
         }
 
-        let all_used = 1 + (idx..pills.len())
-            .map(|i| pills[i].display_width())
-            .sum::<usize>();
+        let all_used = 1
+            + (idx..pills.len())
+                .map(|i| pills[i].display_width())
+                .sum::<usize>();
         if all_used + help_w <= total_w {
             rows.push((idx..pills.len()).collect());
             return (rows, 0);

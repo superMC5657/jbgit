@@ -399,9 +399,11 @@ impl BlameBundle {
     /// multi-file commits resolve the exact source path.
     pub fn previous_for(&self, line_idx: usize) -> Option<&(Oid, String)> {
         let line = self.lines.get(line_idx)?;
-        line.previous
-            .as_ref()
-            .or_else(|| self.commits.get(&line.oid).and_then(|c| c.previous.as_ref()))
+        line.previous.as_ref().or_else(|| {
+            self.commits
+                .get(&line.oid)
+                .and_then(|c| c.previous.as_ref())
+        })
     }
 }
 
@@ -1149,7 +1151,11 @@ fn pair_change_block(
 ) {
     let dels = del_end - del_start;
     let adds = add_end - add_start;
-    if dels == 0 || adds == 0 || (dels == 1 && adds == 1) || dels.saturating_mul(adds) > SIMILARITY_PAIR_CELL_LIMIT {
+    if dels == 0
+        || adds == 0
+        || (dels == 1 && adds == 1)
+        || dels.saturating_mul(adds) > SIMILARITY_PAIR_CELL_LIMIT
+    {
         for k in 0..dels.max(adds) {
             out.push(SideBySideRow {
                 left: (k < dels).then_some(del_start + k),
@@ -1165,14 +1171,10 @@ fn pair_change_block(
     let add_trimmed: Vec<&str> = (add_start..add_end)
         .map(|idx| lines[idx].text.trim())
         .collect();
-    let del_bigrams: Vec<Vec<(char, char)>> = del_trimmed
-        .iter()
-        .map(|s| sorted_char_bigrams(s))
-        .collect();
-    let add_bigrams: Vec<Vec<(char, char)>> = add_trimmed
-        .iter()
-        .map(|s| sorted_char_bigrams(s))
-        .collect();
+    let del_bigrams: Vec<Vec<(char, char)>> =
+        del_trimmed.iter().map(|s| sorted_char_bigrams(s)).collect();
+    let add_bigrams: Vec<Vec<(char, char)>> =
+        add_trimmed.iter().map(|s| sorted_char_bigrams(s)).collect();
 
     let mut candidates: Vec<(u32, usize, usize)> = Vec::new();
     for di in 0..dels {
@@ -1210,16 +1212,17 @@ fn pair_change_block(
     }
     anchors.sort_unstable_by_key(|&(di, _)| di);
 
-    let emit_gap = |out: &mut Vec<SideBySideRow>, d_lo: usize, d_hi: usize, a_lo: usize, a_hi: usize| {
-        let dg = d_hi - d_lo;
-        let ag = a_hi - a_lo;
-        for k in 0..dg.max(ag) {
-            out.push(SideBySideRow {
-                left: (k < dg).then_some(del_start + d_lo + k),
-                right: (k < ag).then_some(add_start + a_lo + k),
-            });
-        }
-    };
+    let emit_gap =
+        |out: &mut Vec<SideBySideRow>, d_lo: usize, d_hi: usize, a_lo: usize, a_hi: usize| {
+            let dg = d_hi - d_lo;
+            let ag = a_hi - a_lo;
+            for k in 0..dg.max(ag) {
+                out.push(SideBySideRow {
+                    left: (k < dg).then_some(del_start + d_lo + k),
+                    right: (k < ag).then_some(add_start + a_lo + k),
+                });
+            }
+        };
 
     let mut prev_d = 0usize;
     let mut prev_a = 0usize;
@@ -1438,8 +1441,7 @@ pub fn word_diff(old: &str, new: &str) -> (ByteRanges, ByteRanges) {
         prefix += 1;
     }
     let mut suffix = 0usize;
-    while suffix < max_common - prefix
-        && tok_a(a.len() - 1 - suffix) == tok_b(b.len() - 1 - suffix)
+    while suffix < max_common - prefix && tok_a(a.len() - 1 - suffix) == tok_b(b.len() - 1 - suffix)
     {
         if !tok_a(a.len() - 1 - suffix).trim().is_empty() {
             fixed_non_ws += 1;
@@ -1923,8 +1925,18 @@ diff --cc src/lib.rs
         let cases = [
             ("G", Some(SignatureStatus::Good), true, "✓"),
             ("U", Some(SignatureStatus::GoodUnknownValidity), true, "⚠"),
-            ("X", Some(SignatureStatus::Expired { key_expired: false }), true, "⚠"),
-            ("Y", Some(SignatureStatus::Expired { key_expired: true }), true, "⚠"),
+            (
+                "X",
+                Some(SignatureStatus::Expired { key_expired: false }),
+                true,
+                "⚠",
+            ),
+            (
+                "Y",
+                Some(SignatureStatus::Expired { key_expired: true }),
+                true,
+                "⚠",
+            ),
             ("R", Some(SignatureStatus::Revoked), true, "✕"),
             ("E", Some(SignatureStatus::CannotCheck), true, "?"),
             ("B", Some(SignatureStatus::Bad), true, "✕"),
@@ -1932,7 +1944,11 @@ diff --cc src/lib.rs
             ("?", None, false, " "),
         ];
         for (code, expected, signed, icon) in cases {
-            assert_eq!(SignatureStatus::from_git_code(code), expected, "code={code}");
+            assert_eq!(
+                SignatureStatus::from_git_code(code),
+                expected,
+                "code={code}"
+            );
             if let Some(st) = expected {
                 assert_eq!(st.is_signed(), signed);
                 assert_eq!(st.icon(), icon);
@@ -2094,14 +2110,29 @@ diff --cc src/lib.rs
     #[test]
     fn whitespace_mode_normalization_and_cycle() {
         assert_eq!(WhitespaceMode::Default.next(), WhitespaceMode::IgnoreChange);
-        assert_eq!(WhitespaceMode::IgnoreChange.next(), WhitespaceMode::IgnoreAll);
+        assert_eq!(
+            WhitespaceMode::IgnoreChange.next(),
+            WhitespaceMode::IgnoreAll
+        );
         assert_eq!(WhitespaceMode::IgnoreAll.next(), WhitespaceMode::Default);
 
-        assert_eq!(WhitespaceMode::parse("default"), Some(WhitespaceMode::Default));
-        assert_eq!(WhitespaceMode::parse("-b"), Some(WhitespaceMode::IgnoreChange));
-        assert_eq!(WhitespaceMode::parse("ignore_change"), Some(WhitespaceMode::IgnoreChange));
+        assert_eq!(
+            WhitespaceMode::parse("default"),
+            Some(WhitespaceMode::Default)
+        );
+        assert_eq!(
+            WhitespaceMode::parse("-b"),
+            Some(WhitespaceMode::IgnoreChange)
+        );
+        assert_eq!(
+            WhitespaceMode::parse("ignore_change"),
+            Some(WhitespaceMode::IgnoreChange)
+        );
         assert_eq!(WhitespaceMode::parse("-w"), Some(WhitespaceMode::IgnoreAll));
-        assert_eq!(WhitespaceMode::parse("ignore_all"), Some(WhitespaceMode::IgnoreAll));
+        assert_eq!(
+            WhitespaceMode::parse("ignore_all"),
+            Some(WhitespaceMode::IgnoreAll)
+        );
 
         // IgnoreChange (-b): collapses horizontal runs & strips trailing whitespace,
         // while keeping word separation distinct from no-space concatenation.
@@ -2134,9 +2165,15 @@ diff --cc src/lib.rs
         let mut hunk = DiffHunk {
             header: "@@ -1,1 +1,2 @@".into(),
             lines: vec![
-                mk(DiffLineKind::Deleted, "let result = compute_total(old_value, count);"),
+                mk(
+                    DiffLineKind::Deleted,
+                    "let result = compute_total(old_value, count);",
+                ),
                 mk(DiffLineKind::Added, "// newly inserted explanatory comment"),
-                mk(DiffLineKind::Added, "let result = compute_total(new_value, count);"),
+                mk(
+                    DiffLineKind::Added,
+                    "let result = compute_total(new_value, count);",
+                ),
             ],
         };
 
@@ -2178,7 +2215,10 @@ diff --cc src/lib.rs
             old_oid: Some(Oid::from_bytes([0x11; 20])),
             new_oid: Some(Oid::from_bytes([0x22; 20])),
         };
-        assert_eq!(modified.size_summary("(none)"), "12.4 KiB → 14.8 KiB (+2.4 KiB)");
+        assert_eq!(
+            modified.size_summary("(none)"),
+            "12.4 KiB → 14.8 KiB (+2.4 KiB)"
+        );
 
         let added = BinaryDiffInfo {
             old_size: None,

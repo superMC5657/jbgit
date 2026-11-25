@@ -283,7 +283,13 @@ fn linked_worktree_of_shallow_clone_reports_is_shallow_and_fingerprint() {
     );
     git(
         &shallow_clone,
-        &["worktree", "add", "-b", "wt-branch", linked_wt.to_str().unwrap()],
+        &[
+            "worktree",
+            "add",
+            "-b",
+            "wt-branch",
+            linked_wt.to_str().unwrap(),
+        ],
     );
 
     let loc = RepoLocation::discover(&linked_wt).unwrap();
@@ -346,11 +352,17 @@ async fn rebase_delete_modify_conflict_labels_match_reverse_conflict_state() {
     // - `del_by_onto.txt` was deleted by `main` ("Them") and modified by `topic` ("Us")
     // - `del_by_topic.txt` was deleted by `topic` ("Us") and modified by `main` ("Them")
     assert_eq!(
-        status.conflict_labels.get("del_by_onto.txt").map(String::as_str),
+        status
+            .conflict_labels
+            .get("del_by_onto.txt")
+            .map(String::as_str),
         Some("Deleted by Them")
     );
     assert_eq!(
-        status.conflict_labels.get("del_by_topic.txt").map(String::as_str),
+        status
+            .conflict_labels
+            .get("del_by_topic.txt")
+            .map(String::as_str),
         Some("Deleted by Us")
     );
 
@@ -496,9 +508,9 @@ async fn multi_commit_net_changes_preserve_displaced_delete_rename_and_path_swap
     })
     .await;
     assert!(
-        b1.changes
-            .iter()
-            .any(|c| c.path == "b.txt" && c.kind == FileStatusKind::Deleted && c.old_path.is_none()),
+        b1.changes.iter().any(|c| c.path == "b.txt"
+            && c.kind == FileStatusKind::Deleted
+            && c.old_path.is_none()),
         "expected displaced Deleted b.txt in {:?}",
         b1.changes
     );
@@ -553,9 +565,9 @@ async fn multi_commit_net_changes_preserve_displaced_delete_rename_and_path_swap
     })
     .await;
     assert!(
-        b3.changes
-            .iter()
-            .any(|c| c.path == "x.txt" && c.kind == FileStatusKind::Modified && c.old_path.is_none()),
+        b3.changes.iter().any(|c| c.path == "x.txt"
+            && c.kind == FileStatusKind::Modified
+            && c.old_path.is_none()),
         "expected displaced Modified x.txt in {:?}",
         b3.changes
     );

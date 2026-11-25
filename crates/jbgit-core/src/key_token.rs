@@ -203,7 +203,10 @@ mod tests {
         assert_eq!(parse_key_token("<Esc>"), parse_key_token("escape"));
         assert_eq!(parse_key_token("<Space>"), parse_key_token("Space"));
         assert_eq!(parse_key_token("<S-F10>"), parse_key_token("Shift+F10"));
-        assert_eq!(parse_key_token("<C-PgDn>"), parse_key_token("Ctrl+PageDown"));
+        assert_eq!(
+            parse_key_token("<C-PgDn>"),
+            parse_key_token("Ctrl+PageDown")
+        );
         assert_eq!(parse_key_token("<A-BS>"), parse_key_token("Alt+Backspace"));
     }
 

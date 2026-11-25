@@ -223,9 +223,10 @@ fn handle_http_conn(mut stream: TcpStream, project_root: &Path, backend: &Path) 
         return;
     };
 
-    let authed = req.headers.iter().any(|(k, v)| {
-        k.eq_ignore_ascii_case("authorization") && v.trim() == EXPECTED_AUTH_HEADER
-    });
+    let authed = req
+        .headers
+        .iter()
+        .any(|(k, v)| k.eq_ignore_ascii_case("authorization") && v.trim() == EXPECTED_AUTH_HEADER);
     if !authed {
         let resp = concat!(
             "HTTP/1.1 401 Unauthorized\r\n",

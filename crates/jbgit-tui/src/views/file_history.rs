@@ -20,8 +20,8 @@ use crate::syntax::render_diff_line_spans_with_tab;
 use crate::views::log_details::{FileDiffRenderProps, render_file_diff_body};
 use crate::views::overlays::draw_shadow;
 use crate::views::{
-    fit_left_right_spans, list_viewport, render_splitter_divider_z, render_toolbar,
-    row_background, truncate_to_width,
+    fit_left_right_spans, list_viewport, render_splitter_divider_z, render_toolbar, row_background,
+    truncate_to_width,
 };
 
 pub fn render_file_history_modal(
@@ -317,7 +317,12 @@ fn render_list_pane(
         hdr_rect,
     );
 
-    let mut body = Rect::new(area.x, area.y + 1, area.width, area.height.saturating_sub(1));
+    let mut body = Rect::new(
+        area.x,
+        area.y + 1,
+        area.width,
+        area.height.saturating_sub(1),
+    );
     if body.height == 0 {
         return;
     }
@@ -345,7 +350,12 @@ fn render_list_pane(
             .style(Style::default().bg(ctx.theme.bg_panel)),
             search_rect,
         );
-        body = Rect::new(body.x, body.y + 1, body.width, body.height.saturating_sub(1));
+        body = Rect::new(
+            body.x,
+            body.y + 1,
+            body.width,
+            body.height.saturating_sub(1),
+        );
     }
 
     if fh.loading && fh.bundle.is_none() {
@@ -402,10 +412,7 @@ fn render_list_pane(
         .filter(|&a| a != selected && a < vis_len && selected < vis_len)
         .map(|a| (selected.min(a), selected.max(a)));
 
-    for (vis_y, idx) in (offset..total_rows)
-        .take(body.height as usize)
-        .enumerate()
-    {
+    for (vis_y, idx) in (offset..total_rows).take(body.height as usize).enumerate() {
         let rect = Rect::new(body.x, body.y + vis_y as u16, body.width, 1);
         if show_load_more && idx == vis_len {
             let hovered = ctx.hover_target == Some(&HitTarget::FileHistoryLoadMore);
@@ -593,7 +600,12 @@ fn render_affected_files_pane(
         hdr_rect,
     );
 
-    let body = Rect::new(area.x, area.y + 1, area.width, area.height.saturating_sub(1));
+    let body = Rect::new(
+        area.x,
+        area.y + 1,
+        area.width,
+        area.height.saturating_sub(1),
+    );
     frame.render_widget(
         Paragraph::new("").style(Style::default().bg(ctx.theme.bg_canvas)),
         body,
@@ -689,7 +701,12 @@ fn render_repo_version_pane(
         hdr_rect,
     );
 
-    let body = Rect::new(area.x, area.y + 1, area.width, area.height.saturating_sub(1));
+    let body = Rect::new(
+        area.x,
+        area.y + 1,
+        area.width,
+        area.height.saturating_sub(1),
+    );
     frame.render_widget(
         Paragraph::new("").style(Style::default().bg(ctx.theme.bg_canvas)),
         body,
@@ -711,10 +728,7 @@ fn render_repo_version_pane(
     match &blob.content {
         TreeBlobContent::Binary => {
             ctx.record_scroll_bound(ScrollPane::FileHistoryBlob, h, 0);
-            let msg = ctx.t_fmt(
-                "view.tree.binary",
-                &[("size", &blob.size.to_string())],
-            );
+            let msg = ctx.t_fmt("view.tree.binary", &[("size", &blob.size.to_string())]);
             frame.render_widget(
                 Paragraph::new(Span::styled(
                     truncate_to_width(&msg, body.width as usize),
@@ -924,7 +938,12 @@ fn render_diff_pane(
         hdr_rect,
     );
 
-    let mut body = Rect::new(area.x, area.y + 1, area.width, area.height.saturating_sub(1));
+    let mut body = Rect::new(
+        area.x,
+        area.y + 1,
+        area.width,
+        area.height.saturating_sub(1),
+    );
     if body.height == 0 {
         return;
     }
@@ -976,7 +995,9 @@ fn render_diff_pane(
                 Style::default().fg(ctx.theme.fg_muted),
             )));
         }
-        let strip_h = (detail_lines.len() as u16).min(5).min(body.height.saturating_sub(2));
+        let strip_h = (detail_lines.len() as u16)
+            .min(5)
+            .min(body.height.saturating_sub(2));
         if strip_h > 0 {
             let strip_rect = Rect::new(body.x, body.y, body.width, strip_h);
             frame.render_widget(

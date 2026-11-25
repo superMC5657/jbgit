@@ -427,8 +427,7 @@ impl BranchesTreeModel {
         for (name, sub) in dir.dirs {
             // Compact single-child folder chains: `a/b/c` as one node.
             let (label, sub) = crate::compact_dir_chain(name, sub, |d| {
-                (d.leaves.is_empty() && d.dirs.len() == 1)
-                    .then(|| d.dirs.pop().expect("one dir"))
+                (d.leaves.is_empty() && d.dirs.len() == 1).then(|| d.dirs.pop().expect("one dir"))
             });
             let path = format!("{path_prefix}{label}");
             let id = self.push(BranchTreeNode {

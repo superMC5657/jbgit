@@ -430,8 +430,16 @@ fn render_identity(
     let w = inner.width as usize;
     let err = ctx.i18n.and_then(|i| d.error(i));
 
-    let name_cur = if d.focused == IdentityField::Name { "▏" } else { "" };
-    let email_cur = if d.focused == IdentityField::Email { "▏" } else { "" };
+    let name_cur = if d.focused == IdentityField::Name {
+        "▏"
+    } else {
+        ""
+    };
+    let email_cur = if d.focused == IdentityField::Email {
+        "▏"
+    } else {
+        ""
+    };
     let field_style = |active: bool| {
         if active {
             Style::default()
@@ -447,7 +455,10 @@ fn render_identity(
 
     let lines = vec![
         Line::from(Span::styled(
-            format!(" {}", truncate_to_width(ctx.t("dialog.identity.subtitle"), w.saturating_sub(2))),
+            format!(
+                " {}",
+                truncate_to_width(ctx.t("dialog.identity.subtitle"), w.saturating_sub(2))
+            ),
             Style::default().fg(ctx.theme.fg_muted),
         )),
         Line::from(Span::styled(
@@ -478,7 +489,10 @@ fn render_identity(
             format!(
                 " [{}] {}   (Space)",
                 if d.global { "x" } else { " " },
-                truncate_to_width(ctx.t("dialog.identity.global_checkbox"), w.saturating_sub(15))
+                truncate_to_width(
+                    ctx.t("dialog.identity.global_checkbox"),
+                    w.saturating_sub(15)
+                )
             ),
             Style::default()
                 .fg(if d.focused == IdentityField::Global {
@@ -504,12 +518,21 @@ fn render_identity(
         },
     ];
     frame.render_widget(Paragraph::new(lines), inner);
-    ctx.hit_registry
-        .register(Rect::new(inner.x, inner.y + 2, inner.width, 1), z + 2, HitTarget::DialogOption(0));
-    ctx.hit_registry
-        .register(Rect::new(inner.x, inner.y + 4, inner.width, 1), z + 2, HitTarget::DialogOption(1));
-    ctx.hit_registry
-        .register(Rect::new(inner.x, inner.y + 5, inner.width, 1), z + 2, HitTarget::DialogCheckbox);
+    ctx.hit_registry.register(
+        Rect::new(inner.x, inner.y + 2, inner.width, 1),
+        z + 2,
+        HitTarget::DialogOption(0),
+    );
+    ctx.hit_registry.register(
+        Rect::new(inner.x, inner.y + 4, inner.width, 1),
+        z + 2,
+        HitTarget::DialogOption(1),
+    );
+    ctx.hit_registry.register(
+        Rect::new(inner.x, inner.y + 5, inner.width, 1),
+        z + 2,
+        HitTarget::DialogCheckbox,
+    );
 
     let confirm_label = if d.pending_commit.is_some() {
         ctx.t("dialog.identity.save_and_commit_btn").into()
@@ -608,7 +631,10 @@ fn render_credential(
         lines.push(Line::from(Span::styled(
             format!(
                 " {}",
-                truncate_to_width(ctx.t("dialog.credential.hint_host_key"), w.saturating_sub(2))
+                truncate_to_width(
+                    ctx.t("dialog.credential.hint_host_key"),
+                    w.saturating_sub(2)
+                )
             ),
             Style::default().fg(ctx.theme.fg_muted),
         )));
@@ -668,11 +694,17 @@ fn render_credential(
                 .add_modifier(Modifier::UNDERLINED),
         )),
         Line::from(Span::styled(
-            format!(" {}", truncate_to_width(ctx.t(hint_key), w.saturating_sub(2))),
+            format!(
+                " {}",
+                truncate_to_width(ctx.t(hint_key), w.saturating_sub(2))
+            ),
             Style::default().fg(ctx.theme.fg_muted),
         )),
         Line::from(Span::styled(
-            format!(" {}", truncate_to_width(ctx.t("dialog.credential.no_store"), w.saturating_sub(2))),
+            format!(
+                " {}",
+                truncate_to_width(ctx.t("dialog.credential.no_store"), w.saturating_sub(2))
+            ),
             Style::default().fg(ctx.theme.fg_muted),
         )),
     ];
@@ -722,7 +754,10 @@ fn render_merge(
     let count_line = match d.commit_count {
         Some(n) => {
             let n_s = n.to_string();
-            ctx.t_fmt("dialog.merge.commit_count", &[("count", &n_s), ("rev", &d.rev), ("cur", &d.current)])
+            ctx.t_fmt(
+                "dialog.merge.commit_count",
+                &[("count", &n_s), ("rev", &d.rev), ("cur", &d.current)],
+            )
         }
         None => ctx.t("dialog.merge.commit_count_unknown").to_string(),
     };
@@ -829,7 +864,10 @@ fn render_merge(
         }
         if !detail.is_empty() {
             spans.push(Span::styled(
-                format!("  {}", truncate_to_width(&detail, w.saturating_sub(label_w + 6))),
+                format!(
+                    "  {}",
+                    truncate_to_width(&detail, w.saturating_sub(label_w + 6))
+                ),
                 Style::default().fg(ctx.theme.fg_muted),
             ));
         }
@@ -1171,7 +1209,10 @@ fn render_rebase_options(
                 let text = o.branch.as_deref().unwrap_or("");
                 let cursor = if sel { "▏" } else { "" };
                 let shown = if text.is_empty() && !sel {
-                    ctx.t_fmt("dialog.rebase_opts.branch_placeholder", &[("cur", &d.current)])
+                    ctx.t_fmt(
+                        "dialog.rebase_opts.branch_placeholder",
+                        &[("cur", &d.current)],
+                    )
                 } else {
                     truncate_to_width(text, w.saturating_sub(label_w + 8))
                 };
@@ -1187,7 +1228,10 @@ fn render_rebase_options(
                 ctx.t("dialog.rebase_opts.interactive_desc").to_string(),
             ),
             RebaseDialogRow::RebaseMerges => (
-                format!("[{}] --rebase-merges", if o.rebase_merges { "x" } else { " " }),
+                format!(
+                    "[{}] --rebase-merges",
+                    if o.rebase_merges { "x" } else { " " }
+                ),
                 String::new(),
                 ctx.t("dialog.rebase_opts.rebase_merges_desc").to_string(),
             ),
@@ -1802,10 +1846,7 @@ fn render_rebase(
             ctx.t("dialog.rebase.diff_hint").to_string(),
             ctx.theme.fg_muted,
         ),
-        None => (
-            ctx.t("dialog.rebase.hint").to_string(),
-            ctx.theme.fg_muted,
-        ),
+        None => (ctx.t("dialog.rebase.hint").to_string(), ctx.theme.fg_muted),
     };
     frame.render_widget(
         Paragraph::new(Span::styled(
@@ -1851,7 +1892,10 @@ fn render_rebase_preview(
     let sep = "─".repeat(w);
     let Some(details_key) = d.desired_details_key() else {
         frame.render_widget(
-            Paragraph::new(Span::styled(sep, Style::default().fg(ctx.theme.border_splitter))),
+            Paragraph::new(Span::styled(
+                sep,
+                Style::default().fg(ctx.theme.border_splitter),
+            )),
             Rect::new(area.x, area.y, area.width, 1),
         );
         if area.height >= 2 {
@@ -1867,7 +1911,10 @@ fn render_rebase_preview(
     };
     let Some(bundle) = state.diff_caches.details.peek(&details_key) else {
         frame.render_widget(
-            Paragraph::new(Span::styled(sep, Style::default().fg(ctx.theme.border_splitter))),
+            Paragraph::new(Span::styled(
+                sep,
+                Style::default().fg(ctx.theme.border_splitter),
+            )),
             Rect::new(area.x, area.y, area.width, 1),
         );
         if area.height >= 2 {
@@ -2080,13 +2127,14 @@ fn render_create_patch(
                 ctx.t("dialog.create_patch.to_file"),
                 ctx.t("dialog.create_patch.to_clipboard")
             ),
-            Style::default()
-                .fg(ctx.theme.fg_primary)
-                .bg(dest_bg),
+            Style::default().fg(ctx.theme.fg_primary).bg(dest_bg),
         ),
     ]);
     let r0 = Rect::new(inner.x, inner.y + 1, inner.width, 1);
-    frame.render_widget(Paragraph::new(dest_line).style(Style::default().bg(dest_bg)), r0);
+    frame.render_widget(
+        Paragraph::new(dest_line).style(Style::default().bg(dest_bg)),
+        r0,
+    );
     ctx.hit_registry
         .register(r0, z + 2, HitTarget::DialogOption(0));
 
@@ -2097,7 +2145,11 @@ fn render_create_patch(
     } else {
         ctx.theme.bg_elevated
     };
-    let cursor = if path_sel && !d.to_clipboard { "▏" } else { "" };
+    let cursor = if path_sel && !d.to_clipboard {
+        "▏"
+    } else {
+        ""
+    };
     let path_fg = if d.to_clipboard {
         ctx.theme.fg_muted
     } else {
@@ -2118,7 +2170,10 @@ fn render_create_patch(
     frame.render_widget(
         Paragraph::new(Line::from(vec![
             Span::styled(path_lbl, muted.bg(path_bg)),
-            Span::styled(format!("{shown_path}{cursor}"), Style::default().fg(path_fg).bg(path_bg)),
+            Span::styled(
+                format!("{shown_path}{cursor}"),
+                Style::default().fg(path_fg).bg(path_bg),
+            ),
         ]))
         .style(Style::default().bg(path_bg)),
         r1,

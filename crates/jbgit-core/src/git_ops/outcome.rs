@@ -366,7 +366,7 @@ pub struct PushOutcomeSummary {
 }
 
 fn is_hex_range_token(s: &str) -> bool {
-    let Some((a, b)) = s.split_once("...") .or_else(|| s.split_once("..")) else {
+    let Some((a, b)) = s.split_once("...").or_else(|| s.split_once("..")) else {
         return false;
     };
     !a.is_empty()
@@ -411,8 +411,7 @@ pub fn parse_push_porcelain(stdout: &[String]) -> PushOutcomeSummary {
         } else if to.starts_with("refs/heads/") || summary.contains("[new branch]") {
             match flag {
                 '*' => {
-                    out.new_branch =
-                        Some(to.strip_prefix("refs/heads/").unwrap_or(to).to_string());
+                    out.new_branch = Some(to.strip_prefix("refs/heads/").unwrap_or(to).to_string());
                 }
                 '=' => {
                     out.branch_up_to_date = true;

@@ -17,8 +17,12 @@ use crate::hit_test::{BranchCleanupButtonKind, HitTarget};
 use crate::views::truncate_to_width;
 
 fn centered_rect(screen: Rect, w: u16, h: u16) -> Rect {
-    let w = w.min(screen.width.saturating_sub(2)).max(10.min(screen.width));
-    let h = h.min(screen.height.saturating_sub(2)).max(5.min(screen.height));
+    let w = w
+        .min(screen.width.saturating_sub(2))
+        .max(10.min(screen.width));
+    let h = h
+        .min(screen.height.saturating_sub(2))
+        .max(5.min(screen.height));
     Rect::new(
         screen.x + screen.width.saturating_sub(w) / 2,
         screen.y + screen.height.saturating_sub(h) / 2,
@@ -225,7 +229,11 @@ pub fn render_branch_cleanup(
         |i| {
             i.t_fmt(
                 "dialog.cleanup_branches.header",
-                &[("base", &bc.base_ref), ("selected", &sel_s), ("total", &tot_s)],
+                &[
+                    ("base", &bc.base_ref),
+                    ("selected", &sel_s),
+                    ("total", &tot_s),
+                ],
             )
         },
     );
@@ -304,7 +312,8 @@ pub fn render_branch_cleanup(
             let used = check.width() + badge.width() + 2;
             let name_budget = (row_w as usize).saturating_sub(used).max(8);
             let name_txt = truncate_to_width(&format!("{}{up}", row.candidate.name), name_budget);
-            let pad = (row_w as usize).saturating_sub(check.width() + name_txt.width() + badge.width() + 1);
+            let pad = (row_w as usize)
+                .saturating_sub(check.width() + name_txt.width() + badge.width() + 1);
             let line = Line::from(vec![
                 Span::styled(
                     check,
@@ -321,7 +330,11 @@ pub fn render_branch_cleanup(
                     Style::default()
                         .fg(ctx.theme.fg_primary)
                         .bg(bg)
-                        .add_modifier(if active { Modifier::BOLD } else { Modifier::empty() }),
+                        .add_modifier(if active {
+                            Modifier::BOLD
+                        } else {
+                            Modifier::empty()
+                        }),
                 ),
                 Span::styled(" ".repeat(pad.max(1)), Style::default().bg(bg)),
                 Span::styled(badge, badge_style.bg(bg)),
@@ -337,7 +350,11 @@ pub fn render_branch_cleanup(
                 .checked_div(max_scroll)
                 .unwrap_or(0);
             for dy in 0..list_h as usize {
-                let ch = if dy >= top && dy < top + thumb { "█" } else { "░" };
+                let ch = if dy >= top && dy < top + thumb {
+                    "█"
+                } else {
+                    "░"
+                };
                 frame.render_widget(
                     Paragraph::new(Span::styled(ch, Style::default().fg(ctx.theme.fg_muted))),
                     Rect::new(sb.x, sb.y + dy as u16, 1, 1),
@@ -355,7 +372,12 @@ pub fn render_branch_cleanup(
     );
     let base_lbl = ctx.i18n.map_or_else(
         || format!(" Base: {} ", bc.base_ref),
-        |i| i.t_fmt("dialog.cleanup_branches.base_btn", &[("base", &bc.base_ref)]),
+        |i| {
+            i.t_fmt(
+                "dialog.cleanup_branches.base_btn",
+                &[("base", &bc.base_ref)],
+            )
+        },
     );
     let close_lbl = format!(" {} ", ctx.t("common.close"));
 

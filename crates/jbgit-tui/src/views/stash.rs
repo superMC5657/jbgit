@@ -16,8 +16,7 @@ use crate::views::log_details::{
     ChangesBrowserProps, DiffHost, DiffPreviewProps, render_changes_browser, render_diff_preview,
 };
 use crate::views::{
-    fit_left_right_spans, list_viewport, render_pane_frame, render_splitter_divider,
-    row_background,
+    fit_left_right_spans, list_viewport, render_pane_frame, render_splitter_divider, row_background,
 };
 
 pub fn render_stash_tab(
@@ -199,11 +198,10 @@ fn render_stash_preview(
         return;
     }
 
-    let preview_split = state.splitters.split(
-        area,
-        SplitterId::StashPreviewVertical,
-        SplitAxis::Vertical,
-    );
+    let preview_split =
+        state
+            .splitters
+            .split(area, SplitterId::StashPreviewVertical, SplitAxis::Vertical);
     ctx.record_splitter_container(
         SplitterId::StashPreviewVertical,
         SplitAxis::Vertical,
@@ -237,7 +235,11 @@ fn render_stash_preview(
             .stash
             .changes()
             .selected_change(&state.diff_caches)
-            .map(|c| state.i18n.t_fmt("view.log_details.diff_file", &[("path", &c.path)]))
+            .map(|c| {
+                state
+                    .i18n
+                    .t_fmt("view.log_details.diff_file", &[("path", &c.path)])
+            })
             .unwrap_or_else(|| state.i18n.t("view.log_details.diff_preview").to_string());
         if !state.stash.diff().soft_wrap && state.stash.diff().horiz_scroll > 0 {
             diff_sub.push_str(&format!("  Col +{}", state.stash.diff().horiz_scroll));

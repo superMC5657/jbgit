@@ -534,7 +534,10 @@ impl RecordingEngineBackend {
     }
 
     pub fn recorded_len(&self) -> usize {
-        self.recorded.lock().unwrap_or_else(|e| e.into_inner()).len()
+        self.recorded
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .len()
     }
 
     pub fn latest_epoch(&self, slot: RequestSlotId) -> u64 {
@@ -993,11 +996,7 @@ fn handle_task_request(ctx: &SupervisorContext, task: ScheduledTask) {
             let epoch = token.epoch();
             spawn_epoch_task(
                 &ctx.event_tx,
-                async move {
-                    load_tree_index_async(&loc, oid, &token)
-                        .await
-                        .map(Arc::new)
-                },
+                async move { load_tree_index_async(&loc, oid, &token).await.map(Arc::new) },
                 move |paths| EngineEvent::TreeIndexLoaded { oid, paths, epoch },
             );
         }
@@ -1160,12 +1159,22 @@ fn handle_task_request(ctx: &SupervisorContext, task: ScheduledTask) {
             new_staged_bytes,
             file_mode,
             remove_from_index,
-        } => spawn_guarded_mutation(ctx, RefreshScope::StageStatus, move |pool, loc| async move {
-            pool.run_with(TaskPriority::Interactive, move || {
-                apply_stage_buffer_sync(&loc, &path, &new_staged_bytes, file_mode, remove_from_index)
-            })
-            .await
-        }),
+        } => spawn_guarded_mutation(
+            ctx,
+            RefreshScope::StageStatus,
+            move |pool, loc| async move {
+                pool.run_with(TaskPriority::Interactive, move || {
+                    apply_stage_buffer_sync(
+                        &loc,
+                        &path,
+                        &new_staged_bytes,
+                        file_mode,
+                        remove_from_index,
+                    )
+                })
+                .await
+            },
+        ),
         TaskRequest::WriteWorktreeBuffer {
             path,
             new_local_bytes,
@@ -1180,28 +1189,40 @@ fn handle_task_request(ctx: &SupervisorContext, task: ScheduledTask) {
             },
         ),
         TaskRequest::StageTargets { targets } => {
-            spawn_guarded_mutation(ctx, RefreshScope::StageStatus, move |pool, loc| async move {
-                pool.run_with(TaskPriority::Interactive, move || {
-                    stage_targets_sync(&loc, &targets)
-                })
-                .await
-            });
+            spawn_guarded_mutation(
+                ctx,
+                RefreshScope::StageStatus,
+                move |pool, loc| async move {
+                    pool.run_with(TaskPriority::Interactive, move || {
+                        stage_targets_sync(&loc, &targets)
+                    })
+                    .await
+                },
+            );
         }
         TaskRequest::StageAllTracked => {
-            spawn_guarded_mutation(ctx, RefreshScope::StageStatus, move |pool, loc| async move {
-                pool.run_with(TaskPriority::Interactive, move || {
-                    stage_all_tracked_sync(&loc)
-                })
-                .await
-            });
+            spawn_guarded_mutation(
+                ctx,
+                RefreshScope::StageStatus,
+                move |pool, loc| async move {
+                    pool.run_with(TaskPriority::Interactive, move || {
+                        stage_all_tracked_sync(&loc)
+                    })
+                    .await
+                },
+            );
         }
         TaskRequest::UnstageTargets { targets } => {
-            spawn_guarded_mutation(ctx, RefreshScope::StageStatus, move |pool, loc| async move {
-                pool.run_with(TaskPriority::Interactive, move || {
-                    unstage_targets_sync(&loc, &targets)
-                })
-                .await
-            });
+            spawn_guarded_mutation(
+                ctx,
+                RefreshScope::StageStatus,
+                move |pool, loc| async move {
+                    pool.run_with(TaskPriority::Interactive, move || {
+                        unstage_targets_sync(&loc, &targets)
+                    })
+                    .await
+                },
+            );
         }
         TaskRequest::DiscardTargets { targets } => {
             spawn_guarded_mutation(
@@ -1305,7 +1326,15 @@ fn handle_task_request(ctx: &SupervisorContext, task: ScheduledTask) {
             env,
             is_read_only,
             refresh_after,
-        } => spawn_run_git_cli(ctx, id, args, stdin_payload, env, is_read_only, refresh_after),
+        } => spawn_run_git_cli(
+            ctx,
+            id,
+            args,
+            stdin_payload,
+            env,
+            is_read_only,
+            refresh_after,
+        ),
     }
 }
 
@@ -1421,15 +1450,12 @@ fn spawn_load_commit_details(
                             }
                             let signature = verify_commit_signature_sync(&git_dir, oid);
                             {
-                                let mut cache =
-                                    sig_cache.lock().unwrap_or_else(|e| e.into_inner());
+                                let mut cache = sig_cache.lock().unwrap_or_else(|e| e.into_inner());
                                 cache.insert(oid, signature.clone());
                             }
                             if !details_token.is_stale() {
-                                let _ = tx.send(EngineEvent::CommitSignatureVerified {
-                                    oid,
-                                    signature,
-                                });
+                                let _ = tx
+                                    .send(EngineEvent::CommitSignatureVerified { oid, signature });
                             }
                         }
                     });
@@ -1443,11 +1469,7 @@ fn spawn_load_commit_details(
     });
 }
 
-fn spawn_verify_commit_signatures(
-    ctx: &SupervisorContext,
-    oids: Vec<Oid>,
-    token: EpochToken,
-) {
+fn spawn_verify_commit_signatures(ctx: &SupervisorContext, oids: Vec<Oid>, token: EpochToken) {
     let git_dir = ctx.location.git_dir.clone();
     let tx = ctx.event_tx.clone();
     let sig_cache = Arc::clone(&ctx.sig_cache);
@@ -1506,14 +1528,13 @@ fn spawn_execute_commit(ctx: &SupervisorContext, id: u64, mut request: CommitReq
     let op_ids = Arc::clone(&ctx.op_ids);
     tokio::spawn(async move {
         let permit = guard.acquire().await;
-        let finish_permit = |permit: MutationPermit,
-                             tx: &UnboundedSender<EngineEvent>,
-                             extra: RefreshScope| {
-            let scope = extra.merge(permit.finish());
-            if scope != RefreshScope::None {
-                let _ = tx.send(EngineEvent::ExternalFsChanged(scope));
-            }
-        };
+        let finish_permit =
+            |permit: MutationPermit, tx: &UnboundedSender<EngineEvent>, extra: RefreshScope| {
+                let scope = extra.merge(permit.finish());
+                if scope != RefreshScope::None {
+                    let _ = tx.send(EngineEvent::ExternalFsChanged(scope));
+                }
+            };
         if request.check_crlf {
             let loc_crlf = loc.clone();
             let stage_all = request.stage_all_tracked;
@@ -1917,11 +1938,9 @@ fn spawn_run_git_cli(
 pub(crate) fn forward_cli_event(tx: &UnboundedSender<EngineEvent>, ev: CliStreamEvent) {
     let _ = tx.send(match ev {
         CliStreamEvent::Started(entry) => EngineEvent::ConsoleStarted(entry),
-        CliStreamEvent::Output { id, stream, line } => EngineEvent::ConsoleOutput {
-            id,
-            stream,
-            line,
-        },
+        CliStreamEvent::Output { id, stream, line } => {
+            EngineEvent::ConsoleOutput { id, stream, line }
+        }
         CliStreamEvent::Finished {
             id,
             exit_code,
@@ -1934,11 +1953,8 @@ pub(crate) fn forward_cli_event(tx: &UnboundedSender<EngineEvent>, ev: CliStream
     });
 }
 
-fn spawn_guarded_mutation<F, Fut>(
-    ctx: &SupervisorContext,
-    scope: RefreshScope,
-    op: F,
-) where
+fn spawn_guarded_mutation<F, Fut>(ctx: &SupervisorContext, scope: RefreshScope, op: F)
+where
     F: FnOnce(Arc<Git2WorkerPool>, RepoLocation) -> Fut + Send + 'static,
     Fut: std::future::Future<Output = Result<(), EngineError>> + Send + 'static,
 {

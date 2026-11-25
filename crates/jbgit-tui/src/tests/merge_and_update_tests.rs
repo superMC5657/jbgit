@@ -481,7 +481,10 @@ fn update_project_upstream_picker_and_submodules_checkbox() {
         Some(ModalLayer::Dialog(d)) => match d.as_ref() {
             Dialog::Choice(c) => {
                 assert_eq!(c.title, "Update Project");
-                assert!(c.checkbox.is_some(), "submodules present -> checkbox visible");
+                assert!(
+                    c.checkbox.is_some(),
+                    "submodules present -> checkbox visible"
+                );
             }
             other => panic!("expected ChoiceDialog, got {other:?}"),
         },

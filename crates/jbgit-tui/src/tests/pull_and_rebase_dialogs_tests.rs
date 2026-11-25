@@ -167,7 +167,10 @@ fn pull_dialog_blocks_conflicts_fetches_completes_and_remembers_choices() {
     );
     assert!(ts.state().modal_stack.is_empty());
     let saved = std::fs::read_to_string(dir.path().join("jbgit-pull-options")).unwrap();
-    assert!(saved.contains("rebase=true") && saved.contains("no_verify=true"), "{saved}");
+    assert!(
+        saved.contains("rebase=true") && saved.contains("no_verify=true"),
+        "{saved}"
+    );
 
     // Re-opening via global shortcut `<A-l>` restores remembered flags.
     ts.send_key(KeyCode::Char('l'), KeyModifiers::ALT);
@@ -245,7 +248,10 @@ fn rebase_dialog_validates_version_root_onto_and_remembers_choices() {
         }]
     );
     let saved = std::fs::read_to_string(dir.path().join("jbgit-rebase-options")).unwrap();
-    assert!(saved.contains("update_refs=true") && saved.contains("autosquash=true"), "{saved}");
+    assert!(
+        saved.contains("update_refs=true") && saved.contains("autosquash=true"),
+        "{saved}"
+    );
 
     // Re-open via `<A-e>` restores flags and leaves onto empty until entered.
     ts.send_key(KeyCode::Char('e'), KeyModifiers::ALT);
@@ -276,7 +282,11 @@ fn log_menu_rebase_onto_commit_fixup_squash_split_and_non_contiguous_squash() {
     ts.dispatch(Action::SelectLogRow(0));
     let items_topic = log_commit_menu_items(ts.state());
     let rebase_onto = find_item(&items_topic, "Rebase 'main' onto Selected Commit");
-    assert!(rebase_onto.is_enabled(), "{:?}", rebase_onto.disabled_reason);
+    assert!(
+        rebase_onto.is_enabled(),
+        "{:?}",
+        rebase_onto.disabled_reason
+    );
     ts.dispatch_many(item_run_actions(rebase_onto));
     assert_eq!(
         ts.take_git_ops(),
@@ -330,10 +340,7 @@ fn log_menu_rebase_onto_commit_fixup_squash_split_and_non_contiguous_squash() {
     ));
 
     // Non-contiguous Squash: select row 1 (c12) and row 3 (c10), skipping row 2 (c11).
-    ts.dispatch_many([
-        Action::SelectLogRow(1),
-        Action::ToggleLogRow(3),
-    ]);
+    ts.dispatch_many([Action::SelectLogRow(1), Action::ToggleLogRow(3)]);
     let items_non_contig = log_commit_menu_items(ts.state());
     let sq_item = find_item(&items_non_contig, "Squash 2 Commits…");
     assert!(sq_item.is_enabled(), "{:?}", sq_item.disabled_reason);
@@ -350,7 +357,14 @@ fn log_menu_rebase_onto_commit_fixup_squash_split_and_non_contiguous_squash() {
     assert_eq!(m.text, "c10\n\nc12");
     ts.send_key(KeyCode::Enter, KeyModifiers::ALT);
     let ops = ts.take_git_ops();
-    let [GitOp::RewriteHistory { base, todo, no_verify }] = ops.as_slice() else {
+    let [
+        GitOp::RewriteHistory {
+            base,
+            todo,
+            no_verify,
+        },
+    ] = ops.as_slice()
+    else {
         panic!("{ops:?}");
     };
     assert_eq!(*base, Some(oid(9)));
@@ -504,7 +518,11 @@ fn interactive_rebase_dialog_edit_update_ref_file_preview_diff_and_edit_pause_gu
     ts.deliver_engine_event(EngineEvent::GitOpFinished(out));
     assert_eq!(ts.state().active_tab, WorkspaceTab::Commit);
     assert!(ts.state().stage_workbench.amend());
-    let note = ts.state().notification.as_ref().expect("edit pause notification");
+    let note = ts
+        .state()
+        .notification
+        .as_ref()
+        .expect("edit pause notification");
     let (_, action_list) = note.action.as_ref().expect("continue rebase button");
     assert!(matches!(
         action_list.as_slice(),
@@ -517,7 +535,11 @@ fn interactive_rebase_dialog_edit_update_ref_file_preview_diff_and_edit_pause_gu
 
 #[test]
 fn pull_and_rebase_dialog_shortcuts_have_zero_conflicts_across_all_presets() {
-    for preset in [KeymapPreset::Default, KeymapPreset::Jetbrains, KeymapPreset::Vim] {
+    for preset in [
+        KeymapPreset::Default,
+        KeymapPreset::Jetbrains,
+        KeymapPreset::Vim,
+    ] {
         let cfg = KeymapConfig::for_preset(preset.clone());
         let pull_key = cfg.primary_key_for(&[KeymapScope::Global], &KeyAction::GitPullDialog);
         let rebase_key = cfg.primary_key_for(&[KeymapScope::Global], &KeyAction::GitRebaseDialog);

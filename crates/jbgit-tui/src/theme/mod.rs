@@ -140,7 +140,10 @@ fn req_ref_style(
 ) -> RefStyle {
     let c = cfg.unwrap_or_else(|| panic!("missing required ref style: {name}"));
     RefStyle {
-        icon: to_color(req_rgb(c.icon.as_ref(), &format!("{name}.icon")), true_color),
+        icon: to_color(
+            req_rgb(c.icon.as_ref(), &format!("{name}.icon")),
+            true_color,
+        ),
         pill_bg: to_color(
             req_rgb(c.pill_bg.as_ref(), &format!("{name}.pill_bg")),
             true_color,
@@ -182,10 +185,7 @@ impl ThemePalette {
         Self::darcula(color::detect_truecolor())
     }
 
-    fn from_flavor_data_complete(
-        data: &crate::config::ThemeFlavorData,
-        true_color: bool,
-    ) -> Self {
+    fn from_flavor_data_complete(data: &crate::config::ThemeFlavorData, true_color: bool) -> Self {
         let p = &data.palette;
         let r = &data.refs;
         let bg_canvas_rgb = req_rgb(p.bg_canvas.as_ref(), "palette.bg_canvas");
@@ -428,23 +428,24 @@ impl ThemePalette {
     }
 
     /// Icon foreground and pill colors `(icon_fg, pill_fg, pill_bg)` for a commit signature status.
-    pub fn signature_colors(
-        &self,
-        status: jbgit_core::SignatureStatus,
-    ) -> (Color, Color, Color) {
+    pub fn signature_colors(&self, status: jbgit_core::SignatureStatus) -> (Color, Color, Color) {
         match status {
-            jbgit_core::SignatureStatus::Good => {
-                (self.status_added, self.ref_local.pill_fg, self.ref_local.pill_bg)
-            }
+            jbgit_core::SignatureStatus::Good => (
+                self.status_added,
+                self.ref_local.pill_fg,
+                self.ref_local.pill_bg,
+            ),
             jbgit_core::SignatureStatus::GoodUnknownValidity
             | jbgit_core::SignatureStatus::Expired { .. } => (
                 self.ref_detached.icon,
                 self.ref_detached.pill_fg,
                 self.ref_detached.pill_bg,
             ),
-            jbgit_core::SignatureStatus::Revoked | jbgit_core::SignatureStatus::Bad => {
-                (self.status_conflicted, self.status_conflicted, self.diff_del_bg)
-            }
+            jbgit_core::SignatureStatus::Revoked | jbgit_core::SignatureStatus::Bad => (
+                self.status_conflicted,
+                self.status_conflicted,
+                self.diff_del_bg,
+            ),
             jbgit_core::SignatureStatus::CannotCheck
             | jbgit_core::SignatureStatus::Pending
             | jbgit_core::SignatureStatus::Unsigned => {

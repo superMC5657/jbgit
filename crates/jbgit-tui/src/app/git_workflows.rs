@@ -972,10 +972,9 @@ impl AppState {
                 None
             }
         } else {
-            let remaining = self
-                .stage_workbench
-                .status()
-                .map_or(0, |s| s.conflicted.iter().filter(|c| c.path != path).count());
+            let remaining = self.stage_workbench.status().map_or(0, |s| {
+                s.conflicted.iter().filter(|c| c.path != path).count()
+            });
             if remaining == 0 && self.ongoing_kind().is_some() {
                 Some(Err(()))
             } else {
@@ -1037,7 +1036,10 @@ impl AppState {
         } else {
             self.push_dialog(Dialog::Choice(ChoiceDialog::buttons(
                 i18n.t("dialog.all_conflicts_resolved.title"),
-                vec![i18n.t("dialog.all_conflicts_resolved.body_commit").to_string()],
+                vec![
+                    i18n.t("dialog.all_conflicts_resolved.body_commit")
+                        .to_string(),
+                ],
                 vec![
                     ChoiceOption::new(
                         i18n.t("dialog.all_conflicts_resolved.commit_panel_btn"),
@@ -1233,17 +1235,30 @@ impl AppState {
                     let behind_s = behind.to_string();
                     let i18n = self.i18n.clone();
                     self.push_dialog(Dialog::Choice(ChoiceDialog::buttons(
-                        i18n.t_fmt("dialog.diverged_checkout.title", &[("remote_ref", remote_ref)]),
+                        i18n.t_fmt(
+                            "dialog.diverged_checkout.title",
+                            &[("remote_ref", remote_ref)],
+                        ),
                         vec![
-                            i18n.t_fmt("dialog.diverged_checkout.prompt", &[("local", &local_name)]),
+                            i18n.t_fmt(
+                                "dialog.diverged_checkout.prompt",
+                                &[("local", &local_name)],
+                            ),
                             i18n.t_fmt(
                                 "dialog.diverged_checkout.counts",
-                                &[("ahead", &ahead_s), ("remote_ref", remote_ref), ("behind", &behind_s)],
+                                &[
+                                    ("ahead", &ahead_s),
+                                    ("remote_ref", remote_ref),
+                                    ("behind", &behind_s),
+                                ],
                             ),
                         ],
                         vec![
                             ChoiceOption::new(
-                                i18n.t_fmt("dialog.diverged_checkout.checkout_local", &[("local", &local_name)]),
+                                i18n.t_fmt(
+                                    "dialog.diverged_checkout.checkout_local",
+                                    &[("local", &local_name)],
+                                ),
                                 Some('l'),
                                 vec![Action::RunGitOp(GitOp::Checkout {
                                     target: local_name.clone(),
@@ -1261,14 +1276,20 @@ impl AppState {
                                     start: remote_ref.to_string(),
                                 })],
                             )
-                            .detail(i18n.t_fmt("dialog.diverged_checkout.drops_commits", &[("ahead", &ahead_s)]))
+                            .detail(i18n.t_fmt(
+                                "dialog.diverged_checkout.drops_commits",
+                                &[("ahead", &ahead_s)],
+                            ))
                             .danger(),
                             ChoiceOption::new(
                                 i18n.t("dialog.diverged_checkout.new_branch"),
                                 Some('n'),
                                 vec![Action::OpenDialog(Box::new(Dialog::Input(
                                     InputDialog::new(
-                                        i18n.t_fmt("dialog.diverged_checkout.new_branch_title", &[("remote_ref", remote_ref)]),
+                                        i18n.t_fmt(
+                                            "dialog.diverged_checkout.new_branch_title",
+                                            &[("remote_ref", remote_ref)],
+                                        ),
                                         i18n.t("dialog.diverged_checkout.new_branch_prompt"),
                                         suggestion,
                                         InputValidation::RefName {
@@ -1511,8 +1532,12 @@ impl AppState {
         let Some(snap) = self.repo_snapshot.clone() else {
             return;
         };
-        self.modal_stack
-            .retain(|l| !matches!(l, ModalLayer::ContextMenu { .. } | ModalLayer::BranchCleanup(_)));
+        self.modal_stack.retain(|l| {
+            !matches!(
+                l,
+                ModalLayer::ContextMenu { .. } | ModalLayer::BranchCleanup(_)
+            )
+        });
         self.blur_active_pane(false);
         let bc = crate::branch_cleanup::BranchCleanupState::for_snapshot(
             &snap,
@@ -1666,7 +1691,12 @@ impl AppState {
         self.push_dialog(Dialog::Choice(dlg));
     }
 
-    pub(crate) fn prompt_push(&mut self, branch: &str, up_to: Option<Oid>, effects: &mut Vec<Effect>) {
+    pub(crate) fn prompt_push(
+        &mut self,
+        branch: &str,
+        up_to: Option<Oid>,
+        effects: &mut Vec<Effect>,
+    ) {
         let Some(snap) = self.repo_snapshot.clone() else {
             return;
         };
@@ -1837,7 +1867,9 @@ impl AppState {
         });
         let remembered = self.load_merge_options();
         self.blur_active_pane(false);
-        self.push_dialog(Dialog::Merge(MergeDialog::new(rev, current, count, remembered)));
+        self.push_dialog(Dialog::Merge(MergeDialog::new(
+            rev, current, count, remembered,
+        )));
     }
 
     fn pull_options_path(&self) -> Option<std::path::PathBuf> {
@@ -2068,7 +2100,11 @@ impl AppState {
         if let Err(msg) = self.require_no_ongoing() {
             return Some(msg);
         }
-        if self.snapshot().and_then(|s| s.head_branch.as_ref()).is_none() {
+        if self
+            .snapshot()
+            .and_then(|s| s.head_branch.as_ref())
+            .is_none()
+        {
             return Some(self.i18n.t("menu.log.detached_no_branch").to_string());
         }
         None
@@ -2094,21 +2130,22 @@ impl AppState {
                 .filter(|r| r.kind == RefKind::RemoteBranch)
                 .map(|r| r.name.clone())
                 .collect();
-            let preferred = snap
-                .default_remote()
-                .map(|r| format!("{r}/{branch}"));
-            remote_branches.sort_by(|a, b| match (
-                preferred.as_deref() == Some(a.as_str()),
-                preferred.as_deref() == Some(b.as_str()),
-            ) {
-                (true, false) => std::cmp::Ordering::Less,
-                (false, true) => std::cmp::Ordering::Greater,
-                _ => jbgit_core::natural_cmp(a, b),
+            let preferred = snap.default_remote().map(|r| format!("{r}/{branch}"));
+            remote_branches.sort_by(|a, b| {
+                match (
+                    preferred.as_deref() == Some(a.as_str()),
+                    preferred.as_deref() == Some(b.as_str()),
+                ) {
+                    (true, false) => std::cmp::Ordering::Less,
+                    (false, true) => std::cmp::Ordering::Greater,
+                    _ => jbgit_core::natural_cmp(a, b),
+                }
             });
             if remote_branches.is_empty() {
-                self.status_notice = Some(
-                    i18n.t_fmt("toast.update_no_upstream_candidates", &[("branch", &branch)]),
-                );
+                self.status_notice = Some(i18n.t_fmt(
+                    "toast.update_no_upstream_candidates",
+                    &[("branch", &branch)],
+                ));
                 return;
             }
             let mode = self.configured_update_mode();
@@ -2131,7 +2168,10 @@ impl AppState {
                         self.update_project_op(mode, true),
                     ]);
                     ChoiceOption::new(up.clone(), None, vec![Action::RunGitOp(base_op)])
-                        .detail(i18n.t_fmt("dialog.update_project.track_detail", &[("branch", &branch), ("upstream", up)]))
+                        .detail(i18n.t_fmt(
+                            "dialog.update_project.track_detail",
+                            &[("branch", &branch), ("upstream", up)],
+                        ))
                         .when_checked(vec![Action::RunGitOp(sub_op)])
                 })
                 .collect();
@@ -2150,7 +2190,9 @@ impl AppState {
             );
             if has_submodules {
                 dlg.checkbox = Some(crate::dialogs::ChoiceCheckbox {
-                    label: i18n.t("dialog.update_project.update_submodules").to_string(),
+                    label: i18n
+                        .t("dialog.update_project.update_submodules")
+                        .to_string(),
                     checked: false,
                     checked_actions: Vec::new(),
                 });
@@ -2207,7 +2249,9 @@ impl AppState {
         );
         if has_submodules {
             dlg.checkbox = Some(crate::dialogs::ChoiceCheckbox {
-                label: i18n.t("dialog.update_project.update_submodules").to_string(),
+                label: i18n
+                    .t("dialog.update_project.update_submodules")
+                    .to_string(),
                 checked: false,
                 checked_actions: Vec::new(),
             });
@@ -2259,7 +2303,10 @@ impl AppState {
                 .collect::<Vec<_>>()
                 .join(", ");
             let n_s = skipped.len().to_string();
-            i18n.t_fmt("toast.update_skipped", &[("count", &n_s), ("names", &names)])
+            i18n.t_fmt(
+                "toast.update_skipped",
+                &[("count", &n_s), ("names", &names)],
+            )
         });
         let Some(info) = info.filter(|i| !i.is_empty()) else {
             let mut text = i18n.t("toast.update_up_to_date").to_string();
@@ -2376,9 +2423,7 @@ impl AppState {
                 GitOp::Sequence(ops) => {
                     self.pending_batch_branch_deletes.clear();
                     if !ops.is_empty()
-                        && ops
-                            .iter()
-                            .all(|o| matches!(o, GitOp::DeleteBranch { .. }))
+                        && ops.iter().all(|o| matches!(o, GitOp::DeleteBranch { .. }))
                     {
                         let restore_ops: Vec<GitOp> = ops
                             .iter()
@@ -2394,10 +2439,9 @@ impl AppState {
                             .collect();
                         let count_s = restore_ops.len().to_string();
                         self.notification = Some(Notification {
-                            text: self.i18n.t_fmt(
-                                "toast.deleted_branches_batch",
-                                &[("count", &count_s)],
-                            ),
+                            text: self
+                                .i18n
+                                .t_fmt("toast.deleted_branches_batch", &[("count", &count_s)]),
                             is_error: false,
                             action: Some((
                                 self.i18n.t_fmt(
@@ -2430,7 +2474,8 @@ impl AppState {
                     self.notify_push_summary(branch, remote, remote_branch, &outcome.stdout);
                 }
                 GitOp::Pull { options }
-                    if options.leaves_changes_uncommitted() && outcome.prepared_message.is_some() =>
+                    if options.leaves_changes_uncommitted()
+                        && outcome.prepared_message.is_some() =>
                 {
                     let msg = outcome.prepared_message.clone().unwrap_or_default();
                     let now = self.now();
@@ -2452,7 +2497,8 @@ impl AppState {
                     });
                 }
                 GitOp::Merge { options, .. }
-                    if options.leaves_changes_uncommitted() && outcome.prepared_message.is_some() =>
+                    if options.leaves_changes_uncommitted()
+                        && outcome.prepared_message.is_some() =>
                 {
                     let msg = outcome.prepared_message.clone().unwrap_or_default();
                     let now = self.now();
@@ -2486,7 +2532,10 @@ impl AppState {
                         self.push_dialog(Dialog::Choice(ChoiceDialog::buttons(
                             i18n.t("dialog.merge_cleanup.title"),
                             vec![
-                                i18n.t_fmt("dialog.merge_cleanup.merged_into", &[("rev", rev), ("cur", &cur)]),
+                                i18n.t_fmt(
+                                    "dialog.merge_cleanup.merged_into",
+                                    &[("rev", rev), ("cur", &cur)],
+                                ),
                                 i18n.t_fmt("dialog.merge_cleanup.ask_delete", &[("rev", rev)]),
                             ],
                             vec![
@@ -2499,7 +2548,11 @@ impl AppState {
                                         tip,
                                     })],
                                 ),
-                                ChoiceOption::new(i18n.t("dialog.merge_cleanup.keep_btn"), Some('k'), Vec::new()),
+                                ChoiceOption::new(
+                                    i18n.t("dialog.merge_cleanup.keep_btn"),
+                                    Some('k'),
+                                    Vec::new(),
+                                ),
                             ],
                         )));
                     }
@@ -2540,12 +2593,18 @@ impl AppState {
                     let mut text = outcome.stdout.join("\n");
                     text.push('\n');
                     let count_s = outcome.stdout.len().to_string();
-                    self.status_notice = Some(self.i18n.t_fmt("toast.copied_patch", &[("count", &count_s)]));
+                    self.status_notice = Some(
+                        self.i18n
+                            .t_fmt("toast.copied_patch", &[("count", &count_s)]),
+                    );
                     effects.push(Effect::CopyToClipboard(text));
                 }
                 GitOp::CreatePatchFile { .. } => {
                     let count_s = outcome.stdout.len().to_string();
-                    self.status_notice = Some(self.i18n.t_fmt("toast.created_patches", &[("count", &count_s)]));
+                    self.status_notice = Some(
+                        self.i18n
+                            .t_fmt("toast.created_patches", &[("count", &count_s)]),
+                    );
                 }
                 GitOp::RewordHead { .. } | GitOp::RewriteHistory { .. } => {
                     self.log.graph.clear_multi_selection();
@@ -2598,7 +2657,9 @@ impl AppState {
                 | GitOp::PruneWorktrees => self.on_worktree_op_succeeded(&op),
                 GitOp::SubmoduleUpdate { path } => {
                     self.status_notice = Some(match path {
-                        Some(p) => self.i18n.t_fmt("toast.submodule_updated_one", &[("path", p)]),
+                        Some(p) => self
+                            .i18n
+                            .t_fmt("toast.submodule_updated_one", &[("path", p)]),
                         None => self.i18n.t("toast.submodules_updated").to_string(),
                     });
                 }
@@ -2730,7 +2791,8 @@ impl AppState {
                     );
                 }
                 options.push(ChoiceOption::new(i18n.cancel(), Some('c'), Vec::new()));
-                self.status_notice = Some(i18n.t_fmt("toast.overwritten_notice", &[("label", &label)]));
+                self.status_notice =
+                    Some(i18n.t_fmt("toast.overwritten_notice", &[("label", &label)]));
                 self.push_dialog(Dialog::Choice(ChoiceDialog::buttons(
                     i18n.t_fmt("dialog.smart.title", &[("verb", verb)]),
                     body,
@@ -2764,7 +2826,10 @@ impl AppState {
                         &[("label", &label), ("kept", kept)],
                     ),
                     is_error: true,
-                    action: Some((i18n.t("toast.resolve_btn").into(), vec![Action::OngoingResolve])),
+                    action: Some((
+                        i18n.t("toast.resolve_btn").into(),
+                        vec![Action::OngoingResolve],
+                    )),
                 });
             }
             Some(GitFailure::EmptyCherryPick) => {
@@ -2798,10 +2863,9 @@ impl AppState {
             }
             Some(GitFailure::NotFullyMerged) => {
                 if let GitOp::DeleteBranch { name, tip, .. } = &op {
-                    let mut body = vec![i18n.t_fmt(
-                        "dialog.confirm_delete.not_merged_prompt",
-                        &[("name", name)],
-                    )];
+                    let mut body = vec![
+                        i18n.t_fmt("dialog.confirm_delete.not_merged_prompt", &[("name", name)]),
+                    ];
                     if let Some(snap) = self.snapshot()
                         && let Some(head) = snap.head_oid
                     {
@@ -2813,10 +2877,9 @@ impl AppState {
                         }
                         if total > commits.len() && !commits.is_empty() {
                             let more = (total - commits.len()).to_string();
-                            body.push(i18n.t_fmt(
-                                "dialog.confirm_delete.and_more",
-                                &[("count", &more)],
-                            ));
+                            body.push(
+                                i18n.t_fmt("dialog.confirm_delete.and_more", &[("count", &more)]),
+                            );
                         }
                     }
                     body.push(i18n.t("dialog.confirm_delete.not_merged_warn").into());
@@ -2833,54 +2896,52 @@ impl AppState {
                     )));
                 }
             }
-            Some(GitFailure::TagAlreadyExists) => {
-                match &op {
-                    GitOp::CreateTag {
-                        name,
-                        target,
-                        message,
-                        force: false,
-                        sign,
-                    } => {
-                        self.push_dialog(Dialog::Choice(ChoiceDialog::confirm(
-                            i18n.t("dialog.tag_exists.title"),
-                            vec![i18n.t_fmt("dialog.tag_exists.local_body", &[("name", name)])],
-                            i18n.t("dialog.tag_exists.overwrite_btn"),
-                            i18n.cancel(),
-                            vec![Action::RunGitOp(GitOp::CreateTag {
-                                name: name.clone(),
-                                target: *target,
-                                message: message.clone(),
-                                force: true,
-                                sign: *sign,
-                            })],
-                        )));
-                    }
-                    GitOp::PushTag {
-                        remote,
-                        name,
-                        force: false,
-                    } => {
-                        self.push_dialog(Dialog::Choice(ChoiceDialog::confirm(
-                            i18n.t("dialog.tag_exists.title"),
-                            vec![i18n.t_fmt(
-                                "dialog.tag_exists.remote_body",
-                                &[("name", name), ("remote", remote)],
-                            )],
-                            i18n.t("dialog.tag_exists.force_push_btn"),
-                            i18n.cancel(),
-                            vec![Action::RunGitOp(GitOp::PushTag {
-                                remote: remote.clone(),
-                                name: name.clone(),
-                                force: true,
-                            })],
-                        )));
-                    }
-                    _ => {
-                        self.notify_error(i18n.t_fmt("toast.op_failed", &[("label", &label)]));
-                    }
+            Some(GitFailure::TagAlreadyExists) => match &op {
+                GitOp::CreateTag {
+                    name,
+                    target,
+                    message,
+                    force: false,
+                    sign,
+                } => {
+                    self.push_dialog(Dialog::Choice(ChoiceDialog::confirm(
+                        i18n.t("dialog.tag_exists.title"),
+                        vec![i18n.t_fmt("dialog.tag_exists.local_body", &[("name", name)])],
+                        i18n.t("dialog.tag_exists.overwrite_btn"),
+                        i18n.cancel(),
+                        vec![Action::RunGitOp(GitOp::CreateTag {
+                            name: name.clone(),
+                            target: *target,
+                            message: message.clone(),
+                            force: true,
+                            sign: *sign,
+                        })],
+                    )));
                 }
-            }
+                GitOp::PushTag {
+                    remote,
+                    name,
+                    force: false,
+                } => {
+                    self.push_dialog(Dialog::Choice(ChoiceDialog::confirm(
+                        i18n.t("dialog.tag_exists.title"),
+                        vec![i18n.t_fmt(
+                            "dialog.tag_exists.remote_body",
+                            &[("name", name), ("remote", remote)],
+                        )],
+                        i18n.t("dialog.tag_exists.force_push_btn"),
+                        i18n.cancel(),
+                        vec![Action::RunGitOp(GitOp::PushTag {
+                            remote: remote.clone(),
+                            name: name.clone(),
+                            force: true,
+                        })],
+                    )));
+                }
+                _ => {
+                    self.notify_error(i18n.t_fmt("toast.op_failed", &[("label", &label)]));
+                }
+            },
             Some(GitFailure::PushRejected) => {
                 if let GitOp::Push {
                     branch,
@@ -3020,10 +3081,9 @@ impl AppState {
                         body.push(i18n.t("dialog.push.rebase_merge_warning").to_string());
                     }
                     if let Some(oid) = partial_up_to {
-                        body.push(i18n.t_fmt(
-                            "dialog.push.rejected_up_to_note",
-                            &[("oid", &oid.short())],
-                        ));
+                        body.push(
+                            i18n.t_fmt("dialog.push.rejected_up_to_note", &[("oid", &oid.short())]),
+                        );
                     } else if is_protected {
                         body.push(i18n.t_fmt(
                             "dialog.push_full.protected_force_blocked",
@@ -3038,7 +3098,9 @@ impl AppState {
                         options,
                     )));
                 } else {
-                    self.notify_error(i18n.t_fmt("toast.push_rejected_notice", &[("label", &label)]));
+                    self.notify_error(
+                        i18n.t_fmt("toast.push_rejected_notice", &[("label", &label)]),
+                    );
                 }
             }
             Some(GitFailure::NotFastForward) => match &op {
@@ -3100,7 +3162,11 @@ impl AppState {
                 self.push_dialog(Dialog::Choice(ChoiceDialog::buttons(
                     i18n.t("dialog.gpg_failed.title"),
                     body,
-                    vec![ChoiceOption::new(i18n.t("common.close"), Some('c'), Vec::new())],
+                    vec![ChoiceOption::new(
+                        i18n.t("common.close"),
+                        Some('c'),
+                        Vec::new(),
+                    )],
                 )));
             }
             Some(GitFailure::AuthenticationFailed) => {
@@ -3140,10 +3206,15 @@ impl AppState {
                 self.prompt_set_upstream(&branch);
             }
             Some(GitFailure::Other(msg)) => {
-                self.notify_error(i18n.t_fmt("toast.op_failed_msg", &[("label", &label), ("error", &msg)]));
+                self.notify_error(
+                    i18n.t_fmt("toast.op_failed_msg", &[("label", &label), ("error", &msg)]),
+                );
             }
             Some(GitFailure::PatchDoesNotApply { detail }) => {
-                self.notify_error(i18n.t_fmt("toast.op_failed_msg", &[("label", &label), ("error", &detail)]));
+                self.notify_error(i18n.t_fmt(
+                    "toast.op_failed_msg",
+                    &[("label", &label), ("error", &detail)],
+                ));
             }
             Some(GitFailure::PatchConflicts { paths }) => {
                 // `git apply --3way` left unmerged entries: resolve them in the

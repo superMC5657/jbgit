@@ -131,7 +131,8 @@ fn main() -> Result<()> {
                     "--scenario" => {
                         idx += 1;
                         opts.sandbox = true;
-                        opts.scenario = SandboxScenario::parse(&req_arg(&args, &mut idx, "--scenario")?)?;
+                        opts.scenario =
+                            SandboxScenario::parse(&req_arg(&args, &mut idx, "--scenario")?)?;
                     }
                     "--custom-config" => {
                         idx += 1;
@@ -143,7 +144,8 @@ fn main() -> Result<()> {
                     }
                     "--config-dir" => {
                         idx += 1;
-                        opts.config_dir = Some(PathBuf::from(req_arg(&args, &mut idx, "--config-dir")?));
+                        opts.config_dir =
+                            Some(PathBuf::from(req_arg(&args, &mut idx, "--config-dir")?));
                     }
                     "--cols" => {
                         idx += 1;
@@ -159,7 +161,8 @@ fn main() -> Result<()> {
                     }
                     "--session-dir" => {
                         idx += 1;
-                        opts.session_dir = PathBuf::from(req_arg(&args, &mut idx, "--session-dir")?);
+                        opts.session_dir =
+                            PathBuf::from(req_arg(&args, &mut idx, "--session-dir")?);
                     }
                     "--no-truecolor" => {
                         idx += 1;
@@ -194,7 +197,11 @@ fn main() -> Result<()> {
         "type" => {
             let text = req_arg(&args, &mut idx, "text")?;
             let settle_ms = parse_opt_u64(&args, idx, "--settle-ms")?.unwrap_or(200);
-            run_client(&session_dir, PilotAction::TypeText { text, settle_ms }, 6000)?;
+            run_client(
+                &session_dir,
+                PilotAction::TypeText { text, settle_ms },
+                6000,
+            )?;
         }
         "click" => {
             let col: u16 = req_arg(&args, &mut idx, "col")?.parse()?;

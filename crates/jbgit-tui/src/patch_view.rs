@@ -209,7 +209,8 @@ impl ApplyPatchState {
         if check.key.options.include_paths.is_empty() {
             if !check.files.is_empty() {
                 self.known_files = check.files.clone();
-            } else if !check.sections.is_empty() && (self.known_files.is_empty() || transform_changed)
+            } else if !check.sections.is_empty()
+                && (self.known_files.is_empty() || transform_changed)
             {
                 self.known_files = check
                     .sections
@@ -235,9 +236,7 @@ impl ApplyPatchState {
             }
         }
 
-        self.selected = self
-            .selected
-            .min(self.known_files.len().saturating_sub(1));
+        self.selected = self.selected.min(self.known_files.len().saturating_sub(1));
         self.check = Some(check);
         self.sync_list_scroll();
     }
@@ -536,12 +535,21 @@ pub fn render_apply_patch_modal(
     let check = s.current_check();
     let rows = s.known_files.len().max(1) as u16;
     let w = if s.show_preview {
-        screen.width.saturating_sub(4).clamp(50.min(screen.width.saturating_sub(2)), 140)
+        screen
+            .width
+            .saturating_sub(4)
+            .clamp(50.min(screen.width.saturating_sub(2)), 140)
     } else {
-        screen.width.saturating_sub(4).clamp(36.min(screen.width.saturating_sub(2)), 108)
+        screen
+            .width
+            .saturating_sub(4)
+            .clamp(36.min(screen.width.saturating_sub(2)), 108)
     };
     let h = if s.show_preview {
-        screen.height.saturating_sub(2).clamp(16.min(screen.height.saturating_sub(2)), 36)
+        screen
+            .height
+            .saturating_sub(2)
+            .clamp(16.min(screen.height.saturating_sub(2)), 36)
     } else {
         (rows + 11)
             .clamp(13, 30)
@@ -638,7 +646,10 @@ pub fn render_apply_patch_modal(
     if opt_y < inner.bottom() {
         if let Some(draft) = &s.editing_dir {
             let prompt = ctx.t("dialog.apply_patch.dir_prompt");
-            let text = format!(" {prompt}: {draft}▏  ({})", ctx.t("dialog.apply_patch.dir_edit_hint"));
+            let text = format!(
+                " {prompt}: {draft}▏  ({})",
+                ctx.t("dialog.apply_patch.dir_edit_hint")
+            );
             line(
                 frame,
                 opt_y,
@@ -652,10 +663,7 @@ pub fn render_apply_patch_modal(
         } else {
             let mut ox = inner.x + 1;
             let rev_box = if s.options.reverse { "[x]" } else { "[ ]" };
-            let rev_text = format!(
-                "{rev_box} r:{}  ",
-                ctx.t("dialog.apply_patch.reverse")
-            );
+            let rev_text = format!("{rev_box} r:{}  ", ctx.t("dialog.apply_patch.reverse"));
             let rev_w = rev_text.width() as u16;
             if ox + rev_w <= inner.right() {
                 let r = Rect::new(ox, opt_y, rev_w, 1);
@@ -906,10 +914,7 @@ fn render_file_list_pane(
         if check.is_none() {
             frame.render_widget(
                 Paragraph::new(Span::styled(
-                    truncate_to_width(
-                        &format!(" {}", ctx.t("dialog.apply_patch.checking")),
-                        width,
-                    ),
+                    truncate_to_width(&format!(" {}", ctx.t("dialog.apply_patch.checking")), width),
                     muted,
                 )),
                 Rect::new(area.x, y, area.width, 1),
@@ -1067,9 +1072,7 @@ fn render_patch_preview_pane(
     let max_scroll = lines.len().saturating_sub(body_h.max(1));
     ctx.record_scroll_bound(ScrollPane::ApplyPatchPreview, body_h, max_scroll);
     let first = s.preview_scroll.offset().min(max_scroll);
-    let syntax_on = ctx
-        .config
-        .is_none_or(|c| c.jbgit.diff.syntax_highlight);
+    let syntax_on = ctx.config.is_none_or(|c| c.jbgit.diff.syntax_highlight);
     let true_color = ctx.theme.true_color;
 
     let tab_size = ctx.diff_tab_size();
@@ -1086,11 +1089,23 @@ fn render_patch_preview_pane(
         {
             (ctx.theme.bg_elevated, ctx.theme.fg_muted, None)
         } else if let Some(rest) = raw.strip_prefix('+') {
-            (ctx.theme.diff_add_bg, ctx.theme.status_added, Some(('+', rest)))
+            (
+                ctx.theme.diff_add_bg,
+                ctx.theme.status_added,
+                Some(('+', rest)),
+            )
         } else if let Some(rest) = raw.strip_prefix('-') {
-            (ctx.theme.diff_del_bg, ctx.theme.status_deleted, Some(('-', rest)))
+            (
+                ctx.theme.diff_del_bg,
+                ctx.theme.status_deleted,
+                Some(('-', rest)),
+            )
         } else if let Some(rest) = raw.strip_prefix(' ') {
-            (ctx.theme.bg_elevated, ctx.theme.fg_primary, Some((' ', rest)))
+            (
+                ctx.theme.bg_elevated,
+                ctx.theme.fg_primary,
+                Some((' ', rest)),
+            )
         } else {
             (ctx.theme.bg_elevated, ctx.theme.fg_muted, None)
         };

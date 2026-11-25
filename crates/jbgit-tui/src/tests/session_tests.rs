@@ -15,9 +15,7 @@ use jbgit_engine::{EngineEvent, TaskRequest};
 use crate::app::Action;
 use crate::session::{ExternalEditorCall, MAX_COALESCE_EVENTS, SessionInput};
 
-use super::{
-    TestSession, make_commit, make_details, make_snapshot, oid_n, screen_text, snapshot,
-};
+use super::{TestSession, make_commit, make_details, make_snapshot, oid_n, screen_text, snapshot};
 
 #[test]
 fn tui_session_caps_batch_at_64_events_and_coalesces_requests() {
@@ -59,7 +57,11 @@ fn tui_session_caps_batch_at_64_events_and_coalesces_requests() {
             )
         })
         .collect();
-    assert_eq!(detail_reqs.len(), 1, "expected 1 coalesced details request: {reqs:?}");
+    assert_eq!(
+        detail_reqs.len(),
+        1,
+        "expected 1 coalesced details request: {reqs:?}"
+    );
     let expected_oid = ts.state().log_commit_at(MAX_COALESCE_EVENTS).unwrap().oid;
     assert!(matches!(
         &detail_reqs[0].0,
@@ -94,7 +96,9 @@ fn tui_session_virtual_clock_drives_30ms_120ms_and_300ms_debounces() {
     // 2. 300ms commit-message draft debounce in Commit tab (zero thread::sleep).
     let dir = tempfile::tempdir().unwrap();
     let draft_path = dir.path().join("draft.txt");
-    ts.state_mut().stage_workbench.load_draft(draft_path.clone());
+    ts.state_mut()
+        .stage_workbench
+        .load_draft(draft_path.clone());
 
     ts.dispatch(Action::SwitchTab(WorkspaceTab::Commit));
     ts.dispatch(Action::FocusPane(PaneId::CommitMessageEditor));
@@ -143,8 +147,9 @@ fn tui_session_virtual_clock_drives_30ms_120ms_and_300ms_debounces() {
     ts.advance_by(Duration::from_millis(35));
     let reqs = ts.take_requests();
     assert!(
-        reqs.iter()
-            .any(|(r, _)| matches!(r, TaskRequest::LoadStageFileDiff { key } if key.path == "b.rs")),
+        reqs.iter().any(
+            |(r, _)| matches!(r, TaskRequest::LoadStageFileDiff { key } if key.path == "b.rs")
+        ),
         "expected debounced StageFileDiff for b.rs, got {reqs:?}"
     );
 }
@@ -310,8 +315,7 @@ fn stamped_clone_and_rebind_drop_stale_tasks_invalidate_tree_syntax_and_sync_cre
         .begin_cancelable(tree_key)
         .expect("tree syntax job should start");
 
-    let (cred_req, _cred_rx) =
-        jbgit_engine::askpass::AskpassRequest::new("Password:".to_string());
+    let (cred_req, _cred_rx) = jbgit_engine::askpass::AskpassRequest::new("Password:".to_string());
     ts.deliver_ui_async(UiAsyncEvent::Askpass(cred_req));
     assert!(!ts.state().credentials.is_empty());
 

@@ -114,10 +114,7 @@ fn lookup_commit_modes(
                 .ok()
                 .and_then(|p| p.tree().ok())
                 .and_then(|t| tree_entry_mode(&t, lookup_old));
-            let new_m = commit
-                .tree()
-                .ok()
-                .and_then(|t| tree_entry_mode(&t, path));
+            let new_m = commit.tree().ok().and_then(|t| tree_entry_mode(&t, path));
             (old_m, new_m)
         }
         _ => (None, None),
@@ -169,10 +166,7 @@ fn lookup_multi_commit_modes(
                     if fallback_mode.is_none() {
                         fallback_mode = Some(pmode);
                     }
-                    let commit_info = c
-                        .tree()
-                        .ok()
-                        .and_then(|t| tree_entry_info(&t, lookup_old));
+                    let commit_info = c.tree().ok().and_then(|t| tree_entry_info(&t, lookup_old));
                     if commit_info != Some((pid, pmode)) {
                         matched_changed = Some(pmode);
                         break;
@@ -226,10 +220,9 @@ fn populate_file_diff(
     out.mode_change = mode_change;
     let (old_size, old_oid) = old.metadata();
     let (new_size, new_oid) = new.metadata();
-    let (Some((old_bytes, old_bin)), Some((new_bytes, new_bin))) = (
-        old.into_bytes_or_too_large(),
-        new.into_bytes_or_too_large(),
-    ) else {
+    let (Some((old_bytes, old_bin)), Some((new_bytes, new_bin))) =
+        (old.into_bytes_or_too_large(), new.into_bytes_or_too_large())
+    else {
         out.is_too_large = true;
         return Ok(out);
     };
@@ -296,17 +289,19 @@ pub fn load_file_diff_with_oids_sync(
         let context_lines = key.context.lines();
         let lookup_old = key.old_path.as_deref().unwrap_or(&key.path);
 
-        let read_opt_oid = |opt: Option<Oid>, mode: Option<u32>| -> Result<CheckedBlob, EngineError> {
-            match opt {
-                Some(id) => Ok(read_blob(repo, to_git2_oid(&id)?, mode)),
-                None => Ok(CheckedBlob::Missing),
-            }
-        };
+        let read_opt_oid =
+            |opt: Option<Oid>, mode: Option<u32>| -> Result<CheckedBlob, EngineError> {
+                match opt {
+                    Some(id) => Ok(read_blob(repo, to_git2_oid(&id)?, mode)),
+                    None => Ok(CheckedBlob::Missing),
+                }
+            };
 
         match key.details.mode {
             DetailsMode::CompareVersions if key.details.oids.len() >= 2 => {
                 if let Some((old_id, new_id)) = known_oids {
-                    let (old_m, new_m) = lookup_commit_modes(repo, &key.details, lookup_old, &key.path);
+                    let (old_m, new_m) =
+                        lookup_commit_modes(repo, &key.details, lookup_old, &key.path);
                     let mc = FileModeChange::from_modes(old_m, new_m);
                     return populate_file_diff(
                         out,
@@ -346,7 +341,8 @@ pub fn load_file_diff_with_oids_sync(
             }
             DetailsMode::Commits if key.details.oids.len() == 1 => {
                 if let Some((old_id, new_id)) = known_oids {
-                    let (old_m, new_m) = lookup_commit_modes(repo, &key.details, lookup_old, &key.path);
+                    let (old_m, new_m) =
+                        lookup_commit_modes(repo, &key.details, lookup_old, &key.path);
                     let mc = FileModeChange::from_modes(old_m, new_m);
                     return populate_file_diff(
                         out,

@@ -15,24 +15,34 @@ pub fn branch_menu_items(state: &AppState, name: &str, kind: RefKind) -> Vec<Con
         return Vec::new();
     };
     let i18n = &state.i18n;
-    let checkout_sc = catalog::shortcut_for_action(state, &[KeymapScope::Branch], &KeyAction::Checkout);
-    let new_branch_sc = catalog::shortcut_for_action(state, &[KeymapScope::Branch], &KeyAction::NewBranch);
+    let checkout_sc =
+        catalog::shortcut_for_action(state, &[KeymapScope::Branch], &KeyAction::Checkout);
+    let new_branch_sc =
+        catalog::shortcut_for_action(state, &[KeymapScope::Branch], &KeyAction::NewBranch);
     let pull_sc = catalog::shortcut_for_action(state, &[KeymapScope::Global], &KeyAction::GitPull);
     let pull_dlg_sc =
         catalog::shortcut_for_action(state, &[KeymapScope::Global], &KeyAction::GitPullDialog);
     let rebase_dlg_sc =
         catalog::shortcut_for_action(state, &[KeymapScope::Global], &KeyAction::GitRebaseDialog);
     let push_sc = catalog::shortcut_for_action(state, &[KeymapScope::Global], &KeyAction::GitPush);
-    let rename_sc = catalog::shortcut_for_action(state, &[KeymapScope::Branch], &KeyAction::RenameBranch);
-    let delete_sc = catalog::all_shortcuts_for_action(state, &[KeymapScope::Branch], &KeyAction::DeleteBranch);
-    let fav_sc = catalog::shortcut_for_action(state, &[KeymapScope::Branch], &KeyAction::ToggleFavorite);
+    let rename_sc =
+        catalog::shortcut_for_action(state, &[KeymapScope::Branch], &KeyAction::RenameBranch);
+    let delete_sc =
+        catalog::all_shortcuts_for_action(state, &[KeymapScope::Branch], &KeyAction::DeleteBranch);
+    let fav_sc =
+        catalog::shortcut_for_action(state, &[KeymapScope::Branch], &KeyAction::ToggleFavorite);
 
     let current = snap.head_branch.clone();
     let cur = current.clone().unwrap_or_else(|| "HEAD".to_string());
     let no_ongoing = state.require_no_ongoing();
     let detached = current.is_none();
     let star_item = |full: &str, short: &str| {
-        let fav = state.log.branches.settings.favorites.is_favorite(full, short);
+        let fav = state
+            .log
+            .branches
+            .settings
+            .favorites
+            .is_favorite(full, short);
         run(
             if fav {
                 i18n.t("menu.branch.unmark_favorite")
@@ -73,7 +83,10 @@ pub fn branch_menu_items(state: &AppState, name: &str, kind: RefKind) -> Vec<Con
             );
             if !is_detached_head && let Some(wt) = snap.worktree_of_branch(&name) {
                 items.push(run(
-                    i18n.t_fmt("menu.branch.open_in_worktree", &[("worktree", &ellipsize(&wt.name(), 24))]),
+                    i18n.t_fmt(
+                        "menu.branch.open_in_worktree",
+                        &[("worktree", &ellipsize(&wt.name(), 24))],
+                    ),
                     Some('t'),
                     None,
                     vec![Action::SwitchRepository(wt.path.clone())],
@@ -83,21 +96,35 @@ pub fn branch_menu_items(state: &AppState, name: &str, kind: RefKind) -> Vec<Con
                     i18n.t("menu.branch.new_worktree"),
                     Some('t'),
                     None,
-                    dialog(crate::worktrees_view::new_worktree_for_branch_dialog(state, &name)),
+                    dialog(crate::worktrees_view::new_worktree_for_branch_dialog(
+                        state, &name,
+                    )),
                 ));
             }
             items.push(
                 run(
-                    i18n.t_fmt("menu.branch.new_branch_from", &[("name", &ellipsize(&name, 24))]),
+                    i18n.t_fmt(
+                        "menu.branch.new_branch_from",
+                        &[("name", &ellipsize(&name, 24))],
+                    ),
                     Some('n'),
                     new_branch_sc.as_deref(),
-                    dialog(new_branch_dialog(&name, &name, local_names(state), "", i18n)),
+                    dialog(new_branch_dialog(
+                        &name,
+                        &name,
+                        local_names(state),
+                        "",
+                        i18n,
+                    )),
                 )
                 .icon("+"),
             );
             items.push(
                 run(
-                    i18n.t_fmt("menu.branch.checkout_and_rebase", &[("cur", &ellipsize(&cur, 24))]),
+                    i18n.t_fmt(
+                        "menu.branch.checkout_and_rebase",
+                        &[("cur", &ellipsize(&cur, 24))],
+                    ),
                     Some('a'),
                     None,
                     op(GitOp::Rebase {
@@ -129,25 +156,40 @@ pub fn branch_menu_items(state: &AppState, name: &str, kind: RefKind) -> Vec<Con
                 vec![Action::PromptCompareWithBranch { left: name.clone() }],
             ));
             items.push(run(
-                i18n.t_fmt("menu.branch.show_reflog", &[("name", &ellipsize(&name, 24))]),
+                i18n.t_fmt(
+                    "menu.branch.show_reflog",
+                    &[("name", &ellipsize(&name, 24))],
+                ),
                 None,
                 catalog::shortcut_for_action(state, &[KeymapScope::Branch], &KeyAction::OpenReflog)
                     .as_deref(),
                 vec![Action::OpenReflog(name.clone())],
             ));
             let diff_local = info
-                .map(|r| vec![Action::CompareWithLocal { target: r.target_oid }])
+                .map(|r| {
+                    vec![Action::CompareWithLocal {
+                        target: r.target_oid,
+                    }]
+                })
                 .unwrap_or_default();
             items.push(
-                run(i18n.t("menu.branch.show_diff_working_tree"), Some('w'), None, diff_local)
-                    .enabled_if(info.is_some(), i18n.t("menu.branch.target_not_loaded")),
+                run(
+                    i18n.t("menu.branch.show_diff_working_tree"),
+                    Some('w'),
+                    None,
+                    diff_local,
+                )
+                .enabled_if(info.is_some(), i18n.t("menu.branch.target_not_loaded")),
             );
             items.push(ContextMenuItem::separator());
             items.push(
                 run(
                     i18n.t_fmt(
                         "menu.branch.rebase_onto",
-                        &[("cur", &ellipsize(&cur, 18)), ("name", &ellipsize(&name, 18))],
+                        &[
+                            ("cur", &ellipsize(&cur, 18)),
+                            ("name", &ellipsize(&name, 18)),
+                        ],
                     ),
                     Some('b'),
                     None,
@@ -173,7 +215,10 @@ pub fn branch_menu_items(state: &AppState, name: &str, kind: RefKind) -> Vec<Con
                 run(
                     i18n.t_fmt(
                         "menu.branch.merge_into",
-                        &[("name", &ellipsize(&name, 18)), ("cur", &ellipsize(&cur, 18))],
+                        &[
+                            ("name", &ellipsize(&name, 18)),
+                            ("cur", &ellipsize(&cur, 18)),
+                        ],
                     ),
                     Some('m'),
                     None,
@@ -213,16 +258,16 @@ pub fn branch_menu_items(state: &AppState, name: &str, kind: RefKind) -> Vec<Con
                     if is_current { pull_sc.as_deref() } else { None },
                     update,
                 )
-                    .icon("↓")
-                    .enabled_if(
-                        upstream.is_some(),
-                        i18n.t_fmt("menu.branch.no_upstream", &[("name", &name)]),
-                    )
-                    .require(if is_current {
-                        no_ongoing.clone()
-                    } else {
-                        Ok(())
-                    }),
+                .icon("↓")
+                .enabled_if(
+                    upstream.is_some(),
+                    i18n.t_fmt("menu.branch.no_upstream", &[("name", &name)]),
+                )
+                .require(if is_current {
+                    no_ongoing.clone()
+                } else {
+                    Ok(())
+                }),
             );
             if is_current {
                 items.push(
@@ -249,10 +294,7 @@ pub fn branch_menu_items(state: &AppState, name: &str, kind: RefKind) -> Vec<Con
                 )
                 .icon("↑"),
             );
-            let has_remote_branches = snap
-                .refs
-                .iter()
-                .any(|r| r.kind == RefKind::RemoteBranch);
+            let has_remote_branches = snap.refs.iter().any(|r| r.kind == RefKind::RemoteBranch);
             items.push(
                 run(
                     i18n.t("menu.branch.set_upstream"),
@@ -263,7 +305,10 @@ pub fn branch_menu_items(state: &AppState, name: &str, kind: RefKind) -> Vec<Con
                     }],
                 )
                 .enabled_if(!is_detached_head, i18n.t("menu.log.detached_no_branch"))
-                .enabled_if(has_remote_branches, i18n.t("menu.branch.no_remote_branches")),
+                .enabled_if(
+                    has_remote_branches,
+                    i18n.t("menu.branch.no_remote_branches"),
+                ),
             );
             items.push(
                 run(
@@ -321,7 +366,10 @@ pub fn branch_menu_items(state: &AppState, name: &str, kind: RefKind) -> Vec<Con
             );
             items.push(
                 run(
-                    i18n.t_fmt("menu.branch.new_branch_from", &[("name", &ellipsize(name, 24))]),
+                    i18n.t_fmt(
+                        "menu.branch.new_branch_from",
+                        &[("name", &ellipsize(name, 24))],
+                    ),
                     Some('n'),
                     new_branch_sc.as_deref(),
                     dialog(new_branch_dialog_with_track(
@@ -356,7 +404,10 @@ pub fn branch_menu_items(state: &AppState, name: &str, kind: RefKind) -> Vec<Con
             if crate::worktrees_view::worktrees_supported(state) {
                 items.push(
                     run(
-                        i18n.t_fmt("menu.branch.new_worktree_from", &[("name", &ellipsize(name, 24))]),
+                        i18n.t_fmt(
+                            "menu.branch.new_worktree_from",
+                            &[("name", &ellipsize(name, 24))],
+                        ),
                         Some('t'),
                         None,
                         vec![Action::PromptNewWorktreeFromBranch(name.to_string())],
@@ -385,15 +436,26 @@ pub fn branch_menu_items(state: &AppState, name: &str, kind: RefKind) -> Vec<Con
                 .map(|target| vec![Action::CompareWithLocal { target }])
                 .unwrap_or_default();
             items.push(
-                run(i18n.t("menu.branch.show_diff_working_tree"), Some('w'), None, diff_local)
-                    .enabled_if(target_oid.is_some(), i18n.t("menu.branch.target_not_loaded")),
+                run(
+                    i18n.t("menu.branch.show_diff_working_tree"),
+                    Some('w'),
+                    None,
+                    diff_local,
+                )
+                .enabled_if(
+                    target_oid.is_some(),
+                    i18n.t("menu.branch.target_not_loaded"),
+                ),
             );
             items.push(ContextMenuItem::separator());
             items.push(
                 run(
                     i18n.t_fmt(
                         "menu.branch.merge_into",
-                        &[("name", &ellipsize(name, 18)), ("cur", &ellipsize(&cur, 18))],
+                        &[
+                            ("name", &ellipsize(name, 18)),
+                            ("cur", &ellipsize(&cur, 18)),
+                        ],
                     ),
                     Some('m'),
                     None,
@@ -409,7 +471,10 @@ pub fn branch_menu_items(state: &AppState, name: &str, kind: RefKind) -> Vec<Con
                 run(
                     i18n.t_fmt(
                         "menu.branch.rebase_onto",
-                        &[("cur", &ellipsize(&cur, 18)), ("name", &ellipsize(name, 22))],
+                        &[
+                            ("cur", &ellipsize(&cur, 18)),
+                            ("name", &ellipsize(name, 22)),
+                        ],
                     ),
                     Some('b'),
                     None,
@@ -456,7 +521,10 @@ pub fn branch_menu_items(state: &AppState, name: &str, kind: RefKind) -> Vec<Con
             );
             items.push(
                 run(
-                    i18n.t_fmt("menu.branch.new_branch_from", &[("name", &ellipsize(name, 24))]),
+                    i18n.t_fmt(
+                        "menu.branch.new_branch_from",
+                        &[("name", &ellipsize(name, 24))],
+                    ),
                     Some('n'),
                     new_branch_sc.as_deref(),
                     dialog(new_branch_dialog(name, name, local_names(state), "", i18n)),
@@ -484,7 +552,10 @@ pub fn branch_menu_items(state: &AppState, name: &str, kind: RefKind) -> Vec<Con
                 run(
                     i18n.t_fmt(
                         "menu.branch.merge_into",
-                        &[("name", &ellipsize(name, 18)), ("cur", &ellipsize(&cur, 18))],
+                        &[
+                            ("name", &ellipsize(name, 18)),
+                            ("cur", &ellipsize(&cur, 18)),
+                        ],
                     ),
                     Some('m'),
                     None,
@@ -583,7 +654,10 @@ pub fn branch_menu_items(state: &AppState, name: &str, kind: RefKind) -> Vec<Con
                 )
                 .enabled_if(false, i18n.t("menu.branch.no_remote_configured")),
                 [only] => run(
-                    i18n.t_fmt("menu.branch.delete_tag_on_named_remote", &[("remote", only)]),
+                    i18n.t_fmt(
+                        "menu.branch.delete_tag_on_named_remote",
+                        &[("remote", only)],
+                    ),
                     Some('r'),
                     None,
                     del_remote_dialog(only),
@@ -674,11 +748,22 @@ pub fn ongoing_menu_items(state: &AppState, kind: OngoingKind) -> Vec<ContextMen
         .icon("▶")
         .enabled_if(
             conflicts == 0,
-            i18n.t_fmt("menu.branch.cannot_continue_conflicts", &[("count", &conflicts_s)]),
+            i18n.t_fmt(
+                "menu.branch.cannot_continue_conflicts",
+                &[("count", &conflicts_s)],
+            ),
         ),
     ];
     if kind.can_skip() {
-        items.push(run(i18n.t("menu.branch.skip_commit"), Some('s'), None, step(OngoingStep::Skip)).icon("⤼"));
+        items.push(
+            run(
+                i18n.t("menu.branch.skip_commit"),
+                Some('s'),
+                None,
+                step(OngoingStep::Skip),
+            )
+            .icon("⤼"),
+        );
     }
     items.push(
         run(

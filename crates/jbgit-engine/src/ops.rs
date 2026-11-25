@@ -862,24 +862,13 @@ pub(crate) fn compile_patch_source(
                 oids.iter()
                     .rev()
                     .map(|oid| {
-                        CompiledStep::new([
-                            "format-patch",
-                            "--stdout",
-                            "-1",
-                            &oid.to_string(),
-                        ])
+                        CompiledStep::new(["format-patch", "--stdout", "-1", &oid.to_string()])
                     })
                     .collect()
             } else {
                 oids.iter()
                     .map(|oid| {
-                        CompiledStep::new([
-                            "show",
-                            "--format=",
-                            "--patch",
-                            "-R",
-                            &oid.to_string(),
-                        ])
+                        CompiledStep::new(["show", "--format=", "--patch", "-R", &oid.to_string()])
                     })
                     .collect()
             }
@@ -899,9 +888,7 @@ pub(crate) fn compile_patch_source(
             vec![CompiledStep::new(args)]
         }
         PatchSource::StagePaths {
-            staged,
-            unstaged,
-            ..
+            staged, unstaged, ..
         } => {
             let staged_set: HashSet<&str> = staged.iter().map(String::as_str).collect();
             let unstaged_set: HashSet<&str> = unstaged.iter().map(String::as_str).collect();
@@ -1161,16 +1148,16 @@ impl<R: GitCliRunner> Runner<'_, R> {
             .await;
         match res {
             Ok(out) => {
-                let index_lock = out.index_lock_conflict.map(|(lock_path, message)| {
-                    IndexLockConflict {
-                        lock_path,
-                        message,
-                        retry_args: step.args.clone(),
-                        retry_stdin: step.stdin.clone(),
-                        retry_env: env.to_vec(),
-                        retry_is_read_only: read_only,
-                    }
-                });
+                let index_lock =
+                    out.index_lock_conflict
+                        .map(|(lock_path, message)| IndexLockConflict {
+                            lock_path,
+                            message,
+                            retry_args: step.args.clone(),
+                            retry_stdin: step.stdin.clone(),
+                            retry_env: env.to_vec(),
+                            retry_is_read_only: read_only,
+                        });
                 StepResult {
                     exit_code: out.exit_code,
                     stdout: out.stdout_lines,
@@ -1218,10 +1205,18 @@ impl<R: GitCliRunner> Runner<'_, R> {
         if let Some(steps) = compile_simple_steps(&op) {
             let prepared = match &op {
                 GitOp::Merge { options, .. } if options.leaves_changes_uncommitted() => {
-                    Some(if options.squash { "SQUASH_MSG" } else { "MERGE_MSG" })
+                    Some(if options.squash {
+                        "SQUASH_MSG"
+                    } else {
+                        "MERGE_MSG"
+                    })
                 }
                 GitOp::Pull { options } if options.leaves_changes_uncommitted() => {
-                    Some(if options.squash { "SQUASH_MSG" } else { "MERGE_MSG" })
+                    Some(if options.squash {
+                        "SQUASH_MSG"
+                    } else {
+                        "MERGE_MSG"
+                    })
                 }
                 _ => None,
             };
@@ -1242,10 +1237,9 @@ impl<R: GitCliRunner> Runner<'_, R> {
                     .and_then(|c| c.get_string("core.commentChar").ok())
                     .map(|v| jbgit_core::parse_comment_char(Some(&v)))
                     .unwrap_or('#');
-                res.outcome.prepared_message =
-                    std::fs::read_to_string(self.loc.git_dir.join(file))
-                        .ok()
-                        .and_then(|raw| clean_prepared_message_with_char(&raw, comment_char));
+                res.outcome.prepared_message = std::fs::read_to_string(self.loc.git_dir.join(file))
+                    .ok()
+                    .and_then(|raw| clean_prepared_message_with_char(&raw, comment_char));
             }
             if is_ongoing_rebase {
                 let active = self.is_rebase_active();
@@ -1274,16 +1268,10 @@ impl<R: GitCliRunner> Runner<'_, R> {
         }
         match op.clone() {
             GitOp::CherryPickAllowEmpty => {
-                let commit_step = CompiledStep::new([
-                    "commit",
-                    "--allow-empty",
-                    "--no-edit",
-                ])
-                .with_env("GIT_EDITOR", ":");
+                let commit_step = CompiledStep::new(["commit", "--allow-empty", "--no-edit"])
+                    .with_env("GIT_EDITOR", ":");
                 let res = self.run_steps(op.clone(), vec![commit_step]).await;
-                if res.outcome.success
-                    && self.loc.git_dir.join("sequencer").join("todo").exists()
-                {
+                if res.outcome.success && self.loc.git_dir.join("sequencer").join("todo").exists() {
                     let cont = CompiledStep::new(["cherry-pick", "--continue"])
                         .with_env("GIT_EDITOR", ":");
                     return self.run_steps(op, vec![cont]).await;
@@ -1302,26 +1290,27 @@ impl<R: GitCliRunner> Runner<'_, R> {
                     Ok(Ok(x)) => x,
                     Ok(Err(e)) => {
                         return GitOpRunResult {
-                            outcome: GitOpOutcome::failed(op, GitFailure::PatchDoesNotApply {
-                                detail: e,
-                            }),
+                            outcome: GitOpOutcome::failed(
+                                op,
+                                GitFailure::PatchDoesNotApply { detail: e },
+                            ),
                             index_lock: None,
                         };
                     }
                     Err(e) => {
                         return GitOpRunResult {
-                            outcome: GitOpOutcome::failed(op, GitFailure::PatchDoesNotApply {
-                                detail: e.to_string(),
-                            }),
+                            outcome: GitOpOutcome::failed(
+                                op,
+                                GitFailure::PatchDoesNotApply {
+                                    detail: e.to_string(),
+                                },
+                            ),
                             index_lock: None,
                         };
                     }
                 };
-                let mut step = CompiledStep::new(crate::details::apply_args(
-                    &options,
-                    false,
-                    file.as_deref(),
-                ));
+                let mut step =
+                    CompiledStep::new(crate::details::apply_args(&options, false, file.as_deref()));
                 step.stdin = stdin;
                 let mut res = self.run_steps(op, vec![step]).await;
                 // `--3way` prints `U <path>` on stdout and the notes on stderr.
@@ -1336,7 +1325,10 @@ impl<R: GitCliRunner> Runner<'_, R> {
                 source,
                 output,
                 reverse,
-            } => self.run_create_patch_file(op, source, output, reverse).await,
+            } => {
+                self.run_create_patch_file(op, source, output, reverse)
+                    .await
+            }
             GitOp::PatchToClipboard { source, reverse } => {
                 self.run_patch_to_clipboard(op, source, reverse).await
             }
@@ -1461,7 +1453,10 @@ impl<R: GitCliRunner> Runner<'_, R> {
             }
             GitOp::Smart(inner) => Box::pin(self.run_smart(*inner)).await,
             _ => GitOpRunResult {
-                outcome: GitOpOutcome::failed(op, GitFailure::Other("unsupported operation".into())),
+                outcome: GitOpOutcome::failed(
+                    op,
+                    GitFailure::Other("unsupported operation".into()),
+                ),
                 index_lock: None,
             },
         }
@@ -1568,25 +1563,24 @@ impl<R: GitCliRunner> Runner<'_, R> {
                     None
                 } else {
                     let abs_read = abs.clone();
-                    let bytes = match tokio::task::spawn_blocking(move || std::fs::read(&abs_read))
-                        .await
-                    {
-                        Ok(Ok(b)) => b,
-                        Ok(Err(e)) => {
-                            return Err(Box::new((
-                                GitFailure::Other(format!("failed to read '{rel}': {e}")),
-                                Vec::new(),
-                                None,
-                            )));
-                        }
-                        Err(e) => {
-                            return Err(Box::new((
-                                GitFailure::Other(format!("failed to read '{rel}': {e}")),
-                                Vec::new(),
-                                None,
-                            )));
-                        }
-                    };
+                    let bytes =
+                        match tokio::task::spawn_blocking(move || std::fs::read(&abs_read)).await {
+                            Ok(Ok(b)) => b,
+                            Ok(Err(e)) => {
+                                return Err(Box::new((
+                                    GitFailure::Other(format!("failed to read '{rel}': {e}")),
+                                    Vec::new(),
+                                    None,
+                                )));
+                            }
+                            Err(e) => {
+                                return Err(Box::new((
+                                    GitFailure::Other(format!("failed to read '{rel}': {e}")),
+                                    Vec::new(),
+                                    None,
+                                )));
+                            }
+                        };
                     jbgit_core::build_untracked_file_patch(rel, &bytes, reverse)
                 };
                 if let Some(patch_text) = maybe_patch {
@@ -1924,7 +1918,11 @@ impl<R: GitCliRunner> Runner<'_, R> {
                     true,
                 )
                 .await;
-            for oid in list.stdout.iter().filter_map(|l| l.trim().parse::<Oid>().ok()) {
+            for oid in list
+                .stdout
+                .iter()
+                .filter_map(|l| l.trim().parse::<Oid>().ok())
+            {
                 if seen.insert(oid) {
                     commits.push(oid);
                 }
@@ -1992,7 +1990,9 @@ impl<R: GitCliRunner> Runner<'_, R> {
             return fail(
                 op,
                 None,
-                GitFailure::Other("Update Project needs a checked-out branch (HEAD is detached)".into()),
+                GitFailure::Other(
+                    "Update Project needs a checked-out branch (HEAD is detached)".into(),
+                ),
             );
         };
         if current.upstream.is_empty() {
@@ -2128,7 +2128,11 @@ impl<R: GitCliRunner> Runner<'_, R> {
         let mut ranges: Vec<UpdatedRange> = Vec::new();
         let mut skipped: Vec<SkippedBranch> = Vec::new();
         if update_other_branches {
-            for head in before.heads.iter().filter(|h| !h.is_head && !h.upstream.is_empty()) {
+            for head in before
+                .heads
+                .iter()
+                .filter(|h| !h.is_head && !h.upstream.is_empty())
+            {
                 let Some(up) = fetched.tip(&head.upstream) else {
                     skipped.push(SkippedBranch {
                         branch: head.name.clone(),
@@ -2188,7 +2192,10 @@ impl<R: GitCliRunner> Runner<'_, R> {
         let mut submodule_err: Option<(GitFailure, Option<IndexLockConflict>)> = None;
         if update_submodules {
             let sub = self
-                .step(&CompiledStep::new(["submodule", "update", "--recursive"]), false)
+                .step(
+                    &CompiledStep::new(["submodule", "update", "--recursive"]),
+                    false,
+                )
                 .await;
             stderr.extend(sub.stderr.iter().cloned());
             if !sub.ok() {
@@ -2307,7 +2314,10 @@ fn sequence_editor_script(src: &Path) -> String {
 /// Copies ignored / untracked files matching `<src_workdir>/.worktreeinclude`
 /// into `dest_workdir` after `git worktree add` succeeds (never overwriting
 /// existing files in the newly created working tree).
-pub fn apply_worktreeinclude_sync(src_workdir: &std::path::Path, dest_workdir: &std::path::Path) -> Vec<String> {
+pub fn apply_worktreeinclude_sync(
+    src_workdir: &std::path::Path,
+    dest_workdir: &std::path::Path,
+) -> Vec<String> {
     let include_file = src_workdir.join(".worktreeinclude");
     let Ok(rules_text) = std::fs::read_to_string(&include_file) else {
         return Vec::new();
@@ -2549,7 +2559,9 @@ mod tests {
             v(&["remote", "rename", "--", "fork", "mine"])
         );
         assert_eq!(
-            compiled_args(&GitOp::RemoveRemote { name: "mine".into() }),
+            compiled_args(&GitOp::RemoveRemote {
+                name: "mine".into()
+            }),
             v(&["remote", "remove", "--", "mine"])
         );
         assert_eq!(
@@ -2569,10 +2581,15 @@ mod tests {
             v(&["remote", "set-url", "--push", "--", "o", "u"])
         );
         assert_eq!(
-            compiled_args(&GitOp::FetchRemote { name: "fork".into() }),
+            compiled_args(&GitOp::FetchRemote {
+                name: "fork".into()
+            }),
             v(&["fetch", "--prune", "--", "fork"])
         );
-        assert_eq!(compiled_args(&GitOp::Fetch), v(&["fetch", "--all", "--prune"]));
+        assert_eq!(
+            compiled_args(&GitOp::Fetch),
+            v(&["fetch", "--all", "--prune"])
+        );
     }
 
     #[test]
@@ -2604,7 +2621,14 @@ mod tests {
                 branch: WorktreeBranch::Detached(oid),
                 force: false,
             }),
-            v(&["worktree", "add", "--detach", "--", "/w/z", &oid.to_string()])
+            v(&[
+                "worktree",
+                "add",
+                "--detach",
+                "--",
+                "/w/z",
+                &oid.to_string()
+            ])
         );
         assert_eq!(
             compiled_args(&GitOp::AddWorktree {
@@ -2657,7 +2681,9 @@ mod tests {
                 name: "fork".into(),
                 url: "u".into(),
             },
-            GitOp::FetchRemote { name: "fork".into() },
+            GitOp::FetchRemote {
+                name: "fork".into(),
+            },
             GitOp::Pull {
                 options: PullOptions::default(),
             },
@@ -2674,7 +2700,10 @@ mod tests {
         assert!(!has(&calls[0], "GIT_ASKPASS"), "remote add is local");
         assert!(has(&calls[1], "GIT_ASKPASS") && has(&calls[1], "JBGIT_ASKPASS_TOKEN"));
         assert!(has(&calls[1], "SSH_ASKPASS_REQUIRE"));
-        assert!(has(&calls[2], "GIT_ASKPASS"), "pull keeps GIT_EDITOR and adds askpass");
+        assert!(
+            has(&calls[2], "GIT_ASKPASS"),
+            "pull keeps GIT_EDITOR and adds askpass"
+        );
         assert!(has(&calls[2], "GIT_EDITOR"));
         assert!(calls[3].env.is_empty(), "checkout is local");
 
@@ -2874,7 +2903,13 @@ mod tests {
         );
         assert_eq!(
             id_steps[1].args,
-            vec!["config", "--global", "--", "user.email", "alice@example.com"]
+            vec![
+                "config",
+                "--global",
+                "--",
+                "user.email",
+                "alice@example.com"
+            ]
         );
 
         let set_up = GitOp::SetUpstream {
@@ -2907,7 +2942,15 @@ mod tests {
         };
         assert_eq!(
             compile_simple_steps(&tag_ann).unwrap()[0].args,
-            vec!["tag", "-a", "-m", "release", "--", "v1.0", &oid(1).to_string()]
+            vec![
+                "tag",
+                "-a",
+                "-m",
+                "release",
+                "--",
+                "v1.0",
+                &oid(1).to_string()
+            ]
         );
 
         let tag_signed = GitOp::CreateTag {
@@ -3156,7 +3199,13 @@ mod tests {
         assert!(!calls[0].is_read_only);
         assert_eq!(
             calls[0].args,
-            vec!["push", "--porcelain", "--", "origin", "refs/heads/main:refs/heads/main"]
+            vec![
+                "push",
+                "--porcelain",
+                "--",
+                "origin",
+                "refs/heads/main:refs/heads/main"
+            ]
         );
         assert!(calls[0].stdin.is_none());
         assert!(calls[0].env.is_empty());
@@ -3345,7 +3394,9 @@ mod tests {
         assert!(!table.heads[1].is_head);
 
         assert_eq!(
-            clean_prepared_message("Squashed commit of the following:\n\ncommit abc\n# Conflicts:\n#\tx.rs\n\n"),
+            clean_prepared_message(
+                "Squashed commit of the following:\n\ncommit abc\n# Conflicts:\n#\tx.rs\n\n"
+            ),
             Some("Squashed commit of the following:\n\ncommit abc".to_string())
         );
         assert_eq!(clean_prepared_message("# only comments\n"), None);
@@ -3369,7 +3420,9 @@ mod tests {
         };
         let res = run_git_op(&detached, &dummy_loc(), &ids, op.clone(), None, |_| {}).await;
         assert!(!res.outcome.success);
-        assert!(matches!(res.outcome.failure, Some(GitFailure::Other(ref m)) if m.contains("detached")));
+        assert!(
+            matches!(res.outcome.failure, Some(GitFailure::Other(ref m)) if m.contains("detached"))
+        );
         assert_eq!(detached.calls().len(), 1, "nothing is stashed or fetched");
 
         let untracked = RecordingCliRunner::with_responses(vec![GitCliOutput {
@@ -3380,7 +3433,9 @@ mod tests {
             index_lock_conflict: None,
         }]);
         let res = run_git_op(&untracked, &dummy_loc(), &ids, op, None, |_| {}).await;
-        assert!(matches!(res.outcome.failure, Some(GitFailure::Other(ref m)) if m.contains("no upstream")));
+        assert!(
+            matches!(res.outcome.failure, Some(GitFailure::Other(ref m)) if m.contains("no upstream"))
+        );
         let calls = untracked.calls();
         assert_eq!(calls.len(), 1);
         assert!(calls[0].is_read_only);
@@ -3527,7 +3582,12 @@ mod tests {
                 "topic",
             ]
         );
-        assert!(onto_rebase[0].env.iter().any(|(k, v)| k == "GIT_SEQUENCE_EDITOR" && v == ":"));
+        assert!(
+            onto_rebase[0]
+                .env
+                .iter()
+                .any(|(k, v)| k == "GIT_SEQUENCE_EDITOR" && v == ":")
+        );
 
         let root_rebase = compile_simple_steps(&GitOp::Rebase {
             options: RebaseOptions {
@@ -3538,7 +3598,10 @@ mod tests {
             },
         })
         .unwrap();
-        assert_eq!(root_rebase[0].args, vec!["rebase", "--keep-empty", "--root"]);
+        assert_eq!(
+            root_rebase[0].args,
+            vec!["rebase", "--keep-empty", "--root"]
+        );
 
         // RewordHead respects hooks by default, passes --no-verify only when requested.
         let reword_hooks = compile_simple_steps(&GitOp::RewordHead {
@@ -3577,7 +3640,10 @@ mod tests {
         })
         .unwrap();
         assert_eq!(fixup_only.len(), 1);
-        assert_eq!(fixup_only[0].args, vec!["commit", &format!("--fixup={}", oid(1))]);
+        assert_eq!(
+            fixup_only[0].args,
+            vec!["commit", &format!("--fixup={}", oid(1))]
+        );
 
         let squash_only = compile_simple_steps(&GitOp::FixupCommit {
             target: oid(1),
@@ -3602,7 +3668,13 @@ mod tests {
         assert_eq!(fixup_auto.len(), 2);
         assert_eq!(
             fixup_auto[1].args,
-            vec!["rebase", "-i", "--autosquash", "--autostash", &oid(2).to_string()]
+            vec![
+                "rebase",
+                "-i",
+                "--autosquash",
+                "--autostash",
+                &oid(2).to_string()
+            ]
         );
     }
 
@@ -3631,7 +3703,10 @@ mod tests {
             force: true,
         })
         .unwrap();
-        assert_eq!(s[0].args, vec!["checkout", "-B", "feat", "--track", "origin/feat"]);
+        assert_eq!(
+            s[0].args,
+            vec!["checkout", "-B", "feat", "--track", "origin/feat"]
+        );
 
         let s = compile_simple_steps(&GitOp::CreateBranch {
             name: "feat".into(),
@@ -3640,7 +3715,10 @@ mod tests {
             track: true,
         })
         .unwrap();
-        assert_eq!(s[0].args, vec!["branch", "-f", "--track", "--", "feat", "origin/feat"]);
+        assert_eq!(
+            s[0].args,
+            vec!["branch", "-f", "--track", "--", "feat", "origin/feat"]
+        );
 
         let target = oid(7);
         let s = compile_simple_steps(&GitOp::CherryPick {
@@ -3650,7 +3728,10 @@ mod tests {
             mainline: Some(1),
         })
         .unwrap();
-        assert_eq!(s[0].args, vec!["cherry-pick", "-n", "-m", "1", &target.to_string()]);
+        assert_eq!(
+            s[0].args,
+            vec!["cherry-pick", "-n", "-m", "1", &target.to_string()]
+        );
 
         let s = compile_simple_steps(&GitOp::CherryPick {
             oids: vec![target],
@@ -3659,7 +3740,10 @@ mod tests {
             mainline: Some(2),
         })
         .unwrap();
-        assert_eq!(s[0].args, vec!["cherry-pick", "-x", "-m", "2", &target.to_string()]);
+        assert_eq!(
+            s[0].args,
+            vec!["cherry-pick", "-x", "-m", "2", &target.to_string()]
+        );
 
         let s = compile_simple_steps(&GitOp::Revert {
             oids: vec![target],
@@ -3667,7 +3751,10 @@ mod tests {
             mainline: Some(1),
         })
         .unwrap();
-        assert_eq!(s[0].args, vec!["revert", "-n", "-m", "1", &target.to_string()]);
+        assert_eq!(
+            s[0].args,
+            vec!["revert", "-n", "-m", "1", &target.to_string()]
+        );
 
         let s = compile_simple_steps(&GitOp::Revert {
             oids: vec![target],
@@ -3675,7 +3762,10 @@ mod tests {
             mainline: Some(2),
         })
         .unwrap();
-        assert_eq!(s[0].args, vec!["revert", "--no-edit", "-m", "2", &target.to_string()]);
+        assert_eq!(
+            s[0].args,
+            vec!["revert", "--no-edit", "-m", "2", &target.to_string()]
+        );
 
         let s = compile_simple_steps(&GitOp::StashPush {
             message: Some("save".into()),
@@ -3686,7 +3776,16 @@ mod tests {
         .unwrap();
         assert_eq!(
             s[0].args,
-            vec!["stash", "push", "--include-untracked", "--keep-index", "-m", "save", "--", "a.txt"]
+            vec![
+                "stash",
+                "push",
+                "--include-untracked",
+                "--keep-index",
+                "-m",
+                "save",
+                "--",
+                "a.txt"
+            ]
         );
 
         let s = compile_simple_steps(&GitOp::StashApply {
@@ -3891,7 +3990,11 @@ mod tests {
             |_| {},
         )
         .await;
-        assert!(res.outcome.success, "expected ok: {:?}", res.outcome.failure);
+        assert!(
+            res.outcome.success,
+            "expected ok: {:?}",
+            res.outcome.failure
+        );
         assert!(!inside_file.exists());
         assert!(!repo_dir.join("sub").exists());
         assert!(outside.exists());
@@ -3952,7 +4055,11 @@ mod tests {
             |_| {},
         )
         .await;
-        assert!(res.outcome.success, "CreatePatchFile failed: {:?}", res.outcome);
+        assert!(
+            res.outcome.success,
+            "CreatePatchFile failed: {:?}",
+            res.outcome
+        );
 
         let patch_bytes = std::fs::read(&patch_path).unwrap();
         assert!(
@@ -3982,10 +4089,7 @@ mod tests {
             duration_ms: 1,
             stdout_lines: Vec::new(),
             stderr_lines: vec!["fatal: Unable to create '.git/index.lock': File exists.".into()],
-            index_lock_conflict: Some((
-                git_dir.join("index.lock"),
-                "index.lock exists".into(),
-            )),
+            index_lock_conflict: Some((git_dir.join("index.lock"), "index.lock exists".into())),
         }]);
         let ids = AtomicU64::new(1);
         let res = run_git_op(
@@ -4011,15 +4115,15 @@ mod tests {
             conflict.retry_env
         );
         assert!(
-            conflict
-                .retry_env
-                .iter()
-                .any(|(k, _)| k == "GIT_EDITOR"),
+            conflict.retry_env.iter().any(|(k, _)| k == "GIT_EDITOR"),
             "expected GIT_EDITOR in retry_env, got {:?}",
             conflict.retry_env
         );
         assert!(
-            git_dir.join("jbgit-rebase").join("git-rebase-todo").is_file(),
+            git_dir
+                .join("jbgit-rebase")
+                .join("git-rebase-todo")
+                .is_file(),
             ".git/jbgit-rebase must not be deleted when RewriteHistory fails on index.lock"
         );
     }
@@ -4041,10 +4145,7 @@ mod tests {
             duration_ms: 1,
             stdout_lines: Vec::new(),
             stderr_lines: vec!["fatal: Unable to create '.git/index.lock': File exists.".into()],
-            index_lock_conflict: Some((
-                git_dir.join("index.lock"),
-                "index.lock exists".into(),
-            )),
+            index_lock_conflict: Some((git_dir.join("index.lock"), "index.lock exists".into())),
         }]);
         let ids = AtomicU64::new(1);
         let askpass = crate::askpass::AskpassEnv::new(

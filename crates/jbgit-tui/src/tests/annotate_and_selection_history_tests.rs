@@ -434,10 +434,24 @@ fn annotate_renders_hunk_dedup_uncommitted_toggles_prev_rev_diff_goto_and_errors
     ts.send_key(KeyCode::Char('j'), KeyModifiers::NONE);
     assert_eq!(ts.state().modal_stack.annotate().unwrap().cursor, 1);
     ts.send_key(KeyCode::Char('g'), KeyModifiers::NONE);
-    assert!(ts.state().modal_stack.annotate().unwrap().pending_g.is_some());
+    assert!(
+        ts.state()
+            .modal_stack
+            .annotate()
+            .unwrap()
+            .pending_g
+            .is_some()
+    );
     ts.advance_by(crate::log_view::FILE_HISTORY_G_WINDOW);
     assert!(ts.state().modal_stack.annotate().is_some());
-    assert!(ts.state().modal_stack.annotate().unwrap().pending_g.is_none());
+    assert!(
+        ts.state()
+            .modal_stack
+            .annotate()
+            .unwrap()
+            .pending_g
+            .is_none()
+    );
 
     // Double 'gg' jumps back to line 0
     ts.send_key(KeyCode::Char('g'), KeyModifiers::NONE);
@@ -562,10 +576,11 @@ fn selection_history_from_annotate_and_stage_diff_renders_range_patch_and_confir
         }),
         epoch: fh_ep,
     });
-    assert!(!ts.take_requests().iter().any(|(r, _)| matches!(
-        r,
-        TaskRequest::LoadFileDiff { .. }
-    )));
+    assert!(
+        !ts.take_requests()
+            .iter()
+            .any(|(r, _)| matches!(r, TaskRequest::LoadFileDiff { .. }))
+    );
     let diff_key = FileDiffKey {
         details: DetailsKey::single(c2),
         path: "src/auth.rs".into(),
@@ -593,13 +608,18 @@ fn selection_history_from_annotate_and_stage_diff_renders_range_patch_and_confir
     assert!(txt.contains("let ttl = 60;"));
 
     // Lower occluded Annotate Layer 2 must NOT leak hit regions into hit_registry
-    assert!(ts.state().hit_registry.find(|t| matches!(
-        t,
-        HitTarget::AnnotateLine { .. }
-            | HitTarget::AnnotateToolbar(_)
-            | HitTarget::AnnotateArea
-            | HitTarget::AnnotateDiffArea
-    )).is_none());
+    assert!(
+        ts.state()
+            .hit_registry
+            .find(|t| matches!(
+                t,
+                HitTarget::AnnotateLine { .. }
+                    | HitTarget::AnnotateToolbar(_)
+                    | HitTarget::AnnotateArea
+                    | HitTarget::AnnotateDiffArea
+            ))
+            .is_none()
+    );
 
     // Esc pops Selection History cleanly back to Annotate
     ts.send_key(KeyCode::Esc, KeyModifiers::NONE);

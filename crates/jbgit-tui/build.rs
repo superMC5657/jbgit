@@ -13,7 +13,11 @@ fn main() {
     }
 
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR"));
-    let icon_path = manifest_dir.join("..").join("..").join("assets").join("icon.ico");
+    let icon_path = manifest_dir
+        .join("..")
+        .join("..")
+        .join("assets")
+        .join("icon.ico");
     println!("cargo:rerun-if-changed={}", icon_path.display());
 
     let Ok(abs_icon) = fs::canonicalize(&icon_path) else {
@@ -49,7 +53,9 @@ fn main() {
             println!("cargo:rustc-link-arg-bins={}", res_path.display());
         }
         None => {
-            println!("cargo:warning=No Windows resource compiler (rc.exe / llvm-rc / windres) found; jbgit.exe built without icon");
+            println!(
+                "cargo:warning=No Windows resource compiler (rc.exe / llvm-rc / windres) found; jbgit.exe built without icon"
+            );
         }
     }
 }

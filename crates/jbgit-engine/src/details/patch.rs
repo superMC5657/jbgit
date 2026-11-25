@@ -207,7 +207,11 @@ mod tests {
     #[test]
     fn apply_arguments_per_mode_and_options() {
         assert_eq!(
-            apply_args(&ApplyOptions::with_mode(ApplyMode::WorkingTree), false, None),
+            apply_args(
+                &ApplyOptions::with_mode(ApplyMode::WorkingTree),
+                false,
+                None
+            ),
             vec!["apply", "--whitespace=nowarn", "-"]
         );
         assert_eq!(

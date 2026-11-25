@@ -81,10 +81,11 @@ pub fn render_log_tab(
             main_area.height,
         )
     } else {
-        let left_split =
-            state
-                .splitters
-                .split(main_area, SplitterId::LogLeftHorizontal, SplitAxis::Horizontal);
+        let left_split = state.splitters.split(
+            main_area,
+            SplitterId::LogLeftHorizontal,
+            SplitAxis::Horizontal,
+        );
         ctx.record_splitter_container(
             SplitterId::LogLeftHorizontal,
             SplitAxis::Horizontal,
@@ -157,7 +158,9 @@ pub fn render_log_tab(
                 };
                 let vis_s = visible.to_string();
                 let mut out = if visible == s.commits.len() {
-                    state.i18n.t_fmt("view.log.commits_count", &[("count", &total_s)])
+                    state
+                        .i18n
+                        .t_fmt("view.log.commits_count", &[("count", &total_s)])
                 } else {
                     state.i18n.t_fmt(
                         "view.log.commits_filtered",
@@ -166,7 +169,11 @@ pub fn render_log_tab(
                 };
                 if sel_n > 1 || (sel_n == 1 && state.log.graph.is_mark_mode()) {
                     let sel_s = sel_n.to_string();
-                    out.push_str(&state.i18n.t_fmt("view.log.selected_count", &[("count", &sel_s)]));
+                    out.push_str(
+                        &state
+                            .i18n
+                            .t_fmt("view.log.selected_count", &[("count", &sel_s)]),
+                    );
                 }
                 if s.is_shallow {
                     out.push_str(state.i18n.t("view.log.shallow_badge"));
@@ -300,7 +307,10 @@ fn render_branch_compare_bar(
             .register(Rect::new(x, area.y, w, 1), 3, target);
         x += w;
         if x < area.right() {
-            spans.push(Span::styled(" ", Style::default().bg(ctx.theme.bg_elevated)));
+            spans.push(Span::styled(
+                " ",
+                Style::default().bg(ctx.theme.bg_elevated),
+            ));
             x += 1;
         }
     }
@@ -445,7 +455,10 @@ fn render_filter_bar(
         let n_s = range.len().to_string();
         let chip = state.i18n.t_fmt(
             "filter.range_chip",
-            &[("label", &truncate_to_width(&range.label, 18)), ("count", &n_s)],
+            &[
+                ("label", &truncate_to_width(&range.label, 18)),
+                ("count", &n_s),
+            ],
         );
         let style = Style::default()
             .fg(theme.fg_bright)
@@ -455,7 +468,9 @@ fn render_filter_bar(
                 frame,
                 &mut x,
                 "×",
-                Style::default().fg(theme.fg_bright).bg(theme.border_focused),
+                Style::default()
+                    .fg(theme.fg_bright)
+                    .bg(theme.border_focused),
                 Some(HitTarget::FilterRangeClear),
                 reserve,
             );
@@ -500,9 +515,7 @@ fn render_filter_bar(
     let mut processed_active = 0usize;
     let mut hidden_active = 0usize;
 
-    let active_chip_style = Style::default()
-        .fg(theme.fg_accent_link)
-        .bg(theme.bg_panel);
+    let active_chip_style = Style::default().fg(theme.fg_accent_link).bg(theme.bg_panel);
     let clear_style = Style::default().fg(theme.fg_muted).bg(theme.bg_panel);
 
     for field in active_fields {
@@ -514,7 +527,9 @@ fn render_filter_bar(
             0
         };
         let mut label = if field == FilterField::Date {
-            state.i18n.format_date_filter_label(&filter.field_label(field))
+            state
+                .i18n
+                .format_date_filter_label(&filter.field_label(field))
         } else {
             filter.field_label(field)
         };
@@ -540,10 +555,9 @@ fn render_filter_bar(
         let chip = if full_chip.width() < budget {
             Some(full_chip)
         } else {
-            let empty_chip =
-                state
-                    .i18n
-                    .t_fmt("filter.chip", &[("field", field_title), ("label", "")]);
+            let empty_chip = state
+                .i18n
+                .t_fmt("filter.chip", &[("field", field_title), ("label", "")]);
             let overhead = empty_chip.width() + 1;
             if budget >= overhead + 3 {
                 Some(state.i18n.t_fmt(
@@ -788,8 +802,8 @@ fn render_commits_table(
         let is_cursor = row_idx == state.log.graph.selected_idx;
         let is_sel = state.log.graph.is_row_selected(row_idx);
         let has_multi = state.log.graph.has_multi_selection();
-        let is_in_current_branch = highlight_current_branch
-            && cached.current_branch_reachable.contains(perm_id as usize);
+        let is_in_current_branch =
+            highlight_current_branch && cached.current_branch_reachable.contains(perm_id as usize);
         let is_hovered = matches!(
             ctx.hover_target,
             Some(HitTarget::CommitTableRow { visible_row, .. })
@@ -939,12 +953,11 @@ fn render_commits_table(
         let is_sel = state.log.graph.is_row_selected(row_idx);
         let has_multi = state.log.graph.has_multi_selection();
         let is_head = snap.head_oid == Some(commit.oid);
-        let is_my_commit = highlight_my_commits
-            && (snap
-                .user_email
-                .as_deref()
-                .is_some_and(|e| !e.is_empty() && e.eq_ignore_ascii_case(&commit.author_email))
-                || snap
+        let is_my_commit =
+            highlight_my_commits
+                && (snap.user_email.as_deref().is_some_and(|e| {
+                    !e.is_empty() && e.eq_ignore_ascii_case(&commit.author_email)
+                }) || snap
                     .user_name
                     .as_deref()
                     .is_some_and(|n| !n.is_empty() && n == commit.author_name));
@@ -1204,12 +1217,7 @@ fn render_commits_table(
     }
 
     if speed_bar_h > 0 {
-        let bar_rect = Rect::new(
-            area.x,
-            area.bottom().saturating_sub(1),
-            area.width,
-            1,
-        );
+        let bar_rect = Rect::new(area.x, area.bottom().saturating_sub(1), area.width, 1);
         let count_txt = if speed_search.query.trim().is_empty() {
             String::new()
         } else if speed_search.matches.is_empty() {
@@ -1232,11 +1240,13 @@ fn render_commits_table(
             ),
             Span::styled(
                 count_txt,
-                Style::default().fg(if speed_search.matches.is_empty() && !speed_search.query.is_empty() {
-                    ctx.theme.status_conflicted
-                } else {
-                    ctx.theme.status_added
-                }),
+                Style::default().fg(
+                    if speed_search.matches.is_empty() && !speed_search.query.is_empty() {
+                        ctx.theme.status_conflicted
+                    } else {
+                        ctx.theme.status_added
+                    },
+                ),
             ),
             Span::styled(
                 format!("  {}", state.i18n.t("view.log.speed_search_hint")),
@@ -1264,7 +1274,11 @@ fn hovered_expanded_segment(
             ..
         } => cached.expanded_segment_of_row(*visible_row),
         HitTarget::GraphPrintElement {
-            kind: GraphHitKind::Edge { up_row, down_row } | GraphHitKind::Arrow { up_row, down_row, .. },
+            kind:
+                GraphHitKind::Edge { up_row, down_row }
+                | GraphHitKind::Arrow {
+                    up_row, down_row, ..
+                },
             ..
         } => cached.expanded_segment_at_edge(*up_row, *down_row),
         _ => None,
@@ -1296,7 +1310,13 @@ fn render_load_more_row(
         return;
     }
     let is_hovered = matches!(ctx.hover_target, Some(HitTarget::LogLoadMore));
-    let bg = row_background(is_cursor, focused, is_hovered, ctx.theme.bg_canvas, ctx.theme);
+    let bg = row_background(
+        is_cursor,
+        focused,
+        is_hovered,
+        ctx.theme.bg_canvas,
+        ctx.theme,
+    );
     let count_s = format_thousands(state.commit_page_size.max(1));
     let btn_label = if state.loading_more_commits {
         state.i18n.t("view.log.loading_more_btn").to_string()

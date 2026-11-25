@@ -169,7 +169,10 @@ pub struct ProdHost {
 }
 
 impl ProdHost {
-    pub fn new(term_guard: Option<TerminalGuard>, ui_async_tx: UnboundedSender<SessionInput>) -> Self {
+    pub fn new(
+        term_guard: Option<TerminalGuard>,
+        ui_async_tx: UnboundedSender<SessionInput>,
+    ) -> Self {
         Self {
             term_guard,
             ui_async_tx,
@@ -191,9 +194,9 @@ impl SessionHost for ProdHost {
             // Never spawn `tmux display-message` synchronously on the UI event
             // loop: update cell pixels directly from `window_size()` and
             // schedule a debounced background capability re-probe.
-            let fresh_cell_px = crossterm::terminal::window_size().ok().and_then(|w| {
-                CellPixelSize::from_window(w.columns, w.rows, w.width, w.height)
-            });
+            let fresh_cell_px = crossterm::terminal::window_size()
+                .ok()
+                .and_then(|w| CellPixelSize::from_window(w.columns, w.rows, w.width, w.height));
             let mut caps = prev_caps;
             if let Some(px) = fresh_cell_px {
                 caps.cell_px = Some(px);
@@ -634,13 +637,18 @@ impl TuiSession {
 
     /// Confirmed `[worktree] setup_command` `(worktree_path, command)` to run.
     pub fn take_worktree_setup_request(&mut self) -> Option<(PathBuf, String)> {
-        self.take_worktree_setup_task().map(|(_, dir, cmd)| (dir, cmd))
+        self.take_worktree_setup_task()
+            .map(|(_, dir, cmd)| (dir, cmd))
     }
 
     /// Task-ID-stamped `[worktree] setup_command` request for the production event loop.
     pub fn take_worktree_setup_task(&mut self) -> Option<(u64, PathBuf, String)> {
         let (dir, cmd) = self.state.pending_worktree_setup.take()?;
-        let id = self.state.pending_worktree_setup_task_id.take().unwrap_or(0);
+        let id = self
+            .state
+            .pending_worktree_setup_task_id
+            .take()
+            .unwrap_or(0);
         Some((id, dir, cmd))
     }
 
@@ -776,9 +784,7 @@ impl RepoSession {
         let scan_config = config.jbgit.performance.to_engine_config();
         let git_override = config.jbgit.git.executable.clone();
         jbgit_engine::set_configured_git_executable(git_override.clone());
-        let askpass_env = askpass
-            .as_ref()
-            .and_then(|s| s.env_for_current_exe().ok());
+        let askpass_env = askpass.as_ref().and_then(|s| s.env_for_current_exe().ok());
         match EngineSupervisor::start_with_options(
             loc,
             true,

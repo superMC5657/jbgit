@@ -111,7 +111,11 @@ pub fn render_changes_browser(
                         match b.key.path_prefix.as_deref() {
                             Some(dir) => ctx.t_fmt(
                                 "view.log_details.compare_local_dir_sub",
-                                &[("a", &b.key.oids[0].short()), ("dir", dir), ("stats", &stats)],
+                                &[
+                                    ("a", &b.key.oids[0].short()),
+                                    ("dir", dir),
+                                    ("stats", &stats),
+                                ],
                             ),
                             None => ctx.t_fmt(
                                 "view.log_details.compare_local_sub",
@@ -121,10 +125,7 @@ pub fn render_changes_browser(
                     }
                     _ if b.key.oids.len() > 1 => ctx.t_fmt(
                         "view.log_details.commits_stats_sub",
-                        &[
-                            ("count", &b.key.oids.len().to_string()),
-                            ("stats", &stats),
-                        ],
+                        &[("count", &b.key.oids.len().to_string()), ("stats", &stats)],
                     ),
                     _ => stats,
                 }
@@ -278,7 +279,10 @@ pub fn render_changes_browser(
                 ctx.theme.bg_canvas
             })
             .add_modifier(Modifier::BOLD);
-        let wrapped = wrap_text(prompt.trim_start(), list.width.saturating_sub(2).max(1) as usize);
+        let wrapped = wrap_text(
+            prompt.trim_start(),
+            list.width.saturating_sub(2).max(1) as usize,
+        );
         let lines: Vec<Line<'static>> = wrapped
             .into_iter()
             .take(list.height as usize)
@@ -322,7 +326,10 @@ pub fn render_changes_browser(
             } else {
                 ctx.theme.bg_canvas
             });
-        let wrapped = wrap_text(msg.trim_start(), list.width.saturating_sub(2).max(1) as usize);
+        let wrapped = wrap_text(
+            msg.trim_start(),
+            list.width.saturating_sub(2).max(1) as usize,
+        );
         let lines: Vec<Line<'static>> = wrapped
             .into_iter()
             .take(list.height as usize)

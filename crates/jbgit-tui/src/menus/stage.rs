@@ -12,8 +12,13 @@ use super::{dialog, op, run};
 /// `Git.Stage.Tree.Menu` for the stage tree row `idx` (plus selection).
 pub fn stage_tree_menu_items(state: &AppState, idx: usize) -> Vec<ContextMenuItem> {
     let i18n = &state.i18n;
-    let stage_sc = catalog::shortcut_for_action(state, &[KeymapScope::Commit], &KeyAction::ToggleStage);
-    let discard_sc = catalog::all_shortcuts_for_action(state, &[KeymapScope::Commit], &KeyAction::DiscardChanges);
+    let stage_sc =
+        catalog::shortcut_for_action(state, &[KeymapScope::Commit], &KeyAction::ToggleStage);
+    let discard_sc = catalog::all_shortcuts_for_action(
+        state,
+        &[KeymapScope::Commit],
+        &KeyAction::DiscardChanges,
+    );
     let edit_sc = catalog::shortcut_for_action(state, &[KeymapScope::Commit], &KeyAction::EditFile);
     let row = state.stage_workbench.rows().get(idx);
     let group = row.map(|r| r.group_kind());
@@ -129,8 +134,12 @@ pub fn stage_tree_menu_items(state: &AppState, idx: usize) -> Vec<ContextMenuIte
             items.push(run(
                 i18n.t("menu.stage.open_conflict_queue"),
                 Some('q'),
-                catalog::shortcut_for_action(state, &[KeymapScope::Global], &KeyAction::ResolveConflicts)
-                    .as_deref(),
+                catalog::shortcut_for_action(
+                    state,
+                    &[KeymapScope::Global],
+                    &KeyAction::ResolveConflicts,
+                )
+                .as_deref(),
                 vec![Action::OpenConflictQueue],
             ));
             items.push(run(
@@ -215,13 +224,19 @@ pub fn stage_tree_menu_items(state: &AppState, idx: usize) -> Vec<ContextMenuIte
             Some('g'),
             None,
             dialog(Dialog::StashPush(crate::dialogs::StashPushDialog::new(
-                i18n.t_fmt("menu.stage.stash_selected_msg", &[("count", &paths_count_s)]),
+                i18n.t_fmt(
+                    "menu.stage.stash_selected_msg",
+                    &[("count", &paths_count_s)],
+                ),
                 has_untracked,
                 paths.clone(),
             ))),
         )
         .enabled_if(has_paths, i18n.t("common.select_files"))
-        .enabled_if(!is_submodule, i18n.t("menu.stage.submodule_readonly_reason"))
+        .enabled_if(
+            !is_submodule,
+            i18n.t("menu.stage.submodule_readonly_reason"),
+        )
         .enabled_if(
             group != Some(StageNodeKind::Conflicted),
             i18n.t("menu.stage.resolve_before_stash"),
@@ -290,7 +305,8 @@ pub fn stage_tree_menu_items(state: &AppState, idx: usize) -> Vec<ContextMenuIte
         )
         .enabled_if(file_path.is_some(), i18n.t("menu.stage.select_file")),
     );
-    let history_sc = catalog::shortcut_for_action(state, &[KeymapScope::Commit], &KeyAction::FileHistory);
+    let history_sc =
+        catalog::shortcut_for_action(state, &[KeymapScope::Commit], &KeyAction::FileHistory);
     let ann_sc = catalog::shortcut_for_action(state, &[KeymapScope::Commit], &KeyAction::Annotate);
     let history_action = file_path
         .as_ref()
@@ -371,7 +387,10 @@ pub fn stage_tree_menu_items(state: &AppState, idx: usize) -> Vec<ContextMenuIte
                 edit_sc.as_deref(),
                 vec![Action::OpenExternalEditorFile(Some(p.clone()))],
             )
-            .enabled_if(!is_submodule, i18n.t("menu.stage.submodule_readonly_reason")),
+            .enabled_if(
+                !is_submodule,
+                i18n.t("menu.stage.submodule_readonly_reason"),
+            ),
         );
     }
     let count_s = paths.len().to_string();
@@ -394,7 +413,10 @@ pub fn stage_tree_menu_items(state: &AppState, idx: usize) -> Vec<ContextMenuIte
         )
         .icon("✕")
         .enabled_if(has_paths, i18n.t("common.select_files"))
-        .enabled_if(!is_submodule, i18n.t("menu.stage.submodule_readonly_reason"))
+        .enabled_if(
+            !is_submodule,
+            i18n.t("menu.stage.submodule_readonly_reason"),
+        )
         .enabled_if(
             !matches!(group, Some(StageNodeKind::AmendCommit)),
             i18n.t("menu.stage.cannot_delete_amend"),
@@ -436,10 +458,14 @@ fn stage_diff_common_items(
     path: Option<String>,
 ) -> Vec<ContextMenuItem> {
     let i18n = &state.i18n;
-    let sbs_sc = catalog::shortcut_for_action(state, &[KeymapScope::Diff], &KeyAction::ToggleSideBySide);
-    let ws_sc = catalog::shortcut_for_action(state, &[KeymapScope::Diff], &KeyAction::CycleDiffWhitespace);
-    let wrap_sc = catalog::shortcut_for_action(state, &[KeymapScope::Diff], &KeyAction::ToggleDiffSoftWrap);
-    let three_sc = catalog::shortcut_for_action(state, &[KeymapScope::Diff], &KeyAction::ThreeWayInspector);
+    let sbs_sc =
+        catalog::shortcut_for_action(state, &[KeymapScope::Diff], &KeyAction::ToggleSideBySide);
+    let ws_sc =
+        catalog::shortcut_for_action(state, &[KeymapScope::Diff], &KeyAction::CycleDiffWhitespace);
+    let wrap_sc =
+        catalog::shortcut_for_action(state, &[KeymapScope::Diff], &KeyAction::ToggleDiffSoftWrap);
+    let three_sc =
+        catalog::shortcut_for_action(state, &[KeymapScope::Diff], &KeyAction::ThreeWayInspector);
     let edit_sc = catalog::shortcut_for_action(state, &[KeymapScope::Commit], &KeyAction::EditFile);
     let ann_sc = catalog::shortcut_for_action(state, &[KeymapScope::Commit], &KeyAction::Annotate);
     let is_amend = side == Some(StageDiffSide::AmendCommit);
@@ -554,11 +580,21 @@ fn stage_diff_common_items(
 /// Right-click on the Commit tab's diff (hunk / line) view.
 pub fn stage_diff_menu_items(state: &AppState) -> Vec<ContextMenuItem> {
     let i18n = &state.i18n;
-    let stage_sc = catalog::shortcut_for_action(state, &[KeymapScope::Diff], &KeyAction::StageSelection)
-        .or_else(|| catalog::shortcut_for_action(state, &[KeymapScope::Diff], &KeyAction::ToggleStage));
-    let unstage_sc = catalog::shortcut_for_action(state, &[KeymapScope::Diff], &KeyAction::UnstageSelection)
-        .or_else(|| catalog::shortcut_for_action(state, &[KeymapScope::Diff], &KeyAction::ToggleStage));
-    let rollback_sc = catalog::all_shortcuts_for_action(state, &[KeymapScope::Diff], &KeyAction::RollbackSelection);
+    let stage_sc =
+        catalog::shortcut_for_action(state, &[KeymapScope::Diff], &KeyAction::StageSelection)
+            .or_else(|| {
+                catalog::shortcut_for_action(state, &[KeymapScope::Diff], &KeyAction::ToggleStage)
+            });
+    let unstage_sc =
+        catalog::shortcut_for_action(state, &[KeymapScope::Diff], &KeyAction::UnstageSelection)
+            .or_else(|| {
+                catalog::shortcut_for_action(state, &[KeymapScope::Diff], &KeyAction::ToggleStage)
+            });
+    let rollback_sc = catalog::all_shortcuts_for_action(
+        state,
+        &[KeymapScope::Diff],
+        &KeyAction::RollbackSelection,
+    );
     let (side, path) = diff_side_and_path(state);
     let is_readonly_type = state
         .stage_workbench
@@ -722,7 +758,10 @@ fn nearest_nested_gitignore(
     workdir: &std::path::Path,
     rel_path: &str,
 ) -> Option<(String, std::path::PathBuf)> {
-    let norm = rel_path.trim().trim_start_matches(['/', '\\']).replace('\\', "/");
+    let norm = rel_path
+        .trim()
+        .trim_start_matches(['/', '\\'])
+        .replace('\\', "/");
     let mut cur = norm.as_str();
     while let Some((parent, _)) = cur.rsplit_once('/') {
         if parent.is_empty() {
@@ -842,7 +881,13 @@ fn build_flexible_ignore_submenu(
     if let Some((nested_dir, nested_file)) = nested {
         let label = format!("{nested_dir}/.gitignore");
         sub.push(ContextMenuItem::separator());
-        push_rule_group(&mut sub, &label, false, Some(&nested_dir), Some(nested_file));
+        push_rule_group(
+            &mut sub,
+            &label,
+            false,
+            Some(&nested_dir),
+            Some(nested_file),
+        );
     }
     sub.push(ContextMenuItem::separator());
     push_rule_group(&mut sub, ".git/info/exclude", true, None, None);
@@ -851,7 +896,9 @@ fn build_flexible_ignore_submenu(
         i18n.t("menu.stage.open_gitignore_editor"),
         None,
         None,
-        vec![Action::OpenExternalEditorFile(Some(".gitignore".to_string()))],
+        vec![Action::OpenExternalEditorFile(Some(
+            ".gitignore".to_string(),
+        ))],
     ));
     sub.push(run(
         i18n.t("menu.stage.open_exclude_editor"),

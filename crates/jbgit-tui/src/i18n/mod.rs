@@ -1,10 +1,10 @@
-use std::fs;
-use std::path::Path;
 use jbgit_core::{
     BranchCategory, DiffContext, GitOp, OngoingKind, OngoingStep, PaneId, RefNameError, ResetMode,
     RewritePlanError, StageNodeKind, TodoAction, WhitespaceMode, validate_ref_name_typed,
 };
 use rustc_hash::FxHashMap;
+use std::fs;
+use std::path::Path;
 
 use crate::graph::GraphRendererMode;
 use crate::log_view::{DiffPreviewDock, FilterField, format_absolute_time};
@@ -278,7 +278,12 @@ impl I18n {
         }
     }
 
-    pub fn validate_ref_name(&self, name: &str, existing: &[&str], what_key: &str) -> Result<(), String> {
+    pub fn validate_ref_name(
+        &self,
+        name: &str,
+        existing: &[&str],
+        what_key: &str,
+    ) -> Result<(), String> {
         let what = match what_key {
             "Branch" | "branch" | "validation.what.branch" => self.t("validation.what.branch"),
             "Tag" | "tag" | "validation.what.tag" => self.t("validation.what.tag"),
@@ -316,9 +321,10 @@ impl I18n {
             RefNameError::AlreadyExists(n) => {
                 self.t_fmt("validation.exists", &[("what", what), ("name", &n)])
             }
-            RefNameError::ConflictsWithExisting(conflict) => {
-                self.t_fmt("validation.conflicts", &[("what", what), ("conflict", &conflict)])
-            }
+            RefNameError::ConflictsWithExisting(conflict) => self.t_fmt(
+                "validation.conflicts",
+                &[("what", what), ("conflict", &conflict)],
+            ),
         })
     }
 
@@ -339,17 +345,16 @@ impl I18n {
             RewritePlanError::ContainsMergeCommits => {
                 self.t_fmt("rewrite.err_merge_commits", &[("verb", verb)])
             }
-            RewritePlanError::ProtectedBranch(branch) => {
-                self.t_fmt("rewrite.err_protected", &[("verb", verb), ("branch", branch)])
-            }
+            RewritePlanError::ProtectedBranch(branch) => self.t_fmt(
+                "rewrite.err_protected",
+                &[("verb", verb), ("branch", branch)],
+            ),
         }
     }
 
     pub fn git_op_label(&self, op: &GitOp) -> String {
         match op {
-            GitOp::Checkout { target, .. } => {
-                self.t_fmt("git_op.checkout", &[("target", target)])
-            }
+            GitOp::Checkout { target, .. } => self.t_fmt("git_op.checkout", &[("target", target)]),
             GitOp::ForceCheckout { target } => {
                 self.t_fmt("git_op.force_checkout", &[("target", target)])
             }
@@ -382,10 +387,9 @@ impl I18n {
                 "git_op.delete_remote_tag",
                 &[("remote", remote), ("name", name)],
             ),
-            GitOp::PushTag { remote, name, .. } => self.t_fmt(
-                "git_op.push_tag",
-                &[("remote", remote), ("name", name)],
-            ),
+            GitOp::PushTag { remote, name, .. } => {
+                self.t_fmt("git_op.push_tag", &[("remote", remote), ("name", name)])
+            }
             GitOp::Merge { rev, options } => self.t_fmt(
                 if options.squash {
                     "git_op.squash_merge"
@@ -421,15 +425,18 @@ impl I18n {
                     None => self.t_fmt("git_op.add_worktree_detached", &[("path", &p)]),
                 }
             }
-            GitOp::RemoveWorktree { path, .. } => {
-                self.t_fmt("git_op.remove_worktree", &[("path", &path.display().to_string())])
-            }
-            GitOp::LockWorktree { path, .. } => {
-                self.t_fmt("git_op.lock_worktree", &[("path", &path.display().to_string())])
-            }
-            GitOp::UnlockWorktree { path } => {
-                self.t_fmt("git_op.unlock_worktree", &[("path", &path.display().to_string())])
-            }
+            GitOp::RemoveWorktree { path, .. } => self.t_fmt(
+                "git_op.remove_worktree",
+                &[("path", &path.display().to_string())],
+            ),
+            GitOp::LockWorktree { path, .. } => self.t_fmt(
+                "git_op.lock_worktree",
+                &[("path", &path.display().to_string())],
+            ),
+            GitOp::UnlockWorktree { path } => self.t_fmt(
+                "git_op.unlock_worktree",
+                &[("path", &path.display().to_string())],
+            ),
             GitOp::PruneWorktrees => self.t("git_op.prune_worktrees").to_string(),
             GitOp::ApplyPatch { source, .. } => match source {
                 jbgit_core::PatchInput::File(path) => {
@@ -439,14 +446,20 @@ impl I18n {
                     );
                     self.t_fmt("git_op.apply_patch_file", &[("name", &name)])
                 }
-                jbgit_core::PatchInput::Clipboard => self.t("git_op.apply_patch_clipboard").to_string(),
+                jbgit_core::PatchInput::Clipboard => {
+                    self.t("git_op.apply_patch_clipboard").to_string()
+                }
             },
             GitOp::Rebase { options } => {
-                let target = options
-                    .effective_onto()
-                    .unwrap_or(if options.root { "--root" } else { "HEAD" });
+                let target = options.effective_onto().unwrap_or(if options.root {
+                    "--root"
+                } else {
+                    "HEAD"
+                });
                 match options.effective_branch() {
-                    Some(b) => self.t_fmt("git_op.rebase_branch", &[("branch", b), ("onto", target)]),
+                    Some(b) => {
+                        self.t_fmt("git_op.rebase_branch", &[("branch", b), ("onto", target)])
+                    }
                     None => self.t_fmt("git_op.rebase_onto", &[("onto", target)]),
                 }
             }
@@ -679,7 +692,11 @@ fn parse_and_flatten_toml(content: &str) -> FxHashMap<String, String> {
     map
 }
 
-fn flatten_table(prefix: &str, table: &toml::map::Map<String, toml::Value>, out: &mut FxHashMap<String, String>) {
+fn flatten_table(
+    prefix: &str,
+    table: &toml::map::Map<String, toml::Value>,
+    out: &mut FxHashMap<String, String>,
+) {
     for (k, v) in table {
         let full_key = if prefix.is_empty() {
             k.clone()
@@ -779,7 +796,11 @@ custom_extra = "自定义内容"
         };
         state.repo_snapshot = Some(std::sync::Arc::new(snap));
 
-        let items = crate::menus::branch_menu_items(&state, "特性/分支-1", jbgit_core::RefKind::LocalBranch);
+        let items = crate::menus::branch_menu_items(
+            &state,
+            "特性/分支-1",
+            jbgit_core::RefKind::LocalBranch,
+        );
         let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
 
         assert!(labels.contains(&"检出"));
@@ -845,7 +866,10 @@ custom_extra = "自定义内容"
     #[test]
     fn test_auto_locale_returns_valid_lang() {
         let detected = detect_system_language();
-        assert!(detected == "zh-CN" || detected == "en-US", "unexpected {detected}");
+        assert!(
+            detected == "zh-CN" || detected == "en-US",
+            "unexpected {detected}"
+        );
     }
 
     #[test]
@@ -887,10 +911,13 @@ custom_extra = "自定义内容"
         );
 
         // CJK paste into InputDialog
-        state.modal_stack.push(crate::app::ModalLayer::Dialog(Box::new(
-            crate::dialogs::new_branch_from_head_dialog(None, &state.i18n),
-        )));
-        for a in crate::input::route_terminal_event(&Event::Paste("特性/中文分支\n".into()), &state) {
+        state
+            .modal_stack
+            .push(crate::app::ModalLayer::Dialog(Box::new(
+                crate::dialogs::new_branch_from_head_dialog(None, &state.i18n),
+            )));
+        for a in crate::input::route_terminal_event(&Event::Paste("特性/中文分支\n".into()), &state)
+        {
             state.dispatch(a);
         }
         if let Some(crate::app::ModalLayer::Dialog(d)) = state.modal_stack.last() {
@@ -903,9 +930,11 @@ custom_extra = "自定义内容"
         state.modal_stack.pop();
 
         // CJK paste into GoToRevision floating popup
-        state.modal_stack.push(crate::app::ModalLayer::GoToRevision {
-            query: String::new(),
-        });
+        state
+            .modal_stack
+            .push(crate::app::ModalLayer::GoToRevision {
+                query: String::new(),
+            });
         for a in crate::input::route_terminal_event(&Event::Paste("标签-发布".into()), &state) {
             state.dispatch(a);
         }
@@ -997,11 +1026,7 @@ custom_extra = "自定义内容"
         let locales_dir = dir.path().join("locales");
         std::fs::create_dir_all(&locales_dir).unwrap();
         // Place a rogue TOML outside `locales/` that `../secret` would reach without validation.
-        std::fs::write(
-            dir.path().join("secret.toml"),
-            "[common]\nok = \"PWNED\"\n",
-        )
-        .unwrap();
+        std::fs::write(dir.path().join("secret.toml"), "[common]\nok = \"PWNED\"\n").unwrap();
         let i18n = I18n::load("../secret", Some(&locales_dir));
         assert_ne!(i18n.t("common.ok"), "PWNED");
     }

@@ -25,9 +25,12 @@ pub fn verify_commit_signature_sync(git_dir: &Path, oid: Oid) -> CommitSignature
         return CommitSignature::cannot_check();
     };
     let mut cmd = crate::cli::non_interactive_std_command(&git, None);
-    cmd.arg("--git-dir")
-        .arg(git_dir)
-        .args(["log", "-1", "--format=%G?%x1f%GS%x1f%GK", &oid.to_string()]);
+    cmd.arg("--git-dir").arg(git_dir).args([
+        "log",
+        "-1",
+        "--format=%G?%x1f%GS%x1f%GK",
+        &oid.to_string(),
+    ]);
     match cmd.output() {
         Ok(o) if o.status.success() => {
             let text = String::from_utf8_lossy(&o.stdout);
@@ -392,11 +395,7 @@ fn resolve_multi_commit_changes(
     }
 
     let mut out = Vec::new();
-    for (key_path, entry) in active
-        .into_iter()
-        .chain(deleted_at)
-        .chain(displaced)
-    {
+    for (key_path, entry) in active.into_iter().chain(deleted_at).chain(displaced) {
         if entry.before.oid == entry.after.oid
             && entry.before.path == entry.after.path
             && entry.before.mode == entry.after.mode

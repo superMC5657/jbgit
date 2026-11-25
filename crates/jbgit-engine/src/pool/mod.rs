@@ -3,12 +3,12 @@ mod snapshot;
 mod stage_status;
 mod worker_pool;
 
+#[cfg(test)]
+pub(crate) use scan_config::AHEAD_BEHIND_BRANCH_LIMIT;
 pub use scan_config::{
     AheadBehindUpdate, DEFAULT_COMMIT_PAGE_SIZE, LARGE_INDEX_ENTRIES, StatusScanConfig,
     StatusScanMode, StatusScanPolicy,
 };
-#[cfg(test)]
-pub(crate) use scan_config::AHEAD_BEHIND_BRANCH_LIMIT;
 pub use snapshot::{
     MAX_INCREMENTAL_NEW_COMMITS, SnapshotCommitCache, SnapshotLoadKind, SnapshotLoadMode,
     load_repo_snapshot_incremental_sync, load_repo_snapshot_with_config_sync,
@@ -102,7 +102,9 @@ mod tests {
         assert!(StatusScanPolicy::for_index_entries(0).worktree_renames);
         assert!(StatusScanPolicy::for_index_entries(LARGE_INDEX_ENTRIES).worktree_renames);
         assert!(!StatusScanPolicy::for_index_entries(LARGE_INDEX_ENTRIES + 1).worktree_renames);
-        assert!(StatusScanPolicy::for_index_entries(LARGE_INDEX_ENTRIES + 1).recurse_untracked_dirs);
+        assert!(
+            StatusScanPolicy::for_index_entries(LARGE_INDEX_ENTRIES + 1).recurse_untracked_dirs
+        );
 
         let custom = StatusScanConfig {
             large_index_entries: 100,
@@ -129,7 +131,8 @@ mod tests {
             cfg.set_str("user.name", "Test").unwrap();
             cfg.set_str("user.email", "test@example.com").unwrap();
         }
-        repo.remote("origin", "https://example.com/repo.git").unwrap();
+        repo.remote("origin", "https://example.com/repo.git")
+            .unwrap();
         std::fs::write(root.join("a.txt"), "hello\n").unwrap();
         let mut idx = repo.index().unwrap();
         idx.add_path(Path::new("a.txt")).unwrap();
@@ -146,7 +149,9 @@ mod tests {
             let remote_ref = format!("refs/remotes/origin/b-{i:02}");
             repo.reference(&remote_ref, c1, true, "remote").unwrap();
             let mut branch = repo.branch(&format!("b-{i:02}"), &c1_commit, true).unwrap();
-            branch.set_upstream(Some(&format!("origin/b-{i:02}"))).unwrap();
+            branch
+                .set_upstream(Some(&format!("origin/b-{i:02}")))
+                .unwrap();
         }
         std::fs::write(root.join("a.txt"), "v2\n").unwrap();
         idx.add_path(Path::new("a.txt")).unwrap();

@@ -225,9 +225,8 @@ mod tests {
         let (h1, o1) = hex_oid(0x11);
         let (h2, _o2) = hex_oid(0x22);
         let (h3, o3) = hex_oid(0x33);
-        let raw = format!(
-            "+ {h2}\n- {h3} already picked subject\n- {h1}\n  - {h1}\nmalformed line\n"
-        );
+        let raw =
+            format!("+ {h2}\n- {h3} already picked subject\n- {h1}\n  - {h1}\nmalformed line\n");
         let parsed = parse_git_cherry_output(&raw);
         assert_eq!(parsed, vec![o1, o3]);
     }

@@ -856,7 +856,10 @@ fn changes_toolbar_expand_collapse_buttons_reflect_tree_state() {
     let (ex_x, ex_y) = find_glyph(&buf, "⊕");
     let (co_x, co_y) = find_glyph(&buf, "⊖");
     assert_eq!(buf[(ex_x, ex_y)].fg, ts.state().theme.fg_bright);
-    assert_eq!(buf[(ex_x, ex_y)].bg, ts.state().theme.bg_selection_unfocused);
+    assert_eq!(
+        buf[(ex_x, ex_y)].bg,
+        ts.state().theme.bg_selection_unfocused
+    );
     assert_eq!(buf[(co_x, co_y)].fg, ts.state().theme.fg_muted);
     assert_eq!(buf[(co_x, co_y)].bg, ts.state().theme.bg_panel);
 
@@ -866,7 +869,10 @@ fn changes_toolbar_expand_collapse_buttons_reflect_tree_state() {
     assert_eq!(buf[(ex_x, ex_y)].fg, ts.state().theme.fg_muted);
     assert_eq!(buf[(ex_x, ex_y)].bg, ts.state().theme.bg_panel);
     assert_eq!(buf[(co_x, co_y)].fg, ts.state().theme.fg_bright);
-    assert_eq!(buf[(co_x, co_y)].bg, ts.state().theme.bg_selection_unfocused);
+    assert_eq!(
+        buf[(co_x, co_y)].bg,
+        ts.state().theme.bg_selection_unfocused
+    );
 
     // Expand only `src` -> mixed state -> neither ⊕ nor ⊖ active.
     ts.state_mut().log.details.changes.collapsed.remove("src");
@@ -880,7 +886,10 @@ fn changes_toolbar_expand_collapse_buttons_reflect_tree_state() {
     ts.send_mouse(MouseEventKind::Down(MouseButton::Left), ex_x, ex_y);
     let buf = ts.render(140, 40);
     assert_eq!(buf[(ex_x, ex_y)].fg, ts.state().theme.fg_bright);
-    assert_eq!(buf[(ex_x, ex_y)].bg, ts.state().theme.bg_selection_unfocused);
+    assert_eq!(
+        buf[(ex_x, ex_y)].bg,
+        ts.state().theme.bg_selection_unfocused
+    );
     assert_eq!(buf[(co_x, co_y)].fg, ts.state().theme.fg_muted);
     assert_eq!(buf[(co_x, co_y)].bg, ts.state().theme.bg_panel);
 
@@ -1018,17 +1027,14 @@ fn text_filter_typing_is_debounced_into_one_graph_rebuild() {
         ts.state().log.graph.cached.as_ref().unwrap().visible_builds,
         builds
     );
-    let due = ts
-        .state()
-        .log
-        .filter
-        .text_apply_at
-        .expect("debounce armed");
+    let due = ts.state().log.filter.text_apply_at.expect("debounce armed");
     assert!(ts.next_deadline().is_some_and(|d| d <= due));
 
     // Not yet due → still nothing.
     let almost_due = due - Duration::from_millis(1);
-    let _ = ts.session.advance_to(almost_due, Some(&ts.engine), &mut ts.host);
+    let _ = ts
+        .session
+        .advance_to(almost_due, Some(&ts.engine), &mut ts.host);
     assert_eq!(ts.state().log.graph.filter_generation, generation);
 
     settle_filter(&mut ts);
@@ -1061,7 +1067,10 @@ fn snapshot_reload_with_active_filter_projects_visible_graph_once() {
     });
     let _ = ts.render(140, 30);
     let cached = ts.state().log.graph.cached.as_ref().unwrap();
-    assert_eq!(cached.visible_builds, 1, "no throw-away unfiltered projection");
+    assert_eq!(
+        cached.visible_builds, 1,
+        "no throw-away unfiltered projection"
+    );
     assert_eq!(ts.state().log.graph.visible_count(), 2);
 }
 
@@ -1220,7 +1229,9 @@ fn large_graph_rebuild_offloads_off_thread_and_drops_stale_epochs() {
     // Stale job1 cancels itself without wasting CPU or overwriting state.
     assert!(job1.run().is_none(), "superseded graph job must cancel");
     let rebuilt2 = job2.run().expect("latest graph job completes");
-    ts.deliver_ui_async(crate::app::UiAsyncEvent::LogGraphRebuilt(Box::new(rebuilt2)));
+    ts.deliver_ui_async(crate::app::UiAsyncEvent::LogGraphRebuilt(Box::new(
+        rebuilt2,
+    )));
     assert_eq!(ts.state().log.graph.visible_count(), 1);
 }
 
@@ -1228,15 +1239,7 @@ fn large_graph_rebuild_offloads_off_thread_and_drops_stale_epochs() {
 fn ahead_behind_backfill_updates_branches_without_rebuilding_graph() {
     let mut ts = fixture_session();
     let _ = ts.render(140, 40);
-    let ptr_before = Arc::as_ptr(
-        &ts.state()
-            .log
-            .graph
-            .cached
-            .as_ref()
-            .unwrap()
-            .permanent,
-    );
+    let ptr_before = Arc::as_ptr(&ts.state().log.graph.cached.as_ref().unwrap().permanent);
 
     let repo_epoch = ts
         .state()
@@ -1246,15 +1249,7 @@ fn ahead_behind_backfill_updates_branches_without_rebuilding_graph() {
         epoch: repo_epoch,
         updates: vec![("refs/heads/bugfix/ui".to_string(), (3, 2))],
     });
-    let ptr_after = Arc::as_ptr(
-        &ts.state()
-            .log
-            .graph
-            .cached
-            .as_ref()
-            .unwrap()
-            .permanent,
-    );
+    let ptr_after = Arc::as_ptr(&ts.state().log.graph.cached.as_ref().unwrap().permanent);
     assert_eq!(ptr_before, ptr_after, "backfill must not rebuild graph");
 
     let node = ts

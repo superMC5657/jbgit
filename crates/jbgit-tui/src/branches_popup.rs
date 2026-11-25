@@ -14,7 +14,9 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::app::{Action, AppState, MenuParent, ModalLayer, RenderContext};
 use crate::config::KeymapScope;
-use crate::dialogs::{Dialog, InputDialog, InputIntent, InputValidation, new_branch_from_head_dialog};
+use crate::dialogs::{
+    Dialog, InputDialog, InputIntent, InputValidation, new_branch_from_head_dialog,
+};
 use crate::hit_test::HitTarget;
 use crate::keymap::{KeyAction, KeySequence};
 use crate::menus::{branch_menu_items, ongoing_menu_items};
@@ -157,7 +159,9 @@ pub fn build_popup_rows(state: &AppState, query: &str) -> Vec<PopupRow> {
         .filter_map(|r| branch_row(state, r, q, 1).map(|(_, b)| b))
         .collect();
     if !recent.is_empty() {
-        rows.push(PopupRow::Header(state.i18n.t("view.branches_popup.recent").into()));
+        rows.push(PopupRow::Header(
+            state.i18n.t("view.branches_popup.recent").into(),
+        ));
         rows.extend(recent.into_iter().map(PopupRow::Branch));
     }
 
@@ -504,7 +508,10 @@ pub fn render_branches_popup(
         Span::styled(" 🔍 ", Style::default().fg(ctx.theme.fg_muted)),
         Span::styled(
             if query.is_empty() {
-                state.i18n.t("view.branches_popup.search_placeholder").to_string()
+                state
+                    .i18n
+                    .t("view.branches_popup.search_placeholder")
+                    .to_string()
             } else {
                 format!("{query}▏")
             },
@@ -608,7 +615,10 @@ pub fn render_branches_popup(
                 };
                 (
                     vec![Span::styled(
-                        state.i18n.t("view.branches_popup.new_branch_btn").to_string(),
+                        state
+                            .i18n
+                            .t("view.branches_popup.new_branch_btn")
+                            .to_string(),
                         Style::default().fg(fg),
                     )],
                     right,
@@ -628,7 +638,10 @@ pub fn render_branches_popup(
                 };
                 (
                     vec![Span::styled(
-                        state.i18n.t("view.branches_popup.update_project_btn").to_string(),
+                        state
+                            .i18n
+                            .t("view.branches_popup.update_project_btn")
+                            .to_string(),
                         Style::default().fg(fg),
                     )],
                     right,
@@ -648,7 +661,10 @@ pub fn render_branches_popup(
                 };
                 (
                     vec![Span::styled(
-                        state.i18n.t("view.branches_popup.pull_dialog_btn").to_string(),
+                        state
+                            .i18n
+                            .t("view.branches_popup.pull_dialog_btn")
+                            .to_string(),
                         Style::default().fg(fg),
                     )],
                     right,
@@ -668,7 +684,10 @@ pub fn render_branches_popup(
                 };
                 (
                     vec![Span::styled(
-                        state.i18n.t("view.branches_popup.rebase_dialog_btn").to_string(),
+                        state
+                            .i18n
+                            .t("view.branches_popup.rebase_dialog_btn")
+                            .to_string(),
                         Style::default().fg(fg),
                     )],
                     right,
@@ -676,14 +695,20 @@ pub fn render_branches_popup(
             }
             PopupRow::CheckoutRevision => (
                 vec![Span::styled(
-                    state.i18n.t("view.branches_popup.checkout_rev_btn").to_string(),
+                    state
+                        .i18n
+                        .t("view.branches_popup.checkout_rev_btn")
+                        .to_string(),
                     Style::default().fg(fg),
                 )],
                 Vec::new(),
             ),
             PopupRow::CleanupBranches => (
                 vec![Span::styled(
-                    state.i18n.t("view.branches_popup.cleanup_branches_btn").to_string(),
+                    state
+                        .i18n
+                        .t("view.branches_popup.cleanup_branches_btn")
+                        .to_string(),
                     Style::default().fg(fg),
                 )],
                 Vec::new(),
@@ -702,7 +727,10 @@ pub fn render_branches_popup(
                 };
                 (
                     vec![Span::styled(
-                        state.i18n.t("view.branches_popup.configure_remotes_btn").to_string(),
+                        state
+                            .i18n
+                            .t("view.branches_popup.configure_remotes_btn")
+                            .to_string(),
                         Style::default().fg(fg),
                     )],
                     right,
@@ -722,7 +750,10 @@ pub fn render_branches_popup(
                 };
                 (
                     vec![Span::styled(
-                        state.i18n.t("view.branches_popup.worktrees_btn").to_string(),
+                        state
+                            .i18n
+                            .t("view.branches_popup.worktrees_btn")
+                            .to_string(),
                         Style::default().fg(fg),
                     )],
                     right,
@@ -742,7 +773,10 @@ pub fn render_branches_popup(
                 };
                 (
                     vec![Span::styled(
-                        state.i18n.t("view.branches_popup.unshallow_btn").to_string(),
+                        state
+                            .i18n
+                            .t("view.branches_popup.unshallow_btn")
+                            .to_string(),
                         Style::default().fg(fg),
                     )],
                     right,

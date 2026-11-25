@@ -158,10 +158,8 @@ pub fn apply_linear_bek(
             continue;
         }
 
-        let mut down_nodes: Vec<VisibleRowIdx> = down_adj[merge_row_usize]
-            .iter()
-            .map(|&(d, _)| d)
-            .collect();
+        let mut down_nodes: Vec<VisibleRowIdx> =
+            down_adj[merge_row_usize].iter().map(|&(d, _)| d).collect();
         down_nodes.sort_unstable();
         down_nodes.dedup();
         if down_nodes.len() != 2 {
@@ -173,13 +171,9 @@ pub fn apply_linear_bek(
         let right_child = down_nodes[0];
         let left_child = down_nodes[1];
 
-        let Some(fragment) = find_fragment(
-            merge_row,
-            left_child,
-            right_child,
-            &down_adj,
-            &layout_of,
-        ) else {
+        let Some(fragment) =
+            find_fragment(merge_row, left_child, right_child, &down_adj, &layout_of)
+        else {
             continue;
         };
 
@@ -247,7 +241,10 @@ pub fn apply_linear_bek(
     for (row_usize, edges) in down_adj.into_iter().enumerate() {
         let up = row_usize as VisibleRowIdx;
         for (down, edge_type) in edges {
-            debug_assert!(up < down, "LinearBek violated topo invariant: {up} >= {down}");
+            debug_assert!(
+                up < down,
+                "LinearBek violated topo invariant: {up} >= {down}"
+            );
             up_counts[down as usize] += 1;
             down_edges_data.push(GraphEdge {
                 up,
@@ -346,8 +343,7 @@ fn find_fragment(
                 if next > left_child + LINEAR_BEK_MAGIC_SET_SIZE as u32 {
                     return None;
                 }
-                let ms = magic_set
-                    .get_or_insert_with(|| calculate_magic_set(left_child, down_adj));
+                let ms = magic_set.get_or_insert_with(|| calculate_magic_set(left_child, down_adj));
                 if ms.contains(&next) {
                     fragment.add_tail_edge(up_node, next);
                 } else {
@@ -362,8 +358,7 @@ fn find_fragment(
                     return None;
                 }
             } else {
-                let ms = magic_set
-                    .get_or_insert_with(|| calculate_magic_set(left_child, down_adj));
+                let ms = magic_set.get_or_insert_with(|| calculate_magic_set(left_child, down_adj));
                 if ms.contains(&next) {
                     fragment.add_tail_edge(up_node, next);
                 } else {
