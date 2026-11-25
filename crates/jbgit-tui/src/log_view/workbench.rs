@@ -95,6 +95,8 @@ pub struct LogWorkbench {
     /// Key of the currently in-flight `git cherry` request, if any.
     pub(crate) cherry_picked_requested: Option<CherryPickedKey>,
     pub(crate) branch_compare: Option<BranchCompareState>,
+    /// Last filter-error status notice emitted, so clearing the error clears only our own toast.
+    pub(crate) last_filter_error_notice: Option<String>,
 }
 
 impl LogWorkbench {
@@ -137,6 +139,7 @@ impl LogWorkbench {
             cherry_picked: None,
             cherry_picked_requested: None,
             branch_compare: None,
+            last_filter_error_notice: None,
         }
     }
 
@@ -353,6 +356,18 @@ impl LogWorkbench {
         }
     }
 
+    pub fn sync_filter_error_notice(&mut self, i18n: &I18n, status_notice: &mut Option<String>) {
+        if let Some(err) = &self.graph.filter_error {
+            let msg = i18n.t_fmt("toast.filter_error", &[("err", &err.to_string())]);
+            *status_notice = Some(msg.clone());
+            self.last_filter_error_notice = Some(msg);
+        } else if let Some(prev) = self.last_filter_error_notice.take()
+            && status_notice.as_deref() == Some(prev.as_str())
+        {
+            *status_notice = None;
+        }
+    }
+
     pub fn on_filter_changed(
         &mut self,
         snap: Option<&Arc<RepoSnapshot>>,
@@ -366,9 +381,7 @@ impl LogWorkbench {
         self.sync_affected_filter();
         self.graph.filter_generation = self.graph.filter_generation.wrapping_add(1);
         self.ensure_graph_cache(snap, branch_colors, async_enabled);
-        if let Some(err) = &self.graph.filter_error {
-            *status_notice = Some(i18n.t_fmt("toast.filter_error", &[("err", &err.to_string())]));
-        }
+        self.sync_filter_error_notice(i18n, status_notice);
     }
 
     pub fn navigate_to_branch_node(
@@ -1708,13 +1721,23 @@ impl LogWorkbench {
                 self.details.many_changes_confirmed = None;
             }
             if desired != self.details.changes.current_key {
+                let same_selection_parent_switch = self
+                    .details
+                    .changes
+                    .current_key
+                    .as_ref()
+                    .zip(desired.as_ref())
+                    .is_some_and(|(old, new)| old.mode == new.mode && old.oids == new.oids);
                 self.details.changes.current_key = desired.clone();
                 self.details.changes.selected = 0;
                 self.details.details_scroll.reset();
                 self.details.diff.reset_view_offsets();
                 self.details.pending = match desired {
                     Some(k) if ctx.diff_caches.details.get(&k).is_some() => None,
-                    Some(k) if self.details.compare_override.is_some() => {
+                    Some(k)
+                        if self.details.compare_override.is_some()
+                            || same_selection_parent_switch =>
+                    {
                         ctx.effects.push(Effect::RequestCommitDetails {
                             slot: RequestSlotId::LogCommitDetails,
                             key: k,
@@ -1724,9 +1747,17 @@ impl LogWorkbench {
                     Some(k) => Some((k, now + DETAILS_DEBOUNCE)),
                     None => None,
                 };
-                if self.details.current_bundle(ctx.diff_caches).is_none() {
+                if self.details.current_bundle(ctx.diff_caches).is_none()
+                    && !same_selection_parent_switch
+                {
                     self.details.diff.zoomed = false;
                 }
+            }
+            if self.details.diff.zoomed
+                && self.details.selected_change(ctx.diff_caches).is_none()
+                && let Some(&first_file) = self.details.file_row_positions(ctx.diff_caches).first()
+            {
+                self.details.changes.selected = first_file;
             }
         }
 

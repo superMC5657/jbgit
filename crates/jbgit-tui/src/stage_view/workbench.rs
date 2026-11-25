@@ -1400,7 +1400,7 @@ impl CommitWorkbench {
     }
 
     pub fn select_diff_line(&mut self, row_idx: usize, extend: bool) {
-        if extend {
+        if extend && self.can_enter_visual_mode().is_ok() {
             if self.visual_anchor_row.is_none() {
                 self.visual_anchor_row = Some(self.diff_cursor_row);
             }
@@ -2203,7 +2203,13 @@ impl CommitWorkbench {
                 if self.visual_anchor_row.is_some() {
                     self.visual_anchor_row = None;
                 } else {
-                    self.visual_anchor_row = Some(self.diff_cursor_row);
+                    match self.can_enter_visual_mode() {
+                        Ok(()) => self.visual_anchor_row = Some(self.diff_cursor_row),
+                        Err(Some(key)) => {
+                            *ctx.status_notice = Some(ctx.i18n.t(key).to_string());
+                        }
+                        Err(None) => {}
+                    }
                 }
             }
             Action::DiffToggleSideBySide(DiffScope::Stage) => {
@@ -2472,6 +2478,18 @@ impl CommitWorkbench {
         self.diff_scroll.set_offset(vis.saturating_sub(vh / 2));
     }
 
+    fn can_enter_visual_mode(&self) -> Result<(), Option<&'static str>> {
+        if let Some(key) = self.readonly_diff_notice_key() {
+            return Err(Some(key));
+        }
+        if let Some(diff) = self.current_diff.as_ref()
+            && (diff.is_binary || diff.is_too_large || diff.hunks.is_empty())
+        {
+            return Err(None);
+        }
+        Ok(())
+    }
+
     fn readonly_diff_notice_key(&self) -> Option<&'static str> {
         if self.diff_whitespace != WhitespaceMode::Default {
             return Some("toast.whitespace_line_staging_disabled");
@@ -2588,6 +2606,13 @@ impl CommitWorkbench {
             }
             Action::CommitEditorDeleteWord => {
                 self.editor.delete_word_backward();
+                self.mark_draft_dirty(ctx.now);
+            }
+            Action::CommitEditorSelectAll => {
+                self.editor.select_all();
+            }
+            Action::CommitEditorClearLine => {
+                self.editor.delete_to_line_start();
                 self.mark_draft_dirty(ctx.now);
             }
             Action::CommitEditorMove(kind) => match kind {

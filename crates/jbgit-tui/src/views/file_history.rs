@@ -98,82 +98,100 @@ pub fn render_file_history_modal(
         inner.height.saturating_sub(2),
     );
 
-    let compact_toolbar = toolbar_rect.width < 90;
-    let mut buttons = Vec::new();
-    if !fh.is_selection_history() {
-        let head_oid = state.repo_snapshot.as_deref().and_then(|s| s.head_oid);
-        let pinned_start_oid = match &fh.key.scope {
-            HistoryBranchScope::CurrentHead => {
-                fh.key.start_oid.filter(|oid| head_oid != Some(*oid))
-            }
-            _ => None,
-        };
-        let scope_label = match &fh.key.scope {
-            HistoryBranchScope::CurrentHead => match pinned_start_oid {
-                Some(oid) => oid.short(),
-                None => ctx.t("view.file_history.scope_head").to_string(),
-            },
-            HistoryBranchScope::AllBranches => ctx.t("view.file_history.scope_all").to_string(),
-            HistoryBranchScope::Branch(b) => {
-                truncate_to_width(b, if compact_toolbar { 8 } else { 16 })
-            }
-        };
-        let scope_active =
-            !matches!(fh.key.scope, HistoryBranchScope::CurrentHead) || pinned_start_oid.is_some();
-        buttons.push((
-            if compact_toolbar {
-                truncate_to_width(&scope_label, 8)
+    let narrow_scope_chip = toolbar_rect.width < 90;
+    let build_toolbar = |compact_toolbar: bool| {
+        let mut buttons = Vec::new();
+        if !fh.is_selection_history() {
+            let head_oid = state.repo_snapshot.as_deref().and_then(|s| s.head_oid);
+            let pinned_start_oid = match &fh.key.scope {
+                HistoryBranchScope::CurrentHead => {
+                    fh.key.start_oid.filter(|oid| head_oid != Some(*oid))
+                }
+                _ => None,
+            };
+            let scope_label = match &fh.key.scope {
+                HistoryBranchScope::CurrentHead => match pinned_start_oid {
+                    Some(oid) => oid.short(),
+                    None => ctx.t("view.file_history.scope_head").to_string(),
+                },
+                HistoryBranchScope::AllBranches => ctx.t("view.file_history.scope_all").to_string(),
+                HistoryBranchScope::Branch(b) => {
+                    truncate_to_width(b, if compact_toolbar { 8 } else { 16 })
+                }
+            };
+            let scope_active = !matches!(fh.key.scope, HistoryBranchScope::CurrentHead)
+                || pinned_start_oid.is_some();
+            buttons.push((
+                if narrow_scope_chip {
+                    truncate_to_width(&scope_label, 8)
+                } else {
+                    ctx.t_fmt("view.file_history.btn_scope", &[("scope", &scope_label)])
+                },
+                scope_active,
+                FileHistoryToolbarButton::BranchScope,
+            ));
+            let follow_label = if compact_toolbar {
+                ctx.t("view.file_history.btn_follow_compact").to_string()
+            } else if matches!(fh.key.scope, HistoryBranchScope::AllBranches) {
+                ctx.t("view.file_history.btn_follow_disabled").to_string()
             } else {
-                ctx.t_fmt("view.file_history.btn_scope", &[("scope", &scope_label)])
-            },
-            scope_active,
-            FileHistoryToolbarButton::BranchScope,
-        ));
-        let follow_label = if compact_toolbar {
-            ctx.t("view.file_history.btn_follow_compact").to_string()
-        } else if matches!(fh.key.scope, HistoryBranchScope::AllBranches) {
-            ctx.t("view.file_history.btn_follow_disabled").to_string()
+                ctx.t("view.file_history.btn_follow").to_string()
+            };
+            buttons.push((
+                follow_label,
+                fh.key.effective_follow(),
+                FileHistoryToolbarButton::FollowRenames,
+            ));
+        }
+        let toolbar_order: &[FileHistoryToolbarButton] = if compact_toolbar {
+            &[
+                FileHistoryToolbarButton::CompareLocal,
+                FileHistoryToolbarButton::SideBySide,
+                FileHistoryToolbarButton::Zoom,
+                FileHistoryToolbarButton::Context,
+                FileHistoryToolbarButton::Whitespace,
+                FileHistoryToolbarButton::SoftWrap,
+                FileHistoryToolbarButton::CommitDetails,
+                FileHistoryToolbarButton::AffectedFiles,
+                FileHistoryToolbarButton::Annotate,
+                FileHistoryToolbarButton::LocateInLog,
+            ]
         } else {
-            ctx.t("view.file_history.btn_follow").to_string()
+            &[
+                FileHistoryToolbarButton::CompareLocal,
+                FileHistoryToolbarButton::CommitDetails,
+                FileHistoryToolbarButton::AffectedFiles,
+                FileHistoryToolbarButton::SideBySide,
+                FileHistoryToolbarButton::Context,
+                FileHistoryToolbarButton::Whitespace,
+                FileHistoryToolbarButton::SoftWrap,
+                FileHistoryToolbarButton::Zoom,
+                FileHistoryToolbarButton::Annotate,
+                FileHistoryToolbarButton::LocateInLog,
+            ]
         };
-        buttons.push((
-            follow_label,
-            fh.key.effective_follow(),
-            FileHistoryToolbarButton::FollowRenames,
-        ));
-    }
-    let toolbar_order: &[FileHistoryToolbarButton] = if compact_toolbar {
-        &[
-            FileHistoryToolbarButton::CompareLocal,
-            FileHistoryToolbarButton::SideBySide,
-            FileHistoryToolbarButton::Zoom,
-            FileHistoryToolbarButton::Context,
-            FileHistoryToolbarButton::Whitespace,
-            FileHistoryToolbarButton::SoftWrap,
-            FileHistoryToolbarButton::CommitDetails,
-            FileHistoryToolbarButton::AffectedFiles,
-            FileHistoryToolbarButton::Annotate,
-            FileHistoryToolbarButton::LocateInLog,
-        ]
-    } else {
-        &[
-            FileHistoryToolbarButton::CompareLocal,
-            FileHistoryToolbarButton::CommitDetails,
-            FileHistoryToolbarButton::AffectedFiles,
-            FileHistoryToolbarButton::SideBySide,
-            FileHistoryToolbarButton::Context,
-            FileHistoryToolbarButton::Whitespace,
-            FileHistoryToolbarButton::SoftWrap,
-            FileHistoryToolbarButton::Zoom,
-            FileHistoryToolbarButton::Annotate,
-            FileHistoryToolbarButton::LocateInLog,
-        ]
+        buttons.extend(
+            toolbar_order
+                .iter()
+                .map(|&btn| file_history_toolbar_entry(btn, fh, ctx, compact_toolbar)),
+        );
+        buttons
     };
-    buttons.extend(
-        toolbar_order
+    let buttons = if toolbar_rect.width < 90 {
+        build_toolbar(true)
+    } else {
+        let full = build_toolbar(false);
+        let full_w: usize = full
             .iter()
-            .map(|&btn| file_history_toolbar_entry(btn, fh, ctx, compact_toolbar)),
-    );
+            .map(|(label, _, _)| label.width())
+            .sum::<usize>()
+            + full.len().saturating_sub(1);
+        if full_w > toolbar_rect.width as usize {
+            build_toolbar(true)
+        } else {
+            full
+        }
+    };
     render_toolbar(
         frame,
         toolbar_rect,

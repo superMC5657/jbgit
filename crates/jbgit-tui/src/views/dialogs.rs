@@ -1763,7 +1763,12 @@ fn render_message(
         inner.width,
         inner.height.saturating_sub(2),
     );
-    let mut lines: Vec<Line<'_>> = d
+    let (cur_line, cur_col) = d.cursor_line_col();
+    let sel_style = Style::default()
+        .fg(ctx.theme.fg_bright)
+        .bg(ctx.theme.bg_selection_focused);
+    let cursor_span = Span::styled("▏", Style::default().fg(ctx.theme.border_focused));
+    let lines: Vec<Line<'_>> = d
         .text
         .split('\n')
         .enumerate()
@@ -1773,17 +1778,29 @@ fn render_message(
             } else {
                 ctx.theme.fg_primary
             };
-            Line::from(Span::styled(format!(" {l}"), Style::default().fg(fg)))
+            let text_style = Style::default().fg(fg);
+            if d.selected_all && !d.text.is_empty() {
+                Line::from(vec![Span::raw(" "), Span::styled(l.to_string(), sel_style)])
+            } else if i == cur_line {
+                let split_b = l
+                    .char_indices()
+                    .nth(cur_col)
+                    .map_or(l.len(), |(idx, _)| idx);
+                let (before, after) = l.split_at(split_b);
+                let mut spans = vec![
+                    Span::styled(format!(" {before}"), text_style),
+                    cursor_span.clone(),
+                ];
+                if !after.is_empty() {
+                    spans.push(Span::styled(after.to_string(), text_style));
+                }
+                Line::from(spans)
+            } else {
+                Line::from(Span::styled(format!(" {l}"), text_style))
+            }
         })
         .collect();
-    if let Some(last) = lines.last_mut() {
-        last.spans.push(Span::styled(
-            "▏",
-            Style::default().fg(ctx.theme.border_focused),
-        ));
-    }
-    let total = lines.len() as u16;
-    let scroll = total.saturating_sub(text_area.height);
+    let scroll = (cur_line as u16 + 1).saturating_sub(text_area.height);
     frame.render_widget(
         Paragraph::new(lines)
             .wrap(Wrap { trim: false })

@@ -300,6 +300,8 @@ pub enum Action {
     CommitEditorBackspace,
     CommitEditorDelete,
     CommitEditorDeleteWord,
+    CommitEditorSelectAll,
+    CommitEditorClearLine,
     CommitEditorMove(EditorMoveKind),
     CommitEditorUndo,
     CommitEditorRedo,

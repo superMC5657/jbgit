@@ -23,6 +23,7 @@ pub struct CommitMessageEditor {
     pub lines: Vec<String>,
     pub cursor_line: usize,
     pub cursor_col: usize,
+    pub selected_all: bool,
     pub scroll_row: usize,
     scroll_vp: ScrollViewport,
     viewport_width: usize,
@@ -37,6 +38,7 @@ impl Default for CommitMessageEditor {
             lines: vec![String::new()],
             cursor_line: 0,
             cursor_col: 0,
+            selected_all: false,
             scroll_row: 0,
             scroll_vp: ScrollViewport::new(),
             viewport_width: 0,
@@ -87,6 +89,7 @@ impl CommitMessageEditor {
         };
         self.cursor_line = self.lines.len().saturating_sub(1);
         self.cursor_col = self.lines[self.cursor_line].chars().count();
+        self.selected_all = false;
         self.scroll_vp.reset();
         self.scroll_row = 0;
         self.sync_scroll_to_cursor();
@@ -99,6 +102,20 @@ impl CommitMessageEditor {
         self.lines = vec![String::new()];
         self.cursor_line = 0;
         self.cursor_col = 0;
+        self.selected_all = false;
+        self.scroll_vp.reset();
+        self.scroll_row = 0;
+    }
+
+    pub fn select_all(&mut self) {
+        self.selected_all = !self.is_empty();
+    }
+
+    fn reset_buffer_without_undo(&mut self) {
+        self.lines = vec![String::new()];
+        self.cursor_line = 0;
+        self.cursor_col = 0;
+        self.selected_all = false;
         self.scroll_vp.reset();
         self.scroll_row = 0;
     }
@@ -129,6 +146,7 @@ impl CommitMessageEditor {
         self.cursor_col = snap
             .cursor_col
             .min(self.lines[self.cursor_line].chars().count());
+        self.selected_all = false;
         self.sync_scroll_to_cursor();
         true
     }
@@ -147,6 +165,7 @@ impl CommitMessageEditor {
         self.cursor_col = snap
             .cursor_col
             .min(self.lines[self.cursor_line].chars().count());
+        self.selected_all = false;
         self.sync_scroll_to_cursor();
         true
     }
@@ -159,6 +178,9 @@ impl CommitMessageEditor {
 
     pub fn insert_char(&mut self, ch: char) {
         self.push_undo();
+        if self.selected_all {
+            self.reset_buffer_without_undo();
+        }
         let line = &mut self.lines[self.cursor_line];
         let b = Self::byte_idx_at(line, self.cursor_col);
         line.insert(b, ch);
@@ -168,6 +190,9 @@ impl CommitMessageEditor {
 
     pub fn insert_newline(&mut self) {
         self.push_undo();
+        if self.selected_all {
+            self.reset_buffer_without_undo();
+        }
         let line = &mut self.lines[self.cursor_line];
         let b = Self::byte_idx_at(line, self.cursor_col);
         let tail = line.split_off(b);
@@ -182,6 +207,9 @@ impl CommitMessageEditor {
             return;
         }
         self.push_undo();
+        if self.selected_all {
+            self.reset_buffer_without_undo();
+        }
         let norm = pasted.replace("\r\n", "\n").replace('\r', "\n");
         let mut parts = norm.split('\n');
         let first = parts.next().unwrap_or("");
@@ -211,6 +239,10 @@ impl CommitMessageEditor {
     }
 
     pub fn backspace(&mut self) {
+        if self.selected_all {
+            self.clear();
+            return;
+        }
         if self.cursor_line == 0 && self.cursor_col == 0 {
             return;
         }
@@ -231,6 +263,10 @@ impl CommitMessageEditor {
     }
 
     pub fn delete_forward(&mut self) {
+        if self.selected_all {
+            self.clear();
+            return;
+        }
         let len = self.lines[self.cursor_line].chars().count();
         if self.cursor_col < len {
             self.push_undo();
@@ -247,6 +283,10 @@ impl CommitMessageEditor {
     }
 
     pub fn delete_word_backward(&mut self) {
+        if self.selected_all {
+            self.clear();
+            return;
+        }
         if self.cursor_col == 0 {
             self.backspace();
             return;
@@ -268,7 +308,24 @@ impl CommitMessageEditor {
         self.sync_scroll_to_cursor();
     }
 
+    pub fn delete_to_line_start(&mut self) {
+        if self.selected_all {
+            self.clear();
+            return;
+        }
+        if self.cursor_col == 0 {
+            return;
+        }
+        self.push_undo();
+        let line = &mut self.lines[self.cursor_line];
+        let end = Self::byte_idx_at(line, self.cursor_col);
+        line.replace_range(..end, "");
+        self.cursor_col = 0;
+        self.sync_scroll_to_cursor();
+    }
+
     pub fn move_left(&mut self) {
+        self.selected_all = false;
         if self.cursor_col > 0 {
             self.cursor_col -= 1;
         } else if self.cursor_line > 0 {
@@ -279,6 +336,7 @@ impl CommitMessageEditor {
     }
 
     pub fn move_right(&mut self) {
+        self.selected_all = false;
         let len = self.lines[self.cursor_line].chars().count();
         if self.cursor_col < len {
             self.cursor_col += 1;
@@ -290,6 +348,7 @@ impl CommitMessageEditor {
     }
 
     pub fn move_up(&mut self) {
+        self.selected_all = false;
         if self.cursor_line > 0 {
             self.cursor_line -= 1;
             self.cursor_col = self
@@ -300,6 +359,7 @@ impl CommitMessageEditor {
     }
 
     pub fn move_down(&mut self) {
+        self.selected_all = false;
         if self.cursor_line + 1 < self.lines.len() {
             self.cursor_line += 1;
             self.cursor_col = self
@@ -310,11 +370,13 @@ impl CommitMessageEditor {
     }
 
     pub fn move_home(&mut self) {
+        self.selected_all = false;
         self.cursor_col = 0;
         self.sync_scroll_to_cursor();
     }
 
     pub fn move_end(&mut self) {
+        self.selected_all = false;
         self.cursor_col = self.lines[self.cursor_line].chars().count();
         self.sync_scroll_to_cursor();
     }

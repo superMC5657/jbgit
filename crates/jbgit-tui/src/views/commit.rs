@@ -917,7 +917,14 @@ fn render_commit_message_editor(
         };
 
         let mut spans = vec![lead];
-        if focused && row_idx == cur_row {
+        if focused && ed.selected_all && !ed.is_empty() {
+            spans.push(Span::styled(
+                wl.text.clone(),
+                Style::default()
+                    .fg(ctx.theme.fg_bright)
+                    .bg(ctx.theme.bg_selection_focused),
+            ));
+        } else if focused && row_idx == cur_row {
             let (before, after_char, rest) = split_at_visual_col(&wl.text, cur_col);
             spans.push(Span::styled(before, Style::default().fg(text_fg)));
             let cursor_ch = after_char.unwrap_or(" ");

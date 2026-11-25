@@ -302,7 +302,7 @@ impl AppState {
                         crate::dialogs::Dialog::Message(msg) => {
                             let norm = text.replace("\r\n", "\n").replace('\r', "\n");
                             if !norm.is_empty() {
-                                msg.text.push_str(&norm);
+                                msg.insert_str(&norm);
                             }
                         }
                         crate::dialogs::Dialog::Merge(m) if m.editing_message() => {

@@ -1809,3 +1809,445 @@ fn log_filter_bar_hover_preserves_active_toggle_and_input_error_styles() {
         "hovering FilterTextInput on regex error must preserve status_conflicted fg"
     );
 }
+
+// =========================================================================
+// Round 3 QA regression tests (P2-1 through P2-5 + P3-1)
+// =========================================================================
+
+#[test]
+fn round3_p2_1_regex_filter_error_toast_clears_when_filter_recovers() {
+    let mut ts = zh_session_with_snapshot(snapshot());
+
+    // Enter invalid regex filter -> status_notice reports filter error.
+    ts.dispatch(Action::ToggleFilterRegex);
+    for ch in "[invalid".chars() {
+        ts.dispatch(Action::FilterTextInput(ch));
+    }
+    ts.dispatch(Action::FilterTextDone);
+    assert!(
+        ts.state()
+            .status_notice
+            .as_deref()
+            .is_some_and(|n| n.contains("筛选错误")),
+        "invalid regex must surface filter error toast, got: {:?}",
+        ts.state().status_notice
+    );
+
+    // Clearing the text input recovers filter_error -> stale filter error toast clears.
+    ts.dispatch(Action::FilterTextClear);
+    ts.dispatch(Action::FilterTextDone);
+    assert!(
+        ts.state().log.graph.filter_error.is_none(),
+        "clearing query must clear filter_error"
+    );
+    assert!(
+        ts.state().status_notice.is_none(),
+        "stale filter error toast must clear once regex recovers, got: {:?}",
+        ts.state().status_notice
+    );
+
+    // Unrelated status_notice must NOT be clobbered when filter recovers.
+    for ch in "[bad".chars() {
+        ts.dispatch(Action::FilterTextInput(ch));
+    }
+    ts.dispatch(Action::FilterTextDone);
+    assert!(ts.state().log.graph.filter_error.is_some());
+    ts.state_mut().status_notice = Some("自定义提示".into());
+    ts.dispatch(Action::FilterTextClear);
+    ts.dispatch(Action::FilterTextDone);
+    assert_eq!(
+        ts.state().status_notice.as_deref(),
+        Some("自定义提示"),
+        "clearing filter error must not erase unrelated status_notice"
+    );
+}
+
+#[test]
+fn round3_p2_2_multi_active_filters_keep_no_merges_visible_at_140x40() {
+    use jbgit_core::{DateFilter, PathFilter, UserFilter};
+
+    // Two active filters (Date + Paths) in zh-CN at 140x40.
+    let mut ts = zh_session_with_snapshot(snapshot());
+    ts.state_mut().log.filter.spec.date = DateFilter::parse("yesterday", 1_700_000_000).unwrap();
+    ts.state_mut().log.filter.spec.paths = PathFilter::parse("src/auth.rs");
+    let buf = ts.render(140, 40);
+    let row3 = rendered_row(&buf, 3);
+    assert!(
+        row3.contains("[排除合并]"),
+        "[排除合并] must remain visible with 2 active filters at 140x40, got row 3: {row3:?}"
+    );
+    assert!(
+        ts.state()
+            .hit_registry
+            .find(|t| *t == HitTarget::FilterNoMergesToggle)
+            .is_some(),
+        "FilterNoMergesToggle hit target must be registered with 2 active filters"
+    );
+
+    // Three active filters (User + Date + Paths) in zh-CN at 140x40.
+    ts.state_mut().log.filter.spec.user = UserFilter::parse("QA");
+    let buf3 = ts.render(140, 40);
+    let row3_three = rendered_row(&buf3, 3);
+    assert!(
+        row3_three.contains("[排除合并]"),
+        "[排除合并] must remain visible with 3 active filters at 140x40, got row 3: {row3_three:?}"
+    );
+    assert!(
+        ts.state()
+            .hit_registry
+            .find(|t| *t == HitTarget::FilterNoMergesToggle)
+            .is_some(),
+        "FilterNoMergesToggle hit target must be registered with 3 active filters"
+    );
+
+    // Same check in en-US at 140x40.
+    let mut ts_en = TestSession::with_snapshot(snapshot());
+    ts_en.state_mut().log.filter.spec.date = DateFilter::parse("yesterday", 1_700_000_000).unwrap();
+    ts_en.state_mut().log.filter.spec.paths = PathFilter::parse("src/auth.rs");
+    let buf_en = ts_en.render(140, 40);
+    let row3_en = rendered_row(&buf_en, 3);
+    assert!(
+        row3_en.contains("[No Merges]"),
+        "[No Merges] must remain visible with 2 active filters in en-US at 140x40, got: {row3_en:?}"
+    );
+}
+
+#[test]
+fn round3_p2_3_lfs_binary_submodule_whitespace_block_visual_mode() {
+    use jbgit_core::{LfsDiff, LfsPointer, SubmoduleState};
+    use jbgit_engine::SubmoduleDiffInfo;
+
+    let mut ts = zh_session_with_snapshot(snapshot());
+    ts.dispatch(Action::SwitchTab(WorkspaceTab::Commit));
+
+    let make_text_diff = |path: &str| {
+        let base = b"line 1\nline 2\n";
+        let local = b"line 1\nline 2 edited\n";
+        let tracker = StageLineTracker::new(base, base, local);
+        let (hunks, is_truncated) =
+            tracker.build_interactive_hunks(false, DiffContext::Three, 1000);
+        Arc::new(ThreeDocStageDiff {
+            key: StageDiffKey {
+                path: path.into(),
+                old_path: None,
+                side: StageDiffSide::Unstaged,
+                context: DiffContext::Three,
+                whitespace: WhitespaceMode::Default,
+            },
+            vcs_exists: true,
+            staged_exists: true,
+            local_exists: true,
+            vcs_bytes: base.to_vec(),
+            staged_bytes: base.to_vec(),
+            local_bytes: local.to_vec(),
+            file_mode: 0o100644,
+            mode_change: None,
+            is_symlink: false,
+            is_binary: false,
+            binary: None,
+            is_conflicted: false,
+            submodule: None,
+            lfs: None,
+            tracker,
+            hunks,
+            is_truncated,
+            is_too_large: false,
+        })
+    };
+
+    // 1. LFS pointer blocks visual mode and emits LFS notice.
+    let mut lfs_diff = (*make_text_diff("assets/model.bin")).clone();
+    lfs_diff.lfs = Some(LfsDiff {
+        old: None,
+        new: Some(LfsPointer {
+            oid_sha256: "0123456789abcdef".into(),
+            size: 1024,
+        }),
+        filter_detected: true,
+    });
+    ts.state_mut()
+        .stage_workbench
+        .set_diff_for_test(Some(Arc::new(lfs_diff)));
+    ts.dispatch(Action::StageDiffToggleVisual);
+    assert!(
+        ts.state().stage_workbench.visual_anchor_row().is_none(),
+        "LFS pointer diff must not enter visual line-selection mode"
+    );
+    assert!(
+        ts.state()
+            .status_notice
+            .as_deref()
+            .is_some_and(|n| n.contains("LFS")),
+        "LFS pointer visual toggle should show LFS notice, got: {:?}",
+        ts.state().status_notice
+    );
+
+    // 2. Binary diff blocks visual mode (both key toggle and Shift+Click extend).
+    let mut bin_diff = (*make_text_diff("assets/logo.bin")).clone();
+    bin_diff.is_binary = true;
+    bin_diff.hunks.clear();
+    ts.state_mut()
+        .stage_workbench
+        .set_diff_for_test(Some(Arc::new(bin_diff)));
+    ts.dispatch(Action::StageDiffToggleVisual);
+    assert!(ts.state().stage_workbench.visual_anchor_row().is_none());
+    ts.dispatch(Action::StageDiffSelectLine {
+        row_idx: 0,
+        extend: true,
+    });
+    assert!(ts.state().stage_workbench.visual_anchor_row().is_none());
+
+    // 3. Submodule diff blocks visual mode.
+    let mut sub_diff = (*make_text_diff("libs/submod")).clone();
+    sub_diff.submodule = Some(SubmoduleDiffInfo {
+        head_oid: Some(oid(1)),
+        index_oid: Some(oid(1)),
+        workdir_oid: Some(oid(2)),
+        state: SubmoduleState {
+            new_commits: true,
+            dirty_workdir: true,
+            uninitialized: false,
+        },
+    });
+    ts.state_mut()
+        .stage_workbench
+        .set_diff_for_test(Some(Arc::new(sub_diff)));
+    ts.dispatch(Action::StageDiffToggleVisual);
+    assert!(ts.state().stage_workbench.visual_anchor_row().is_none());
+
+    // 4. Ignore-whitespace mode blocks visual mode.
+    ts.state_mut()
+        .stage_workbench
+        .set_diff_for_test(Some(make_text_diff("src/wide_lines.rs")));
+    ts.dispatch(Action::DiffCycleWhitespace(crate::app::DiffScope::Stage));
+    ts.dispatch(Action::StageDiffToggleVisual);
+    assert!(
+        ts.state().stage_workbench.visual_anchor_row().is_none(),
+        "ignore-whitespace mode must not enter visual line-selection mode"
+    );
+}
+
+#[test]
+fn round3_p2_4_file_history_toolbar_auto_compacts_at_140x40_with_side_by_side_and_context_10() {
+    use crate::app::DiffScope;
+    use crate::hit_test::FileHistoryToolbarButton;
+
+    let mut ts = zh_session_with_snapshot(snapshot());
+    ts.dispatch(Action::OpenFileHistory {
+        path: "src/auth.rs".into(),
+        start_oid: None,
+        follow_renames: true,
+        line_range: None,
+    });
+    ts.dispatch(Action::DiffToggleSideBySide(DiffScope::FileHistory));
+    ts.dispatch(Action::DiffCycleContext(DiffScope::FileHistory));
+    let buf = ts.render(140, 40);
+    let screen = rendered_screen(&buf);
+    assert!(
+        ts.state()
+            .hit_registry
+            .find(|t| *t == HitTarget::FileHistoryToolbar(FileHistoryToolbarButton::LocateInLog))
+            .is_some(),
+        "LocateInLog button must remain visible and clickable at 140x40 when SideBySide + Lines10 are active:\n{screen}"
+    );
+}
+
+#[test]
+fn round3_p2_5_log_zoomed_diff_stays_zoomed_when_switching_merge_parent_to_empty_changes() {
+    let p1 = super::oid_n(1);
+    let p2 = super::oid_n(2);
+    let merge_oid = super::oid_n(3);
+    let mut snap = snapshot();
+    snap.commits = vec![
+        super::make_commit(3, vec![p1, p2], "merge feature/ui-cards"),
+        super::make_commit(1, vec![], "parent 1"),
+        super::make_commit(2, vec![], "parent 2"),
+    ];
+    snap.head_oid = Some(merge_oid);
+    snap.refs = vec![local("main", 3)];
+
+    let mut ts = zh_session_with_snapshot(snap);
+    let key_p1 = DetailsKey::commits(vec![merge_oid], 0);
+    let bundle_p1 = Arc::new(CommitChangesBundle {
+        key: key_p1.clone(),
+        details: vec![super::make_details(
+            merge_oid,
+            vec![p1, p2],
+            "merge feature/ui-cards",
+        )],
+        changes: vec![jbgit_core::FileChange {
+            path: "src/card.rs".into(),
+            old_path: None,
+            kind: FileStatusKind::Modified,
+            is_binary: false,
+            old_oid: Some(oid(10)),
+            new_oid: Some(oid(11)),
+            additions: 2,
+            deletions: 1,
+            exists_in_workdir: true,
+        }],
+    });
+    ts.state_mut().diff_caches.insert_details(bundle_p1);
+    ts.state_mut().log.details.changes.current_key = Some(key_p1);
+    let file_row = ts
+        .state()
+        .log
+        .details
+        .change_rows(&ts.state().diff_caches)
+        .iter()
+        .position(|r| r.label == "card.rs")
+        .expect("card.rs row in changes tree");
+    ts.dispatch(Action::ChangesSelect(
+        crate::app::ChangesHost::Log,
+        file_row,
+    ));
+
+    // Enter fullscreen diff on parent 1/2.
+    ts.dispatch(Action::ZoomDiff(true));
+    assert!(ts.state().log.details.diff.zoomed);
+
+    // Switch to parent 2/2 (initially uncached -> loading). Must remain zoomed!
+    ts.dispatch(Action::SwitchMergeParent);
+    assert_eq!(ts.state().log.details.merge_parent, 1);
+    assert!(
+        ts.state().log.details.diff.zoomed,
+        "switching merge parent while zoomed must NOT exit fullscreen during loading"
+    );
+
+    // Deliver empty bundle for parent 2/2 (no file changes). Must remain zoomed and render cleanly!
+    let key_p2 = DetailsKey::commits(vec![merge_oid], 1);
+    let empty_bundle = Arc::new(CommitChangesBundle {
+        key: key_p2.clone(),
+        details: vec![super::make_details(
+            merge_oid,
+            vec![p1, p2],
+            "merge feature/ui-cards",
+        )],
+        changes: vec![],
+    });
+    let ep = ts
+        .state()
+        .request_slots
+        .latest(jbgit_core::RequestSlotId::LogCommitDetails);
+    ts.deliver_engine_event(EngineEvent::CommitDetailsLoaded {
+        slot: jbgit_core::RequestSlotId::LogCommitDetails,
+        bundle: empty_bundle,
+        epoch: ep,
+    });
+    assert!(
+        ts.state().log.details.diff.zoomed,
+        "empty parent 2/2 bundle must keep fullscreen diff active"
+    );
+    let buf = ts.render(140, 40);
+    let screen = rendered_screen(&buf);
+    assert!(
+        screen.contains("无差异内容") || screen.contains("无变更"),
+        "zoomed diff with empty parent changes should render clean empty state:\n{screen}"
+    );
+
+    // Pressing SwitchMergeParent again returns to parent 1/2 while staying zoomed
+    // and automatically restores selection onto the first changed file.
+    ts.dispatch(Action::SwitchMergeParent);
+    assert_eq!(ts.state().log.details.merge_parent, 0);
+    assert!(ts.state().log.details.diff.zoomed);
+    assert_eq!(
+        ts.state()
+            .log
+            .details
+            .selected_change(&ts.state().diff_caches)
+            .map(|c| c.path.as_str()),
+        Some("src/card.rs")
+    );
+}
+
+#[test]
+fn round3_p3_1_commit_editor_and_message_dialog_support_ctrl_a_and_multiline_editing() {
+    use crate::dialogs::{Dialog, MessageDialog, MessageIntent};
+
+    // 1. CommitMessageEditor: Ctrl+a select-all, replace, undo, backspace, Ctrl+u.
+    let mut ts = zh_session_with_snapshot(snapshot());
+    ts.dispatch(Action::SwitchTab(WorkspaceTab::Commit));
+    ts.dispatch(Action::FocusPane(jbgit_core::PaneId::CommitMessageEditor));
+    ts.dispatch(Action::CommitEditorPaste(
+        "feat: old title\nbody line".into(),
+    ));
+    assert_eq!(
+        ts.state().stage_workbench.editor().text(),
+        "feat: old title\nbody line"
+    );
+
+    ts.send_key(KeyCode::Char('a'), KeyModifiers::CONTROL);
+    assert!(ts.state().stage_workbench.editor().selected_all);
+    // Rendering while selected_all applies selection background highlight cleanly.
+    let _ = ts.render(140, 40);
+
+    // Typing replaces the entire selected text in a single undoable step.
+    ts.send_key(KeyCode::Char('X'), KeyModifiers::NONE);
+    assert_eq!(ts.state().stage_workbench.editor().text(), "X");
+    assert!(!ts.state().stage_workbench.editor().selected_all);
+    ts.send_key(KeyCode::Char('z'), KeyModifiers::CONTROL);
+    assert_eq!(
+        ts.state().stage_workbench.editor().text(),
+        "feat: old title\nbody line"
+    );
+
+    // Ctrl+a + Backspace clears the whole editor.
+    ts.send_key(KeyCode::Char('a'), KeyModifiers::CONTROL);
+    ts.send_key(KeyCode::Backspace, KeyModifiers::NONE);
+    assert_eq!(ts.state().stage_workbench.editor().text(), "");
+
+    // Ctrl+u deletes to line start.
+    ts.dispatch(Action::CommitEditorPaste("prefix_keep".into()));
+    ts.send_key(KeyCode::Left, KeyModifiers::NONE);
+    ts.send_key(KeyCode::Left, KeyModifiers::NONE);
+    ts.send_key(KeyCode::Left, KeyModifiers::NONE);
+    ts.send_key(KeyCode::Left, KeyModifiers::NONE);
+    ts.send_key(KeyCode::Char('u'), KeyModifiers::CONTROL);
+    assert_eq!(ts.state().stage_workbench.editor().text(), "keep");
+
+    // 2. Dialog::Message (Reword): Ctrl+a, Ctrl+u, cursor nav, Delete, paste.
+    ts.dispatch(Action::OpenDialog(Box::new(Dialog::Message(
+        MessageDialog::new(
+            "Reword Commit",
+            "line one\nline two".into(),
+            MessageIntent::RewordHead,
+        ),
+    ))));
+
+    // Move Home, Delete first char of line two ('l' -> "ine two"), Up, End, insert '!'.
+    ts.send_key(KeyCode::Home, KeyModifiers::NONE);
+    ts.send_key(KeyCode::Delete, KeyModifiers::NONE);
+    ts.send_key(KeyCode::Up, KeyModifiers::NONE);
+    ts.send_key(KeyCode::End, KeyModifiers::NONE);
+    ts.send_key(KeyCode::Char('!'), KeyModifiers::NONE);
+    if let Some(ModalLayer::Dialog(d)) = ts.state().modal_stack.last()
+        && let Dialog::Message(m) = d.as_ref()
+    {
+        assert_eq!(m.text, "line one!\nine two");
+    } else {
+        panic!("expected MessageDialog");
+    }
+
+    // Ctrl+a + paste replaces all text.
+    ts.send_key(KeyCode::Char('a'), KeyModifiers::CONTROL);
+    let _ = ts.render(140, 40);
+    ts.dispatch(Action::ModalPaste("reworded message".into()));
+    if let Some(ModalLayer::Dialog(d)) = ts.state().modal_stack.last()
+        && let Dialog::Message(m) = d.as_ref()
+    {
+        assert_eq!(m.text, "reworded message");
+        assert!(!m.selected_all);
+    } else {
+        panic!("expected MessageDialog");
+    }
+
+    // Ctrl+u clears the message.
+    ts.send_key(KeyCode::Char('u'), KeyModifiers::CONTROL);
+    if let Some(ModalLayer::Dialog(d)) = ts.state().modal_stack.last()
+        && let Dialog::Message(m) = d.as_ref()
+    {
+        assert_eq!(m.text, "");
+    } else {
+        panic!("expected MessageDialog");
+    }
+}

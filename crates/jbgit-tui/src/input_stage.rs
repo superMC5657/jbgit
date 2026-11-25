@@ -42,6 +42,8 @@ pub(crate) fn route_commit_priority_key(key: &KeyEvent, state: &AppState) -> Opt
             KeyCode::Backspace if alt => vec![Action::CommitEditorDeleteWord],
             KeyCode::Backspace => vec![Action::CommitEditorBackspace],
             KeyCode::Delete => vec![Action::CommitEditorDelete],
+            KeyCode::Char('a') if ctrl && !alt => vec![Action::CommitEditorSelectAll],
+            KeyCode::Char('u') if ctrl && !alt => vec![Action::CommitEditorClearLine],
             KeyCode::Char('w') if ctrl => vec![Action::CommitEditorDeleteWord],
             KeyCode::Char('z') if ctrl && shift => vec![Action::CommitEditorRedo],
             KeyCode::Char('z') if ctrl => vec![Action::CommitEditorUndo],

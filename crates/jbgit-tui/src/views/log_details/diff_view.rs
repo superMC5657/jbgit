@@ -425,7 +425,13 @@ pub fn render_zoomed_diff(
         .details
         .selected_change(&state.diff_caches)
         .map(|c| c.path.clone())
-        .unwrap_or_default();
+        .unwrap_or_else(
+            || match state.log.details.changes.current_bundle(&state.diff_caches) {
+                None => ctx.t("common.loading").to_string(),
+                Some(b) if b.changes.is_empty() => ctx.t("diff.no_changes").to_string(),
+                Some(_) => String::new(),
+            },
+        );
     let mut header = ctx.t_fmt(
         "view.log_details.zoom_header",
         &[
@@ -1282,10 +1288,10 @@ pub fn render_diff_preview(
     let h = body.height as usize;
     let Some(change) = changes.selected_change(caches) else {
         ctx.record_scroll_bound(host.scroll_pane(), h, 0);
-        let msg = if changes.current_bundle(caches).is_none() {
-            ctx.t("common.loading")
-        } else {
-            ctx.t("view.log_details.select_file_diff")
+        let msg = match changes.current_bundle(caches) {
+            None => ctx.t("common.loading"),
+            Some(bundle) if bundle.changes.is_empty() => ctx.t("view.log_details.no_changes"),
+            Some(_) => ctx.t("view.log_details.select_file_diff"),
         };
         frame.render_widget(muted_line(ctx, msg), body);
         return;

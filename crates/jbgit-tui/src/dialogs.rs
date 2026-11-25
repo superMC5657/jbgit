@@ -805,16 +805,179 @@ pub enum MessageIntent {
 pub struct MessageDialog {
     pub title: String,
     pub text: String,
+    /// Cursor position as a Unicode scalar (`char`) index into `text`.
+    pub cursor: usize,
+    pub selected_all: bool,
     pub intent: MessageIntent,
 }
 
 impl MessageDialog {
     pub fn new(title: impl Into<String>, text: String, intent: MessageIntent) -> Self {
+        let cursor = text.chars().count();
         Self {
             title: title.into(),
             text,
+            cursor,
+            selected_all: false,
             intent,
         }
+    }
+
+    fn clamped_cursor(&self) -> usize {
+        self.cursor.min(self.text.chars().count())
+    }
+
+    fn byte_idx_at(&self, char_idx: usize) -> usize {
+        self.text
+            .char_indices()
+            .nth(char_idx)
+            .map_or(self.text.len(), |(idx, _)| idx)
+    }
+
+    pub fn select_all(&mut self) {
+        self.selected_all = !self.text.is_empty();
+    }
+
+    pub fn clear(&mut self) {
+        self.text.clear();
+        self.cursor = 0;
+        self.selected_all = false;
+    }
+
+    pub fn insert_char(&mut self, c: char) {
+        if self.selected_all {
+            self.clear();
+        }
+        let cur = self.clamped_cursor();
+        let b = self.byte_idx_at(cur);
+        self.text.insert(b, c);
+        self.cursor = cur + 1;
+    }
+
+    pub fn insert_str(&mut self, s: &str) {
+        if s.is_empty() {
+            return;
+        }
+        if self.selected_all {
+            self.clear();
+        }
+        let cur = self.clamped_cursor();
+        let b = self.byte_idx_at(cur);
+        self.text.insert_str(b, s);
+        self.cursor = cur + s.chars().count();
+    }
+
+    pub fn backspace(&mut self) {
+        if self.selected_all {
+            self.clear();
+            return;
+        }
+        let cur = self.clamped_cursor();
+        if cur == 0 {
+            self.cursor = 0;
+            return;
+        }
+        let start = self.byte_idx_at(cur - 1);
+        let end = self.byte_idx_at(cur);
+        self.text.replace_range(start..end, "");
+        self.cursor = cur - 1;
+    }
+
+    pub fn delete_forward(&mut self) {
+        if self.selected_all {
+            self.clear();
+            return;
+        }
+        let cur = self.clamped_cursor();
+        let len = self.text.chars().count();
+        if cur >= len {
+            self.cursor = len;
+            return;
+        }
+        let start = self.byte_idx_at(cur);
+        let end = self.byte_idx_at(cur + 1);
+        self.text.replace_range(start..end, "");
+        self.cursor = cur;
+    }
+
+    pub fn move_left(&mut self) {
+        self.selected_all = false;
+        self.cursor = self.clamped_cursor().saturating_sub(1);
+    }
+
+    pub fn move_right(&mut self) {
+        self.selected_all = false;
+        let len = self.text.chars().count();
+        self.cursor = (self.clamped_cursor() + 1).min(len);
+    }
+
+    pub fn move_home(&mut self) {
+        self.selected_all = false;
+        let cur = self.clamped_cursor();
+        let chars: Vec<char> = self.text.chars().collect();
+        let mut idx = cur;
+        while idx > 0 && chars[idx - 1] != '\n' {
+            idx -= 1;
+        }
+        self.cursor = idx;
+    }
+
+    pub fn move_end(&mut self) {
+        self.selected_all = false;
+        let cur = self.clamped_cursor();
+        let chars: Vec<char> = self.text.chars().collect();
+        let mut idx = cur;
+        while idx < chars.len() && chars[idx] != '\n' {
+            idx += 1;
+        }
+        self.cursor = idx;
+    }
+
+    pub fn move_up(&mut self) {
+        self.selected_all = false;
+        let (line, col) = self.cursor_line_col();
+        if line == 0 {
+            return;
+        }
+        self.cursor = self.char_idx_at_line_col(line - 1, col);
+    }
+
+    pub fn move_down(&mut self) {
+        self.selected_all = false;
+        let (line, col) = self.cursor_line_col();
+        let total_lines = self.text.split('\n').count();
+        if line + 1 >= total_lines {
+            return;
+        }
+        self.cursor = self.char_idx_at_line_col(line + 1, col);
+    }
+
+    /// Returns `(line_idx, char_col)` of the cursor within `self.text.split('\n')`.
+    pub fn cursor_line_col(&self) -> (usize, usize) {
+        let cur = self.clamped_cursor();
+        let mut line = 0usize;
+        let mut col = 0usize;
+        for ch in self.text.chars().take(cur) {
+            if ch == '\n' {
+                line += 1;
+                col = 0;
+            } else {
+                col += 1;
+            }
+        }
+        (line, col)
+    }
+
+    fn char_idx_at_line_col(&self, target_line: usize, target_col: usize) -> usize {
+        let mut idx = 0usize;
+        for (i, line) in self.text.split('\n').enumerate() {
+            let len = line.chars().count();
+            if i == target_line {
+                return idx + target_col.min(len);
+            }
+            idx += len + 1;
+        }
+        self.text.chars().count()
     }
 
     pub fn confirm_actions(&self, i18n: &I18n) -> Vec<Action> {
@@ -2586,16 +2749,52 @@ pub fn route_dialog_key(dialog: &mut Dialog, key: &KeyEvent, i18n: &I18n) -> Dia
         Dialog::Message(d) => match key.code {
             KeyCode::Enter if ctrl || alt => DialogKey::Confirm,
             KeyCode::Char('s') if ctrl => DialogKey::Confirm,
+            KeyCode::Char('a') if ctrl && !alt => {
+                d.select_all();
+                DialogKey::Redraw
+            }
+            KeyCode::Char('u') if ctrl && !alt => {
+                d.clear();
+                DialogKey::Redraw
+            }
+            KeyCode::Left => {
+                d.move_left();
+                DialogKey::Redraw
+            }
+            KeyCode::Right => {
+                d.move_right();
+                DialogKey::Redraw
+            }
+            KeyCode::Up => {
+                d.move_up();
+                DialogKey::Redraw
+            }
+            KeyCode::Down => {
+                d.move_down();
+                DialogKey::Redraw
+            }
+            KeyCode::Home => {
+                d.move_home();
+                DialogKey::Redraw
+            }
+            KeyCode::End => {
+                d.move_end();
+                DialogKey::Redraw
+            }
             KeyCode::Enter => {
-                d.text.push('\n');
+                d.insert_char('\n');
                 DialogKey::Redraw
             }
             KeyCode::Backspace => {
-                d.text.pop();
+                d.backspace();
+                DialogKey::Redraw
+            }
+            KeyCode::Delete => {
+                d.delete_forward();
                 DialogKey::Redraw
             }
             KeyCode::Char(c) if plain && !c.is_control() => {
-                d.text.push(c);
+                d.insert_char(c);
                 DialogKey::Redraw
             }
             _ => DialogKey::None,

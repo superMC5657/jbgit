@@ -146,12 +146,8 @@ impl AppState {
             }
             UiAsyncEvent::LogGraphRebuilt(rebuilt) => {
                 if self.log.graph.apply_rebuilt(*rebuilt) {
-                    if let Some(err) = &self.log.graph.filter_error {
-                        self.status_notice = Some(
-                            self.i18n
-                                .t_fmt("toast.filter_error", &[("err", &err.to_string())]),
-                        );
-                    }
+                    self.log
+                        .sync_filter_error_notice(&self.i18n, &mut self.status_notice);
                     self.needs_redraw = true;
                     let now = self.now();
                     self.reconcile_log_requests(now, &mut effects);
