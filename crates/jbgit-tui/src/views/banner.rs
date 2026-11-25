@@ -126,7 +126,7 @@ pub fn render_banner(
                     ka,
                 );
                 let text = match sc {
-                    Some(k) => format!("{lbl} {k}"),
+                    Some(k) => format!(" {} {k} ", lbl.trim()),
                     None => (*lbl).to_string(),
                 };
                 (text, *btn)

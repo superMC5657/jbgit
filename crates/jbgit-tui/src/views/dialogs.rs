@@ -182,17 +182,31 @@ fn render_new_branch(
     } else {
         ctx.theme.bg_panel
     };
-    let shown = if name_focused {
-        format!(" {}▌", d.value)
+    let val_shown = truncate_to_width(&d.value, w.saturating_sub(3));
+    let input_line = if name_focused && d.selected_all && !val_shown.is_empty() {
+        Line::from(vec![
+            Span::styled(" ", Style::default().fg(ctx.theme.fg_bright).bg(field_bg)),
+            Span::styled(
+                val_shown,
+                Style::default()
+                    .fg(ctx.theme.fg_bright)
+                    .bg(ctx.theme.border_focused),
+            ),
+            Span::styled("▌", Style::default().fg(ctx.theme.fg_bright).bg(field_bg)),
+        ])
     } else {
-        format!(" {}", d.value)
-    };
-    frame.render_widget(
-        Paragraph::new(Span::styled(
-            truncate_to_width(&shown, w),
+        let shown = if name_focused {
+            format!(" {val_shown}▌")
+        } else {
+            format!(" {val_shown}")
+        };
+        Line::from(Span::styled(
+            shown,
             Style::default().fg(ctx.theme.fg_bright).bg(field_bg),
         ))
-        .style(Style::default().bg(field_bg)),
+    };
+    frame.render_widget(
+        Paragraph::new(input_line).style(Style::default().bg(field_bg)),
         Rect::new(inner.x, y, inner.width, 1),
     );
     y += 1;
@@ -315,17 +329,31 @@ fn render_stash_push(
     } else {
         ctx.theme.bg_panel
     };
-    let shown = if msg_focused {
-        format!(" {}▌", d.message)
+    let msg_shown = truncate_to_width(&d.message, w.saturating_sub(3));
+    let msg_line = if msg_focused && d.selected_all && !msg_shown.is_empty() {
+        Line::from(vec![
+            Span::styled(" ", Style::default().fg(ctx.theme.fg_bright).bg(field_bg)),
+            Span::styled(
+                msg_shown,
+                Style::default()
+                    .fg(ctx.theme.fg_bright)
+                    .bg(ctx.theme.border_focused),
+            ),
+            Span::styled("▌", Style::default().fg(ctx.theme.fg_bright).bg(field_bg)),
+        ])
     } else {
-        format!(" {}", d.message)
-    };
-    frame.render_widget(
-        Paragraph::new(Span::styled(
-            truncate_to_width(&shown, w),
+        let shown = if msg_focused {
+            format!(" {msg_shown}▌")
+        } else {
+            format!(" {msg_shown}")
+        };
+        Line::from(Span::styled(
+            shown,
             Style::default().fg(ctx.theme.fg_bright).bg(field_bg),
         ))
-        .style(Style::default().bg(field_bg)),
+    };
+    frame.render_widget(
+        Paragraph::new(msg_line).style(Style::default().bg(field_bg)),
         Rect::new(inner.x, y, inner.width, 1),
     );
     y += 2;
@@ -453,6 +481,21 @@ fn render_identity(
         }
     };
 
+    let render_identity_input = |val: &str, active: bool, cur: &str| -> Line<'static> {
+        let shown = truncate_to_width(val, w.saturating_sub(4));
+        let pad = " ".repeat(w.saturating_sub(shown.width() + 3));
+        let base = field_style(active);
+        if active && d.selected_all && !shown.is_empty() {
+            Line::from(vec![
+                Span::styled(" ", base),
+                Span::styled(shown, base.bg(ctx.theme.bg_selection_focused)),
+                Span::styled(format!("{cur}{pad}"), base),
+            ])
+        } else {
+            Line::from(Span::styled(format!(" {shown}{cur}{pad}"), base))
+        }
+    };
+
     let lines = vec![
         Line::from(Span::styled(
             format!(
@@ -465,26 +508,12 @@ fn render_identity(
             format!(" {}", ctx.t("dialog.identity.name_label")),
             Style::default().fg(ctx.theme.fg_primary),
         )),
-        Line::from(Span::styled(
-            format!(
-                " {}{name_cur}{}",
-                truncate_to_width(&d.name, w.saturating_sub(4)),
-                " ".repeat(w.saturating_sub(d.name.width() + 3))
-            ),
-            field_style(d.focused == IdentityField::Name),
-        )),
+        render_identity_input(&d.name, d.focused == IdentityField::Name, name_cur),
         Line::from(Span::styled(
             format!(" {}", ctx.t("dialog.identity.email_label")),
             Style::default().fg(ctx.theme.fg_primary),
         )),
-        Line::from(Span::styled(
-            format!(
-                " {}{email_cur}{}",
-                truncate_to_width(&d.email, w.saturating_sub(4)),
-                " ".repeat(w.saturating_sub(d.email.width() + 3))
-            ),
-            field_style(d.focused == IdentityField::Email),
-        )),
+        render_identity_input(&d.email, d.focused == IdentityField::Email, email_cur),
         Line::from(Span::styled(
             format!(
                 " [{}] {}   (Space)",
@@ -507,12 +536,22 @@ fn render_identity(
                 }),
         )),
         match &err {
-            Some(e) => Line::from(Span::styled(
+            Some(e) if d.validation_shown => Line::from(Span::styled(
                 format!(" ✕ {}", truncate_to_width(e, w.saturating_sub(4))),
                 Style::default().fg(ctx.theme.status_conflicted),
             )),
+            Some(_) => Line::from(Span::styled(
+                format!(
+                    " {}",
+                    truncate_to_width(ctx.t("dialog.identity.hint"), w.saturating_sub(2))
+                ),
+                Style::default().fg(ctx.theme.fg_muted),
+            )),
             None => Line::from(Span::styled(
-                format!(" ✓ {}", ctx.t("dialog.identity.hint")),
+                format!(
+                    " ✓ {}",
+                    truncate_to_width(ctx.t("dialog.identity.hint"), w.saturating_sub(4))
+                ),
                 Style::default().fg(ctx.theme.status_added),
             )),
         },
@@ -620,14 +659,21 @@ fn render_credential(
                 ))
             })
             .collect();
-        lines.push(Line::from(Span::styled(
-            format!(" {}▏", truncate_to_width(&shown, w.saturating_sub(4)))
-                + &" ".repeat(w.saturating_sub(shown.width() + 3)),
-            Style::default()
-                .fg(ctx.theme.fg_bright)
-                .bg(ctx.theme.bg_panel)
-                .add_modifier(Modifier::UNDERLINED),
-        )));
+        let shown_val = truncate_to_width(&shown, w.saturating_sub(4));
+        let val_pad = " ".repeat(w.saturating_sub(shown_val.width() + 3));
+        let cred_base = Style::default()
+            .fg(ctx.theme.fg_bright)
+            .bg(ctx.theme.bg_panel)
+            .add_modifier(Modifier::UNDERLINED);
+        lines.push(if d.selected_all && !shown_val.is_empty() {
+            Line::from(vec![
+                Span::styled(" ", cred_base),
+                Span::styled(shown_val, cred_base.bg(ctx.theme.bg_selection_focused)),
+                Span::styled(format!("▏{val_pad}"), cred_base),
+            ])
+        } else {
+            Line::from(Span::styled(format!(" {shown_val}▏{val_pad}"), cred_base))
+        });
         lines.push(Line::from(Span::styled(
             format!(
                 " {}",
@@ -678,6 +724,21 @@ fn render_credential(
     } else {
         "dialog.credential.hint_masked"
     };
+    let shown_val = truncate_to_width(&shown, w.saturating_sub(4));
+    let val_pad = " ".repeat(w.saturating_sub(shown_val.width() + 3));
+    let cred_base = Style::default()
+        .fg(ctx.theme.fg_bright)
+        .bg(ctx.theme.bg_panel)
+        .add_modifier(Modifier::UNDERLINED);
+    let cred_input_line = if d.selected_all && !shown_val.is_empty() {
+        Line::from(vec![
+            Span::styled(" ", cred_base),
+            Span::styled(shown_val, cred_base.bg(ctx.theme.bg_selection_focused)),
+            Span::styled(format!("▏{val_pad}"), cred_base),
+        ])
+    } else {
+        Line::from(Span::styled(format!(" {shown_val}▏{val_pad}"), cred_base))
+    };
     let lines = vec![
         Line::from(Span::styled(
             format!(" {}", truncate_to_width(&d.prompt, w.saturating_sub(2))),
@@ -685,14 +746,7 @@ fn render_credential(
                 .fg(ctx.theme.fg_primary)
                 .add_modifier(Modifier::BOLD),
         )),
-        Line::from(Span::styled(
-            format!(" {}▏", truncate_to_width(&shown, w.saturating_sub(4)))
-                + &" ".repeat(w.saturating_sub(shown.width() + 3)),
-            Style::default()
-                .fg(ctx.theme.fg_bright)
-                .bg(ctx.theme.bg_panel)
-                .add_modifier(Modifier::UNDERLINED),
-        )),
+        cred_input_line,
         Line::from(Span::styled(
             format!(
                 " {}",
@@ -1364,6 +1418,27 @@ fn render_rebase_options(
     );
 }
 
+fn format_input_checkbox_line(on: bool, label: &str, hint: &str, inner_w: usize) -> String {
+    let prefix = format!(" [{}] ", if on { "x" } else { " " });
+    let suffix = format!("   ({hint})");
+    let fixed_w = prefix.width() + suffix.width();
+    if inner_w > fixed_w + 1 {
+        let avail = inner_w.saturating_sub(fixed_w + 1);
+        return format!("{prefix}{}{suffix}", truncate_to_width(label, avail));
+    }
+    let compact_suffix = format!(" ({hint})");
+    let compact_fixed = prefix.width() + compact_suffix.width();
+    if inner_w > compact_fixed {
+        let avail = inner_w.saturating_sub(compact_fixed + 1);
+        format!(
+            "{prefix}{}{compact_suffix}",
+            truncate_to_width(label, avail)
+        )
+    } else {
+        truncate_to_width(&format!("{prefix}{compact_suffix}"), inner_w)
+    }
+}
+
 fn render_input(
     frame: &mut Frame<'_>,
     screen: Rect,
@@ -1371,24 +1446,49 @@ fn render_input(
     d: &InputDialog,
     z: u8,
 ) {
+    let tab_hint = ctx.t("dialog.checkbox.tab_hint").to_string();
+    let ctrl_s_hint = ctx.t("dialog.checkbox.ctrl_s_hint").to_string();
+    let title_w = d.title.width() + 4;
+    let prompt_w = d.prompt.width() + 2;
+    let checkbox_w = d
+        .checkbox
+        .as_ref()
+        .map_or(0, |(label, _)| 5 + label.width() + 5 + tab_hint.width());
+    let secondary_checkbox_w = d
+        .secondary_checkbox
+        .as_ref()
+        .map_or(0, |(label, _)| 5 + label.width() + 5 + ctrl_s_hint.width());
+    let desired_w = 64usize
+        .max(title_w + 2)
+        .max(prompt_w + 2)
+        .max(checkbox_w + 4)
+        .max(secondary_checkbox_w + 4);
     let h = 8 + u16::from(d.checkbox.is_some()) + u16::from(d.secondary_checkbox.is_some());
-    let rect = centered(screen, 64, h);
+    let rect = centered(screen, desired_w.min(u16::MAX as usize) as u16, h);
     let inner = frame_block(frame, screen, ctx, rect, &d.title, false, z);
     let w = inner.width as usize;
     let err = ctx.i18n.and_then(|i| d.error(i));
+    let shown_val = truncate_to_width(&d.value, w.saturating_sub(4));
+    let val_pad = " ".repeat(w.saturating_sub(shown_val.width() + 3));
+    let input_base = Style::default()
+        .fg(ctx.theme.fg_bright)
+        .bg(ctx.theme.bg_panel)
+        .add_modifier(Modifier::UNDERLINED);
+    let input_line = if d.selected_all && !shown_val.is_empty() {
+        Line::from(vec![
+            Span::styled(" ", input_base),
+            Span::styled(shown_val, input_base.bg(ctx.theme.bg_selection_focused)),
+            Span::styled(format!("▏{val_pad}"), input_base),
+        ])
+    } else {
+        Line::from(Span::styled(format!(" {shown_val}▏{val_pad}"), input_base))
+    };
     let mut lines = vec![
         Line::from(Span::styled(
-            format!(" {}", d.prompt),
+            format!(" {}", truncate_to_width(&d.prompt, w.saturating_sub(2))),
             Style::default().fg(ctx.theme.fg_primary),
         )),
-        Line::from(Span::styled(
-            format!(" {}▏", truncate_to_width(&d.value, w.saturating_sub(4)))
-                + &" ".repeat(w.saturating_sub(d.value.width() + 3)),
-            Style::default()
-                .fg(ctx.theme.fg_bright)
-                .bg(ctx.theme.bg_panel)
-                .add_modifier(Modifier::UNDERLINED),
-        )),
+        input_line,
         match &err {
             Some(e) => Line::from(Span::styled(
                 format!(" ✕ {}", truncate_to_width(e, w.saturating_sub(4))),
@@ -1403,11 +1503,7 @@ fn render_input(
     let mut next_cb_y = inner.y + 3;
     if let Some((label, on)) = &d.checkbox {
         lines.push(Line::from(Span::styled(
-            format!(
-                " [{}] {label}   ({})",
-                if *on { "x" } else { " " },
-                ctx.t("dialog.checkbox.tab_hint")
-            ),
+            format_input_checkbox_line(*on, label, &tab_hint, w),
             Style::default().fg(ctx.theme.fg_primary),
         )));
         ctx.hit_registry.register(
@@ -1419,11 +1515,7 @@ fn render_input(
     }
     if let Some((label, on)) = &d.secondary_checkbox {
         lines.push(Line::from(Span::styled(
-            format!(
-                " [{}] {label}   ({})",
-                if *on { "x" } else { " " },
-                ctx.t("dialog.checkbox.ctrl_s_hint")
-            ),
+            format_input_checkbox_line(*on, label, &ctrl_s_hint, w),
             Style::default().fg(ctx.theme.fg_primary),
         )));
         ctx.hit_registry.register(

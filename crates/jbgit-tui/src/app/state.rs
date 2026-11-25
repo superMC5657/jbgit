@@ -946,4 +946,15 @@ impl AppState {
             self.schedule_file_syntax(diff, effects);
         }
     }
+
+    /// True when the workspace is not attached to a repository (startup error or
+    /// onboarding modal without a loaded repository), so background panes should
+    /// not render misleading "Loading…" placeholders.
+    pub fn is_unattached_workspace(&self) -> bool {
+        self.repo_error.is_some()
+            || self.modal_stack.iter().any(|l| {
+                matches!(l, ModalLayer::Welcome(_))
+                    || (self.repo_snapshot.is_none() && matches!(l, ModalLayer::CloneRepo(_)))
+            })
+    }
 }

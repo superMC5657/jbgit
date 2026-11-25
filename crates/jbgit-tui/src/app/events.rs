@@ -98,6 +98,18 @@ impl AppState {
                     for layer in self.modal_stack.iter_mut().rev() {
                         if let ModalLayer::CloneRepo(cd) = layer {
                             cd.cloning = false;
+                            let err_lines: Vec<&str> = err
+                                .lines()
+                                .map(str::trim)
+                                .filter(|l| !l.is_empty())
+                                .collect();
+                            cd.progress_lines.retain(|line| {
+                                let trimmed = line.trim();
+                                !trimmed.is_empty()
+                                    && !err_lines
+                                        .iter()
+                                        .any(|e| *e == trimmed || e.ends_with(trimmed))
+                            });
                             cd.error = Some(err.clone());
                             break;
                         }

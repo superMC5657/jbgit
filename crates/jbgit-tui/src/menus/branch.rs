@@ -119,36 +119,34 @@ pub fn branch_menu_items(state: &AppState, name: &str, kind: RefKind) -> Vec<Con
                 )
                 .icon("+"),
             );
-            items.push(
-                run(
-                    i18n.t_fmt(
-                        "menu.branch.checkout_and_rebase",
-                        &[("cur", &ellipsize(&cur, 24))],
-                    ),
-                    Some('a'),
-                    None,
-                    op(GitOp::Rebase {
-                        options: RebaseOptions::onto(cur.clone(), Some(name.clone())),
-                    }),
-                )
-                .enabled_if(
-                    !is_current && !detached,
-                    i18n.t("menu.branch.choose_other_branch"),
-                )
-                .require(no_ongoing.clone()),
-            );
+            if !is_current {
+                items.push(
+                    run(
+                        i18n.t_fmt(
+                            "menu.branch.checkout_and_rebase",
+                            &[("cur", &ellipsize(&cur, 24))],
+                        ),
+                        Some('a'),
+                        None,
+                        op(GitOp::Rebase {
+                            options: RebaseOptions::onto(cur.clone(), Some(name.clone())),
+                        }),
+                    )
+                    .enabled_if(!detached, i18n.t("menu.branch.choose_other_branch"))
+                    .require(no_ongoing.clone()),
+                );
+            }
             items.push(ContextMenuItem::separator());
-            items.push(
-                run(
+            if !is_current {
+                items.push(run(
                     i18n.t_fmt("menu.branch.compare_with", &[("cur", &ellipsize(&cur, 24))]),
                     Some('o'),
                     None,
                     vec![Action::CompareWithCurrent {
                         branch: name.clone(),
                     }],
-                )
-                .enabled_if(!is_current, i18n.t("menu.branch.compare_self")),
-            );
+                ));
+            }
             items.push(run(
                 i18n.t("menu.branch.compare_with_other"),
                 None,
@@ -182,24 +180,25 @@ pub fn branch_menu_items(state: &AppState, name: &str, kind: RefKind) -> Vec<Con
                 .enabled_if(info.is_some(), i18n.t("menu.branch.target_not_loaded")),
             );
             items.push(ContextMenuItem::separator());
-            items.push(
-                run(
-                    i18n.t_fmt(
-                        "menu.branch.rebase_onto",
-                        &[
-                            ("cur", &ellipsize(&cur, 18)),
-                            ("name", &ellipsize(&name, 18)),
-                        ],
-                    ),
-                    Some('b'),
-                    None,
-                    op(GitOp::Rebase {
-                        options: RebaseOptions::onto(name.clone(), None),
-                    }),
-                )
-                .enabled_if(!is_current, i18n.t("menu.branch.rebase_self"))
-                .require(no_ongoing.clone()),
-            );
+            if !is_current {
+                items.push(
+                    run(
+                        i18n.t_fmt(
+                            "menu.branch.rebase_onto",
+                            &[
+                                ("cur", &ellipsize(&cur, 18)),
+                                ("name", &ellipsize(&name, 18)),
+                            ],
+                        ),
+                        Some('b'),
+                        None,
+                        op(GitOp::Rebase {
+                            options: RebaseOptions::onto(name.clone(), None),
+                        }),
+                    )
+                    .require(no_ongoing.clone()),
+                );
+            }
             items.push(
                 run(
                     i18n.t("menu.branch.rebase_options"),
@@ -211,30 +210,27 @@ pub fn branch_menu_items(state: &AppState, name: &str, kind: RefKind) -> Vec<Con
                 )
                 .require(no_ongoing.clone()),
             );
-            items.push(
-                run(
-                    i18n.t_fmt(
-                        "menu.branch.merge_into",
-                        &[
-                            ("name", &ellipsize(&name, 18)),
-                            ("cur", &ellipsize(&cur, 18)),
-                        ],
-                    ),
-                    Some('m'),
-                    None,
-                    op(GitOp::Merge {
-                        rev: name.clone(),
-                        options: MergeOptions::default(),
-                    }),
-                )
-                .enabled_if(!is_current, i18n.t("menu.branch.merge_self"))
-                .require(no_ongoing.clone()),
-            );
-            items.push(
-                merge_options_item(state, &name, &cur)
-                    .enabled_if(!is_current, i18n.t("menu.branch.merge_self"))
+            if !is_current {
+                items.push(
+                    run(
+                        i18n.t_fmt(
+                            "menu.branch.merge_into",
+                            &[
+                                ("name", &ellipsize(&name, 18)),
+                                ("cur", &ellipsize(&cur, 18)),
+                            ],
+                        ),
+                        Some('m'),
+                        None,
+                        op(GitOp::Merge {
+                            rev: name.clone(),
+                            options: MergeOptions::default(),
+                        }),
+                    )
                     .require(no_ongoing.clone()),
-            );
+                );
+                items.push(merge_options_item(state, &name, &cur).require(no_ongoing.clone()));
+            }
             items.push(ContextMenuItem::separator());
             let upstream = info.and_then(|i| i.upstream.clone());
             let update = if is_current {

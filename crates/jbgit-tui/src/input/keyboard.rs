@@ -359,6 +359,15 @@ fn route_modal_key(key: KeyEvent, state: &AppState) -> Vec<Action> {
                         selected: 0,
                     }]
                 }
+                KeyCode::Char('u' | 'U')
+                    if key.modifiers.contains(KeyModifiers::CONTROL)
+                        && !matches!(kind, PopupKind::ChooseParent | PopupKind::ChooseChild) =>
+                {
+                    vec![Action::PopupSetState {
+                        query: String::new(),
+                        selected: 0,
+                    }]
+                }
                 KeyCode::Up => {
                     let max_idx = popup_candidate_count(kind, &query, state).saturating_sub(1);
                     vec![Action::PopupSelectCandidate(

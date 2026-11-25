@@ -151,7 +151,7 @@ pub fn render_top_header(
                 ctx.theme.ref_detached.pill_bg,
             )
         }
-    } else if state.repo_error.is_some() {
+    } else if state.is_unattached_workspace() {
         (
             state.i18n.t("view.header.no_repo").to_string(),
             ctx.theme.status_untracked,

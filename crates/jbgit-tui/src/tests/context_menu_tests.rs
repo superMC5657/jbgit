@@ -650,19 +650,22 @@ fn p0_detached_head_branch_menu_disables_destructive_and_invalid_ops() {
     let ts = TestSession::with_snapshot(snap);
 
     let items = crate::menus::branch_menu_items(ts.state(), "", jbgit_core::RefKind::Head);
-    for label in [
-        "Checkout",
-        "Rename",
-        "Delete",
-        "Set Upstream",
-        "Compare with 'HEAD'",
-        "Rebase 'HEAD' onto 'HEAD'",
-        "Merge 'HEAD' into 'HEAD'",
-    ] {
+    for label in ["Checkout", "Rename", "Delete", "Set Upstream"] {
         let item = find_item(&items, label);
         assert!(
             !item.is_enabled(),
             "detached HEAD menu item '{label}' must be disabled"
+        );
+    }
+    for omitted in [
+        "Checkout and Rebase",
+        "Compare with 'HEAD'",
+        "Rebase 'HEAD' onto 'HEAD'",
+        "Merge 'HEAD' into 'HEAD'",
+    ] {
+        assert!(
+            !items.iter().any(|i| i.label.contains(omitted)),
+            "detached HEAD menu must omit self-referential item '{omitted}'"
         );
     }
     assert!(
@@ -685,6 +688,57 @@ fn p0_detached_head_branch_menu_disables_destructive_and_invalid_ops() {
         crate::keymap::catalog::branch_delete(ts.state(), "HEAD", jbgit_core::RefKind::Head)
             .is_err()
     );
+}
+
+#[test]
+fn current_branch_menu_omits_self_referential_ops_without_duplicate_separators() {
+    let ts = TestSession::with_snapshot(snapshot());
+    let items =
+        crate::menus::branch_menu_items(ts.state(), "main", jbgit_core::RefKind::LocalBranch);
+
+    for omitted in [
+        "Checkout and Rebase",
+        "Compare with 'main'",
+        "Rebase 'main' onto 'main'",
+        "Merge 'main' into 'main'",
+    ] {
+        assert!(
+            !items.iter().any(|i| i.label.contains(omitted)),
+            "current branch menu must omit self-referential item '{omitted}', got: {:?}",
+            items.iter().map(|i| &i.label).collect::<Vec<_>>()
+        );
+    }
+    // Non-self operations remain present.
+    assert!(items.iter().any(|i| i.label.contains("Compare with…")));
+    assert!(items.iter().any(|i| i.label.contains("Rebase…")));
+
+    // No leading, trailing, or consecutive separators.
+    assert!(!items.first().is_some_and(|i| i.is_separator()));
+    assert!(!items.last().is_some_and(|i| i.is_separator()));
+    assert!(
+        !items
+            .windows(2)
+            .any(|w| w[0].is_separator() && w[1].is_separator()),
+        "current branch menu must not contain adjacent separators"
+    );
+
+    // Non-current branch still exposes those actions.
+    let other_items = crate::menus::branch_menu_items(
+        ts.state(),
+        "feature/dag-layout",
+        jbgit_core::RefKind::LocalBranch,
+    );
+    for present in [
+        "Checkout and Rebase",
+        "Compare with 'main'",
+        "Rebase 'main' onto 'feature/dag-layout'",
+        "Merge 'feature/dag-layout' into 'main'",
+    ] {
+        assert!(
+            other_items.iter().any(|i| i.label.contains(present)),
+            "non-current branch menu must include '{present}'"
+        );
+    }
 }
 
 #[test]

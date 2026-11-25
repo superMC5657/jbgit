@@ -2304,14 +2304,16 @@ impl CommitWorkbench {
                 if let Some(key) = self.readonly_diff_notice_key() {
                     *ctx.status_notice = Some(ctx.i18n.t(key).to_string());
                 } else if let Some(sel) = self.collect_selected_line_sets() {
-                    self.apply_stage_diff_selection(StageDiffOp::Stage, sel, ctx);
+                    let whole_hunk = self.selected_visual_bounds().is_none();
+                    self.apply_stage_diff_selection(StageDiffOp::Stage, sel, whole_hunk, ctx);
                 }
             }
             Action::StageDiffUnstageSelection => {
                 if let Some(key) = self.readonly_diff_notice_key() {
                     *ctx.status_notice = Some(ctx.i18n.t(key).to_string());
                 } else if let Some(sel) = self.collect_selected_line_sets() {
-                    self.apply_stage_diff_selection(StageDiffOp::Unstage, sel, ctx);
+                    let whole_hunk = self.selected_visual_bounds().is_none();
+                    self.apply_stage_diff_selection(StageDiffOp::Unstage, sel, whole_hunk, ctx);
                 }
             }
             Action::StageDiffRollbackSelection => {
@@ -2321,7 +2323,8 @@ impl CommitWorkbench {
                     *ctx.status_notice =
                         Some(ctx.i18n.t("toast.untracked_rollback_disabled").to_string());
                 } else if let Some(sel) = self.collect_selected_line_sets() {
-                    self.apply_stage_diff_selection(StageDiffOp::Rollback, sel, ctx);
+                    let whole_hunk = self.selected_visual_bounds().is_none();
+                    self.apply_stage_diff_selection(StageDiffOp::Rollback, sel, whole_hunk, ctx);
                 }
             }
             Action::StageDiffUndoRollback => {
@@ -2402,14 +2405,14 @@ impl CommitWorkbench {
                         if let Some(key) = self.readonly_diff_notice_key() {
                             *ctx.status_notice = Some(ctx.i18n.t(key).to_string());
                         } else if let Some(sel) = self.collect_hunk_line_sets(hunk_idx) {
-                            self.apply_stage_diff_selection(StageDiffOp::Stage, sel, ctx);
+                            self.apply_stage_diff_selection(StageDiffOp::Stage, sel, true, ctx);
                         }
                     }
                     DiffHunkActionKind::Unstage => {
                         if let Some(key) = self.readonly_diff_notice_key() {
                             *ctx.status_notice = Some(ctx.i18n.t(key).to_string());
                         } else if let Some(sel) = self.collect_hunk_line_sets(hunk_idx) {
-                            self.apply_stage_diff_selection(StageDiffOp::Unstage, sel, ctx);
+                            self.apply_stage_diff_selection(StageDiffOp::Unstage, sel, true, ctx);
                         }
                     }
                     DiffHunkActionKind::Rollback => {
@@ -2419,7 +2422,7 @@ impl CommitWorkbench {
                             *ctx.status_notice =
                                 Some(ctx.i18n.t("toast.untracked_rollback_disabled").to_string());
                         } else if let Some(sel) = self.collect_hunk_line_sets(hunk_idx) {
-                            self.apply_stage_diff_selection(StageDiffOp::Rollback, sel, ctx);
+                            self.apply_stage_diff_selection(StageDiffOp::Rollback, sel, true, ctx);
                         }
                     }
                 }
@@ -2473,6 +2476,7 @@ impl CommitWorkbench {
         &mut self,
         op: StageDiffOp,
         sel: LineSelection,
+        whole_hunk: bool,
         ctx: &mut CommitContext<'_>,
     ) {
         let Some(diff) = self.current_diff.as_ref().cloned() else {
@@ -2526,10 +2530,12 @@ impl CommitWorkbench {
                 self.visual_anchor_row = None;
                 self.invalidate_diff_cache_for_path(&diff.key.path);
                 self.pending_select_immediate = true;
-                *ctx.status_notice = Some(
-                    ctx.i18n
-                        .t_fmt("toast.rolled_back_lines", &[("path", &diff.key.path)]),
-                );
+                let toast_key = if whole_hunk {
+                    "toast.rolled_back_hunk"
+                } else {
+                    "toast.rolled_back_lines"
+                };
+                *ctx.status_notice = Some(ctx.i18n.t_fmt(toast_key, &[("path", &diff.key.path)]));
                 ctx.effects.push(Effect::WriteWorktreeBuffer {
                     path: diff.key.path.clone(),
                     new_local_bytes: new_local,

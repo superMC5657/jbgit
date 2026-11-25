@@ -173,7 +173,7 @@ fn render_command_list(
                 ctx.theme.border_focused,
             ),
             Some(0) => (" ✓ ".to_string(), ctx.theme.status_added),
-            Some(code) => (format!(" ✗{code}"), ctx.theme.status_conflicted),
+            Some(code) => (format!(" ✗{code} "), ctx.theme.status_conflicted),
         };
 
         let dur = entry
@@ -181,14 +181,12 @@ fn render_command_list(
             .map(|ms| format!(" {ms}ms"))
             .unwrap_or_else(|| " …".to_string());
 
-        let reserved = 10 + badge_txt.width() + dur.width();
+        let ts = format!(" [{}]", entry.timestamp_label());
+        let reserved = ts.width() + badge_txt.width() + dur.width();
         let max_cmd = (area.width as usize).saturating_sub(reserved);
 
         let line = Line::from(vec![
-            Span::styled(
-                format!(" [{}]", entry.timestamp_label()),
-                Style::default().fg(ctx.theme.fg_muted),
-            ),
+            Span::styled(ts, Style::default().fg(ctx.theme.fg_muted)),
             Span::styled(
                 badge_txt,
                 Style::default().fg(badge_fg).add_modifier(Modifier::BOLD),

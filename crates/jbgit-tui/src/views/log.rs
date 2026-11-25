@@ -377,15 +377,65 @@ fn render_filter_bar(
         true
     };
 
-    let any_chip_active = FilterField::ALL.iter().any(|&f| filter.field_active(f))
-        || filter.spec.no_merges
-        || filter.spec.range.is_some();
+    let mut active_fields: Vec<FilterField> = Vec::new();
+    let mut inactive_fields: Vec<FilterField> = Vec::new();
+    for field in FilterField::ALL {
+        if filter.field_active(field) {
+            active_fields.push(field);
+        } else {
+            inactive_fields.push(field);
+        }
+    }
 
-    // Text box: stay slightly trimmer when unfocused & empty while chip filters are active
-    // so active chips always have room at 140x40–180x40.
+    let nm_on = filter.spec.no_merges;
+    let nm_label = state.i18n.t("filter.no_merges");
+    let nm_chip_full = format!(" [{nm_label}] ");
+    let nm_chip_compact = format!(" [{nm_label}]");
+    let nm_chip_tight = format!("[{nm_label}]");
+
+    let any_chip_active = !active_fields.is_empty() || nm_on || filter.spec.range.is_some();
+
+    let condensed_inactive_fields_w: usize = inactive_fields
+        .iter()
+        .map(|&field| format!(" {}▾", state.i18n.filter_field_title(field)).width())
+        .sum();
+    let min_inactive_compact =
+        condensed_inactive_fields_w + if nm_on { 0 } else { nm_chip_compact.width() };
+    let min_inactive_tight =
+        condensed_inactive_fields_w + if nm_on { 0 } else { nm_chip_tight.width() };
+
+    // Text box: stay trimmer when unfocused & empty while chip filters are active
+    // so active chips and condensed inactive triggers (`路径▾`, `[排除合并]`) remain reachable at 140x40.
     let text = &filter.spec.text;
+    let usable_w = area.width.saturating_sub(reserve) as usize;
     let box_w = if text.query.is_empty() && !filter.editing_text && any_chip_active {
-        ((area.width as usize) / 4).clamp(10, 20)
+        let base_w = ((area.width as usize) / 4).clamp(10, 20);
+        let active_desired_w: usize = active_fields
+            .iter()
+            .map(|&field| {
+                let field_title = state.i18n.filter_field_title(field);
+                let empty_w = state
+                    .i18n
+                    .t_fmt("filter.chip", &[("field", field_title), ("label", "")])
+                    .width();
+                let label_w = if field == FilterField::Date {
+                    state
+                        .i18n
+                        .format_date_filter_label(&filter.field_label(field))
+                        .width()
+                } else {
+                    filter.field_label(field).width()
+                };
+                empty_w + 1 + label_w.min(14)
+            })
+            .sum::<usize>()
+            + if nm_on { nm_chip_compact.width() } else { 0 };
+        let needed = 8 + active_desired_w + min_inactive_compact;
+        if usable_w < base_w + needed {
+            usable_w.saturating_sub(needed).clamp(8, 12)
+        } else {
+            base_w
+        }
     } else {
         ((area.width as usize) / 3).clamp(10, 32)
     };
@@ -493,18 +543,6 @@ fn render_filter_bar(
 
     // Render active filter chips ahead of inactive `All` chips so active filters
     // (Date, Paths, --no-merges, etc.) are never silently dropped on narrow panes.
-    let mut active_fields: Vec<FilterField> = Vec::new();
-    let mut inactive_fields: Vec<FilterField> = Vec::new();
-    for field in FilterField::ALL {
-        if filter.field_active(field) {
-            active_fields.push(field);
-        } else {
-            inactive_fields.push(field);
-        }
-    }
-
-    let nm_on = filter.spec.no_merges;
-    let nm_chip = format!(" [{}] ", state.i18n.t("filter.no_merges"));
     let nm_active_style = Style::default()
         .fg(theme.fg_bright)
         .bg(theme.border_focused)
@@ -538,13 +576,11 @@ fn render_filter_bar(
             label.push('…');
         }
         let field_title = state.i18n.filter_field_title(field);
-        let full_chip = state.i18n.t_fmt(
-            "filter.chip",
-            &[
-                ("field", field_title),
-                ("label", &truncate_to_width(&label, 18)),
-            ],
-        );
+        let empty_chip = state
+            .i18n
+            .t_fmt("filter.chip", &[("field", field_title), ("label", "")]);
+        // Overhead includes the trailing clickable `×` clear button (1 col).
+        let overhead = empty_chip.width() + 1;
         let avail_with_ovf = right.saturating_sub(x + reserve + overflow_reserve) as usize;
         let avail_no_ovf = right.saturating_sub(x + reserve) as usize;
         let budget = if !more_active_after && hidden_active == 0 {
@@ -552,24 +588,36 @@ fn render_filter_bar(
         } else {
             avail_with_ovf
         };
-        let chip = if full_chip.width() < budget {
-            Some(full_chip)
-        } else {
-            let empty_chip = state
-                .i18n
-                .t_fmt("filter.chip", &[("field", field_title), ("label", "")]);
-            let overhead = empty_chip.width() + 1;
-            if budget >= overhead + 3 {
-                Some(state.i18n.t_fmt(
-                    "filter.chip",
-                    &[
-                        ("field", field_title),
-                        ("label", &truncate_to_width(&label, budget - overhead)),
-                    ],
-                ))
+        // Dynamically budget active chip label width so condensed inactive triggers
+        // (`路径▾`, `[排除合并]`, etc.) stay visible at 140x40 while preserving at least
+        // 8 cols of readable label before falling back to prioritizing the active chip.
+        let desired_label = label.width().min(18);
+        let max_label_cap = if !more_active_after && hidden_active == 0 {
+            let after_compact = budget.saturating_sub(min_inactive_compact + overhead);
+            let after_tight = budget.saturating_sub(min_inactive_tight + overhead);
+            if after_compact >= desired_label || after_tight >= desired_label {
+                desired_label
+            } else if after_compact >= 8 {
+                after_compact.min(18)
+            } else if after_tight >= 8 {
+                after_tight.min(18)
             } else {
-                None
+                budget.saturating_sub(overhead).min(18)
             }
+        } else {
+            18
+        };
+        let chip = if max_label_cap >= 3 && budget >= overhead + 3 {
+            let effective_cap = max_label_cap.min(budget.saturating_sub(overhead));
+            Some(state.i18n.t_fmt(
+                "filter.chip",
+                &[
+                    ("field", field_title),
+                    ("label", &truncate_to_width(&label, effective_cap)),
+                ],
+            ))
+        } else {
+            None
         };
         if let Some(chip_text) = chip {
             if put(
@@ -598,14 +646,22 @@ fn render_filter_bar(
 
     if nm_on {
         let ovf_res = if hidden_active > 0 { 6 } else { 0 };
-        if !put(
+        let placed = put(
             frame,
             &mut x,
-            &nm_chip,
+            &nm_chip_full,
             nm_active_style,
             Some(HitTarget::FilterNoMergesToggle),
             reserve + ovf_res,
-        ) {
+        ) || put(
+            frame,
+            &mut x,
+            &nm_chip_compact,
+            nm_active_style,
+            Some(HitTarget::FilterNoMergesToggle),
+            reserve + ovf_res,
+        );
+        if !placed {
             hidden_active += 1;
         }
     }
@@ -641,7 +697,7 @@ fn render_filter_bar(
                 .width()
         })
         .sum::<usize>()
-        + if nm_on { 0 } else { nm_chip.width() };
+        + if nm_on { 0 } else { nm_chip_full.width() };
     let avail_inactive = right.saturating_sub(x + reserve) as usize;
     let condense_inactive = full_inactive_w > avail_inactive;
 
@@ -670,14 +726,34 @@ fn render_filter_bar(
     }
 
     if !nm_on {
-        put(
-            frame,
-            &mut x,
-            &nm_chip,
-            nm_inactive_style,
-            Some(HitTarget::FilterNoMergesToggle),
-            reserve,
-        );
+        if condense_inactive {
+            if !put(
+                frame,
+                &mut x,
+                &nm_chip_compact,
+                nm_inactive_style,
+                Some(HitTarget::FilterNoMergesToggle),
+                reserve,
+            ) {
+                put(
+                    frame,
+                    &mut x,
+                    &nm_chip_tight,
+                    nm_inactive_style,
+                    Some(HitTarget::FilterNoMergesToggle),
+                    reserve,
+                );
+            }
+        } else {
+            put(
+                frame,
+                &mut x,
+                &nm_chip_full,
+                nm_inactive_style,
+                Some(HitTarget::FilterNoMergesToggle),
+                reserve,
+            );
+        }
     }
 }
 
@@ -692,13 +768,15 @@ fn render_commits_table(
     }
 
     let Some(snap) = &state.repo_snapshot else {
-        frame.render_widget(
-            Paragraph::new(Span::styled(
-                state.i18n.t("view.log.loading_graph"),
-                Style::default().fg(ctx.theme.fg_muted),
-            )),
-            area,
-        );
+        if !state.is_unattached_workspace() {
+            frame.render_widget(
+                Paragraph::new(Span::styled(
+                    state.i18n.t("view.log.loading_graph"),
+                    Style::default().fg(ctx.theme.fg_muted),
+                )),
+                area,
+            );
+        }
         return;
     };
 

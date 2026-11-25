@@ -175,43 +175,49 @@ impl AppState {
                 if self.answer_credential(true) {
                     return true;
                 }
-                let Some(ModalLayer::Dialog(d)) = self.modal_stack.last() else {
-                    return true;
+                let actions_opt = {
+                    let Some(ModalLayer::Dialog(d)) = self.modal_stack.last() else {
+                        return true;
+                    };
+                    d.confirm_actions(&self.i18n)
                 };
-                match d.confirm_actions(&self.i18n) {
+                match actions_opt {
                     Some(actions) => {
                         self.modal_stack.pop();
                         self.run_actions(actions, effects);
                     }
                     None => {
-                        if let Dialog::Input(i) = d.as_ref()
-                            && let Some(err) = i.error(&self.i18n)
-                        {
-                            self.status_notice = Some(err);
-                        } else if let Dialog::RebaseTodo(r) = d.as_ref()
-                            && let Some(err) = r.error(&self.i18n)
-                        {
-                            self.status_notice = Some(err);
-                        } else if let Dialog::Merge(m) = d.as_ref()
-                            && let Some(err) = m.error(&self.i18n)
-                        {
-                            self.status_notice = Some(err);
-                        } else if let Dialog::Pull(p) = d.as_ref()
-                            && let Some(err) = p.error(&self.i18n)
-                        {
-                            self.status_notice = Some(err);
-                        } else if let Dialog::Rebase(r) = d.as_ref()
-                            && let Some(err) = r.error(&self.i18n)
-                        {
-                            self.status_notice = Some(err);
-                        } else if let Dialog::CreatePatch(cp) = d.as_ref()
-                            && let Some(err) = cp.error(&self.i18n)
-                        {
-                            self.status_notice = Some(err);
-                        } else if let Dialog::Identity(id) = d.as_ref()
-                            && let Some(err) = id.error(&self.i18n)
-                        {
-                            self.status_notice = Some(err);
+                        if let Some(ModalLayer::Dialog(d)) = self.modal_stack.last_mut() {
+                            if let Dialog::Input(i) = d.as_ref()
+                                && let Some(err) = i.error(&self.i18n)
+                            {
+                                self.status_notice = Some(err);
+                            } else if let Dialog::RebaseTodo(r) = d.as_ref()
+                                && let Some(err) = r.error(&self.i18n)
+                            {
+                                self.status_notice = Some(err);
+                            } else if let Dialog::Merge(m) = d.as_ref()
+                                && let Some(err) = m.error(&self.i18n)
+                            {
+                                self.status_notice = Some(err);
+                            } else if let Dialog::Pull(p) = d.as_ref()
+                                && let Some(err) = p.error(&self.i18n)
+                            {
+                                self.status_notice = Some(err);
+                            } else if let Dialog::Rebase(r) = d.as_ref()
+                                && let Some(err) = r.error(&self.i18n)
+                            {
+                                self.status_notice = Some(err);
+                            } else if let Dialog::CreatePatch(cp) = d.as_ref()
+                                && let Some(err) = cp.error(&self.i18n)
+                            {
+                                self.status_notice = Some(err);
+                            } else if let Dialog::Identity(id) = d.as_mut() {
+                                id.validation_shown = true;
+                                if let Some(err) = id.error(&self.i18n) {
+                                    self.status_notice = Some(err);
+                                }
+                            }
                         }
                     }
                 }

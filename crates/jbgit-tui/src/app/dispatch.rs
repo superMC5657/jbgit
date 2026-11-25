@@ -270,6 +270,10 @@ impl AppState {
                             let clean: String =
                                 text.chars().filter(|c| *c != '\n' && *c != '\r').collect();
                             if !clean.is_empty() {
+                                if inp.selected_all {
+                                    inp.value.clear();
+                                    inp.selected_all = false;
+                                }
                                 inp.value.push_str(&clean);
                             }
                         }
@@ -288,6 +292,10 @@ impl AppState {
                             let clean: String =
                                 text.chars().filter(|c| *c != '\n' && *c != '\r').collect();
                             if !clean.is_empty() {
+                                if sp.selected_all {
+                                    sp.message.clear();
+                                    sp.selected_all = false;
+                                }
                                 sp.message.push_str(&clean);
                             }
                         }
@@ -308,9 +316,19 @@ impl AppState {
                                 text.chars().filter(|c| *c != '\n' && *c != '\r').collect();
                             if !clean.is_empty() {
                                 match id.focused {
-                                    crate::dialogs::IdentityField::Name => id.name.push_str(&clean),
+                                    crate::dialogs::IdentityField::Name => {
+                                        if id.selected_all {
+                                            id.name.clear();
+                                            id.selected_all = false;
+                                        }
+                                        id.name.push_str(&clean);
+                                    }
                                     crate::dialogs::IdentityField::Email => {
-                                        id.email.push_str(&clean)
+                                        if id.selected_all {
+                                            id.email.clear();
+                                            id.selected_all = false;
+                                        }
+                                        id.email.push_str(&clean);
                                     }
                                     crate::dialogs::IdentityField::Global => {}
                                 }
@@ -519,6 +537,7 @@ impl AppState {
                                 0 => crate::dialogs::IdentityField::Name,
                                 _ => crate::dialogs::IdentityField::Email,
                             };
+                            id.selected_all = false;
                         }
                         crate::dialogs::Dialog::Pull(p) => {
                             let rows = crate::dialogs::PullDialogRow::ALL;
