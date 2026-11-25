@@ -1,7 +1,7 @@
 use anyhow::{Result, bail};
 use jbgit_core::{KeyToken, KeyTokenKind, parse_key_token};
 
-use crate::protocol::MouseBtn;
+use crate::protocol::{MouseBtn, MouseModifiers};
 
 /// Encodes a symbolic key token (e.g. `Enter`, `Ctrl+S`, `<C-s>`, `F8`, `Alt+r`,
 /// `<Space>`, `j`) into ANSI / VT bytes suitable for writing into a PTY.
@@ -235,13 +235,22 @@ fn encode_ctrl_modified_char(ch: char, ctrl: bool, alt: bool, shift: bool) -> Re
     Ok(format!("\x1b[{codepoint};{xterm_mod}u").into_bytes())
 }
 
-/// Encodes an SGR mouse press + release at 0-based `(col, row)`.
-pub fn encode_sgr_click(col: u16, row: u16, btn: MouseBtn) -> Vec<u8> {
-    let code = match btn {
+/// Encodes an SGR mouse press + release at 0-based `(col, row)` with optional modifiers.
+pub fn encode_sgr_click(col: u16, row: u16, btn: MouseBtn, mods: MouseModifiers) -> Vec<u8> {
+    let mut code: u8 = match btn {
         MouseBtn::Left => 0,
         MouseBtn::Middle => 1,
         MouseBtn::Right => 2,
     };
+    if mods.shift {
+        code |= 4;
+    }
+    if mods.alt {
+        code |= 8;
+    }
+    if mods.ctrl {
+        code |= 16;
+    }
     let c1 = col.saturating_add(1);
     let r1 = row.saturating_add(1);
     format!("\x1b[<{code};{c1};{r1}M\x1b[<{code};{c1};{r1}m").into_bytes()
@@ -301,6 +310,76 @@ mod tests {
     #[test]
     fn encodes_sgr_hover_coordinates() {
         assert_eq!(encode_sgr_hover(10, 5), b"\x1b[<35;11;6M");
+    }
+
+    #[test]
+    fn encodes_sgr_click_with_modifiers() {
+        assert_eq!(
+            encode_sgr_click(10, 5, MouseBtn::Left, MouseModifiers::default()),
+            b"\x1b[<0;11;6M\x1b[<0;11;6m"
+        );
+        assert_eq!(
+            encode_sgr_click(
+                10,
+                5,
+                MouseBtn::Left,
+                MouseModifiers {
+                    shift: true,
+                    ..Default::default()
+                }
+            ),
+            b"\x1b[<4;11;6M\x1b[<4;11;6m"
+        );
+        assert_eq!(
+            encode_sgr_click(
+                10,
+                5,
+                MouseBtn::Left,
+                MouseModifiers {
+                    alt: true,
+                    ..Default::default()
+                }
+            ),
+            b"\x1b[<8;11;6M\x1b[<8;11;6m"
+        );
+        assert_eq!(
+            encode_sgr_click(
+                10,
+                5,
+                MouseBtn::Left,
+                MouseModifiers {
+                    ctrl: true,
+                    ..Default::default()
+                }
+            ),
+            b"\x1b[<16;11;6M\x1b[<16;11;6m"
+        );
+        assert_eq!(
+            encode_sgr_click(
+                10,
+                5,
+                MouseBtn::Left,
+                MouseModifiers {
+                    ctrl: true,
+                    shift: true,
+                    alt: false,
+                }
+            ),
+            b"\x1b[<20;11;6M\x1b[<20;11;6m"
+        );
+        assert_eq!(
+            encode_sgr_click(
+                10,
+                5,
+                MouseBtn::Right,
+                MouseModifiers {
+                    ctrl: true,
+                    shift: true,
+                    alt: true,
+                }
+            ),
+            b"\x1b[<30;11;6M\x1b[<30;11;6m"
+        );
     }
 
     #[test]

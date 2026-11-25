@@ -28,6 +28,7 @@ Creates `.pilot/sandbox-repo` + bare remote `.pilot/sandbox-remote.git` with:
   - `feature/pull-me` (remote `origin/feature/pull-me` has 2 un-fetched peer commits → test `f` Fetch showing `↓2`, then checkout & `p` Pull)
   - `feature/diverged` (diverged from `origin/feature/diverged` → test `P` Push dialog / Push Rejected / Force-with-lease / Rebase retry)
 - **Patch fixtures**: `.pilot/sample.patch` (cleanly applies to `src/cards.rs`) and `.pilot/conflict.patch` (targets `src/components/header.rs` with a real ancestor index blob so plain `git apply --check` fails and `ThreeWay` (`git apply --3way`) enters the conflict-resolution flow) for Spec 12 #13 (paths are also exported in `.pilot/ready.json`)
+- **Spec 13 Diff & Compare fixtures**: `assets/logo.bin` (uncommitted binary modification for Binary file diff card), `src/wide_lines.rs` (uncommitted indentation-only change + ~170-col line edit for whitespace modes, horizontal scroll / soft-wrap, and inline diff search), and `feature/cherry-source` (cherry-picked `feature/login` + `src/cherry_helper.rs` for two-branch compare & cherry-pick highlight)
 - 2 real stashes (`wip: refactor stash test`, `wip: older stash`)
 - 1 partially staged file (`staged_partial.txt`), 1 multi-hunk modified file (`src/main.rs`), 1 untracked file (`scratch_note.txt`), 1 ignored file (`debug_trace.log` via `.gitignore`)
 - Isolated empty config dir (does not touch user global config)
@@ -37,7 +38,10 @@ Creates `.pilot/sandbox-repo` + bare remote `.pilot/sandbox-remote.git` with:
 ```
 
 ### Scenario B: Merge Conflict (`--scenario conflict`)
-Creates `.pilot/sandbox-repo` in an active **`git merge` conflict** state (`conflict_app.txt` has real `<<<<<<<` / `=======` / `>>>>>>>` conflict markers) for testing the ongoing conflict banner and 3-way conflict resolver:
+Creates `.pilot/sandbox-repo` in an active **`git merge` conflict** state with a multi-file conflict queue (Spec 13 #02 / #09):
+- `conflict_app.txt` (`UU`, contains both a non-overlapping block modified only by `theirs` for 3-way auto-merge and a true conflict block for inline Result editing)
+- `conflict_second.txt` (`UU`, second file in the Conflict Queue)
+- `deleted_by_theirs.txt` (`UD`, delete/modify conflict where `feature/theirs` removed the file and `main` modified it)
 
 ```powershell
 .\target\debug\jbgit-pilot.exe serve --scenario conflict --cols 140 --rows 40
@@ -87,6 +91,34 @@ Starts an ephemeral loopback HTTP Basic Auth server (`git-http-backend`, accepti
 .\target\debug\jbgit-pilot.exe serve --sandbox --scenario askpass --cols 140 --rows 40
 ```
 
+### Scenario G: Rebase Conflict (`--scenario rebase-conflict`)
+Creates `.pilot/sandbox-repo` in an active **`git rebase main`** state on `feature/rebase-me` stopped with `UU rebase_target.txt` and 1 remaining commit (`rebase_followup.txt`) in the sequence (Spec 13 #02 / #05 / #09), so you can verify rebase ours/theirs reversal (`Ours` = upstream `main`, `Theirs` = rebased commit) and Continue/Abort:
+
+```powershell
+.\target\debug\jbgit-pilot.exe serve --sandbox --scenario rebase-conflict --cols 140 --rows 40
+```
+
+### Scenario H: Active Bisect (`--scenario bisect`)
+Creates `.pilot/sandbox-repo` with 8 linear commits on `main` and an active **`git bisect start HEAD <root>`** session (Spec 13 #14) to verify the `BISECTING` banner (`Good` / `Bad` / `Skip` / `Reset`) and Log bisect controls:
+
+```powershell
+.\target\debug\jbgit-pilot.exe serve --sandbox --scenario bisect --cols 140 --rows 40
+```
+
+### Scenario I: Welcome / Init / Clone (`--scenario welcome`)
+Creates an empty non-Git workspace (under `%TEMP%` when `.pilot/` sits inside a Git repository so parent `.git` discovery does not shadow it), `.pilot/sandbox-clone-src.git` (local bare repository with 2 commits, path exported in `.pilot/ready.json` as `clone_source`), and `.pilot/sandbox-recent` (registered in `recent-repos.toml`) so startup opens the **Welcome modal** (*Initialize Git Repository* / *Clone Repository* / *Open Recent*, Spec 13 #13):
+
+```powershell
+.\target\debug\jbgit-pilot.exe serve --sandbox --scenario welcome --cols 140 --rows 40
+```
+
+### Scenario J: Commit Workflow & CRLF Guard (`--scenario workflow`)
+Creates `.pilot/sandbox-repo` with `commit.template = .gitmessage`, cleared local `user.name`/`user.email`, `core.autocrlf = false`, and a staged CRLF file (`crlf_guarded.txt`) to test template pre-fill, missing-identity prompt, and the pre-commit CRLF guard (Spec 13 #07 / #13):
+
+```powershell
+.\target\debug\jbgit-pilot.exe serve --sandbox --scenario workflow --cols 140 --rows 40
+```
+
 ## 3. Interactive AI Testing Commands
 
 Every action command injects real PTY input, waits for screen output to settle, and prints the updated screen with 0-based row numbers (`00|...` .. `39|...`):
@@ -110,8 +142,14 @@ Every action command injects real PTY input, waits for screen output to settle, 
 .\target\debug\jbgit-pilot.exe find "Commit"
 .\target\debug\jbgit-pilot.exe hover 12 1
 .\target\debug\jbgit-pilot.exe click 12 1
+.\target\debug\jbgit-pilot.exe click 20 8 --ctrl
+.\target\debug\jbgit-pilot.exe click 20 12 --shift
+.\target\debug\jbgit-pilot.exe click 20 14 --ctrl --shift
 .\target\debug\jbgit-pilot.exe rclick 45 5
 .\target\debug\jbgit-pilot.exe scroll down 45 5 --steps 3
+
+# Launch with custom environment overrides (e.g., deterministic askpass responder)
+.\target\debug\jbgit-pilot.exe serve --sandbox --scenario askpass --env JBGIT_ASKPASS_RESPONDER=cancel
 
 # Inspect real RGB colors & OSC 52 clipboard output
 .\target\debug\jbgit-pilot.exe colors
@@ -157,6 +195,14 @@ When asked to find bugs or unimplemented features interactively, explore systema
    - **Repo Switcher (`Alt+O`) & Worktrees (`Alt+W`)** (`--scenario multi-repo`): Switch between `sandbox-repo`, `sandbox-repo-feature`, and `sandbox-repo-b`, create/lock/unlock/remove a worktree, and verify drafts stay isolated per repo/worktree.
    - **Linear Collapse, Apply Patch (`Alt+P`) & Browse at Revision (`Alt+T`)** (`--scenario full`): Collapse/expand `feature/linear-chain` (`Ctrl+Shift+-` / `Ctrl+Shift+=` or `z c`/`z o`/`z M`/`z R` in Vim preset), apply `.pilot/sample.patch` cleanly and verify `.pilot/conflict.patch` surfaces a check failure, and browse the tree at a historical commit via `Alt+T`.
    - **Capabilities (`--scenario capabilities`) & Askpass (`--scenario askpass`)**: Verify the shallow boundary marker + Unshallow, `libs/submod` read-only submodule badge, `assets/model.bin` LFS pointer diff placeholder, and end-to-end HTTP Basic Auth Fetch/Push (`alice` / `s3cr3t`) + `Esc` cancel with zero plaintext credential output in `[4 Console]`.
+10. **Spec 13 Reference Parity Features (across `full`, `conflict`, `rebase-conflict`, `bisect`, `welcome`, `workflow`)**:
+   - **Non-Contiguous Log Selection & Compare (`--scenario full`)**: Use `click <col> <row> --ctrl` on two non-contiguous commits in Log to verify aggregated multi-commit changes and two-commit comparison (`Compare Versions` / swap direction), plus `show_only_affected_changes` under active Path filter.
+   - **Diff Whitespace, Horizontal Scroll, Search & Binary Card (`--scenario full`)**: Open `src/wide_lines.rs` in Diff/Commit view, cycle whitespace modes (`Default` / `IgnoreChange` / `IgnoreAll`), test horizontal scroll vs soft-wrap on the ~170-col line, search inside the diff (`/` / `Ctrl+F`), and inspect `assets/logo.bin` to verify the non-LFS binary file summary card.
+   - **Pull / Rebase Option Dialogs & Reflog / Highlighters (`--scenario full`)**: Open Pull options, Rebase options, `feature/cherry-source` two-branch comparison, Reflog modal, LinearBek toggle, and My Commits / Cherry-Picked highlighters.
+   - **Multi-File Conflict Queue, Delete/Modify & Rebase Reversal (`--scenario conflict` / `rebase-conflict`)**: On `conflict`, inspect the Conflict Queue across `conflict_app.txt` (test auto-merge + inline Result editing), `conflict_second.txt`, and `deleted_by_theirs.txt` (`UD` keep-ours vs accept-theirs removal). On `rebase-conflict`, verify `REBASING` banner, reversed Ours/Theirs labels on `rebase_target.txt`, and Continue/Abort flow.
+   - **Active Bisect Banner (`--scenario bisect`)**: Verify the `BISECTING` banner displays remaining steps/revisions and `Good` / `Bad` / `Skip` / `Reset` buttons advance or reset `git bisect` cleanly.
+   - **Welcome / Init / Clone (`--scenario welcome`)**: Verify startup opens the Welcome modal in the empty workspace (`repo` in `.pilot/ready.json`) with *Initialize Git Repository*, *Clone Repository* (test cloning `clone_source` from `.pilot/ready.json`), and *Open Recent* (`sandbox-recent`).
+   - **Commit Template, Missing Identity & CRLF Guard (`--scenario workflow`)**: Verify Commit editor pre-fills from `.gitmessage`, attempting Commit triggers the missing `user.name`/`user.email` identity prompt, and after setting identity, committing staged `crlf_guarded.txt` triggers the CRLF pre-commit guard.
 
 ## 5. Recording Findings
 

@@ -36,6 +36,8 @@ pub enum PilotAction {
         #[serde(flatten)]
         pos: CellPos,
         button: MouseBtn,
+        #[serde(default)]
+        modifiers: MouseModifiers,
         settle_ms: u64,
     },
     Scroll {
@@ -76,6 +78,16 @@ pub enum MouseBtn {
     Left,
     Right,
     Middle,
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MouseModifiers {
+    #[serde(default)]
+    pub ctrl: bool,
+    #[serde(default)]
+    pub shift: bool,
+    #[serde(default)]
+    pub alt: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

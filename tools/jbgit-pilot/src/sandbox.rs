@@ -26,8 +26,19 @@ pub struct PreparedSandbox {
     pub repo_dir: PathBuf,
     pub askpass_url: Option<String>,
     pub patches: Option<(PathBuf, PathBuf)>,
+    pub clone_source: Option<PathBuf>,
+    pub commit_template: Option<PathBuf>,
     pub recent_repos: Vec<PathBuf>,
+    temp_cleanup: Option<PathBuf>,
     _askpass_server: Option<AskpassHttpServer>,
+}
+
+impl Drop for PreparedSandbox {
+    fn drop(&mut self) {
+        if let Some(path) = self.temp_cleanup.take() {
+            let _ = remove_path_if_exists(&path);
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -43,6 +54,17 @@ pub enum SandboxScenario {
     Capabilities,
     /// Ephemeral HTTP Basic Auth remote requiring `GIT_ASKPASS` (Spec 12 #08).
     Askpass,
+    /// Active `git rebase` conflict with remaining rebase sequence steps
+    /// (Spec 13 #02/#05/#09).
+    RebaseConflict,
+    /// Active `git bisect` session across 8 linear commits (Spec 13 #14).
+    Bisect,
+    /// Empty non-Git workspace + local bare clone source + recent repo entry
+    /// (Spec 13 #13 Welcome / Init / Clone).
+    Welcome,
+    /// Commit template, missing local identity, and staged CRLF guard fixture
+    /// (Spec 13 #07/#13).
+    Workflow,
 }
 
 impl SandboxScenario {
@@ -54,8 +76,12 @@ impl SandboxScenario {
             "multi-repo" | "multirepo" => Ok(Self::MultiRepo),
             "capabilities" | "caps" => Ok(Self::Capabilities),
             "askpass" | "auth" => Ok(Self::Askpass),
+            "rebase-conflict" | "rebase" => Ok(Self::RebaseConflict),
+            "bisect" => Ok(Self::Bisect),
+            "welcome" | "non-git" | "init" => Ok(Self::Welcome),
+            "workflow" | "commit-workflow" | "crlf" => Ok(Self::Workflow),
             other => bail!(
-                "unknown scenario '{other}' (expected: full, conflict, basic, multi-repo, capabilities, askpass)"
+                "unknown scenario '{other}' (expected: full, conflict, basic, multi-repo, capabilities, askpass, rebase-conflict, bisect, welcome, workflow)"
             ),
         }
     }
@@ -222,6 +248,9 @@ fn cleanup_sandbox_artifacts(dir: &Path, remote_dir: &Path) -> Result<()> {
         parent.join("sandbox-peer"),
         parent.join("sandbox-seed"),
         parent.join("sandbox-sub-seed"),
+        parent.join("sandbox-empty"),
+        parent.join("sandbox-clone-src.git"),
+        parent.join("sandbox-recent"),
         sample_patch,
         conflict_patch,
         dir.to_path_buf(),
@@ -242,7 +271,10 @@ pub fn prepare_sandbox(session_dir: &Path, scenario: SandboxScenario) -> Result<
         repo_dir: dir.clone(),
         askpass_url: None,
         patches: None,
+        clone_source: None,
+        commit_template: None,
         recent_repos: Vec::new(),
+        temp_cleanup: None,
         _askpass_server: None,
     };
 
@@ -276,6 +308,26 @@ pub fn prepare_sandbox(session_dir: &Path, scenario: SandboxScenario) -> Result<
             init_askpass_scenario(&dir, &http_root, &url)?;
             prepared.askpass_url = Some(url);
             prepared._askpass_server = Some(server);
+        }
+        SandboxScenario::RebaseConflict => {
+            init_git_repo(&dir, "main")?;
+            init_rebase_conflict_scenario(&dir)?;
+        }
+        SandboxScenario::Bisect => {
+            init_git_repo(&dir, "main")?;
+            init_bisect_scenario(&dir)?;
+        }
+        SandboxScenario::Welcome => {
+            let (empty_dir, clone_src, recent_dir, temp_cleanup) =
+                init_welcome_scenario(&session_dir)?;
+            prepared.repo_dir = empty_dir;
+            prepared.clone_source = Some(clone_src);
+            prepared.recent_repos.push(recent_dir);
+            prepared.temp_cleanup = temp_cleanup;
+        }
+        SandboxScenario::Workflow => {
+            init_git_repo(&dir, "main")?;
+            prepared.commit_template = Some(init_workflow_scenario(&dir)?);
         }
     }
 
@@ -349,35 +401,65 @@ fn init_basic_scenario(dir: &Path) -> Result<()> {
 }
 
 fn init_conflict_scenario(dir: &Path) -> Result<()> {
-    fs::write(
-        dir.join("conflict_app.txt"),
-        "line 1: base\nline 2: common\n",
-    )?;
+    let base_app = "\
+line 01: header\n\
+line 02: config\n\
+line 03: keep A\n\
+line 04: keep B\n\
+line 05: conflict slot\n\
+line 06: keep C\n\
+line 07: keep D\n\
+line 08: keep E\n\
+line 09: auto-merge slot\n\
+line 10: footer\n";
+    fs::write(dir.join("conflict_app.txt"), base_app)?;
+    fs::write(dir.join("conflict_second.txt"), "second base\n")?;
+    fs::write(dir.join("deleted_by_theirs.txt"), "base content\n")?;
     fs::write(dir.join("README.md"), "# Conflict QA Repo\n")?;
     run_git(dir, &["add", "."])?;
     run_git(dir, &["commit", "-m", "base commit"])?;
 
     run_git(dir, &["checkout", "-b", "feature/theirs"])?;
-    fs::write(
-        dir.join("conflict_app.txt"),
-        "line 1: theirs change\nline 2: common\n",
-    )?;
-    run_git(dir, &["commit", "-am", "theirs change"])?;
+    let theirs_app = "\
+line 01: header\n\
+line 02: config\n\
+line 03: keep A\n\
+line 04: keep B\n\
+line 05: theirs conflict edit\n\
+line 06: keep C\n\
+line 07: keep D\n\
+line 08: keep E\n\
+line 09: auto-merge theirs only\n\
+line 10: footer\n";
+    fs::write(dir.join("conflict_app.txt"), theirs_app)?;
+    fs::write(dir.join("conflict_second.txt"), "second theirs\n")?;
+    run_git(dir, &["rm", "--", "deleted_by_theirs.txt"])?;
+    run_git(dir, &["commit", "-am", "theirs changes"])?;
 
     run_git(dir, &["checkout", "main"])?;
-    fs::write(
-        dir.join("conflict_app.txt"),
-        "line 1: ours change\nline 2: common\n",
-    )?;
-    run_git(dir, &["commit", "-am", "ours change"])?;
+    let ours_app = "\
+line 01: header\n\
+line 02: config\n\
+line 03: keep A\n\
+line 04: keep B\n\
+line 05: ours conflict edit\n\
+line 06: keep C\n\
+line 07: keep D\n\
+line 08: keep E\n\
+line 09: auto-merge slot\n\
+line 10: footer\n";
+    fs::write(dir.join("conflict_app.txt"), ours_app)?;
+    fs::write(dir.join("conflict_second.txt"), "second ours\n")?;
+    fs::write(dir.join("deleted_by_theirs.txt"), "ours modified\n")?;
+    run_git(dir, &["commit", "-am", "ours changes"])?;
 
     let out = Command::new("git")
-        .args(["merge", "feature/theirs"])
+        .args(["merge", "--", "feature/theirs"])
         .current_dir(dir)
-        .env("GIT_AUTHOR_NAME", "QA Tester")
-        .env("GIT_AUTHOR_EMAIL", "qa@example.com")
-        .env("GIT_COMMITTER_NAME", "QA Tester")
-        .env("GIT_COMMITTER_EMAIL", "qa@example.com")
+        .env("GIT_AUTHOR_NAME", QA_USER_NAME)
+        .env("GIT_AUTHOR_EMAIL", QA_USER_EMAIL)
+        .env("GIT_COMMITTER_NAME", QA_USER_NAME)
+        .env("GIT_COMMITTER_EMAIL", QA_USER_EMAIL)
         .output()?;
     if out.status.success() {
         bail!("expected merge conflict in Conflict scenario, but merge succeeded");
@@ -407,6 +489,16 @@ fn init_full_scenario(dir: &Path, remote_dir: &Path) -> Result<(PathBuf, PathBuf
         dir.join("src/components/header.rs"),
         "pub fn title() -> &'static str { \"jbgit\" }\n",
     )?;
+    fs::create_dir_all(dir.join("assets"))?;
+    fs::write(
+        dir.join("assets/logo.bin"),
+        b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01",
+    )?;
+    let wide_base = format!(
+        "pub fn indented_check() {{\n    let alpha = 1;\n}}\n\npub const WIDE_SPEC13_LINE: &str = \"{}_TAIL_BASE\";\n",
+        "X".repeat(130)
+    );
+    fs::write(dir.join("src/wide_lines.rs"), &wide_base)?;
     fs::write(dir.join(".gitignore"), "*.log\n")?;
     fs::write(
         dir.join("staged_partial.txt"),
@@ -581,6 +673,17 @@ fn init_full_scenario(dir: &Path, remote_dir: &Path) -> Result<(PathBuf, PathBuf
         &["tag", "-a", "v0.2.0-rc1", "-m", "Release candidate 1"],
     )?;
 
+    // Unmerged comparison & cherry-pick highlight fixture (Spec 13 #06/#11).
+    run_git(dir, &["checkout", "-b", "feature/cherry-source"])?;
+    run_git(dir, &["cherry-pick", "--", "feature/login"])?;
+    fs::write(
+        dir.join("src/cherry_helper.rs"),
+        "pub fn cherry_helper() -> bool {\n    true\n}\n",
+    )?;
+    run_git(dir, &["add", "src/cherry_helper.rs"])?;
+    run_git(dir, &["commit", "-m", "feat: cherry-source helper"])?;
+    run_git(dir, &["checkout", "main"])?;
+
     fs::write(
         &sample_patch,
         "diff --git a/src/cards.rs b/src/cards.rs\n--- a/src/cards.rs\n+++ b/src/cards.rs\n@@ -1 +1,2 @@\n pub fn card() -> &'static str { \"card\" }\n+pub fn card_badge() -> &'static str { \"badge\" }\n",
@@ -613,6 +716,17 @@ fn init_full_scenario(dir: &Path, remote_dir: &Path) -> Result<(PathBuf, PathBuf
         dir.join("src/main.rs"),
         format!("{}\n", src_lines.join("\n")),
     )?;
+
+    // Binary diff card + whitespace/horizontal-scroll/search diff fixtures (Spec 13 #04).
+    fs::write(
+        dir.join("assets/logo.bin"),
+        b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x02\x00\xff\x7f",
+    )?;
+    let wide_modified = format!(
+        "pub fn indented_check() {{\n        let alpha = 1;\n}}\n\npub const WIDE_SPEC13_LINE: &str = \"{}_TAIL_EDITED\";\n",
+        "X".repeat(130)
+    );
+    fs::write(dir.join("src/wide_lines.rs"), wide_modified)?;
 
     fs::write(dir.join("scratch_note.txt"), "untracked qa file\n")?;
     fs::write(dir.join("debug_trace.log"), "ignored debug log\n")?;
@@ -838,6 +952,148 @@ fn init_askpass_scenario(dir: &Path, http_root: &Path, http_url: &str) -> Result
     Ok(())
 }
 
+/// Active `git rebase main` stopped on a conflict in `rebase_target.txt` with
+/// 1 remaining commit in the rebase sequence (Spec 13 #02/#05/#09).
+fn init_rebase_conflict_scenario(dir: &Path) -> Result<()> {
+    fs::write(dir.join("rebase_target.txt"), "base line\n")?;
+    fs::write(dir.join("README.md"), "# Rebase Conflict QA Repo\n")?;
+    run_git(dir, &["add", "."])?;
+    run_git(dir, &["commit", "-m", "base commit"])?;
+
+    run_git(dir, &["checkout", "-b", "feature/rebase-me"])?;
+    fs::write(dir.join("rebase_target.txt"), "feature branch change 1\n")?;
+    run_git(dir, &["commit", "-am", "feat: branch change 1"])?;
+    fs::write(dir.join("rebase_followup.txt"), "second rebased commit\n")?;
+    run_git(dir, &["add", "rebase_followup.txt"])?;
+    run_git(dir, &["commit", "-m", "feat: branch followup"])?;
+
+    run_git(dir, &["checkout", "main"])?;
+    fs::write(dir.join("rebase_target.txt"), "upstream main change\n")?;
+    run_git(dir, &["commit", "-am", "main: upstream edit"])?;
+
+    run_git(dir, &["checkout", "feature/rebase-me"])?;
+    let out = Command::new("git")
+        .args(["rebase", "--", "main"])
+        .current_dir(dir)
+        .env("GIT_AUTHOR_NAME", QA_USER_NAME)
+        .env("GIT_AUTHOR_EMAIL", QA_USER_EMAIL)
+        .env("GIT_COMMITTER_NAME", QA_USER_NAME)
+        .env("GIT_COMMITTER_EMAIL", QA_USER_EMAIL)
+        .output()?;
+    if out.status.success() {
+        bail!("expected rebase conflict in RebaseConflict scenario, but rebase succeeded");
+    }
+    Ok(())
+}
+
+/// Active `git bisect` session across 8 linear commits on `main` (Spec 13 #14).
+fn init_bisect_scenario(dir: &Path) -> Result<()> {
+    for step in 1..=8 {
+        let label = if step == 1 {
+            "good"
+        } else if step == 8 {
+            "bad"
+        } else {
+            "step"
+        };
+        fs::write(dir.join("bisect_log.txt"), format!("bisect step {step}\n"))?;
+        run_git(dir, &["add", "bisect_log.txt"])?;
+        run_git(
+            dir,
+            &["commit", "-m", &format!("bisect: step {step} ({label})")],
+        )?;
+    }
+    let root_bytes = run_git_stdout(dir, &["rev-list", "--max-parents=0", "HEAD"])?;
+    let root_oid = String::from_utf8(root_bytes)
+        .context("root oid is not UTF-8")?
+        .trim()
+        .to_string();
+    run_git(dir, &["bisect", "start", "HEAD", &root_oid])?;
+    Ok(())
+}
+
+/// Empty non-Git workspace + local bare clone source + recent repo entry
+/// (Spec 13 #13 Welcome / Init / Clone).
+fn init_welcome_scenario(
+    session_dir: &Path,
+) -> Result<(PathBuf, PathBuf, PathBuf, Option<PathBuf>)> {
+    let has_git_ancestor = session_dir
+        .ancestors()
+        .any(|ancestor| ancestor.join(".git").exists());
+    let (empty_dir, temp_cleanup) = if has_git_ancestor {
+        // Place the empty workspace outside any parent `.git` (e.g. when
+        // `session_dir` is `.pilot/` inside the jGit repository) so
+        // `Repository::discover` opens the Welcome modal instead of jGit.
+        let root = std::env::temp_dir().join(format!("jbgit-pilot-welcome-{}", std::process::id()));
+        remove_path_if_exists(&root)?;
+        let workspace = root.join("sandbox-empty");
+        fs::create_dir_all(&workspace)?;
+        (workspace, Some(root))
+    } else {
+        let workspace = session_dir.join("sandbox-empty");
+        fs::create_dir_all(&workspace)?;
+        (workspace, None)
+    };
+
+    let clone_src = session_dir.join("sandbox-clone-src.git");
+    fs::create_dir_all(&clone_src)?;
+    run_git(&clone_src, &["init", "--bare", "-b", "main"])?;
+
+    let seed_dir = session_dir.join("sandbox-seed");
+    init_git_repo(&seed_dir, "main")?;
+    fs::write(seed_dir.join("README.md"), "# Clone Source Repo\n")?;
+    run_git(&seed_dir, &["add", "README.md"])?;
+    run_git(&seed_dir, &["commit", "-m", "init: clone source"])?;
+    fs::write(seed_dir.join("hello.txt"), "cloned from local bare repo\n")?;
+    run_git(&seed_dir, &["add", "hello.txt"])?;
+    run_git(&seed_dir, &["commit", "-m", "feat: add hello.txt"])?;
+    run_git(
+        &seed_dir,
+        &["remote", "add", "origin", &clone_src.to_string_lossy()],
+    )?;
+    run_git(&seed_dir, &["push", "-u", "origin", "main"])?;
+    remove_path_if_exists(&seed_dir)?;
+
+    let recent_dir = session_dir.join("sandbox-recent");
+    init_git_repo(&recent_dir, "main")?;
+    fs::write(recent_dir.join("README.md"), "# Recent Repo\n")?;
+    run_git(&recent_dir, &["add", "README.md"])?;
+    run_git(&recent_dir, &["commit", "-m", "init: recent repo"])?;
+
+    Ok((empty_dir, clone_src, recent_dir, temp_cleanup))
+}
+
+/// Commit template, missing local identity, and staged CRLF file
+/// (Spec 13 #07/#13).
+fn init_workflow_scenario(dir: &Path) -> Result<PathBuf> {
+    fs::write(dir.join("README.md"), "# Workflow QA Repo\n")?;
+    run_git(dir, &["add", "README.md"])?;
+    run_git(dir, &["commit", "-m", "init: workflow sandbox"])?;
+
+    fs::create_dir_all(dir.join("src"))?;
+    fs::write(dir.join("src/app.rs"), "pub fn run() {}\n")?;
+    run_git(dir, &["add", "src/app.rs"])?;
+    run_git(dir, &["commit", "-m", "feat: add app module"])?;
+
+    let template_path = dir.join(".gitmessage");
+    fs::write(&template_path, "feat(): \n\n# Spec 13 commit template\n")?;
+    run_git(
+        dir,
+        &["config", "--local", "commit.template", ".gitmessage"],
+    )?;
+
+    run_git(dir, &["config", "--local", "core.autocrlf", "false"])?;
+    fs::write(
+        dir.join("crlf_guarded.txt"),
+        b"first line\r\nsecond line\r\n",
+    )?;
+    run_git(dir, &["add", "--", "crlf_guarded.txt"])?;
+
+    run_git(dir, &["config", "--local", "user.name", ""])?;
+    run_git(dir, &["config", "--local", "user.email", ""])?;
+    Ok(template_path)
+}
+
 fn configure_git_user(dir: &Path, name: &str, email: &str) -> Result<()> {
     run_git(dir, &["config", "user.name", name])?;
     run_git(dir, &["config", "user.email", email])?;
@@ -966,7 +1222,8 @@ mod tests {
         let linear_log = git_out(dir, &["log", "--oneline", "main..feature/linear-chain"]);
         assert_eq!(linear_log.lines().count(), 5, "{linear_log}");
 
-        let (sample_patch, conflict_patch) = prepared.patches.expect("full scenario patches");
+        let (sample_patch, conflict_patch) =
+            prepared.patches.as_ref().expect("full scenario patches");
         let ok = Command::new("git")
             .args(["apply", "--check", &sample_patch.to_string_lossy()])
             .current_dir(dir)
@@ -1023,6 +1280,107 @@ mod tests {
         assert!(conflicted.contains("<<<<<<<"), "{conflicted}");
         let status = git_out(dir, &["status", "--short"]);
         assert!(status.contains("UU src/components/header.rs"), "{status}");
+        assert!(status.contains("assets/logo.bin"), "{status}");
+        assert!(status.contains("src/wide_lines.rs"), "{status}");
+
+        let cherry_log = git_out(dir, &["log", "--oneline", "main..feature/cherry-source"]);
+        assert_eq!(cherry_log.lines().count(), 2, "{cherry_log}");
+    }
+
+    #[test]
+    fn conflict_scenario_creates_multi_file_queue_and_delete_modify() {
+        let tmp = TestDir::new("conflict");
+        let prepared = prepare_sandbox(&tmp.0, SandboxScenario::Conflict).unwrap();
+        let dir = &prepared.repo_dir;
+
+        assert!(dir.join(".git/MERGE_HEAD").is_file(), "expected MERGE_HEAD");
+        let status = git_out(dir, &["status", "--short"]);
+        assert!(status.contains("UU conflict_app.txt"), "{status}");
+        assert!(status.contains("UU conflict_second.txt"), "{status}");
+        assert!(status.contains("UD deleted_by_theirs.txt"), "{status}");
+    }
+
+    #[test]
+    fn rebase_conflict_scenario_starts_active_rebase_with_conflict() {
+        let tmp = TestDir::new("rebase-conflict");
+        let prepared = prepare_sandbox(&tmp.0, SandboxScenario::RebaseConflict).unwrap();
+        let dir = &prepared.repo_dir;
+
+        assert!(
+            dir.join(".git/rebase-merge").is_dir(),
+            "expected .git/rebase-merge"
+        );
+        let status = git_out(dir, &["status", "--short"]);
+        assert!(status.contains("UU rebase_target.txt"), "{status}");
+    }
+
+    #[test]
+    fn bisect_scenario_starts_active_bisect_session() {
+        let tmp = TestDir::new("bisect");
+        let prepared = prepare_sandbox(&tmp.0, SandboxScenario::Bisect).unwrap();
+        let dir = &prepared.repo_dir;
+
+        assert!(
+            dir.join(".git/BISECT_START").is_file(),
+            "expected .git/BISECT_START"
+        );
+        let status = git_out(dir, &["status", "--short"]);
+        assert!(status.trim().is_empty(), "expected clean tree: {status}");
+    }
+
+    #[test]
+    fn welcome_scenario_creates_non_git_dir_clone_source_and_recent_repo() {
+        let tmp = TestDir::new("welcome");
+        let prepared = prepare_sandbox(&tmp.0, SandboxScenario::Welcome).unwrap();
+
+        assert!(prepared.repo_dir.is_dir(), "expected empty dir");
+        assert!(
+            !prepared.repo_dir.join(".git").exists(),
+            "welcome dir must not contain .git"
+        );
+        let clone_src = prepared.clone_source.as_deref().expect("clone_source");
+        assert!(
+            clone_src.join("HEAD").is_file(),
+            "expected bare clone source"
+        );
+        let log = git_out(clone_src, &["log", "--oneline", "main"]);
+        assert_eq!(log.lines().count(), 2, "{log}");
+
+        assert_eq!(prepared.recent_repos.len(), 1);
+        assert!(prepared.recent_repos[0].join(".git").exists());
+    }
+
+    #[test]
+    fn workflow_scenario_configures_template_missing_identity_and_staged_crlf() {
+        let tmp = TestDir::new("workflow");
+        let prepared = prepare_sandbox(&tmp.0, SandboxScenario::Workflow).unwrap();
+        let dir = &prepared.repo_dir;
+
+        assert_eq!(
+            prepared.commit_template.as_deref(),
+            Some(dir.join(".gitmessage").as_path())
+        );
+        assert_eq!(
+            git_out(dir, &["config", "--local", "--get", "commit.template"]).trim(),
+            ".gitmessage"
+        );
+        assert_eq!(
+            git_out(dir, &["config", "--local", "--get", "user.name"]).trim(),
+            ""
+        );
+        assert_eq!(
+            git_out(dir, &["config", "--local", "--get", "user.email"]).trim(),
+            ""
+        );
+        assert_eq!(
+            git_out(dir, &["config", "--local", "--get", "core.autocrlf"]).trim(),
+            "false"
+        );
+        let staged_blob = run_git_stdout(dir, &["cat-file", "blob", ":crlf_guarded.txt"]).unwrap();
+        assert!(
+            staged_blob.windows(2).any(|w| w == b"\r\n"),
+            "expected CRLF bytes in staged blob: {staged_blob:?}"
+        );
     }
 
     #[test]

@@ -33,6 +33,7 @@ pub struct ServeOptions {
     pub cols: u16,
     pub rows: u16,
     pub truecolor: bool,
+    pub extra_env: Vec<(String, String)>,
 }
 
 pub(crate) struct SharedPtyState {
@@ -132,6 +133,9 @@ pub fn run_serve(opts: ServeOptions) -> Result<()> {
             cmd.env("XDG_CONFIG_HOME", cfg);
         }
     }
+    for (k, v) in &opts.extra_env {
+        cmd.env(k, v);
+    }
 
     let mut child = pair
         .slave
@@ -204,6 +208,12 @@ pub fn run_serve(opts: ServeOptions) -> Result<()> {
         if let Some((sample, conflict)) = &prepared.patches {
             ready_info["sample_patch"] = serde_json::json!(sample);
             ready_info["conflict_patch"] = serde_json::json!(conflict);
+        }
+        if let Some(clone_src) = &prepared.clone_source {
+            ready_info["clone_source"] = serde_json::json!(clone_src);
+        }
+        if let Some(tpl) = &prepared.commit_template {
+            ready_info["commit_template"] = serde_json::json!(tpl);
         }
     }
     fs::write(&ready_path, serde_json::to_string_pretty(&ready_info)?)?;
@@ -323,10 +333,11 @@ fn handle_action(
         PilotAction::Click {
             pos,
             button,
+            modifiers,
             settle_ms,
         } => {
             let sent_at = Instant::now();
-            let bytes = encode_sgr_click(pos.col, pos.row, button);
+            let bytes = encode_sgr_click(pos.col, pos.row, button, modifiers);
             writer.write_all(&bytes)?;
             writer.flush()?;
             wait_after_input(shared, sent_at, settle_ms, 2500);

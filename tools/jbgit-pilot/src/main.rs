@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Result, bail};
 
 use crate::client::{print_response, send_action};
-use crate::protocol::{CellPos, MouseBtn, PilotAction};
+use crate::protocol::{CellPos, MouseBtn, MouseModifiers, PilotAction};
 use crate::server::{SandboxScenario, ServeOptions, run_serve};
 
 fn default_session_dir() -> PathBuf {
@@ -61,16 +61,17 @@ USAGE:
   jbgit-pilot [--session-dir <dir>] <COMMAND> [ARGS...]
 
 SERVER (run with IsDaemon=true):
-  serve [--repo <dir> | --sandbox] [--scenario full|conflict|basic|multi-repo|capabilities|askpass]
+  serve [--repo <dir> | --sandbox]
+        [--scenario full|conflict|basic|multi-repo|capabilities|askpass|rebase-conflict|bisect|welcome|workflow]
         [--custom-config | --config-dir <dir> | --use-user-config]
-        [--cols 140] [--rows 40] [--bin <path>] [--no-truecolor]
+        [--cols 140] [--rows 40] [--bin <path>] [--no-truecolor] [--env KEY=VALUE]
 
 CLIENT COMMANDS:
   screen [--settle-ms 150]
   key <key1> [<key2> ...] [--settle-ms 200]
   type <text> [--settle-ms 200]
-  click <col> <row> [--button left|right|middle] [--settle-ms 200]
-  rclick <col> <row> [--settle-ms 200]
+  click <col> <row> [--button left|right|middle] [--ctrl] [--shift] [--alt] [--settle-ms 200]
+  rclick <col> <row> [--ctrl] [--shift] [--alt] [--settle-ms 200]
   hover <col> <row> [--settle-ms 200]
   scroll <up|down> <col> <row> [--steps 3] [--settle-ms 200]
   resize <cols> <rows> [--settle-ms 200]
@@ -117,6 +118,7 @@ fn main() -> Result<()> {
                 cols: 140,
                 rows: 40,
                 truecolor: true,
+                extra_env: Vec::new(),
             };
             while idx < args.len() {
                 match args[idx].as_str() {
@@ -168,6 +170,17 @@ fn main() -> Result<()> {
                         idx += 1;
                         opts.truecolor = false;
                     }
+                    "--env" => {
+                        idx += 1;
+                        let pair = req_arg(&args, &mut idx, "--env")?;
+                        let Some((k, v)) = pair.split_once('=') else {
+                            bail!("invalid --env '{pair}' (expected KEY=VALUE)");
+                        };
+                        if k.is_empty() {
+                            bail!("invalid --env '{pair}' (empty key)");
+                        }
+                        opts.extra_env.push((k.to_string(), v.to_string()));
+                    }
                     other => bail!("unknown flag '{other}' for serve"),
                 }
             }
@@ -204,51 +217,12 @@ fn main() -> Result<()> {
             )?;
         }
         "click" => {
-            let col: u16 = req_arg(&args, &mut idx, "col")?.parse()?;
-            let row: u16 = req_arg(&args, &mut idx, "row")?.parse()?;
-            let mut button = MouseBtn::Left;
-            let mut settle_ms = 200u64;
-            while idx < args.len() {
-                match args[idx].as_str() {
-                    "--button" => {
-                        idx += 1;
-                        button = match req_arg(&args, &mut idx, "--button")?.as_str() {
-                            "left" => MouseBtn::Left,
-                            "right" => MouseBtn::Right,
-                            "middle" => MouseBtn::Middle,
-                            other => bail!("invalid button '{other}'"),
-                        };
-                    }
-                    "--settle-ms" => {
-                        idx += 1;
-                        settle_ms = req_arg(&args, &mut idx, "--settle-ms")?.parse()?;
-                    }
-                    other => bail!("unknown flag '{other}' for click"),
-                }
-            }
-            run_client(
-                &session_dir,
-                PilotAction::Click {
-                    pos: CellPos { col, row },
-                    button,
-                    settle_ms,
-                },
-                6000,
-            )?;
+            let action = parse_click_action(&args, &mut idx, MouseBtn::Left, true, "click")?;
+            run_client(&session_dir, action, 6000)?;
         }
         "rclick" => {
-            let col: u16 = req_arg(&args, &mut idx, "col")?.parse()?;
-            let row: u16 = req_arg(&args, &mut idx, "row")?.parse()?;
-            let settle_ms = parse_opt_u64(&args, idx, "--settle-ms")?.unwrap_or(200);
-            run_client(
-                &session_dir,
-                PilotAction::Click {
-                    pos: CellPos { col, row },
-                    button: MouseBtn::Right,
-                    settle_ms,
-                },
-                6000,
-            )?;
+            let action = parse_click_action(&args, &mut idx, MouseBtn::Right, false, "rclick")?;
+            run_client(&session_dir, action, 6000)?;
         }
         "hover" => {
             let col: u16 = req_arg(&args, &mut idx, "col")?.parse()?;
@@ -366,6 +340,56 @@ fn run_client(session_dir: &Path, action: PilotAction, timeout_ms: u64) -> Resul
         std::process::exit(1);
     }
     Ok(())
+}
+
+fn parse_click_action(
+    args: &[String],
+    idx: &mut usize,
+    default_button: MouseBtn,
+    allow_button: bool,
+    cmd_name: &str,
+) -> Result<PilotAction> {
+    let col: u16 = req_arg(args, idx, "col")?.parse()?;
+    let row: u16 = req_arg(args, idx, "row")?.parse()?;
+    let mut button = default_button;
+    let mut modifiers = MouseModifiers::default();
+    let mut settle_ms = 200u64;
+    while *idx < args.len() {
+        match args[*idx].as_str() {
+            "--button" if allow_button => {
+                *idx += 1;
+                button = match req_arg(args, idx, "--button")?.as_str() {
+                    "left" => MouseBtn::Left,
+                    "right" => MouseBtn::Right,
+                    "middle" => MouseBtn::Middle,
+                    other => bail!("invalid button '{other}'"),
+                };
+            }
+            "--ctrl" => {
+                *idx += 1;
+                modifiers.ctrl = true;
+            }
+            "--shift" => {
+                *idx += 1;
+                modifiers.shift = true;
+            }
+            "--alt" => {
+                *idx += 1;
+                modifiers.alt = true;
+            }
+            "--settle-ms" => {
+                *idx += 1;
+                settle_ms = req_arg(args, idx, "--settle-ms")?.parse()?;
+            }
+            other => bail!("unknown flag '{other}' for {cmd_name}"),
+        }
+    }
+    Ok(PilotAction::Click {
+        pos: CellPos { col, row },
+        button,
+        modifiers,
+        settle_ms,
+    })
 }
 
 fn req_arg(args: &[String], idx: &mut usize, name: &str) -> Result<String> {
