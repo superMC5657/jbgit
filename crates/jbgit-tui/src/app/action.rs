@@ -440,6 +440,7 @@ pub enum Action {
     PromptDeleteTag {
         name: String,
     },
+    PromptPushCurrentBranch,
     PromptPush {
         branch: String,
         up_to: Option<Oid>,

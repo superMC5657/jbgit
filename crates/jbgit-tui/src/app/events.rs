@@ -332,8 +332,15 @@ impl AppState {
                     self.diff_caches.clear_blames();
                 }
                 self.repo_snapshot = Some(snapshot);
+                self.awaiting_head_snapshot = false;
                 self.apply_pending_remote_selection();
-                self.sync_open_push_dialog_remotes(&mut effects);
+                self.sync_open_push_dialog_from_snapshot(&mut effects);
+                if self.pending_push_after_head_switch && self.head_switch_ops_running == 0 {
+                    self.pending_push_after_head_switch = false;
+                    if self.modal_stack.is_empty() {
+                        self.prompt_push_current_branch(&mut effects);
+                    }
+                }
                 if self.pending_update_stash
                     && self.ongoing_kind().is_none()
                     && (self.pending_update_stash_restore || prev_ongoing.is_some())
@@ -888,6 +895,26 @@ impl AppState {
             }
             EngineEvent::GitOpFinished(outcome) => {
                 self.git_ops_running = self.git_ops_running.saturating_sub(1);
+                if outcome.op.may_change_head() {
+                    self.head_switch_ops_running = self.head_switch_ops_running.saturating_sub(1);
+                    if outcome.success {
+                        if self.head_switch_ops_running == 0 {
+                            if outcome.op.refresh_scope() != jbgit_core::RefreshScope::None {
+                                self.awaiting_head_snapshot = true;
+                            } else if self.pending_push_after_head_switch {
+                                self.pending_push_after_head_switch = false;
+                                if self.modal_stack.is_empty() {
+                                    self.prompt_push_current_branch(&mut effects);
+                                }
+                            }
+                        }
+                    } else {
+                        self.pending_push_after_head_switch = false;
+                        if self.head_switch_ops_running == 0 {
+                            self.awaiting_head_snapshot = false;
+                        }
+                    }
+                }
                 if outcome.success {
                     self.stage_workbench.on_git_op_succeeded();
                 }
@@ -931,6 +958,11 @@ impl AppState {
             EngineEvent::Error(msg) => {
                 self.loading_snapshot = false;
                 self.loading_more_commits = false;
+                if self.git_ops_running == 0 {
+                    self.head_switch_ops_running = 0;
+                    self.awaiting_head_snapshot = false;
+                    self.pending_push_after_head_switch = false;
+                }
                 // Keep `requested` keys intact on diff/details views so failing
                 // single-flight loads do not spin in an infinite hot retry loop
                 // on every subsequent reconcile; changing selection or pressing

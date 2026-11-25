@@ -730,28 +730,7 @@ pub fn execute_action(run: &KeyAction, state: &AppState) -> Option<Vec<Action>> 
                 state.update_project_op(state.configured_update_mode(), false),
             )],
         }),
-        KeyAction::GitPush => {
-            let Some(snap) = state.repo_snapshot.as_ref() else {
-                return Some(vec![Action::Notice(
-                    state.i18n.t("toast.repo_not_loaded").to_string(),
-                )]);
-            };
-            if let Some(branch) = snap.head_branch.clone() {
-                Some(vec![Action::PromptPush {
-                    branch,
-                    up_to: None,
-                }])
-            } else if let Some(head_oid) = snap.head_oid {
-                Some(vec![Action::PromptPush {
-                    branch: "HEAD".to_string(),
-                    up_to: Some(head_oid),
-                }])
-            } else {
-                Some(vec![Action::Notice(
-                    state.i18n.t("menu.log.detached_no_branch").to_string(),
-                )])
-            }
-        }
+        KeyAction::GitPush => Some(vec![Action::PromptPushCurrentBranch]),
         KeyAction::Palette => Some(vec![Action::OpenPopup {
             kind: PopupKind::PalettePreview,
             initial_query: String::new(),

@@ -2584,6 +2584,16 @@ impl AppState {
                 self.push_dialog(dlg);
             }
             Action::PushConfirm => {
+                if self
+                    .modal_stack
+                    .push_dialog()
+                    .is_some_and(|pd| pd.follow_head)
+                    && (self.head_switch_ops_running > 0 || self.awaiting_head_snapshot)
+                {
+                    self.status_notice =
+                        Some(self.i18n.t("dialog.repo_switch.op_running").to_string());
+                    return true;
+                }
                 let check = self.modal_stack.push_dialog().map(|pd| {
                     pd.can_push(&self.config.jbgit.push.protected_branches, &self.i18n)
                         .map(|()| (pd.visible_commits().len(), pd.build_push_op()))

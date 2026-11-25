@@ -68,17 +68,34 @@ pub fn render_branches_pane(
             )
         })
         .unwrap_or_default();
+    let buttons = [
+        (" ⌖", BranchesToolbarButton::Locate),
+        (" ⊞", BranchesToolbarButton::GroupByDir),
+        (" «", BranchesToolbarButton::Collapse),
+    ];
+    let buttons_w: u16 = buttons.iter().map(|(t, _)| t.width() as u16).sum::<u16>() + 1;
+    let show_buttons = area.height > 0 && area.width >= buttons_w + 2;
     let body = render_pane_frame(frame, area, PaneId::LogBranchesTree, &sub, ctx);
 
     // Header toolbar: [⌖] locate, [⊞] group by directory, [«] collapse.
-    if area.width >= 20 {
-        let buttons = [
-            (" ⌖", BranchesToolbarButton::Locate),
-            (" ⊞", BranchesToolbarButton::GroupByDir),
-            (" «", BranchesToolbarButton::Collapse),
-        ];
-        let total: u16 = buttons.iter().map(|(t, _)| t.width() as u16).sum::<u16>() + 1;
-        let mut x = area.right().saturating_sub(total);
+    // Keep buttons visible on narrow panes and let them progressively occlude
+    // the subtitle (and then the title on ultra-narrow widths) from right to left.
+    if show_buttons {
+        let header_bg = if ctx.focused_pane == PaneId::LogBranchesTree {
+            ctx.theme.bg_panel
+        } else {
+            ctx.theme.bg_canvas
+        };
+        let buttons_x = area.right().saturating_sub(buttons_w);
+        // Clear any double-width glyph straddling `buttons_x - 1` so `Buffer::diff`
+        // does not bleed it into the buttons' leading space.
+        if buttons_x > area.x
+            && let Some(cell) = frame.buffer_mut().cell_mut((buttons_x - 1, area.y))
+            && cell.symbol().width() > 1
+        {
+            cell.set_char(' ');
+        }
+        let mut x = buttons_x;
         for (text, btn) in buttons {
             let w = text.width() as u16;
             let rect = Rect::new(x, area.y, w, 1);
@@ -92,12 +109,19 @@ pub fn render_branches_pane(
                 ctx.theme.fg_muted
             };
             frame.render_widget(
-                Paragraph::new(Span::styled(text, Style::default().fg(fg))),
+                Paragraph::new(Span::styled(text, Style::default().fg(fg).bg(header_bg))),
                 rect,
             );
             ctx.hit_registry
                 .register(rect, 3, HitTarget::BranchesToolbar(btn));
             x += w;
+        }
+        if x < area.right() {
+            frame.render_widget(
+                Paragraph::new(" ".repeat((area.right() - x) as usize))
+                    .style(Style::default().bg(header_bg)),
+                Rect::new(x, area.y, area.right() - x, 1),
+            );
         }
     }
 

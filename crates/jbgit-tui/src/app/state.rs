@@ -75,6 +75,12 @@ pub struct AppState {
     pub(crate) menu_hover: Option<MenuHover>,
     /// Number of Git write operations in flight.
     pub(crate) git_ops_running: usize,
+    /// Number of in-flight Git operations that may change `HEAD`.
+    pub(crate) head_switch_ops_running: usize,
+    /// Waiting for `RepoSnapshotLoaded` after a `HEAD`-changing op succeeded.
+    pub(crate) awaiting_head_snapshot: bool,
+    /// Global `P` (`PromptPushCurrentBranch`) pressed while switching `HEAD`.
+    pub(crate) pending_push_after_head_switch: bool,
     /// Outgoing commit count visible when the user confirmed the last Push dialog.
     pub(crate) last_push_expected_commits: Option<usize>,
     /// Commit queued while configuring missing `user.name` / `user.email`.
@@ -243,6 +249,9 @@ impl AppState {
             notification: None,
             menu_hover: None,
             git_ops_running: 0,
+            head_switch_ops_running: 0,
+            awaiting_head_snapshot: false,
+            pending_push_after_head_switch: false,
             last_push_expected_commits: None,
             pending_commit_after_identity: None,
             last_patch_dir: None,
@@ -697,6 +706,9 @@ impl AppState {
             || self.stage_workbench.commit_in_progress()
             || self.stage_workbench.loading_stage_status()
             || self.git_ops_running > 0
+            || self.head_switch_ops_running > 0
+            || self.awaiting_head_snapshot
+            || self.pending_push_after_head_switch
             || self.modal_stack.file_history().is_some_and(|fh| fh.loading)
             || self.modal_stack.annotate().is_some_and(|ann| ann.loading)
             || self.modal_stack.push_dialog().is_some_and(|pd| pd.loading)

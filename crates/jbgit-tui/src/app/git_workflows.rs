@@ -121,6 +121,9 @@ impl AppState {
     }
 
     fn start_git_op(&mut self, op: GitOp, effects: &mut Vec<Effect>) {
+        if op.may_change_head() {
+            self.head_switch_ops_running += 1;
+        }
         let label = self.i18n.git_op_label(&op);
         self.status_notice = Some(self.i18n.t_fmt("toast.op_running", &[("label", &label)]));
         self.notification = None;
@@ -736,6 +739,7 @@ impl AppState {
             }
             Action::PromptDeleteBranch { name } => self.prompt_delete_branch(name, effects),
             Action::PromptDeleteTag { name } => self.prompt_delete_tag(name, effects),
+            Action::PromptPushCurrentBranch => self.prompt_push_current_branch(effects),
             Action::PromptPush { branch, up_to } => self.prompt_push(branch, *up_to, effects),
             Action::PromptMerge { rev } => self.prompt_merge(rev),
             Action::RememberMergeOptions(options) => {
@@ -1727,15 +1731,10 @@ impl AppState {
         self.push_dialog(Dialog::Choice(dlg));
     }
 
-    pub(crate) fn prompt_push(
-        &mut self,
+    fn resolve_push_dialog_target(
+        snap: &jbgit_core::RepoSnapshot,
         branch: &str,
-        up_to: Option<Oid>,
-        effects: &mut Vec<Effect>,
-    ) {
-        let Some(snap) = self.repo_snapshot.clone() else {
-            return;
-        };
+    ) -> (Vec<String>, usize, String, bool, Option<Oid>) {
         let is_detached = branch == "HEAD";
         let local = (!is_detached).then(|| snap.local_branch(branch)).flatten();
         let upstream = local.and_then(|l| l.upstream.clone());
@@ -1765,6 +1764,55 @@ impl AppState {
             .then(|| snap.remote_branch(selected_remote, &remote_branch))
             .flatten()
             .map(|r| r.target_oid);
+        (
+            remotes,
+            remote_idx,
+            remote_branch,
+            set_upstream,
+            expected_remote_oid,
+        )
+    }
+
+    pub(crate) fn prompt_push_current_branch(&mut self, effects: &mut Vec<Effect>) {
+        if self.head_switch_ops_running > 0 || self.awaiting_head_snapshot {
+            self.pending_push_after_head_switch = true;
+            return;
+        }
+        let Some(snap) = self.repo_snapshot.as_ref() else {
+            self.status_notice = Some(self.i18n.t("toast.repo_not_loaded").to_string());
+            return;
+        };
+        if let Some(branch) = snap.head_branch.clone() {
+            self.prompt_push_with_mode(&branch, None, true, effects);
+        } else if let Some(head_oid) = snap.head_oid {
+            self.prompt_push_with_mode("HEAD", Some(head_oid), true, effects);
+        } else {
+            self.status_notice = Some(self.i18n.t("menu.log.detached_no_branch").to_string());
+        }
+    }
+
+    pub(crate) fn prompt_push(
+        &mut self,
+        branch: &str,
+        up_to: Option<Oid>,
+        effects: &mut Vec<Effect>,
+    ) {
+        self.prompt_push_with_mode(branch, up_to, false, effects);
+    }
+
+    fn prompt_push_with_mode(
+        &mut self,
+        branch: &str,
+        up_to: Option<Oid>,
+        follow_head: bool,
+        effects: &mut Vec<Effect>,
+    ) {
+        let Some(snap) = self.repo_snapshot.clone() else {
+            return;
+        };
+        let is_detached = branch == "HEAD";
+        let (remotes, remote_idx, remote_branch, set_upstream, expected_remote_oid) =
+            Self::resolve_push_dialog_target(&snap, branch);
         let mut pd = PushDialogState::new(
             branch.to_string(),
             remotes,
@@ -1774,6 +1822,7 @@ impl AppState {
             up_to,
             jbgit_core::DiffContext::from_lines(self.config.jbgit.diff.context_lines),
         );
+        pd.follow_head = follow_head;
         pd.diff.whitespace = self.config.jbgit.diff.whitespace.to_core();
         pd.diff.soft_wrap = self.config.jbgit.diff.soft_wrap;
         pd.expected_remote_oid = expected_remote_oid;
@@ -1792,16 +1841,68 @@ impl AppState {
         }
     }
 
-    /// Refreshes an open PushDialog's remote list after adding/renaming a remote
-    /// (e.g. via inline `[+ Define Remote…]`).
-    pub(crate) fn sync_open_push_dialog_remotes(&mut self, effects: &mut Vec<Effect>) {
+    /// Refreshes an open PushDialog from the latest repository snapshot:
+    /// rebinds `follow_head` dialogs when `HEAD` changes, and syncs remotes /
+    /// expected remote OIDs otherwise.
+    pub(crate) fn sync_open_push_dialog_from_snapshot(&mut self, effects: &mut Vec<Effect>) {
         let Some(snap) = self.repo_snapshot.clone() else {
             return;
         };
         let avail = snap.available_remotes();
         let mut reload_key = None;
+        let mut close_unborn = false;
         for layer in self.modal_stack.iter_mut() {
             if let ModalLayer::PushDialog(pd) = layer {
+                if pd.follow_head {
+                    let target = snap
+                        .head_branch
+                        .as_deref()
+                        .map(|b| (b.to_string(), None))
+                        .or_else(|| snap.head_oid.map(|oid| ("HEAD".to_string(), Some(oid))));
+                    let Some((new_branch, new_up_to)) = target else {
+                        close_unborn = true;
+                        continue;
+                    };
+                    if pd.branch != new_branch || (new_branch == "HEAD" && pd.up_to != new_up_to) {
+                        let (remotes, remote_idx, remote_branch, set_upstream, expected_remote_oid) =
+                            Self::resolve_push_dialog_target(&snap, &new_branch);
+                        pd.branch = new_branch;
+                        pd.up_to = new_up_to;
+                        pd.remotes = remotes;
+                        pd.remote_idx = remote_idx;
+                        pd.remote_branch = remote_branch;
+                        pd.set_upstream = set_upstream;
+                        pd.expected_remote_oid = expected_remote_oid;
+                        pd.editing_target = false;
+                        pd.target_draft.clear();
+                        pd.target_selected_all = false;
+                        pd.completion_selected = 0;
+                        pd.picking_remote = false;
+                        pd.error = None;
+                        pd.outgoing = None;
+                        pd.selected_commit = 0;
+                        pd.commit_scroll.reset();
+                        pd.selected_file = 0;
+                        pd.file_scroll.reset();
+                        pd.show_diff = false;
+                        pd.details_requested = None;
+                        pd.details_pending = None;
+                        pd.diff.requested = None;
+                        pd.diff.pending = None;
+                        pd.diff.scroll.reset();
+                        pd.focus = if pd.is_detached() && pd.remote_branch.is_empty() {
+                            crate::log_view::PushDialogFocus::Target
+                        } else {
+                            crate::log_view::PushDialogFocus::Commits
+                        };
+                        let has_remote = !pd.remote().is_empty();
+                        pd.loading = has_remote;
+                        if has_remote {
+                            reload_key = Some(pd.outgoing_key());
+                        }
+                        continue;
+                    }
+                }
                 let was_empty = pd.remotes.is_empty();
                 let prev_remote = pd.remote().to_string();
                 if pd.remotes != avail {
@@ -1833,9 +1934,17 @@ impl AppState {
                         reload_key = Some(pd.outgoing_key());
                     }
                 }
+                if !pd.editing_target && !pd.remote().is_empty() && !pd.remote_branch.is_empty() {
+                    pd.expected_remote_oid = snap
+                        .remote_branch(pd.remote(), &pd.remote_branch)
+                        .map(|r| r.target_oid);
+                }
             }
         }
-        if let Some(key) = reload_key {
+        if close_unborn {
+            self.modal_stack.close_push_dialog();
+            self.status_notice = Some(self.i18n.t("menu.log.detached_no_branch").to_string());
+        } else if let Some(key) = reload_key {
             effects.push(Effect::RequestOutgoing(key));
         }
     }

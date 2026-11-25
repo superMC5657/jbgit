@@ -23,6 +23,7 @@ pub enum PushDialogFocus {
 #[derive(Debug)]
 pub struct PushDialogState {
     pub branch: String,
+    pub follow_head: bool,
     pub remotes: Vec<String>,
     pub remote_idx: usize,
     pub remote_branch: String,
@@ -64,6 +65,7 @@ impl PushDialogState {
     ) -> Self {
         Self {
             branch,
+            follow_head: false,
             remotes,
             remote_idx,
             remote_branch,

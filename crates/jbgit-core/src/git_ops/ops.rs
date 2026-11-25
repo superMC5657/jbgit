@@ -1393,6 +1393,33 @@ impl GitOp {
             _ => RefreshScope::All,
         }
     }
+
+    /// Operations that may change `HEAD` (branch switch, detach, reset, rebase, merge, etc.).
+    pub fn may_change_head(&self) -> bool {
+        match self {
+            Self::Checkout { .. }
+            | Self::ForceCheckout { .. }
+            | Self::CheckoutNewBranch { .. }
+            | Self::CheckoutResetBranch { .. }
+            | Self::RenameBranch { .. }
+            | Self::Reset { .. }
+            | Self::Merge { .. }
+            | Self::Rebase { .. }
+            | Self::Pull { .. }
+            | Self::CherryPick { .. }
+            | Self::CherryPickAllowEmpty
+            | Self::Revert { .. }
+            | Self::RewordHead { .. }
+            | Self::RewriteHistory { .. }
+            | Self::FixupCommit { .. }
+            | Self::Ongoing { .. }
+            | Self::StashBranch { .. }
+            | Self::UpdateProject { .. } => true,
+            Self::Smart(inner) => inner.may_change_head(),
+            Self::Sequence(ops) => ops.iter().any(Self::may_change_head),
+            _ => false,
+        }
+    }
 }
 
 /// Infers a default local directory name from a Git clone URL or local path

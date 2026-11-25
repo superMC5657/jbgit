@@ -2711,3 +2711,306 @@ fn round5_qa5_02_filter_editor_candidates_support_mouse_hover_click_and_scroll()
         "yesterday"
     );
 }
+
+fn snapshot_on_branch(branch: &str, same_oid: bool) -> jbgit_core::RepoSnapshot {
+    let mut snap = snapshot();
+    snap.remotes = super::remote_infos(&["origin"]);
+    let target_oid = if same_oid { 12 } else { 11 };
+    let mut feat = local("feature/diverged", target_oid);
+    feat.upstream = Some("origin/feature/diverged".into());
+    feat.ahead_behind = Some((1, 1));
+    let mut main = local("main", 12);
+    main.upstream = Some("origin/main".into());
+    main.ahead_behind = Some((10, 0));
+
+    if branch == "feature/diverged" {
+        feat.is_head = true;
+        snap.head_branch = Some("feature/diverged".into());
+        snap.head_oid = Some(oid(target_oid));
+    } else {
+        main.is_head = true;
+        snap.head_branch = Some("main".into());
+        snap.head_oid = Some(oid(12));
+    }
+    snap.refs = vec![
+        main,
+        feat,
+        super::remote("origin/main", 10),
+        super::remote("origin/feature/diverged", 9),
+    ];
+    snap
+}
+
+#[test]
+fn push_dialog_defers_while_checkout_in_flight_and_opens_on_new_head() {
+    let mut ts = zh_session_with_snapshot(snapshot_on_branch("main", true));
+    let _ = ts.take_requests();
+
+    ts.dispatch(Action::RunGitOp(jbgit_core::GitOp::Checkout {
+        target: "feature/diverged".into(),
+        detach: false,
+    }));
+    assert_eq!(ts.state().head_switch_ops_running, 1);
+
+    // Global `P` while checkout is in flight must NOT open a stale `main` PushDialog.
+    ts.send_key(KeyCode::Char('P'), KeyModifiers::SHIFT);
+    assert!(ts.state().modal_stack.push_dialog().is_none());
+    assert!(ts.state().pending_push_after_head_switch);
+    assert!(ts.state().has_active_tasks());
+
+    // PushConfirm cannot fire a stale push either.
+    ts.dispatch(Action::PushConfirm);
+    let ops = ts.take_git_ops();
+    assert!(
+        !ops.iter()
+            .any(|op| matches!(op, jbgit_core::GitOp::Push { .. }))
+    );
+
+    // Checkout finishes: still awaiting RepoSnapshotLoaded before opening PushDialog.
+    ts.deliver_engine_event(EngineEvent::GitOpFinished(jbgit_core::GitOpOutcome {
+        op: jbgit_core::GitOp::Checkout {
+            target: "feature/diverged".into(),
+            detach: false,
+        },
+        success: true,
+        stdout: Vec::new(),
+        stderr: Vec::new(),
+        failure: None,
+        stash_kept: false,
+        update_info: None,
+        prepared_message: None,
+        paused_for_edit: false,
+    }));
+    assert_eq!(ts.state().head_switch_ops_running, 0);
+    assert!(ts.state().awaiting_head_snapshot);
+    assert!(ts.state().modal_stack.push_dialog().is_none());
+
+    // RepoSnapshotLoaded arrives (even with identical head_oid!) -> PushDialog opens for feature/diverged.
+    ts.deliver_engine_event(EngineEvent::RepoSnapshotLoaded {
+        snapshot: Arc::new(snapshot_on_branch("feature/diverged", true)),
+        epoch: 10,
+    });
+    assert!(!ts.state().awaiting_head_snapshot);
+    assert!(!ts.state().pending_push_after_head_switch);
+
+    let pd = ts
+        .state()
+        .modal_stack
+        .push_dialog()
+        .expect("deferred PushDialog must open after new HEAD snapshot");
+    assert_eq!(pd.branch, "feature/diverged");
+    assert_eq!(pd.remote_branch, "feature/diverged");
+    assert!(pd.follow_head);
+
+    let reqs = ts.take_requests();
+    assert!(reqs.iter().any(|(req, _)| matches!(
+        req,
+        TaskRequest::LoadOutgoing { key } if key.branch == "feature/diverged"
+    )));
+}
+
+#[test]
+fn push_dialog_cancels_deferred_open_when_checkout_fails() {
+    let mut ts = zh_session_with_snapshot(snapshot_on_branch("main", false));
+    let _ = ts.take_requests();
+
+    ts.dispatch(Action::RunGitOp(jbgit_core::GitOp::Checkout {
+        target: "feature/diverged".into(),
+        detach: false,
+    }));
+    ts.send_key(KeyCode::Char('P'), KeyModifiers::SHIFT);
+    assert!(ts.state().pending_push_after_head_switch);
+
+    ts.deliver_engine_event(EngineEvent::GitOpFinished(jbgit_core::GitOpOutcome {
+        op: jbgit_core::GitOp::Checkout {
+            target: "feature/diverged".into(),
+            detach: false,
+        },
+        success: false,
+        stdout: Vec::new(),
+        stderr: vec!["error: dirty worktree".into()],
+        failure: Some(jbgit_core::GitFailure::Other("checkout failed".into())),
+        stash_kept: false,
+        update_info: None,
+        prepared_message: None,
+        paused_for_edit: false,
+    }));
+    assert!(!ts.state().pending_push_after_head_switch);
+    assert!(!ts.state().awaiting_head_snapshot);
+
+    ts.deliver_engine_event(EngineEvent::RepoSnapshotLoaded {
+        snapshot: Arc::new(snapshot_on_branch("main", false)),
+        epoch: 10,
+    });
+    assert!(ts.state().modal_stack.push_dialog().is_none());
+}
+
+#[test]
+fn push_dialog_follow_head_refreshes_on_snapshot_while_explicit_branch_stays_pinned() {
+    // 1. follow_head == true (global `P`): rebinds when RepoSnapshotLoaded changes HEAD.
+    let mut ts = zh_session_with_snapshot(snapshot_on_branch("main", false));
+    let _ = ts.take_requests();
+    ts.send_key(KeyCode::Char('P'), KeyModifiers::SHIFT);
+    let _ = ts.take_requests();
+    {
+        let pd = ts.state().modal_stack.push_dialog().unwrap();
+        assert_eq!(pd.branch, "main");
+        assert!(pd.follow_head);
+    }
+
+    ts.deliver_engine_event(EngineEvent::RepoSnapshotLoaded {
+        snapshot: Arc::new(snapshot_on_branch("feature/diverged", false)),
+        epoch: 10,
+    });
+    {
+        let pd = ts.state().modal_stack.push_dialog().unwrap();
+        assert_eq!(pd.branch, "feature/diverged");
+        assert_eq!(pd.remote_branch, "feature/diverged");
+    }
+    let reqs = ts.take_requests();
+    assert!(reqs.iter().any(|(req, _)| matches!(
+        req,
+        TaskRequest::LoadOutgoing { key } if key.branch == "feature/diverged"
+    )));
+
+    // 2. Explicit PromptPush (`follow_head == false`): stays pinned to `main` even if HEAD changes.
+    let mut ts_explicit = zh_session_with_snapshot(snapshot_on_branch("main", false));
+    ts_explicit.dispatch(Action::PromptPush {
+        branch: "main".into(),
+        up_to: None,
+    });
+    let _ = ts_explicit.take_requests();
+    assert!(
+        !ts_explicit
+            .state()
+            .modal_stack
+            .push_dialog()
+            .unwrap()
+            .follow_head
+    );
+
+    ts_explicit.deliver_engine_event(EngineEvent::RepoSnapshotLoaded {
+        snapshot: Arc::new(snapshot_on_branch("feature/diverged", false)),
+        epoch: 10,
+    });
+    assert_eq!(
+        ts_explicit
+            .state()
+            .modal_stack
+            .push_dialog()
+            .unwrap()
+            .branch,
+        "main"
+    );
+}
+
+#[test]
+fn branches_pane_header_keeps_buttons_and_progressively_occludes_subtitle() {
+    let mut snap = snapshot();
+    snap.refs = vec![
+        local("main", 12),
+        local("feature/a", 11),
+        local("feature/b", 10),
+        local("feature/c", 9),
+        local("feature/d", 8),
+        local("feature/e", 7),
+        local("feature/f", 6),
+        super::remote("origin/main", 10),
+        super::remote("origin/feature/a", 9),
+        super::remote("origin/feature/b", 8),
+        super::remote("origin/feature/c", 7),
+        super::remote("origin/feature/d", 6),
+        super::remote("origin/feature/e", 5),
+        super::remote("origin/feature/f", 4),
+    ];
+    snap.refs[0].is_head = true;
+
+    let render_header_at_width = |state: &crate::app::AppState, width: u16| -> String {
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(width, 5)).unwrap();
+        terminal
+            .draw(|f| {
+                let area = Rect::new(0, 0, width, 5);
+                let mut hit_registry = crate::hit_test::HitTestRegistry::default();
+                let mut ctx = crate::app::RenderContext::minimal(
+                    &state.theme,
+                    state.glyph_mode,
+                    &state.branch_colors,
+                    &mut hit_registry,
+                );
+                ctx.i18n = Some(&state.i18n);
+                ctx.focused_pane = jbgit_core::PaneId::LogBranchesTree;
+                crate::views::log_branches::render_branches_pane(f, area, state, &mut ctx);
+            })
+            .unwrap();
+        let row = rendered_row(terminal.backend().buffer(), 0);
+        assert_eq!(
+            row.width(),
+            width as usize,
+            "rendered header width must match pane width {width}: {row:?}"
+        );
+        row
+    };
+
+    // 1. Progressive occlusion in en-US (`▌Branches  14 refs`, buttons ` ⌖ ⊞ « ` width 7).
+    let cfg = crate::config::AppConfig::default();
+    let mut ts_en = TestSession::with_config(PathBuf::from("/repo"), cfg);
+    ts_en.deliver_engine_event(EngineEvent::RepoSnapshotLoaded {
+        snapshot: Arc::new(snap.clone()),
+        epoch: 10,
+    });
+    ts_en.dispatch(Action::SwitchTab(WorkspaceTab::Log));
+
+    for (width, expected) in [
+        (25, "▌Branches  14 refs ⌖ ⊞ « "),
+        (24, "▌Branches  14 ref ⌖ ⊞ « "),
+        (23, "▌Branches  14 re ⌖ ⊞ « "),
+        (20, "▌Branches  14 ⌖ ⊞ « "),
+        (18, "▌Branches   ⌖ ⊞ « "),
+        (12, "▌Bran ⌖ ⊞ « "),
+    ] {
+        assert_eq!(
+            render_header_at_width(ts_en.state(), width),
+            expected,
+            "en-US branches header mismatch at width {width}"
+        );
+    }
+
+    // 2. Progressive occlusion + CJK wide-char boundary sanitization in zh-CN (`▌分支  14 个引用`).
+    let mut ts_zh = zh_session_with_snapshot(snap);
+    ts_zh.dispatch(Action::SwitchTab(WorkspaceTab::Log));
+
+    for (width, expected) in [
+        (23, "▌分支  14 个引用 ⌖ ⊞ « "),
+        (22, "▌分支  14 个引  ⌖ ⊞ « "),
+        (21, "▌分支  14 个引 ⌖ ⊞ « "),
+        (18, "▌分支  14   ⌖ ⊞ « "),
+        (14, "▌分支   ⌖ ⊞ « "),
+        (11, "▌分  ⌖ ⊞ « "),
+    ] {
+        assert_eq!(
+            render_header_at_width(ts_zh.state(), width),
+            expected,
+            "zh-CN branches header mismatch at width {width}"
+        );
+    }
+
+    // 3. Full-screen zh-CN Log view with narrow left splitter (0.13 at 140x40):
+    // toolbar buttons remain rendered and clickable on the left pane header.
+    ts_zh
+        .state_mut()
+        .splitters
+        .set_default_ratio(jbgit_core::SplitterId::LogLeftHorizontal, 0.13);
+    let buf_zh = ts_zh.render(140, 40);
+    let zh_hdr = rendered_row(&buf_zh, 2);
+    let left_zh: String = zh_hdr.chars().take(18).collect();
+    assert!(
+        left_zh.contains('⌖') && left_zh.contains('⊞') && left_zh.contains('«'),
+        "narrow zh-CN branches header must keep toolbar buttons: {left_zh:?}"
+    );
+    assert!(
+        ts_zh
+            .hit_center_of(|t| matches!(t, HitTarget::BranchesToolbar(_)))
+            .is_some()
+    );
+}
