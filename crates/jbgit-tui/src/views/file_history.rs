@@ -118,14 +118,26 @@ pub fn render_file_history_modal(
 
     let mut buttons = Vec::new();
     if !fh.is_selection_history() {
+        let head_oid = state.repo_snapshot.as_deref().and_then(|s| s.head_oid);
+        let pinned_start_oid = match &fh.key.scope {
+            HistoryBranchScope::CurrentHead => {
+                fh.key.start_oid.filter(|oid| head_oid != Some(*oid))
+            }
+            _ => None,
+        };
         let scope_label = match &fh.key.scope {
-            HistoryBranchScope::CurrentHead => ctx.t("view.file_history.scope_head").to_string(),
+            HistoryBranchScope::CurrentHead => match pinned_start_oid {
+                Some(oid) => oid.short(),
+                None => ctx.t("view.file_history.scope_head").to_string(),
+            },
             HistoryBranchScope::AllBranches => ctx.t("view.file_history.scope_all").to_string(),
             HistoryBranchScope::Branch(b) => truncate_to_width(b, 16),
         };
+        let scope_active =
+            !matches!(fh.key.scope, HistoryBranchScope::CurrentHead) || pinned_start_oid.is_some();
         buttons.push((
             ctx.t_fmt("view.file_history.btn_scope", &[("scope", &scope_label)]),
-            !matches!(fh.key.scope, HistoryBranchScope::CurrentHead),
+            scope_active,
             FileHistoryToolbarButton::BranchScope,
         ));
         let follow_label = if matches!(fh.key.scope, HistoryBranchScope::AllBranches) {

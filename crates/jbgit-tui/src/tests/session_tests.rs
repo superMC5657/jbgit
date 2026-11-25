@@ -385,3 +385,237 @@ fn log_flush_pending_respects_details_deadline() {
         "flush_pending must emit LoadCommitDetails once deadline passes: {due_reqs:?}"
     );
 }
+
+#[test]
+fn stage_notice_cleared_and_ignored_toggle_spinner_resets_on_stage_status_loaded() {
+    let mut ts = TestSession::with_snapshot(snapshot());
+    ts.dispatch(Action::SwitchTab(WorkspaceTab::Commit));
+    let epoch0 = ts.state().request_slots.latest(RequestSlotId::StageStatus);
+    let initial_status = Arc::new(StageStatusSnapshot {
+        staged: vec![StageEntry {
+            path: "staged.rs".into(),
+            old_path: None,
+            kind: FileStatusKind::Modified,
+        }],
+        unstaged: vec![StageEntry {
+            path: "unstaged.rs".into(),
+            old_path: None,
+            kind: FileStatusKind::Modified,
+        }],
+        ..Default::default()
+    });
+    ts.deliver_engine_event(EngineEvent::StageStatusLoaded {
+        status: Arc::clone(&initial_status),
+        epoch: epoch0,
+    });
+    let _ = ts.take_requests();
+
+    // 1. StageActionSelected sets transient notice, cleared when StageStatusLoaded arrives.
+    let unstaged_row = ts
+        .state()
+        .stage_workbench
+        .rows()
+        .iter()
+        .position(|r| {
+            matches!(
+                &r.kind,
+                jbgit_core::StageTreeRowKind::File { path, .. } if path == "unstaged.rs"
+            )
+        })
+        .expect("unstaged.rs row");
+    ts.dispatch(Action::SelectCommitStageRow(unstaged_row));
+    ts.dispatch(Action::StageActionSelected);
+    assert!(
+        ts.state().status_notice.is_some(),
+        "staging action must set transient progress notice"
+    );
+    let stage_epoch = ts.state().request_slots.latest(RequestSlotId::StageStatus);
+    ts.deliver_engine_event(EngineEvent::StageStatusLoaded {
+        status: Arc::clone(&initial_status),
+        epoch: stage_epoch,
+    });
+    assert!(
+        ts.state().status_notice.is_none(),
+        "transient staging notice must clear once StageStatusLoaded arrives: {:?}",
+        ts.state().status_notice
+    );
+
+    // 2. UnstageActionSelected sets transient notice, cleared when StageStatusLoaded arrives.
+    let staged_row = ts
+        .state()
+        .stage_workbench
+        .rows()
+        .iter()
+        .position(|r| {
+            matches!(
+                &r.kind,
+                jbgit_core::StageTreeRowKind::File { path, .. } if path == "staged.rs"
+            )
+        })
+        .expect("staged.rs row");
+    ts.dispatch(Action::SelectCommitStageRow(staged_row));
+    ts.dispatch(Action::UnstageActionSelected);
+    assert!(
+        ts.state().status_notice.is_some(),
+        "unstaging action must set transient progress notice"
+    );
+    let unstage_epoch = ts.state().request_slots.latest(RequestSlotId::StageStatus);
+    ts.deliver_engine_event(EngineEvent::StageStatusLoaded {
+        status: Arc::clone(&initial_status),
+        epoch: unstage_epoch,
+    });
+    assert!(
+        ts.state().status_notice.is_none(),
+        "transient unstaging notice must clear once StageStatusLoaded arrives: {:?}",
+        ts.state().status_notice
+    );
+
+    // 3. StageAllTracked sets transient notice, cleared on StageStatusLoaded;
+    //    but if an unrelated notice overwrote it, StageStatusLoaded preserves the new notice.
+    ts.dispatch(Action::StageAllTracked);
+    assert!(ts.state().status_notice.is_some());
+    ts.state_mut().status_notice = Some("unrelated notice".to_string());
+    let all_epoch = ts.state().request_slots.latest(RequestSlotId::StageStatus);
+    ts.deliver_engine_event(EngineEvent::StageStatusLoaded {
+        status: Arc::clone(&initial_status),
+        epoch: all_epoch,
+    });
+    assert_eq!(
+        ts.state().status_notice.as_deref(),
+        Some("unrelated notice"),
+        "StageStatusLoaded must not clobber unrelated status notices"
+    );
+    ts.state_mut().status_notice = None;
+
+    // 4. StageToggleShowIgnored uses stage-status loading (not loading_snapshot)
+    //    and resets has_active_tasks() back to false on StageStatusLoaded.
+    let _ = ts.take_requests();
+    ts.dispatch(Action::StageToggleShowIgnored);
+    assert!(
+        !ts.state().loading_snapshot,
+        "StageToggleShowIgnored must not hijack loading_snapshot"
+    );
+    assert!(
+        ts.state().has_active_tasks(),
+        "StageToggleShowIgnored must mark stage status load active"
+    );
+    let reqs = ts.take_requests();
+    let stage_req_epoch = reqs
+        .iter()
+        .find_map(|(req, ep)| matches!(req, TaskRequest::LoadStageStatus { .. }).then_some(*ep))
+        .expect("StageToggleShowIgnored must request LoadStageStatus")
+        .expect("LoadStageStatus must carry an epoch");
+    ts.deliver_engine_event(EngineEvent::StageStatusLoaded {
+        status: initial_status,
+        epoch: stage_req_epoch,
+    });
+    assert!(
+        !ts.state().has_active_tasks(),
+        "has_active_tasks() must return false after StageStatusLoaded"
+    );
+}
+
+#[test]
+fn file_history_scope_shows_pinned_short_oid_and_current_head_clears_start_oid() {
+    let mut ts = TestSession::with_snapshot(snapshot());
+    let head_oid = ts
+        .state()
+        .repo_snapshot
+        .as_deref()
+        .and_then(|s| s.head_oid)
+        .expect("snapshot HEAD oid");
+    let old_oid = ts.state().log_commit_at(2).expect("older commit").oid;
+    assert_ne!(old_oid, head_oid);
+    let _ = ts.take_requests();
+
+    // Open FileHistory pinned to an older commit.
+    ts.dispatch(Action::OpenFileHistory {
+        path: "src/lib.rs".into(),
+        start_oid: Some(old_oid),
+        follow_renames: true,
+        line_range: None,
+    });
+    let open_reqs = ts.take_requests();
+    assert!(open_reqs.iter().any(|(req, _)| matches!(
+        req,
+        TaskRequest::LoadFileHistory { key }
+            if key.scope == jbgit_core::HistoryBranchScope::CurrentHead
+                && key.start_oid == Some(old_oid)
+    )));
+
+    // Toolbar must show the pinned short OID rather than misleading `HEAD`.
+    let screen_pinned = screen_text(&ts.render(140, 36));
+    let expected_pinned = ts.state().i18n.t_fmt(
+        "view.file_history.btn_scope",
+        &[("scope", &old_oid.short())],
+    );
+    let head_label = ts.state().i18n.t_fmt(
+        "view.file_history.btn_scope",
+        &[("scope", ts.state().i18n.t("view.file_history.scope_head"))],
+    );
+    assert!(
+        screen_pinned.contains(&expected_pinned),
+        "toolbar should show pinned short OID `{expected_pinned}`:\n{screen_pinned}"
+    );
+    assert!(
+        !screen_pinned.contains(&head_label),
+        "toolbar must not show `{head_label}` when pinned to older commit:\n{screen_pinned}"
+    );
+
+    // Switching scope explicitly to CurrentHead clears start_oid and reloads full HEAD history.
+    ts.dispatch(Action::FileHistorySetBranchScope(
+        jbgit_core::HistoryBranchScope::CurrentHead,
+    ));
+    assert_eq!(
+        ts.state()
+            .modal_stack
+            .file_history()
+            .expect("file history open")
+            .key
+            .start_oid,
+        None
+    );
+    let head_reqs = ts.take_requests();
+    assert!(
+        head_reqs.iter().any(|(req, _)| matches!(
+            req,
+            TaskRequest::LoadFileHistory { key }
+                if key.scope == jbgit_core::HistoryBranchScope::CurrentHead
+                    && key.start_oid.is_none()
+        )),
+        "selecting Current HEAD must clear start_oid and emit LoadFileHistory: {head_reqs:?}"
+    );
+
+    let screen_head = screen_text(&ts.render(140, 36));
+    assert!(
+        screen_head.contains(&head_label),
+        "toolbar should show `{head_label}` after switching to Current HEAD:\n{screen_head}"
+    );
+
+    // Also verify switching old_oid -> AllBranches -> CurrentHead drops start_oid.
+    ts.dispatch(Action::OpenFileHistory {
+        path: "src/lib.rs".into(),
+        start_oid: Some(old_oid),
+        follow_renames: true,
+        line_range: None,
+    });
+    let _ = ts.take_requests();
+    ts.dispatch(Action::FileHistorySetBranchScope(
+        jbgit_core::HistoryBranchScope::AllBranches,
+    ));
+    let _ = ts.take_requests();
+    ts.dispatch(Action::FileHistorySetBranchScope(
+        jbgit_core::HistoryBranchScope::CurrentHead,
+    ));
+    assert_eq!(
+        ts.state().modal_stack.file_history().unwrap().key.start_oid,
+        None
+    );
+    let roundtrip_reqs = ts.take_requests();
+    assert!(roundtrip_reqs.iter().any(|(req, _)| matches!(
+        req,
+        TaskRequest::LoadFileHistory { key }
+            if key.scope == jbgit_core::HistoryBranchScope::CurrentHead
+                && key.start_oid.is_none()
+    )));
+}

@@ -1174,9 +1174,32 @@ impl AppState {
             }
             Action::FileHistorySetBranchScope(scope) => {
                 if let Some(fh) = self.modal_stack.file_history_mut()
-                    && let Some(key) = fh.set_branch_scope(scope.clone())
+                    && !fh.is_selection_history()
                 {
-                    effects.push(Effect::RequestFileHistory(key));
+                    let clearing_pinned_head =
+                        matches!(scope, jbgit_core::HistoryBranchScope::CurrentHead)
+                            && fh.key.start_oid.is_some();
+                    let key = if fh.key.scope == *scope && clearing_pinned_head {
+                        fh.key.start_oid = None;
+                        fh.key.limit = jbgit_core::DEFAULT_FILE_HISTORY_LIMIT;
+                        fh.loading = true;
+                        fh.error = None;
+                        fh.anchor = None;
+                        fh.anchor_pinned = false;
+                        fh.pending_preserve_oid = None;
+                        fh.diff.scroll.reset();
+                        fh.diff.pending = None;
+                        fh.diff.requested = None;
+                        Some(fh.key.clone())
+                    } else {
+                        if matches!(scope, jbgit_core::HistoryBranchScope::CurrentHead) {
+                            fh.key.start_oid = None;
+                        }
+                        fh.set_branch_scope(scope.clone())
+                    };
+                    if let Some(key) = key {
+                        effects.push(Effect::RequestFileHistory(key));
+                    }
                 }
             }
             Action::FileHistoryLoadMore => {

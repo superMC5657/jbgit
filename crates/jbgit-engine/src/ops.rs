@@ -541,16 +541,6 @@ pub(crate) fn compile_simple_steps(op: &GitOp) -> Option<Vec<CompiledStep>> {
             name.clone(),
             format!("stash@{{{index}}}"),
         ])],
-        GitOp::UnresolveConflict { paths } => {
-            if paths.is_empty() {
-                Vec::new()
-            } else {
-                vec![CompiledStep::with_pathspecs(
-                    vec!["checkout".to_string(), "-m".to_string()],
-                    paths,
-                )]
-            }
-        }
         GitOp::IntentToAdd { paths } => {
             if paths.is_empty() {
                 Vec::new()
@@ -634,6 +624,7 @@ pub(crate) fn compile_simple_steps(op: &GitOp) -> Option<Vec<CompiledStep>> {
         GitOp::BisectSkip => vec![CompiledStep::new(["bisect", "skip"])],
         GitOp::BisectReset => vec![CompiledStep::new(["bisect", "reset"])],
         GitOp::AcceptSide { .. }
+        | GitOp::UnresolveConflict { .. }
         | GitOp::RewriteHistory { .. }
         | GitOp::ApplyPatch { .. }
         | GitOp::CreatePatchFile { .. }
@@ -1063,6 +1054,266 @@ fn plan_accept_side(git_dir: &Path, paths: &[String], ours: bool) -> AcceptSideP
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ConflictTreeEntry {
+    mode: u32,
+    oid_hex: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct UnresolveIndexRecord {
+    path: String,
+    base: Option<ConflictTreeEntry>,
+    ours: Option<ConflictTreeEntry>,
+    theirs: Option<ConflictTreeEntry>,
+}
+
+#[derive(Debug, Default)]
+struct UnresolveConflictPlan {
+    /// Standard `UU` paths currently resolved at stage 0 (or non-ongoing fallback)
+    /// that can run `git checkout -m -- <paths>` directly.
+    direct_checkout_m: Vec<String>,
+    /// Stage records mirroring `direct_checkout_m` when all of them come from an
+    /// active conflict state, used as fallback if `REUC` is missing in the index.
+    direct_checkout_m_fallback: Vec<UnresolveIndexRecord>,
+    /// Index stage records to rewrite via `git update-index -z --index-info`.
+    index_records: Vec<UnresolveIndexRecord>,
+    /// Paths whose stages (`1`/`2`/`3` or `2`/`3`) were written via `update-index`
+    /// and now need `git checkout -m -- <paths>` to recreate conflict markers.
+    post_update_checkout_m: Vec<String>,
+    /// Paths (`UD` / `AU`) whose surviving stage-2 blob should be checked out to worktree.
+    checkout_stage2: Vec<String>,
+    /// Paths (`DU` / `UA`) whose surviving stage-3 blob should be checked out to worktree.
+    checkout_stage3: Vec<String>,
+    /// Paths (`DD`) that should be removed from the worktree after restoring stage 1.
+    remove_worktree: Vec<String>,
+}
+
+fn read_git_oid_file(path: &Path) -> Option<git2::Oid> {
+    let raw = std::fs::read_to_string(path).ok()?;
+    let line = raw.lines().find(|l| !l.trim().is_empty())?.trim();
+    git2::Oid::from_str(line).ok()
+}
+
+fn commit_tree(repo: &git2::Repository, oid: git2::Oid) -> Option<git2::Tree<'_>> {
+    repo.find_commit(oid).ok()?.tree().ok()
+}
+
+fn first_parent_tree(repo: &git2::Repository, oid: git2::Oid) -> Option<git2::Tree<'_>> {
+    repo.find_commit(oid).ok()?.parent(0).ok()?.tree().ok()
+}
+
+type OngoingConflictTrees<'repo> = (
+    Option<git2::Tree<'repo>>,
+    Option<git2::Tree<'repo>>,
+    Option<git2::Tree<'repo>>,
+);
+
+/// Resolves `(base_tree, stage2_ours_tree, stage3_theirs_tree)` for the currently
+/// active conflict-producing Git operation (Merge, Rebase, Cherry-Pick, or Revert).
+fn resolve_ongoing_conflict_trees(repo: &git2::Repository) -> Option<OngoingConflictTrees<'_>> {
+    let git_dir = repo.path();
+    let head_oid = repo.head().ok().and_then(|h| h.target())?;
+
+    if let Some(merge_head) = read_git_oid_file(&git_dir.join("MERGE_HEAD")) {
+        let ours_tree = commit_tree(repo, head_oid);
+        let theirs_tree = commit_tree(repo, merge_head);
+        let base_tree = repo
+            .merge_base(head_oid, merge_head)
+            .ok()
+            .and_then(|b| commit_tree(repo, b));
+        return Some((base_tree, ours_tree, theirs_tree));
+    }
+
+    if let Some(rebase_commit) =
+        read_git_oid_file(&git_dir.join("rebase-merge").join("stopped-sha"))
+            .or_else(|| read_git_oid_file(&git_dir.join("rebase-apply").join("original-commit")))
+            .or_else(|| read_git_oid_file(&git_dir.join("REBASE_HEAD")))
+    {
+        let ours_tree = commit_tree(repo, head_oid);
+        let theirs_tree = commit_tree(repo, rebase_commit);
+        let base_tree = first_parent_tree(repo, rebase_commit);
+        return Some((base_tree, ours_tree, theirs_tree));
+    }
+
+    if let Some(cp_head) = read_git_oid_file(&git_dir.join("CHERRY_PICK_HEAD")) {
+        let ours_tree = commit_tree(repo, head_oid);
+        let theirs_tree = commit_tree(repo, cp_head);
+        let base_tree = first_parent_tree(repo, cp_head);
+        return Some((base_tree, ours_tree, theirs_tree));
+    }
+
+    if let Some(rev_head) = read_git_oid_file(&git_dir.join("REVERT_HEAD")) {
+        let ours_tree = commit_tree(repo, head_oid);
+        let base_tree = commit_tree(repo, rev_head);
+        let theirs_tree = first_parent_tree(repo, rev_head);
+        return Some((base_tree, ours_tree, theirs_tree));
+    }
+
+    None
+}
+
+fn lookup_tree_entry(tree: Option<&git2::Tree<'_>>, norm_path: &str) -> Option<ConflictTreeEntry> {
+    let entry = tree?.get_path(Path::new(norm_path)).ok()?;
+    match entry.kind() {
+        Some(git2::ObjectType::Blob | git2::ObjectType::Commit) => Some(ConflictTreeEntry {
+            mode: entry.filemode() as u32,
+            oid_hex: entry.id().to_string(),
+        }),
+        _ => None,
+    }
+}
+
+/// Inspects the active Git operation's `(base, ours, theirs)` trees and the current
+/// index to plan conflict restoration across `UU`, `AA`, `UD`, `DU`, `DD`, `AU`, `UA`.
+fn plan_unresolve_conflict(git_dir: &Path, paths: &[String]) -> UnresolveConflictPlan {
+    let Ok(repo) = git2::Repository::open(git_dir) else {
+        return UnresolveConflictPlan {
+            direct_checkout_m: paths.to_vec(),
+            ..Default::default()
+        };
+    };
+    let Some((base_tree, ours_tree, theirs_tree)) = resolve_ongoing_conflict_trees(&repo) else {
+        return UnresolveConflictPlan {
+            direct_checkout_m: paths.to_vec(),
+            ..Default::default()
+        };
+    };
+
+    let index = repo.index().ok();
+    let mut plan = UnresolveConflictPlan::default();
+    for p in paths {
+        let norm = p.replace('\\', "/");
+        let base = lookup_tree_entry(base_tree.as_ref(), &norm);
+        let ours = lookup_tree_entry(ours_tree.as_ref(), &norm);
+        let theirs = lookup_tree_entry(theirs_tree.as_ref(), &norm);
+
+        if base.is_none() && ours.is_none() && theirs.is_none() {
+            plan.direct_checkout_m.push(p.clone());
+            continue;
+        }
+
+        let has_gitlink = [&base, &ours, &theirs].iter().any(|e| {
+            e.as_ref()
+                .is_some_and(|i| i.mode == jbgit_core::GIT_MODE_GITLINK)
+        });
+        let has_stage0 = index
+            .as_ref()
+            .is_some_and(|idx| idx.get_path(Path::new(&norm), 0).is_some());
+
+        match (&base, &ours, &theirs) {
+            (Some(_), Some(_), Some(_)) if !has_gitlink && has_stage0 => {
+                plan.direct_checkout_m.push(p.clone());
+                plan.direct_checkout_m_fallback.push(UnresolveIndexRecord {
+                    path: norm,
+                    base,
+                    ours,
+                    theirs,
+                });
+            }
+            (_, Some(_), Some(_)) => {
+                plan.index_records.push(UnresolveIndexRecord {
+                    path: norm,
+                    base,
+                    ours,
+                    theirs,
+                });
+                if !has_gitlink {
+                    plan.post_update_checkout_m.push(p.clone());
+                }
+            }
+            (_, Some(_), None) => {
+                plan.index_records.push(UnresolveIndexRecord {
+                    path: norm.clone(),
+                    base,
+                    ours,
+                    theirs,
+                });
+                if !has_gitlink {
+                    plan.checkout_stage2.push(norm);
+                }
+            }
+            (_, None, Some(_)) => {
+                plan.index_records.push(UnresolveIndexRecord {
+                    path: norm.clone(),
+                    base,
+                    ours,
+                    theirs,
+                });
+                if !has_gitlink {
+                    plan.checkout_stage3.push(norm);
+                }
+            }
+            (Some(_), None, None) => {
+                plan.index_records.push(UnresolveIndexRecord {
+                    path: norm.clone(),
+                    base,
+                    ours,
+                    theirs,
+                });
+                plan.remove_worktree.push(norm);
+            }
+            (None, None, None) => unreachable!(),
+        }
+    }
+    plan
+}
+
+fn compile_checkout_m_step(paths: &[String]) -> CompiledStep {
+    CompiledStep::with_pathspecs(vec!["checkout".to_string(), "-m".to_string()], paths)
+}
+
+fn compile_unresolve_index_steps(plan: &UnresolveConflictPlan) -> Vec<CompiledStep> {
+    let mut steps = Vec::new();
+    if !plan.index_records.is_empty() {
+        let mut payload = Vec::new();
+        for rec in &plan.index_records {
+            let oid_len = rec
+                .base
+                .as_ref()
+                .or(rec.ours.as_ref())
+                .or(rec.theirs.as_ref())
+                .map_or(40, |e| e.oid_hex.len());
+            let zero_oid = "0".repeat(oid_len);
+            payload.extend_from_slice(format!("0 {zero_oid}\t{}\0", rec.path).as_bytes());
+            for (stage, entry) in [(1u8, &rec.base), (2u8, &rec.ours), (3u8, &rec.theirs)] {
+                if let Some(e) = entry {
+                    payload.extend_from_slice(
+                        format!("{:06o} {} {stage}\t{}\0", e.mode, e.oid_hex, rec.path).as_bytes(),
+                    );
+                }
+            }
+        }
+        steps.push(CompiledStep::new(["update-index", "-z", "--index-info"]).with_stdin(payload));
+    }
+    if !plan.post_update_checkout_m.is_empty() {
+        steps.push(compile_checkout_m_step(&plan.post_update_checkout_m));
+    }
+    if !plan.checkout_stage2.is_empty() {
+        let mut payload = Vec::new();
+        for p in &plan.checkout_stage2 {
+            payload.extend_from_slice(p.as_bytes());
+            payload.push(0);
+        }
+        steps.push(
+            CompiledStep::new(["checkout-index", "-f", "--stage=2", "-z", "--stdin"])
+                .with_stdin(payload),
+        );
+    }
+    if !plan.checkout_stage3.is_empty() {
+        let mut payload = Vec::new();
+        for p in &plan.checkout_stage3 {
+            payload.extend_from_slice(p.as_bytes());
+            payload.push(0);
+        }
+        steps.push(
+            CompiledStep::new(["checkout-index", "-f", "--stage=3", "-z", "--stdin"])
+                .with_stdin(payload),
+        );
+    }
+    steps
+}
+
 /// Whether a compiled step talks to a remote (and may need credentials).
 pub(crate) fn is_network_step(args: &[String]) -> bool {
     matches!(
@@ -1279,6 +1530,7 @@ impl<R: GitCliRunner> Runner<'_, R> {
                 res
             }
             GitOp::AcceptSide { paths, ours } => self.run_accept_side(op, paths, ours).await,
+            GitOp::UnresolveConflict { paths } => self.run_unresolve_conflict(op, paths).await,
             GitOp::ApplyPatch { source, options } => {
                 let loc = self.loc.clone();
                 let source_clone = source.clone();
@@ -1477,6 +1729,92 @@ impl<R: GitCliRunner> Runner<'_, R> {
             plan.git_ours,
         );
         self.run_steps(op, steps).await
+    }
+
+    async fn run_unresolve_conflict(&self, op: GitOp, paths: Vec<String>) -> GitOpRunResult {
+        if paths.is_empty() {
+            return GitOpRunResult {
+                outcome: GitOpOutcome::ok(op),
+                index_lock: None,
+            };
+        }
+        let mut plan = plan_unresolve_conflict(&self.loc.git_dir, &paths);
+        let mut outcome = GitOpOutcome::ok(op.clone());
+
+        if !plan.direct_checkout_m.is_empty() {
+            let step = compile_checkout_m_step(&plan.direct_checkout_m);
+            let res = self.step(&step, false).await;
+            if res.ok() {
+                outcome.stderr.extend(res.stderr);
+                outcome.stdout = res.stdout;
+            } else if res.index_lock.is_none()
+                && !plan.direct_checkout_m_fallback.is_empty()
+                && plan.direct_checkout_m_fallback.len() == plan.direct_checkout_m.len()
+            {
+                // `git checkout -m` failed (e.g. `REUC` extension absent from index);
+                // fall back to rebuilding stages 1/2/3 via `update-index` + `checkout -m`.
+                plan.post_update_checkout_m
+                    .append(&mut plan.direct_checkout_m);
+                plan.index_records
+                    .append(&mut plan.direct_checkout_m_fallback);
+            } else {
+                outcome.stderr.extend(res.stderr.iter().cloned());
+                outcome.stdout = res.stdout.clone();
+                outcome.success = false;
+                outcome.failure = Some(classify_failure(&res.all_lines()));
+                return GitOpRunResult {
+                    outcome,
+                    index_lock: res.index_lock,
+                };
+            }
+        }
+
+        let steps = compile_unresolve_index_steps(&plan);
+        for step in &steps {
+            let res = self.step(step, false).await;
+            outcome.stderr.extend(res.stderr.iter().cloned());
+            outcome.stdout = res.stdout.clone();
+            if !res.ok() {
+                outcome.success = false;
+                outcome.failure = Some(classify_failure(&res.all_lines()));
+                return GitOpRunResult {
+                    outcome,
+                    index_lock: res.index_lock,
+                };
+            }
+        }
+
+        if !plan.remove_worktree.is_empty() {
+            let workdir = self.loc.workdir.clone();
+            let to_remove = plan.remove_worktree;
+            let removed = tokio::task::spawn_blocking(move || -> Result<(), String> {
+                for p in &to_remove {
+                    if workdir.join(p).symlink_metadata().is_ok()
+                        && let Err(e) = crate::stage::safe_remove_untracked_path(&workdir, p)
+                    {
+                        return Err(format!("{p}: {e}"));
+                    }
+                }
+                Ok(())
+            })
+            .await;
+            match removed {
+                Ok(Ok(())) => {}
+                Ok(Err(msg)) => {
+                    outcome.success = false;
+                    outcome.failure = Some(GitFailure::Other(msg));
+                }
+                Err(e) => {
+                    outcome.success = false;
+                    outcome.failure = Some(GitFailure::Other(e.to_string()));
+                }
+            }
+        }
+
+        GitOpRunResult {
+            outcome,
+            index_lock: None,
+        }
     }
 
     async fn collect_patch_lines(
@@ -2731,9 +3069,6 @@ mod tests {
                 rev: "HEAD~1".into(),
                 paths: many.clone(),
             },
-            GitOp::UnresolveConflict {
-                paths: many.clone(),
-            },
             GitOp::IntentToAdd {
                 paths: many.clone(),
             },
@@ -2757,6 +3092,28 @@ mod tests {
                 assert_eq!(payload.iter().filter(|&&b| b == 0).count(), 55);
             }
         }
+
+        let unresolve_step = compile_checkout_m_step(&many);
+        assert!(
+            unresolve_step
+                .args
+                .contains(&"--pathspec-from-file=-".to_string())
+        );
+        assert!(
+            unresolve_step
+                .args
+                .contains(&"--pathspec-file-nul".to_string())
+        );
+        assert_eq!(
+            unresolve_step
+                .stdin
+                .as_ref()
+                .expect("nul-delimited stdin")
+                .iter()
+                .filter(|&&b| b == 0)
+                .count(),
+            55
+        );
 
         let accept_steps = compile_accept_side_steps(&many, &many, true);
         assert_eq!(accept_steps.len(), 3);

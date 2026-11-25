@@ -172,6 +172,8 @@ pub struct CommitWorkbench {
     template_applied: bool,
     editor_from_draft: bool,
     commit_in_progress: bool,
+    loading_stage_status: bool,
+    pending_stage_notice: Option<String>,
     empty_message_error: bool,
     commit_history: Vec<String>,
     history_path: Option<PathBuf>,
@@ -240,6 +242,8 @@ impl Default for CommitWorkbench {
             template_applied: false,
             editor_from_draft: false,
             commit_in_progress: false,
+            loading_stage_status: false,
+            pending_stage_notice: None,
             empty_message_error: false,
             commit_history: Vec::new(),
             history_path: None,
@@ -507,6 +511,10 @@ impl CommitWorkbench {
 
     pub fn set_commit_in_progress(&mut self, in_progress: bool) {
         self.commit_in_progress = in_progress;
+    }
+
+    pub fn loading_stage_status(&self) -> bool {
+        self.loading_stage_status
     }
 
     pub fn empty_message_error(&self) -> bool {
@@ -1691,6 +1699,12 @@ impl CommitWorkbench {
                 if !request_slots.accept(RequestSlotId::StageStatus, epoch) {
                     return None;
                 }
+                self.loading_stage_status = false;
+                if let Some(pending) = self.pending_stage_notice.take()
+                    && ctx.status_notice.as_deref() == Some(pending.as_str())
+                {
+                    *ctx.status_notice = None;
+                }
                 self.apply_status(status);
                 None
             }
@@ -1867,6 +1881,11 @@ impl CommitWorkbench {
                 *ctx.status_notice = Some(ctx.i18n.t("toast.undid_last_commit").to_string());
                 None
             }
+            EngineEvent::Error(msg) => {
+                self.loading_stage_status = false;
+                self.pending_stage_notice = None;
+                Some(EngineEvent::Error(msg))
+            }
             other => Some(other),
         }
     }
@@ -1955,7 +1974,7 @@ impl CommitWorkbench {
             }
             Action::StageToggleShowIgnored => {
                 self.toggle_show_ignored();
-                *ctx.loading_snapshot = true;
+                self.loading_stage_status = true;
                 ctx.effects
                     .push(Effect::RefreshScope(RefreshScope::StageStatus));
             }
@@ -1975,10 +1994,11 @@ impl CommitWorkbench {
                     if !targets.is_empty() {
                         self.invalidate_paths(&targets);
                         let count_s = targets.len().to_string();
-                        *ctx.status_notice = Some(
-                            ctx.i18n
-                                .t_fmt("toast.staging_paths", &[("count", &count_s)]),
-                        );
+                        let notice = ctx
+                            .i18n
+                            .t_fmt("toast.staging_paths", &[("count", &count_s)]);
+                        self.pending_stage_notice = Some(notice.clone());
+                        *ctx.status_notice = Some(notice);
                         ctx.effects.push(Effect::StageTargets(targets));
                     }
                 }
@@ -1993,10 +2013,11 @@ impl CommitWorkbench {
                     if !targets.is_empty() {
                         self.invalidate_paths(&targets);
                         let count_s = targets.len().to_string();
-                        *ctx.status_notice = Some(
-                            ctx.i18n
-                                .t_fmt("toast.unstaging_paths", &[("count", &count_s)]),
-                        );
+                        let notice = ctx
+                            .i18n
+                            .t_fmt("toast.unstaging_paths", &[("count", &count_s)]);
+                        self.pending_stage_notice = Some(notice.clone());
+                        *ctx.status_notice = Some(notice);
                         ctx.effects.push(Effect::UnstageTargets(targets));
                     }
                 }
@@ -2005,7 +2026,9 @@ impl CommitWorkbench {
                 self.invalidate_all_diff_caches();
                 self.pending_select_immediate = true;
                 ctx.effects.push(Effect::StageAllTracked);
-                *ctx.status_notice = Some(ctx.i18n.t("toast.staging_all_tracked").to_string());
+                let notice = ctx.i18n.t("toast.staging_all_tracked").to_string();
+                self.pending_stage_notice = Some(notice.clone());
+                *ctx.status_notice = Some(notice);
             }
             Action::DiscardPromptSelected => {
                 if let Some(status) = self.status.clone() {

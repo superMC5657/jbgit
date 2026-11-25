@@ -691,6 +691,7 @@ impl AppState {
             || self.loading_more_commits
             || self.log.graph.rebuild_in_progress
             || self.stage_workbench.commit_in_progress()
+            || self.stage_workbench.loading_stage_status()
             || self.git_ops_running > 0
             || self.modal_stack.file_history().is_some_and(|fh| fh.loading)
             || self.modal_stack.annotate().is_some_and(|ann| ann.loading)

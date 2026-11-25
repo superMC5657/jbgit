@@ -1972,3 +1972,242 @@ async fn stash_push_keep_index_apply_reinstate_index_and_checkout_single_file() 
         "base-s\n"
     );
 }
+
+#[tokio::test]
+async fn unresolve_conflict_restores_ud_du_aa_and_uu_after_accept_side() {
+    let tmp = init_repo();
+    let d = tmp.path();
+
+    // Base commit with files that will trigger UD, DU, and UU conflicts.
+    fs::write(d.join("deleted_by_theirs.txt"), "base-ud\n").unwrap();
+    fs::write(d.join("deleted_by_ours.txt"), "base-du\n").unwrap();
+    fs::write(d.join("both_modified.txt"), "base-uu\n").unwrap();
+    git(d, &["add", "."]);
+    git(d, &["commit", "-m", "base"]);
+
+    // Feature branch (theirs): deletes deleted_by_theirs, modifies deleted_by_ours & both_modified, adds both_added.
+    git(d, &["checkout", "-b", "feature"]);
+    fs::remove_file(d.join("deleted_by_theirs.txt")).unwrap();
+    fs::write(d.join("deleted_by_ours.txt"), "theirs-du\n").unwrap();
+    fs::write(d.join("both_modified.txt"), "theirs-uu\n").unwrap();
+    fs::write(d.join("both_added.txt"), "theirs-aa\n").unwrap();
+    git(d, &["add", "-A"]);
+    git(d, &["commit", "-m", "feature"]);
+
+    // Main branch (ours): modifies deleted_by_theirs & both_modified, deletes deleted_by_ours, adds both_added.
+    git(d, &["checkout", "main"]);
+    fs::write(d.join("deleted_by_theirs.txt"), "ours-ud\n").unwrap();
+    fs::remove_file(d.join("deleted_by_ours.txt")).unwrap();
+    fs::write(d.join("both_modified.txt"), "ours-uu\n").unwrap();
+    fs::write(d.join("both_added.txt"), "ours-aa\n").unwrap();
+    git(d, &["add", "-A"]);
+    git(d, &["commit", "-m", "main"]);
+
+    // Trigger merge conflicts.
+    let merge = run(
+        d,
+        GitOp::Merge {
+            rev: "feature".into(),
+            options: Default::default(),
+        },
+    )
+    .await;
+    assert!(!merge.success);
+    let st_init = git(d, &["status", "--porcelain"]);
+    assert!(st_init.contains("UD deleted_by_theirs.txt"), "{st_init}");
+    assert!(st_init.contains("DU deleted_by_ours.txt"), "{st_init}");
+    assert!(st_init.contains("AA both_added.txt"), "{st_init}");
+    assert!(st_init.contains("UU both_modified.txt"), "{st_init}");
+
+    // 1a. UD resolved via AcceptSide(ours=true) -> UnresolveConflict restores UD & ours worktree content.
+    let accept_ud_ours = run(
+        d,
+        GitOp::AcceptSide {
+            paths: vec!["deleted_by_theirs.txt".into()],
+            ours: true,
+        },
+    )
+    .await;
+    assert!(accept_ud_ours.success, "{accept_ud_ours:?}");
+    let unresolve_ud_1 = run(
+        d,
+        GitOp::UnresolveConflict {
+            paths: vec!["deleted_by_theirs.txt".into()],
+        },
+    )
+    .await;
+    assert!(unresolve_ud_1.success, "{unresolve_ud_1:?}");
+    let st_ud_1 = git(d, &["status", "--porcelain", "--", "deleted_by_theirs.txt"]);
+    assert!(
+        st_ud_1.contains("UD deleted_by_theirs.txt"),
+        "expected UD after unresolve (from ours=true), got: {st_ud_1}"
+    );
+    assert_eq!(
+        fs::read_to_string(d.join("deleted_by_theirs.txt")).unwrap(),
+        "ours-ud\n"
+    );
+
+    // 1b. UD resolved via AcceptSide(ours=false) (`git rm -rf`) -> UnresolveConflict restores UD & worktree file.
+    let accept_ud_theirs = run(
+        d,
+        GitOp::AcceptSide {
+            paths: vec!["deleted_by_theirs.txt".into()],
+            ours: false,
+        },
+    )
+    .await;
+    assert!(accept_ud_theirs.success, "{accept_ud_theirs:?}");
+    assert!(
+        !d.join("deleted_by_theirs.txt").exists(),
+        "AcceptSide(ours=false) on UD must remove worktree file"
+    );
+    let unresolve_ud_2 = run(
+        d,
+        GitOp::UnresolveConflict {
+            paths: vec!["deleted_by_theirs.txt".into()],
+        },
+    )
+    .await;
+    assert!(unresolve_ud_2.success, "{unresolve_ud_2:?}");
+    let st_ud_2 = git(d, &["status", "--porcelain", "--", "deleted_by_theirs.txt"]);
+    assert!(
+        st_ud_2.contains("UD deleted_by_theirs.txt"),
+        "expected UD after unresolve (from ours=false / git rm), got: {st_ud_2}"
+    );
+    assert_eq!(
+        fs::read_to_string(d.join("deleted_by_theirs.txt")).unwrap(),
+        "ours-ud\n"
+    );
+
+    // 2. DU resolved via AcceptSide(ours=true) (`git rm -rf`) and AcceptSide(ours=false) -> restores DU & theirs content.
+    for ours in [true, false] {
+        let accept = run(
+            d,
+            GitOp::AcceptSide {
+                paths: vec!["deleted_by_ours.txt".into()],
+                ours,
+            },
+        )
+        .await;
+        assert!(accept.success, "DU accept ours={ours}: {accept:?}");
+        let unresolve = run(
+            d,
+            GitOp::UnresolveConflict {
+                paths: vec!["deleted_by_ours.txt".into()],
+            },
+        )
+        .await;
+        assert!(unresolve.success, "DU unresolve ours={ours}: {unresolve:?}");
+        let st_du = git(d, &["status", "--porcelain", "--", "deleted_by_ours.txt"]);
+        assert!(
+            st_du.contains("DU deleted_by_ours.txt"),
+            "expected DU after unresolve (ours={ours}), got: {st_du}"
+        );
+        assert_eq!(
+            fs::read_to_string(d.join("deleted_by_ours.txt")).unwrap(),
+            "theirs-du\n"
+        );
+    }
+
+    // 3. AA resolved via AcceptSide -> UnresolveConflict restores AA and conflict markers.
+    let accept_aa = run(
+        d,
+        GitOp::AcceptSide {
+            paths: vec!["both_added.txt".into()],
+            ours: true,
+        },
+    )
+    .await;
+    assert!(accept_aa.success, "{accept_aa:?}");
+    let unresolve_aa = run(
+        d,
+        GitOp::UnresolveConflict {
+            paths: vec!["both_added.txt".into()],
+        },
+    )
+    .await;
+    assert!(unresolve_aa.success, "{unresolve_aa:?}");
+    let st_aa = git(d, &["status", "--porcelain", "--", "both_added.txt"]);
+    assert!(st_aa.contains("AA both_added.txt"), "{st_aa}");
+    let aa_disk = fs::read_to_string(d.join("both_added.txt")).unwrap();
+    assert!(aa_disk.contains("<<<<<<<"), "{aa_disk}");
+
+    // 4. UU non-regression: resolved via AcceptSide -> UnresolveConflict restores UU and conflict markers.
+    let accept_uu = run(
+        d,
+        GitOp::AcceptSide {
+            paths: vec!["both_modified.txt".into()],
+            ours: true,
+        },
+    )
+    .await;
+    assert!(accept_uu.success, "{accept_uu:?}");
+    let unresolve_uu = run(
+        d,
+        GitOp::UnresolveConflict {
+            paths: vec!["both_modified.txt".into()],
+        },
+    )
+    .await;
+    assert!(unresolve_uu.success, "{unresolve_uu:?}");
+    let st_uu = git(d, &["status", "--porcelain", "--", "both_modified.txt"]);
+    assert!(st_uu.contains("UU both_modified.txt"), "{st_uu}");
+    let uu_disk = fs::read_to_string(d.join("both_modified.txt")).unwrap();
+    assert!(uu_disk.contains("<<<<<<<"), "{uu_disk}");
+}
+
+#[tokio::test]
+async fn unresolve_conflict_restores_ud_during_cherry_pick() {
+    let tmp = init_repo();
+    let d = tmp.path();
+
+    commit_file(d, "victim.txt", "base\n", "base");
+    git(d, &["checkout", "-b", "drop-branch"]);
+    fs::remove_file(d.join("victim.txt")).unwrap();
+    git(d, &["add", "-A"]);
+    git(d, &["commit", "-m", "delete victim"]);
+    let drop_oid: Oid = git(d, &["rev-parse", "HEAD"]).trim().parse().unwrap();
+
+    git(d, &["checkout", "main"]);
+    commit_file(d, "victim.txt", "modified-on-main\n", "modify victim");
+
+    let cp = run(
+        d,
+        GitOp::CherryPick {
+            oids: vec![drop_oid],
+            no_commit: false,
+            record_origin: false,
+            mainline: None,
+        },
+    )
+    .await;
+    assert!(!cp.success);
+    assert!(git(d, &["status", "--porcelain"]).contains("UD victim.txt"));
+
+    // Resolve by accepting deletion (`ours=false`), then unresolve back to UD.
+    let accept = run(
+        d,
+        GitOp::AcceptSide {
+            paths: vec!["victim.txt".into()],
+            ours: false,
+        },
+    )
+    .await;
+    assert!(accept.success, "{accept:?}");
+    assert!(!d.join("victim.txt").exists());
+
+    let unresolve = run(
+        d,
+        GitOp::UnresolveConflict {
+            paths: vec!["victim.txt".into()],
+        },
+    )
+    .await;
+    assert!(unresolve.success, "{unresolve:?}");
+    let st = git(d, &["status", "--porcelain", "--", "victim.txt"]);
+    assert!(st.contains("UD victim.txt"), "got: {st}");
+    assert_eq!(
+        fs::read_to_string(d.join("victim.txt")).unwrap(),
+        "modified-on-main\n"
+    );
+}

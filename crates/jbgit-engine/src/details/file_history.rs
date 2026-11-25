@@ -553,3 +553,77 @@ pub(crate) async fn load_file_history_async(
         truncated,
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+    use std::process::Command;
+
+    use jbgit_core::{FileHistoryKey, HistoryBranchScope, Oid, RequestEpoch};
+
+    use super::{build_file_history_args, load_file_history_async};
+    use crate::probe::RepoLocation;
+
+    fn git(dir: &Path, args: &[&str]) -> String {
+        let out = Command::new("git")
+            .current_dir(dir)
+            .args(args)
+            .output()
+            .expect("spawn git");
+        assert!(
+            out.status.success(),
+            "git {:?} failed: {}",
+            args,
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    }
+
+    #[tokio::test]
+    async fn file_history_start_oid_pins_rev_and_none_loads_head_commits() {
+        let tmp = tempfile::tempdir().unwrap();
+        let d = tmp.path();
+        git(d, &["init", "-b", "main"]);
+        git(d, &["config", "user.name", "Test"]);
+        git(d, &["config", "user.email", "test@example.com"]);
+
+        let mut oids = Vec::new();
+        for i in 1..=4 {
+            std::fs::write(d.join("tracked.txt"), format!("v{i}\n")).unwrap();
+            git(d, &["add", "tracked.txt"]);
+            git(d, &["commit", "-m", &format!("c{i}")]);
+            let sha = git(d, &["rev-parse", "HEAD"]);
+            oids.push(sha.parse::<Oid>().unwrap());
+        }
+
+        let loc = RepoLocation::discover(d).unwrap();
+        let epoch = RequestEpoch::new();
+        let token = epoch.issue();
+
+        // Pinned to c3: args target c3 and bundle contains 3 commits (c3, c2, c1), excluding HEAD (c4).
+        let pinned_key = FileHistoryKey::new("tracked.txt", Some(oids[2]), true, None);
+        let pinned_args = build_file_history_args(&pinned_key);
+        assert!(pinned_args.contains(&oids[2].to_string()));
+        assert!(!pinned_args.contains(&"HEAD".to_string()));
+
+        let pinned_bundle = load_file_history_async(&loc, &pinned_key, &token)
+            .await
+            .expect("load pinned history");
+        assert_eq!(pinned_bundle.entries.len(), 3);
+        assert_eq!(pinned_bundle.entries[0].oid, oids[2]);
+        assert!(!pinned_bundle.entries.iter().any(|e| e.oid == oids[3]));
+
+        // Clearing start_oid (Current HEAD): args target HEAD and bundle includes all 4 commits.
+        let mut head_key = pinned_key;
+        head_key.scope = HistoryBranchScope::CurrentHead;
+        head_key.start_oid = None;
+        let head_args = build_file_history_args(&head_key);
+        assert!(head_args.contains(&"HEAD".to_string()));
+
+        let head_bundle = load_file_history_async(&loc, &head_key, &token)
+            .await
+            .expect("load HEAD history");
+        assert_eq!(head_bundle.entries.len(), 4);
+        assert_eq!(head_bundle.entries[0].oid, oids[3]);
+    }
+}
