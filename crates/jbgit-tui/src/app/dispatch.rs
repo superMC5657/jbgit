@@ -356,7 +356,7 @@ impl AppState {
                             let clean: String =
                                 text.chars().filter(|c| *c != '\n' && *c != '\r').collect();
                             if !clean.is_empty() {
-                                cp.path.push_str(&clean);
+                                cp.push_path(&clean);
                             }
                         }
                         _ => {}
@@ -464,8 +464,7 @@ impl AppState {
                             .filter(|c| *c != '\n' && *c != '\r' && !c.is_control())
                             .collect();
                         if !clean.is_empty() {
-                            pd.target_draft.push_str(&clean);
-                            pd.completion_selected = 0;
+                            pd.push_target_text(&clean);
                         }
                     }
                     ModalLayer::TreeBrowser(tb) if tb.search_open => {
@@ -527,6 +526,7 @@ impl AppState {
                         crate::dialogs::Dialog::Merge(m) => {
                             let rows = crate::dialogs::MergeDialogRow::ALL;
                             m.selected = idx.min(rows.len() - 1);
+                            m.selected_all = false;
                             let row = m.row();
                             if row != crate::dialogs::MergeDialogRow::Message {
                                 m.toggle(row, true);
@@ -542,6 +542,7 @@ impl AppState {
                         crate::dialogs::Dialog::Pull(p) => {
                             let rows = crate::dialogs::PullDialogRow::ALL;
                             p.selected = idx.min(rows.len() - 1);
+                            p.selected_all = false;
                             let row = p.row();
                             if row != crate::dialogs::PullDialogRow::Branch {
                                 p.toggle(row, true);
@@ -550,6 +551,7 @@ impl AppState {
                         crate::dialogs::Dialog::Rebase(r) => {
                             let rows = crate::dialogs::RebaseDialogRow::ALL;
                             r.selected = idx.min(rows.len() - 1);
+                            r.selected_all = false;
                             let row = r.row();
                             if !row.is_text() {
                                 r.toggle(row, true);
@@ -564,6 +566,7 @@ impl AppState {
                                 return effects;
                             }
                             cp.selected = target;
+                            cp.selected_all = false;
                             let row = cp.row();
                             if row != crate::dialogs::CreatePatchRow::Path {
                                 cp.toggle(row);
@@ -2306,11 +2309,7 @@ impl AppState {
             }
             Action::PushStartEditTarget => {
                 if let Some(pd) = self.modal_stack.push_dialog_mut() {
-                    pd.editing_target = true;
-                    pd.picking_remote = false;
-                    pd.target_draft = pd.remote_branch.clone();
-                    pd.completion_selected = 0;
-                    pd.focus = PushDialogFocus::Target;
+                    pd.start_edit_target();
                 }
             }
             Action::PushEditTargetChar(ch) => {
@@ -2318,24 +2317,28 @@ impl AppState {
                     && let Some(pd) = self.modal_stack.push_dialog_mut()
                     && pd.editing_target
                 {
-                    pd.target_draft.push(*ch);
-                    pd.completion_selected = 0;
+                    pd.push_target_char(*ch);
                 }
             }
             Action::PushEditTargetBackspace => {
                 if let Some(pd) = self.modal_stack.push_dialog_mut()
                     && pd.editing_target
                 {
-                    pd.target_draft.pop();
-                    pd.completion_selected = 0;
+                    pd.pop_target_char();
+                }
+            }
+            Action::PushEditTargetSelectAll => {
+                if let Some(pd) = self.modal_stack.push_dialog_mut()
+                    && pd.editing_target
+                {
+                    pd.select_all_target();
                 }
             }
             Action::PushEditTargetClear => {
                 if let Some(pd) = self.modal_stack.push_dialog_mut()
                     && pd.editing_target
                 {
-                    pd.target_draft.clear();
-                    pd.completion_selected = 0;
+                    pd.clear_target_draft();
                 }
             }
             Action::PushEditTargetMoveCompletion(delta) => {
@@ -2357,8 +2360,7 @@ impl AppState {
                     let cands = pd.completion_candidates(snap.as_deref());
                     let idx = opt_idx.unwrap_or(pd.completion_selected);
                     if let Some(choice) = cands.get(idx) {
-                        pd.target_draft = choice.clone();
-                        pd.completion_selected = 0;
+                        pd.set_target_draft(choice.clone());
                     }
                 }
             }
@@ -2375,8 +2377,7 @@ impl AppState {
                         Some(EditOutcome::Err(err))
                     } else {
                         let next_branch = pd.target_draft.trim().to_string();
-                        pd.editing_target = false;
-                        pd.completion_selected = 0;
+                        pd.finish_edit_target();
                         if next_branch != pd.remote_branch {
                             pd.remote_branch = next_branch;
                             pd.expected_remote_oid = self
@@ -2416,16 +2417,14 @@ impl AppState {
             }
             Action::PushEditTargetCancel => {
                 if let Some(pd) = self.modal_stack.push_dialog_mut() {
-                    pd.editing_target = false;
-                    pd.target_draft.clear();
-                    pd.completion_selected = 0;
+                    pd.cancel_edit_target();
                 }
             }
             Action::PushToggleRemotePicker => {
                 if let Some(pd) = self.modal_stack.push_dialog_mut() {
                     if pd.remotes.len() > 1 {
                         pd.picking_remote = !pd.picking_remote;
-                        pd.editing_target = false;
+                        pd.finish_edit_target();
                         pd.focus = PushDialogFocus::Target;
                     } else {
                         pd.picking_remote = false;
@@ -2622,9 +2621,7 @@ impl AppState {
                 match outcome {
                     Some(EscOutcome::CancelEdit) => {
                         if let Some(pd) = self.modal_stack.push_dialog_mut() {
-                            pd.editing_target = false;
-                            pd.target_draft.clear();
-                            pd.completion_selected = 0;
+                            pd.cancel_edit_target();
                         }
                     }
                     Some(EscOutcome::CloseRemote) => {

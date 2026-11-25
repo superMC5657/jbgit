@@ -166,13 +166,22 @@ pub fn render_top_header(
     };
 
     let pill_w = pill_text.width() as u16;
-    spans.push(Span::styled(
-        pill_text,
+    let branch_hovered = matches!(
+        ctx.hover_target,
+        Some(HitTarget::BranchWidgetPill | HitTarget::HeaderBehindBadge)
+    );
+    let pill_style = if branch_hovered {
+        Style::default()
+            .fg(ctx.theme.fg_bright)
+            .bg(ctx.theme.bg_hover)
+            .add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
+    } else {
         Style::default()
             .fg(pill_fg)
             .bg(pill_bg)
-            .add_modifier(Modifier::BOLD),
-    ));
+            .add_modifier(Modifier::BOLD)
+    };
+    spans.push(Span::styled(pill_text, pill_style));
     if branch_start_x < area.x.saturating_add(area.width) {
         let w = pill_w.min(
             area.x

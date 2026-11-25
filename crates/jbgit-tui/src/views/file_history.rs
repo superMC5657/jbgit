@@ -36,25 +36,7 @@ pub fn render_file_history_modal(
         return;
     }
 
-    let width = if screen.width >= 36 {
-        ((u32::from(screen.width) * 92) / 100).max(32) as u16
-    } else {
-        screen.width.saturating_sub(2).max(20)
-    }
-    .min(screen.width);
-    let height = if screen.height >= 14 {
-        ((u32::from(screen.height) * 88) / 100).max(12) as u16
-    } else {
-        screen.height.saturating_sub(2).max(10)
-    }
-    .min(screen.height);
-
-    let rect = Rect::new(
-        screen.x + screen.width.saturating_sub(width) / 2,
-        screen.y + screen.height.saturating_sub(height) / 2,
-        width,
-        height,
-    );
+    let rect = crate::views::large_overlay_modal_rect(screen);
 
     draw_shadow(frame, screen, rect);
     crate::views::clear_modal_overlay(frame, rect);
@@ -116,6 +98,7 @@ pub fn render_file_history_modal(
         inner.height.saturating_sub(2),
     );
 
+    let compact_toolbar = toolbar_rect.width < 90;
     let mut buttons = Vec::new();
     if !fh.is_selection_history() {
         let head_oid = state.repo_snapshot.as_deref().and_then(|s| s.head_oid);
@@ -131,16 +114,24 @@ pub fn render_file_history_modal(
                 None => ctx.t("view.file_history.scope_head").to_string(),
             },
             HistoryBranchScope::AllBranches => ctx.t("view.file_history.scope_all").to_string(),
-            HistoryBranchScope::Branch(b) => truncate_to_width(b, 16),
+            HistoryBranchScope::Branch(b) => {
+                truncate_to_width(b, if compact_toolbar { 8 } else { 16 })
+            }
         };
         let scope_active =
             !matches!(fh.key.scope, HistoryBranchScope::CurrentHead) || pinned_start_oid.is_some();
         buttons.push((
-            ctx.t_fmt("view.file_history.btn_scope", &[("scope", &scope_label)]),
+            if compact_toolbar {
+                truncate_to_width(&scope_label, 8)
+            } else {
+                ctx.t_fmt("view.file_history.btn_scope", &[("scope", &scope_label)])
+            },
             scope_active,
             FileHistoryToolbarButton::BranchScope,
         ));
-        let follow_label = if matches!(fh.key.scope, HistoryBranchScope::AllBranches) {
+        let follow_label = if compact_toolbar {
+            ctx.t("view.file_history.btn_follow_compact").to_string()
+        } else if matches!(fh.key.scope, HistoryBranchScope::AllBranches) {
             ctx.t("view.file_history.btn_follow_disabled").to_string()
         } else {
             ctx.t("view.file_history.btn_follow").to_string()
@@ -151,74 +142,38 @@ pub fn render_file_history_modal(
             FileHistoryToolbarButton::FollowRenames,
         ));
     }
-    buttons.extend([
-        (
-            ctx.t("view.file_history.btn_compare_local").to_string(),
-            fh.compare_with_local,
+    let toolbar_order: &[FileHistoryToolbarButton] = if compact_toolbar {
+        &[
             FileHistoryToolbarButton::CompareLocal,
-        ),
-        (
-            ctx.t("view.file_history.btn_details").to_string(),
-            fh.show_commit_details,
-            FileHistoryToolbarButton::CommitDetails,
-        ),
-        (
-            ctx.t("view.file_history.btn_affected").to_string(),
-            fh.show_affected_files,
-            FileHistoryToolbarButton::AffectedFiles,
-        ),
-        (
-            if fh.diff.side_by_side {
-                ctx.t("view.log_details.side_by_side_btn")
-            } else {
-                ctx.t("view.log_details.unified_btn")
-            }
-            .to_string(),
-            fh.diff.side_by_side,
             FileHistoryToolbarButton::SideBySide,
-        ),
-        (
-            ctx.t_fmt(
-                "view.log_details.ctx_btn",
-                &[("ctx", ctx.diff_context_label(fh.diff.context))],
-            ),
-            false,
-            FileHistoryToolbarButton::Context,
-        ),
-        (
-            ctx.t_fmt(
-                "view.log_details.ws_btn",
-                &[("ws", ctx.diff_whitespace_label(fh.diff.whitespace))],
-            ),
-            fh.diff.whitespace != jbgit_core::WhitespaceMode::Default,
-            FileHistoryToolbarButton::Whitespace,
-        ),
-        (
-            ctx.t("view.log_details.wrap_btn").to_string(),
-            fh.diff.soft_wrap,
-            FileHistoryToolbarButton::SoftWrap,
-        ),
-        (
-            if fh.diff.zoomed {
-                ctx.t("view.log_details.restore_btn")
-            } else {
-                ctx.t("view.log_details.zoom_btn")
-            }
-            .to_string(),
-            fh.diff.zoomed,
             FileHistoryToolbarButton::Zoom,
-        ),
-        (
-            ctx.t("view.file_history.btn_annotate").to_string(),
-            false,
+            FileHistoryToolbarButton::Context,
+            FileHistoryToolbarButton::Whitespace,
+            FileHistoryToolbarButton::SoftWrap,
+            FileHistoryToolbarButton::CommitDetails,
+            FileHistoryToolbarButton::AffectedFiles,
             FileHistoryToolbarButton::Annotate,
-        ),
-        (
-            ctx.t("view.file_history.btn_locate_log").to_string(),
-            false,
             FileHistoryToolbarButton::LocateInLog,
-        ),
-    ]);
+        ]
+    } else {
+        &[
+            FileHistoryToolbarButton::CompareLocal,
+            FileHistoryToolbarButton::CommitDetails,
+            FileHistoryToolbarButton::AffectedFiles,
+            FileHistoryToolbarButton::SideBySide,
+            FileHistoryToolbarButton::Context,
+            FileHistoryToolbarButton::Whitespace,
+            FileHistoryToolbarButton::SoftWrap,
+            FileHistoryToolbarButton::Zoom,
+            FileHistoryToolbarButton::Annotate,
+            FileHistoryToolbarButton::LocateInLog,
+        ]
+    };
+    buttons.extend(
+        toolbar_order
+            .iter()
+            .map(|&btn| file_history_toolbar_entry(btn, fh, ctx, compact_toolbar)),
+    );
     render_toolbar(
         frame,
         toolbar_rect,
@@ -1116,4 +1071,114 @@ fn render_diff_pane(
         },
         ctx,
     );
+}
+
+fn file_history_toolbar_entry(
+    btn: FileHistoryToolbarButton,
+    fh: &FileHistoryState,
+    ctx: &RenderContext<'_>,
+    compact: bool,
+) -> (String, bool, FileHistoryToolbarButton) {
+    let (label, active) = match btn {
+        FileHistoryToolbarButton::CompareLocal => (
+            ctx.t(if compact {
+                "view.file_history.btn_compare_local_compact"
+            } else {
+                "view.file_history.btn_compare_local"
+            })
+            .to_string(),
+            fh.compare_with_local,
+        ),
+        FileHistoryToolbarButton::SideBySide => (
+            ctx.t(match (compact, fh.diff.side_by_side) {
+                (true, true) => "view.file_history.btn_side_by_side_compact",
+                (true, false) => "view.file_history.btn_unified_compact",
+                (false, true) => "view.log_details.side_by_side_btn",
+                (false, false) => "view.log_details.unified_btn",
+            })
+            .to_string(),
+            fh.diff.side_by_side,
+        ),
+        FileHistoryToolbarButton::Zoom => (
+            ctx.t(match (compact, fh.diff.zoomed) {
+                (true, true) => "view.file_history.btn_restore_compact",
+                (true, false) => "view.file_history.btn_zoom_compact",
+                (false, true) => "view.log_details.restore_btn",
+                (false, false) => "view.log_details.zoom_btn",
+            })
+            .to_string(),
+            fh.diff.zoomed,
+        ),
+        FileHistoryToolbarButton::Context => (
+            if compact {
+                format!("↕{}", ctx.diff_context_label(fh.diff.context))
+            } else {
+                ctx.t_fmt(
+                    "view.log_details.ctx_btn",
+                    &[("ctx", ctx.diff_context_label(fh.diff.context))],
+                )
+            },
+            false,
+        ),
+        FileHistoryToolbarButton::Whitespace => (
+            if compact {
+                ctx.t("view.file_history.btn_ws_compact").to_string()
+            } else {
+                ctx.t_fmt(
+                    "view.log_details.ws_btn",
+                    &[("ws", ctx.diff_whitespace_label(fh.diff.whitespace))],
+                )
+            },
+            fh.diff.whitespace != jbgit_core::WhitespaceMode::Default,
+        ),
+        FileHistoryToolbarButton::SoftWrap => (
+            ctx.t(if compact {
+                "view.file_history.btn_wrap_compact"
+            } else {
+                "view.log_details.wrap_btn"
+            })
+            .to_string(),
+            fh.diff.soft_wrap,
+        ),
+        FileHistoryToolbarButton::CommitDetails => (
+            ctx.t(if compact {
+                "view.file_history.btn_details_compact"
+            } else {
+                "view.file_history.btn_details"
+            })
+            .to_string(),
+            fh.show_commit_details,
+        ),
+        FileHistoryToolbarButton::AffectedFiles => (
+            ctx.t(if compact {
+                "view.file_history.btn_affected_compact"
+            } else {
+                "view.file_history.btn_affected"
+            })
+            .to_string(),
+            fh.show_affected_files,
+        ),
+        FileHistoryToolbarButton::Annotate => (
+            ctx.t(if compact {
+                "view.file_history.btn_annotate_compact"
+            } else {
+                "view.file_history.btn_annotate"
+            })
+            .to_string(),
+            false,
+        ),
+        FileHistoryToolbarButton::LocateInLog => (
+            ctx.t(if compact {
+                "view.file_history.btn_locate_log_compact"
+            } else {
+                "view.file_history.btn_locate_log"
+            })
+            .to_string(),
+            false,
+        ),
+        FileHistoryToolbarButton::BranchScope | FileHistoryToolbarButton::FollowRenames => {
+            unreachable!("scope and follow buttons are handled separately")
+        }
+    };
+    (label, active, btn)
 }

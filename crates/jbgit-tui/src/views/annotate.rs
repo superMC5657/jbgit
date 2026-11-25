@@ -30,25 +30,7 @@ pub fn render_annotate_modal(
         return;
     }
 
-    let width = if screen.width >= 36 {
-        ((u32::from(screen.width) * 92) / 100).max(32) as u16
-    } else {
-        screen.width.saturating_sub(2).max(20)
-    }
-    .min(screen.width);
-    let height = if screen.height >= 14 {
-        ((u32::from(screen.height) * 90) / 100).max(12) as u16
-    } else {
-        screen.height.saturating_sub(2).max(10)
-    }
-    .min(screen.height);
-
-    let rect = Rect::new(
-        screen.x + screen.width.saturating_sub(width) / 2,
-        screen.y + screen.height.saturating_sub(height) / 2,
-        width,
-        height,
-    );
+    let rect = crate::views::large_overlay_modal_rect(screen);
 
     draw_shadow(frame, screen, rect);
     crate::views::clear_modal_overlay(frame, rect);

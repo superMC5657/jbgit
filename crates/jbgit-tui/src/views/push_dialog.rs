@@ -226,22 +226,19 @@ fn render_target_pane(
     // Row 1: target branch (inline edit or clickable badge)
     let row1 = Rect::new(inner.x, y, inner.width, 1);
     if pd.editing_target {
-        let input_text = format!(
-            " : {}▏",
-            truncate_to_width(&pd.target_draft, w.saturating_sub(6))
+        let shown = truncate_to_width(&pd.target_draft, w.saturating_sub(6));
+        let prefix = " : ";
+        let cursor = "▏";
+        let pad = " ".repeat(w.saturating_sub(prefix.width() + shown.width() + cursor.width()));
+        let line = crate::views::underlined_selectable_input_line(
+            prefix,
+            &shown,
+            cursor,
+            &pad,
+            pd.target_selected_all,
+            ctx.theme,
         );
-        frame.render_widget(
-            Paragraph::new(Span::styled(
-                format!(
-                    "{input_text}{}",
-                    " ".repeat(w.saturating_sub(input_text.width()))
-                ),
-                Style::default()
-                    .fg(ctx.theme.fg_bright)
-                    .bg(ctx.theme.bg_selection_focused),
-            )),
-            row1,
-        );
+        frame.render_widget(Paragraph::new(line), row1);
     } else {
         let shown_target = if pd.remote_branch.trim().is_empty() {
             ctx.t("dialog.push_full.target_placeholder")

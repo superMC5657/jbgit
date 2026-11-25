@@ -260,7 +260,8 @@ fn render_branch_compare_bar(
     let range = bc.range_label();
     let ol = bc.only_left.to_string();
     let or = bc.only_right.to_string();
-    let label = state.i18n.t_fmt(
+    let counts = format!("(← {ol} · → {or})");
+    let full_label = state.i18n.t_fmt(
         "view.log.compare_banner",
         &[("range", &range), ("left_only", &ol), ("right_only", &or)],
     );
@@ -272,31 +273,60 @@ fn render_branch_compare_bar(
     };
     let close_btn = " ✕ ";
     let btns_w = cycle_btn.width() + diff_btn.width() + close_btn.width() + 2;
-    let label_w = (area.width as usize).saturating_sub(btns_w + 1);
+    let label_w = (area.width as usize).saturating_sub(btns_w + 2);
+    let fitted_label = if full_label.width() <= label_w {
+        full_label
+    } else {
+        let compact = format!("{range} {counts}");
+        if compact.width() <= label_w {
+            compact
+        } else {
+            let avail_range = label_w.saturating_sub(counts.width() + 1);
+            if avail_range >= 4 {
+                format!("{} {counts}", truncate_to_width(&range, avail_range))
+            } else {
+                truncate_to_width(&counts, label_w)
+            }
+        }
+    };
     let mut x = area.x;
-    let mut spans = vec![Span::styled(
-        format!(" {} ", truncate_to_width(&label, label_w)),
-        Style::default()
-            .fg(ctx.theme.fg_bright)
-            .bg(ctx.theme.bg_elevated)
-            .add_modifier(Modifier::BOLD),
-    )];
-    x += spans[0].content.width() as u16;
+    let mut spans = Vec::new();
+    if label_w > 0 {
+        let lbl = format!(" {fitted_label} ");
+        x += lbl.width() as u16;
+        spans.push(Span::styled(
+            lbl,
+            Style::default()
+                .fg(ctx.theme.fg_bright)
+                .bg(ctx.theme.bg_elevated)
+                .add_modifier(Modifier::BOLD),
+        ));
+    }
     let buttons = [
         (cycle_btn, HitTarget::BranchCompareCycle, false),
         (diff_btn, HitTarget::BranchCompareTreeDiff, bc.tree_diff),
         (close_btn, HitTarget::BranchCompareClose, false),
     ];
-    for (txt, target, active) in buttons {
+    for (idx, (txt, target, active)) in buttons.into_iter().enumerate() {
         let w = txt.width() as u16;
         if x + w > area.right() {
-            break;
+            continue;
         }
+        let hovered = ctx.hover_target == Some(&target);
         let st = if active {
-            Style::default()
+            let base = Style::default()
                 .fg(ctx.theme.bg_canvas)
                 .bg(ctx.theme.fg_accent_link)
-                .add_modifier(Modifier::BOLD)
+                .add_modifier(Modifier::BOLD);
+            if hovered {
+                base.add_modifier(Modifier::UNDERLINED)
+            } else {
+                base
+            }
+        } else if hovered {
+            Style::default()
+                .fg(ctx.theme.fg_bright)
+                .bg(ctx.theme.bg_hover)
         } else {
             Style::default()
                 .fg(ctx.theme.fg_accent_link)
@@ -306,7 +336,7 @@ fn render_branch_compare_bar(
         ctx.hit_registry
             .register(Rect::new(x, area.y, w, 1), 3, target);
         x += w;
-        if x < area.right() {
+        if idx + 1 < 3 && x < area.right() {
             spans.push(Span::styled(
                 " ",
                 Style::default().bg(ctx.theme.bg_elevated),
@@ -342,20 +372,21 @@ fn render_filter_bar(
     // ⚙ Presentation, pinned to the far right.
     let gear = " ⚙ ";
     let gear_w = gear.width() as u16;
+    let hover_target = ctx.hover_target;
     if area.width > gear_w + 10 {
         let rect = Rect::new(right - gear_w, area.y, gear_w, 1);
-        frame.render_widget(
-            Paragraph::new(Span::styled(
-                gear,
-                Style::default().fg(theme.fg_primary).bg(theme.bg_panel),
-            )),
-            rect,
-        );
+        let gear_style = if hover_target == Some(&HitTarget::FilterPresentation) {
+            Style::default().fg(theme.fg_bright).bg(theme.bg_hover)
+        } else {
+            Style::default().fg(theme.fg_primary).bg(theme.bg_panel)
+        };
+        frame.render_widget(Paragraph::new(Span::styled(gear, gear_style)), rect);
         ctx.hit_registry
             .register(rect, 3, HitTarget::FilterPresentation);
     }
     let reserve = gear_w;
 
+    let nm_on = filter.spec.no_merges;
     let registry = &mut *ctx.hit_registry;
     let mut put = |frame: &mut Frame<'_>,
                    x: &mut u16,
@@ -369,7 +400,60 @@ fn render_filter_bar(
             return false;
         }
         let rect = Rect::new(*x, area.y, w, 1);
-        frame.render_widget(Paragraph::new(Span::styled(text.to_string(), style)), rect);
+        let hovered = target.as_ref().is_some_and(|t| hover_target == Some(t));
+        let effective_style = if hovered {
+            match target.as_ref() {
+                Some(
+                    HitTarget::FilterClear(_)
+                    | HitTarget::FilterRangeClear
+                    | HitTarget::FilterClearAll,
+                ) => Style::default().fg(theme.status_deleted).bg(theme.bg_hover),
+                Some(HitTarget::FilterChip(field)) if filter.field_active(*field) => style
+                    .fg(theme.fg_bright)
+                    .bg(theme.bg_hover)
+                    .add_modifier(Modifier::UNDERLINED),
+                Some(HitTarget::FilterChip(_)) => {
+                    Style::default().fg(theme.fg_bright).bg(theme.bg_hover)
+                }
+                Some(HitTarget::FilterNoMergesToggle) if nm_on => {
+                    style.add_modifier(Modifier::UNDERLINED)
+                }
+                Some(HitTarget::FilterNoMergesToggle) => {
+                    Style::default().fg(theme.fg_bright).bg(theme.bg_hover)
+                }
+                Some(HitTarget::FilterRegexToggle) => {
+                    if filter.spec.text.regex {
+                        style.add_modifier(Modifier::UNDERLINED)
+                    } else {
+                        Style::default().fg(theme.fg_bright).bg(theme.bg_hover)
+                    }
+                }
+                Some(HitTarget::FilterCaseToggle) => {
+                    if filter.spec.text.match_case {
+                        style.add_modifier(Modifier::UNDERLINED)
+                    } else {
+                        Style::default().fg(theme.fg_bright).bg(theme.bg_hover)
+                    }
+                }
+                Some(HitTarget::FilterTextInput) => {
+                    if filter.editing_text {
+                        style
+                    } else {
+                        style.bg(theme.bg_hover)
+                    }
+                }
+                Some(HitTarget::FilterRestoreDirHistory) => {
+                    style.bg(theme.bg_hover).add_modifier(Modifier::UNDERLINED)
+                }
+                Some(_) | None => style,
+            }
+        } else {
+            style
+        };
+        frame.render_widget(
+            Paragraph::new(Span::styled(text.to_string(), effective_style)),
+            rect,
+        );
         if let Some(t) = target {
             registry.register(rect, 3, t);
         }
@@ -387,7 +471,6 @@ fn render_filter_bar(
         }
     }
 
-    let nm_on = filter.spec.no_merges;
     let nm_label = state.i18n.t("filter.no_merges");
     let nm_chip_full = format!(" [{nm_label}] ");
     let nm_chip_compact = format!(" [{nm_label}]");

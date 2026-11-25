@@ -743,13 +743,14 @@ pub fn render_tree_browser(
     if screen.width < 40 || screen.height < 10 {
         return;
     }
-    let rect = Rect::new(
-        screen.x + 1,
-        screen.y + 1,
-        screen.width.saturating_sub(2),
-        screen.height.saturating_sub(2),
-    );
-    draw_shadow(frame, screen, rect);
+    let rect = if screen.width >= 85 && screen.height >= 25 {
+        crate::views::large_overlay_modal_rect(screen)
+    } else {
+        crate::views::compact_modal_rect(screen)
+    };
+    if rect.width < screen.width {
+        draw_shadow(frame, screen, rect);
+    }
     crate::views::clear_modal_overlay(frame, rect);
     let mut title = ctx.t_fmt("view.tree.title", &[("title", &s.title)]);
     if !s.multi_selected.is_empty() {

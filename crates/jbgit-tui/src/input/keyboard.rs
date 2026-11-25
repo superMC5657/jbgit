@@ -1284,6 +1284,7 @@ fn route_push_dialog_key(key: &KeyEvent, state: &AppState) -> Vec<Action> {
             KeyCode::Up => vec![Action::PushEditTargetMoveCompletion(-1)],
             KeyCode::Down => vec![Action::PushEditTargetMoveCompletion(1)],
             KeyCode::Backspace => vec![Action::PushEditTargetBackspace],
+            KeyCode::Char('a') if ctrl => vec![Action::PushEditTargetSelectAll],
             KeyCode::Char('u') if ctrl => vec![Action::PushEditTargetClear],
             KeyCode::Char(c) if plain && !c.is_control() => vec![Action::PushEditTargetChar(c)],
             _ => Vec::new(),

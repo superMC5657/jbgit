@@ -1,6 +1,6 @@
 # 04: 交互控件 Hover 视觉反馈一致性补齐（冲突按钮 / 筛选芯片 / 顶栏分支胶囊）
 
-Status: ready-for-agent
+Status: resolved
 Spec: [../spec.md](../spec.md)
 Milestone: M12 — 工作流正确性与 UI 交互加固
 Priority: P3
@@ -28,14 +28,14 @@ Priority: P3
 
 ## 2. 任务清单
 
-- [ ] **为 Merge Conflict Resolver 底部按钮增加 hover 高亮**：
+- [x] **为 Merge Conflict Resolver 底部按钮增加 hover 高亮**：
   - 在 `crates/jbgit-tui/src/views/conflict_merge.rs:761-775` 中判断 `let hovered = ctx.hover_target == Some(&HitTarget::ConflictMergeButton(kind));`；
   - 非 `primary` 按钮悬停时切换为 `fg: ctx.theme.fg_bright, bg: ctx.theme.bg_hover`（与 `render_toolbar` `:515-519` 一致）；`primary` 按钮悬停时增加 `Modifier::REVERSED` 或 `Modifier::UNDERLINED` / 提亮背景以区分态。
-- [ ] **为 Log 筛选栏芯片与 `⚙` 按钮增加 hover 高亮**：
+- [x] **为 Log 筛选栏芯片与 `⚙` 按钮增加 hover 高亮**：
   - 在 `crates/jbgit-tui/src/views/log.rs:346-356`（`FilterPresentation`）及 `:360-378` 的 `put` 闭包中统一支持按 `target` 检查 `ctx.hover_target == target.as_ref()`：
     - 非激活态芯片（`分支▾`、`作者▾`、`日期▾`、`路径▾`、`[排除合并]`、`⚙`）悬停时使用 `fg: theme.fg_bright, bg: theme.bg_hover`；
     - 激活态芯片悬停时附加明显视觉反馈（如 `Modifier::UNDERLINED` 或 `fg_bright`）；`×` 清除钮悬停时切为 `status_deleted` / `bg_hover`。
-- [ ] **为顶栏分支胶囊增加 hover 高亮**：
+- [x] **为顶栏分支胶囊增加 hover 高亮**：
   - 在 `crates/jbgit-tui/src/views/header.rs:168-176` 中检查 `ctx.hover_target == Some(&HitTarget::BranchWidgetPill)`（或 `HeaderBehindBadge`），悬停时调整背景色/样式（如切换为 `ctx.theme.bg_hover` 或在原胶囊色基础上加 `Modifier::UNDERLINED` + `fg_bright`），与未悬停态形成可测量的 cell style 差异。
 
 ---
@@ -50,3 +50,11 @@ Priority: P3
   - `full` 场景使用 `hover-text "分支▾"` 与 `hover-text "main"`（带 `--row 0`）+ `inspect-row` 验证颜色变化。
 
 ## Comments
+
+- **2026-11-25**: 已修复并验证：
+  - `views/conflict_merge.rs`、`views/log.rs`（筛选芯片、`×` 清除钮、`⚙` 及对比栏按钮）与 `views/header.rs`（`BranchWidgetPill` / `HeaderBehindBadge`）均接入 `ctx.hover_target` 悬停配色。
+  - **测试**：`conflict_merge_bottom_buttons_change_style_on_hover`、`log_filter_chips_gear_and_header_branch_pill_change_style_on_hover` 及全量工作区测试均通过。
+  - **Pilot 实机复验（`conflict` + `full` 沙盒 `hover-text` + `inspect-row`）**：
+    - 冲突解决器 `自动应用 (1)` / `我方`：`#BCBEC4 / #2B2D30` → `#DFE1E5 / #2D2F34`；
+    - Log 筛选栏 `分支▾` 与 `⚙`：`#BCBEC4 / #2B2D30` → `#DFE1E5 / #2D2F34`；
+    - 顶栏分支胶囊 `main ↑3 ▾`：`#F2E49B / #3A3728` → `#DFE1E5 / #2D2F34`。

@@ -2796,17 +2796,25 @@ impl AppState {
                     _ => "dialog.smart.verb.checkout",
                 };
                 let verb = i18n.t(verb_key);
-                let count_s = files.len().max(1).to_string();
-                let mut body = vec![i18n.t_fmt(
-                    "dialog.smart.overwrite_prompt",
-                    &[("label", &label), ("count", &count_s)],
-                )];
-                body.extend(files.iter().take(6).map(|f| format!("  • {f}")));
-                if files.len() > 6 {
-                    let rem_s = (files.len() - 6).to_string();
-                    body.push(i18n.t_fmt("dialog.smart.more_files", &[("count", &rem_s)]));
-                }
-                body.push(String::new());
+                let mut body = if files.is_empty() {
+                    vec![i18n.t_fmt(
+                        "dialog.smart.overwrite_prompt_generic",
+                        &[("label", &label)],
+                    )]
+                } else {
+                    let count_s = files.len().to_string();
+                    let mut lines = vec![i18n.t_fmt(
+                        "dialog.smart.overwrite_prompt",
+                        &[("label", &label), ("count", &count_s)],
+                    )];
+                    lines.extend(files.iter().take(6).map(|f| format!("  • {f}")));
+                    if files.len() > 6 {
+                        let rem_s = (files.len() - 6).to_string();
+                        lines.push(i18n.t_fmt("dialog.smart.more_files", &[("count", &rem_s)]));
+                    }
+                    lines.push(String::new());
+                    lines
+                };
                 body.push(i18n.t_fmt("dialog.smart.explain", &[("verb", verb)]));
                 let mut options = vec![ChoiceOption::new(
                     i18n.t_fmt("dialog.smart.title", &[("verb", verb)]),

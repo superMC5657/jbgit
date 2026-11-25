@@ -77,6 +77,21 @@ struct DialogButtonSpec {
     target: HitTarget,
 }
 
+/// Text value style for inline-editable option-dialog rows (`Merge` / `Pull` / `Rebase`).
+fn inline_text_value_style(
+    selected: bool,
+    selected_all: bool,
+    non_empty: bool,
+    theme: &crate::theme::ThemePalette,
+) -> Style {
+    let base = Style::default().fg(theme.fg_bright).bg(theme.bg_panel);
+    if selected && selected_all && non_empty {
+        base.bg(theme.border_focused)
+    } else {
+        base
+    }
+}
+
 /// Renders `[label]` buttons left-to-right starting at `(x, y)`.
 fn render_buttons(
     frame: &mut Frame<'_>,
@@ -903,9 +918,12 @@ fn render_merge(
         ));
         if !value.is_empty() {
             let value_style = if row == MergeDialogRow::Message {
-                Style::default()
-                    .fg(ctx.theme.fg_bright)
-                    .bg(ctx.theme.bg_panel)
+                inline_text_value_style(
+                    sel,
+                    d.selected_all,
+                    !d.message_text().is_empty(),
+                    ctx.theme,
+                )
             } else {
                 Style::default().fg(ctx.theme.fg_accent_link)
             };
@@ -1104,9 +1122,7 @@ fn render_pull(
         ));
         if !value.is_empty() {
             let value_style = if row == PullDialogRow::Branch {
-                Style::default()
-                    .fg(ctx.theme.fg_bright)
-                    .bg(ctx.theme.bg_panel)
+                inline_text_value_style(sel, d.selected_all, !d.branch_text().is_empty(), ctx.theme)
             } else {
                 Style::default().fg(ctx.theme.fg_accent_link)
             };
@@ -1334,9 +1350,12 @@ fn render_rebase_options(
             let value_style = if disabled {
                 Style::default().fg(ctx.theme.fg_muted)
             } else if row.is_text() {
-                Style::default()
-                    .fg(ctx.theme.fg_bright)
-                    .bg(ctx.theme.bg_panel)
+                inline_text_value_style(
+                    sel,
+                    d.selected_all,
+                    !d.current_text().is_empty(),
+                    ctx.theme,
+                )
             } else {
                 Style::default().fg(ctx.theme.fg_accent_link)
             };
@@ -1465,19 +1484,14 @@ fn render_input(
     let err = ctx.i18n.and_then(|i| d.error(i));
     let shown_val = truncate_to_width(&d.value, w.saturating_sub(4));
     let val_pad = " ".repeat(w.saturating_sub(shown_val.width() + 3));
-    let input_base = Style::default()
-        .fg(ctx.theme.fg_bright)
-        .bg(ctx.theme.bg_panel)
-        .add_modifier(Modifier::UNDERLINED);
-    let input_line = if d.selected_all && !shown_val.is_empty() {
-        Line::from(vec![
-            Span::styled(" ", input_base),
-            Span::styled(shown_val, input_base.bg(ctx.theme.bg_selection_focused)),
-            Span::styled(format!("▏{val_pad}"), input_base),
-        ])
-    } else {
-        Line::from(Span::styled(format!(" {shown_val}▏{val_pad}"), input_base))
-    };
+    let input_line = crate::views::underlined_selectable_input_line(
+        " ",
+        &shown_val,
+        "▏",
+        &val_pad,
+        d.selected_all,
+        ctx.theme,
+    );
     let mut lines = vec![
         Line::from(Span::styled(
             format!(" {}", truncate_to_width(&d.prompt, w.saturating_sub(2))),
@@ -2254,15 +2268,28 @@ fn render_create_patch(
         d.path.clone()
     };
     let r1 = Rect::new(inner.x, inner.y + 3, inner.width, 1);
-    frame.render_widget(
-        Paragraph::new(Line::from(vec![
+    let path_text_spans = if d.editing_path() && d.selected_all && !shown_path.is_empty() {
+        vec![
+            Span::styled(path_lbl, muted.bg(path_bg)),
+            Span::styled(
+                shown_path,
+                Style::default()
+                    .fg(ctx.theme.fg_bright)
+                    .bg(ctx.theme.border_focused),
+            ),
+            Span::styled(cursor, Style::default().fg(path_fg).bg(path_bg)),
+        ]
+    } else {
+        vec![
             Span::styled(path_lbl, muted.bg(path_bg)),
             Span::styled(
                 format!("{shown_path}{cursor}"),
                 Style::default().fg(path_fg).bg(path_bg),
             ),
-        ]))
-        .style(Style::default().bg(path_bg)),
+        ]
+    };
+    frame.render_widget(
+        Paragraph::new(Line::from(path_text_spans)).style(Style::default().bg(path_bg)),
         r1,
     );
     ctx.hit_registry

@@ -570,6 +570,75 @@ pub(crate) fn clear_modal_overlay(frame: &mut Frame<'_>, rect: Rect) {
     frame.render_widget(ratatui::widgets::Clear, rect);
 }
 
+/// Centers a `width × height` modal rectangle inside `screen`.
+pub(crate) fn centered_modal_rect(screen: Rect, width: u16, height: u16) -> Rect {
+    Rect::new(
+        screen.x + screen.width.saturating_sub(width) / 2,
+        screen.y + screen.height.saturating_sub(height) / 2,
+        width,
+        height,
+    )
+}
+
+/// Full-width narrow-viewport modal rectangle starting below the global header/tabs.
+pub(crate) fn compact_modal_rect(screen: Rect) -> Rect {
+    let top = if screen.height >= 16 {
+        screen.y.saturating_add(2)
+    } else {
+        screen.y.saturating_add(1)
+    };
+    let height = screen
+        .bottom()
+        .saturating_sub(top)
+        .max(10.min(screen.height));
+    Rect::new(screen.x, top, screen.width, height)
+}
+
+/// Standard `92% × 90%` centered overlay rectangle shared by large full-screen modals
+/// (`Annotate`, `FileHistory`, and desktop `TreeBrowser`) so stacked overlays align cleanly.
+pub(crate) fn large_overlay_modal_rect(screen: Rect) -> Rect {
+    let width = if screen.width >= 36 {
+        ((u32::from(screen.width) * 92) / 100).max(32) as u16
+    } else {
+        screen.width.saturating_sub(2).max(20)
+    }
+    .min(screen.width);
+    let height = if screen.height >= 14 {
+        ((u32::from(screen.height) * 90) / 100).max(12) as u16
+    } else {
+        screen.height.saturating_sub(2).max(10)
+    }
+    .min(screen.height);
+    centered_modal_rect(screen, width, height)
+}
+
+/// Renders an underlined single-line text input row with optional `Ctrl+a` selection highlight.
+pub(crate) fn underlined_selectable_input_line(
+    prefix: &str,
+    shown: &str,
+    cursor: &str,
+    pad: &str,
+    selected_all: bool,
+    theme: &ThemePalette,
+) -> Line<'static> {
+    let input_base = Style::default()
+        .fg(theme.fg_bright)
+        .bg(theme.bg_panel)
+        .add_modifier(Modifier::UNDERLINED);
+    if selected_all && !shown.is_empty() {
+        Line::from(vec![
+            Span::styled(prefix.to_string(), input_base),
+            Span::styled(shown.to_string(), input_base.bg(theme.bg_selection_focused)),
+            Span::styled(format!("{cursor}{pad}"), input_base),
+        ])
+    } else {
+        Line::from(Span::styled(
+            format!("{prefix}{shown}{cursor}{pad}"),
+            input_base,
+        ))
+    }
+}
+
 /// Registers a clickable `ModalButton::Cancel` hit target for a right-aligned `[Esc]` hint inside `row_rect`.
 pub(crate) fn register_right_esc_cancel(
     ctx: &mut RenderContext<'_>,

@@ -16,6 +16,57 @@ use jbgit_engine::askpass::Secret;
 use crate::app::{Action, ScrollViewport};
 use crate::i18n::I18n;
 
+/// Appends `text` to a single-line input buffer, replacing its entire contents first
+/// when `selected_all` is set (`Ctrl+a`).
+pub(crate) fn push_selectable_text(buf: &mut String, selected_all: &mut bool, text: &str) {
+    if *selected_all {
+        buf.clear();
+        *selected_all = false;
+    }
+    buf.push_str(text);
+}
+
+/// Removes the last character from a single-line input buffer, or clears the entire
+/// buffer when `selected_all` is set (`Ctrl+a`).
+pub(crate) fn pop_selectable_char(buf: &mut String, selected_all: &mut bool) {
+    if *selected_all {
+        buf.clear();
+        *selected_all = false;
+    } else {
+        buf.pop();
+    }
+}
+
+/// Appends `text` to an optional single-line input buffer, replacing its contents first
+/// when `selected_all` is set (`Ctrl+a`).
+pub(crate) fn push_selectable_opt_text(
+    buf: &mut Option<String>,
+    selected_all: &mut bool,
+    text: &str,
+) {
+    if *selected_all {
+        *buf = None;
+        *selected_all = false;
+    }
+    buf.get_or_insert_with(String::new).push_str(text);
+}
+
+/// Removes the last character from an optional single-line input buffer (setting it to
+/// `None` when empty), or clears it immediately when `selected_all` is set (`Ctrl+a`).
+pub(crate) fn pop_selectable_opt_char(buf: &mut Option<String>, selected_all: &mut bool) {
+    if *selected_all {
+        *buf = None;
+        *selected_all = false;
+        return;
+    }
+    if let Some(s) = buf.as_mut() {
+        s.pop();
+        if s.is_empty() {
+            *buf = None;
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InputValidation {
     None,
@@ -1027,6 +1078,7 @@ pub struct MergeDialog {
     pub commit_count: Option<usize>,
     pub options: MergeOptions,
     pub selected: usize,
+    pub selected_all: bool,
 }
 
 impl MergeDialog {
@@ -1045,6 +1097,7 @@ impl MergeDialog {
                 ..remembered
             },
             selected: 0,
+            selected_all: false,
         }
     }
 
@@ -1059,6 +1112,7 @@ impl MergeDialog {
     pub fn move_selection(&mut self, delta: isize) {
         let len = MergeDialogRow::ALL.len() as isize;
         self.selected = (self.selected as isize + delta).rem_euclid(len) as usize;
+        self.selected_all = false;
     }
 
     /// Toggles / cycles `row` (`forward = false` cycles backwards).
@@ -1090,19 +1144,11 @@ impl MergeDialog {
     }
 
     pub fn push_message(&mut self, text: &str) {
-        self.options
-            .message
-            .get_or_insert_with(String::new)
-            .push_str(text);
+        push_selectable_opt_text(&mut self.options.message, &mut self.selected_all, text);
     }
 
     pub fn pop_message(&mut self) {
-        if let Some(m) = self.options.message.as_mut() {
-            m.pop();
-            if m.is_empty() {
-                self.options.message = None;
-            }
-        }
+        pop_selectable_opt_char(&mut self.options.message, &mut self.selected_all);
     }
 
     /// Localized description of the first option clash, if any.
@@ -1298,6 +1344,7 @@ pub struct PullDialog {
     pub remote_branches: Vec<(String, String)>,
     pub options: PullOptions,
     pub selected: usize,
+    pub selected_all: bool,
     pub fetching: bool,
 }
 
@@ -1336,6 +1383,7 @@ impl PullDialog {
                 ..remembered
             },
             selected: 0,
+            selected_all: false,
             fetching: false,
         }
     }
@@ -1377,6 +1425,7 @@ impl PullDialog {
     pub fn move_selection(&mut self, delta: isize) {
         let len = PullDialogRow::ALL.len() as isize;
         self.selected = (self.selected as isize + delta).rem_euclid(len) as usize;
+        self.selected_all = false;
     }
 
     pub fn branches_for_selected_remote(&self) -> Vec<String> {
@@ -1395,22 +1444,15 @@ impl PullDialog {
     }
 
     pub fn push_branch(&mut self, text: &str) {
-        self.options
-            .branch
-            .get_or_insert_with(String::new)
-            .push_str(text);
+        push_selectable_opt_text(&mut self.options.branch, &mut self.selected_all, text);
     }
 
     pub fn pop_branch(&mut self) {
-        if let Some(b) = self.options.branch.as_mut() {
-            b.pop();
-            if b.is_empty() {
-                self.options.branch = None;
-            }
-        }
+        pop_selectable_opt_char(&mut self.options.branch, &mut self.selected_all);
     }
 
     pub fn complete_branch(&mut self, forward: bool) {
+        self.selected_all = false;
         let candidates = self.branches_for_selected_remote();
         if let Some(next) = cycle_completion(&candidates, self.branch_text(), forward) {
             self.options.branch = Some(next);
@@ -1540,6 +1582,7 @@ pub struct RebaseDialog {
     pub git_version: Option<GitVersion>,
     pub options: RebaseOptions,
     pub selected: usize,
+    pub selected_all: bool,
 }
 
 impl RebaseDialog {
@@ -1588,6 +1631,7 @@ impl RebaseDialog {
             git_version,
             options,
             selected: 0,
+            selected_all: false,
         }
     }
 
@@ -1602,12 +1646,25 @@ impl RebaseDialog {
                 && self.options.effective_upstream().is_none())
     }
 
+    pub fn current_text(&self) -> &str {
+        match self.row() {
+            RebaseDialogRow::Onto => self.options.onto.as_str(),
+            RebaseDialogRow::Upstream => self.options.upstream.as_deref().unwrap_or(""),
+            RebaseDialogRow::Branch => self.options.branch.as_deref().unwrap_or(""),
+            _ => "",
+        }
+    }
+
     pub fn move_selection(&mut self, delta: isize) {
         let len = RebaseDialogRow::ALL.len() as isize;
         self.selected = (self.selected as isize + delta).rem_euclid(len) as usize;
+        self.selected_all = false;
     }
 
     pub fn push_text(&mut self, text: &str) {
+        if self.selected_all {
+            self.clear_text();
+        }
         match self.row() {
             RebaseDialogRow::Onto => self.options.onto.push_str(text),
             RebaseDialogRow::Upstream if !self.options.root => {
@@ -1627,6 +1684,10 @@ impl RebaseDialog {
     }
 
     pub fn pop_text(&mut self) {
+        if self.selected_all {
+            self.clear_text();
+            return;
+        }
         match self.row() {
             RebaseDialogRow::Onto => {
                 self.options.onto.pop();
@@ -1652,6 +1713,7 @@ impl RebaseDialog {
     }
 
     pub fn clear_text(&mut self) {
+        self.selected_all = false;
         match self.row() {
             RebaseDialogRow::Onto => self.options.onto.clear(),
             RebaseDialogRow::Upstream => self.options.upstream = None,
@@ -1661,6 +1723,7 @@ impl RebaseDialog {
     }
 
     pub fn complete_text(&mut self, forward: bool) {
+        self.selected_all = false;
         match self.row() {
             RebaseDialogRow::Onto => {
                 if let Some(next) =
@@ -1774,6 +1837,7 @@ pub struct CreatePatchDialog {
     /// Generate a reversed patch (`-R`).
     pub reverse: bool,
     pub selected: usize,
+    pub selected_all: bool,
 }
 
 impl CreatePatchDialog {
@@ -1792,14 +1856,46 @@ impl CreatePatchDialog {
             next = (next as isize + delta.signum()).rem_euclid(len) as usize;
         }
         self.selected = next;
+        self.selected_all = false;
     }
 
     pub fn toggle(&mut self, row: CreatePatchRow) {
+        self.selected_all = false;
         match row {
             CreatePatchRow::Destination => self.to_clipboard = !self.to_clipboard,
             CreatePatchRow::Reverse => self.reverse = !self.reverse,
             CreatePatchRow::Path => {}
         }
+    }
+
+    pub fn push_path(&mut self, text: &str) {
+        push_selectable_text(&mut self.path, &mut self.selected_all, text);
+    }
+
+    pub fn push_path_char(&mut self, ch: char) {
+        if self.selected_all {
+            self.path.clear();
+            self.selected_all = false;
+        }
+        self.path.push(ch);
+    }
+
+    pub fn pop_path(&mut self) {
+        pop_selectable_char(&mut self.path, &mut self.selected_all);
+    }
+
+    pub fn clear_path(&mut self) {
+        self.path.clear();
+        self.selected_all = false;
+    }
+
+    pub fn set_path(&mut self, path: String) {
+        self.path = path;
+        self.selected_all = false;
+    }
+
+    pub fn select_all_path(&mut self) {
+        self.selected_all = !self.path.is_empty();
     }
 
     pub fn error(&self, i18n: &I18n) -> Option<String> {
@@ -1859,6 +1955,7 @@ pub fn create_patch_dialog(
         base: default_dir,
         reverse: false,
         selected: if to_clipboard { 0 } else { 1 },
+        selected_all: false,
     })
 }
 
@@ -2523,8 +2620,13 @@ pub fn route_dialog_key(dialog: &mut Dialog, key: &KeyEvent, i18n: &I18n) -> Dia
                     d.pop_message();
                     DialogKey::Redraw
                 }
+                KeyCode::Char('a') if editing && ctrl => {
+                    d.selected_all = !d.message_text().is_empty();
+                    DialogKey::Redraw
+                }
                 KeyCode::Char('u') if editing && ctrl => {
                     d.options.message = None;
+                    d.selected_all = false;
                     DialogKey::Redraw
                 }
                 KeyCode::Char(c) if editing && plain && !c.is_control() => {
@@ -2548,6 +2650,7 @@ pub fn route_dialog_key(dialog: &mut Dialog, key: &KeyEvent, i18n: &I18n) -> Dia
                     match MergeDialogRow::ALL.iter().position(|r| r.mnemonic() == c) {
                         Some(idx) => {
                             d.selected = idx;
+                            d.selected_all = false;
                             let row = d.row();
                             if row != MergeDialogRow::Message {
                                 d.toggle(row, true);
@@ -2586,8 +2689,13 @@ pub fn route_dialog_key(dialog: &mut Dialog, key: &KeyEvent, i18n: &I18n) -> Dia
                     d.pop_branch();
                     DialogKey::Redraw
                 }
+                KeyCode::Char('a') if editing && ctrl => {
+                    d.selected_all = !d.branch_text().is_empty();
+                    DialogKey::Redraw
+                }
                 KeyCode::Char('u') if editing && ctrl => {
                     d.options.branch = None;
+                    d.selected_all = false;
                     DialogKey::Redraw
                 }
                 KeyCode::Char(c) if editing && plain && !c.is_control() => {
@@ -2603,6 +2711,7 @@ pub fn route_dialog_key(dialog: &mut Dialog, key: &KeyEvent, i18n: &I18n) -> Dia
                     match PullDialogRow::ALL.iter().position(|r| r.mnemonic() == c) {
                         Some(idx) => {
                             d.selected = idx;
+                            d.selected_all = false;
                             let row = d.row();
                             if row != PullDialogRow::Branch {
                                 d.toggle(row, true);
@@ -2639,6 +2748,10 @@ pub fn route_dialog_key(dialog: &mut Dialog, key: &KeyEvent, i18n: &I18n) -> Dia
                     d.pop_text();
                     DialogKey::Redraw
                 }
+                KeyCode::Char('a') if editing && ctrl => {
+                    d.selected_all = !d.current_text().is_empty();
+                    DialogKey::Redraw
+                }
                 KeyCode::Char('u') if editing && ctrl => {
                     d.clear_text();
                     DialogKey::Redraw
@@ -2658,6 +2771,7 @@ pub fn route_dialog_key(dialog: &mut Dialog, key: &KeyEvent, i18n: &I18n) -> Dia
                     match RebaseDialogRow::ALL.iter().position(|r| r.mnemonic() == c) {
                         Some(idx) => {
                             d.selected = idx;
+                            d.selected_all = false;
                             let row = d.row();
                             if !row.is_text() {
                                 d.toggle(row, true);
@@ -2684,7 +2798,7 @@ pub fn route_dialog_key(dialog: &mut Dialog, key: &KeyEvent, i18n: &I18n) -> Dia
                 }
                 KeyCode::Tab if editing => {
                     if let Some(next) = crate::patch_view::complete_path(&d.base, &d.path) {
-                        d.path = next;
+                        d.set_path(next);
                     } else {
                         d.move_selection(1);
                     }
@@ -2695,15 +2809,19 @@ pub fn route_dialog_key(dialog: &mut Dialog, key: &KeyEvent, i18n: &I18n) -> Dia
                     DialogKey::Redraw
                 }
                 KeyCode::Backspace if editing => {
-                    d.path.pop();
+                    d.pop_path();
+                    DialogKey::Redraw
+                }
+                KeyCode::Char('a') if editing && ctrl => {
+                    d.select_all_path();
                     DialogKey::Redraw
                 }
                 KeyCode::Char('u') if editing && ctrl => {
-                    d.path.clear();
+                    d.clear_path();
                     DialogKey::Redraw
                 }
                 KeyCode::Char(c) if editing && plain && !c.is_control() => {
-                    d.path.push(c);
+                    d.push_path_char(c);
                     DialogKey::Redraw
                 }
                 KeyCode::Left | KeyCode::Right | KeyCode::Char(' ') if !editing => {

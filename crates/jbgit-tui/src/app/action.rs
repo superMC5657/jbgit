@@ -675,6 +675,7 @@ pub enum Action {
     PushStartEditTarget,
     PushEditTargetChar(char),
     PushEditTargetBackspace,
+    PushEditTargetSelectAll,
     PushEditTargetClear,
     PushEditTargetMoveCompletion(isize),
     PushEditTargetAcceptCompletion(Option<usize>),

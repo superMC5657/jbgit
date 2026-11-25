@@ -28,6 +28,7 @@ pub struct PushDialogState {
     pub remote_branch: String,
     pub editing_target: bool,
     pub target_draft: String,
+    pub target_selected_all: bool,
     pub completion_selected: usize,
     pub picking_remote: bool,
     pub up_to: Option<Oid>,
@@ -68,6 +69,7 @@ impl PushDialogState {
             remote_branch,
             editing_target: false,
             target_draft: String::new(),
+            target_selected_all: false,
             completion_selected: 0,
             picking_remote: false,
             up_to,
@@ -93,6 +95,67 @@ impl PushDialogState {
 
     pub fn is_detached(&self) -> bool {
         self.branch == "HEAD"
+    }
+
+    pub fn start_edit_target(&mut self) {
+        self.editing_target = true;
+        self.picking_remote = false;
+        self.target_draft = self.remote_branch.clone();
+        self.target_selected_all = false;
+        self.completion_selected = 0;
+        self.focus = PushDialogFocus::Target;
+    }
+
+    pub fn push_target_text(&mut self, text: &str) {
+        crate::dialogs::push_selectable_text(
+            &mut self.target_draft,
+            &mut self.target_selected_all,
+            text,
+        );
+        self.completion_selected = 0;
+    }
+
+    pub fn push_target_char(&mut self, ch: char) {
+        if self.target_selected_all {
+            self.target_draft.clear();
+            self.target_selected_all = false;
+        }
+        self.target_draft.push(ch);
+        self.completion_selected = 0;
+    }
+
+    pub fn pop_target_char(&mut self) {
+        crate::dialogs::pop_selectable_char(&mut self.target_draft, &mut self.target_selected_all);
+        self.completion_selected = 0;
+    }
+
+    pub fn select_all_target(&mut self) {
+        self.target_selected_all = !self.target_draft.is_empty();
+    }
+
+    pub fn clear_target_draft(&mut self) {
+        self.target_draft.clear();
+        self.target_selected_all = false;
+        self.completion_selected = 0;
+    }
+
+    pub fn set_target_draft(&mut self, text: String) {
+        self.target_draft = text;
+        self.target_selected_all = false;
+        self.completion_selected = 0;
+    }
+
+    pub fn cancel_edit_target(&mut self) {
+        self.editing_target = false;
+        self.target_draft.clear();
+        self.target_selected_all = false;
+        self.completion_selected = 0;
+    }
+
+    pub fn finish_edit_target(&mut self) {
+        self.editing_target = false;
+        self.target_selected_all = false;
+        self.completion_selected = 0;
     }
 
     pub fn remote(&self) -> &str {

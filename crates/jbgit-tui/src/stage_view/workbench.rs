@@ -637,6 +637,20 @@ impl CommitWorkbench {
         }
     }
 
+    /// Returns the index of the first visible file row (`File` or `AmendFile`),
+    /// falling back to `0` when no file rows exist.
+    pub fn first_file_row_idx(&self) -> usize {
+        self.rows
+            .iter()
+            .position(|r| {
+                matches!(
+                    r.kind,
+                    StageTreeRowKind::File { .. } | StageTreeRowKind::AmendFile { .. }
+                )
+            })
+            .unwrap_or(0)
+    }
+
     /// Replaces the stage status snapshot, re-syncing `rows` and smoothly
     /// anchoring `selected_idx` automatically. Returns `true` when content changed.
     pub fn apply_status(&mut self, status: Arc<StageStatusSnapshot>) -> bool {
@@ -656,7 +670,7 @@ impl CommitWorkbench {
         if !old_rows.is_empty() {
             self.selected_idx = self.smooth_anchor_after_rows_update(&old_rows, old_sel);
         } else {
-            self.selected_idx = 0;
+            self.selected_idx = self.first_file_row_idx();
         }
         changed
     }
@@ -673,7 +687,7 @@ impl CommitWorkbench {
     pub fn toggle_group_by_dir(&mut self) {
         self.tree_opts.group_by_dir = !self.tree_opts.group_by_dir;
         self.rebuild_rows_internal();
-        self.selected_idx = 0;
+        self.selected_idx = self.first_file_row_idx();
     }
 
     pub fn toggle_show_ignored(&mut self) {

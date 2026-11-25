@@ -1,6 +1,6 @@
 # 03: 弹窗窄屏布局、标题栏溢出、叠层边框对齐与菜单宽度修正
 
-Status: ready-for-agent
+Status: resolved
 Spec: [../spec.md](../spec.md)
 Milestone: M12 — 工作流正确性与 UI 交互加固
 Priority: P2
@@ -48,19 +48,19 @@ Priority: P2
 
 ## 2. 任务清单
 
-- [ ] **修复两分支对比标题栏宽度预算与计数保留**：
+- [x] **修复两分支对比标题栏宽度预算与计数保留**：
   - 修正 `crates/jbgit-tui/src/views/log.rs:274-295` 宽度公式：`label_w = (area.width as usize).saturating_sub(btns_w + 2)`，确保 `✕` 按钮始终完整可见（并在极窄屏下给按钮留足空间）；
   - 将 `(← N · → M)` 计数后缀与分支范围文本拆开截断：优先保留完整的 `(← N · → M)`，仅对过长的 `A...B` 分支名做省略。
-- [ ] **优化 Merge Conflict 弹窗窄屏占比、清屏与底部按钮自适应**：
+- [x] **优化 Merge Conflict 弹窗窄屏占比、清屏与底部按钮自适应**：
   - 在 `crates/jbgit-tui/src/views/conflict_merge.rs:140-149`：当 `screen.width <= 84` 或 `screen.height <= 24` 时采用紧凑边距（如 `width = screen.width` 全宽或 `margin = 0`，避免在窄屏留 2 列漏字边缝；纵向起始行在 `screen.height >= 16` 时尽量避开 row 0/1 顶栏与标签栏）；
   - 底部操作区（`:755-776`）在单行放不下全部按钮时，优先保证核心主按钮（`保存`、`关闭`、`我方`/`对方`）始终可见——可按宽度自动换行到 2 行按钮栏，或采用紧凑标签 + 保留尾部 `保存` / `关闭` 的双端布局，不再粗暴 `break` 丢弃 `保存`/`关闭`。
-- [ ] **消除 `Alt+T` Tree Browser 右侧 1 列漏字**：
+- [x] **消除 `Alt+T` Tree Browser 右侧 1 列漏字**：
   - 调整 `crates/jbgit-tui/src/tree_browser.rs:746-753`：铺满 `screen.width` 或与 `FileHistory`/`Annotate` 统一为 `92%` 居中弹窗，不留 1 列残影缝隙。
-- [ ] **对齐 Annotate 与 File History 弹窗高度，消除双层底边框**：
+- [x] **对齐 Annotate 与 File History 弹窗高度，消除双层底边框**：
   - 将 `crates/jbgit-tui/src/views/file_history.rs:45-50` 的高度比例统一为 `90%`（与 `views/annotate.rs:39-44` 一致），或在其叠在 `Annotate` 上方时显式内缩至少 2 行，消除仅差 1 行的紧贴双底边框。
-- [ ] **优化 File History 在 `80x24` 窄屏下的工具栏自适应**：
+- [x] **优化 File History 在 `80x24` 窄屏下的工具栏自适应**：
   - 在 `crates/jbgit-tui/src/views/file_history.rs:119-229`：当 `toolbar_rect.width < 90` 时为工具栏按钮提供紧凑/缩写标签（或在 80 列下折叠低频按钮至右键菜单并优先保留高频切换与 `全屏`），避免右侧按钮被裁切。
-- [ ] **修正上下文菜单外框宽度公式**：
+- [x] **修正上下文菜单外框宽度公式**：
   - 将 `crates/jbgit-tui/src/views/overlays/context_menu.rs:57` 中的 `+ 4` 修正为 `+ 5`（与 `:209` 的边框 `2` + 内边距 `3` 精确对齐），使 `✓ 高亮：我的提交 (My Commits)` 在 `140x40` 下完整显示无省略号。
 
 ---
@@ -76,3 +76,12 @@ Priority: P2
   - **上下文菜单宽度**：在 `140x40` 渲染 `presentation_menu_items`，断言 `高亮：我的提交 (My Commits)` 完整渲染无 `…`。
 
 ## Comments
+
+- **2026-11-25**: 已修复并验证：
+  - 两分支对比栏：修正 `label_w = area.width.saturating_sub(btns_w + 2)`，空间受限时先省去冗余前缀再按需截断分支名以保留完整 `(← N · → M)` 与 `✕`。
+  - Merge Conflict 弹窗：窄屏（`width <= 84 || height <= 24`）采用全宽且起始于第 2 行（避开顶栏/标签栏），底部按钮动态换行至最多 2 行并固定保留 `保存` / `关闭`。
+  - Tree Browser：宽屏统一为 `92% × 90%` 对称居中弹窗，窄屏全宽铺满，消除 1 列残影缝隙。
+  - File History：高度对齐至 `90%` 消除叠在 Annotate 上时的双层底边框；`toolbar_rect.width < 90` 切换为中英对等紧凑标签，80 列下全部 12 枚工具栏按钮完整显示。
+  - 上下文菜单：外框宽度公式修正为 `+ 5`。
+  - **测试**：6 项 `TestBackend` 回归测试及全量工作区测试均通过。
+  - **Pilot 实机复验（`full` + `conflict` 沙盒）**：`main...feature/pull-me` 开启 `树差异 ✓` 后完整显示 `(← 1 · → 1)` 与 `✕` 且点击 `✕` 正常关闭；`conflict` 场景 `80x24` / `50x16` 下无边缝漏字且全部 11 个按钮分布于 2 行；`Alt+T` 边框对称（cols `6..=133`）；Annotate 叠开 `H` 仅保留第 37 行单底边框；File History `80x24` 单行完整展示 `HEAD ⇵追踪 ⇄本地 ▤单列 ⤢全屏 ↕3 空白 折行 详情 文件 追溯 定位`；`⚙` 菜单完整显示 `✓ 高亮：我的提交 (My Commits)`。

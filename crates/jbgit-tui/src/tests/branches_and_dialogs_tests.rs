@@ -403,6 +403,44 @@ fn smart_operation_dialog_offers_stash_and_force_checkout() {
     };
     let labels: Vec<&str> = c.options.iter().map(|o| o.label.as_str()).collect();
     assert_eq!(labels, vec!["Smart Merge", "Cancel"]);
+    assert!(
+        !c.body.iter().any(|l| l.is_empty()),
+        "empty files fallback should not emit an orphan blank line: {:?}",
+        c.body
+    );
+}
+
+#[test]
+fn smart_merge_success_with_stash_kept_offers_unstash_not_resolve_conflicts() {
+    let mut ts = TestSession::with_snapshot(snapshot());
+    let mut outcome = GitOpOutcome::ok(GitOp::Smart(Box::new(GitOp::Merge {
+        rev: "feature/dag-layout".into(),
+        options: Default::default(),
+    })));
+    outcome.stash_kept = true;
+    ts.deliver_engine_event(EngineEvent::GitOpFinished(outcome));
+    let note = ts
+        .state()
+        .notification
+        .clone()
+        .expect("expected stash_kept notification");
+    assert!(note.text.contains("stash@{0}"), "{}", note.text);
+    let (_, actions) = note.action.expect("expected Unstash action");
+    assert!(
+        !actions.iter().any(|a| matches!(a, Action::OngoingResolve)),
+        "must not offer OngoingResolve when stash restore failed without conflicts: {actions:?}"
+    );
+    assert!(
+        actions.iter().any(|a| matches!(
+            a,
+            Action::RunGitOp(GitOp::StashApply {
+                index: 0,
+                pop: true,
+                ..
+            })
+        )),
+        "expected StashApply action: {actions:?}"
+    );
 }
 
 #[test]

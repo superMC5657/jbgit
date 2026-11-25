@@ -54,7 +54,7 @@ pub fn context_menu_rect(
                 ContextMenuEntryKind::Action(_) => i.shortcut.as_ref().map_or(0, |s| s.width() + 3),
                 ContextMenuEntryKind::Separator => 0,
             };
-            i.label.width() + suffix_w + 4 + icon_w
+            i.label.width() + suffix_w + 5 + icon_w
         })
         .max()
         .unwrap_or(20);

@@ -92,6 +92,54 @@ mod tests {
                 files: vec!["src/a.rs".into(), "src/b.rs".into()]
             }
         );
+        // Modern Git `ort` merge uses 2-space indentation and ends with `Merge with strategy ort failed.`
+        let ort_single: Vec<String> = [
+            "error: Your local changes to the following files would be overwritten by merge:",
+            "  staged_partial.txt",
+            "Merge with strategy ort failed.",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        assert_eq!(
+            classify_failure(&ort_single),
+            GitFailure::LocalChangesOverwritten {
+                files: vec!["staged_partial.txt".into()]
+            }
+        );
+        let ort_multi: Vec<String> = [
+            "error: Your local changes to the following files would be overwritten by merge:",
+            "  staged_partial.txt",
+            "  src/main.rs",
+            "  Please commit your changes or stash them before you merge.",
+            "  Aborting",
+            "Merge with strategy ort failed.",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        assert_eq!(
+            classify_failure(&ort_multi),
+            GitFailure::LocalChangesOverwritten {
+                files: vec!["staged_partial.txt".into(), "src/main.rs".into()]
+            }
+        );
+        let untracked_four_spaces: Vec<String> = [
+            "error: The following untracked working tree files would be overwritten by merge:",
+            "    untracked_a.txt",
+            "  untracked_b.txt",
+            "Please move or remove them before you merge.",
+            "Aborting",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        assert_eq!(
+            classify_failure(&untracked_four_spaces),
+            GitFailure::UntrackedOverwritten {
+                files: vec!["untracked_a.txt".into(), "untracked_b.txt".into()]
+            }
+        );
         assert_eq!(
             classify_failure(&["CONFLICT (content): Merge conflict in a.txt".to_string()]),
             GitFailure::Conflicts

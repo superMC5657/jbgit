@@ -1,6 +1,6 @@
 # 02: `[1] 提交` 初始文件选中对齐与弹窗文本输入框 `Ctrl+a` 全选统一
 
-Status: ready-for-agent
+Status: resolved
 Spec: [../spec.md](../spec.md)
 Milestone: M12 — 工作流正确性与 UI 交互加固
 Priority: P2
@@ -38,16 +38,16 @@ Priority: P2
 
 ## 2. 任务清单
 
-- [ ] **优化 `[1] 提交` 首次加载时的初始选中行**：
+- [x] **优化 `[1] 提交` 首次加载时的初始选中行**：
   - 在 `crates/jbgit-tui/src/stage_view/workbench.rs` 新增辅助方法 `first_file_row_idx(&self) -> usize`（返回 `self.rows` 中首个 `StageTreeRowKind::File | StageTreeRowKind::AmendFile` 的索引，若无则回退 `0`）；
   - 在 `apply_status`（`:659`，`old_rows.is_empty()` 分支）与 `toggle_group_by_dir`（`:676`）中改用 `self.first_file_row_idx()`（检查 `#[cfg(test)] pub fn set_status` 及现有测试的兼容预期）；
   - 确认进入 `[1] 提交` 后，左侧变更树高亮落在首条文件上，与右侧 Diff 预览一致，直接按 `.` 即可使用 `查看差异`、`三方差异对比 (HEAD ↔ 已暂存 ↔ 工作区)`、`显示文件历史…`。
-- [ ] **为 `PushDialog` 目标分支编辑补齐 `Ctrl+a` 全选**：
+- [x] **为 `PushDialog` 目标分支编辑补齐 `Ctrl+a` 全选**：
   - 在 `crates/jbgit-tui/src/log_view/push_dialog.rs` 的 `PushDialogState` 增加 `pub target_selected_all: bool`（进入/取消/确认编辑时复位为 `false`）；
   - 新增 `Action::PushEditTargetSelectAll` 并在 `input/keyboard.rs:1279-1291` 绑定 `KeyCode::Char('a') if ctrl`；
   - 在 `PushEditTargetBackspace`、`PushEditTargetChar`、`PushEditTargetClear`、`AcceptCompletion` 与 `ModalPaste` 中统一实现全选清空/覆盖语义；
   - 在 `crates/jbgit-tui/src/views/push_dialog.rs` 中，当 `editing_target && target_selected_all` 且 `target_draft` 非空时使用 `bg_selection_focused` / `fg_bright` 高亮视觉反馈。
-- [ ] **补齐 `Dialog::{Merge, Pull, Rebase, CreatePatch}` 内嵌文本行的 `Ctrl+a` 全选**：
+- [x] **补齐 `Dialog::{Merge, Pull, Rebase, CreatePatch}` 内嵌文本行的 `Ctrl+a` 全选**：
   - 为上述 4 个弹窗的文本编辑态补齐 `selected_all: bool`（切换行/失焦时自动复位，`Ctrl+a` 置真，`Backspace` 清空，输入新字符或粘贴先清空再写入），保持全应用单行弹窗输入行为一致。
 
 ---
@@ -63,3 +63,9 @@ Priority: P2
   - 按 `P` → `e` → `Ctrl+a` → `Backspace` 确认目标分支输入框整行清空。
 
 ## Comments
+
+- **2026-11-25**: 已修复并验证：
+  - `stage_view`: 新增 `first_file_row_idx()`，在 `apply_status` 首次载入及 `toggle_group_by_dir` 中默认选中首个文件行。
+  - `push_dialog` / `dialogs`: 为 `PushDialogState`（目标分支编辑）及 `MergeDialog`、`PullDialog`、`RebaseDialog`、`CreatePatchDialog` 内嵌文本行统一补齐 `Ctrl+a` 全选、退格清空、输入/粘贴覆盖及全选高亮渲染。
+  - **测试**：`stage_view_initial_apply_status_selects_first_file_row_for_context_menu`、`push_dialog_target_edit_supports_ctrl_a_select_all_and_replace`、`inline_option_dialogs_support_ctrl_a_select_all` 及全量工作区测试均通过。
+  - **Pilot 实机复验（`full` 沙盒）**：按 `1` 进入 `[1] 提交` 后 `inspect-row` 确认高亮落在第 5 行 `staged_partial.txt`（`bg=#2E436E`），直接按 `.` 显示可用菜单项并按 `3` 成功打开 `三方变更检视 (工作区 / 暂存区 / HEAD)`；按 `P` → `e` → `Ctrl+a` → `Backspace` 将 `: main▏` 整行清空为 `: ▏`。

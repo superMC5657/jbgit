@@ -115,6 +115,17 @@ pub fn classify_failure(lines: &[String]) -> GitFailure {
             detail: crate::first_apply_error(lines),
         };
     }
+    let is_non_path_line = |trimmed: &str| -> bool {
+        trimmed.is_empty()
+            || trimmed.starts_with("Please commit your changes")
+            || trimmed.starts_with("Please move or remove")
+            || trimmed.starts_with("Aborting")
+            || trimmed.starts_with("Merge with strategy")
+            || trimmed.starts_with("Updating ")
+            || trimmed.starts_with("error:")
+            || trimmed.starts_with("fatal:")
+            || trimmed.starts_with("hint:")
+    };
     let collect_files = |marker: &str| -> Vec<String> {
         let mut files = Vec::new();
         let mut in_list = false;
@@ -124,10 +135,12 @@ pub fn classify_failure(lines: &[String]) -> GitFailure {
                 continue;
             }
             if in_list {
-                if line.starts_with('\t') || line.starts_with("    ") {
-                    files.push(line.trim().to_string());
-                } else if !files.is_empty() || !line.trim().is_empty() {
-                    in_list = !files.is_empty() && line.trim().is_empty();
+                let trimmed = line.trim();
+                if (line.starts_with('\t') || line.starts_with("  ")) && !is_non_path_line(trimmed)
+                {
+                    files.push(trimmed.to_string());
+                } else if !files.is_empty() || !trimmed.is_empty() {
+                    in_list = !files.is_empty() && trimmed.is_empty();
                     if !in_list {
                         break;
                     }

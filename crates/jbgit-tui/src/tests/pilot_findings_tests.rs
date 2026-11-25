@@ -1212,3 +1212,600 @@ fn clone_dialog_supports_ctrl_a_select_all_and_multiline_error_rendering() {
         "multi-line clone error must display context line once without duplicating progress:\n{screen}"
     );
 }
+
+#[test]
+fn stage_view_initial_apply_status_selects_first_file_row_for_context_menu() {
+    use jbgit_core::{FileStatusKind, StageEntry, StageStatusSnapshot, StageTreeRowKind};
+
+    let mut ts = TestSession::with_snapshot(snapshot());
+    let status = Arc::new(StageStatusSnapshot {
+        staged: vec![StageEntry {
+            path: "staged_partial.txt".into(),
+            old_path: None,
+            kind: FileStatusKind::Modified,
+        }],
+        unstaged: vec![StageEntry {
+            path: "staged_partial.txt".into(),
+            old_path: None,
+            kind: FileStatusKind::Modified,
+        }],
+        ..StageStatusSnapshot::default()
+    });
+    ts.deliver_engine_event(EngineEvent::StageStatusLoaded { status, epoch: 1 });
+
+    let sel = ts.state().stage_workbench.selected_idx();
+    assert_ne!(sel, 0, "initial selection should skip group header row 0");
+    let row = ts
+        .state()
+        .stage_workbench
+        .rows()
+        .get(sel)
+        .expect("selected row exists");
+    assert!(
+        matches!(
+            &row.kind,
+            StageTreeRowKind::File { path, .. } if path == "staged_partial.txt"
+        ),
+        "expected selected row to be staged_partial.txt, got {:?}",
+        row.kind
+    );
+
+    let items = crate::menus::stage_tree_menu_items(ts.state(), sel);
+    for label in ["Show Diff", "Three-Side Diff", "Show File History"] {
+        let item = items
+            .iter()
+            .find(|i| i.label.contains(label))
+            .unwrap_or_else(|| panic!("menu item containing {label:?} missing: {items:?}"));
+        assert!(
+            item.is_enabled(),
+            "menu item {:?} should be enabled on initial file selection",
+            item.label
+        );
+    }
+}
+
+#[test]
+fn push_dialog_target_edit_supports_ctrl_a_select_all_and_replace() {
+    let mut ts = TestSession::with_snapshot(snapshot());
+    let pd = crate::log_view::PushDialogState::new(
+        "main".into(),
+        vec!["origin".into()],
+        0,
+        "main".into(),
+        false,
+        None,
+        jbgit_core::DiffContext::default(),
+    );
+    ts.state_mut()
+        .modal_stack
+        .push(ModalLayer::PushDialog(Box::new(pd)));
+
+    // Press `e` to edit target (`main`), then Ctrl+a + Backspace -> empty.
+    ts.send_key(KeyCode::Char('e'), KeyModifiers::NONE);
+    assert!(ts.state().modal_stack.push_dialog().unwrap().editing_target);
+    assert_eq!(
+        ts.state().modal_stack.push_dialog().unwrap().target_draft,
+        "main"
+    );
+    ts.send_key(KeyCode::Char('a'), KeyModifiers::CONTROL);
+    assert!(
+        ts.state()
+            .modal_stack
+            .push_dialog()
+            .unwrap()
+            .target_selected_all
+    );
+    ts.send_key(KeyCode::Backspace, KeyModifiers::NONE);
+    let pd = ts.state().modal_stack.push_dialog().unwrap();
+    assert_eq!(pd.target_draft, "");
+    assert!(!pd.target_selected_all);
+
+    // Cancel and re-enter edit, Ctrl+a + type "release" -> replaces entire draft.
+    ts.send_key(KeyCode::Esc, KeyModifiers::NONE);
+    ts.send_key(KeyCode::Char('e'), KeyModifiers::NONE);
+    ts.send_key(KeyCode::Char('a'), KeyModifiers::CONTROL);
+    for ch in "release".chars() {
+        ts.send_key(KeyCode::Char(ch), KeyModifiers::NONE);
+    }
+    let pd = ts.state().modal_stack.push_dialog().unwrap();
+    assert_eq!(pd.target_draft, "release");
+    assert!(!pd.target_selected_all);
+
+    // Ctrl+a followed by Esc must cancel edit AND reset `target_selected_all` immediately.
+    ts.send_key(KeyCode::Char('a'), KeyModifiers::CONTROL);
+    assert!(
+        ts.state()
+            .modal_stack
+            .push_dialog()
+            .unwrap()
+            .target_selected_all
+    );
+    ts.send_key(KeyCode::Esc, KeyModifiers::NONE);
+    let pd = ts.state().modal_stack.push_dialog().unwrap();
+    assert!(!pd.editing_target);
+    assert!(
+        !pd.target_selected_all,
+        "Esc cancel in PushDialog must reset target_selected_all"
+    );
+}
+
+#[test]
+fn inline_option_dialogs_support_ctrl_a_select_all() {
+    use crate::dialogs::{
+        CreatePatchDialog, CreatePatchRow, Dialog, MergeDialog, MergeDialogRow, PullDialog,
+        PullDialogRow, RebaseDialog, RebaseDialogRow,
+    };
+
+    let snap = snapshot();
+    let mut ts = TestSession::with_snapshot(snap.clone());
+
+    // 1. MergeDialog (Message row)
+    let mut md = MergeDialog::new("feature", "main", Some(2), Default::default());
+    md.selected = MergeDialogRow::ALL
+        .iter()
+        .position(|r| *r == MergeDialogRow::Message)
+        .unwrap();
+    md.push_message("old merge msg");
+    ts.state_mut()
+        .modal_stack
+        .push(ModalLayer::Dialog(Box::new(Dialog::Merge(md))));
+    ts.send_key(KeyCode::Char('a'), KeyModifiers::CONTROL);
+    ts.send_key(KeyCode::Backspace, KeyModifiers::NONE);
+    match ts.state().modal_stack.last() {
+        Some(ModalLayer::Dialog(d)) => match d.as_ref() {
+            Dialog::Merge(m) => assert_eq!(m.message_text(), ""),
+            other => panic!("expected MergeDialog, got {other:?}"),
+        },
+        other => panic!("expected Dialog, got {other:?}"),
+    }
+    for ch in "hello".chars() {
+        ts.send_key(KeyCode::Char(ch), KeyModifiers::NONE);
+    }
+    ts.send_key(KeyCode::Char('a'), KeyModifiers::CONTROL);
+    ts.send_key(KeyCode::Char('x'), KeyModifiers::NONE);
+    match ts.state().modal_stack.last() {
+        Some(ModalLayer::Dialog(d)) => match d.as_ref() {
+            Dialog::Merge(m) => assert_eq!(m.message_text(), "x"),
+            other => panic!("expected MergeDialog, got {other:?}"),
+        },
+        other => panic!("expected Dialog, got {other:?}"),
+    }
+    ts.send_key(KeyCode::Esc, KeyModifiers::NONE);
+
+    // 2. PullDialog (Branch row)
+    let mut pd = PullDialog::from_snapshot(&snap, Default::default());
+    pd.selected = PullDialogRow::ALL
+        .iter()
+        .position(|r| *r == PullDialogRow::Branch)
+        .unwrap();
+    pd.options.branch = Some("feature/old".into());
+    ts.state_mut()
+        .modal_stack
+        .push(ModalLayer::Dialog(Box::new(Dialog::Pull(pd))));
+    ts.send_key(KeyCode::Char('a'), KeyModifiers::CONTROL);
+    ts.send_key(KeyCode::Backspace, KeyModifiers::NONE);
+    match ts.state().modal_stack.last() {
+        Some(ModalLayer::Dialog(d)) => match d.as_ref() {
+            Dialog::Pull(p) => assert_eq!(p.branch_text(), ""),
+            other => panic!("expected PullDialog, got {other:?}"),
+        },
+        other => panic!("expected Dialog, got {other:?}"),
+    }
+    for ch in "main".chars() {
+        ts.send_key(KeyCode::Char(ch), KeyModifiers::NONE);
+    }
+    ts.send_key(KeyCode::Char('a'), KeyModifiers::CONTROL);
+    for ch in "dev".chars() {
+        ts.send_key(KeyCode::Char(ch), KeyModifiers::NONE);
+    }
+    match ts.state().modal_stack.last() {
+        Some(ModalLayer::Dialog(d)) => match d.as_ref() {
+            Dialog::Pull(p) => assert_eq!(p.branch_text(), "dev"),
+            other => panic!("expected PullDialog, got {other:?}"),
+        },
+        other => panic!("expected Dialog, got {other:?}"),
+    }
+    ts.send_key(KeyCode::Esc, KeyModifiers::NONE);
+
+    // 3. RebaseDialog (Onto row)
+    let mut rd =
+        RebaseDialog::from_snapshot(&snap, Some("origin/main".into()), None, Default::default());
+    rd.selected = RebaseDialogRow::ALL
+        .iter()
+        .position(|r| *r == RebaseDialogRow::Onto)
+        .unwrap();
+    ts.state_mut()
+        .modal_stack
+        .push(ModalLayer::Dialog(Box::new(Dialog::Rebase(rd))));
+    ts.send_key(KeyCode::Char('a'), KeyModifiers::CONTROL);
+    ts.send_key(KeyCode::Backspace, KeyModifiers::NONE);
+    match ts.state().modal_stack.last() {
+        Some(ModalLayer::Dialog(d)) => match d.as_ref() {
+            Dialog::Rebase(r) => assert_eq!(r.options.onto, ""),
+            other => panic!("expected RebaseDialog, got {other:?}"),
+        },
+        other => panic!("expected Dialog, got {other:?}"),
+    }
+    for ch in "v1".chars() {
+        ts.send_key(KeyCode::Char(ch), KeyModifiers::NONE);
+    }
+    ts.send_key(KeyCode::Char('a'), KeyModifiers::CONTROL);
+    for ch in "v2".chars() {
+        ts.send_key(KeyCode::Char(ch), KeyModifiers::NONE);
+    }
+    match ts.state().modal_stack.last() {
+        Some(ModalLayer::Dialog(d)) => match d.as_ref() {
+            Dialog::Rebase(r) => assert_eq!(r.options.onto, "v2"),
+            other => panic!("expected RebaseDialog, got {other:?}"),
+        },
+        other => panic!("expected Dialog, got {other:?}"),
+    }
+    ts.send_key(KeyCode::Esc, KeyModifiers::NONE);
+
+    // 4. CreatePatchDialog (Path row)
+    let cp = CreatePatchDialog {
+        source: jbgit_core::PatchSource::StagePaths {
+            staged: vec!["a.rs".into()],
+            unstaged: Vec::new(),
+            untracked: Vec::new(),
+        },
+        to_clipboard: false,
+        path: "/tmp/old.patch".into(),
+        base: PathBuf::from("/tmp"),
+        reverse: false,
+        selected: CreatePatchRow::ALL
+            .iter()
+            .position(|r| *r == CreatePatchRow::Path)
+            .unwrap(),
+        selected_all: false,
+    };
+    ts.state_mut()
+        .modal_stack
+        .push(ModalLayer::Dialog(Box::new(Dialog::CreatePatch(cp))));
+    ts.send_key(KeyCode::Char('a'), KeyModifiers::CONTROL);
+    ts.send_key(KeyCode::Backspace, KeyModifiers::NONE);
+    match ts.state().modal_stack.last() {
+        Some(ModalLayer::Dialog(d)) => match d.as_ref() {
+            Dialog::CreatePatch(c) => assert_eq!(c.path, ""),
+            other => panic!("expected CreatePatchDialog, got {other:?}"),
+        },
+        other => panic!("expected Dialog, got {other:?}"),
+    }
+    for ch in "a.patch".chars() {
+        ts.send_key(KeyCode::Char(ch), KeyModifiers::NONE);
+    }
+    ts.send_key(KeyCode::Char('a'), KeyModifiers::CONTROL);
+    for ch in "b.patch".chars() {
+        ts.send_key(KeyCode::Char(ch), KeyModifiers::NONE);
+    }
+    match ts.state().modal_stack.last() {
+        Some(ModalLayer::Dialog(d)) => match d.as_ref() {
+            Dialog::CreatePatch(c) => assert_eq!(c.path, "b.patch"),
+            other => panic!("expected CreatePatchDialog, got {other:?}"),
+        },
+        other => panic!("expected Dialog, got {other:?}"),
+    }
+}
+
+#[test]
+fn branch_compare_bar_preserves_counts_and_close_button_with_tree_diff() {
+    let mut ts = zh_session_with_snapshot(snapshot());
+    ts.state_mut().log.branch_compare = Some(crate::log_view::BranchCompareState {
+        left: "main".into(),
+        right: "feature/pull-me".into(),
+        left_oid: oid(1),
+        right_oid: oid(2),
+        direction: jbgit_core::BranchCompareDirection::Symmetric,
+        only_left: 1,
+        only_right: 1,
+        tree_diff: true,
+    });
+    let buf = ts.render(140, 40);
+    let screen = rendered_screen(&buf);
+    assert!(
+        screen.contains("(← 1 · → 1)"),
+        "compare bar must preserve complete commit counts:\n{screen}"
+    );
+    assert!(
+        screen.contains("✕"),
+        "compare bar must preserve close button:\n{screen}"
+    );
+    let close_rect = ts
+        .state()
+        .hit_registry
+        .find(|t| *t == HitTarget::BranchCompareClose)
+        .map(|r| r.rect);
+    assert!(
+        close_rect.is_some(),
+        "BranchCompareClose hit target must be registered"
+    );
+}
+
+fn sample_conflict_merge_state() -> ConflictMergeState {
+    let doc = ConflictDocument::from_three_way(
+        "conflict_app.txt",
+        "line1\n<<<<<<< HEAD\nline2_ours\n=======\nline2_theirs\n>>>>>>> feature/theirs\nline3\nline4_theirs\n",
+        Some("line1\nline2\nline3\nline4\n"),
+        Some("line1\nline2_ours\nline3\nline4\n"),
+        Some("line1\nline2_theirs\nline3\nline4_theirs\n"),
+        Default::default(),
+    );
+    ConflictMergeState {
+        path: "conflict_app.txt".into(),
+        doc: Some(doc),
+        ..Default::default()
+    }
+}
+
+#[test]
+fn conflict_merge_modal_narrow_viewports_keep_save_close_and_no_edge_bleed() {
+    use crate::hit_test::ConflictMergeButtonKind;
+
+    for (cols, rows) in [(80u16, 24u16), (50u16, 16u16)] {
+        let mut ts = zh_session_with_snapshot(snapshot());
+        ts.state_mut()
+            .modal_stack
+            .push(ModalLayer::ConflictResolver(Box::new(
+                sample_conflict_merge_state(),
+            )));
+        let buf = ts.render(cols, rows);
+        let screen = rendered_screen(&buf);
+        assert!(
+            screen.contains("保存"),
+            "Save button must be visible at {cols}x{rows}:\n{screen}"
+        );
+        assert!(
+            screen.contains("关闭"),
+            "Close button must be visible at {cols}x{rows}:\n{screen}"
+        );
+        let has_save = ts
+            .state()
+            .hit_registry
+            .find(|t| *t == HitTarget::ConflictMergeButton(ConflictMergeButtonKind::SaveAndStage))
+            .is_some();
+        let has_close = ts
+            .state()
+            .hit_registry
+            .find(|t| *t == HitTarget::ConflictMergeButton(ConflictMergeButtonKind::Cancel))
+            .is_some();
+        assert!(has_save, "SaveAndStage hit target missing at {cols}x{rows}");
+        assert!(has_close, "Cancel hit target missing at {cols}x{rows}");
+        // Modal border spans full width (0..cols-1) so no underlying characters leak outside.
+        assert_eq!(
+            buf[(0, 2)].symbol(),
+            "╭",
+            "top-left modal border should start at col 0 on {cols}x{rows}"
+        );
+        assert_eq!(
+            buf[(cols - 1, 2)].symbol(),
+            "╮",
+            "top-right modal border should reach col {} on {cols}x{rows}",
+            cols - 1
+        );
+    }
+}
+
+#[test]
+fn tree_browser_modal_has_symmetric_margins_without_one_col_sliver() {
+    let mut ts = zh_session_with_snapshot(snapshot());
+    ts.dispatch(Action::OpenTreeBrowser { oid: oid(1) });
+    let buf = ts.render(140, 40);
+    // 92% of 140 = 128 => x = 6..=133, 90% of 40 = 36 => y = 2..=37.
+    assert_eq!(buf[(6, 2)].symbol(), "╭");
+    assert_eq!(buf[(133, 2)].symbol(), "╮");
+    assert_ne!(buf[(1, 1)].symbol(), "╭", "must not leave 1-col sliver gap");
+}
+
+#[test]
+fn annotate_with_stacked_line_history_has_no_double_bottom_border() {
+    let mut ts = zh_session_with_snapshot(snapshot());
+    ts.dispatch(Action::OpenAnnotate {
+        path: "src/main.rs".into(),
+        rev: None,
+    });
+    ts.dispatch(Action::OpenFileHistory {
+        path: "src/main.rs".into(),
+        start_oid: None,
+        follow_renames: false,
+        line_range: Some((1, 5)),
+    });
+    let buf = ts.render(140, 40);
+    let bottom_border_rows: Vec<u16> = (0..40)
+        .filter(|&y| {
+            let line: String = (0..140).map(|x| buf[(x, y)].symbol()).collect();
+            line.contains('╰') && line.contains('╯')
+        })
+        .collect();
+    assert_eq!(
+        bottom_border_rows.len(),
+        1,
+        "stacked Annotate + Line History must not show double bottom borders, found rows: {bottom_border_rows:?}"
+    );
+}
+
+#[test]
+fn file_history_narrow_80x24_toolbar_renders_compact_buttons_without_clipping() {
+    use crate::hit_test::FileHistoryToolbarButton;
+
+    let mut ts = zh_session_with_snapshot(snapshot());
+    ts.dispatch(Action::OpenFileHistory {
+        path: "src/auth.rs".into(),
+        start_oid: None,
+        follow_renames: true,
+        line_range: None,
+    });
+    let buf = ts.render(80, 24);
+    let screen = rendered_screen(&buf);
+    assert!(
+        screen.contains("⤢全屏"),
+        "compact Zoom button should be visible at 80x24:\n{screen}"
+    );
+    for btn in [
+        FileHistoryToolbarButton::BranchScope,
+        FileHistoryToolbarButton::FollowRenames,
+        FileHistoryToolbarButton::CompareLocal,
+        FileHistoryToolbarButton::SideBySide,
+        FileHistoryToolbarButton::Zoom,
+    ] {
+        assert!(
+            ts.state()
+                .hit_registry
+                .find(|t| *t == HitTarget::FileHistoryToolbar(btn))
+                .is_some(),
+            "expected FileHistoryToolbar({btn:?}) to be registered at 80x24"
+        );
+    }
+}
+
+#[test]
+fn context_menu_presentation_my_commits_renders_without_ellipsis() {
+    let mut ts = zh_session_with_snapshot(snapshot());
+    let items = crate::input::presentation_menu_items(ts.state());
+    ts.dispatch(Action::OpenContextMenu {
+        anchor: (100, 4),
+        items,
+        depth: 0,
+    });
+    let buf = ts.render(140, 40);
+    let screen = rendered_screen(&buf);
+    assert!(
+        screen.contains("高亮：我的提交 (My Commits)"),
+        "presentation menu item must render completely without ellipsis:\n{screen}"
+    );
+}
+
+#[test]
+fn conflict_merge_bottom_buttons_change_style_on_hover() {
+    use crate::hit_test::ConflictMergeButtonKind;
+
+    let mut ts = zh_session_with_snapshot(snapshot());
+    ts.state_mut()
+        .modal_stack
+        .push(ModalLayer::ConflictResolver(Box::new(
+            sample_conflict_merge_state(),
+        )));
+    let base_buf = ts.render(140, 40);
+    let hover_bg = ts.state().theme.bg_hover;
+    let bright_fg = ts.state().theme.fg_bright;
+
+    for kind in [
+        ConflictMergeButtonKind::ApplyNonConflicting,
+        ConflictMergeButtonKind::AcceptOurs,
+    ] {
+        let rect = ts
+            .state()
+            .hit_registry
+            .find(|t| *t == HitTarget::ConflictMergeButton(kind))
+            .map(|r| r.rect)
+            .unwrap_or_else(|| panic!("button {kind:?} not registered"));
+        let cx = rect.x + rect.width / 2;
+        let cy = rect.y;
+        let before = (base_buf[(cx, cy)].fg, base_buf[(cx, cy)].bg);
+
+        ts.dispatch(Action::MouseMove { col: cx, row: cy });
+        let after_buf = ts.render(140, 40);
+        let after = (after_buf[(cx, cy)].fg, after_buf[(cx, cy)].bg);
+        assert_ne!(
+            before, after,
+            "ConflictMergeButton({kind:?}) style must change on hover"
+        );
+        assert_eq!(after, (bright_fg, hover_bg));
+    }
+}
+
+#[test]
+fn log_filter_chips_gear_and_header_branch_pill_change_style_on_hover() {
+    let mut ts = zh_session_with_snapshot(snapshot());
+    let base_buf = ts.render(140, 40);
+
+    for target in [
+        HitTarget::FilterChip(FilterField::Branch),
+        HitTarget::FilterPresentation,
+        HitTarget::BranchWidgetPill,
+    ] {
+        let rect = ts
+            .state()
+            .hit_registry
+            .find(|t| *t == target)
+            .map(|r| r.rect)
+            .unwrap_or_else(|| panic!("target {target:?} not registered"));
+        let cx = rect.x + rect.width / 2;
+        let cy = rect.y;
+        let before = (
+            base_buf[(cx, cy)].fg,
+            base_buf[(cx, cy)].bg,
+            base_buf[(cx, cy)].modifier,
+        );
+
+        ts.dispatch(Action::MouseMove { col: cx, row: cy });
+        let after_buf = ts.render(140, 40);
+        let after = (
+            after_buf[(cx, cy)].fg,
+            after_buf[(cx, cy)].bg,
+            after_buf[(cx, cy)].modifier,
+        );
+        assert_ne!(before, after, "{target:?} cell style must change on hover");
+    }
+}
+
+#[test]
+fn log_filter_bar_hover_preserves_active_toggle_and_input_error_styles() {
+    use ratatui::style::Modifier;
+
+    let mut ts = zh_session_with_snapshot(snapshot());
+    ts.state_mut().log.filter.spec.text.regex = true;
+    ts.state_mut().log.filter.spec.text.match_case = true;
+    ts.state_mut().log.filter.spec.text.query = "[invalid".into();
+    ts.state_mut().log.filter.editing_text = true;
+    ts.state_mut().log.graph.filter_error = Some(jbgit_core::FilterError::InvalidRegex(
+        "invalid regex".into(),
+    ));
+
+    let _ = ts.render(140, 40);
+    let active_bg = ts.state().theme.border_focused;
+    let edit_bg = ts.state().theme.bg_selection_focused;
+    let err_fg = ts.state().theme.status_conflicted;
+
+    for target in [HitTarget::FilterRegexToggle, HitTarget::FilterCaseToggle] {
+        let rect = ts
+            .state()
+            .hit_registry
+            .find(|t| *t == target)
+            .map(|r| r.rect)
+            .unwrap_or_else(|| panic!("{target:?} not registered"));
+        let cx = rect.x + rect.width / 2;
+        let cy = rect.y;
+        ts.dispatch(Action::MouseMove { col: cx, row: cy });
+        let buf = ts.render(140, 40);
+        assert_eq!(
+            buf[(cx, cy)].bg,
+            active_bg,
+            "hovering active {target:?} must preserve border_focused background"
+        );
+        assert!(
+            buf[(cx, cy)].modifier.contains(Modifier::UNDERLINED),
+            "hovering active {target:?} should add UNDERLINED feedback"
+        );
+    }
+
+    let input_rect = ts
+        .state()
+        .hit_registry
+        .find(|t| *t == HitTarget::FilterTextInput)
+        .map(|r| r.rect)
+        .expect("FilterTextInput not registered");
+    let cx = input_rect.x + 2;
+    let cy = input_rect.y;
+    ts.dispatch(Action::MouseMove { col: cx, row: cy });
+    let buf = ts.render(140, 40);
+    assert_eq!(
+        buf[(cx, cy)].bg,
+        edit_bg,
+        "hovering FilterTextInput while editing must preserve bg_selection_focused"
+    );
+    assert_eq!(
+        buf[(cx, cy)].fg,
+        err_fg,
+        "hovering FilterTextInput on regex error must preserve status_conflicted fg"
+    );
+}

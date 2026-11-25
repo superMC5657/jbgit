@@ -2626,27 +2626,20 @@ impl<R: GitCliRunner> Runner<'_, R> {
         // 6. Restore local changes.
         let mut outcome = GitOpOutcome::ok(op);
         outcome.update_info = Some(info);
-        let mut index_lock = None;
-        if let Some((failure, lock)) = submodule_err {
-            outcome.success = false;
-            outcome.failure = Some(failure);
-            outcome.stash_kept = stashed;
-            index_lock = lock;
-        } else if stashed {
-            let pop = self.stash_restore().await;
-            stderr.extend(pop.stderr.iter().cloned());
-            if !pop.ok() {
-                outcome.success = false;
-                outcome.stash_kept = true;
-                outcome.failure = Some(GitFailure::Conflicts);
-                index_lock = pop.index_lock;
-            }
-        }
         outcome.stderr = stderr;
-        GitOpRunResult {
+        let mut res = GitOpRunResult {
             outcome,
-            index_lock,
+            index_lock: None,
+        };
+        if let Some((failure, lock)) = submodule_err {
+            res.outcome.success = false;
+            res.outcome.failure = Some(failure);
+            res.outcome.stash_kept = stashed;
+            res.index_lock = lock;
+        } else if stashed {
+            self.restore_stash_into(&mut res).await;
         }
+        res
     }
 
     /// `GitPreservingProcess`: stash local changes (including untracked),
@@ -2681,11 +2674,19 @@ impl<R: GitCliRunner> Runner<'_, R> {
             res.outcome.stash_kept = true;
             return res;
         }
+        self.restore_stash_into(&mut res).await;
+        res
+    }
+
+    /// Restores the auto-stashed working tree after a preserving operation (`run_smart` /
+    /// `run_update_project`), marking `stash_kept` on failure and only classifying the
+    /// outcome as `GitFailure::Conflicts` when `git stash pop` emitted real conflict signals.
+    async fn restore_stash_into(&self, res: &mut GitOpRunResult) {
         let pop = self.stash_restore().await;
         res.outcome.stderr.extend(pop.stderr.iter().cloned());
         if !pop.ok() {
             res.outcome.stash_kept = true;
-            if res.outcome.success {
+            if res.outcome.success && stash_restore_has_conflicts(&pop.all_lines()) {
                 res.outcome.success = false;
                 res.outcome.failure = Some(GitFailure::Conflicts);
             }
@@ -2693,8 +2694,16 @@ impl<R: GitCliRunner> Runner<'_, R> {
                 res.index_lock = pop.index_lock;
             }
         }
-        res
     }
+}
+
+/// Returns `true` only when a failed `git stash pop` actually left unmerged conflict entries.
+fn stash_restore_has_conflicts(lines: &[String]) -> bool {
+    if matches!(classify_failure(lines), GitFailure::Conflicts) {
+        return true;
+    }
+    let joined = lines.join("\n");
+    joined.contains("Unmerged paths:") || joined.contains("needs merge")
 }
 
 fn finish(op: GitOp, res: StepResult) -> GitOpRunResult {
@@ -4620,5 +4629,209 @@ mod tests {
             "expected GIT_ASKPASS in retry_env, got {:?}",
             conflict.retry_env
         );
+    }
+
+    #[tokio::test]
+    async fn smart_merge_untracked_stash_restore_failure_is_not_classified_as_conflicts() {
+        let dir = tempfile::tempdir().unwrap();
+        let git_dir = dir.path().join(".git");
+        std::fs::create_dir_all(&git_dir).unwrap();
+        let loc = RepoLocation {
+            workdir: dir.path().to_path_buf(),
+            git_dir: git_dir.clone(),
+            common_dir: git_dir,
+            is_bare: false,
+            repo_name: "repo".into(),
+        };
+        let runner = RecordingCliRunner::with_responses(vec![
+            // 1. git stash push --include-untracked -m ...
+            GitCliOutput {
+                exit_code: 0,
+                duration_ms: 1,
+                stdout_lines: vec!["Saved working directory and index state".into()],
+                stderr_lines: Vec::new(),
+                index_lock_conflict: None,
+            },
+            // 2. git merge --ff-only -- feature/linear-chain
+            GitCliOutput {
+                exit_code: 0,
+                duration_ms: 1,
+                stdout_lines: vec!["Updating a1..b2".into(), "Fast-forward".into()],
+                stderr_lines: Vec::new(),
+                index_lock_conflict: None,
+            },
+            // 3. git stash pop --index fails due to existing untracked file (NOT merge conflict)
+            GitCliOutput {
+                exit_code: 1,
+                duration_ms: 1,
+                stdout_lines: vec!["linear_chain.txt already exists, no checkout".into()],
+                stderr_lines: vec![
+                    "error: could not restore untracked files from stash".into(),
+                    "The stash entry is kept in case you need it again.".into(),
+                ],
+                index_lock_conflict: None,
+            },
+        ]);
+        let ids = AtomicU64::new(1);
+        let op = GitOp::Smart(Box::new(GitOp::Merge {
+            rev: "feature/linear-chain".into(),
+            options: MergeOptions {
+                ff: jbgit_core::FastForward::FfOnly,
+                ..MergeOptions::default()
+            },
+        }));
+        let res = run_git_op(&runner, &loc, &ids, op, None, |_| {}).await;
+        assert!(res.outcome.stash_kept, "stash must be marked kept");
+        assert!(
+            res.outcome.success,
+            "main ff-only merge succeeded and stash restore had no conflicts"
+        );
+        assert_ne!(
+            res.outcome.failure,
+            Some(GitFailure::Conflicts),
+            "untracked restore failure must not be misclassified as Conflicts"
+        );
+    }
+
+    #[tokio::test]
+    async fn smart_merge_real_stash_restore_conflict_still_classifies_as_conflicts() {
+        let dir = tempfile::tempdir().unwrap();
+        let git_dir = dir.path().join(".git");
+        std::fs::create_dir_all(&git_dir).unwrap();
+        let loc = RepoLocation {
+            workdir: dir.path().to_path_buf(),
+            git_dir: git_dir.clone(),
+            common_dir: git_dir,
+            is_bare: false,
+            repo_name: "repo".into(),
+        };
+        let runner = RecordingCliRunner::with_responses(vec![
+            GitCliOutput {
+                exit_code: 0,
+                duration_ms: 1,
+                stdout_lines: vec!["Saved working directory and index state".into()],
+                stderr_lines: Vec::new(),
+                index_lock_conflict: None,
+            },
+            GitCliOutput {
+                exit_code: 0,
+                duration_ms: 1,
+                stdout_lines: vec!["Fast-forward".into()],
+                stderr_lines: Vec::new(),
+                index_lock_conflict: None,
+            },
+            GitCliOutput {
+                exit_code: 1,
+                duration_ms: 1,
+                stdout_lines: vec![
+                    "Auto-merging app.rs".into(),
+                    "CONFLICT (content): Merge conflict in app.rs".into(),
+                ],
+                stderr_lines: vec!["The stash entry is kept in case you need it again.".into()],
+                index_lock_conflict: None,
+            },
+        ]);
+        let ids = AtomicU64::new(1);
+        let op = GitOp::Smart(Box::new(GitOp::Merge {
+            rev: "feature/linear-chain".into(),
+            options: MergeOptions::default(),
+        }));
+        let res = run_git_op(&runner, &loc, &ids, op, None, |_| {}).await;
+        assert!(res.outcome.stash_kept);
+        assert!(!res.outcome.success);
+        assert_eq!(res.outcome.failure, Some(GitFailure::Conflicts));
+    }
+
+    #[tokio::test]
+    async fn update_project_untracked_stash_restore_failure_is_not_classified_as_conflicts() {
+        let before_refs = vec![
+            format!(
+                "refs/heads/main\t{}\trefs/remotes/origin/main\torigin/main\t*",
+                oid(1)
+            ),
+            format!("refs/remotes/origin/main\t{}\t\t\t ", oid(1)),
+        ];
+        let fetched_refs = vec![
+            format!(
+                "refs/heads/main\t{}\trefs/remotes/origin/main\torigin/main\t*",
+                oid(1)
+            ),
+            format!("refs/remotes/origin/main\t{}\t\t\t ", oid(2)),
+        ];
+        let runner = RecordingCliRunner::with_responses(vec![
+            // 1. read_branch_refs (before)
+            GitCliOutput {
+                exit_code: 0,
+                duration_ms: 1,
+                stdout_lines: before_refs,
+                stderr_lines: Vec::new(),
+                index_lock_conflict: None,
+            },
+            // 2. git stash push --include-untracked -m ...
+            GitCliOutput {
+                exit_code: 0,
+                duration_ms: 1,
+                stdout_lines: vec!["Saved working directory and index state".into()],
+                stderr_lines: Vec::new(),
+                index_lock_conflict: None,
+            },
+            // 3. git fetch --all --prune
+            GitCliOutput {
+                exit_code: 0,
+                duration_ms: 1,
+                stdout_lines: Vec::new(),
+                stderr_lines: Vec::new(),
+                index_lock_conflict: None,
+            },
+            // 4. read_branch_refs (after fetch)
+            GitCliOutput {
+                exit_code: 0,
+                duration_ms: 1,
+                stdout_lines: fetched_refs,
+                stderr_lines: Vec::new(),
+                index_lock_conflict: None,
+            },
+            // 5. git merge --no-edit -- origin/main
+            GitCliOutput {
+                exit_code: 0,
+                duration_ms: 1,
+                stdout_lines: vec!["Fast-forward".into()],
+                stderr_lines: Vec::new(),
+                index_lock_conflict: None,
+            },
+            // 6. rev_parse_head (same oid avoids extra update-info log calls)
+            GitCliOutput {
+                exit_code: 0,
+                duration_ms: 1,
+                stdout_lines: vec![oid(1).to_string()],
+                stderr_lines: Vec::new(),
+                index_lock_conflict: None,
+            },
+            // 7. git stash pop --index fails due to untracked file collision (non-conflict)
+            GitCliOutput {
+                exit_code: 1,
+                duration_ms: 1,
+                stdout_lines: vec!["notes.txt already exists, no checkout".into()],
+                stderr_lines: vec![
+                    "error: could not restore untracked files from stash".into(),
+                    "The stash entry is kept in case you need it again.".into(),
+                ],
+                index_lock_conflict: None,
+            },
+        ]);
+        let ids = AtomicU64::new(1);
+        let op = GitOp::UpdateProject {
+            mode: Some(jbgit_core::UpdateMode::Merge),
+            save_changes: true,
+            update_other_branches: false,
+            update_submodules: false,
+        };
+        let res = run_git_op(&runner, &dummy_loc(), &ids, op, None, |_| {}).await;
+        assert!(res.outcome.stash_kept, "stash must be marked kept");
+        assert!(
+            res.outcome.success,
+            "update succeeded and non-conflict stash restore failure must not fail as Conflicts"
+        );
+        assert_ne!(res.outcome.failure, Some(GitFailure::Conflicts));
     }
 }
