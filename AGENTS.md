@@ -16,4 +16,4 @@ Single-context (`GLOSSARY.md` + `docs/adr/` at the repo root). See `docs/agents/
 
 ### Exploratory TUI testing
 
-Interactive ConPTY + `vt100` testing driver (`tools/jbgit-pilot`) for AI exploratory QA. See `docs/agents/ai-exploratory-testing.md`.
+AI automated and exploratory QA runbook, CLI driver (`tools/jbgit-pilot`), sandbox scenarios, and checklist: see `docs/agents/ai-exploratory-testing.md`.
