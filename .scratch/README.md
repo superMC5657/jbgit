@@ -1,6 +1,6 @@
 # jbgit Feature Specs & Issue Tracker 目录索引
 
-> 本目录为 `jbgit` 项目的本地需求工单与技术规格索引（遵循 [`docs/agents/issue-tracker.md`](../docs/agents/issue-tracker.md) 与 [`AGENTS.md`](../AGENTS.md)），按执行时序汇总 **14 个特性与治理专题（共 66 个原子工单）** 及其架构演进取舍。
+> 本目录为 `jbgit` 项目的本地需求工单与技术规格索引（遵循 [`docs/agents/issue-tracker.md`](../docs/agents/issue-tracker.md) 与 [`AGENTS.md`](../AGENTS.md)），按执行时序汇总 **16 个特性与治理专题（共 76 个原子工单）** 及其架构演进取舍。
 
 ---
 
@@ -32,6 +32,8 @@
 | **#11** | Phase 6: 深模块架构治理与测试面收敛 | [`11-deep-module-architecture-hardening`](./11-deep-module-architecture-hardening/spec.md) | 统一命令目录与纯路由、消费者级单飞槽、共享 Diff 会话、深工作台封装与确定性 `TuiSession` | 2026-11-22 | — | M8 (`core` / `engine` / `tui` / `pilot`) | 6 / 6 Resolved |
 | **#12** | Phase 7: 对齐 reference 基线的功能缺口补齐 | [`12-reference-parity-gap-closure`](./12-reference-parity-gap-closure/spec.md) | Annotate、选区历史、Tag 管理、完整 Push / Merge 对话框、Update Project、远端与凭据、仓库切换、Worktree、多仓库决策、图谱折叠、应用 Patch / 按版本浏览、仓库能力感知 | 2026-11-24 | `77a4a68`..`2b834cd` | M9 (`core` / `engine` / `tui` / `pilot`) | 13 / 14 Resolved（1 wontfix） |
 | **#13** | Phase 8: 对齐 reference 基线的深度补齐与正确性加固 | [`13-reference-parity-depth-and-correctness`](./13-reference-parity-depth-and-correctness/spec.md) | Commit/Stage/冲突/选区 P0 正确性修复、Diff 空白/横滚/搜索、Pull/Rebase 选项弹窗、Upstream/分支清理/选项补齐、Commit 模板与 Push 加固、FileHistory/Annotate 深化、真正 3-Way 合并队列、Patch/Tree 增强、高亮器/LinearBek/Reflog、增量刷新分页、Clone/Init/CRLF、GPG/Bisect/细节三件套 | 规划中（2026-11-24） | — | M10 (`core` / `engine` / `tui` / `pilot`) | 0 / 14 Open（全部 `ready-for-agent`） |
+| **#14** | Phase 9: 探索性 TUI QA（Round 1）缺陷修复 | [`14-pilot-qa-bugfix-and-ergonomics`](./14-pilot-qa-bugfix-and-ergonomics/spec.md) | Windows `\\?\` Clone 路径、`--unshallow` 图谱刷新、暂存 spinner / `UD` 冲突重置 / FileHistory 范围、变更树与分支快捷键、ConPTY 按键编码、筛选栏与弹窗打磨（19 项） | 2026-11-25 | `15d8358`..`2760aea` | M11 (`core` / `engine` / `tui` / `pilot`) | 6 / 6 Resolved |
+| **#15** | Phase 10: 工作流正确性与 UI 交互加固 | [`15-ui-and-workflow-hardening`](./15-ui-and-workflow-hardening/spec.md) | Smart Merge 2 空格文件名解析与 Stash 恢复失败分类、Commit 初始文件选中与弹窗 `Ctrl+a` 全选统一、窄屏弹窗/对比栏/边框对齐与菜单宽度、Hover 反馈一致性 | 规划中（2026-11-25） | — | M12 (`core` / `engine` / `tui`) | 0 / 4 Open（全部 `ready-for-agent`） |
 
 ---
 
@@ -211,6 +213,30 @@
 
 ---
 
+### Phase 9 ~ 10: 探索性 TUI QA 修复与体验加固（2026-11-25）
+
+基于 `jbgit-pilot` 在 Windows ConPTY + `vt100` 下执行端到端探索性测试，按“根因修复 → 回归锁定”持续收敛工作流正确性与 UI 细节。
+
+#### #14 · `14-pilot-qa-bugfix-and-ergonomics`
+- **定位**：第一轮探索性 QA 缺陷修复与体验加固（6 / 6 Resolved，Commits `15d8358`..`2760aea`）。
+- **原子工单**：
+  - [`01-windows-clone-path-and-unshallow-refresh.md`](./14-pilot-qa-bugfix-and-ergonomics/issues/01-windows-clone-path-and-unshallow-refresh.md) — P1（Resolved）：剥离 Windows `\\?\` 克隆路径前缀与 `--unshallow` 线程仓库/快照缓存失效。
+  - [`02-staging-notice-and-conflict-unresolve-correctness.md`](./14-pilot-qa-bugfix-and-ergonomics/issues/02-staging-notice-and-conflict-unresolve-correctness.md) — P2（Resolved）：清除暂存进度 spinner、修复 `UD/DU/AA/DD` 冲突重置与 FileHistory 范围标签对齐。
+  - [`03-log-changes-tree-and-branches-shortcuts.md`](./14-pilot-qa-bugfix-and-ergonomics/issues/03-log-changes-tree-and-branches-shortcuts.md) — P2（Resolved）：Log 变更树 `c`/`p`/`l` 快捷键、目录右键菜单过滤、分支 `Space` 收藏 / `F2` 重命名与 Diff `Ctrl+F`。
+  - [`04-conpty-pilot-keys-and-modal-escape.md`](./14-pilot-qa-bugfix-and-ergonomics/issues/04-conpty-pilot-keys-and-modal-escape.md) — P2（Resolved）：ConPTY 下 `Ctrl+~` / `Ctrl+Enter` / `Esc` 编码与弹窗关闭修复。
+  - [`05-filter-bar-and-dialog-layout-overflow.md`](./14-pilot-qa-bugfix-and-ergonomics/issues/05-filter-bar-and-dialog-layout-overflow.md) — P2（Resolved）：140 列筛选栏动态预算、作者弹窗 `Ctrl+U` 与新建 Worktree 对话框提示防截断。
+  - [`06-modal-banner-console-and-ux-polish.md`](./14-pilot-qa-bugfix-and-ergonomics/issues/06-modal-banner-console-and-ux-polish.md) — P3（Resolved）：身份弹窗延迟校验、Welcome 占位符与重复报错去重、Bisect/Console 排版与通用弹窗 `Ctrl+a` / 自身分支菜单 / Hunk 回滚文案。
+
+#### #15 · `15-ui-and-workflow-hardening`
+- **定位**：工作流正确性与 UI 交互加固（0 / 4 Open，全部 `ready-for-agent`）。
+- **原子工单**：
+  - [`01-smart-merge-blocked-files-and-stash-restore-failure.md`](./15-ui-and-workflow-hardening/issues/01-smart-merge-blocked-files-and-stash-restore-failure.md) — P2：修复 `git merge` ort 2 空格缩进文件名解析遗漏及 `stash pop` 未跟踪文件恢复失败误报为 `GitFailure::Conflicts`。
+  - [`02-commit-initial-selection-and-unified-ctrl-a.md`](./15-ui-and-workflow-hardening/issues/02-commit-initial-selection-and-unified-ctrl-a.md) — P2：`[1] 提交` 首次载入默认选中首条文件行对齐右侧 Diff 预览，补齐 `PushDialog` 与剩余弹窗内嵌文本行 `Ctrl+a` 全选。
+  - [`03-modal-narrow-layout-overflow-and-borders.md`](./15-ui-and-workflow-hardening/issues/03-modal-narrow-layout-overflow-and-borders.md) — P2：修复冲突解决弹窗窄屏裁切/穿透、两分支对比栏 `树差异 ✓` 挤掉 `✕`、`Alt+T` 边缘缝隙、Annotate 叠排行历史双底边框、FileHistory 80 列工具栏与上下文菜单宽度预算。
+  - [`04-interactive-hover-feedback-consistency.md`](./15-ui-and-workflow-hardening/issues/04-interactive-hover-feedback-consistency.md) — P3：统一冲突解决器底部按钮、Log 筛选芯片/`⚙` 与顶栏分支胶囊的鼠标 Hover 视觉反馈。
+
+---
+
 ## 架构演进与取舍清单 (Superseded, Pruned & Trade-offs)
 
 在迭代过程中，部分早期规划、数据结构或交互策略做了明确的演进替换、边界收敛或工程取舍，在此集中备注：
@@ -243,7 +269,7 @@ jbgit/
 ├── docs/
 │   ├── manual.md               # 用户操作与 TOML 配置手册
 │   └── agents/                 # Agent 协作指引（issue-tracker / triage-labels / domain / ai-exploratory-testing）
-└── .scratch/                   # 按执行时序组织的 Feature Specs (#00 ~ #13) 与原子 Issues
+└── .scratch/                   # 按执行时序组织的 Feature Specs (#00 ~ #15) 与原子 Issues
 ```
 
 ---
