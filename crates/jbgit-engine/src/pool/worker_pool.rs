@@ -9,51 +9,120 @@ use jbgit_core::EpochToken;
 
 use crate::error::EngineError;
 
+struct CachedThreadRepo {
+    repo: Repository,
+    common_dir: PathBuf,
+    shallow_fingerprint: Option<Vec<u8>>,
+}
+
 thread_local! {
-    static THREAD_REPOS: RefCell<HashMap<PathBuf, Repository>> = RefCell::new(HashMap::new());
+    static THREAD_REPOS: RefCell<HashMap<PathBuf, CachedThreadRepo>> = RefCell::new(HashMap::new());
+}
+
+/// Reads the current `<common_dir|git_dir>/shallow` file contents when non-empty.
+///
+/// Used both to invalidate cached thread-local `git2::Repository` handles (whose
+/// internal `shallow_grafts` survive external `git fetch --unshallow` / `--depth`
+/// runs) and to guard [`super::snapshot::SnapshotCommitCache`] reuse.
+pub(crate) fn read_shallow_fingerprint(git_dir: &Path, common_dir: &Path) -> Option<Vec<u8>> {
+    if let Ok(bytes) = std::fs::read(common_dir.join("shallow"))
+        && !bytes.is_empty()
+    {
+        return Some(bytes);
+    }
+    if common_dir != git_dir
+        && let Ok(bytes) = std::fs::read(git_dir.join("shallow"))
+        && !bytes.is_empty()
+    {
+        return Some(bytes);
+    }
+    None
+}
+
+fn resolve_common_dir_hint(git_dir: &Path) -> PathBuf {
+    if let Ok(raw) = std::fs::read_to_string(git_dir.join("commondir")) {
+        let trimmed = raw.trim();
+        if !trimmed.is_empty() {
+            let p = Path::new(trimmed);
+            return if p.is_absolute() {
+                p.to_path_buf()
+            } else {
+                git_dir.join(p)
+            };
+        }
+    }
+    git_dir.to_path_buf()
+}
+
+fn open_cached_repo(git_dir: &Path) -> Result<CachedThreadRepo, EngineError> {
+    let common_hint = resolve_common_dir_hint(git_dir);
+    let pre_fingerprint = read_shallow_fingerprint(git_dir, &common_hint);
+    let repo = Repository::open(git_dir)?;
+    let common_dir = repo.commondir().to_path_buf();
+    let shallow_fingerprint = if common_dir == common_hint {
+        pre_fingerprint
+    } else {
+        read_shallow_fingerprint(git_dir, &common_dir)
+    };
+    Ok(CachedThreadRepo {
+        repo,
+        common_dir,
+        shallow_fingerprint,
+    })
 }
 
 /// Executes `f` with a thread-local [`Repository`] for `git_dir`, ensuring any
-/// cached `git_index` handle is reloaded from `.git/index` on disk first.
+/// cached `git_index` handle is reloaded from `.git/index` on disk first and
+/// evicting the cached handle whenever `<common_dir|git_dir>/shallow` changes.
 ///
-/// `git2::Repository` caches its `git_index` handle inside the thread-local
-/// `Repository` without automatically reloading on subsequent `repo.index()`,
-/// `repo.statuses()`, or `repo.reset_default()` calls. Whenever another worker
-/// thread or external `git` process modifies `.git/index`, any cached
-/// `Repository` would otherwise read or overwrite `.git/index` using its stale
-/// snapshot.
+/// `git2::Repository` caches both its `git_index` handle and internal
+/// `shallow_grafts` inside the thread-local `Repository` without automatically
+/// reloading on subsequent calls. Whenever another worker thread or external
+/// `git` process modifies `.git/index` or `.git/shallow` (e.g. `git fetch
+/// --unshallow` / `--depth`), a stale cached `Repository` would otherwise read
+/// outdated index state or keep truncating revwalks/parent lists at old shallow
+/// boundaries.
 pub(crate) fn with_thread_repo<F, T>(git_dir: &Path, f: F) -> Result<T, EngineError>
 where
     F: FnOnce(&Repository) -> Result<T, EngineError>,
 {
     THREAD_REPOS.with(|cell| {
         let mut map = cell.borrow_mut();
-        let was_cached = map.contains_key(git_dir);
-        if !was_cached {
-            let repo = Repository::open(git_dir)?;
-            map.insert(git_dir.to_path_buf(), repo);
-        }
-        if was_cached {
-            let reload_failed = {
-                let repo = map
-                    .get(git_dir)
-                    .ok_or_else(|| EngineError::RepoNotFound(git_dir.to_path_buf()))?;
-                !repo.is_bare()
-                    && repo
+        if let Some(cached) = map.get(git_dir) {
+            let current_shallow = read_shallow_fingerprint(git_dir, &cached.common_dir);
+            if current_shallow != cached.shallow_fingerprint {
+                let common_dir = cached.common_dir.clone();
+                map.remove(git_dir);
+                let repo = Repository::open(git_dir)?;
+                map.insert(
+                    git_dir.to_path_buf(),
+                    CachedThreadRepo {
+                        repo,
+                        common_dir,
+                        shallow_fingerprint: current_shallow,
+                    },
+                );
+            } else {
+                let reload_failed = !cached.repo.is_bare()
+                    && cached
+                        .repo
                         .index()
                         .ok()
-                        .is_some_and(|mut index| index.read(true).is_err())
-            };
-            if reload_failed {
-                map.remove(git_dir);
-                let fresh = Repository::open(git_dir)?;
-                return f(&fresh);
+                        .is_some_and(|mut index| index.read(true).is_err());
+                if reload_failed {
+                    map.remove(git_dir);
+                    let fresh = Repository::open(git_dir)?;
+                    return f(&fresh);
+                }
             }
+        } else {
+            let entry = open_cached_repo(git_dir)?;
+            map.insert(git_dir.to_path_buf(), entry);
         }
-        let repo = map
+        let entry = map
             .get(git_dir)
             .ok_or_else(|| EngineError::RepoNotFound(git_dir.to_path_buf()))?;
-        f(repo)
+        f(&entry.repo)
     })
 }
 

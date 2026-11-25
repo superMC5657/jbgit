@@ -375,3 +375,120 @@ fn keymap_presets_have_no_conflicts_with_clone_repository() {
     );
     assert_eq!(KeyAction::CloneRepository.as_str(), "clone_repository");
 }
+
+#[test]
+fn clone_dialog_and_welcome_strip_windows_verbatim_path_prefixes() {
+    use std::path::Path;
+
+    use crate::repo_lifecycle::{CloneDialogState, default_clone_base_dir};
+
+    let i18n = I18n::load("en-US", None);
+
+    // 1. Drive-letter verbatim base_dir (`\\?\C:\...`)
+    let mut cd = CloneDialogState::new(PathBuf::from(r"\\?\C:\Users\dev\workspace"));
+    assert_eq!(cd.base_dir, PathBuf::from(r"C:\Users\dev\workspace"));
+    cd.apply(CloneDialogAction::Paste(
+        "https://github.com/acme/demo-repo.git".into(),
+    ));
+    let expected_drive = PathBuf::from(r"C:\Users\dev\workspace").join("demo-repo");
+    assert_eq!(PathBuf::from(&cd.target_dir), expected_drive);
+    assert!(
+        !cd.target_dir.starts_with(r"\\?\"),
+        "inferred target_dir must strip verbatim prefix: {}",
+        cd.target_dir
+    );
+    #[cfg(windows)]
+    {
+        let req = cd.build_request(&i18n).expect("valid drive clone request");
+        assert_eq!(
+            req.target_dir,
+            PathBuf::from(r"C:\Users\dev\workspace\demo-repo")
+        );
+    }
+
+    // Even if `base_dir` is assigned directly with `\\?\`, sync_inferred_target_dir
+    // and build_request still strip it.
+    cd.base_dir = PathBuf::from(r"\\?\C:\Users\dev\workspace");
+    cd.target_dir.clear();
+    cd.dir_edited = false;
+    cd.sync_inferred_target_dir();
+    assert_eq!(PathBuf::from(&cd.target_dir), expected_drive);
+    cd.target_dir.clear();
+    let req_inferred = cd
+        .build_request(&i18n)
+        .expect("build_request infers stripped path");
+    assert_eq!(req_inferred.target_dir, expected_drive);
+
+    // 2. UNC verbatim base_dir (`\\?\UNC\server\share\dir`)
+    let mut unc_cd = CloneDialogState::new(PathBuf::from(r"\\?\UNC\server\share\dir"));
+    assert_eq!(unc_cd.base_dir, PathBuf::from(r"\\server\share\dir"));
+    unc_cd.apply(CloneDialogAction::Paste(
+        "https://github.com/acme/demo-repo.git".into(),
+    ));
+    let expected_unc = PathBuf::from(r"\\server\share\dir").join("demo-repo");
+    assert_eq!(PathBuf::from(&unc_cd.target_dir), expected_unc);
+    assert!(!unc_cd.target_dir.starts_with(r"\\?\"));
+    #[cfg(windows)]
+    {
+        let req = unc_cd
+            .build_request(&i18n)
+            .expect("valid UNC clone request");
+        assert_eq!(
+            req.target_dir,
+            PathBuf::from(r"\\server\share\dir\demo-repo")
+        );
+    }
+
+    // 3. User-pasted `\\?\` paths in TargetDir are stripped by build_request
+    let mut pasted_cd = CloneDialogState::new(PathBuf::new());
+    pasted_cd.url = "https://github.com/acme/demo-repo.git".into();
+    pasted_cd.target_dir = r"\\?\C:\Users\dev\pasted-repo".into();
+    let pasted_req = pasted_cd
+        .build_request(&i18n)
+        .expect("pasted verbatim drive path");
+    assert_eq!(
+        pasted_req.target_dir,
+        PathBuf::from(r"C:\Users\dev\pasted-repo")
+    );
+    pasted_cd.target_dir = r"\\?\unc\server\share\pasted-repo".into();
+    let pasted_unc_req = pasted_cd
+        .build_request(&i18n)
+        .expect("pasted verbatim UNC path");
+    assert_eq!(
+        pasted_unc_req.target_dir,
+        PathBuf::from(r"\\server\share\pasted-repo")
+    );
+
+    // 4. default_clone_base_dir strips explicit and state paths
+    let ts = TestSession::with_snapshot(snapshot());
+    assert_eq!(
+        default_clone_base_dir(ts.state(), Some(Path::new(r"\\?\C:\Users\dev\workspace"))),
+        PathBuf::from(r"C:\Users\dev\workspace")
+    );
+    assert_eq!(
+        default_clone_base_dir(ts.state(), Some(Path::new(r"\\?\UNC\server\share\dir"))),
+        PathBuf::from(r"\\server\share\dir")
+    );
+
+    // 5. Non-Git startup via init_engine_and_session never leaks `\\?\` into
+    //    AppState.repo_path_display or WelcomeState.dir
+    let tmp = tempfile::TempDir::new().unwrap();
+    let non_git = tmp.path().join("no_git_here");
+    std::fs::create_dir_all(&non_git).unwrap();
+    let (_repo, session) = init_engine_and_session(non_git, None);
+    let display_str = session.state().repo_path_display.to_string_lossy();
+    assert!(
+        !display_str.starts_with(r"\\?\"),
+        "repo_path_display leaked verbatim prefix: {display_str}"
+    );
+    match session.state().modal_stack.last() {
+        Some(ModalLayer::Welcome(ws)) => {
+            let ws_str = ws.dir.to_string_lossy();
+            assert!(
+                !ws_str.starts_with(r"\\?\"),
+                "WelcomeState.dir leaked verbatim prefix: {ws_str}"
+            );
+        }
+        other => panic!("expected Welcome modal, got {other:?}"),
+    }
+}

@@ -3347,6 +3347,22 @@ async fn shallow_clone_detected_and_unshallowed_via_git_op() {
     let shallow_snap = fetch_snapshot(&handle, &mut rx).await;
     assert!(shallow_snap.is_shallow);
     assert_eq!(shallow_snap.commits.len(), 1);
+    let boundary_oid = shallow_snap.commits[0].oid;
+    assert!(shallow_snap.commits[0].parents.is_empty());
+
+    // Warm multiple worker threads with shallow snapshots and commit details so
+    // cached thread-local git2::Repository handles hold shallow_grafts.
+    for _ in 0..8 {
+        let _ = fetch_snapshot(&handle, &mut rx).await;
+        let det = fetch_commit_details(
+            &handle,
+            &mut rx,
+            RequestSlotId::LogCommitDetails,
+            DetailsKey::single(boundary_oid),
+        )
+        .await;
+        assert!(det.details[0].parents.is_empty());
+    }
 
     let outcome = run_git_op(
         &handle,
@@ -3361,6 +3377,28 @@ async fn shallow_clone_detected_and_unshallowed_via_git_op() {
     let full_snap = fetch_snapshot(&handle, &mut rx).await;
     assert!(!full_snap.is_shallow);
     assert_eq!(full_snap.commits.len(), 3);
+    let boundary_after = full_snap
+        .commits
+        .iter()
+        .find(|c| c.oid == boundary_oid)
+        .expect("former shallow boundary commit still in snapshot");
+    assert_eq!(
+        boundary_after.parents.len(),
+        1,
+        "former shallow boundary commit must expose its real parent after unshallow"
+    );
+
+    let full_det = fetch_commit_details(
+        &handle,
+        &mut rx,
+        RequestSlotId::LogCommitDetails,
+        DetailsKey::single(boundary_oid),
+    )
+    .await;
+    assert_eq!(
+        full_det.details[0].parents, boundary_after.parents,
+        "commit details must expose real parent after unshallow"
+    );
 }
 
 #[tokio::test]

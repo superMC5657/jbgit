@@ -124,7 +124,7 @@ pub struct CloneDialogState {
 impl CloneDialogState {
     pub fn new(base_dir: PathBuf) -> Self {
         Self {
-            base_dir,
+            base_dir: jbgit_engine::probe::strip_verbatim_prefix(base_dir),
             url: String::new(),
             target_dir: String::new(),
             dir_edited: false,
@@ -145,12 +145,15 @@ impl CloneDialogState {
         }
         match jbgit_core::infer_clone_dir_name(&self.url) {
             Some(name) => {
-                let path = if self.base_dir.as_os_str().is_empty() {
+                let base_dir = jbgit_engine::probe::strip_verbatim_prefix(self.base_dir.clone());
+                let path = if base_dir.as_os_str().is_empty() {
                     PathBuf::from(name)
                 } else {
-                    self.base_dir.join(name)
+                    base_dir.join(name)
                 };
-                self.target_dir = path.display().to_string();
+                self.target_dir = jbgit_engine::probe::strip_verbatim_prefix(path)
+                    .display()
+                    .to_string();
             }
             None if self.url.trim().is_empty() => {
                 self.target_dir.clear();
@@ -283,14 +286,17 @@ impl CloneDialogState {
             return Err(i18n.t("dialog.remotes.url_spaces").to_string());
         }
 
+        let base_dir = jbgit_engine::probe::strip_verbatim_prefix(self.base_dir.clone());
         let raw_dir = self.target_dir.trim();
         let target_dir = if !raw_dir.is_empty() {
-            resolve_path(&self.base_dir, raw_dir)
+            let cleaned_raw = jbgit_engine::probe::strip_verbatim_prefix_str(raw_dir);
+            resolve_path(&base_dir, cleaned_raw.as_deref().unwrap_or(raw_dir))
         } else if let Some(inferred) = jbgit_core::infer_clone_dir_name(url) {
-            resolve_path(&self.base_dir, &inferred)
+            resolve_path(&base_dir, &inferred)
         } else {
             return Err(i18n.t("dialog.clone.dir_empty").to_string());
         };
+        let target_dir = jbgit_engine::probe::strip_verbatim_prefix(target_dir);
 
         let occupied = target_dir.is_file()
             || std::fs::read_dir(&target_dir).is_ok_and(|mut d| d.next().is_some());
@@ -320,17 +326,16 @@ impl CloneDialogState {
 /// provided, else the current repository's parent directory (when bound), else
 /// the displayed startup directory.
 pub fn default_clone_base_dir(state: &AppState, explicit: Option<&Path>) -> PathBuf {
-    if let Some(dir) = explicit {
-        return dir.to_path_buf();
-    }
-    if let Some(snap) = state.repo_snapshot.as_ref() {
-        return snap.workdir.parent().unwrap_or(&snap.workdir).to_path_buf();
-    }
-    if state.repo_path_display.is_dir() {
+    let dir = if let Some(dir) = explicit {
+        dir.to_path_buf()
+    } else if let Some(snap) = state.repo_snapshot.as_ref() {
+        snap.workdir.parent().unwrap_or(&snap.workdir).to_path_buf()
+    } else if state.repo_path_display.is_dir() {
         state.repo_path_display.clone()
     } else {
         std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
-    }
+    };
+    jbgit_engine::probe::strip_verbatim_prefix(dir)
 }
 
 /// Builds the 3-choice CRLF pre-commit warning dialog (`Fix & Commit` /

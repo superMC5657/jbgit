@@ -900,10 +900,12 @@ pub fn init_engine_and_session(
         Ok(loc) => RepoSession::bind_location(loc, askpass),
         Err(e) => {
             if target_path.is_dir() {
-                let resolved_dir = target_path
-                    .canonicalize()
-                    .or_else(|_| std::env::current_dir().map(|cwd| cwd.join(&target_path)))
-                    .unwrap_or(target_path);
+                let resolved_dir = jbgit_engine::probe::strip_verbatim_prefix(
+                    target_path
+                        .canonicalize()
+                        .or_else(|_| std::env::current_dir().map(|cwd| cwd.join(&target_path)))
+                        .unwrap_or(target_path),
+                );
                 let config = crate::config::AppConfig::load(Some(&resolved_dir));
                 let configured = config.jbgit.git.configured_executable().map(str::to_string);
                 jbgit_engine::set_configured_git_executable(config.jbgit.git.executable.clone());

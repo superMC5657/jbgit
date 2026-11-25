@@ -205,4 +205,172 @@ mod tests {
         assert!(matches!(res, Err(EngineError::Cancelled)));
         assert_eq!(ran.load(Ordering::SeqCst), 0);
     }
+
+    #[tokio::test]
+    async fn unshallow_evicts_thread_repo_and_invalidates_commit_cache_parents() {
+        use std::process::Command;
+
+        use jbgit_core::{DetailsKey, GitOp};
+
+        use crate::details::load_commit_details_sync;
+        use crate::probe::RepoLocation;
+        use crate::supervisor::{EngineBackend, EngineEvent, EngineSupervisor, TaskRequest};
+
+        let run_git = |cwd: &Path, args: &[&str]| {
+            let out = Command::new("git")
+                .current_dir(cwd)
+                .env("GIT_AUTHOR_NAME", "Test")
+                .env("GIT_AUTHOR_EMAIL", "test@example.com")
+                .env("GIT_COMMITTER_NAME", "Test")
+                .env("GIT_COMMITTER_EMAIL", "test@example.com")
+                .args(args)
+                .output()
+                .expect("failed to execute git");
+            assert!(
+                out.status.success(),
+                "git {args:?} failed: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+        };
+
+        // 1. Build an upstream repository with 4 commits.
+        let upstream_dir = tempfile::tempdir().unwrap();
+        let up = upstream_dir.path();
+        run_git(up, &["init", "-b", "main"]);
+        for idx in 1..=4 {
+            std::fs::write(up.join("f.txt"), format!("step {idx}\n")).unwrap();
+            run_git(up, &["add", "f.txt"]);
+            run_git(up, &["commit", "-m", &format!("commit {idx}")]);
+        }
+
+        // 2. Shallow-clone with --depth 1.
+        let parent_dir = tempfile::tempdir().unwrap();
+        let clone_path = parent_dir.path().join("shallow");
+        run_git(
+            parent_dir.path(),
+            &[
+                "clone",
+                "--no-local",
+                "--depth",
+                "1",
+                &up.to_string_lossy(),
+                &clone_path.to_string_lossy(),
+            ],
+        );
+
+        let loc = RepoLocation::discover(&clone_path).unwrap();
+        let pool = Git2WorkerPool::new(1);
+        let epoch = RequestEpoch::new();
+
+        // 3. Load shallow snapshot + commit details on the single worker thread so
+        //    THREAD_REPOS caches the git2::Repository with shallow_grafts loaded.
+        let loc1 = loc.clone();
+        let tok1 = epoch.issue();
+        let (shallow_snap, shallow_cache) = pool
+            .run_epoch(TaskPriority::Background, tok1, move |tok| {
+                let (snap, _, cache, _) = load_repo_snapshot_incremental_sync(
+                    &loc1,
+                    tok,
+                    100,
+                    StatusScanConfig::default(),
+                    None,
+                    SnapshotLoadMode::Incremental,
+                )?;
+                Ok((snap, cache))
+            })
+            .await
+            .unwrap();
+        assert!(shallow_snap.is_shallow);
+        assert_eq!(shallow_snap.commits.len(), 1);
+        let boundary_oid = shallow_snap.commits[0].oid;
+        assert!(
+            shallow_snap.commits[0].parents.is_empty(),
+            "shallow boundary commit initially appears root-like"
+        );
+
+        let loc_det1 = loc.clone();
+        let tok_det1 = epoch.issue();
+        let shallow_details = pool
+            .run_epoch(TaskPriority::Interactive, tok_det1, move |tok| {
+                load_commit_details_sync(&loc_det1, &DetailsKey::single(boundary_oid), tok)
+            })
+            .await
+            .unwrap();
+        assert!(
+            shallow_details.details[0].parents.is_empty(),
+            "shallow boundary commit details initially have no parents"
+        );
+
+        // 4. Execute GitOp::Unshallow via EngineSupervisor.
+        let (handle, mut rx) = EngineSupervisor::start(loc.clone(), false).unwrap();
+        let _ = handle.dispatch(TaskRequest::RunGitOp {
+            op: GitOp::Unshallow {
+                remote: "origin".into(),
+            },
+        });
+        let outcome = tokio::time::timeout(Duration::from_secs(15), async {
+            while let Some(ev) = rx.recv().await {
+                if let EngineEvent::GitOpFinished(outcome) = ev {
+                    return outcome;
+                }
+            }
+            panic!("engine channel closed before GitOp::Unshallow completed");
+        })
+        .await
+        .expect("timed out waiting for GitOp::Unshallow");
+        assert!(outcome.success, "GitOp::Unshallow failed: {outcome:?}");
+        let _ = handle.shutdown(Duration::from_secs(5)).await;
+
+        // 5. On the EXACT SAME 1-thread worker pool (reusing THREAD_REPOS) and passing
+        //    `Some(&shallow_cache)` in Incremental mode, reload snapshot and commit details.
+        let loc2 = loc.clone();
+        let tok2 = epoch.issue();
+        let (full_snap, load_kind) = pool
+            .run_epoch(TaskPriority::Background, tok2, move |tok| {
+                let (snap, _, _, kind) = load_repo_snapshot_incremental_sync(
+                    &loc2,
+                    tok,
+                    100,
+                    StatusScanConfig::default(),
+                    Some(&shallow_cache),
+                    SnapshotLoadMode::Incremental,
+                )?;
+                Ok((snap, kind))
+            })
+            .await
+            .unwrap();
+        assert!(!full_snap.is_shallow, "repo must no longer be shallow");
+        assert_eq!(load_kind, SnapshotLoadKind::Full);
+        assert_eq!(
+            full_snap.commits.len(),
+            4,
+            "all 4 commits must be visible after unshallow on cached worker thread"
+        );
+        let boundary_after = full_snap
+            .commits
+            .iter()
+            .find(|c| c.oid == boundary_oid)
+            .expect("boundary commit still present");
+        assert_eq!(
+            boundary_after.parents.len(),
+            1,
+            "former shallow boundary commit must now report its real parent"
+        );
+        let expected_parent = boundary_after.parents[0];
+
+        // 6. load_commit_details_sync on the same cached worker thread must also see the parent.
+        let loc_det2 = loc.clone();
+        let tok_det2 = epoch.issue();
+        let full_details = pool
+            .run_epoch(TaskPriority::Interactive, tok_det2, move |tok| {
+                load_commit_details_sync(&loc_det2, &DetailsKey::single(boundary_oid), tok)
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            full_details.details[0].parents,
+            vec![expected_parent],
+            "load_commit_details_sync must return real parent after unshallow"
+        );
+    }
 }

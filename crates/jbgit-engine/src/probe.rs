@@ -57,8 +57,8 @@ pub(crate) fn canonical_or_self(p: &Path) -> PathBuf {
     strip_verbatim_prefix(fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf()))
 }
 
-#[cfg(any(windows, test))]
-pub(crate) fn strip_verbatim_prefix_str(s: &str) -> Option<String> {
+/// Strips a Windows verbatim path prefix (`\\?\` or `\\?\UNC\`) from `s` if present.
+pub fn strip_verbatim_prefix_str(s: &str) -> Option<String> {
     if let Some(rest) = s.strip_prefix(r"\\?\") {
         if rest.len() >= 4 && rest[..4].eq_ignore_ascii_case(r"UNC\") {
             Some(format!(r"\\{}", &rest[4..]))
@@ -70,15 +70,10 @@ pub(crate) fn strip_verbatim_prefix_str(s: &str) -> Option<String> {
     }
 }
 
-#[cfg(windows)]
-fn strip_verbatim_prefix(p: PathBuf) -> PathBuf {
+/// Strips a Windows verbatim path prefix (`\\?\` or `\\?\UNC\`) from `p` when present.
+pub fn strip_verbatim_prefix(p: PathBuf) -> PathBuf {
     let s = p.to_string_lossy();
     strip_verbatim_prefix_str(&s).map_or(p, PathBuf::from)
-}
-
-#[cfg(not(windows))]
-fn strip_verbatim_prefix(p: PathBuf) -> PathBuf {
-    p
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -257,7 +252,9 @@ fn strip_refs_heads(s: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::strip_verbatim_prefix_str;
+    use std::path::PathBuf;
+
+    use super::{strip_verbatim_prefix, strip_verbatim_prefix_str};
 
     #[test]
     fn strip_verbatim_prefix_preserves_unc_and_drive_paths() {
@@ -275,5 +272,18 @@ mod tests {
         );
         assert_eq!(strip_verbatim_prefix_str(r"C:\Users\dev\repo"), None);
         assert_eq!(strip_verbatim_prefix_str("/var/repo"), None);
+
+        assert_eq!(
+            strip_verbatim_prefix(PathBuf::from(r"\\?\C:\Users\dev\repo")),
+            PathBuf::from(r"C:\Users\dev\repo")
+        );
+        assert_eq!(
+            strip_verbatim_prefix(PathBuf::from(r"\\?\UNC\server\share\repo")),
+            PathBuf::from(r"\\server\share\repo")
+        );
+        assert_eq!(
+            strip_verbatim_prefix(PathBuf::from("/var/repo")),
+            PathBuf::from("/var/repo")
+        );
     }
 }

@@ -19,7 +19,7 @@ use super::scan_config::{
     AHEAD_BEHIND_BRANCH_LIMIT, AHEAD_BEHIND_TIME_BUDGET, AheadBehindUpdate, PendingAheadBehind,
     StatusScanConfig,
 };
-use super::worker_pool::with_thread_repo;
+use super::worker_pool::{read_shallow_fingerprint, with_thread_repo};
 
 const GITLINK_MODE: u32 = 0o160_000;
 /// Maximum number of new commits scanned by an incremental head revwalk before
@@ -438,11 +438,7 @@ pub fn load_repo_snapshot_incremental_sync(
 
         let shallow_fingerprint = probe
             .is_shallow
-            .then(|| {
-                std::fs::read(location.common_dir.join("shallow"))
-                    .or_else(|_| std::fs::read(location.git_dir.join("shallow")))
-                    .ok()
-            })
+            .then(|| read_shallow_fingerprint(&location.git_dir, &location.common_dir))
             .flatten();
         let tip_oids = collect_tip_oids(probe.head_oid, &refs);
 
@@ -465,15 +461,23 @@ pub fn load_repo_snapshot_incremental_sync(
                 (kind == SnapshotLoadKind::IncrementalNoOp).then(|| prev.oid_to_index.clone());
             (commits, has_more, kind, idx)
         } else {
+            let shallow_compatible = previous.is_some_and(|prev| {
+                prev.is_shallow == probe.is_shallow
+                    && prev.shallow_fingerprint == shallow_fingerprint
+            });
             let reuse = match mode {
                 SnapshotLoadMode::FullNoReuse => None,
-                SnapshotLoadMode::Incremental | SnapshotLoadMode::Paginate => previous,
+                SnapshotLoadMode::Incremental | SnapshotLoadMode::Paginate => {
+                    shallow_compatible.then_some(previous).flatten()
+                }
             };
             let (commits, has_more) = collect_commits_with_reuse(
                 repo,
                 token,
                 max_commits,
                 scan_config.load_commit_bodies,
+                probe.is_shallow,
+                &shallow_fingerprint,
                 reuse,
             )?;
             (commits, has_more, SnapshotLoadKind::Full, None)
@@ -1057,6 +1061,8 @@ fn collect_commits_with_reuse(
     token: &EpochToken,
     max_commits: usize,
     load_commit_bodies: bool,
+    is_shallow: bool,
+    shallow_fingerprint: &Option<Vec<u8>>,
     reuse: Option<&SnapshotCommitCache>,
 ) -> Result<(Vec<CommitSummary>, bool), EngineError> {
     let mut revwalk = repo.revwalk()?;
@@ -1067,7 +1073,11 @@ fn collect_commits_with_reuse(
     let _ = revwalk.push_glob("refs/remotes/*");
     let _ = revwalk.push_glob("refs/tags/*");
 
-    let reuse_cache = reuse.filter(|c| c.load_commit_bodies == load_commit_bodies);
+    let reuse_cache = reuse.filter(|c| {
+        c.load_commit_bodies == load_commit_bodies
+            && c.is_shallow == is_shallow
+            && c.shallow_fingerprint == *shallow_fingerprint
+    });
     let mut commits = Vec::with_capacity(max_commits.min(4096));
     let mut has_more = false;
     for (idx, oid_res) in revwalk.enumerate() {
