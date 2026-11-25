@@ -24,7 +24,7 @@ pub use details_pane::{
 pub use file_history::{FILE_HISTORY_G_WINDOW, FileHistoryFocus, FileHistoryState};
 pub use filter_bar::{
     FilterBarState, FilterField, LogSpeedSearchState, PathMatches, PathRequest,
-    complete_last_token, filter_suggestions_with_context,
+    apply_filter_suggestion, complete_last_token_for_field, filter_suggestions_with_context,
 };
 pub use presentation::{
     LogPresentation, PresentationToggle, format_absolute_time, format_relative_time,
@@ -39,6 +39,7 @@ mod tests {
 
     use jbgit_core::{DetailsKey, DiffContext};
 
+    use super::filter_bar::complete_last_token;
     use super::*;
 
     #[test]

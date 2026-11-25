@@ -210,6 +210,20 @@ fn route_mouse_scroll(col: u16, row: u16, delta: isize, state: &AppState) -> Vec
                 );
                 return crate::branches_popup::route_branches_popup_key(&key, state);
             }
+            HitTarget::FilterEditorRow(_) => {
+                if let Some(top @ crate::app::ModalLayer::FilterEditor { .. }) =
+                    state.modal_stack.last()
+                    && let Some(kind) = top.popup_kind()
+                {
+                    let (query_ref, selected) = top.popup_query_and_selected().unwrap_or(("", 0));
+                    let max_idx = super::keyboard::popup_candidate_count(kind, query_ref, state)
+                        .saturating_sub(1);
+                    let step = delta / 3;
+                    let next =
+                        (selected.min(max_idx) as isize + step).clamp(0, max_idx as isize) as usize;
+                    return vec![Action::PopupSelectCandidate(next)];
+                }
+            }
             HitTarget::RepoSwitcherRow(_) => {
                 let key = KeyEvent::new(
                     if delta > 0 {
@@ -413,7 +427,10 @@ fn route_mouse_left_down(
         HitTarget::FilterChip(field) => {
             let mut initial = state.log.filter.field_expr(field);
             if !initial.is_empty() {
-                initial.push(' ');
+                match field {
+                    crate::log_view::FilterField::User => initial.push_str(", "),
+                    _ => initial.push(' '),
+                }
             }
             vec![Action::OpenPopup {
                 kind: PopupKind::FilterEditor(field),
@@ -858,6 +875,7 @@ fn route_mouse_right_down(col: u16, row: u16, state: &AppState) -> Vec<Action> {
             | HitTarget::DialogSecondaryCheckbox
             | HitTarget::ModalButton(_)
             | HitTarget::BranchPopupStar(_)
+            | HitTarget::FilterEditorRow(_)
             | HitTarget::RemotesRow(_)
             | HitTarget::RepoSwitcherRow(_)
             | HitTarget::WelcomeItem(_)

@@ -405,14 +405,12 @@ impl UserFilter {
         let mut users: Vec<String> = Vec::new();
         for tok in expr
             .split([',', '|'])
-            .flat_map(|chunk| {
+            .map(|chunk| {
                 let t = chunk.trim();
-                // Keep "First Last" together when separated by commas; otherwise split words.
-                if expr.contains(',') || expr.contains('|') {
-                    vec![t]
-                } else {
-                    t.split_whitespace().collect()
-                }
+                t.strip_prefix('"')
+                    .and_then(|rest| rest.strip_suffix('"'))
+                    .map(str::trim)
+                    .unwrap_or(t)
             })
             .filter(|t| !t.is_empty())
         {
@@ -923,6 +921,30 @@ mod user_matcher_tests {
         assert!(f.matches("Someone", "ME@example.com", me));
         assert!(f.matches("Me Myself", "other@x.io", me));
         assert!(!f.matches("Someone", "other@x.io", me));
+    }
+
+    #[test]
+    fn user_filter_preserves_spaces_in_author_names_and_splits_on_comma_or_pipe() {
+        let me = RepoUser::default();
+        let single = UserFilter::parse("QA Tester");
+        assert_eq!(single.users, vec!["QA Tester"]);
+        assert_eq!(single.label(), "QA Tester");
+        assert!(single.matches("QA Tester", "qa@example.com", me));
+        assert!(!single.matches("Other Tester", "other@example.com", me));
+        assert!(!single.matches("Alice Dev", "alice@example.com", me));
+
+        let quoted = UserFilter::parse("\"QA Tester\"");
+        assert_eq!(quoted.users, vec!["QA Tester"]);
+
+        let multi = UserFilter::parse("QA Tester, Alice Dev");
+        assert_eq!(multi.users, vec!["QA Tester", "Alice Dev"]);
+        assert_eq!(multi.label(), "QA Tester, Alice Dev");
+        assert!(multi.matches("QA Tester", "qa@example.com", me));
+        assert!(multi.matches("Alice Dev", "alice@example.com", me));
+        assert!(!multi.matches("Other Tester", "other@example.com", me));
+
+        let piped = UserFilter::parse("@me | QA Tester | ");
+        assert_eq!(piped.users, vec!["@me", "QA Tester"]);
     }
 
     #[test]

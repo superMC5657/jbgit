@@ -361,6 +361,8 @@ pub enum HitTarget {
     DialogSecondaryCheckbox,
     BranchPopupRow(usize),
     BranchPopupStar(usize),
+    /// Candidate suggestion row inside the `FilterEditor` popup (index into suggestions).
+    FilterEditorRow(usize),
     /// Row of the `Configure Remotes…` modal.
     RemotesRow(usize),
     /// Visible row of the repository switcher.

@@ -4,7 +4,9 @@ use jbgit_core::{ChangeRowKind, PaneId, WorkspaceTab};
 use crate::app::{Action, AppState, ChangesHost, DiffScope, ModalLayer, PopupKind};
 use crate::hit_test::HitTarget;
 use crate::input_stage::{route_commit_changes_tree_key, route_commit_priority_key};
-use crate::log_view::{complete_last_token, filter_suggestions_with_context};
+use crate::log_view::{
+    apply_filter_suggestion, complete_last_token_for_field, filter_suggestions_with_context,
+};
 
 use super::menus::{
     keyboard_context_menu, route_conflict_merge_key, route_conflict_queue_key,
@@ -236,11 +238,7 @@ fn route_modal_key(key: KeyEvent, state: &AppState) -> Vec<Action> {
                             if let Some(s) =
                                 suggestions.get(selected.min(suggestions.len().saturating_sub(1)))
                             {
-                                if query.trim().is_empty() {
-                                    s.clone()
-                                } else {
-                                    complete_last_token(&query, s).trim_end().to_string()
-                                }
+                                apply_filter_suggestion(field, &query, s)
                             } else {
                                 query
                             }
@@ -344,7 +342,7 @@ fn route_modal_key(key: KeyEvent, state: &AppState) -> Vec<Action> {
                             suggestions.get(selected.min(suggestions.len().saturating_sub(1)))
                         {
                             return vec![Action::PopupSetState {
-                                query: complete_last_token(&query, s),
+                                query: complete_last_token_for_field(field, &query, s),
                                 selected: 0,
                             }];
                         }

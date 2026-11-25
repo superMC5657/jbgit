@@ -44,7 +44,7 @@ impl FilterField {
     pub const fn hint(self) -> &'static str {
         match self {
             Self::Branch => "names, a..b, Favorites, -exclude   e.g. main..feat Favorites",
-            Self::User => "@me, names or emails      e.g. @me alice",
+            Self::User => "@me, names or emails (comma-separated)  e.g. @me, Alice Smith",
             Self::Date => "today | yesterday | 7d | 30d | YYYY-MM-DD..YYYY-MM-DD",
             Self::Paths => "repo-relative dirs / files  e.g. src/graph docs",
         }
@@ -68,7 +68,7 @@ impl FilterField {
     pub fn expr(self, spec: &LogFilterSpec) -> String {
         match self {
             Self::Branch => spec.branch.to_expr(),
-            Self::User => spec.user.users.join(" "),
+            Self::User => spec.user.users.join(", "),
             Self::Date => spec.date.label.clone(),
             Self::Paths => spec.paths.paths.join(" "),
         }
@@ -313,7 +313,10 @@ pub struct FilterBarState {
 
 impl FilterBarState {
     pub fn record_history(&mut self, field: FilterField, expr: &str) {
-        let trimmed = expr.trim();
+        let trimmed = match field {
+            FilterField::User => expr.trim().trim_end_matches([',', '|']).trim(),
+            _ => expr.trim(),
+        };
         if trimmed.is_empty() {
             return;
         }
@@ -415,11 +418,14 @@ pub fn filter_suggestions_with_context(
     has_favorites: bool,
     history: &[String],
 ) -> Vec<String> {
-    let last = query
-        .rsplit(|c: char| c.is_whitespace() || c == ',')
-        .next()
-        .unwrap_or("")
-        .trim_start_matches(['-', '+']);
+    let last = match field {
+        FilterField::User => query.rsplit([',', '|']).next().unwrap_or("").trim(),
+        _ => query
+            .rsplit(|c: char| c.is_whitespace() || c == ',')
+            .next()
+            .unwrap_or("")
+            .trim_start_matches(['-', '+']),
+    };
     let mut base: Vec<String> = Vec::new();
     let mut push_unique = |item: String| {
         if !base.contains(&item) {
@@ -509,4 +515,45 @@ pub fn complete_last_token(query: &str, completion: &str) -> String {
         ""
     };
     format!("{head}{sign}{completion} ")
+}
+
+/// Replaces the active token of `query` with `completion`, using comma-delimited
+/// segments for [`FilterField::User`] so author names containing spaces stay intact.
+pub fn complete_last_token_for_field(field: FilterField, query: &str, completion: &str) -> String {
+    match field {
+        FilterField::User => {
+            let prefix = match query.rfind([',', '|']) {
+                Some(sep_idx) => {
+                    let head = &query[..=sep_idx];
+                    if head.ends_with(' ') {
+                        head.to_string()
+                    } else {
+                        format!("{head} ")
+                    }
+                }
+                None => String::new(),
+            };
+            format!("{prefix}{completion}, ")
+        }
+        FilterField::Date => completion.to_string(),
+        FilterField::Branch | FilterField::Paths => complete_last_token(query, completion),
+    }
+}
+
+/// Builds the final filter expression when confirming a selected suggestion
+/// (via `Enter` or mouse click in the `FilterEditor` popup).
+pub fn apply_filter_suggestion(field: FilterField, query: &str, suggestion: &str) -> String {
+    if query.trim().is_empty() || field == FilterField::Date {
+        suggestion.to_string()
+    } else {
+        let completed = complete_last_token_for_field(field, query, suggestion);
+        match field {
+            FilterField::User => completed
+                .trim_end()
+                .trim_end_matches([',', '|'])
+                .trim_end()
+                .to_string(),
+            _ => completed.trim_end().to_string(),
+        }
+    }
 }

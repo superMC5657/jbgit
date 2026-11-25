@@ -417,6 +417,27 @@ pub fn route_overlay_and_stash_click(
             out.extend(activate_row(state, &query, idx));
             out
         }
+        HitTarget::FilterEditorRow(idx) => {
+            let Some(ModalLayer::FilterEditor { field, query, .. }) = state.modal_stack.last()
+            else {
+                return Some(Vec::new());
+            };
+            let field = *field;
+            let snap = state.repo_snapshot.as_deref();
+            let has_fav = !state
+                .log
+                .favorite_branch_names(state.repo_snapshot.as_ref())
+                .is_empty();
+            let hist = state.log.filter.history_for(field);
+            let suggestions =
+                crate::log_view::filter_suggestions_with_context(field, snap, query, has_fav, hist);
+            if let Some(s) = suggestions.get(*idx) {
+                let expr = crate::log_view::apply_filter_suggestion(field, query, s);
+                vec![Action::PopModal, Action::ApplyFilterField { field, expr }]
+            } else {
+                Vec::new()
+            }
+        }
         HitTarget::BranchPopupStar(idx) => {
             let query = match state.modal_stack.last() {
                 Some(ModalLayer::BranchesPopup { query, .. }) => query.clone(),

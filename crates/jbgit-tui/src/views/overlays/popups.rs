@@ -79,6 +79,7 @@ pub(super) fn render_floating_popup(
                 query,
                 selected,
                 selection_touched,
+                z,
             );
         }
         PopupKind::GoToRevision => render_goto_revision_popup(frame, inner, state, ctx, query),
@@ -412,11 +413,12 @@ fn render_filter_editor_popup(
     frame: &mut Frame<'_>,
     inner: Rect,
     state: &AppState,
-    ctx: &RenderContext<'_>,
+    ctx: &mut RenderContext<'_>,
     field: FilterField,
     query: &str,
     selected: usize,
     selection_touched: bool,
+    z: u8,
 ) {
     let mut lines = vec![
         Line::from(vec![
@@ -454,13 +456,26 @@ fn render_filter_editor_popup(
     let room = inner.height.saturating_sub(3) as usize;
     let sel = selected.min(suggestions.len().saturating_sub(1));
     let start = sel.saturating_sub(room.saturating_sub(1));
-    for (idx, s) in suggestions.iter().enumerate().skip(start).take(room) {
-        let bg = if idx == sel {
-            if selection_touched || !query.is_empty() {
-                ctx.theme.bg_selection_focused
-            } else {
-                ctx.theme.bg_hover
-            }
+    let any_row_hovered = matches!(ctx.hover_target, Some(HitTarget::FilterEditorRow(_)));
+    for (vis_idx, (idx, s)) in suggestions
+        .iter()
+        .enumerate()
+        .skip(start)
+        .take(room)
+        .enumerate()
+    {
+        let target = HitTarget::FilterEditorRow(idx);
+        let hovered = ctx.hover_target == Some(&target);
+        let row_y = inner.y.saturating_add(3 + vis_idx as u16);
+        ctx.hit_registry.register(
+            Rect::new(inner.x, row_y, inner.width, 1),
+            z.saturating_add(2),
+            target,
+        );
+        let bg = if idx == sel && (selection_touched || !query.is_empty()) {
+            ctx.theme.bg_selection_focused
+        } else if hovered || (idx == sel && !any_row_hovered) {
+            ctx.theme.bg_hover
         } else {
             ctx.theme.bg_elevated
         };

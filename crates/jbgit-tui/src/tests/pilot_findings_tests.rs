@@ -2539,3 +2539,175 @@ and the repository exists.
         "os error 123"
     );
 }
+
+#[test]
+fn round5_qa5_01_author_filter_preserves_spaced_names_across_pick_reopen_and_tab() {
+    let mut snap = snapshot();
+    assert!(snap.commits.len() >= 3);
+    snap.commits[0].author_name = "QA Tester".into();
+    snap.commits[0].author_email = "qa@example.com".into();
+    snap.commits[1].author_name = "Other Tester".into();
+    snap.commits[1].author_email = "other@example.com".into();
+    snap.commits[2].author_name = "Alice Dev".into();
+    snap.commits[2].author_email = "alice@example.com".into();
+    for c in snap.commits.iter_mut().skip(3) {
+        c.author_name = "QA Tester".into();
+        c.author_email = "qa@example.com".into();
+    }
+
+    let mut ts = zh_session_with_snapshot(snap);
+    ts.dispatch(Action::SwitchTab(WorkspaceTab::Log));
+
+    // 1. Pick "QA Tester" from the dropdown (index 1, right after "@me") via keyboard Down + Enter.
+    ts.dispatch(Action::OpenPopup {
+        kind: PopupKind::FilterEditor(FilterField::User),
+        initial_query: String::new(),
+    });
+    ts.send_key(KeyCode::Down, KeyModifiers::NONE);
+    ts.send_key(KeyCode::Enter, KeyModifiers::NONE);
+
+    assert_eq!(ts.state().log.filter.spec.user.users, vec!["QA Tester"]);
+    assert_eq!(
+        ts.state().log.filter.field_label(FilterField::User),
+        "QA Tester",
+        "spaced author name must NOT be split into 'QA, Tester'"
+    );
+    // Visible graph commits must exclude "Other Tester" and "Alice Dev".
+    let visible_authors: Vec<&str> = (0..ts.state().log.graph.visible_count())
+        .filter_map(|row| {
+            ts.state()
+                .log
+                .graph
+                .commit_at(ts.state().repo_snapshot.as_ref(), row)
+                .map(|c| c.author_name.as_str())
+        })
+        .collect();
+    assert!(!visible_authors.is_empty());
+    assert!(
+        visible_authors.iter().all(|a| *a == "QA Tester"),
+        "only QA Tester commits should match, got: {visible_authors:?}"
+    );
+
+    // 2. Click the active User chip to reopen and add a second spaced author via Tab + Enter.
+    let _ = ts.render(140, 40);
+    let (cx, cy) = ts
+        .hit_center_of(|t| matches!(t, HitTarget::FilterChip(FilterField::User)))
+        .expect("User filter chip hit region");
+    ts.send_mouse(MouseEventKind::Down(MouseButton::Left), cx, cy);
+    assert_eq!(
+        ts.state()
+            .modal_stack
+            .last()
+            .and_then(|m| m.popup_query_and_selected())
+            .map(|(q, _)| q),
+        Some("QA Tester, "),
+        "reopening active User chip must preserve comma separator"
+    );
+    ts.type_str("Alice D");
+    ts.send_key(KeyCode::Tab, KeyModifiers::NONE);
+    assert_eq!(
+        ts.state()
+            .modal_stack
+            .last()
+            .and_then(|m| m.popup_query_and_selected())
+            .map(|(q, _)| q),
+        Some("QA Tester, Alice Dev, "),
+        "Tab completion for spaced author must replace only the active comma-separated segment"
+    );
+    ts.send_key(KeyCode::Enter, KeyModifiers::NONE);
+    assert_eq!(
+        ts.state().log.filter.spec.user.users,
+        vec!["QA Tester", "Alice Dev"]
+    );
+    assert_eq!(
+        ts.state().log.filter.field_expr(FilterField::User),
+        "QA Tester, Alice Dev"
+    );
+}
+
+#[test]
+fn round5_qa5_02_filter_editor_candidates_support_mouse_hover_click_and_scroll() {
+    let mut snap = snapshot();
+    snap.commits[0].author_name = "QA Tester".into();
+    snap.commits[1].author_name = "Other Tester".into();
+    for c in snap.commits.iter_mut().skip(2) {
+        c.author_name = "QA Tester".into();
+    }
+
+    let mut ts = zh_session_with_snapshot(snap);
+    ts.dispatch(Action::SwitchTab(WorkspaceTab::Log));
+
+    // 1. Open Author FilterEditor and verify candidate rows register HitTarget::FilterEditorRow.
+    ts.dispatch(Action::OpenPopup {
+        kind: PopupKind::FilterEditor(FilterField::User),
+        initial_query: String::new(),
+    });
+    let _ = ts.render(140, 40);
+    let (rx, ry) = ts
+        .hit_center_of(|t| matches!(t, HitTarget::FilterEditorRow(1)))
+        .expect("FilterEditor candidate row 1 ('QA Tester') must have a hit region");
+
+    // Hovering candidate row 1 highlights it with bg_hover.
+    ts.send_mouse(MouseEventKind::Moved, rx, ry);
+    let hovered_buf = ts.render(140, 40);
+    assert_eq!(
+        hovered_buf[(rx, ry)].bg,
+        ts.state().theme.bg_hover,
+        "hovering a FilterEditor candidate row must apply bg_hover"
+    );
+
+    // Right-clicking a candidate row is absorbed without opening a context menu.
+    ts.send_mouse(MouseEventKind::Down(MouseButton::Right), rx, ry);
+    assert!(matches!(
+        ts.state().modal_stack.last(),
+        Some(ModalLayer::FilterEditor {
+            field: FilterField::User,
+            ..
+        })
+    ));
+
+    // Scrolling over a candidate row moves candidate selection.
+    ts.send_mouse(MouseEventKind::ScrollDown, rx, ry);
+    assert_eq!(
+        ts.state()
+            .modal_stack
+            .last()
+            .and_then(|m| m.popup_query_and_selected())
+            .map(|(_, sel)| sel),
+        Some(1)
+    );
+
+    // Left-clicking candidate row 1 applies "QA Tester" and closes the popup.
+    ts.send_mouse(MouseEventKind::Down(MouseButton::Left), rx, ry);
+    assert!(
+        ts.state().modal_stack.is_empty(),
+        "clicking a FilterEditor candidate must close the popup"
+    );
+    assert_eq!(ts.state().log.filter.spec.user.users, vec!["QA Tester"]);
+
+    // 2. Date FilterEditor: clicking a preset directly applies it even when switching from another preset.
+    ts.dispatch(Action::ApplyFilterField {
+        field: FilterField::Date,
+        expr: "today".into(),
+    });
+    let _ = ts.render(140, 40);
+    let (dcx, dcy) = ts
+        .hit_center_of(|t| matches!(t, HitTarget::FilterChip(FilterField::Date)))
+        .expect("Date filter chip hit region");
+    ts.send_mouse(MouseEventKind::Down(MouseButton::Left), dcx, dcy);
+    let _ = ts.render(140, 40);
+    // Suggestions for Date start with history ("today") followed by presets ("yesterday", ...).
+    let (drx, dry) = ts
+        .hit_center_of(|t| matches!(t, HitTarget::FilterEditorRow(1)))
+        .expect("Date FilterEditor candidate row 1 ('yesterday') hit region");
+    ts.send_mouse(MouseEventKind::Down(MouseButton::Left), drx, dry);
+    assert!(ts.state().modal_stack.is_empty());
+    assert_eq!(
+        ts.state()
+            .log
+            .filter
+            .field_expr(FilterField::Date)
+            .to_ascii_lowercase(),
+        "yesterday"
+    );
+}
