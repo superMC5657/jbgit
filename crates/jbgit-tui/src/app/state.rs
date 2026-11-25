@@ -320,6 +320,10 @@ impl AppState {
         if leaving_tab || leaving_pane {
             self.blur_active_pane(leaving_tab);
         }
+        if leaving_tab {
+            self.hover_target = None;
+            self.hover_pos = None;
+        }
         self.active_tab = tab;
         self.focused_pane = pane;
     }

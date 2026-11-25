@@ -1,4 +1,4 @@
-use jbgit_core::{GroupOptions, RefInfo, group_refs_for_table};
+use jbgit_core::{GroupOptions, RefInfo, WorkspaceTab, group_refs_for_table};
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
@@ -11,15 +11,20 @@ use crate::hit_test::HitTarget;
 use crate::theme::RefBadgeKind;
 use crate::views::log_details::signature_badge_and_desc_keys;
 
-/// Renders a hover tooltip when the pointer rests over a Detached HEAD pill or
-/// a `+N` overflow pill and no modal layer is open.
+/// Renders a hover tooltip when the pointer rests over a Detached HEAD pill,
+/// `+N` overflow pill, or signature badge on the Log view and no modal layer is open.
 pub fn render_hover_tooltip(
     frame: &mut Frame<'_>,
     screen: Rect,
     state: &AppState,
     ctx: &RenderContext<'_>,
 ) {
-    if !state.modal_stack.is_empty() || screen.width < 16 || screen.height < 5 {
+    if !state.modal_stack.is_empty()
+        || state.active_tab != WorkspaceTab::Log
+        || state.log.details.diff.zoomed
+        || screen.width < 16
+        || screen.height < 5
+    {
         return;
     }
     let (Some(target), Some((hx, hy))) = (ctx.hover_target, state.hover_pos) else {

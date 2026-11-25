@@ -467,9 +467,49 @@ pub fn render_branches_popup(
         .repo_snapshot
         .as_ref()
         .map_or("jbgit", |s| s.repo_name.as_str());
+    let base_title = state.i18n.t("view.branches_popup.title");
+    let full_title = format!(" {base_title} ({repo}) ");
+
+    // Title-bar buttons: [↻ Fetch] [⚙]. Compute available title width up front so
+    // narrow viewports (`50x16`) truncate the title cleanly instead of letting buttons
+    // overwrite the title text.
+    let fetch = state.i18n.t("view.branches_popup.fetch_btn");
+    let gear = " ⚙ ";
+    let gear_w = gear.width() as u16;
+    let fetch_w = fetch.width() as u16;
+    let gx = rect.right().saturating_sub(gear_w + 2);
+    let fx = gx.saturating_sub(fetch_w + 1);
+    let min_title_w = format!(" {base_title} ").width().min(16);
+    let avail_with_both = fx.saturating_sub(rect.x + 2) as usize;
+    let avail_with_gear = gx.saturating_sub(rect.x + 2) as usize;
+    let (show_fetch, show_gear, max_title_w) = if avail_with_both >= min_title_w {
+        (true, true, avail_with_both)
+    } else if avail_with_gear >= min_title_w {
+        (false, true, avail_with_gear)
+    } else {
+        (false, false, rect.width.saturating_sub(4) as usize)
+    };
+    let rendered_title = if full_title.width() <= max_title_w {
+        full_title
+    } else {
+        let prefix = format!(" {base_title} (");
+        let suffix = ") ";
+        let repo_budget = max_title_w.saturating_sub(prefix.width() + suffix.width());
+        if repo_budget >= 3 {
+            let short_repo = crate::views::truncate_to_width(repo, repo_budget);
+            format!("{prefix}{short_repo}{suffix}")
+        } else {
+            let bare = format!(" {base_title} ");
+            if bare.width() <= max_title_w {
+                bare
+            } else {
+                crate::views::truncate_to_width(&bare, max_title_w)
+            }
+        }
+    };
     let block = Block::default()
         .title(Span::styled(
-            format!(" {} ({repo}) ", state.i18n.t("view.branches_popup.title")),
+            rendered_title,
             Style::default()
                 .fg(ctx.theme.fg_bright)
                 .add_modifier(Modifier::BOLD),
@@ -482,30 +522,27 @@ pub fn render_branches_popup(
     ctx.hit_registry
         .register(rect, z + 1, HitTarget::DialogBody);
 
-    // Title-bar buttons: [↻ Fetch] [⚙]
-    let fetch = state.i18n.t("view.branches_popup.fetch_btn");
-    let gear = " ⚙ ";
-    let gx = rect.right().saturating_sub(gear.width() as u16 + 2);
-    let fx = gx.saturating_sub(fetch.width() as u16 + 1);
-    if fx > rect.x + 24 {
-        let btn = Style::default()
-            .fg(ctx.theme.fg_accent_link)
-            .bg(ctx.theme.bg_panel);
+    let btn = Style::default()
+        .fg(ctx.theme.fg_accent_link)
+        .bg(ctx.theme.bg_panel);
+    if show_fetch {
         frame.render_widget(
             Paragraph::new(Span::styled(fetch, btn)),
-            Rect::new(fx, rect.y, fetch.width() as u16, 1),
-        );
-        frame.render_widget(
-            Paragraph::new(Span::styled(gear, btn)),
-            Rect::new(gx, rect.y, gear.width() as u16, 1),
+            Rect::new(fx, rect.y, fetch_w, 1),
         );
         ctx.hit_registry.register(
-            Rect::new(fx, rect.y, fetch.width() as u16, 1),
+            Rect::new(fx, rect.y, fetch_w, 1),
             z + 2,
             HitTarget::BranchPopupFetch,
         );
+    }
+    if show_gear {
+        frame.render_widget(
+            Paragraph::new(Span::styled(gear, btn)),
+            Rect::new(gx, rect.y, gear_w, 1),
+        );
         ctx.hit_registry.register(
-            Rect::new(gx, rect.y, gear.width() as u16, 1),
+            Rect::new(gx, rect.y, gear_w, 1),
             z + 2,
             HitTarget::BranchPopupSettings,
         );

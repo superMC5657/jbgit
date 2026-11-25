@@ -111,11 +111,7 @@ impl AppState {
                             break;
                         }
                     }
-                    let toast_err = err
-                        .lines()
-                        .map(str::trim)
-                        .rfind(|l| !l.is_empty())
-                        .unwrap_or(err.trim());
+                    let toast_err = pick_clone_toast_error(&err);
                     self.status_notice = Some(
                         self.i18n
                             .t_fmt("toast.repo_clone_failed", &[("err", toast_err)]),
@@ -1131,4 +1127,29 @@ impl AppState {
             cm.externally_resolved = false;
         }
     }
+}
+
+/// Extracts the most informative single-line summary for a `git clone` failure toast.
+/// Prefers the first `fatal:` / `error:` diagnostic over trailing boilerplate lines
+/// (such as `"and the repository exists."`) or leading `"Cloning into ..."` preambles.
+pub(crate) fn pick_clone_toast_error(err: &str) -> &str {
+    let lines: Vec<&str> = err
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .collect();
+    if let Some(primary) = lines.iter().copied().find(|l| {
+        let lower = l.to_ascii_lowercase();
+        lower.starts_with("fatal:") || lower.starts_with("error:")
+    }) {
+        return primary;
+    }
+    if let Some(non_preamble) = lines
+        .iter()
+        .copied()
+        .find(|l| !l.to_ascii_lowercase().starts_with("cloning into "))
+    {
+        return non_preamble;
+    }
+    lines.first().copied().unwrap_or_else(|| err.trim())
 }

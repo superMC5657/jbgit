@@ -482,38 +482,44 @@ fn render_filter_bar(
         .iter()
         .map(|&field| format!(" {}▾", state.i18n.filter_field_title(field)).width())
         .sum();
+    let tight_inactive_fields_w: usize = inactive_fields
+        .iter()
+        .map(|&field| format!("{}▾", state.i18n.filter_field_title(field)).width())
+        .sum();
     let min_inactive_compact =
         condensed_inactive_fields_w + if nm_on { 0 } else { nm_chip_compact.width() };
     let min_inactive_tight =
         condensed_inactive_fields_w + if nm_on { 0 } else { nm_chip_tight.width() };
+    let min_inactive_ultra_tight =
+        tight_inactive_fields_w + if nm_on { 0 } else { nm_chip_tight.width() };
 
-    // Text box: stay trimmer when unfocused & empty while chip filters are active
+    // Text box: shrink cleanly whenever chips are active (even with non-empty search text)
     // so active chips and condensed inactive triggers (`路径▾`, `[排除合并]`) remain reachable at 140x40.
     let text = &filter.spec.text;
     let usable_w = area.width.saturating_sub(reserve) as usize;
+    let active_desired_w: usize = active_fields
+        .iter()
+        .map(|&field| {
+            let field_title = state.i18n.filter_field_title(field);
+            let empty_w = state
+                .i18n
+                .t_fmt("filter.chip", &[("field", field_title), ("label", "")])
+                .width();
+            let label_w = if field == FilterField::Date {
+                state
+                    .i18n
+                    .format_date_filter_label(&filter.field_label(field))
+                    .width()
+            } else {
+                filter.field_label(field).width()
+            };
+            empty_w + 1 + label_w.min(14)
+        })
+        .sum::<usize>()
+        + if nm_on { nm_chip_compact.width() } else { 0 };
     let box_w = if text.query.is_empty() && !filter.editing_text {
         if any_chip_active {
             let base_w = ((area.width as usize) / 4).clamp(10, 20);
-            let active_desired_w: usize = active_fields
-                .iter()
-                .map(|&field| {
-                    let field_title = state.i18n.filter_field_title(field);
-                    let empty_w = state
-                        .i18n
-                        .t_fmt("filter.chip", &[("field", field_title), ("label", "")])
-                        .width();
-                    let label_w = if field == FilterField::Date {
-                        state
-                            .i18n
-                            .format_date_filter_label(&filter.field_label(field))
-                            .width()
-                    } else {
-                        filter.field_label(field).width()
-                    };
-                    empty_w + 1 + label_w.min(14)
-                })
-                .sum::<usize>()
-                + if nm_on { nm_chip_compact.width() } else { 0 };
             let needed = 8 + active_desired_w + min_inactive_compact;
             if usable_w < base_w + needed {
                 usable_w.saturating_sub(needed).clamp(8, 12)
@@ -529,8 +535,33 @@ fn render_filter_bar(
                 base_w
             }
         }
+    } else if any_chip_active {
+        let query_need = 3 + text.query.width() + usize::from(filter.editing_text);
+        let max_w = ((area.width as usize) / 3).clamp(10, 24);
+        let base_w = if filter.editing_text {
+            query_need.clamp(12, max_w)
+        } else {
+            (query_need + 1).clamp(8, max_w)
+        };
+        let min_w = if filter.editing_text {
+            query_need.clamp(10, 14).min(base_w)
+        } else {
+            query_need.clamp(8, 12).min(base_w)
+        };
+        let needed = 8 + active_desired_w + min_inactive_compact;
+        if usable_w < base_w + needed {
+            usable_w.saturating_sub(needed).clamp(min_w, base_w)
+        } else {
+            base_w
+        }
     } else {
-        ((area.width as usize) / 3).clamp(10, 32)
+        let base_w = ((area.width as usize) / 3).clamp(10, 32);
+        let needed = 8 + min_inactive_tight;
+        if usable_w < base_w + needed {
+            usable_w.saturating_sub(needed).clamp(10, base_w)
+        } else {
+            base_w
+        }
     };
     let (content, fg) = if text.query.is_empty() && !filter.editing_text {
         (
@@ -655,6 +686,7 @@ fn render_filter_bar(
         label: String,
         desired_w: usize,
         min_w: usize,
+        tight_min_w: usize,
         normal_overhead: usize,
         compact_overhead: usize,
     }
@@ -685,6 +717,7 @@ fn render_filter_bar(
                 label,
                 desired_w,
                 min_w: desired_w.clamp(1, 3),
+                tight_min_w: desired_w.clamp(1, 2),
                 // Overhead includes the trailing clickable `×` clear button (1 col).
                 normal_overhead: empty_chip.width() + 1,
                 compact_overhead: format!(" {title}:▾").width() + 1,
@@ -698,67 +731,89 @@ fn render_filter_bar(
     let sum_normal_overhead: usize = active_plans.iter().map(|p| p.normal_overhead).sum();
     let sum_compact_overhead: usize = active_plans.iter().map(|p| p.compact_overhead).sum();
     let sum_min_labels: usize = active_plans.iter().map(|p| p.min_w).sum();
+    let sum_tight_min_labels: usize = active_plans.iter().map(|p| p.tight_min_w).sum();
     let sum_desired_labels: usize = active_plans.iter().map(|p| p.desired_w).sum();
 
-    let allocate_caps = |plans: &[ActiveChipPlan<'_>], label_pool: usize| -> Vec<usize> {
-        let mut caps: Vec<usize> = plans.iter().map(|p| p.min_w).collect();
-        let mut used: usize = caps.iter().sum();
-        if used >= label_pool {
-            return caps;
-        }
-        // Water-fill evenly across chips still below their desired label width so short
-        // chips (e.g. `昨天`, `QA`) stay intact while long ones trim fairly.
-        loop {
-            let mut progressed = false;
-            for (i, plan) in plans.iter().enumerate() {
-                if used >= label_pool {
+    let allocate_caps =
+        |plans: &[ActiveChipPlan<'_>], label_pool: usize, tight_floor: bool| -> Vec<usize> {
+            let mut caps: Vec<usize> = plans
+                .iter()
+                .map(|p| if tight_floor { p.tight_min_w } else { p.min_w })
+                .collect();
+            let mut used: usize = caps.iter().sum();
+            if used >= label_pool {
+                return caps;
+            }
+            // Water-fill evenly across chips still below their desired label width so short
+            // chips (e.g. `昨天`, `QA`) stay intact while long ones trim fairly.
+            loop {
+                let mut progressed = false;
+                for (i, plan) in plans.iter().enumerate() {
+                    if used >= label_pool {
+                        break;
+                    }
+                    if caps[i] < plan.desired_w {
+                        caps[i] += 1;
+                        used += 1;
+                        progressed = true;
+                    }
+                }
+                if !progressed || used >= label_pool {
                     break;
                 }
-                if caps[i] < plan.desired_w {
-                    caps[i] += 1;
-                    used += 1;
-                    progressed = true;
-                }
             }
-            if !progressed || used >= label_pool {
-                break;
-            }
-        }
-        caps
-    };
+            caps
+        };
 
     // Prefer normal chip spacing when it keeps inactive triggers (`路径▾`, `[排除合并]`)
     // visible with readable active labels; switch to compact ` 字段:值▾` spacing when 2+
     // active filters need extra breathing room at standard widths (e.g. 140x40).
-    let (compact_active, planned_caps): (bool, Option<Vec<usize>>) = if active_plans.is_empty() {
-        (false, None)
-    } else if sum_normal_overhead + sum_desired_labels + min_inactive_compact <= avail_for_fields
-        || sum_normal_overhead + sum_desired_labels + min_inactive_tight <= avail_for_fields
-    {
-        (
-            false,
-            Some(active_plans.iter().map(|p| p.desired_w).collect()),
-        )
-    } else if active_plans.len() == 1
-        && sum_normal_overhead + active_plans[0].desired_w.min(8) + min_inactive_compact
+    let (compact_active, tight_active_floor, planned_caps): (bool, bool, Option<Vec<usize>>) =
+        if active_plans.is_empty() {
+            (false, false, None)
+        } else if sum_normal_overhead + sum_desired_labels + min_inactive_compact
             <= avail_for_fields
-    {
-        let pool = avail_for_fields.saturating_sub(min_inactive_compact + sum_normal_overhead);
-        (false, Some(allocate_caps(&active_plans, pool)))
-    } else if active_plans.len() == 1
-        && sum_normal_overhead + sum_min_labels + min_inactive_tight <= avail_for_fields
-    {
-        let pool = avail_for_fields.saturating_sub(min_inactive_tight + sum_normal_overhead);
-        (false, Some(allocate_caps(&active_plans, pool)))
-    } else if sum_compact_overhead + sum_min_labels + min_inactive_compact <= avail_for_fields {
-        let pool = avail_for_fields.saturating_sub(min_inactive_compact + sum_compact_overhead);
-        (true, Some(allocate_caps(&active_plans, pool)))
-    } else if sum_compact_overhead + sum_min_labels + min_inactive_tight <= avail_for_fields {
-        let pool = avail_for_fields.saturating_sub(min_inactive_tight + sum_compact_overhead);
-        (true, Some(allocate_caps(&active_plans, pool)))
-    } else {
-        (active_plans.len() >= 2, None)
-    };
+            || sum_normal_overhead + sum_desired_labels + min_inactive_tight <= avail_for_fields
+        {
+            (
+                false,
+                false,
+                Some(active_plans.iter().map(|p| p.desired_w).collect()),
+            )
+        } else if active_plans.len() == 1
+            && sum_normal_overhead + active_plans[0].desired_w.min(8) + min_inactive_compact
+                <= avail_for_fields
+        {
+            let pool = avail_for_fields.saturating_sub(min_inactive_compact + sum_normal_overhead);
+            (
+                false,
+                false,
+                Some(allocate_caps(&active_plans, pool, false)),
+            )
+        } else if active_plans.len() == 1
+            && sum_normal_overhead + sum_min_labels + min_inactive_tight <= avail_for_fields
+        {
+            let pool = avail_for_fields.saturating_sub(min_inactive_tight + sum_normal_overhead);
+            (
+                false,
+                false,
+                Some(allocate_caps(&active_plans, pool, false)),
+            )
+        } else if sum_compact_overhead + sum_min_labels + min_inactive_compact <= avail_for_fields {
+            let pool = avail_for_fields.saturating_sub(min_inactive_compact + sum_compact_overhead);
+            (true, false, Some(allocate_caps(&active_plans, pool, false)))
+        } else if sum_compact_overhead + sum_min_labels + min_inactive_tight <= avail_for_fields {
+            let pool = avail_for_fields.saturating_sub(min_inactive_tight + sum_compact_overhead);
+            (true, false, Some(allocate_caps(&active_plans, pool, false)))
+        } else if sum_compact_overhead + sum_tight_min_labels + min_inactive_ultra_tight
+            <= avail_for_fields
+        {
+            let pool =
+                avail_for_fields.saturating_sub(min_inactive_ultra_tight + sum_compact_overhead);
+            (true, true, Some(allocate_caps(&active_plans, pool, true)))
+        } else {
+            (active_plans.len() >= 2, false, None)
+        };
 
     for (idx, plan) in active_plans.iter().enumerate() {
         processed_active += 1;
@@ -773,6 +828,11 @@ fn render_filter_bar(
         } else {
             plan.normal_overhead
         };
+        let min_label_w = if tight_active_floor {
+            plan.tight_min_w
+        } else {
+            plan.min_w
+        };
         let avail_with_ovf = right.saturating_sub(x + reserve + overflow_reserve) as usize;
         let avail_no_ovf = right.saturating_sub(x + reserve) as usize;
         let budget = if planned_caps.is_some() || (!more_active_after && hidden_active == 0) {
@@ -784,7 +844,7 @@ fn render_filter_bar(
             .as_ref()
             .and_then(|caps| caps.get(idx).copied())
             .unwrap_or_else(|| budget.saturating_sub(overhead).min(18));
-        let chip = if max_label_cap >= plan.min_w && budget >= overhead + plan.min_w {
+        let chip = if max_label_cap >= min_label_w && budget >= overhead + min_label_w {
             let effective_cap = max_label_cap.min(budget.saturating_sub(overhead));
             let truncated = truncate_to_width(&plan.label, effective_cap);
             Some(if compact_active {
@@ -825,20 +885,38 @@ fn render_filter_bar(
 
     if nm_on {
         let ovf_res = if hidden_active > 0 { 6 } else { 0 };
+        let inactive_compact_res = condensed_inactive_fields_w as u16;
+        let inactive_tight_res = tight_inactive_fields_w as u16;
+        // Preserve space budgeted for inactive filter triggers (`路径▾` / `Paths▾`)
+        // before upgrading `[排除合并]` to padded variants; fall back cleanly on ultra-narrow bars.
         let placed = put(
             frame,
             &mut x,
             &nm_chip_full,
             nm_active_style,
             Some(HitTarget::FilterNoMergesToggle),
-            reserve + ovf_res,
+            reserve + ovf_res + inactive_compact_res,
         ) || put(
             frame,
             &mut x,
             &nm_chip_compact,
             nm_active_style,
             Some(HitTarget::FilterNoMergesToggle),
-            reserve + ovf_res,
+            reserve + ovf_res + inactive_compact_res,
+        ) || put(
+            frame,
+            &mut x,
+            &nm_chip_tight,
+            nm_active_style,
+            Some(HitTarget::FilterNoMergesToggle),
+            reserve + ovf_res + inactive_compact_res,
+        ) || put(
+            frame,
+            &mut x,
+            &nm_chip_tight,
+            nm_active_style,
+            Some(HitTarget::FilterNoMergesToggle),
+            reserve + ovf_res + inactive_tight_res,
         ) || put(
             frame,
             &mut x,
@@ -891,9 +969,13 @@ fn render_filter_bar(
     } else {
         0
     };
+    let tight_inactive =
+        condense_inactive && condensed_inactive_fields_w + nm_reserve as usize > avail_inactive;
 
     for field in inactive_fields {
-        let chip = if condense_inactive {
+        let chip = if tight_inactive {
+            format!("{}▾", state.i18n.filter_field_title(field))
+        } else if condense_inactive {
             format!(" {}▾", state.i18n.filter_field_title(field))
         } else {
             state.i18n.t_fmt(

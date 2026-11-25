@@ -14,6 +14,8 @@ mod types;
 pub use action::{Action, ChangesHost, DiffScope};
 pub use credentials::CredentialQueue;
 pub use effects::execute_effects_with_host;
+#[cfg(test)]
+pub(crate) use events::pick_clone_toast_error;
 pub use modal_stack::{ModalLayer, ModalStack};
 pub use scroll::ScrollViewport;
 pub use state::AppState;

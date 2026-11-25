@@ -2251,3 +2251,291 @@ fn round3_p3_1_commit_editor_and_message_dialog_support_ctrl_a_and_multiline_edi
         panic!("expected MessageDialog");
     }
 }
+
+#[test]
+fn round4_p1_01_log_filter_bar_keeps_inactive_triggers_at_140x40_with_no_merges_and_search_text() {
+    // 1. zh-CN at 140x40: Branch + Author + Date + [排除合并] active must keep `路径▾` clickable.
+    let mut ts = zh_session_with_snapshot(snapshot());
+    ts.dispatch(Action::SwitchTab(WorkspaceTab::Log));
+    ts.dispatch(Action::ApplyFilterField {
+        field: FilterField::Branch,
+        expr: "feature/diverged".into(),
+    });
+    ts.dispatch(Action::ApplyFilterField {
+        field: FilterField::User,
+        expr: "QA Tester".into(),
+    });
+    ts.dispatch(Action::ApplyFilterField {
+        field: FilterField::Date,
+        expr: "last_7d".into(),
+    });
+    ts.dispatch(Action::ToggleNoMergesFilter);
+    let buf = ts.render(140, 40);
+    let row3 = rendered_row(&buf, 3);
+    assert!(
+        row3.contains("路径▾"),
+        "zh-CN 140x40 with 3 active filters + [排除合并] must keep `路径▾` visible, row3={row3:?}"
+    );
+    assert!(
+        ts.hit_center_of(|t| matches!(t, HitTarget::FilterChip(FilterField::Paths)))
+            .is_some(),
+        "zh-CN 140x40 must register FilterChip(Paths) hit target, row3={row3:?}"
+    );
+    assert!(
+        ts.hit_center_of(|t| matches!(t, HitTarget::FilterNoMergesToggle))
+            .is_some(),
+        "zh-CN 140x40 must register FilterNoMergesToggle hit target, row3={row3:?}"
+    );
+
+    // 2. zh-CN at 140x40: non-empty search text (`feat[bad`, regex on) + long Branch filter
+    // must keep Author / Date / Paths inactive triggers and [排除合并] reachable (both unfocused
+    // and editing, with [排除合并] off and on).
+    for nm_active in [false, true] {
+        for editing in [false, true] {
+            let mut ts = zh_session_with_snapshot(snapshot());
+            ts.dispatch(Action::SwitchTab(WorkspaceTab::Log));
+            ts.dispatch(Action::ApplyFilterField {
+                field: FilterField::Branch,
+                expr: "feature/diverged".into(),
+            });
+            ts.dispatch(Action::ToggleFilterRegex);
+            ts.dispatch(Action::FocusFilterText);
+            for ch in "feat[bad".chars() {
+                ts.dispatch(Action::FilterTextInput(ch));
+            }
+            if !editing {
+                ts.dispatch(Action::FilterTextDone);
+            }
+            if nm_active {
+                ts.dispatch(Action::ToggleNoMergesFilter);
+            }
+            let buf = ts.render(140, 40);
+            let row3 = rendered_row(&buf, 3);
+            for field in [FilterField::User, FilterField::Date, FilterField::Paths] {
+                assert!(
+                    ts.hit_center_of(|t| matches!(t, HitTarget::FilterChip(f) if *f == field))
+                        .is_some(),
+                    "nm_active={nm_active} editing={editing}: missing inactive chip {field:?}, row3={row3:?}"
+                );
+            }
+            assert!(
+                ts.hit_center_of(|t| matches!(t, HitTarget::FilterNoMergesToggle))
+                    .is_some(),
+                "nm_active={nm_active} editing={editing}: missing [排除合并], row3={row3:?}"
+            );
+        }
+    }
+
+    // 3. en-US at 140x40: Branch + Author + Date + [No Merges] active must keep `Paths▾` visible.
+    let mut ts_en = TestSession::with_snapshot(snapshot());
+    ts_en.state_mut().i18n = Arc::new(I18n::load("en-US", None));
+    ts_en.dispatch(Action::SwitchTab(WorkspaceTab::Log));
+    ts_en.dispatch(Action::ApplyFilterField {
+        field: FilterField::Branch,
+        expr: "feature/diverged".into(),
+    });
+    ts_en.dispatch(Action::ApplyFilterField {
+        field: FilterField::User,
+        expr: "QA Tester".into(),
+    });
+    ts_en.dispatch(Action::ApplyFilterField {
+        field: FilterField::Date,
+        expr: "last_7d".into(),
+    });
+    ts_en.dispatch(Action::ToggleNoMergesFilter);
+    let buf_en = ts_en.render(140, 40);
+    let row3_en = rendered_row(&buf_en, 3);
+    assert!(
+        row3_en.contains("Paths▾"),
+        "en-US 140x40 with 3 active filters + [No Merges] must keep `Paths▾` visible, row3={row3_en:?}"
+    );
+    assert!(
+        ts_en
+            .hit_center_of(|t| matches!(t, HitTarget::FilterChip(FilterField::Paths)))
+            .is_some(),
+        "en-US 140x40 must register FilterChip(Paths), row3={row3_en:?}"
+    );
+    assert!(
+        ts_en
+            .hit_center_of(|t| matches!(t, HitTarget::FilterNoMergesToggle))
+            .is_some(),
+        "en-US 140x40 must register FilterNoMergesToggle, row3={row3_en:?}"
+    );
+}
+
+#[test]
+fn round4_p2_01_conflict_queue_wraps_footer_buttons_on_narrow_50x16_viewport() {
+    use crate::app::{ConflictQueueEntry, ConflictQueueState};
+    use crate::hit_test::ConflictQueueButtonKind;
+    use jbgit_core::ConflictSideStatus;
+
+    for locale in ["zh-CN", "en-US"] {
+        let mut ts = TestSession::with_snapshot(snapshot());
+        ts.state_mut().i18n = Arc::new(I18n::load(locale, None));
+        let cq = ConflictQueueState {
+            yours_label: "main".into(),
+            theirs_label: "feature/conflict".into(),
+            entries: vec![
+                ConflictQueueEntry {
+                    path: "conflict_app.txt".into(),
+                    yours_status: ConflictSideStatus::Modified,
+                    theirs_status: ConflictSideStatus::Modified,
+                    resolved: false,
+                },
+                ConflictQueueEntry {
+                    path: "deleted_by_theirs.txt".into(),
+                    yours_status: ConflictSideStatus::Modified,
+                    theirs_status: ConflictSideStatus::Deleted,
+                    resolved: true,
+                },
+            ],
+            ..Default::default()
+        };
+        ts.state_mut()
+            .modal_stack
+            .push(ModalLayer::ConflictQueue(Box::new(cq)));
+        let buf = ts.render(50, 16);
+        let screen = rendered_screen(&buf);
+        for kind in [
+            ConflictQueueButtonKind::Merge,
+            ConflictQueueButtonKind::AcceptYours,
+            ConflictQueueButtonKind::AcceptTheirs,
+            ConflictQueueButtonKind::RevertResolved,
+            ConflictQueueButtonKind::Mergetool,
+            ConflictQueueButtonKind::Close,
+        ] {
+            assert!(
+                ts.hit_center_of(|t| matches!(t, HitTarget::ConflictQueueButton(k) if *k == kind))
+                    .is_some(),
+                "locale={locale} 50x16 ConflictQueue must expose {kind:?} button:\n{screen}"
+            );
+        }
+    }
+}
+
+#[test]
+fn round4_p2_02_hover_tooltip_clears_on_tab_switch_and_never_renders_off_log_tab() {
+    use jbgit_core::SignatureStatus;
+
+    let snap = snapshot();
+    let head_oid = snap.commits[0].oid;
+    let mut ts = zh_session_with_snapshot(snap);
+    ts.dispatch(Action::SwitchTab(WorkspaceTab::Log));
+    ts.state_mut().diff_caches.signatures.insert(
+        head_oid,
+        CommitSignature {
+            status: SignatureStatus::Good,
+            signer: Some("Alice <alice@example.com>".into()),
+            key: Some("DEADBEEFCAFEBABE".into()),
+        },
+    );
+    ts.state_mut().hover_target = Some(HitTarget::CommitSignatureCell {
+        visible_row: 0,
+        commit_oid: head_oid,
+    });
+    ts.state_mut().hover_pos = Some((40, 6));
+
+    // On Log tab, the signature tooltip renders.
+    let buf_log = ts.render(140, 40);
+    assert!(
+        rendered_screen(&buf_log).contains("提交签名"),
+        "signature tooltip should appear while hovering signature badge on Log tab"
+    );
+
+    // Switching to Commit tab without moving the mouse must clear hover state and hide tooltip.
+    ts.dispatch(Action::SwitchTab(WorkspaceTab::Commit));
+    assert!(ts.state().hover_target.is_none());
+    assert!(ts.state().hover_pos.is_none());
+    let buf_commit = ts.render(140, 40);
+    assert!(
+        !rendered_screen(&buf_commit).contains("提交签名"),
+        "signature tooltip must not linger after switching to Commit tab"
+    );
+
+    // Defense-in-depth: even if hover_target is set while on Commit tab, Log tooltip must not render.
+    ts.state_mut().hover_target = Some(HitTarget::CommitSignatureCell {
+        visible_row: 0,
+        commit_oid: head_oid,
+    });
+    ts.state_mut().hover_pos = Some((40, 6));
+    let buf_commit_guard = ts.render(140, 40);
+    assert!(
+        !rendered_screen(&buf_commit_guard).contains("提交签名"),
+        "Log-only tooltip must never render while active_tab != WorkspaceTab::Log"
+    );
+}
+
+#[test]
+fn round4_p2_03_branches_popup_narrow_50x16_title_does_not_overlap_buttons() {
+    for locale in ["zh-CN", "en-US"] {
+        let mut snap = snapshot();
+        snap.repo_name = "sandbox-repo".into();
+        let mut ts = TestSession::with_snapshot(snap);
+        ts.state_mut().i18n = Arc::new(I18n::load(locale, None));
+        ts.dispatch(Action::OpenBranchesPopup {
+            query: String::new(),
+        });
+        let buf = ts.render(50, 16);
+
+        let fetch_center = ts
+            .hit_center_of(|t| matches!(t, HitTarget::BranchPopupFetch))
+            .expect("50x16 BranchesPopup should keep Fetch button clickable");
+        let gear_center = ts
+            .hit_center_of(|t| matches!(t, HitTarget::BranchPopupSettings))
+            .expect("50x16 BranchesPopup should keep Gear button clickable");
+        assert_eq!(fetch_center.1, gear_center.1);
+
+        let top_row = rendered_row(&buf, fetch_center.1);
+        let fetch_icon_pos = top_row
+            .find('↻')
+            .expect("top border row must render Fetch button");
+        let prefix = &top_row[..fetch_icon_pos];
+        assert!(
+            prefix.contains("─ ") || prefix.ends_with("─ "),
+            "locale={locale} 50x16 title must be separated from Fetch button by border `─`, top_row={top_row:?}"
+        );
+        // Ensure the truncated title preserves balanced parentheses if repo name is shown.
+        if prefix.contains('(') {
+            assert!(
+                prefix.contains(')'),
+                "locale={locale} 50x16 title repo parens must not be overwritten by Fetch button, top_row={top_row:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn round4_p3_01_clone_failed_toast_picks_primary_fatal_line_over_trailing_boilerplate() {
+    let mut ts = zh_session_with_snapshot(snapshot());
+    let multi_err = "\
+Cloning into 'bad-target'...
+fatal: '/does/not/exist' does not appear to be a git repository
+fatal: Could not read from remote repository.
+
+Please make sure you have the correct access rights
+and the repository exists.
+";
+    ts.state_mut()
+        .apply_ui_async_event(crate::app::UiAsyncEvent::CloneFinished(Err(
+            multi_err.to_string()
+        )));
+    let notice = ts.state().status_notice.clone().unwrap_or_default();
+    assert!(
+        notice.contains("fatal: '/does/not/exist' does not appear to be a git repository"),
+        "clone failure toast should surface the primary `fatal:` line, got: {notice:?}"
+    );
+    assert!(
+        !notice.contains("and the repository exists."),
+        "clone failure toast must not show trailing boilerplate line, got: {notice:?}"
+    );
+
+    // Direct helper checks for error:, preamble-only fallback, and plain errors.
+    assert_eq!(
+        crate::app::pick_clone_toast_error("Cloning into 'x'...\nerror: invalid url\nhint: check"),
+        "error: invalid url"
+    );
+    assert_eq!(
+        crate::app::pick_clone_toast_error("Cloning into 'x'...\nos error 123\ntrailing detail"),
+        "os error 123"
+    );
+}
