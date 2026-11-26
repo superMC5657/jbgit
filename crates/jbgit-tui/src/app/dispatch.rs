@@ -1468,11 +1468,15 @@ impl AppState {
                     fh.diff.search.close();
                 }
             }
-            Action::DiffSearchJump(DiffScope::FileHistory, delta) => {
+            Action::DiffSearchJump {
+                scope: DiffScope::FileHistory,
+                delta,
+                wrap,
+            } => {
                 let tab_size = self.config.jbgit.diff.tab_size;
                 if let Some(fh) = self.modal_stack.file_history_mut() {
                     let diff = fh.current_diff_arc(&self.diff_caches);
-                    fh.diff.jump_search(*delta, diff.as_ref(), tab_size);
+                    fh.diff.jump_search(*delta, *wrap, diff.as_ref(), tab_size);
                 }
             }
             Action::DiffScroll(DiffScope::FileHistory, delta) => {
@@ -1771,14 +1775,18 @@ impl AppState {
                     ann.diff.search.close();
                 }
             }
-            Action::DiffSearchJump(DiffScope::Annotate, delta) => {
+            Action::DiffSearchJump {
+                scope: DiffScope::Annotate,
+                delta,
+                wrap,
+            } => {
                 let head_oid = self.repo_snapshot.as_ref().and_then(|s| s.head_oid);
                 let tab_size = self.config.jbgit.diff.tab_size;
                 if let Some(ann) = self.modal_stack.annotate_mut() {
                     let diff = ann
                         .desired_diff_key(head_oid)
                         .and_then(|k| self.diff_caches.peek_diff(&k).cloned());
-                    ann.diff.jump_search(*delta, diff.as_ref(), tab_size);
+                    ann.diff.jump_search(*delta, *wrap, diff.as_ref(), tab_size);
                 }
             }
             Action::DiffScroll(DiffScope::Annotate, delta) => {
@@ -2295,13 +2303,17 @@ impl AppState {
                     pd.diff.search.close();
                 }
             }
-            Action::DiffSearchJump(DiffScope::Push, delta) => {
+            Action::DiffSearchJump {
+                scope: DiffScope::Push,
+                delta,
+                wrap,
+            } => {
                 let tab_size = self.config.jbgit.diff.tab_size;
                 if let Some(pd) = self.modal_stack.push_dialog_mut() {
                     let diff = pd
                         .desired_diff_key(&self.diff_caches)
                         .and_then(|k| self.diff_caches.peek_diff(&k).cloned());
-                    pd.diff.jump_search(*delta, diff.as_ref(), tab_size);
+                    pd.diff.jump_search(*delta, *wrap, diff.as_ref(), tab_size);
                 }
             }
             Action::DiffScroll(DiffScope::Push, delta) => {
@@ -2347,9 +2359,8 @@ impl AppState {
                 {
                     let len = pd.completion_candidates(snap.as_deref()).len();
                     if len > 0 {
-                        pd.completion_selected = (pd.completion_selected as isize + *delta)
-                            .rem_euclid(len as isize)
-                            as usize;
+                        pd.completion_selected =
+                            crate::nav::step_index(pd.completion_selected, len, *delta, false);
                     }
                 }
             }
@@ -2437,7 +2448,7 @@ impl AppState {
                     && pd.remotes.len() > 1
                 {
                     let len = pd.remotes.len();
-                    let next = (pd.remote_idx as isize + *delta).rem_euclid(len as isize) as usize;
+                    let next = crate::nav::step_index(pd.remote_idx, len, *delta, false);
                     if next != pd.remote_idx {
                         let prev_remote = pd.remote().to_string();
                         pd.remote_idx = next;
@@ -2830,13 +2841,17 @@ impl AppState {
                     rf.diff.search.close();
                 }
             }
-            Action::DiffSearchJump(DiffScope::Reflog, delta) => {
+            Action::DiffSearchJump {
+                scope: DiffScope::Reflog,
+                delta,
+                wrap,
+            } => {
                 let tab_size = self.config.jbgit.diff.tab_size;
                 if let Some(rf) = self.modal_stack.reflog_mut() {
                     let diff = rf
                         .desired_diff_key(&self.diff_caches)
                         .and_then(|k| self.diff_caches.peek_diff(&k).cloned());
-                    rf.diff.jump_search(*delta, diff.as_ref(), tab_size);
+                    rf.diff.jump_search(*delta, *wrap, diff.as_ref(), tab_size);
                 }
             }
             Action::ReflogLoadMore => {

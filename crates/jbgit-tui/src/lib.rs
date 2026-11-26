@@ -17,6 +17,7 @@ mod input_stage;
 pub mod keymap;
 mod log_view;
 mod menus;
+mod nav;
 mod patch_view;
 mod remotes_view;
 pub mod repo_lifecycle;

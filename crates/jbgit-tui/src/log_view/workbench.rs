@@ -1077,10 +1077,10 @@ impl LogWorkbench {
             Action::LogSpeedSearchClose => {
                 self.speed_search.close();
             }
-            Action::LogSpeedSearchStep(forward) => {
+            Action::LogSpeedSearchStep { forward, wrap } => {
                 self.sync_speed_search(ctx.snap);
                 if self.speed_search.is_active()
-                    && let Some(row) = self.speed_search.step(*forward)
+                    && let Some(row) = self.speed_search.step(*forward, *wrap)
                 {
                     self.graph.jump_to(ctx.snap, row, true);
                 }
@@ -1608,10 +1608,16 @@ impl LogWorkbench {
             Action::DiffSearchClose(DiffScope::Log) => {
                 self.details.diff.search.close();
             }
-            Action::DiffSearchJump(DiffScope::Log, delta) => {
+            Action::DiffSearchJump {
+                scope: DiffScope::Log,
+                delta,
+                wrap,
+            } => {
                 let diff = self.details.current_diff(ctx.diff_caches).cloned();
                 let tab = self.details.diff.tab_size();
-                self.details.diff.jump_search(*delta, diff.as_ref(), tab);
+                self.details
+                    .diff
+                    .jump_search(*delta, *wrap, diff.as_ref(), tab);
             }
             Action::DiffScroll(DiffScope::Log, delta) => {
                 self.scroll_pane(ScrollPane::LogDiff, *delta, ctx.diff_caches);

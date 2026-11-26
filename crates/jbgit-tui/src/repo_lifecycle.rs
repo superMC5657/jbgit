@@ -72,6 +72,13 @@ pub enum CloneField {
 }
 
 impl CloneField {
+    pub const ALL: [Self; 4] = [
+        Self::Url,
+        Self::TargetDir,
+        Self::Depth,
+        Self::RecurseSubmodules,
+    ];
+
     pub const fn next(self) -> Self {
         match self {
             Self::Url => Self::TargetDir,
@@ -89,6 +96,11 @@ impl CloneField {
             Self::RecurseSubmodules => Self::Depth,
         }
     }
+
+    pub fn step_clamped(self, delta: isize) -> Self {
+        let cur = Self::ALL.iter().position(|f| *f == self).unwrap_or(0);
+        Self::ALL[crate::nav::step_index(cur, Self::ALL.len(), delta, false)]
+    }
 }
 
 /// Mutations applied to the active [`ModalLayer::CloneRepo`].
@@ -97,6 +109,7 @@ pub enum CloneDialogAction {
     SetFocus(CloneField),
     NextField,
     PrevField,
+    MoveField(isize),
     SelectAll,
     DeselectAll,
     InsertChar(char),
@@ -183,6 +196,10 @@ impl CloneDialogState {
             }
             CloneDialogAction::PrevField => {
                 self.focus = self.focus.prev();
+                self.selected_all = false;
+            }
+            CloneDialogAction::MoveField(delta) => {
+                self.focus = self.focus.step_clamped(delta);
                 self.selected_all = false;
             }
             CloneDialogAction::SelectAll => {
@@ -521,10 +538,10 @@ pub fn route_clone_repo_key(key: &KeyEvent, state: &AppState) -> Vec<Action> {
     let alt = key.modifiers.contains(KeyModifiers::ALT);
     match key.code {
         KeyCode::Esc => vec![Action::PopModal],
-        KeyCode::Tab | KeyCode::Down => vec![Action::CloneRepoUpdate(CloneDialogAction::NextField)],
-        KeyCode::BackTab | KeyCode::Up => {
-            vec![Action::CloneRepoUpdate(CloneDialogAction::PrevField)]
-        }
+        KeyCode::Tab => vec![Action::CloneRepoUpdate(CloneDialogAction::NextField)],
+        KeyCode::BackTab => vec![Action::CloneRepoUpdate(CloneDialogAction::PrevField)],
+        KeyCode::Down => vec![Action::CloneRepoUpdate(CloneDialogAction::MoveField(1))],
+        KeyCode::Up => vec![Action::CloneRepoUpdate(CloneDialogAction::MoveField(-1))],
         KeyCode::Enter => vec![Action::CloneRepoSubmit],
         KeyCode::Char('a' | 'A') if ctrl && !alt => {
             vec![Action::CloneRepoUpdate(CloneDialogAction::SelectAll)]

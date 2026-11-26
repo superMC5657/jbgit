@@ -286,21 +286,6 @@ pub fn popup_layout(screen: Rect, rows: usize, selected: usize) -> PopupLayout {
     PopupLayout { rect, list, scroll }
 }
 
-fn move_selection(rows: &[PopupRow], from: usize, delta: isize) -> usize {
-    let n = rows.len();
-    if n == 0 {
-        return 0;
-    }
-    let mut idx = from.min(n - 1);
-    for _ in 0..n {
-        idx = ((idx as isize + delta).rem_euclid(n as isize)) as usize;
-        if rows[idx].selectable() {
-            return idx;
-        }
-    }
-    from
-}
-
 /// Actions for activating popup row `idx` (Enter / → / click).
 pub fn activate_row(state: &AppState, query: &str, idx: usize) -> Vec<Action> {
     let rows = build_popup_rows(state, query);
@@ -382,21 +367,23 @@ pub fn route_branches_popup_key(key: &KeyEvent, state: &AppState) -> Vec<Action>
         KeyCode::Esc => vec![Action::PopModal],
         KeyCode::Up => vec![Action::PopupSetState {
             query,
-            selected: move_selection(&rows, selected, -1),
+            selected: crate::nav::step_selectable(&rows, selected, -1, false, PopupRow::selectable),
         }],
         KeyCode::Down => vec![Action::PopupSetState {
             query,
-            selected: move_selection(&rows, selected, 1),
+            selected: crate::nav::step_selectable(&rows, selected, 1, false, PopupRow::selectable),
         }],
         KeyCode::PageUp | KeyCode::PageDown => {
-            let mut sel = selected;
-            let d = if key.code == KeyCode::PageUp { -1 } else { 1 };
-            for _ in 0..10 {
-                sel = move_selection(&rows, sel, d);
-            }
+            let delta = if key.code == KeyCode::PageUp { -10 } else { 10 };
             vec![Action::PopupSetState {
                 query,
-                selected: sel,
+                selected: crate::nav::step_selectable(
+                    &rows,
+                    selected,
+                    delta,
+                    false,
+                    PopupRow::selectable,
+                ),
             }]
         }
         KeyCode::Enter | KeyCode::Right => activate_row(state, &query, selected),

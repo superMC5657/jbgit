@@ -1272,9 +1272,9 @@ impl MergeDialog {
         self.row() == MergeDialogRow::Message
     }
 
-    pub fn move_selection(&mut self, delta: isize) {
-        let len = MergeDialogRow::ALL.len() as isize;
-        self.selected = (self.selected as isize + delta).rem_euclid(len) as usize;
+    pub fn move_selection(&mut self, delta: isize, wrap: bool) {
+        self.selected =
+            crate::nav::step_index(self.selected, MergeDialogRow::ALL.len(), delta, wrap);
         self.selected_all = false;
     }
 
@@ -1343,6 +1343,8 @@ pub enum IdentityField {
 }
 
 impl IdentityField {
+    pub const ALL: [Self; 3] = [Self::Name, Self::Email, Self::Global];
+
     pub fn next(self) -> Self {
         match self {
             Self::Name => Self::Email,
@@ -1357,6 +1359,11 @@ impl IdentityField {
             Self::Email => Self::Name,
             Self::Global => Self::Email,
         }
+    }
+
+    pub fn step_clamped(self, delta: isize) -> Self {
+        let cur = Self::ALL.iter().position(|f| *f == self).unwrap_or(0);
+        Self::ALL[crate::nav::step_index(cur, Self::ALL.len(), delta, false)]
     }
 }
 
@@ -1585,9 +1592,9 @@ impl PullDialog {
         self.row() == PullDialogRow::Branch
     }
 
-    pub fn move_selection(&mut self, delta: isize) {
-        let len = PullDialogRow::ALL.len() as isize;
-        self.selected = (self.selected as isize + delta).rem_euclid(len) as usize;
+    pub fn move_selection(&mut self, delta: isize, wrap: bool) {
+        self.selected =
+            crate::nav::step_index(self.selected, PullDialogRow::ALL.len(), delta, wrap);
         self.selected_all = false;
     }
 
@@ -1818,9 +1825,9 @@ impl RebaseDialog {
         }
     }
 
-    pub fn move_selection(&mut self, delta: isize) {
-        let len = RebaseDialogRow::ALL.len() as isize;
-        self.selected = (self.selected as isize + delta).rem_euclid(len) as usize;
+    pub fn move_selection(&mut self, delta: isize, wrap: bool) {
+        self.selected =
+            crate::nav::step_index(self.selected, RebaseDialogRow::ALL.len(), delta, wrap);
         self.selected_all = false;
     }
 
@@ -2012,14 +2019,12 @@ impl CreatePatchDialog {
         self.row() == CreatePatchRow::Path && !self.to_clipboard
     }
 
-    pub fn move_selection(&mut self, delta: isize) {
-        let len = CreatePatchRow::ALL.len() as isize;
-        let mut next = (self.selected as isize + delta).rem_euclid(len) as usize;
-        if self.to_clipboard && CreatePatchRow::ALL[next] == CreatePatchRow::Path {
-            next = (next as isize + delta.signum()).rem_euclid(len) as usize;
-        }
-        self.selected = next;
+    pub fn move_selection(&mut self, delta: isize, wrap: bool) {
         self.selected_all = false;
+        self.selected =
+            crate::nav::step_selectable(&CreatePatchRow::ALL, self.selected, delta, wrap, |&row| {
+                !(self.to_clipboard && row == CreatePatchRow::Path)
+            });
     }
 
     pub fn toggle(&mut self, row: CreatePatchRow) {
@@ -2158,6 +2163,11 @@ impl NewBranchField {
             Self::Track => Self::Overwrite,
             Self::AutoSanitize => Self::Track,
         }
+    }
+
+    pub fn step_clamped(self, delta: isize) -> Self {
+        let cur = Self::ALL.iter().position(|f| *f == self).unwrap_or(0);
+        Self::ALL[crate::nav::step_index(cur, Self::ALL.len(), delta, false)]
     }
 }
 
@@ -2303,11 +2313,10 @@ impl StashPushDialog {
         r
     }
 
-    pub fn move_focus(&mut self, delta: isize) {
+    pub fn move_focus(&mut self, delta: isize, wrap: bool) {
         let rows = self.rows();
-        let cur = rows.iter().position(|f| *f == self.focused).unwrap_or(0) as isize;
-        let len = rows.len() as isize;
-        self.focused = rows[(cur + delta).rem_euclid(len) as usize];
+        let cur = rows.iter().position(|f| *f == self.focused).unwrap_or(0);
+        self.focused = rows[crate::nav::step_index(cur, rows.len(), delta, wrap)];
         self.selected_all = false;
     }
 
@@ -2526,13 +2535,23 @@ pub fn route_dialog_key(dialog: &mut Dialog, key: &KeyEvent, i18n: &I18n) -> Dia
                     DialogKey::Confirm
                 }
             }
-            KeyCode::Tab | KeyCode::Down => {
+            KeyCode::Tab => {
                 d.focused = d.focused.next();
                 d.selected_all = false;
                 DialogKey::Redraw
             }
-            KeyCode::BackTab | KeyCode::Up => {
+            KeyCode::BackTab => {
                 d.focused = d.focused.prev();
+                d.selected_all = false;
+                DialogKey::Redraw
+            }
+            KeyCode::Down => {
+                d.focused = d.focused.step_clamped(1);
+                d.selected_all = false;
+                DialogKey::Redraw
+            }
+            KeyCode::Up => {
+                d.focused = d.focused.step_clamped(-1);
                 d.selected_all = false;
                 DialogKey::Redraw
             }
@@ -2556,13 +2575,23 @@ pub fn route_dialog_key(dialog: &mut Dialog, key: &KeyEvent, i18n: &I18n) -> Dia
         },
         Dialog::NewBranch(d) => match key.code {
             KeyCode::Enter => DialogKey::Confirm,
-            KeyCode::Tab | KeyCode::Down => {
+            KeyCode::Tab => {
                 d.focused = d.focused.next();
                 d.selected_all = false;
                 DialogKey::Redraw
             }
-            KeyCode::BackTab | KeyCode::Up => {
+            KeyCode::BackTab => {
                 d.focused = d.focused.prev();
+                d.selected_all = false;
+                DialogKey::Redraw
+            }
+            KeyCode::Down => {
+                d.focused = d.focused.step_clamped(1);
+                d.selected_all = false;
+                DialogKey::Redraw
+            }
+            KeyCode::Up => {
+                d.focused = d.focused.step_clamped(-1);
                 d.selected_all = false;
                 DialogKey::Redraw
             }
@@ -2631,12 +2660,20 @@ pub fn route_dialog_key(dialog: &mut Dialog, key: &KeyEvent, i18n: &I18n) -> Dia
         },
         Dialog::StashPush(d) => match key.code {
             KeyCode::Enter => DialogKey::Confirm,
-            KeyCode::Tab | KeyCode::Down => {
-                d.move_focus(1);
+            KeyCode::Tab => {
+                d.move_focus(1, true);
                 DialogKey::Redraw
             }
-            KeyCode::BackTab | KeyCode::Up => {
-                d.move_focus(-1);
+            KeyCode::BackTab => {
+                d.move_focus(-1, true);
+                DialogKey::Redraw
+            }
+            KeyCode::Down => {
+                d.move_focus(1, false);
+                DialogKey::Redraw
+            }
+            KeyCode::Up => {
+                d.move_focus(-1, false);
                 DialogKey::Redraw
             }
             KeyCode::Char('u') if alt => {
@@ -2704,12 +2741,20 @@ pub fn route_dialog_key(dialog: &mut Dialog, key: &KeyEvent, i18n: &I18n) -> Dia
             let len = d.options.len().max(1);
             match key.code {
                 KeyCode::Enter => DialogKey::Confirm,
-                KeyCode::Up | KeyCode::Left | KeyCode::BackTab => {
-                    d.selected = (d.selected + len - 1) % len;
+                KeyCode::Up => {
+                    d.selected = crate::nav::step_index(d.selected, len, -1, false);
                     DialogKey::Redraw
                 }
-                KeyCode::Down | KeyCode::Right | KeyCode::Tab => {
-                    d.selected = (d.selected + 1) % len;
+                KeyCode::Down => {
+                    d.selected = crate::nav::step_index(d.selected, len, 1, false);
+                    DialogKey::Redraw
+                }
+                KeyCode::Left | KeyCode::BackTab => {
+                    d.selected = crate::nav::step_index(d.selected, len, -1, true);
+                    DialogKey::Redraw
+                }
+                KeyCode::Right | KeyCode::Tab => {
+                    d.selected = crate::nav::step_index(d.selected, len, 1, true);
                     DialogKey::Redraw
                 }
                 KeyCode::Char(' ') if plain && d.checkbox.is_some() => {
@@ -2807,12 +2852,20 @@ pub fn route_dialog_key(dialog: &mut Dialog, key: &KeyEvent, i18n: &I18n) -> Dia
                     DialogKey::Redraw
                 }
                 KeyCode::Enter => DialogKey::Confirm,
-                KeyCode::Up | KeyCode::BackTab => {
-                    d.move_selection(-1);
+                KeyCode::Up => {
+                    d.move_selection(-1, false);
                     DialogKey::Redraw
                 }
-                KeyCode::Down | KeyCode::Tab => {
-                    d.move_selection(1);
+                KeyCode::Down => {
+                    d.move_selection(1, false);
+                    DialogKey::Redraw
+                }
+                KeyCode::BackTab => {
+                    d.move_selection(-1, true);
+                    DialogKey::Redraw
+                }
+                KeyCode::Tab => {
+                    d.move_selection(1, true);
                     DialogKey::Redraw
                 }
                 KeyCode::Backspace if editing => {
@@ -2868,12 +2921,20 @@ pub fn route_dialog_key(dialog: &mut Dialog, key: &KeyEvent, i18n: &I18n) -> Dia
                 KeyCode::Enter => DialogKey::Confirm,
                 KeyCode::F(5) => DialogKey::Actions(vec![Action::PullDialogFetch]),
                 KeyCode::Char('r') if ctrl => DialogKey::Actions(vec![Action::PullDialogFetch]),
-                KeyCode::Up | KeyCode::BackTab => {
-                    d.move_selection(-1);
+                KeyCode::Up => {
+                    d.move_selection(-1, false);
                     DialogKey::Redraw
                 }
-                KeyCode::Down | KeyCode::Tab => {
-                    d.move_selection(1);
+                KeyCode::Down => {
+                    d.move_selection(1, false);
+                    DialogKey::Redraw
+                }
+                KeyCode::BackTab => {
+                    d.move_selection(-1, true);
+                    DialogKey::Redraw
+                }
+                KeyCode::Tab => {
+                    d.move_selection(1, true);
                     DialogKey::Redraw
                 }
                 KeyCode::Left => {
@@ -2927,12 +2988,20 @@ pub fn route_dialog_key(dialog: &mut Dialog, key: &KeyEvent, i18n: &I18n) -> Dia
             let editing = d.editing_text();
             match key.code {
                 KeyCode::Enter => DialogKey::Confirm,
-                KeyCode::Up | KeyCode::BackTab => {
-                    d.move_selection(-1);
+                KeyCode::Up => {
+                    d.move_selection(-1, false);
                     DialogKey::Redraw
                 }
-                KeyCode::Down | KeyCode::Tab => {
-                    d.move_selection(1);
+                KeyCode::Down => {
+                    d.move_selection(1, false);
+                    DialogKey::Redraw
+                }
+                KeyCode::BackTab => {
+                    d.move_selection(-1, true);
+                    DialogKey::Redraw
+                }
+                KeyCode::Tab => {
+                    d.move_selection(1, true);
                     DialogKey::Redraw
                 }
                 KeyCode::Left => {
@@ -2987,24 +3056,28 @@ pub fn route_dialog_key(dialog: &mut Dialog, key: &KeyEvent, i18n: &I18n) -> Dia
             let editing = d.editing_path();
             match key.code {
                 KeyCode::Enter => DialogKey::Confirm,
-                KeyCode::Up | KeyCode::BackTab => {
-                    d.move_selection(-1);
+                KeyCode::Up => {
+                    d.move_selection(-1, false);
                     DialogKey::Redraw
                 }
                 KeyCode::Down => {
-                    d.move_selection(1);
+                    d.move_selection(1, false);
+                    DialogKey::Redraw
+                }
+                KeyCode::BackTab => {
+                    d.move_selection(-1, true);
                     DialogKey::Redraw
                 }
                 KeyCode::Tab if editing => {
                     if let Some(next) = crate::patch_view::complete_path(&d.base, &d.path) {
                         d.set_path(next);
                     } else {
-                        d.move_selection(1);
+                        d.move_selection(1, true);
                     }
                     DialogKey::Redraw
                 }
                 KeyCode::Tab => {
-                    d.move_selection(1);
+                    d.move_selection(1, true);
                     DialogKey::Redraw
                 }
                 KeyCode::Backspace if editing => {

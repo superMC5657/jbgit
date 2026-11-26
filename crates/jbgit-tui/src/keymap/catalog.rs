@@ -1199,8 +1199,16 @@ pub fn execute_action(run: &KeyAction, state: &AppState) -> Option<Vec<Action>> 
             crate::diff_session::DIFF_HORIZ_SCROLL_STEP,
         )]),
         KeyAction::DiffSearch => Some(vec![Action::DiffSearchOpen(diff_scope(state))]),
-        KeyAction::DiffSearchNext => Some(vec![Action::DiffSearchJump(diff_scope(state), 1)]),
-        KeyAction::DiffSearchPrev => Some(vec![Action::DiffSearchJump(diff_scope(state), -1)]),
+        KeyAction::DiffSearchNext => Some(vec![Action::DiffSearchJump {
+            scope: diff_scope(state),
+            delta: 1,
+            wrap: true,
+        }]),
+        KeyAction::DiffSearchPrev => Some(vec![Action::DiffSearchJump {
+            scope: diff_scope(state),
+            delta: -1,
+            wrap: true,
+        }]),
         KeyAction::CycleDiffDock => Some(vec![Action::DiffCycleDock]),
         KeyAction::ZoomDiff => Some(vec![Action::ZoomDiff(!state.log.details.diff.zoomed)]),
 

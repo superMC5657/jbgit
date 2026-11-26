@@ -450,17 +450,17 @@ impl ChangesTreeSession {
         }
     }
 
-    pub fn select_next_file(&mut self, delta: isize, store: &DiffCacheStore) {
+    /// Steps to the next or previous file row, returning `true` when selection changed.
+    pub fn select_next_file(&mut self, delta: isize, store: &DiffCacheStore) -> bool {
         let files = self.file_row_positions(store);
-        if files.is_empty() {
-            return;
+        let Some(next) = crate::nav::step_sorted_position(&files, self.selected, delta) else {
+            return false;
+        };
+        if next == self.selected {
+            return false;
         }
-        let cur = files
-            .iter()
-            .position(|&p| p == self.selected)
-            .map_or(0, |i| i as isize + delta);
-        let next = cur.rem_euclid(files.len() as isize) as usize;
-        self.selected = files[next];
+        self.selected = next;
+        true
     }
 
     pub fn toggle_group_by_dir(&mut self) {
@@ -731,13 +731,12 @@ impl DiffSearchState {
         Some(self.matches[self.current].row_idx)
     }
 
-    /// Steps to the next (`delta >= 0`) or previous (`delta < 0`) match, wrapping around.
-    pub fn step(&mut self, delta: isize) -> Option<usize> {
+    /// Steps to the next (`delta >= 0`) or previous (`delta < 0`) match, wrapping when `wrap` is true.
+    pub fn step(&mut self, delta: isize, wrap: bool) -> Option<usize> {
         if self.matches.is_empty() {
             return None;
         }
-        let len = self.matches.len() as isize;
-        self.current = (self.current as isize + delta).rem_euclid(len) as usize;
+        self.current = crate::nav::step_index(self.current, self.matches.len(), delta, wrap);
         Some(self.matches[self.current].row_idx)
     }
 
@@ -944,21 +943,9 @@ impl DiffSession {
             return;
         }
         let cur = self.scroll.offset();
-        let target = if delta >= 0 {
-            offsets
-                .iter()
-                .copied()
-                .find(|&o| o > cur)
-                .unwrap_or(offsets[0])
-        } else {
-            offsets
-                .iter()
-                .copied()
-                .rev()
-                .find(|&o| o < cur)
-                .unwrap_or(*offsets.last().unwrap())
-        };
-        self.scroll.set_offset(target);
+        if let Some(target) = crate::nav::jump_sorted_anchor(&offsets, cur, delta) {
+            self.scroll.set_offset(target);
+        }
     }
 
     pub fn toggle_side_by_side(&mut self) {
@@ -1038,7 +1025,13 @@ impl DiffSession {
     }
 
     /// Jumps to the next (`delta >= 0`) or previous (`delta < 0`) search hit and centers `scroll`.
-    pub fn jump_search(&mut self, delta: isize, diff: Option<&Arc<FileDiff>>, tab_size: usize) {
+    pub fn jump_search(
+        &mut self,
+        delta: isize,
+        wrap: bool,
+        diff: Option<&Arc<FileDiff>>,
+        tab_size: usize,
+    ) {
         let Some(diff) = diff else {
             return;
         };
@@ -1046,7 +1039,7 @@ impl DiffSession {
             self.refresh_search(Some(diff), tab_size);
             return;
         }
-        if let Some(row_idx) = self.search.step(delta) {
+        if let Some(row_idx) = self.search.step(delta, wrap) {
             self.center_on_row(row_idx, diff, tab_size);
         }
     }
@@ -1162,12 +1155,16 @@ mod tests {
         let diff = sample_diff();
         let mut session = DiffSession::new(DiffContext::Three);
         assert_eq!(session.hunk_header_offsets(&diff), vec![0, 3]);
+        session.jump_hunk(-1, Some(&diff));
+        assert_eq!(session.scroll.offset(), 0);
         session.jump_hunk(1, Some(&diff));
         assert_eq!(session.scroll.offset(), 3);
         session.jump_hunk(1, Some(&diff));
+        assert_eq!(session.scroll.offset(), 3);
+        session.jump_hunk(-1, Some(&diff));
         assert_eq!(session.scroll.offset(), 0);
         session.jump_hunk(-1, Some(&diff));
-        assert_eq!(session.scroll.offset(), 3);
+        assert_eq!(session.scroll.offset(), 0);
 
         session.toggle_side_by_side();
         assert!(session.side_by_side);
@@ -1246,12 +1243,18 @@ mod tests {
         assert_eq!(session.search.matches.len(), 4);
         assert_eq!(session.search.current, 0);
 
-        session.jump_search(1, Some(&diff), 4);
-        assert_eq!(session.search.current, 1);
-        session.jump_search(-1, Some(&diff), 4);
+        session.jump_search(-1, false, Some(&diff), 4);
         assert_eq!(session.search.current, 0);
-        session.jump_search(-1, Some(&diff), 4);
+        session.jump_search(1, false, Some(&diff), 4);
+        assert_eq!(session.search.current, 1);
+        session.jump_search(-1, false, Some(&diff), 4);
+        assert_eq!(session.search.current, 0);
+        session.jump_search(-1, true, Some(&diff), 4);
         assert_eq!(session.search.current, 3);
+        session.jump_search(1, false, Some(&diff), 4);
+        assert_eq!(session.search.current, 3);
+        session.jump_search(1, true, Some(&diff), 4);
+        assert_eq!(session.search.current, 0);
 
         // Verify Split mode also indexes both left (side=0) and right (side=1) matches.
         session.toggle_side_by_side();
@@ -1304,5 +1307,61 @@ mod tests {
         store.clear_blames();
         assert!(store.peek_blame(&make_key(1, false)).is_none());
         assert!(store.peek_blame(&make_key(17, false)).is_none());
+    }
+
+    #[test]
+    fn changes_tree_select_next_file_clamps_without_wrapping() {
+        let mut store = DiffCacheStore::new();
+        let key = DetailsKey::single(Oid::from_bytes([9; 20]));
+        let mk_change = |path: &str, byte: u8| FileChange {
+            path: path.into(),
+            old_path: None,
+            kind: FileStatusKind::Modified,
+            additions: 1,
+            deletions: 0,
+            is_binary: false,
+            exists_in_workdir: true,
+            old_oid: Some(Oid::from_bytes([byte; 20])),
+            new_oid: Some(Oid::from_bytes([byte + 1; 20])),
+        };
+        store.insert_details(Arc::new(CommitChangesBundle {
+            key: key.clone(),
+            details: vec![],
+            changes: vec![
+                mk_change("dir/a.rs", 10),
+                mk_change("dir/b.rs", 20),
+                mk_change("z.rs", 30),
+            ],
+        }));
+
+        let mut tree = ChangesTreeSession {
+            current_key: Some(key),
+            group_by_dir: true,
+            ..Default::default()
+        };
+        let files = tree.file_row_positions(&store);
+        assert_eq!(files.len(), 3);
+        let first_file = files[0];
+        let last_file = files[2];
+
+        // Starting on the directory row (row 0), stepping backward clamps to first_file and
+        // stepping forward from past-end / last clamps to last_file without wrapping.
+        assert_ne!(tree.selected, first_file);
+        assert!(tree.select_next_file(-1, &store));
+        assert_eq!(tree.selected, first_file);
+        assert!(!tree.select_next_file(-1, &store));
+        assert_eq!(tree.selected, first_file);
+
+        assert!(tree.select_next_file(1, &store));
+        assert_eq!(tree.selected, files[1]);
+        assert!(tree.select_next_file(1, &store));
+        assert_eq!(tree.selected, last_file);
+        assert!(!tree.select_next_file(1, &store));
+        assert_eq!(tree.selected, last_file);
+
+        // Starting on the directory row with delta > 0 lands on the next file, not wrapping.
+        tree.selected = 0;
+        assert!(tree.select_next_file(1, &store));
+        assert_eq!(tree.selected, first_file);
     }
 }

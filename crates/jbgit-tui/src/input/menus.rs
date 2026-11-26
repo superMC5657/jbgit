@@ -22,22 +22,6 @@ use crate::log_view::PresentationToggle;
 use crate::menus;
 use crate::views::overlays::{context_menu_rect, menu_item_row_y};
 
-/// Index of the next selectable (non-separator) item in direction `delta`.
-fn step_selectable(items: &[ContextMenuItem], from: usize, delta: isize) -> usize {
-    let n = items.len();
-    if n == 0 {
-        return 0;
-    }
-    let mut idx = from.min(n - 1);
-    for _ in 0..n {
-        idx = (idx as isize + delta).rem_euclid(n as isize) as usize;
-        if !items[idx].is_separator() {
-            return idx;
-        }
-    }
-    from
-}
-
 /// True when the layer directly beneath the open context menus is the
 /// branches popup (actions then close the popup as well).
 fn menus_over_branches_popup(state: &AppState) -> bool {
@@ -128,19 +112,26 @@ pub fn route_context_menu_key(key: KeyEvent, state: &AppState) -> Vec<Action> {
     match key.code {
         KeyCode::Esc | KeyCode::Left => vec![Action::PopModal],
         KeyCode::Up | KeyCode::Char('k') if !items.is_empty() => {
-            let idx = step_selectable(items, selected, -1);
+            let idx =
+                crate::nav::step_selectable(items, selected, -1, false, |i| !i.is_separator());
             vec![Action::ContextMenuSetSelected { depth, idx }]
         }
         KeyCode::Down | KeyCode::Char('j') if !items.is_empty() => {
-            let idx = step_selectable(items, selected, 1);
+            let idx = crate::nav::step_selectable(items, selected, 1, false, |i| !i.is_separator());
             vec![Action::ContextMenuSetSelected { depth, idx }]
         }
         KeyCode::Home if !items.is_empty() => {
-            let idx = step_selectable(items, items.len() - 1, 1);
+            let idx = items
+                .iter()
+                .position(|i| !i.is_separator())
+                .unwrap_or(selected);
             vec![Action::ContextMenuSetSelected { depth, idx }]
         }
         KeyCode::End if !items.is_empty() => {
-            let idx = step_selectable(items, 0, -1);
+            let idx = items
+                .iter()
+                .rposition(|i| !i.is_separator())
+                .unwrap_or(selected);
             vec![Action::ContextMenuSetSelected { depth, idx }]
         }
         KeyCode::Right => {

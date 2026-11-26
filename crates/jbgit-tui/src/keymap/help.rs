@@ -405,20 +405,9 @@ pub fn resolve_help_selection(rows: &[HelpRow], selected: usize) -> usize {
 }
 
 pub fn step_help_selection(rows: &[HelpRow], from: usize, delta: isize) -> usize {
-    let n = rows.len();
-    if n == 0 || !rows.iter().any(HelpRow::is_selectable) {
+    if rows.is_empty() || !rows.iter().any(HelpRow::is_selectable) {
         return 0;
     }
-    let mut idx = resolve_help_selection(rows, from);
-    let step = if delta >= 0 { 1isize } else { -1isize };
-    let count = delta.unsigned_abs().max(1);
-    for _ in 0..count {
-        for _ in 0..n {
-            idx = (idx as isize + step).rem_euclid(n as isize) as usize;
-            if rows[idx].is_selectable() {
-                break;
-            }
-        }
-    }
-    idx
+    let resolved = resolve_help_selection(rows, from);
+    crate::nav::step_selectable(rows, resolved, delta, false, HelpRow::is_selectable)
 }

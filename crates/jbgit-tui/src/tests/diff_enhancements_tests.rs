@@ -267,6 +267,22 @@ fn diff_inline_search_incremental_navigation_and_esc_priority() {
     ts.send_key(KeyCode::Char('N'), KeyModifiers::SHIFT);
     assert_eq!(ts.state().log.details.diff.search.current, 2);
 
+    // Re-open editing (`/`) from the top and verify Up/Down arrow keys clamp instead of wrapping.
+    ts.send_key(KeyCode::Home, KeyModifiers::NONE);
+    ts.send_key(KeyCode::Char('/'), KeyModifiers::NONE);
+    for ch in "targetword".chars() {
+        ts.send_key(KeyCode::Char(ch), KeyModifiers::NONE);
+    }
+    assert_eq!(ts.state().log.details.diff.search.current, 0);
+    ts.send_key(KeyCode::Up, KeyModifiers::NONE);
+    assert_eq!(ts.state().log.details.diff.search.current, 0);
+    ts.send_key(KeyCode::Down, KeyModifiers::NONE);
+    ts.send_key(KeyCode::Down, KeyModifiers::NONE);
+    assert_eq!(ts.state().log.details.diff.search.current, 2);
+    ts.send_key(KeyCode::Down, KeyModifiers::NONE);
+    assert_eq!(ts.state().log.details.diff.search.current, 2);
+    ts.send_key(KeyCode::Enter, KeyModifiers::NONE);
+
     // Esc closes inline search FIRST without leaving Diff preview!
     ts.send_key(KeyCode::Esc, KeyModifiers::NONE);
     assert!(!ts.state().log.details.diff.search.active);

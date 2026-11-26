@@ -202,8 +202,9 @@ impl DetailsPaneState {
     }
 
     pub fn select_next_file(&mut self, delta: isize, store: &DiffCacheStore) {
-        self.changes.select_next_file(delta, store);
-        self.diff.reset_view_offsets();
+        if self.changes.select_next_file(delta, store) {
+            self.diff.reset_view_offsets();
+        }
     }
 
     /// Consumes `pending_select_path` once the active bundle has loaded.

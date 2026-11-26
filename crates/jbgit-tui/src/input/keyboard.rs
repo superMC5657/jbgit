@@ -33,8 +33,16 @@ pub(crate) fn route_diff_search_editing_key(key: &KeyEvent, scope: DiffScope) ->
         KeyCode::Enter => vec![Action::DiffSearchConfirm(scope)],
         KeyCode::Backspace => vec![Action::DiffSearchBackspace(scope)],
         KeyCode::Char('u') if ctrl => vec![Action::DiffSearchClear(scope)],
-        KeyCode::Down => vec![Action::DiffSearchJump(scope, 1)],
-        KeyCode::Up => vec![Action::DiffSearchJump(scope, -1)],
+        KeyCode::Down => vec![Action::DiffSearchJump {
+            scope,
+            delta: 1,
+            wrap: false,
+        }],
+        KeyCode::Up => vec![Action::DiffSearchJump {
+            scope,
+            delta: -1,
+            wrap: false,
+        }],
         KeyCode::Char(c) if !ctrl && !alt => vec![Action::DiffSearchChar(scope, c)],
         _ => Vec::new(),
     }
@@ -761,8 +769,14 @@ fn route_log_priority_key(key: &KeyEvent, state: &AppState) -> Option<Vec<Action
             return Some(match key.code {
                 KeyCode::Esc => vec![Action::LogSpeedSearchClose],
                 KeyCode::Enter => vec![Action::LogSpeedSearchConfirm],
-                KeyCode::Down => vec![Action::LogSpeedSearchStep(true)],
-                KeyCode::Up => vec![Action::LogSpeedSearchStep(false)],
+                KeyCode::Down => vec![Action::LogSpeedSearchStep {
+                    forward: true,
+                    wrap: false,
+                }],
+                KeyCode::Up => vec![Action::LogSpeedSearchStep {
+                    forward: false,
+                    wrap: false,
+                }],
                 KeyCode::Backspace => vec![Action::LogSpeedSearchBackspace],
                 _ => match plain_char(key) {
                     Some(c) => vec![Action::LogSpeedSearchInput(c)],
@@ -771,8 +785,18 @@ fn route_log_priority_key(key: &KeyEvent, state: &AppState) -> Option<Vec<Action
             });
         } else if state.focused_pane == PaneId::LogCommitTable && !ctrl && !alt {
             match key.code {
-                KeyCode::Char('n') => return Some(vec![Action::LogSpeedSearchStep(true)]),
-                KeyCode::Char('N') => return Some(vec![Action::LogSpeedSearchStep(false)]),
+                KeyCode::Char('n') => {
+                    return Some(vec![Action::LogSpeedSearchStep {
+                        forward: true,
+                        wrap: true,
+                    }]);
+                }
+                KeyCode::Char('N') => {
+                    return Some(vec![Action::LogSpeedSearchStep {
+                        forward: false,
+                        wrap: true,
+                    }]);
+                }
                 KeyCode::Esc => return Some(vec![Action::LogSpeedSearchClose]),
                 _ => {}
             }
@@ -995,10 +1019,18 @@ fn route_file_history_key(key: &KeyEvent, state: &AppState) -> Vec<Action> {
         KeyCode::Char('/') if diff_focused => Some(Action::DiffSearchOpen(DiffScope::FileHistory)),
         KeyCode::Char('/') => Some(Action::FileHistorySearchOpen),
         KeyCode::Char('n') if fh.diff.search.active || diff_focused => {
-            Some(Action::DiffSearchJump(DiffScope::FileHistory, 1))
+            Some(Action::DiffSearchJump {
+                scope: DiffScope::FileHistory,
+                delta: 1,
+                wrap: true,
+            })
         }
         KeyCode::Char('N') if fh.diff.search.active || diff_focused => {
-            Some(Action::DiffSearchJump(DiffScope::FileHistory, -1))
+            Some(Action::DiffSearchJump {
+                scope: DiffScope::FileHistory,
+                delta: -1,
+                wrap: true,
+            })
         }
         KeyCode::Char('[') => Some(Action::DiffJumpHunk(DiffScope::FileHistory, -1)),
         KeyCode::Char(']') => Some(Action::DiffJumpHunk(DiffScope::FileHistory, 1)),
@@ -1164,10 +1196,18 @@ fn route_annotate_key(key: &KeyEvent, state: &AppState) -> Vec<Action> {
             }
             KeyCode::Char('/') if diff_focused => Some(Action::DiffSearchOpen(DiffScope::Annotate)),
             KeyCode::Char('n') if diff_focused && ann.diff.search.active => {
-                Some(Action::DiffSearchJump(DiffScope::Annotate, 1))
+                Some(Action::DiffSearchJump {
+                    scope: DiffScope::Annotate,
+                    delta: 1,
+                    wrap: true,
+                })
             }
             KeyCode::Char('N') if diff_focused && ann.diff.search.active => {
-                Some(Action::DiffSearchJump(DiffScope::Annotate, -1))
+                Some(Action::DiffSearchJump {
+                    scope: DiffScope::Annotate,
+                    delta: -1,
+                    wrap: true,
+                })
             }
             KeyCode::Left | KeyCode::Char('h') if diff_focused => Some(Action::DiffScrollHoriz(
                 DiffScope::Annotate,
@@ -1344,7 +1384,7 @@ fn route_push_dialog_key(key: &KeyEvent, state: &AppState) -> Vec<Action> {
                 vec![Action::DiffScroll(DiffScope::Push, -1)]
             }
             PushDialogFocus::Files => vec![Action::PushMoveFile(-1)],
-            PushDialogFocus::Target => vec![Action::PushFocusPrev],
+            PushDialogFocus::Target => Vec::new(),
         },
         KeyCode::PageDown => match pd.focus {
             PushDialogFocus::Commits => vec![Action::PushMoveCommit(10)],
@@ -1440,12 +1480,20 @@ fn route_reflog_key(key: &KeyEvent, state: &AppState) -> Vec<Action> {
         KeyCode::Char('n')
             if !ctrl && !alt && rf.focus == ReflogFocus::Diff && rf.diff.search.active =>
         {
-            vec![Action::DiffSearchJump(DiffScope::Reflog, 1)]
+            vec![Action::DiffSearchJump {
+                scope: DiffScope::Reflog,
+                delta: 1,
+                wrap: true,
+            }]
         }
         KeyCode::Char('N')
             if !ctrl && !alt && rf.focus == ReflogFocus::Diff && rf.diff.search.active =>
         {
-            vec![Action::DiffSearchJump(DiffScope::Reflog, -1)]
+            vec![Action::DiffSearchJump {
+                scope: DiffScope::Reflog,
+                delta: -1,
+                wrap: true,
+            }]
         }
         KeyCode::Char('h') | KeyCode::Left if !ctrl && !alt && rf.focus == ReflogFocus::Diff => {
             vec![Action::DiffScrollHoriz(

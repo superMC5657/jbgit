@@ -145,8 +145,9 @@ impl StashWorkbench {
                 self.changes.expand_all(*expand, store);
             }
             Action::DiffNextFile(DiffScope::Stash, delta) => {
-                self.changes.select_next_file(*delta, store);
-                self.diff.reset_view_offsets();
+                if self.changes.select_next_file(*delta, store) {
+                    self.diff.reset_view_offsets();
+                }
             }
             Action::DiffJumpHunk(DiffScope::Stash, delta) => {
                 let diff = self.diff_key(store).and_then(|k| store.peek_diff(&k));
@@ -195,12 +196,16 @@ impl StashWorkbench {
             Action::DiffSearchClose(DiffScope::Stash) => {
                 self.diff.search.close();
             }
-            Action::DiffSearchJump(DiffScope::Stash, delta) => {
+            Action::DiffSearchJump {
+                scope: DiffScope::Stash,
+                delta,
+                wrap,
+            } => {
                 let diff = self
                     .diff_key(store)
                     .and_then(|k| store.peek_diff(&k).cloned());
                 let tab = self.diff.tab_size();
-                self.diff.jump_search(*delta, diff.as_ref(), tab);
+                self.diff.jump_search(*delta, *wrap, diff.as_ref(), tab);
             }
             Action::DiffScroll(DiffScope::Stash, delta) => {
                 self.scroll_diff(*delta, store);

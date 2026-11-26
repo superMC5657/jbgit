@@ -1280,3 +1280,68 @@ fn p1_p2_ux_regressions_menus_mouse_paste_popups_and_ignore_filter() {
         "Remote branch New Worktree must be hidden on git < 2.17"
     );
 }
+
+#[test]
+fn context_menu_navigation_clamps_without_wrapping() {
+    let mut ts = TestSession::with_snapshot(snapshot());
+    let _ = ts.render(140, 40);
+
+    // 1. Commit context menu in Log view (`Shift+F10` / `.`): Up/Down/j/k clamp at ends,
+    //    skipping separators, while Home/End jump to first/last selectable item.
+    ts.dispatch(Action::SelectLogRow(2));
+    let _ = ts.render(140, 40);
+    ts.send_key(KeyCode::Char('.'), KeyModifiers::NONE);
+    let (items, sel0, _) = top_menu(ts.state());
+    let first_sel = items.iter().position(|i| !i.is_separator()).unwrap();
+    let last_sel = items.iter().rposition(|i| !i.is_separator()).unwrap();
+    assert_eq!(sel0, first_sel);
+    assert!(last_sel > first_sel);
+
+    ts.send_key(KeyCode::Up, KeyModifiers::NONE);
+    assert_eq!(top_menu(ts.state()).1, first_sel);
+    ts.send_key(KeyCode::Char('k'), KeyModifiers::NONE);
+    assert_eq!(top_menu(ts.state()).1, first_sel);
+
+    ts.send_key(KeyCode::End, KeyModifiers::NONE);
+    assert_eq!(top_menu(ts.state()).1, last_sel);
+    ts.send_key(KeyCode::Down, KeyModifiers::NONE);
+    assert_eq!(top_menu(ts.state()).1, last_sel);
+    ts.send_key(KeyCode::Char('j'), KeyModifiers::NONE);
+    assert_eq!(top_menu(ts.state()).1, last_sel);
+
+    ts.send_key(KeyCode::Home, KeyModifiers::NONE);
+    assert_eq!(top_menu(ts.state()).1, first_sel);
+    ts.dispatch(Action::PopContextMenus);
+
+    // 2. File context menu in Commit workbench (`CommitChangesTree`): also clamps at ends.
+    ts.dispatch(Action::SwitchTab(WorkspaceTab::Commit));
+    ts.deliver_engine_event(EngineEvent::StageStatusLoaded {
+        status: Arc::new(StageStatusSnapshot {
+            staged: vec![],
+            unstaged: vec![StageEntry {
+                path: "file_a.rs".into(),
+                old_path: None,
+                kind: FileStatusKind::Modified,
+            }],
+            untracked: vec![],
+            conflicted: vec![],
+            ignored: vec![],
+            ..Default::default()
+        }),
+        epoch: 1,
+    });
+    // Row 0 is the "Changes" container, row 1 is "file_a.rs".
+    ts.dispatch(Action::SelectCommitStageRow(1));
+    let _ = ts.render(140, 40);
+    ts.send_key(KeyCode::Char('.'), KeyModifiers::NONE);
+    let (file_items, file_sel0, _) = top_menu(ts.state());
+    let file_first = file_items.iter().position(|i| !i.is_separator()).unwrap();
+    let file_last = file_items.iter().rposition(|i| !i.is_separator()).unwrap();
+    assert_eq!(file_sel0, file_first);
+    ts.send_key(KeyCode::Up, KeyModifiers::NONE);
+    assert_eq!(top_menu(ts.state()).1, file_first);
+    ts.send_key(KeyCode::End, KeyModifiers::NONE);
+    assert_eq!(top_menu(ts.state()).1, file_last);
+    ts.send_key(KeyCode::Down, KeyModifiers::NONE);
+    assert_eq!(top_menu(ts.state()).1, file_last);
+}

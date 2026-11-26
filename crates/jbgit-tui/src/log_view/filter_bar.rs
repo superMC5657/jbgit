@@ -274,16 +274,15 @@ impl LogSpeedSearchState {
         Some(self.matches[idx])
     }
 
-    /// Steps to the next (`forward == true`) or previous match, wrapping around.
-    pub fn step(&mut self, forward: bool) -> Option<usize> {
+    /// Steps to the next (`forward == true`) or previous match, wrapping when `wrap` is true.
+    pub fn step(&mut self, forward: bool, wrap: bool) -> Option<usize> {
         if self.matches.is_empty() {
             self.current = None;
             return None;
         }
         let len = self.matches.len();
         let next = match self.current {
-            Some(i) if forward => (i + 1) % len,
-            Some(i) => (i + len - 1) % len,
+            Some(i) => crate::nav::step_index(i, len, if forward { 1 } else { -1 }, wrap),
             None if forward => 0,
             None => len - 1,
         };

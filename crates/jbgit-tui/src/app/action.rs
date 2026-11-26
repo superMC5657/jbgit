@@ -157,7 +157,10 @@ pub enum Action {
     LogSpeedSearchBackspace,
     LogSpeedSearchConfirm,
     LogSpeedSearchClose,
-    LogSpeedSearchStep(bool),
+    LogSpeedSearchStep {
+        forward: bool,
+        wrap: bool,
+    },
     ApplyFilterField {
         field: FilterField,
         expr: String,
@@ -257,7 +260,11 @@ pub enum Action {
     DiffSearchClear(DiffScope),
     DiffSearchConfirm(DiffScope),
     DiffSearchClose(DiffScope),
-    DiffSearchJump(DiffScope, isize),
+    DiffSearchJump {
+        scope: DiffScope,
+        delta: isize,
+        wrap: bool,
+    },
     DiffScroll(DiffScope, isize),
     ScrollDetails(isize),
     CopyText(String),

@@ -2146,22 +2146,9 @@ impl CommitWorkbench {
             Action::DiffJumpHunk(DiffScope::Stage, dir) => {
                 self.bracket_jump_at = Some(ctx.now);
                 let headers = self.hunk_header_rows();
-                if !headers.is_empty() {
-                    let cur = self.diff_cursor_row;
-                    let target = if *dir >= 0 {
-                        headers
-                            .iter()
-                            .copied()
-                            .find(|&h| h > cur)
-                            .unwrap_or(headers[0])
-                    } else {
-                        headers
-                            .iter()
-                            .copied()
-                            .rev()
-                            .find(|&h| h < cur)
-                            .unwrap_or(*headers.last().unwrap())
-                    };
+                if let Some(target) =
+                    crate::nav::jump_sorted_anchor(&headers, self.diff_cursor_row, *dir)
+                {
                     self.diff_cursor_row = target;
                     let tab = self.diff_tab_size.get();
                     let vis_target = self.diff_visual_row_offset_of(target, tab);
@@ -2181,21 +2168,11 @@ impl CommitWorkbench {
                     })
                     .map(|(i, _)| i)
                     .collect();
-                if !file_indices.is_empty() {
-                    let cur = self.selected_idx;
-                    let next_pos = match file_indices.iter().position(|&i| i == cur) {
-                        Some(pos) => (pos as isize + *delta)
-                            .clamp(0, file_indices.len() as isize - 1)
-                            as usize,
-                        None if *delta >= 0 => {
-                            file_indices.iter().position(|&i| i > cur).unwrap_or(0)
-                        }
-                        None => file_indices
-                            .iter()
-                            .rposition(|&i| i < cur)
-                            .unwrap_or(file_indices.len() - 1),
-                    };
-                    self.select_row(file_indices[next_pos]);
+                if let Some(next_row) =
+                    crate::nav::step_sorted_position(&file_indices, self.selected_idx, *delta)
+                    && next_row != self.selected_idx
+                {
+                    self.select_row(next_row);
                     self.multi_selected.clear();
                 }
             }
@@ -2290,13 +2267,17 @@ impl CommitWorkbench {
             Action::DiffSearchClose(DiffScope::Stage) => {
                 self.diff_search.close();
             }
-            Action::DiffSearchJump(DiffScope::Stage, delta) => {
+            Action::DiffSearchJump {
+                scope: DiffScope::Stage,
+                delta,
+                wrap,
+            } => {
                 if self.diff_search.active
                     && self.diff_search.matches.is_empty()
                     && !self.diff_search.query.is_empty()
                 {
                     self.refresh_diff_search();
-                } else if let Some(row_idx) = self.diff_search.step(*delta) {
+                } else if let Some(row_idx) = self.diff_search.step(*delta, *wrap) {
                     self.center_diff_on_row(row_idx);
                 }
             }
@@ -2714,9 +2695,8 @@ impl CommitWorkbench {
             Action::CommitAuthorCycleCompletion(delta) => {
                 let len = self.author_candidates(ctx.snap).len();
                 if len > 0 {
-                    let next =
-                        (self.author_completion_idx as isize + *delta).rem_euclid(len as isize);
-                    self.author_completion_idx = next as usize;
+                    self.author_completion_idx =
+                        crate::nav::step_index(self.author_completion_idx, len, *delta, false);
                 }
             }
             Action::CommitAuthorAcceptCompletion => {
