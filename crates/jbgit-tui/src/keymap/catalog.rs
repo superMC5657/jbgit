@@ -50,36 +50,35 @@ pub struct StructuralHint {
 pub struct NormalStructuralHints {
     pub leading: Option<StructuralHint>,
     pub after_primary: Option<StructuralHint>,
-    pub console_probe_fallback: Option<StructuralHint>,
-    pub log_changes_copy_path_fallback: Option<StructuralHint>,
     pub help_trailing: Option<StructuralHint>,
 }
 
-const COMMIT_EDITOR_ACTIONS: [KeyAction; 5] = [
+const COMMIT_EDITOR_ACTIONS: [KeyAction; 6] = [
     KeyAction::Commit,
     KeyAction::CommitAndPush,
     KeyAction::ToggleAmend,
     KeyAction::ToggleSignoff,
     KeyAction::CommitHistory,
+    KeyAction::EditCommitMessageExternal,
 ];
 
-const ADVANCED_TOOL_ACTIONS: [(&KeyAction, &str); 9] = [
-    (&KeyAction::CloneRepository, "—"),
-    (&KeyAction::CycleGpgSign, "—"),
-    (&KeyAction::Palette, "—"),
-    (&KeyAction::ToggleGlyphMode, "F12"),
-    (&KeyAction::CycleGraphRenderer, "F8"),
-    (&KeyAction::UpdateSubmodules, "—"),
-    (&KeyAction::Unshallow, "—"),
-    (&KeyAction::LogLoadMore, "—"),
-    (&KeyAction::GitStatusProbe, "Console: p"),
+const ADVANCED_TOOL_ACTIONS: [KeyAction; 9] = [
+    KeyAction::CloneRepository,
+    KeyAction::CycleGpgSign,
+    KeyAction::Palette,
+    KeyAction::ToggleGlyphMode,
+    KeyAction::CycleGraphRenderer,
+    KeyAction::UpdateSubmodules,
+    KeyAction::Unshallow,
+    KeyAction::LogLoadMore,
+    KeyAction::GitStatusProbe,
 ];
 
 pub const fn commit_editor_actions() -> &'static [KeyAction] {
     &COMMIT_EDITOR_ACTIONS
 }
 
-pub const fn advanced_tool_actions() -> &'static [(&'static KeyAction, &'static str)] {
+pub const fn advanced_tool_actions() -> &'static [KeyAction] {
     &ADVANCED_TOOL_ACTIONS
 }
 
@@ -153,12 +152,9 @@ pub fn branch_speed_search_hints(state: &AppState) -> Vec<StructuralHint> {
     ]
 }
 
-pub fn commit_editor_structural_hints(
-    state: &AppState,
-    editing_author: bool,
-) -> (StructuralHint, StructuralHint) {
+pub fn commit_editor_structural_hints(state: &AppState, editing_author: bool) -> StructuralHint {
     let t = |k: &str| state.i18n.t(k).to_string();
-    let esc_hint = if editing_author {
+    if editing_author {
         StructuralHint {
             key: "Enter/Esc".into(),
             label: t("view.footer.pill.apply"),
@@ -170,13 +166,7 @@ pub fn commit_editor_structural_hints(
             label: state.i18n.t("help.action.back_to_changes").to_string(),
             action: None,
         }
-    };
-    let edit_hint = StructuralHint {
-        key: "Ctrl+E".into(),
-        label: t("view.footer.pill.edit"),
-        action: None,
-    };
-    (esc_hint, edit_hint)
+    }
 }
 
 pub fn normal_structural_hints(state: &AppState) -> NormalStructuralHints {
@@ -239,21 +229,6 @@ pub fn normal_structural_hints(state: &AppState) -> NormalStructuralHints {
         None
     };
 
-    let console_probe_fallback = if state.active_tab == WorkspaceTab::Console
-        && state.focused_pane == PaneId::ConsoleCommandList
-        && km
-            .primary_key_for(&[KeymapScope::Global], &KeyAction::GitStatusProbe)
-            .is_none()
-    {
-        Some(StructuralHint {
-            key: super::actions::DEFAULT_CONSOLE_PROBE_CHAR.to_string(),
-            label: t("view.footer.pill.status_probe"),
-            action: Some(KeyAction::GitStatusProbe),
-        })
-    } else {
-        None
-    };
-
     let help_trailing = if state.active_tab == WorkspaceTab::Console
         && state.focused_pane == PaneId::ConsoleOutputDetail
     {
@@ -266,25 +241,9 @@ pub fn normal_structural_hints(state: &AppState) -> NormalStructuralHints {
         None
     };
 
-    let log_changes_copy_path_fallback = if state.active_tab == WorkspaceTab::Log
-        && state.focused_pane == PaneId::LogChangesTree
-        && !is_log_diff_zoomed(state)
-        && super::actions::is_plain_c_copy_file_path_fallback_active(state)
-    {
-        Some(StructuralHint {
-            key: "c".to_string(),
-            label: t("view.footer.pill.copy_file_path"),
-            action: Some(KeyAction::CopyFilePath),
-        })
-    } else {
-        None
-    };
-
     NormalStructuralHints {
         leading,
         after_primary,
-        console_probe_fallback,
-        log_changes_copy_path_fallback,
         help_trailing,
     }
 }
@@ -500,8 +459,15 @@ pub fn is_action_applicable(run: &KeyAction, state: &AppState) -> bool {
         | KeyAction::Reword
         | KeyAction::DropCommit
         | KeyAction::CollapseLinearBranch
-        | KeyAction::ExpandLinearBranch => {
+        | KeyAction::ExpandLinearBranch
+        | KeyAction::NavLogBack
+        | KeyAction::NavLogForward => {
             state.active_tab == WorkspaceTab::Log && state.focused_pane == PaneId::LogCommitTable
+        }
+        KeyAction::ToggleBranchCompareTreeDiff => {
+            state.active_tab == WorkspaceTab::Log
+                && state.focused_pane == PaneId::LogCommitTable
+                && state.log.branch_compare.is_some()
         }
         KeyAction::ToggleOnlyAffectedChanges => {
             state.active_tab == WorkspaceTab::Log
@@ -538,9 +504,15 @@ pub fn is_action_applicable(run: &KeyAction, state: &AppState) -> bool {
         | KeyAction::ToggleNoMerges
         | KeyAction::ToggleLinearBek
         | KeyAction::LogSpeedSearch
-        | KeyAction::MaximizeCommitMessage
         | KeyAction::OpenReflog
         | KeyAction::ToggleBranchesPane => state.active_tab == WorkspaceTab::Log,
+        KeyAction::MaximizeCommitMessage => {
+            state.active_tab == WorkspaceTab::Log
+                && matches!(
+                    state.focused_pane,
+                    PaneId::LogCommitTable | PaneId::LogDetailsDiff
+                )
+        }
         KeyAction::FileHistory => {
             (state.active_tab == WorkspaceTab::Log && state.focused_pane == PaneId::LogChangesTree)
                 || (state.active_tab == WorkspaceTab::Commit
@@ -587,6 +559,11 @@ pub fn is_action_applicable(run: &KeyAction, state: &AppState) -> bool {
         | KeyAction::ToggleAmend
         | KeyAction::ToggleSignoff
         | KeyAction::CommitHistory => state.active_tab == WorkspaceTab::Commit,
+        KeyAction::EditCommitMessageExternal => {
+            state.active_tab == WorkspaceTab::Commit
+                && state.focused_pane == PaneId::CommitMessageEditor
+                && !state.stage_workbench.editing_author()
+        }
         KeyAction::EditFile => {
             state.active_tab == WorkspaceTab::Commit
                 && matches!(
@@ -597,6 +574,10 @@ pub fn is_action_applicable(run: &KeyAction, state: &AppState) -> bool {
         KeyAction::ToggleGroup => matches!(
             state.focused_pane,
             PaneId::CommitChangesTree | PaneId::LogChangesTree | PaneId::StashDiffPreview
+        ),
+        KeyAction::ChangesExpandAll | KeyAction::ChangesCollapseAll => matches!(
+            state.focused_pane,
+            PaneId::LogChangesTree | PaneId::StashDiffPreview | PaneId::CommitChangesTree
         ),
         KeyAction::StashNew
         | KeyAction::StashApply
@@ -680,6 +661,20 @@ pub fn execute_action(run: &KeyAction, state: &AppState) -> Option<Vec<Action>> 
         KeyAction::ExpandLinearBranch => Some(notice_on_err(graph_expand_selected(state))),
         KeyAction::CollapseAllLinearBranches => Some(notice_on_err(graph_collapse_all(state))),
         KeyAction::ExpandAllLinearBranches => Some(notice_on_err(graph_expand_all(state))),
+        KeyAction::NavLogBack => Some(vec![Action::NavLogBack]),
+        KeyAction::NavLogForward => Some(vec![Action::NavLogForward]),
+        KeyAction::ToggleBranchCompareTreeDiff => Some(vec![Action::ToggleBranchCompareTreeDiff]),
+        KeyAction::ChangesExpandAll | KeyAction::ChangesCollapseAll => {
+            let expand = matches!(run, KeyAction::ChangesExpandAll);
+            match state.active_tab {
+                WorkspaceTab::Commit => Some(vec![Action::StageExpandAll(expand)]),
+                WorkspaceTab::Stash => {
+                    Some(vec![Action::ChangesExpandAll(ChangesHost::Stash, expand)])
+                }
+                _ => Some(vec![Action::ChangesExpandAll(ChangesHost::Log, expand)]),
+            }
+        }
+        KeyAction::EditCommitMessageExternal => Some(vec![Action::OpenExternalEditorMessage]),
         KeyAction::UpdateSubmodules => {
             if let Err(msg) = state.require_no_ongoing() {
                 return Some(vec![Action::Notice(msg)]);
@@ -1340,7 +1335,11 @@ pub fn shortcut_for_action(
     let mut scopes = super::actions::scopes_for_context(state);
     for &s in preferred_scopes {
         if !scopes.contains(&s) {
-            scopes.push(s);
+            if let Some(global_idx) = scopes.iter().position(|&x| x == KeymapScope::Global) {
+                scopes.insert(global_idx, s);
+            } else {
+                scopes.push(s);
+            }
         }
     }
     resolve_action_shortcut(state, &scopes, action)

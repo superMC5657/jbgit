@@ -128,7 +128,7 @@ impl AppConfig {
         let mut final_preset = config.keymap.preset.clone();
         let mut keymap_overlays: Vec<KeymapConfigOverlay> = Vec::new();
 
-        // Pass 1: Load jbgit.toml / config.toml plus optional legacy theme.toml / keymap.toml overlays.
+        // Pass 1: Load jbgit.toml / config.toml plus optional legacy theme.toml overlays.
         for &(dir, allow_config_toml_alias) in layers {
             let mut flags = OverlayFlags::default();
             let mut jbgit_km_preset: Option<KeymapPreset> = None;
@@ -192,13 +192,6 @@ impl AppConfig {
                     ..Default::default()
                 });
             }
-
-            load_toml_overlay::<KeymapConfigOverlay>(&dir.join("keymap.toml"), |ov| {
-                if let Some(p) = &ov.preset {
-                    final_preset = p.clone();
-                }
-                keymap_overlays.push(ov.clone());
-            });
         }
 
         // Pass 2: Load layered `themes/<final_flavor>.toml` overrides.
@@ -211,7 +204,7 @@ impl AppConfig {
         }
 
         // Pass 3: Build keymap from `keymaps/default.toml`, then `keymaps/<final_preset>.toml`,
-        // then apply collected `keymap.toml` overlays without re-triggering preset resets.
+        // then apply collected `[keymap]` settings from `jbgit.toml` without re-triggering preset resets.
         let mut keymap = KeymapConfig::for_preset(KeymapPreset::Default);
         for &(dir, _) in layers {
             load_toml_overlay::<KeymapConfigOverlay>(
@@ -304,9 +297,6 @@ impl AppConfig {
             }
             self.theme.merge_overlay(ov);
         });
-        load_toml_overlay::<KeymapConfigOverlay>(&dir.join("keymap.toml"), |ov| {
-            self.keymap.merge_overlay(ov);
-        });
 
         // Honor jbgit.toml `[general].flavor` / `[graph].glyph_mode` when theme.toml in this layer did not override them.
         if flags.jbgit_flavor_set && !flags.theme_flavor_set {
@@ -335,7 +325,7 @@ impl AppConfig {
             Some("themes/gruvbox-dark" | "themes/gruvbox-dark.toml" | "gruvbox-dark") => {
                 BUILTIN_THEME_GRUVBOX_DARK_TOML
             }
-            Some("keymap" | "keymap.toml" | "keymaps/default" | "keymaps/default.toml") => {
+            Some("keymap" | "keymaps/default" | "keymaps/default.toml") => {
                 BUILTIN_KEYMAP_DEFAULT_TOML
             }
             Some("keymaps/jetbrains" | "keymaps/jetbrains.toml" | "jetbrains") => {
@@ -1395,6 +1385,7 @@ gutter_width = 4
         for list in [
             &default_cfg.global,
             &default_cfg.log,
+            &default_cfg.log_changes,
             &default_cfg.commit,
             &default_cfg.branch,
             &default_cfg.diff,
@@ -1415,6 +1406,7 @@ gutter_width = 4
             for sec in [
                 &ov.global,
                 &ov.log,
+                &ov.log_changes,
                 &ov.commit,
                 &ov.branch,
                 &ov.diff,
@@ -1601,11 +1593,17 @@ border_focused = "#040506"
         use crate::keymap::KeyAction;
 
         let dir = tempfile::tempdir().unwrap();
+        let repo_dir = tempfile::tempdir().unwrap();
         fs::create_dir_all(dir.path().join("keymaps")).unwrap();
+        fs::create_dir_all(repo_dir.path().join("keymaps")).unwrap();
 
         // 1. Overriding `keymaps/jetbrains.toml` replaces built-in jetbrains overlay:
         //    editing <C-t> changes it, and omitting <C-k> removes it cleanly.
-        fs::write(dir.path().join("keymap.toml"), "preset = \"jetbrains\"\n").unwrap();
+        fs::write(
+            dir.path().join("jbgit.toml"),
+            "[keymap]\npreset = \"jetbrains\"\n",
+        )
+        .unwrap();
         fs::write(
             dir.path().join("keymaps/jetbrains.toml"),
             r#"
@@ -1636,7 +1634,11 @@ prepend_keymap = [
         );
 
         // 2. Overriding `keymaps/default.toml` replaces sections so deleted bindings stay removed.
-        fs::write(dir.path().join("keymap.toml"), "preset = \"default\"\n").unwrap();
+        fs::write(
+            dir.path().join("jbgit.toml"),
+            "[keymap]\npreset = \"default\"\n",
+        )
+        .unwrap();
         fs::write(
             dir.path().join("keymaps/default.toml"),
             r#"
@@ -1653,7 +1655,8 @@ key_bindings = [
         // Unspecified `[log]` still keeps built-in default bindings
         assert!(!def_cfg.keymap.log.key_bindings.is_empty());
 
-        // 3. Custom preset `my-keys` overlays on top of `keymaps/default.toml`, and `keymap.toml` layers on top.
+        // 3. Custom preset `my-keys` overlays on top of `keymaps/default.toml`, higher layer
+        //    `keymaps/my-keys.toml` layers on top, and legacy `keymap.toml` is ignored.
         fs::remove_file(dir.path().join("keymaps/default.toml")).unwrap();
         fs::write(
             dir.path().join("keymaps/my-keys.toml"),
@@ -1668,10 +1671,13 @@ prepend_keymap = [
         )
         .unwrap();
         fs::write(
-            dir.path().join("keymap.toml"),
+            dir.path().join("jbgit.toml"),
+            "[keymap]\npreset = \"my-keys\"\n",
+        )
+        .unwrap();
+        fs::write(
+            repo_dir.path().join("keymaps/my-keys.toml"),
             r#"
-preset = "my-keys"
-
 [global]
 prepend_keymap = [
     { on = "<F10>", run = "quit" },
@@ -1679,7 +1685,18 @@ prepend_keymap = [
 "#,
         )
         .unwrap();
-        let custom_cfg = AppConfig::load_from_layers(&[(dir.path(), false)]);
+        fs::write(
+            repo_dir.path().join("keymap.toml"),
+            r#"
+[global]
+prepend_keymap = [
+    { on = "<F11>", run = "help" },
+]
+"#,
+        )
+        .unwrap();
+        let custom_cfg =
+            AppConfig::load_from_layers(&[(dir.path(), false), (repo_dir.path(), true)]);
         assert_eq!(
             custom_cfg.keymap.preset,
             KeymapPreset::Custom("my-keys".to_string())
@@ -1698,6 +1715,15 @@ prepend_keymap = [
                 .primary_key_for(&[KeymapScope::Global], &KeyAction::Quit)
                 .as_deref(),
             Some("F10")
+        );
+        assert!(
+            !custom_cfg
+                .keymap
+                .global
+                .key_bindings
+                .iter()
+                .any(|b| b.on == ["<F11>"]),
+            "legacy keymap.toml must not be loaded"
         );
     }
 

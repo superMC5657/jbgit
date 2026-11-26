@@ -150,6 +150,12 @@ pub enum KeyAction {
     ExpandLinearBranch,
     CollapseAllLinearBranches,
     ExpandAllLinearBranches,
+    NavLogBack,
+    NavLogForward,
+    ToggleBranchCompareTreeDiff,
+    ChangesExpandAll,
+    ChangesCollapseAll,
+    EditCommitMessageExternal,
     Unknown(String),
 }
 
@@ -196,6 +202,12 @@ impl KeyAction {
             "expand_linear_branch" => Self::ExpandLinearBranch,
             "collapse_all_linear_branches" => Self::CollapseAllLinearBranches,
             "expand_all_linear_branches" => Self::ExpandAllLinearBranches,
+            "nav_log_back" => Self::NavLogBack,
+            "nav_log_forward" => Self::NavLogForward,
+            "toggle_branch_compare_tree_diff" => Self::ToggleBranchCompareTreeDiff,
+            "changes_expand_all" => Self::ChangesExpandAll,
+            "changes_collapse_all" => Self::ChangesCollapseAll,
+            "edit_commit_message_external" => Self::EditCommitMessageExternal,
             "palette" => Self::Palette,
             "toggle_glyph_mode" => Self::ToggleGlyphMode,
             "cycle_graph_renderer" => Self::CycleGraphRenderer,
@@ -324,6 +336,12 @@ impl KeyAction {
             Self::ExpandLinearBranch => "expand_linear_branch",
             Self::CollapseAllLinearBranches => "collapse_all_linear_branches",
             Self::ExpandAllLinearBranches => "expand_all_linear_branches",
+            Self::NavLogBack => "nav_log_back",
+            Self::NavLogForward => "nav_log_forward",
+            Self::ToggleBranchCompareTreeDiff => "toggle_branch_compare_tree_diff",
+            Self::ChangesExpandAll => "changes_expand_all",
+            Self::ChangesCollapseAll => "changes_collapse_all",
+            Self::EditCommitMessageExternal => "edit_commit_message_external",
             Self::Palette => "palette",
             Self::ToggleGlyphMode => "toggle_glyph_mode",
             Self::CycleGraphRenderer => "cycle_graph_renderer",
@@ -538,6 +556,12 @@ impl KeyAction {
             Self::ExpandLinearBranch,
             Self::CollapseAllLinearBranches,
             Self::ExpandAllLinearBranches,
+            Self::NavLogBack,
+            Self::NavLogForward,
+            Self::ToggleBranchCompareTreeDiff,
+            Self::ChangesExpandAll,
+            Self::ChangesCollapseAll,
+            Self::EditCommitMessageExternal,
         ];
         // Compile-time guard: adding a new KeyAction variant forces updating `all` above.
         for a in &all {
@@ -664,7 +688,13 @@ impl KeyAction {
                 | Self::CollapseLinearBranch
                 | Self::ExpandLinearBranch
                 | Self::CollapseAllLinearBranches
-                | Self::ExpandAllLinearBranches => {}
+                | Self::ExpandAllLinearBranches
+                | Self::NavLogBack
+                | Self::NavLogForward
+                | Self::ToggleBranchCompareTreeDiff
+                | Self::ChangesExpandAll
+                | Self::ChangesCollapseAll
+                | Self::EditCommitMessageExternal => {}
             }
         }
         all
@@ -792,6 +822,12 @@ impl KeyAction {
             Self::ExpandLinearBranch => "view.footer.pill.expand",
             Self::CollapseAllLinearBranches => "view.footer.pill.collapse_all",
             Self::ExpandAllLinearBranches => "view.footer.pill.expand_all",
+            Self::NavLogBack => "view.footer.pill.nav_log_back",
+            Self::NavLogForward => "view.footer.pill.nav_log_forward",
+            Self::ToggleBranchCompareTreeDiff => "view.footer.pill.branch_compare_tree_diff",
+            Self::ChangesExpandAll => "view.footer.pill.expand_all",
+            Self::ChangesCollapseAll => "view.footer.pill.collapse_all",
+            Self::EditCommitMessageExternal => "view.footer.pill.edit",
         })
     }
 }
@@ -842,6 +878,7 @@ fn key_token_kind_to_code(kind: jbgit_core::KeyTokenKind) -> KeyCode {
         KeyTokenKind::End => KeyCode::End,
         KeyTokenKind::PageUp => KeyCode::PageUp,
         KeyTokenKind::PageDown => KeyCode::PageDown,
+        KeyTokenKind::Menu => KeyCode::Menu,
         KeyTokenKind::F(n) => KeyCode::F(n),
     }
 }
@@ -937,6 +974,7 @@ impl KeyStroke {
             KeyCode::Tab if self.shift => s.push_str("Shift+Tab"),
             KeyCode::Tab => s.push_str("Tab"),
             KeyCode::BackTab => s.push_str("Shift+Tab"),
+            KeyCode::Menu => s.push_str("Menu"),
             KeyCode::F(n) => s.push_str(&format!("F{n}")),
             _ => s.push('?'),
         }
@@ -1122,15 +1160,7 @@ mod tests {
     #[test]
     fn default_keymap_has_no_unknown_actions() {
         let cfg = AppConfig::default();
-        for scope in [
-            crate::config::KeymapScope::Global,
-            crate::config::KeymapScope::Log,
-            crate::config::KeymapScope::Commit,
-            crate::config::KeymapScope::Branch,
-            crate::config::KeymapScope::Diff,
-            crate::config::KeymapScope::Stash,
-            crate::config::KeymapScope::Console,
-        ] {
+        for scope in crate::config::KeymapScope::ALL {
             for b in cfg.keymap.bindings_for(scope) {
                 assert!(
                     !matches!(b.run, KeyAction::Unknown(_)),
@@ -1603,9 +1633,12 @@ prepend_keymap = [
                     {
                         continue;
                     }
-                    // Explicit intentional shadowing: in `LogChangesTree`, `p` copies the selected
-                    // file's patch instead of falling through to global `p -> git_pull`.
-                    if pane == PaneId::LogChangesTree && *action == KeyAction::GitPull {
+                    // Explicit intentional shadowing: in `LogChangesTree` and `ConsoleCommandList`,
+                    // `p` is bound to `copy_file_patch` / `git_status_probe` instead of falling
+                    // through to global `p -> git_pull`.
+                    if matches!(pane, PaneId::LogChangesTree | PaneId::ConsoleCommandList)
+                        && *action == KeyAction::GitPull
+                    {
                         continue;
                     }
                     let mut reachable = false;
@@ -1680,18 +1713,17 @@ prepend_keymap = [
                 "Zoomed diff Alt+M must resolve to ChooseParent in {preset:?}"
             );
 
-            // P2-03: LogChangesTree `c`/`p`/`l` resolve to file actions without falling through to GitPull.
+            // P2-03: LogChangesTree `c`/`p`/`l` resolve directly via [log_changes] without falling through to GitPull.
             state.active_tab = WorkspaceTab::Log;
             state.focused_pane = PaneId::LogChangesTree;
             state.log.details.diff_preview = false;
             state.log.details.diff.zoomed = false;
             assert!(
-                route_dynamic_key(
-                    &KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE),
-                    &state
-                )
-                .is_some(),
-                "LogChangesTree 'c' must be handled by CopyFilePath in {preset:?}"
+                matches!(
+                    check_scopes(&[KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE)], &state),
+                    MatchResult::Exact(b) if b.run == KeyAction::CopyFilePath
+                ),
+                "LogChangesTree 'c' must resolve to CopyFilePath in {preset:?}"
             );
             assert!(
                 matches!(

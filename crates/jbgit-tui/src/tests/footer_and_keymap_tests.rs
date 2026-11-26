@@ -566,7 +566,7 @@ prepend_keymap = [
 #[test]
 fn footer_console_probe_vim_diff_noop_append_and_which_key_non_overlap() {
     // 1. Default ConsoleCommandList shows `p Status` without `Pull`;
-    //    rebinding git_status_probe in [global] shows `g s Status` and unshadows `p Pull`.
+    //    rebinding git_status_probe in [console] shows `g s Status` and unshadows `p Pull`.
     let mut console_ts = TestSession::with_snapshot(snapshot());
     console_ts.state_mut().config.keymap = KeymapConfig::for_preset(KeymapPreset::Default);
     console_ts.dispatch(Action::SwitchTab(WorkspaceTab::Console));
@@ -584,8 +584,8 @@ fn footer_console_probe_vim_diff_noop_append_and_which_key_non_overlap() {
 
     let probe_ov: KeymapConfigOverlay = toml::from_str(
         r#"
-[global]
-prepend_keymap = [
+[console]
+key_bindings = [
     { on = ["g", "s"], run = "git_status_probe", show_hint = true },
 ]
 "#,
@@ -848,12 +848,12 @@ prepend_keymap = [
         shadow_ts.state().modal_stack
     );
 
-    // 5. Unbinding <C-A-n> via noop hides Ctrl+Alt+N and disables it in BranchesQuickView.
+    // 5. Unbinding <C-A-n> via noop in [global] hides Ctrl+Alt+N and disables it in BranchesQuickView.
     let mut unbind_ts = TestSession::with_snapshot(snapshot());
     unbind_ts.state_mut().config.keymap = KeymapConfig::for_preset(KeymapPreset::Default);
     let unbind_ov: KeymapConfigOverlay = toml::from_str(
         r#"
-[branch]
+[global]
 prepend_keymap = [
     { on = [ "<C-A-n>" ], run = "noop" },
 ]
@@ -1089,7 +1089,7 @@ prepend_keymap = [
     );
     assert_eq!(
         sc.as_deref(),
-        Some("Del"),
+        Some("Del / Ctrl+Alt+Z"),
         "shadowed 'd' must not appear in multi-key menu hint"
     );
 
@@ -1318,5 +1318,370 @@ fn commit_message_editor_shows_prominent_edit_mode_and_esc_exit_indicators() {
     assert!(
         footer_zh.replace(' ', "").contains("退出编辑"),
         "{footer_zh}"
+    );
+}
+
+#[test]
+fn unbinding_consolidated_keymap_actions_has_no_ghost_fallbacks() {
+    // 1. Unbinding F8, F12, <A-b>, <C-A-z>, <C-e> via noop leaves no ghost fallback firing.
+    let mut ts = TestSession::with_snapshot(snapshot());
+    ts.state_mut().config.keymap = KeymapConfig::for_preset(KeymapPreset::Default);
+    let ov: KeymapConfigOverlay = toml::from_str(
+        r#"
+[global]
+prepend_keymap = [
+    { on = [ "<F8>" ], run = "noop" },
+    { on = [ "<F12>" ], run = "noop" },
+    { on = [ "<A-b>" ], run = "noop" },
+    { on = [ "?" ], run = "noop" },
+    { on = [ "<F1>" ], run = "help", show_hint = true },
+]
+[commit]
+prepend_keymap = [
+    { on = [ "<C-A-z>" ], run = "noop" },
+    { on = [ "<C-e>" ], run = "noop" },
+]
+"#,
+    )
+    .unwrap();
+    ts.state_mut().config.keymap.merge_overlay(&ov);
+
+    assert!(
+        route_terminal_event(
+            &Event::Key(KeyEvent::new(KeyCode::F(8), KeyModifiers::NONE)),
+            ts.state()
+        )
+        .is_empty()
+    );
+    assert!(
+        route_terminal_event(
+            &Event::Key(KeyEvent::new(KeyCode::F(12), KeyModifiers::NONE)),
+            ts.state()
+        )
+        .is_empty()
+    );
+
+    ts.dispatch(Action::SwitchTab(WorkspaceTab::Commit));
+    ts.dispatch(Action::FocusPane(PaneId::CommitChangesTree));
+    assert!(
+        route_terminal_event(
+            &Event::Key(KeyEvent::new(KeyCode::Char('b'), KeyModifiers::ALT)),
+            ts.state()
+        )
+        .is_empty()
+    );
+    assert!(
+        route_terminal_event(
+            &Event::Key(KeyEvent::new(
+                KeyCode::Char('z'),
+                KeyModifiers::CONTROL | KeyModifiers::ALT
+            )),
+            ts.state()
+        )
+        .is_empty()
+    );
+
+    ts.dispatch(Action::FocusPane(PaneId::CommitMessageEditor));
+    assert!(
+        route_terminal_event(
+            &Event::Key(KeyEvent::new(KeyCode::Char('e'), KeyModifiers::CONTROL)),
+            ts.state()
+        )
+        .is_empty()
+    );
+
+    // 2. Rebound help key (`F1`) opens and closes ShortcutsHelp when query is empty, while `?` no longer closes it.
+    ts.dispatch(Action::FocusPane(PaneId::CommitChangesTree));
+    ts.send_key(KeyCode::F(1), KeyModifiers::NONE);
+    assert!(matches!(
+        ts.state().modal_stack.last(),
+        Some(ModalLayer::ShortcutsHelp { .. })
+    ));
+    ts.send_key(KeyCode::Char('?'), KeyModifiers::SHIFT);
+    assert!(matches!(
+        ts.state().modal_stack.last(),
+        Some(ModalLayer::ShortcutsHelp { query, .. }) if query == "?"
+    ));
+    ts.send_key(KeyCode::Backspace, KeyModifiers::NONE);
+    ts.send_key(KeyCode::F(1), KeyModifiers::NONE);
+    assert!(ts.state().modal_stack.is_empty());
+
+    // 3. Default preset does not bind s/u/+/- in CommitChangesTree or CommitDiffPreview,
+    //    while Vim preset still routes s/u in CommitDiffPreview.
+    let mut def_ts = TestSession::with_snapshot(snapshot());
+    def_ts.state_mut().config.keymap = KeymapConfig::for_preset(KeymapPreset::Default);
+    def_ts.dispatch(Action::SwitchTab(WorkspaceTab::Commit));
+    def_ts.dispatch(Action::FocusPane(PaneId::CommitChangesTree));
+    for code in [
+        KeyCode::Char('s'),
+        KeyCode::Char('u'),
+        KeyCode::Char('+'),
+        KeyCode::Char('-'),
+    ] {
+        assert!(
+            route_terminal_event(
+                &Event::Key(KeyEvent::new(code, KeyModifiers::NONE)),
+                def_ts.state()
+            )
+            .is_empty(),
+            "{code:?} should not fire in Default CommitChangesTree"
+        );
+    }
+    def_ts.dispatch(Action::FocusPane(PaneId::CommitDiffPreview));
+    for code in [
+        KeyCode::Char('s'),
+        KeyCode::Char('u'),
+        KeyCode::Char('+'),
+        KeyCode::Char('-'),
+    ] {
+        assert!(
+            route_terminal_event(
+                &Event::Key(KeyEvent::new(code, KeyModifiers::NONE)),
+                def_ts.state()
+            )
+            .is_empty(),
+            "{code:?} should not fire in Default CommitDiffPreview"
+        );
+    }
+
+    let mut vim_ts = TestSession::with_snapshot(snapshot());
+    vim_ts.state_mut().config.keymap = KeymapConfig::for_preset(KeymapPreset::Vim);
+    vim_ts.dispatch(Action::SwitchTab(WorkspaceTab::Commit));
+    vim_ts.dispatch(Action::FocusPane(PaneId::CommitDiffPreview));
+    assert!(matches!(
+        route_terminal_event(
+            &Event::Key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::NONE)),
+            vim_ts.state()
+        )
+        .as_slice(),
+        [Action::StageDiffStageSelection]
+    ));
+    assert!(matches!(
+        route_terminal_event(
+            &Event::Key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::NONE)),
+            vim_ts.state()
+        )
+        .as_slice(),
+        [Action::StageDiffUnstageSelection]
+    ));
+
+    // 4. `e`/`E` in LogChangesTree and StashDiffPreview route through dynamic keymap
+    //    (and `E` in LogChangesTree dispatches ChangesExpandAll(_, false), NOT MaximizeCommitMessage).
+    def_ts.dispatch(Action::SwitchTab(WorkspaceTab::Log));
+    def_ts.dispatch(Action::FocusPane(PaneId::LogChangesTree));
+    assert!(matches!(
+        route_terminal_event(
+            &Event::Key(KeyEvent::new(KeyCode::Char('e'), KeyModifiers::NONE)),
+            def_ts.state()
+        )
+        .as_slice(),
+        [Action::ChangesExpandAll(crate::app::ChangesHost::Log, true)]
+    ));
+    assert!(matches!(
+        route_terminal_event(
+            &Event::Key(KeyEvent::new(KeyCode::Char('E'), KeyModifiers::SHIFT)),
+            def_ts.state()
+        )
+        .as_slice(),
+        [Action::ChangesExpandAll(
+            crate::app::ChangesHost::Log,
+            false
+        )]
+    ));
+
+    def_ts.dispatch(Action::SwitchTab(WorkspaceTab::Stash));
+    def_ts.dispatch(Action::FocusPane(PaneId::StashDiffPreview));
+    assert!(matches!(
+        route_terminal_event(
+            &Event::Key(KeyEvent::new(KeyCode::Char('e'), KeyModifiers::NONE)),
+            def_ts.state()
+        )
+        .as_slice(),
+        [Action::ChangesExpandAll(
+            crate::app::ChangesHost::Stash,
+            true
+        )]
+    ));
+    assert!(matches!(
+        route_terminal_event(
+            &Event::Key(KeyEvent::new(KeyCode::Char('E'), KeyModifiers::SHIFT)),
+            def_ts.state()
+        )
+        .as_slice(),
+        [Action::ChangesExpandAll(
+            crate::app::ChangesHost::Stash,
+            false
+        )]
+    ));
+}
+
+#[test]
+fn shortcuts_help_close_and_undo_rollback_toast_respect_scope_shadowing() {
+    use crate::config::KeymapScope;
+    use jbgit_core::{DiffContext, StageLineTracker};
+
+    // 1. `route_shortcuts_help_key` uses `check_scopes`:
+    //    - Non-global `help` binding (`<F1>` in `[log]`) closes ShortcutsHelp when query is empty.
+    //    - Shadowing global `?` in `[diff]` prevents `?` from closing ShortcutsHelp in Diff.
+    let mut ts = TestSession::with_snapshot(snapshot());
+    ts.state_mut().config.keymap = KeymapConfig::for_preset(KeymapPreset::Default);
+    let help_ov: KeymapConfigOverlay = toml::from_str(
+        r#"
+[log]
+prepend_keymap = [
+    { on = [ "<F1>" ], run = "help" },
+]
+[diff]
+prepend_keymap = [
+    { on = [ "?" ], run = "next_hunk" },
+]
+"#,
+    )
+    .unwrap();
+    ts.state_mut().config.keymap.merge_overlay(&help_ov);
+
+    ts.dispatch(Action::SwitchTab(WorkspaceTab::Log));
+    ts.dispatch(Action::FocusPane(PaneId::LogCommitTable));
+    ts.send_key(KeyCode::F(1), KeyModifiers::NONE);
+    assert!(matches!(
+        ts.state().modal_stack.last(),
+        Some(ModalLayer::ShortcutsHelp { .. })
+    ));
+    ts.send_key(KeyCode::F(1), KeyModifiers::NONE);
+    assert!(
+        ts.state().modal_stack.is_empty(),
+        "non-global [log] help key must close ShortcutsHelp when query is empty"
+    );
+
+    ts.dispatch(Action::SwitchTab(WorkspaceTab::Commit));
+    ts.dispatch(Action::FocusPane(PaneId::CommitDiffPreview));
+    ts.dispatch(Action::OpenPopup {
+        kind: PopupKind::ShortcutsHelp,
+        initial_query: String::new(),
+    });
+    ts.send_key(KeyCode::Char('?'), KeyModifiers::SHIFT);
+    assert!(
+        matches!(
+            ts.state().modal_stack.last(),
+            Some(ModalLayer::ShortcutsHelp { query, .. }) if query == "?"
+        ),
+        "shadowed `?` in [diff] must type into ShortcutsHelp search instead of closing it"
+    );
+    ts.send_key(KeyCode::Esc, KeyModifiers::NONE);
+
+    // 2. `resolve_shadowed_action_shortcut` and rollback toast respect higher-priority scope shadowing:
+    //    unbind `undo_rollback` in [diff] and bind it in [commit] to `w` (shadowed by [diff] `cycle_diff_context`).
+    let build_diff = || {
+        let base = b"line 1\nline 2\n";
+        let local = b"line 1\nline 2 edited\n";
+        let tracker = StageLineTracker::new(base, base, local);
+        let (hunks, is_truncated) =
+            tracker.build_interactive_hunks(false, DiffContext::Three, 1000);
+        Arc::new(jbgit_engine::ThreeDocStageDiff {
+            key: StageDiffKey {
+                path: "src/app.rs".into(),
+                old_path: None,
+                side: StageDiffSide::Unstaged,
+                context: DiffContext::Three,
+                whitespace: jbgit_core::WhitespaceMode::Default,
+            },
+            vcs_exists: true,
+            staged_exists: true,
+            local_exists: true,
+            vcs_bytes: base.to_vec(),
+            staged_bytes: base.to_vec(),
+            local_bytes: local.to_vec(),
+            file_mode: 0o100644,
+            mode_change: None,
+            is_symlink: false,
+            is_binary: false,
+            binary: None,
+            is_conflicted: false,
+            submodule: None,
+            lfs: None,
+            tracker,
+            hunks,
+            is_truncated,
+            is_too_large: false,
+        })
+    };
+
+    let mut rb_ts = TestSession::with_snapshot(snapshot());
+    rb_ts.state_mut().config.keymap = KeymapConfig::for_preset(KeymapPreset::Default);
+    let shadowed_only_ov: KeymapConfigOverlay = toml::from_str(
+        r#"
+[diff]
+prepend_keymap = [
+    { on = [ "<C-z>" ], run = "noop" },
+]
+[commit]
+prepend_keymap = [
+    { on = [ "w" ], run = "undo_rollback" },
+]
+"#,
+    )
+    .unwrap();
+    rb_ts
+        .state_mut()
+        .config
+        .keymap
+        .merge_overlay(&shadowed_only_ov);
+    rb_ts.dispatch(Action::SwitchTab(WorkspaceTab::Commit));
+    rb_ts.dispatch(Action::FocusPane(PaneId::CommitDiffPreview));
+
+    let scopes = [KeymapScope::Diff, KeymapScope::Commit, KeymapScope::Global];
+    assert_eq!(
+        crate::keymap::resolve::resolve_shadowed_action_shortcut(
+            rb_ts.state(),
+            &scopes,
+            &KeyAction::UndoRollback,
+        ),
+        None,
+        "shadowed [commit] undo_rollback key `w` must not be returned"
+    );
+
+    rb_ts
+        .state_mut()
+        .stage_workbench
+        .set_diff_for_test(Some(build_diff()));
+    rb_ts.dispatch(Action::StageDiffRollbackSelection);
+    let no_key_notice = rb_ts.state().status_notice.clone().unwrap_or_default();
+    assert!(
+        !no_key_notice.contains(" w ") && !no_key_notice.contains("(w)"),
+        "rollback toast must fall back to no-key wording instead of shadowed `w`: {no_key_notice:?}"
+    );
+
+    let with_fallback_ov: KeymapConfigOverlay = toml::from_str(
+        r#"
+[commit]
+append_keymap = [
+    { on = [ "U" ], run = "undo_rollback" },
+]
+"#,
+    )
+    .unwrap();
+    rb_ts
+        .state_mut()
+        .config
+        .keymap
+        .merge_overlay(&with_fallback_ov);
+    assert_eq!(
+        crate::keymap::resolve::resolve_shadowed_action_shortcut(
+            rb_ts.state(),
+            &scopes,
+            &KeyAction::UndoRollback,
+        )
+        .as_deref(),
+        Some("U")
+    );
+    rb_ts
+        .state_mut()
+        .stage_workbench
+        .set_diff_for_test(Some(build_diff()));
+    rb_ts.dispatch(Action::StageDiffRollbackSelection);
+    let fallback_notice = rb_ts.state().status_notice.clone().unwrap_or_default();
+    assert!(
+        fallback_notice.contains('U'),
+        "rollback toast must advertise unshadowed alias `U`: {fallback_notice:?}"
     );
 }

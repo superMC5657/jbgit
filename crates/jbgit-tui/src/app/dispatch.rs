@@ -940,11 +940,32 @@ impl AppState {
                 if !handled {
                     let default_remote = self.default_remote();
                     let mut modals = Vec::new();
+                    let undo_rollback_key = matches!(
+                        &other,
+                        Action::StageDiffRollbackSelection
+                            | Action::ApplyStageDiffHunk(
+                                _,
+                                crate::hit_test::DiffHunkActionKind::Rollback
+                            )
+                    )
+                    .then(|| {
+                        crate::keymap::resolve::resolve_shadowed_action_shortcut(
+                            self,
+                            &[
+                                crate::config::KeymapScope::Diff,
+                                crate::config::KeymapScope::Commit,
+                                crate::config::KeymapScope::Global,
+                            ],
+                            &crate::keymap::KeyAction::UndoRollback,
+                        )
+                    })
+                    .flatten();
                     let mut cctx = crate::stage_view::CommitContext {
                         snap: snap.as_deref(),
                         default_remote: &default_remote,
                         warn_crlf: self.config.jbgit.commit.warn_crlf,
                         i18n: &self.i18n,
+                        undo_rollback_key,
                         now,
                         focused_pane: &mut self.focused_pane,
                         loading_snapshot: &mut self.loading_snapshot,

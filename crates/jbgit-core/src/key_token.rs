@@ -1,4 +1,4 @@
-//! Shared symbolic key-token parser used by both `jbgit-tui` (`keymap.toml`)
+//! Shared symbolic key-token parser used by both `jbgit-tui` (`keymaps/*.toml`)
 //! and `jbgit-pilot` (PTY key-sequence encoding).
 
 use thiserror::Error;
@@ -22,6 +22,7 @@ pub enum KeyTokenKind {
     End,
     PageUp,
     PageDown,
+    Menu,
     F(u8),
 }
 
@@ -63,6 +64,7 @@ fn parse_named_key(name: &str) -> Option<KeyTokenKind> {
         "end" => Some(KeyTokenKind::End),
         "pageup" | "pgup" => Some(KeyTokenKind::PageUp),
         "pagedown" | "pgdn" => Some(KeyTokenKind::PageDown),
+        "menu" => Some(KeyTokenKind::Menu),
         f if f.starts_with('f') && f.len() > 1 && f[1..].chars().all(|c| c.is_ascii_digit()) => {
             let n = f[1..].parse::<u8>().ok()?;
             (1..=24).contains(&n).then_some(KeyTokenKind::F(n))
@@ -120,8 +122,8 @@ fn normalize_token(kind: KeyTokenKind, ctrl: bool, alt: bool, shift: bool) -> Ke
 
 /// Parses a single symbolic key specification into a normalized [`KeyToken`].
 ///
-/// Accepts both angle-bracketed `keymap.toml` tokens (`<C-d>`, `<C-S-k>`, `<A-1>`,
-/// `<Space>`, `<CR>`, `<BackTab>`, `<F8>`, `<S-F10>`) and bare pilot notation
+/// Accepts both angle-bracketed `keymaps/*.toml` tokens (`<C-d>`, `<C-S-k>`, `<A-1>`,
+/// `<Space>`, `<CR>`, `<BackTab>`, `<F8>`, `<S-F10>`, `<Menu>`) and bare pilot notation
 /// (`Enter`, `Ctrl+S`, `Shift+Tab`, `Alt+Backspace`, `G`, `?`).
 pub fn parse_key_token(spec: &str) -> Result<KeyToken, KeyTokenError> {
     let trimmed = spec.trim();
@@ -208,6 +210,7 @@ mod tests {
             parse_key_token("Ctrl+PageDown")
         );
         assert_eq!(parse_key_token("<A-BS>"), parse_key_token("Alt+Backspace"));
+        assert_eq!(parse_key_token("<Menu>"), parse_key_token("Menu"));
     }
 
     #[test]

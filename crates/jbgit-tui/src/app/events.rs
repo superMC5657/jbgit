@@ -257,6 +257,7 @@ impl AppState {
                 default_remote: &default_remote,
                 warn_crlf: self.config.jbgit.commit.warn_crlf,
                 i18n: &self.i18n,
+                undo_rollback_key: None,
                 now,
                 focused_pane: &mut self.focused_pane,
                 loading_snapshot: &mut self.loading_snapshot,

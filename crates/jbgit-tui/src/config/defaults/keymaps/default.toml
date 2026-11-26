@@ -13,9 +13,11 @@ key_bindings = [
     { on = [ "q" ], run = "quit", desc = "退出 jbgit" },
     { on = [ "." ], run = "context_menu", desc = "打开当前选中项的操作菜单", show_hint = true },
     { on = [ "<S-F10>" ], run = "context_menu", desc = "打开当前选中项的操作菜单" },
+    { on = [ "<Menu>" ], run = "context_menu", desc = "打开当前选中项的操作菜单" },
     { on = [ "b" ], run = "toggle_branches_popup", desc = "呼出全局分支速查浮窗", show_hint = true },
     { on = [ "<C-`>" ], run = "toggle_branches_popup", desc = "呼出全局分支速查浮窗" },
     { on = [ "<C-~>" ], run = "toggle_branches_popup", desc = "呼出全局分支速查浮窗" },
+    { on = [ "<A-b>" ], run = "toggle_branches_popup", desc = "呼出全局分支速查浮窗" },
     { on = [ "g", "b" ], run = "toggle_branches_popup", desc = "呼出全局分支速查浮窗" },
     { on = [ "p" ], run = "git_pull", desc = "拉取当前分支更新 (Pull)", show_hint = true },
     { on = [ "<A-l>" ], run = "git_pull_dialog", desc = "拉取选项对话框 (Pull…)" },
@@ -26,6 +28,7 @@ key_bindings = [
     { on = [ "<A-r>" ], run = "configure_remotes", desc = "管理远端 (Configure Remotes…)" },
     { on = [ "<A-o>" ], run = "switch_repository", desc = "切换仓库 (最近仓库 / Worktree / 子模块)" },
     { on = [ "<A-w>" ], run = "worktrees", desc = "管理 Worktree (Working Trees…)" },
+    { on = [ "<C-A-n>" ], run = "new_branch", desc = "在当前位置 / HEAD 新建分支" },
     { on = [ "<A-c>" ], run = "resolve_conflicts", desc = "解决合并冲突 (Resolve Conflicts…)" },
     { on = [ "<A-S-g>" ], run = "bisect_good", desc = "标记当前提交为 Good (Bisect)" },
     { on = [ "<A-S-b>" ], run = "bisect_bad", desc = "标记当前提交为 Bad (Bisect)" },
@@ -44,6 +47,8 @@ key_bindings = [
     { on = [ "<A-4>" ], run = "tab_console", desc = "切换至 [4] 控制台" },
     { on = [ "<Tab>" ], run = "focus_next", desc = "切换到下一个面板" },
     { on = [ "<BackTab>" ], run = "focus_prev", desc = "切换到上一个面板" },
+    { on = [ "<F12>" ], run = "toggle_glyph_mode", desc = "切换 Unicode / NerdFont 图标模式" },
+    { on = [ "<F8>" ], run = "cycle_graph_renderer", desc = "切换提交图谱渲染器" },
 ]
 
 [log]
@@ -56,19 +61,19 @@ key_bindings = [
     { on = [ "<Home>" ], run = "goto_top", desc = "跳转至列表顶部" },
     { on = [ "G" ], run = "goto_bottom", desc = "跳转至列表底部" },
     { on = [ "<End>" ], run = "goto_bottom", desc = "跳转至列表底部" },
-    { on = [ "{" ], run = "prev_commit", desc = "切换至上一个提交", show_hint = true },
-    { on = [ "}" ], run = "next_commit", desc = "切换至下一个提交", show_hint = true },
     { on = [ "/" ], run = "focus_filter", desc = "聚焦分支 / 提交筛选框", show_hint = true },
     { on = [ "c" ], run = "checkout", desc = "检出选中的分支或提交", show_hint = true },
-    { on = [ "p" ], run = "copy_file_patch", desc = "复制选中文件的变更补丁 (Patch)" },
-    { on = [ "l" ], run = "compare_file_with_local", desc = "与本地工作区版本对比" },
     { on = [ "<Space>" ], run = "toggle_log_row_selection", desc = "勾选 / 取消勾选当前提交（支持非连续多选）" },
     { on = [ "<C-d>" ], run = "compare_or_diff", desc = "对比选中两个提交 / 开关差异预览", show_hint = true },
     { on = [ "X" ], run = "swap_compare_direction", desc = "交换双提交对比方向 (Base ↔ Target)" },
+    { on = [ "T" ], run = "toggle_branch_compare_tree_diff", desc = "分支对比时切换完整目录树差异" },
     { on = [ "a" ], run = "toggle_only_affected_changes", desc = "切换「仅显示受影响变更」（路径筛选生效时）" },
     { on = [ "n" ], run = "new_branch", desc = "在此提交新建分支", show_hint = true },
     { on = [ "y" ], run = "copy_hash", desc = "复制提交哈希", show_hint = true },
     { on = [ "<F4>" ], run = "zoom_diff", desc = "切换全屏差异预览" },
+    { on = [ "<C-Enter>" ], run = "zoom_diff", desc = "切换全屏差异预览" },
+    { on = [ "<A-Left>" ], run = "nav_log_back", desc = "返回上一个查看的提交" },
+    { on = [ "<A-Right>" ], run = "nav_log_forward", desc = "前进到下一个查看的提交" },
     { on = [ "v" ], run = "toggle_group", desc = "切换按目录树分组" },
     { on = [ "H" ], run = "file_history", desc = "查看选中文件提交历史" },
     { on = [ "<A-g>" ], run = "annotate", desc = "使用 Git Blame 逐行追溯 (Annotate)" },
@@ -94,6 +99,17 @@ key_bindings = [
     { on = [ "E" ], run = "maximize_commit_message", desc = "最大化查看完整提交说明" },
 ]
 
+[log_changes]
+key_bindings = [
+    { on = [ "{" ], run = "prev_commit", desc = "切换至上一个提交", show_hint = true },
+    { on = [ "}" ], run = "next_commit", desc = "切换至下一个提交", show_hint = true },
+    { on = [ "c" ], run = "copy_file_path", desc = "复制选中文件或目录的相对路径" },
+    { on = [ "p" ], run = "copy_file_patch", desc = "复制选中文件的变更补丁 (Patch)" },
+    { on = [ "l" ], run = "compare_file_with_local", desc = "与本地工作区版本对比" },
+    { on = [ "e" ], run = "changes_expand_all", desc = "展开全部目录" },
+    { on = [ "E" ], run = "changes_collapse_all", desc = "折叠全部目录" },
+]
+
 [branch]
 key_bindings = [
     { on = [ "/" ], run = "branch_search", desc = "在分支树中模糊搜索", show_hint = true },
@@ -106,7 +122,6 @@ key_bindings = [
     { on = [ "<Del>" ], run = "delete_branch", desc = "删除分支" },
     { on = [ "J" ], run = "navigate_branch", desc = "定位到日志中的分支顶端" },
     { on = [ "R" ], run = "open_reflog", desc = "查看选中分支的 Git Reflog" },
-    { on = [ "<C-A-n>" ], run = "new_branch", desc = "从当前分支新建分支" },
 ]
 
 [commit]
@@ -132,8 +147,10 @@ key_bindings = [
     { on = [ "<C-m>" ], run = "commit_history", desc = "选择历史提交说明" },
     { on = [ "<C-A-k>" ], run = "commit_and_push", desc = "提交并推送…" },
     { on = [ "<Del>" ], run = "discard_changes", desc = "放弃选中文件的本地更改" },
+    { on = [ "<C-A-z>" ], run = "discard_changes", desc = "放弃选中文件的本地更改" },
     { on = [ "<C-Enter>" ], run = "commit", desc = "执行提交" },
     { on = [ "<A-Enter>" ], run = "commit", desc = "执行提交" },
+    { on = [ "<C-e>" ], run = "edit_commit_message_external", desc = "在外部编辑器中编辑提交说明", show_hint = true },
     { on = [ "<A-a>" ], run = "toggle_amend", desc = "切换追加至上一提交 (Amend)" },
     { on = [ "<A-m>" ], run = "toggle_amend", desc = "切换追加至上一提交 (Amend)" },
     { on = [ "<C-a>" ], run = "select_all", desc = "全选变更文件" },
@@ -152,7 +169,7 @@ key_bindings = [
     { on = [ "G" ], run = "goto_bottom", desc = "跳转至底部" },
     { on = [ "<End>" ], run = "goto_bottom", desc = "跳转至底部" },
     { on = [ "<Space>" ], run = "toggle_stage", desc = "暂存 / 取消暂存代码块或选中行", show_hint = true },
-    { on = [ "d" ], run = "rollback_selection", desc = "回滚代码块或选中行 (Ctrl+Z 撤销)", show_hint = true },
+    { on = [ "d" ], run = "rollback_selection", desc = "回滚代码块或选中行", show_hint = true },
     { on = [ "v" ], run = "toggle_visual", desc = "切换逐行选择模式", show_hint = true },
     { on = [ "[" ], run = "prev_hunk", desc = "跳转至上一个 Hunk 代码块", show_hint = true },
     { on = [ "]" ], run = "next_hunk", desc = "跳转至下一个 Hunk 代码块", show_hint = true },
@@ -176,8 +193,9 @@ key_bindings = [
     { on = [ "x" ], run = "switch_diff_side", desc = "切换未暂存 / 已暂存侧对比" },
     { on = [ "X" ], run = "swap_compare_direction", desc = "交换双提交对比方向 (Base ↔ Target)" },
     { on = [ "i" ], run = "three_way_inspector", desc = "打开三方变更检视 (HEAD/暂存/本地)" },
-    { on = [ "<Del>" ], run = "rollback_selection", desc = "回滚代码块或选中行 (Ctrl+Z 撤销)" },
+    { on = [ "<Del>" ], run = "rollback_selection", desc = "回滚代码块或选中行" },
     { on = [ "<F4>" ], run = "zoom_diff", desc = "切换全屏差异预览" },
+    { on = [ "<C-Enter>" ], run = "zoom_diff", desc = "切换全屏差异预览" },
     { on = [ "<C-z>" ], run = "undo_rollback", desc = "撤销上一次行级回滚" },
 ]
 
@@ -197,12 +215,15 @@ key_bindings = [
     { on = [ "d" ], run = "stash_drop", desc = "删除选中贮藏", show_hint = true },
     { on = [ "B" ], run = "stash_branch", desc = "从选中贮藏创建分支" },
     { on = [ "v" ], run = "toggle_group", desc = "切换按目录树分组" },
+    { on = [ "e" ], run = "changes_expand_all", desc = "展开全部目录" },
+    { on = [ "E" ], run = "changes_collapse_all", desc = "折叠全部目录" },
     { on = [ "<Del>" ], run = "stash_drop", desc = "删除选中贮藏" },
     { on = [ "C" ], run = "stash_clear", desc = "清空所有贮藏" },
 ]
 
 [console]
 key_bindings = [
+    { on = [ "p" ], run = "git_status_probe", desc = "执行 git status 诊断探测", show_hint = true },
     { on = [ "j" ], run = "cursor_down", desc = "向下移动一行" },
     { on = [ "<Down>" ], run = "cursor_down", desc = "向下移动一行" },
     { on = [ "k" ], run = "cursor_up", desc = "向上移动一行" },

@@ -1070,28 +1070,45 @@ pub fn log_change_menu_items(state: &AppState) -> Vec<ContextMenuItem> {
         };
 
     let i18n = &state.i18n;
-    let diff_sc =
-        catalog::shortcut_for_action(state, &[KeymapScope::Log], &KeyAction::CompareOrDiff);
+    let diff_sc = catalog::shortcut_for_action(
+        state,
+        &[KeymapScope::LogChanges, KeymapScope::Log],
+        &KeyAction::CompareOrDiff,
+    );
     let zoom_sc = catalog::shortcut_for_action(
         state,
-        &[KeymapScope::Log, KeymapScope::Diff],
+        &[KeymapScope::LogChanges, KeymapScope::Log, KeymapScope::Diff],
         &KeyAction::ZoomDiff,
     );
-    let hist_sc = catalog::shortcut_for_action(state, &[KeymapScope::Log], &KeyAction::FileHistory);
-    let ann_sc = catalog::shortcut_for_action(state, &[KeymapScope::Log], &KeyAction::Annotate);
-    let cmp_local_sc =
-        catalog::shortcut_for_action(state, &[KeymapScope::Log], &KeyAction::CompareFileWithLocal);
+    let hist_sc = catalog::shortcut_for_action(
+        state,
+        &[KeymapScope::LogChanges, KeymapScope::Log],
+        &KeyAction::FileHistory,
+    );
+    let ann_sc = catalog::shortcut_for_action(
+        state,
+        &[KeymapScope::LogChanges, KeymapScope::Log],
+        &KeyAction::Annotate,
+    );
+    let cmp_local_sc = catalog::shortcut_for_action(
+        state,
+        &[KeymapScope::LogChanges, KeymapScope::Log],
+        &KeyAction::CompareFileWithLocal,
+    );
     let copy_path_sc = catalog::shortcut_for_action(
         state,
-        &[KeymapScope::Log, KeymapScope::Global],
+        &[
+            KeymapScope::LogChanges,
+            KeymapScope::Log,
+            KeymapScope::Global,
+        ],
         &KeyAction::CopyFilePath,
-    )
-    .or_else(|| {
-        crate::keymap::actions::is_plain_c_copy_file_path_fallback_active(state)
-            .then(|| "c".to_string())
-    });
-    let copy_patch_sc =
-        catalog::shortcut_for_action(state, &[KeymapScope::Log], &KeyAction::CopyFilePatch);
+    );
+    let copy_patch_sc = catalog::shortcut_for_action(
+        state,
+        &[KeymapScope::LogChanges, KeymapScope::Log],
+        &KeyAction::CopyFilePatch,
+    );
 
     let need_single = i18n.t("menu.log_change.need_single_commit");
 

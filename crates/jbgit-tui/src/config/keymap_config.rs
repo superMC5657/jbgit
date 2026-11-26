@@ -52,11 +52,25 @@ impl<'de> Deserialize<'de> for KeymapPreset {
 pub enum KeymapScope {
     Global,
     Log,
+    LogChanges,
     Commit,
     Branch,
     Diff,
     Stash,
     Console,
+}
+
+impl KeymapScope {
+    pub const ALL: [Self; 8] = [
+        Self::Global,
+        Self::Log,
+        Self::LogChanges,
+        Self::Commit,
+        Self::Branch,
+        Self::Diff,
+        Self::Stash,
+        Self::Console,
+    ];
 }
 
 fn deserialize_key_seq<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
@@ -93,6 +107,8 @@ pub struct KeymapConfig {
     #[serde(default)]
     pub log: KeyBindingsList,
     #[serde(default)]
+    pub log_changes: KeyBindingsList,
+    #[serde(default)]
     pub commit: KeyBindingsList,
     #[serde(default)]
     pub branch: KeyBindingsList,
@@ -112,6 +128,7 @@ impl Default for KeymapConfig {
             footer_max_lines: default_footer_max_lines(),
             global: KeyBindingsList::default(),
             log: KeyBindingsList::default(),
+            log_changes: KeyBindingsList::default(),
             commit: KeyBindingsList::default(),
             branch: KeyBindingsList::default(),
             diff: KeyBindingsList::default(),
@@ -211,11 +228,27 @@ pub struct KeymapConfigOverlay {
     pub footer_max_lines: Option<u16>,
     pub global: Option<KeyBindingsList>,
     pub log: Option<KeyBindingsList>,
+    pub log_changes: Option<KeyBindingsList>,
     pub commit: Option<KeyBindingsList>,
     pub branch: Option<KeyBindingsList>,
     pub diff: Option<KeyBindingsList>,
     pub stash: Option<KeyBindingsList>,
     pub console: Option<KeyBindingsList>,
+}
+
+impl KeymapConfigOverlay {
+    fn section(&self, scope: KeymapScope) -> Option<&KeyBindingsList> {
+        match scope {
+            KeymapScope::Global => self.global.as_ref(),
+            KeymapScope::Log => self.log.as_ref(),
+            KeymapScope::LogChanges => self.log_changes.as_ref(),
+            KeymapScope::Commit => self.commit.as_ref(),
+            KeymapScope::Branch => self.branch.as_ref(),
+            KeymapScope::Diff => self.diff.as_ref(),
+            KeymapScope::Stash => self.stash.as_ref(),
+            KeymapScope::Console => self.console.as_ref(),
+        }
+    }
 }
 
 fn keys_equal(a: &[String], b: &[String]) -> bool {
@@ -375,16 +408,35 @@ fn apply_preset_section(base: &mut Vec<KeyBindingConfig>, overlay: &KeyBindingsL
 }
 
 impl KeymapConfig {
+    pub fn section(&self, scope: KeymapScope) -> &KeyBindingsList {
+        match scope {
+            KeymapScope::Global => &self.global,
+            KeymapScope::Log => &self.log,
+            KeymapScope::LogChanges => &self.log_changes,
+            KeymapScope::Commit => &self.commit,
+            KeymapScope::Branch => &self.branch,
+            KeymapScope::Diff => &self.diff,
+            KeymapScope::Stash => &self.stash,
+            KeymapScope::Console => &self.console,
+        }
+    }
+
+    pub fn section_mut(&mut self, scope: KeymapScope) -> &mut KeyBindingsList {
+        match scope {
+            KeymapScope::Global => &mut self.global,
+            KeymapScope::Log => &mut self.log,
+            KeymapScope::LogChanges => &mut self.log_changes,
+            KeymapScope::Commit => &mut self.commit,
+            KeymapScope::Branch => &mut self.branch,
+            KeymapScope::Diff => &mut self.diff,
+            KeymapScope::Stash => &mut self.stash,
+            KeymapScope::Console => &mut self.console,
+        }
+    }
+
     fn normalize_sections(&mut self) {
-        for list in [
-            &mut self.global,
-            &mut self.log,
-            &mut self.commit,
-            &mut self.branch,
-            &mut self.diff,
-            &mut self.stash,
-            &mut self.console,
-        ] {
+        for scope in KeymapScope::ALL {
+            let list = self.section_mut(scope);
             let extra = KeyBindingsList {
                 key_bindings: Vec::new(),
                 prepend_keymap: std::mem::take(&mut list.prepend_keymap),
@@ -404,17 +456,9 @@ impl KeymapConfig {
         if let Some(lines) = overlay.footer_max_lines {
             self.footer_max_lines = lines;
         }
-        for (dst, src) in [
-            (&mut self.global.key_bindings, &overlay.global),
-            (&mut self.log.key_bindings, &overlay.log),
-            (&mut self.commit.key_bindings, &overlay.commit),
-            (&mut self.branch.key_bindings, &overlay.branch),
-            (&mut self.diff.key_bindings, &overlay.diff),
-            (&mut self.stash.key_bindings, &overlay.stash),
-            (&mut self.console.key_bindings, &overlay.console),
-        ] {
-            if let Some(sec) = src {
-                apply_preset_section(dst, sec);
+        for scope in KeymapScope::ALL {
+            if let Some(sec) = overlay.section(scope) {
+                apply_preset_section(&mut self.section_mut(scope).key_bindings, sec);
             }
         }
         self.precompile_all();
@@ -453,15 +497,7 @@ impl KeymapConfig {
     }
 
     pub fn precompile_all(&self) {
-        for scope in [
-            KeymapScope::Global,
-            KeymapScope::Log,
-            KeymapScope::Commit,
-            KeymapScope::Branch,
-            KeymapScope::Diff,
-            KeymapScope::Stash,
-            KeymapScope::Console,
-        ] {
+        for scope in KeymapScope::ALL {
             for b in self.bindings_for(scope) {
                 b.precompile();
             }
@@ -486,40 +522,16 @@ impl KeymapConfig {
         if let Some(lines) = overlay.footer_max_lines {
             self.footer_max_lines = lines;
         }
-        if let Some(g) = &overlay.global {
-            merge_section(&mut self.global.key_bindings, g);
-        }
-        if let Some(l) = &overlay.log {
-            merge_section(&mut self.log.key_bindings, l);
-        }
-        if let Some(c) = &overlay.commit {
-            merge_section(&mut self.commit.key_bindings, c);
-        }
-        if let Some(b) = &overlay.branch {
-            merge_section(&mut self.branch.key_bindings, b);
-        }
-        if let Some(d) = &overlay.diff {
-            merge_section(&mut self.diff.key_bindings, d);
-        }
-        if let Some(s) = &overlay.stash {
-            merge_section(&mut self.stash.key_bindings, s);
-        }
-        if let Some(c) = &overlay.console {
-            merge_section(&mut self.console.key_bindings, c);
+        for scope in KeymapScope::ALL {
+            if let Some(sec) = overlay.section(scope) {
+                merge_section(&mut self.section_mut(scope).key_bindings, sec);
+            }
         }
         self.precompile_all();
     }
 
     pub fn bindings_for(&self, scope: KeymapScope) -> &[KeyBindingConfig] {
-        match scope {
-            KeymapScope::Global => &self.global.key_bindings,
-            KeymapScope::Log => &self.log.key_bindings,
-            KeymapScope::Commit => &self.commit.key_bindings,
-            KeymapScope::Branch => &self.branch.key_bindings,
-            KeymapScope::Diff => &self.diff.key_bindings,
-            KeymapScope::Stash => &self.stash.key_bindings,
-            KeymapScope::Console => &self.console.key_bindings,
-        }
+        &self.section(scope).key_bindings
     }
 
     pub fn primary_key_for(&self, scopes: &[KeymapScope], run: &KeyAction) -> Option<String> {
@@ -615,15 +627,7 @@ mod tests {
     fn precompile_all_populates_parsed_key_cache() {
         let cfg = KeymapConfig::default();
         cfg.precompile_all();
-        for scope in [
-            KeymapScope::Global,
-            KeymapScope::Log,
-            KeymapScope::Commit,
-            KeymapScope::Branch,
-            KeymapScope::Diff,
-            KeymapScope::Stash,
-            KeymapScope::Console,
-        ] {
+        for scope in KeymapScope::ALL {
             for b in cfg.bindings_for(scope) {
                 assert!(
                     b.is_precompiled(),

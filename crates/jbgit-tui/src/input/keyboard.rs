@@ -9,8 +9,8 @@ use crate::log_view::{
 };
 
 use super::menus::{
-    keyboard_context_menu, route_conflict_merge_key, route_conflict_queue_key,
-    route_context_menu_key, route_stash_fallback_key,
+    route_conflict_merge_key, route_conflict_queue_key, route_context_menu_key,
+    route_stash_fallback_key,
 };
 
 fn plain_char(key: &KeyEvent) -> Option<char> {
@@ -100,25 +100,6 @@ pub(crate) fn route_key(key: KeyEvent, state: &AppState) -> Vec<Action> {
     let mut prefix = Vec::new();
     if clear_bracket {
         prefix.push(Action::StageClearBracketJump);
-    }
-
-    if state.active_tab == WorkspaceTab::Console
-        && state.focused_pane == PaneId::ConsoleCommandList
-        && state.pending_keys.is_empty()
-        && key.code == KeyCode::Char(crate::keymap::actions::DEFAULT_CONSOLE_PROBE_CHAR)
-        && !key.modifiers.contains(KeyModifiers::CONTROL)
-        && !key.modifiers.contains(KeyModifiers::ALT)
-        && state
-            .config
-            .keymap
-            .primary_key_for(
-                &[crate::config::KeymapScope::Global],
-                &crate::keymap::KeyAction::GitStatusProbe,
-            )
-            .is_none()
-    {
-        prefix.push(crate::keymap::actions::git_status_probe_action());
-        return prefix;
     }
 
     if let Some(actions) = crate::keymap::route_dynamic_key(&key, state) {
@@ -405,33 +386,7 @@ fn route_modal_key(key: KeyEvent, state: &AppState) -> Vec<Action> {
 
 fn route_pane_fallback_key(key: KeyEvent, state: &AppState) -> Vec<Action> {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
-    let alt = key.modifiers.contains(KeyModifiers::ALT);
     let shift = key.modifiers.contains(KeyModifiers::SHIFT);
-    let in_log = state.active_tab == WorkspaceTab::Log;
-
-    match key.code {
-        KeyCode::Menu => {
-            if let Some(actions) = keyboard_context_menu(state) {
-                return actions;
-            }
-        }
-        KeyCode::Char('b' | 'B') if alt && !in_log => {
-            return vec![Action::OpenBranchesPopup {
-                query: String::new(),
-            }];
-        }
-        KeyCode::Char('n' | 'N') if ctrl && alt => {
-            return vec![Action::OpenDialog(Box::new(
-                crate::dialogs::new_branch_from_head_dialog(
-                    state.repo_snapshot.as_deref(),
-                    &state.i18n,
-                ),
-            ))];
-        }
-        KeyCode::F(12) => return vec![Action::ToggleGlyphMode],
-        KeyCode::F(8) => return vec![Action::CycleGraphRenderer],
-        _ => {}
-    }
 
     match state.focused_pane {
         PaneId::LogBranchesTree => match key.code {
@@ -456,8 +411,6 @@ fn route_pane_fallback_key(key: KeyEvent, state: &AppState) -> Vec<Action> {
                 half: false,
                 down: false,
             }],
-            KeyCode::Left if alt => vec![Action::NavLogBack],
-            KeyCode::Right if alt => vec![Action::NavLogForward],
             KeyCode::Right if shift => {
                 let parents = state
                     .log_commit_at(state.log.graph.selected_idx)
@@ -512,9 +465,6 @@ fn route_pane_fallback_key(key: KeyEvent, state: &AppState) -> Vec<Action> {
             KeyCode::Esc if state.log.branch_compare.is_some() => {
                 vec![Action::CloseBranchCompare]
             }
-            KeyCode::Char('T') if !ctrl && !alt && state.log.branch_compare.is_some() => {
-                vec![Action::ToggleBranchCompareTreeDiff]
-            }
             KeyCode::Esc if state.log.filter.saved_before_dir_history.is_some() => {
                 vec![Action::RestorePreDirHistoryFilter]
             }
@@ -528,7 +478,6 @@ fn route_pane_fallback_key(key: KeyEvent, state: &AppState) -> Vec<Action> {
             KeyCode::Enter if state.log.details.many_changes_blocked.is_some() => {
                 vec![Action::ConfirmLoadManyChanges]
             }
-            KeyCode::Enter if ctrl => vec![Action::ZoomDiff(true)],
             KeyCode::Enter => {
                 let row = state
                     .log
@@ -552,15 +501,6 @@ fn route_pane_fallback_key(key: KeyEvent, state: &AppState) -> Vec<Action> {
                 }
             }
             KeyCode::Esc => vec![Action::FocusPane(PaneId::LogCommitTable)],
-            KeyCode::Char('v') if !ctrl && !alt => {
-                vec![Action::ChangesToggleGroupByDir(ChangesHost::Log)]
-            }
-            KeyCode::Char('e') if !ctrl && !alt => {
-                vec![Action::ChangesExpandAll(ChangesHost::Log, true)]
-            }
-            KeyCode::Char('E') if !ctrl && !alt => {
-                vec![Action::ChangesExpandAll(ChangesHost::Log, false)]
-            }
             _ => Vec::new(),
         },
         PaneId::LogDetailsDiff if state.log.details.diff_preview => {
@@ -570,7 +510,6 @@ fn route_pane_fallback_key(key: KeyEvent, state: &AppState) -> Vec<Action> {
                 KeyCode::PageUp => vec![Action::DiffScroll(DiffScope::Log, -page)],
                 KeyCode::Left if shift => vec![Action::DiffScrollHoriz(DiffScope::Log, -16)],
                 KeyCode::Right if shift => vec![Action::DiffScrollHoriz(DiffScope::Log, 16)],
-                KeyCode::Enter if ctrl => vec![Action::ZoomDiff(true)],
                 KeyCode::Esc if state.log.details.diff.search.active => {
                     vec![Action::DiffSearchClose(DiffScope::Log)]
                 }
@@ -621,7 +560,14 @@ fn route_shortcuts_help_key(key: &KeyEvent, state: &AppState) -> Vec<Action> {
 
     match key.code {
         KeyCode::Esc => vec![Action::PopModal],
-        KeyCode::Char('?') if query.is_empty() && !ctrl && !alt => vec![Action::PopModal],
+        _ if query.is_empty()
+            && matches!(
+                crate::keymap::check_scopes(&[*key], state),
+                crate::keymap::MatchResult::Exact(b) if b.run == crate::keymap::KeyAction::Help
+            ) =>
+        {
+            vec![Action::PopModal]
+        }
         KeyCode::Up | KeyCode::Down | KeyCode::PageUp | KeyCode::PageDown => {
             let rows = crate::keymap::build_help_rows(state, &query);
             let delta = match key.code {
@@ -694,7 +640,6 @@ fn route_shortcuts_help_key(key: &KeyEvent, state: &AppState) -> Vec<Action> {
 
 /// Fallback keymap for full-screen zoomed diff viewer (after dynamic keymap).
 fn route_diff_zoomed_fallback(key: &KeyEvent, page: isize, search_active: bool) -> Vec<Action> {
-    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     let shift = key.modifiers.contains(KeyModifiers::SHIFT);
     match key.code {
         KeyCode::PageDown => vec![Action::DiffScroll(DiffScope::Log, page)],
@@ -710,8 +655,6 @@ fn route_diff_zoomed_fallback(key: &KeyEvent, page: isize, search_active: bool) 
             DiffScope::Log,
             crate::app::SCROLL_GOTO_BOTTOM,
         )],
-        KeyCode::Char('P') => vec![Action::SwitchMergeParent],
-        KeyCode::Enter if ctrl => vec![Action::ZoomDiff(false)],
         KeyCode::Esc if search_active => vec![Action::DiffSearchClose(DiffScope::Log)],
         KeyCode::Esc => vec![Action::ZoomDiff(false)],
         _ => Vec::new(),

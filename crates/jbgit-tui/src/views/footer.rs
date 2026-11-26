@@ -13,9 +13,7 @@ use crate::config::KeymapScope;
 use crate::hit_test::{GraphHitKind, HitTarget};
 use crate::keymap::actions::is_action_applicable;
 use crate::keymap::catalog::{self, ContextMode};
-use crate::keymap::resolve::{
-    KeyResolveCtx, collect_claimed_keys, push_unique_seq, resolve_key_in_scopes,
-};
+use crate::keymap::resolve::{KeyResolveCtx, collect_claimed_keys, resolve_key_in_scopes};
 use crate::keymap::{KeyAction, KeySequence, scopes_for_context};
 use crate::views::truncate_to_width;
 
@@ -255,7 +253,20 @@ fn render_graph_arrow_footer(
         &[("arrow", arrow), ("dir", dir_label)],
     );
     let short = target_oid.short();
-    let suffix = state.i18n.t("view.footer.arrow_jump_suffix");
+    let back_key = crate::keymap::catalog::shortcut_for_action(
+        state,
+        &[KeymapScope::Log, KeymapScope::Global],
+        &KeyAction::NavLogBack,
+    );
+    let suffix = match back_key.as_deref() {
+        Some(key) => state
+            .i18n
+            .t_fmt("view.footer.arrow_jump_suffix", &[("key", key)]),
+        None => state
+            .i18n
+            .t("view.footer.arrow_jump_suffix_no_key")
+            .to_string(),
+    };
     let subj_budget =
         (area.width as usize).saturating_sub(prefix.width() + short.width() + 2 + suffix.width());
     let line = Line::from(vec![
@@ -517,8 +528,7 @@ fn collect_footer_hints(state: &AppState) -> FooterHints {
             let commit_scopes = [KeymapScope::Commit];
             let mut seen_actions = Vec::new();
             let mut raw_pills = Vec::new();
-            let (esc_hint, edit_hint) =
-                catalog::commit_editor_structural_hints(state, editing_author);
+            let esc_hint = catalog::commit_editor_structural_hints(state, editing_author);
             let esc_label = if editing_author {
                 esc_hint.label
             } else {
@@ -546,13 +556,6 @@ fn collect_footer_hints(state: &AppState) -> FooterHints {
                 &mut raw_pills,
             );
 
-            raw_pills.push(RawPill {
-                action: None,
-                key: edit_hint.key,
-                label: edit_hint.label,
-                emphasized: false,
-            });
-
             return FooterHints {
                 pills: merge_paired_pills(raw_pills, state),
                 help: None,
@@ -567,7 +570,6 @@ fn collect_footer_hints(state: &AppState) -> FooterHints {
     let filter_speed_search = in_branch_tree && km.tree_speed_search;
     let structural = catalog::normal_structural_hints(state);
     let mut after_primary_lit = structural.after_primary;
-    let mut console_probe = structural.console_probe_fallback;
 
     let mut claimed_keys: Vec<KeySequence> = Vec::new();
     let mut non_global_claimed_keys: Vec<KeySequence> = Vec::new();
@@ -611,21 +613,6 @@ fn collect_footer_hints(state: &AppState) -> FooterHints {
                 {
                     seen_actions.push(b.run.clone());
                 }
-            }
-
-            if scope == KeymapScope::Console
-                && let Some(probe) = console_probe.take()
-            {
-                if let Some(seq) = KeySequence::parse(std::slice::from_ref(&probe.key)) {
-                    push_unique_seq(&mut claimed_keys, &seq);
-                    push_unique_seq(&mut non_global_claimed_keys, &seq);
-                }
-                raw_pills.push(RawPill {
-                    action: probe.action,
-                    key: probe.key,
-                    label: probe.label,
-                    emphasized: false,
-                });
             }
 
             if let Some(lit) = after_primary_lit.take() {

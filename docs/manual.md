@@ -23,7 +23,7 @@
   - [2. 配置文件路径与 4 级覆盖优先级](#2-配置文件路径与-4-级覆盖优先级)
   - [3. `jbgit.toml`：通用行为、图谱与布局比例](#3-jbgittoml通用行为图谱与布局比例)
   - [4. `theme.toml`：主题预设与语义配色](#4-themetoml主题预设与语义配色)
-  - [5. `keymap.toml`：快捷键预设与增量覆盖](#5-keymaptoml快捷键预设与增量覆盖)
+  - [5. `keymaps/<preset>.toml`：快捷键预设与增量覆盖](#5-keymapspresettoml快捷键预设与增量覆盖)
   - [6. 常用 `run` 动作标识符参考](#6-常用-run-动作标识符参考)
 - [四、远端与凭据 (Remotes & Credentials)](#四远端与凭据-remotes--credentials)
 - [五、切换仓库与 Worktree (Repositories & Working Trees)](#五切换仓库与-worktree-repositories--working-trees)
@@ -46,7 +46,7 @@ jbgit 默认采用**零冲突统一键位（`preset = "default"`）**，并通�
 
 ## 二、快捷键速查表 (Keybindings)
 
-> 下表以默认预设 `preset = "default"` 为准；若切换到 `"jetbrains"` 或 `"vim"` 预设，部分按键行为会相应调整（详见[第 5 节](#5-keymaptoml快捷键预设与增量覆盖)）。
+> 下表以默认预设 `preset = "default"` 为准；若切换到 `"jetbrains"` 或 `"vim"` 预设，部分按键行为会相应调整（详见[第 5 节](#5-keymapspresettoml快捷键预设与增量覆盖)）。
 
 ### 全局操作 (Global)
 
@@ -105,7 +105,7 @@ jbgit 默认采用**零冲突统一键位（`preset = "default"`）**，并通�
 
 | 快捷键 | 功能描述 |
 | :--- | :--- |
-| `/` / `<Ctrl-f>`（`<Esc>` 退出） | 进入分支树模糊搜索（可在 `keymap.toml` 设为 `tree_speed_search = true` 开启直接打字速查） |
+| `/` / `<Ctrl-f>`（`<Esc>` 退出） | 进入分支树模糊搜索（可在 `jbgit.toml` 的 `[keymap]` 或 `keymaps/<preset>.toml` 中设为 `tree_speed_search = true` 开启直接打字速查） |
 | `<Left>` / `<Right>` / `<PageUp>` / `<PageDown>` | 折叠或展开分组节点 / 翻页滚动 |
 | `<Space>` | 添加 / 取消收藏当前分支（置顶显示） |
 | `<Enter>` | 按选中分支过滤提交日志 |
@@ -134,7 +134,7 @@ jbgit 默认采用**零冲突统一键位（`preset = "default"`）**，并通�
 | 快捷键 | 功能描述 |
 | :--- | :--- |
 | `<Alt-p>` / `<Alt-Shift-p>` | 应用 Patch 文件（路径相对仓库根，`Tab` 补全） / 从剪贴板应用 Patch，见[第七章](#七应用-patch-与按版本浏览-apply-patch--browse-at-revision) |
-| `<Space>`（或 `s`/`+`、`u`/`-`） | **暂存 / 取消暂存** 当前选中的文件或代码块 |
+| `<Space>` | **暂存 / 取消暂存** 当前选中的文件或代码块 |
 | `<Enter>` / `<Left>` / `<Right>` | 折叠/展开目录容器，或在文件上聚焦右侧 Diff 预览 |
 | `c` | 聚焦提交说明编辑器（变更树与 Commit Diff 预览窗格均可直接按 `c`；编辑区内按 `<Esc>` 返回变更树） |
 | `<Ctrl-s>` / `<Ctrl-Enter>` / `<Alt-Enter>` | 执行提交（编辑区内 `<Ctrl-Alt-k>` 提交并推送） |
@@ -165,8 +165,8 @@ jbgit 默认采用**零冲突统一键位（`preset = "default"`）**，并通�
 | `W` | 切换软换行（Soft Wrap，按显示宽度与 CJK 字符边界自动折行并同步滚屏高度） |
 | `h` / `l` 或 `<Left>` / `<Right>` | 未开启软换行时按列水平滚动（`<Shift-Left>` / `<Shift-Right>` 大步进），标题栏显示 `Col +N` 指示；Tab 字符按真实 `tab_size` 列对齐展开 |
 | `/` · `n` / `N` · `<Esc>` | Diff 内联搜索：`/` 打开底部搜索栏（忽略大小写、实时统计 `[cur/total]` 并高亮命中片段），`Enter` 确认后用 `n` / `N` 跳转下一/上一命中并自动居中滚屏，`<Esc>` 优先关闭搜索 |
-| `m` / `<Alt-m>` / `z`（或 `<F4>` / `<Ctrl-Enter>`） | *(Log Diff)* 切换停靠位置 (`m`) / 切换合并父提交 (`<Alt-m>`，全屏亦支持 `P`) / 全屏差异预览 (`z`/`F4`/`Esc`)；二进制文件自动展示 Old/New 字节体积变化与短 Blob OID 元数据卡片 |
-| `<Space>` / `v` / `d` | *(Commit Diff)* 暂存/取消 (`Space`/`s`/`u`) · 行级可视选择 (`v`) · 回滚选区 (`d`/`Del`，`<Ctrl-z>` 撤销) |
+| `m` / `<Alt-m>` / `z`（或 `<F4>` / `<Ctrl-Enter>`） | *(Log Diff)* 切换停靠位置 (`m`) / 切换合并父提交 (`<Alt-m>`) / 全屏差异预览 (`z`/`F4`/`Esc`)；二进制文件自动展示 Old/New 字节体积变化与短 Blob OID 元数据卡片 |
+| `<Space>` / `v` / `d` | *(Commit Diff)* 暂存/取消 (`Space`，`vim` 预设另提供 `s`/`u`) · 行级可视选择 (`v`) · 回滚选区 (`d`/`Del`，`<Ctrl-z>` 撤销) |
 | `x` / `i` / `c` / `<Esc>` | *(Commit Diff)* 切换未暂存与已暂存侧 (`x`) · 三方检视 (`i`) · 聚焦提交说明 (`c`) · 退出可视选择或返回变更树 (`Esc`) |
 
 > 差异视图顶部会在发生文件权限/类型变更或符号链接变更时展示元数据头（如 `mode 100644 → 100755`、`symlink target (120000)`），并在文件末尾无换行符时显式展示 `\ No newline at end of file`。
@@ -339,7 +339,7 @@ jbgit --print-default-config vim              # 打印 keymaps/vim.toml
 - `themes/<flavor>.toml`：各主题预设的完整调色板（内置 `darcula` / `catppuccin-mocha` / `gruvbox-dark`，可直接修改覆盖，也可新建自定义 `themes/<name>.toml` 并在 `jbgit.toml` 中设置 `flavor = "<name>"`）
 - `keymaps/<preset>.toml`：各快捷键预设的完整/增量定义（内置 `default` / `jetbrains` / `vim`，可直接修改覆盖，也可新建自定义 `keymaps/<name>.toml` 并在 `jbgit.toml` 中设置 `[keymap] preset = "<name>"`）
 
-> 兼容说明：若配置目录中仍放有旧版独立的 `theme.toml` 或 `keymap.toml`，程序仍会将其作为同层增量覆写叠加加载，但 `--init-config` 不再生成这两个冗余包装文件。
+> 说明：`--init-config` 会在配置目录生成 `jbgit.toml`、`themes/*.toml` 与 `keymaps/*.toml`；若配置目录中仍放有旧版 `theme.toml`，程序仍会将其作为同层增量覆写叠加加载，快捷键请在 `jbgit.toml`（`[keymap]`）及 `keymaps/<preset>.toml` 中配置。
 
 ### 3. `jbgit.toml`：通用行为、图谱与布局比例
 
@@ -456,7 +456,7 @@ gutter_width = 28
 protected_branches = [ "main", "master" ]
 
 [update]
-# Update Project（<Alt-u>）同步当前分支的方式: "git-config"（遵循 branch.<name>.rebase / pull.rebase）| "merge" | "rebase"
+# Update Project 同步当前分支的方式: "git-config"（遵循 branch.<name>.rebase / pull.rebase）| "merge" | "rebase"
 mode = "git-config"
 # 更新前自动贮藏本地改动（含未跟踪文件），结束后恢复；当前分支冲突时贮藏会保留，继续 / 中止后自动恢复
 save_changes = true
@@ -543,21 +543,21 @@ mode = "nerd_font"
 # tracks = [ { fg = "#FF6285", muted_bg = "#603239" } ]
 ```
 
-### 5. `keymap.toml`：快捷键预设与增量覆盖
+### 5. `keymaps/<preset>.toml`：快捷键预设与增量覆盖
 
-`keymap.toml` 支持全局按键预设切换与分作用域（`[global]`、`[log]`、`[branch]`、`[commit]`、`[diff]`、`[stash]`、`[console]`）增量定制：
+通过 `jbgit.toml` 中的 `[keymap]` 与 `keymaps/<preset>.toml` 支持全局按键预设切换及分作用域（`[global]`、`[log]`、`[log_changes]`、`[branch]`、`[commit]`、`[diff]`、`[stash]`、`[console]`）增量定制：
 
 - **预设风格 (`preset`)**：
   - `"default"`：极简零冲突推荐预设（完整底表位于 `keymaps/default.toml`）。
-  - `"jetbrains"`：贴近 IntelliJ IDEA 习惯（完整定义位于 `keymaps/jetbrains.toml`，自动开启 `tree_speed_search = true`，并补充 `<C-k>` 打开 Commit、`<C-S-k>` Push、`<C-t>` Pull、`<C-A-n>` 新建分支、`<A-m>` Amend 等映射）。注意 `<C-t>` 保持绑定 Pull 以不改变已有习惯；Update Project 在三套预设中统一为 `<A-u>`，如需 IDEA 的 `Ctrl+T = Update Project`，可在 `[global]` 中 `prepend_keymap = [{ on = "<C-t>", run = "update_project" }]`。
+  - `"jetbrains"`：贴近 IntelliJ IDEA 习惯（完整定义位于 `keymaps/jetbrains.toml`，自动开启 `tree_speed_search = true`，并补充 `<C-k>` 打开 Commit、`<C-S-k>` Push、`<C-t>` Pull、`<A-m>` Amend 等映射）。注意 `<C-t>` 保持绑定 Pull 以不改变已有习惯；Update Project 在三套预设中统一为 `<A-u>`，如需 IDEA 的 `Ctrl+T = Update Project`，可在 `[global]` 中 `prepend_keymap = [{ on = "<C-t>", run = "update_project" }]`。
   - `"vim"`：Vim / Lazygit 风格（完整定义位于 `keymaps/vim.toml`，Log 中 `<C-d>`/`<C-u>` 半页翻滚、`d` 对比提交/开关差异、`z c`/`z o`/`z M`/`z R` 折叠 / 展开线性分支，Diff 中 `s`/`u` 暂存/取消暂存）。
-  - **直接修改或自定义预设**：可编辑配置目录下的 `keymaps/default.toml`、`keymaps/jetbrains.toml`、`keymaps/vim.toml` 覆写内置预设（非 default 预设在磁盘存在对应 TOML 时以磁盘文件为准），也可新建 `keymaps/<自定义名称>.toml` 并在 `keymap.toml` 中设置 `preset = "<自定义名称>"`（会在 `keymaps/default.toml` 之上叠加）。
+  - **直接修改或自定义预设**：可编辑配置目录下的 `keymaps/default.toml`、`keymaps/jetbrains.toml`、`keymaps/vim.toml` 覆写内置预设（非 default 预设在磁盘存在对应 TOML 时以磁盘文件为准），也可新建 `keymaps/<自定义名称>.toml` 并在 `jbgit.toml` 的 `[keymap]` 中设置 `preset = "<自定义名称>"`（会在 `keymaps/default.toml` 之上叠加）。
 - **分支树直接打字搜索 (`tree_speed_search`)**：
   - `false`（默认）：在分支树面板按 `/` 或 `<Ctrl-f>` 进入搜索，单键 `j`/`k`/`c`/`q`/`r` 等保留导航与快捷操作。
   - `true`：在分支树面板直接打字即可实时过滤分支。
 - **底栏快捷键提示定制 (`show_hint` 与 `footer_max_lines`)**：
   - 每条按键绑定支持可选参数 `show_hint = true | false`，用于控制该动作是否显示在底部快捷键提示栏中；省略时通过 `prepend_keymap` / `key_bindings` 改键会自动继承该动作原有的展示设置（使用 `run = "noop"` 解绑主按键时也会由存活别名继承），而 `append_keymap` 仅追加低优先级别名而不抢占主绑定的提示，显式设置则覆盖默认状态。
-  - **展示顺序**：当前聚焦作用域（如 `diff`、`branch`、`commit`、`log`、`stash`、`console`）优先，其次为 `global`；同一作用域内严格按照 `keymap.toml` 中的声明顺序从左向右排列（`prepend_keymap` 会排在作用域前列，`?` 帮助固定锚定在底栏最右侧）。
+  - **展示顺序**：当前聚焦作用域（如 `diff`、`log_changes`、`branch`、`commit`、`log`、`stash`、`console`）优先，其次为 `global`；同一作用域内严格按照 `keymaps/*.toml` 中的声明顺序从左向右排列（`prepend_keymap` 会排在作用域前列，`?` 帮助固定锚定在底栏最右侧）。
   - **超出宽度与多行 (`footer_max_lines`)**：
     - `1`（默认）：单行展示，超出终端宽度的条目自动隐藏并在右侧显示 `+N` 提示角标。
     - `2` / `3` 等正整数：允许底栏按宽度自动折行多行展示，仅在超过最大行数时折叠隐藏并显示 `+N`。
@@ -572,7 +572,7 @@ mode = "nerd_font"
 示例：
 
 ```toml
-preset = "default"
+# 示例：keymaps/default.toml（预设切换请在 jbgit.toml 的 [keymap] 中设置 preset）
 tree_speed_search = false
 footer_max_lines = 1
 
@@ -600,13 +600,14 @@ prepend_keymap = [
 
 | 作用域 | 可用 `run` 动作标识符 |
 | :--- | :--- |
-| `global` | `quit`, `help`, `context_menu`, `refresh`, `tab_commit`, `tab_log`, `tab_branches`, `tab_stash`, `tab_console`, `focus_next`, `focus_prev`, `toggle_branches_popup`, `toggle_branches_pane`, `git_fetch`, `git_pull`, `git_pull_dialog`, `git_rebase_dialog`, `git_push`, `update_project`, `configure_remotes`, `switch_repository`, `clone_repository`, `worktrees`, `resolve_conflicts`, `update_submodules`, `unshallow`, `bisect_good`, `bisect_bad`, `bisect_skip`, `bisect_reset`, `cycle_gpg_sign`, `goto_revision`, `palette`, `toggle_glyph_mode`, `cycle_graph_renderer`, `git_status_probe`, `noop` |
-| `log` | `cursor_down`, `cursor_up`, `goto_top`, `goto_bottom`, `prev_commit`, `next_commit`, `page_down_half`, `page_up_half`, `goto_revision`, `focus_filter`, `toggle_branches_pane`, `toggle_log_row_selection`, `compare_or_diff`, `swap_compare_direction`, `toggle_only_affected_changes`, `zoom_diff`, `copy_hash`, `copy_commit_message`, `copy_row_summary`, `copy_file_path`, `copy_file_patch`, `compare_file_with_local`, `checkout`, `new_branch`, `uncommit`, `reword`, `drop_commit`, `choose_parent`, `toggle_group`, `file_history`, `annotate`, `collapse_linear_branch`, `expand_linear_branch`, `collapse_all_linear_branches`, `expand_all_linear_branches`, `browse_revision`, `toggle_no_merges`, `toggle_linear_bek`, `log_speed_search`, `maximize_commit_message`, `open_reflog`, `log_load_more` |
+| `global` | `quit`, `help`, `context_menu`, `refresh`, `tab_commit`, `tab_log`, `tab_branches`, `tab_stash`, `tab_console`, `focus_next`, `focus_prev`, `toggle_branches_popup`, `toggle_branches_pane`, `git_fetch`, `git_pull`, `git_pull_dialog`, `git_rebase_dialog`, `git_push`, `update_project`, `configure_remotes`, `switch_repository`, `clone_repository`, `worktrees`, `new_branch`, `resolve_conflicts`, `update_submodules`, `unshallow`, `bisect_good`, `bisect_bad`, `bisect_skip`, `bisect_reset`, `cycle_gpg_sign`, `goto_revision`, `palette`, `toggle_glyph_mode`, `cycle_graph_renderer`, `noop` |
+| `log` | `cursor_down`, `cursor_up`, `goto_top`, `goto_bottom`, `page_down_half`, `page_up_half`, `nav_log_back`, `nav_log_forward`, `goto_revision`, `focus_filter`, `toggle_branches_pane`, `toggle_log_row_selection`, `compare_or_diff`, `swap_compare_direction`, `toggle_branch_compare_tree_diff`, `toggle_only_affected_changes`, `zoom_diff`, `copy_hash`, `copy_commit_message`, `copy_row_summary`, `checkout`, `new_branch`, `uncommit`, `reword`, `drop_commit`, `choose_parent`, `toggle_group`, `file_history`, `annotate`, `collapse_linear_branch`, `expand_linear_branch`, `collapse_all_linear_branches`, `expand_all_linear_branches`, `browse_revision`, `toggle_no_merges`, `toggle_linear_bek`, `log_speed_search`, `maximize_commit_message`, `open_reflog`, `log_load_more` |
+| `log_changes` | `prev_commit`, `next_commit`, `copy_file_path`, `copy_file_patch`, `compare_file_with_local`, `changes_expand_all`, `changes_collapse_all` |
 | `branch` | `branch_search`, `toggle_favorite`, `checkout`, `new_branch`, `rename_branch`, `delete_branch`, `navigate_branch`, `open_reflog` |
-| `commit` | `cursor_down`, `cursor_up`, `goto_top`, `goto_bottom`, `toggle_stage`, `stage_selection`, `unstage_selection`, `focus_commit_msg`, `commit`, `commit_and_push`, `toggle_amend`, `toggle_signoff`, `commit_history`, `select_all`, `discard_changes`, `toggle_group`, `edit_file`, `file_history`, `annotate`, `apply_patch`, `apply_patch_clipboard` |
+| `commit` | `cursor_down`, `cursor_up`, `goto_top`, `goto_bottom`, `toggle_stage`, `stage_selection`, `unstage_selection`, `focus_commit_msg`, `edit_commit_message_external`, `commit`, `commit_and_push`, `toggle_amend`, `toggle_signoff`, `commit_history`, `select_all`, `discard_changes`, `toggle_group`, `changes_expand_all`, `changes_collapse_all`, `edit_file`, `file_history`, `annotate`, `apply_patch`, `apply_patch_clipboard` |
 | `diff` | `cursor_down`, `cursor_up`, `goto_top`, `goto_bottom`, `prev_hunk`, `next_hunk`, `prev_file`, `next_file`, `toggle_side_by_side`, `cycle_diff_context`, `cycle_diff_whitespace`, `toggle_diff_soft_wrap`, `diff_scroll_left`, `diff_scroll_right`, `diff_search`, `diff_search_next`, `diff_search_prev`, `cycle_diff_dock`, `choose_parent`, `zoom_diff`, `swap_compare_direction`, `toggle_stage`, `stage_selection`, `unstage_selection`, `toggle_visual`, `rollback_selection`, `undo_rollback`, `switch_diff_side`, `three_way_inspector` |
-| `stash` | `cursor_down`, `cursor_up`, `goto_top`, `goto_bottom`, `stash_new`, `stash_apply`, `stash_pop`, `stash_drop`, `stash_branch`, `stash_clear`, `toggle_group` |
-| `console` | `cursor_down`, `cursor_up`, `goto_top`, `goto_bottom`, `page_down_half`, `page_up_half` |
+| `stash` | `cursor_down`, `cursor_up`, `goto_top`, `goto_bottom`, `stash_new`, `stash_apply`, `stash_pop`, `stash_drop`, `stash_branch`, `stash_clear`, `toggle_group`, `changes_expand_all`, `changes_collapse_all` |
+| `console` | `cursor_down`, `cursor_up`, `goto_top`, `goto_bottom`, `page_down_half`, `page_up_half`, `git_status_probe` |
 
 ---
 
@@ -817,7 +818,7 @@ jbgit 同一时间只绑定**一个活动仓库**（多根同步模型不做，�
 
 6. **交互式二分查找 (`Git Bisect`)**
    - Log 提交右键菜单提供「从此处开始二分查找 (Bad)」与「标记为正常提交 (Bisect Good)」，支持先选 Bad 再选 Good 或在已开始的 Bisect 中随时标记历史提交。
-   - 仓库进入 `Bisect` 状态后，顶部橙色状态横幅实时估算剩余修订数与约需步数，并提供可点击的 `[Good]` / `[Bad]` / `[Skip]` / `[Reset]` 按钮；对应动作 `bisect_good` / `bisect_bad` / `bisect_skip` / `bisect_reset` 均已注册至 `CommandCatalog`（可在 `?` 命令面板执行或于 `keymap.toml` 自定义绑定）。
+   - 仓库进入 `Bisect` 状态后，顶部橙色状态横幅实时估算剩余修订数与约需步数，并提供可点击的 `[Good]` / `[Bad]` / `[Skip]` / `[Reset]` 按钮；对应动作 `bisect_good` / `bisect_bad` / `bisect_skip` / `bisect_reset` 均已注册至 `CommandCatalog`（可在 `?` 命令面板执行或于 `keymaps/*.toml` 自定义绑定）。
 
 ---
 

@@ -44,6 +44,7 @@ pub struct CommitContext<'a> {
     pub default_remote: &'a str,
     pub warn_crlf: bool,
     pub i18n: &'a I18n,
+    pub undo_rollback_key: Option<String>,
     pub now: Instant,
     pub focused_pane: &'a mut PaneId,
     pub loading_snapshot: &'a mut bool,
@@ -2544,12 +2545,26 @@ impl CommitWorkbench {
                 self.visual_anchor_row = None;
                 self.invalidate_diff_cache_for_path(&diff.key.path);
                 self.pending_select_immediate = true;
-                let toast_key = if whole_hunk {
-                    "toast.rolled_back_hunk"
-                } else {
-                    "toast.rolled_back_lines"
-                };
-                *ctx.status_notice = Some(ctx.i18n.t_fmt(toast_key, &[("path", &diff.key.path)]));
+                let undo_key = ctx.undo_rollback_key.as_deref();
+                *ctx.status_notice = Some(match undo_key {
+                    Some(key) => {
+                        let toast_key = if whole_hunk {
+                            "toast.rolled_back_hunk"
+                        } else {
+                            "toast.rolled_back_lines"
+                        };
+                        ctx.i18n
+                            .t_fmt(toast_key, &[("path", &diff.key.path), ("key", key)])
+                    }
+                    None => {
+                        let toast_key = if whole_hunk {
+                            "toast.rolled_back_hunk_no_key"
+                        } else {
+                            "toast.rolled_back_lines_no_key"
+                        };
+                        ctx.i18n.t_fmt(toast_key, &[("path", &diff.key.path)])
+                    }
+                });
                 ctx.effects.push(Effect::WriteWorktreeBuffer {
                     path: diff.key.path.clone(),
                     new_local_bytes: new_local,

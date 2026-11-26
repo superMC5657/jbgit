@@ -961,6 +961,54 @@ fn stage_diff_rollback_toast_distinguishes_hunk_from_visual_line_selection() {
         lines_notice.contains("选中行"),
         "visual selection rollback must use line wording `选中行`, got: {lines_notice:?}"
     );
+    assert!(
+        lines_notice.contains("Ctrl+Z"),
+        "default rollback toast must mention Ctrl+Z, got: {lines_notice:?}"
+    );
+
+    // 3. Rebinding undo_rollback updates the rollback toast key dynamically; unbinding omits it.
+    let rebind_ov: crate::config::KeymapConfigOverlay = toml::from_str(
+        r#"
+[diff]
+prepend_keymap = [
+    { on = "<C-z>", run = "noop" },
+    { on = "<A-z>", run = "undo_rollback" },
+]
+"#,
+    )
+    .unwrap();
+    ts.state_mut().config.keymap.merge_overlay(&rebind_ov);
+    ts.state_mut()
+        .stage_workbench
+        .set_diff_for_test(Some(build_diff()));
+    ts.dispatch(Action::StageDiffRollbackSelection);
+    let rebound_notice = ts.state().status_notice.clone().unwrap_or_default();
+    assert!(
+        rebound_notice.contains("Alt+Z") && !rebound_notice.contains("Ctrl+Z"),
+        "rebound rollback toast must show Alt+Z, got: {rebound_notice:?}"
+    );
+
+    let unbind_ov: crate::config::KeymapConfigOverlay = toml::from_str(
+        r#"
+[diff]
+prepend_keymap = [
+    { on = "<A-z>", run = "noop" },
+]
+"#,
+    )
+    .unwrap();
+    ts.state_mut().config.keymap.merge_overlay(&unbind_ov);
+    ts.state_mut()
+        .stage_workbench
+        .set_diff_for_test(Some(build_diff()));
+    ts.dispatch(Action::StageDiffRollbackSelection);
+    let no_key_notice = ts.state().status_notice.clone().unwrap_or_default();
+    assert!(
+        no_key_notice.contains("选中代码块")
+            && !no_key_notice.contains("Alt+Z")
+            && !no_key_notice.contains("Ctrl+Z"),
+        "unbound rollback toast must omit undo key hint, got: {no_key_notice:?}"
+    );
 }
 
 /// Code-review regression: active filter chips with 1-2 col labels (`v1`, `a`, `王`)
@@ -1107,22 +1155,30 @@ fn copy_file_path_respects_zoomed_diff_noop_and_appears_in_help() {
         "CopyFilePath must not be applicable while Log diff is zoomed"
     );
 
-    // Explicit `c -> noop` in `[log]` must disable both routing and context menu hint.
+    // Explicit `c -> noop` in `[log_changes]` must disable both routing and context menu hint.
     ts.state_mut().log.details.diff.zoomed = false;
-    let noop_binding: crate::config::keymap_config::KeyBindingConfig = toml::from_str(
-        r#"on = ["c"]
-run = "noop""#,
+    let noop_ov: crate::config::KeymapConfigOverlay = toml::from_str(
+        r#"
+[log_changes]
+prepend_keymap = [
+    { on = ["c"], run = "noop" },
+]
+"#,
     )
     .unwrap();
-    ts.state_mut()
-        .config
-        .keymap
-        .log
-        .key_bindings
-        .push(noop_binding);
+    ts.state_mut().config.keymap.merge_overlay(&noop_ov);
     assert!(
-        !crate::keymap::actions::is_plain_c_copy_file_path_fallback_active(ts.state()),
-        "explicit `c -> noop` in [log] must suppress plain `c` CopyFilePath fallback"
+        crate::keymap::catalog::shortcut_for_action(
+            ts.state(),
+            &[
+                crate::config::KeymapScope::LogChanges,
+                crate::config::KeymapScope::Log,
+                crate::config::KeymapScope::Global
+            ],
+            &KeyAction::CopyFilePath
+        )
+        .is_none(),
+        "explicit `c -> noop` in [log_changes] must suppress CopyFilePath shortcut hint"
     );
     assert!(route_dynamic_key(&key_c, ts.state()).is_none());
 }

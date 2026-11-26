@@ -92,7 +92,7 @@ default_parent = ""
 setup_command = ""
 
 [update]
-# Update Project（<A-u>）同步当前分支的方式："git-config"（遵循 branch.<name>.rebase / pull.rebase）| "merge" | "rebase"
+# Update Project 同步当前分支的方式："git-config"（遵循 branch.<name>.rebase / pull.rebase）| "merge" | "rebase"
 mode = "git-config"
 # 更新前自动贮藏本地改动，结束后恢复
 save_changes = true

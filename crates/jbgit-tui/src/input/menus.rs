@@ -690,9 +690,6 @@ pub fn route_stash_fallback_key(key: &KeyEvent, state: &AppState) -> Vec<Action>
                 KeyCode::Right if shift => vec![Action::DiffScrollHoriz(DiffScope::Stash, 16)],
                 KeyCode::Right => vec![Action::ChangesExpand(ChangesHost::Stash, true)],
                 KeyCode::Left => vec![Action::ChangesExpand(ChangesHost::Stash, false)],
-                KeyCode::Char('v') => vec![Action::ChangesToggleGroupByDir(ChangesHost::Stash)],
-                KeyCode::Char('e') => vec![Action::ChangesExpandAll(ChangesHost::Stash, true)],
-                KeyCode::Char('E') => vec![Action::ChangesExpandAll(ChangesHost::Stash, false)],
                 KeyCode::PageDown | KeyCode::Char(' ') => {
                     vec![Action::DiffScroll(DiffScope::Stash, 10)]
                 }

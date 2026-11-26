@@ -70,11 +70,10 @@ fn is_candidate_usable(
         && !has_earlier_conflict(&cur_bindings[..binding_idx], seq, ctx, target_run)
 }
 
-/// Resolves the best display key string for `binding`, falling back to surviving aliases
-/// of the same action across `scopes[scope_idx..]` when the primary key is shadowed.
-pub(crate) fn resolve_key_in_scopes(
+fn resolve_key_from(
     ctx: &KeyResolveCtx<'_>,
     scopes: &[KeymapScope],
+    start_scope_idx: usize,
     scope_idx: usize,
     binding_idx: usize,
     binding: &KeyBindingConfig,
@@ -83,7 +82,7 @@ pub(crate) fn resolve_key_in_scopes(
         && is_candidate_usable(
             ctx,
             scopes,
-            scope_idx,
+            start_scope_idx,
             scope_idx,
             binding_idx,
             seq,
@@ -104,7 +103,7 @@ pub(crate) fn resolve_key_in_scopes(
                 && is_candidate_usable(
                     ctx,
                     scopes,
-                    scope_idx,
+                    start_scope_idx,
                     fb_scope_idx,
                     fb_idx,
                     alt_seq,
@@ -119,12 +118,23 @@ pub(crate) fn resolve_key_in_scopes(
     None
 }
 
-/// Resolves the active display key for `action` across `scopes`, respecting
-/// higher-priority scope shadowing, `noop` overrides, and speed-search capture.
-pub(crate) fn resolve_action_shortcut(
+/// Resolves the best display key string for `binding`, falling back to surviving aliases
+/// of the same action across `scopes[scope_idx..]` when the primary key is shadowed.
+pub(crate) fn resolve_key_in_scopes(
+    ctx: &KeyResolveCtx<'_>,
+    scopes: &[KeymapScope],
+    scope_idx: usize,
+    binding_idx: usize,
+    binding: &KeyBindingConfig,
+) -> Option<String> {
+    resolve_key_from(ctx, scopes, scope_idx, scope_idx, binding_idx, binding)
+}
+
+fn resolve_action_shortcut_with_start(
     state: &AppState,
     scopes: &[KeymapScope],
     action: &KeyAction,
+    shadow_from_start: bool,
 ) -> Option<String> {
     let ctx = KeyResolveCtx {
         state,
@@ -134,16 +144,43 @@ pub(crate) fn resolve_action_shortcut(
     };
     let km = &state.config.keymap;
     for (scope_idx, &scope) in scopes.iter().enumerate() {
+        let start_scope_idx = if shadow_from_start { 0 } else { scope_idx };
         for (binding_idx, binding) in km.bindings_for(scope).iter().enumerate() {
             if binding.run == *action
-                && let Some(key) =
-                    resolve_key_in_scopes(&ctx, scopes, scope_idx, binding_idx, binding)
+                && let Some(key) = resolve_key_from(
+                    &ctx,
+                    scopes,
+                    start_scope_idx,
+                    scope_idx,
+                    binding_idx,
+                    binding,
+                )
             {
                 return Some(key);
             }
         }
     }
     None
+}
+
+/// Resolves the active display key for `action` across `scopes`, checking intra-scope
+/// shadowing and surviving aliases across lower-priority scopes.
+pub(crate) fn resolve_action_shortcut(
+    state: &AppState,
+    scopes: &[KeymapScope],
+    action: &KeyAction,
+) -> Option<String> {
+    resolve_action_shortcut_with_start(state, scopes, action, false)
+}
+
+/// Resolves the active display key for `action` across an active scope stack `scopes`,
+/// respecting shadowing from all higher-priority scopes (`scopes[0..scope_idx]`).
+pub(crate) fn resolve_shadowed_action_shortcut(
+    state: &AppState,
+    scopes: &[KeymapScope],
+    action: &KeyAction,
+) -> Option<String> {
+    resolve_action_shortcut_with_start(state, scopes, action, true)
 }
 
 /// Resolves all unshadowed display keys for `action` across `scopes` (checking

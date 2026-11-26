@@ -100,6 +100,10 @@ pub(crate) fn write_custom_test_config(dir: &Path) -> Result<()> {
 language = "en-US"
 default_tab = "log"
 
+[keymap]
+preset = "default"
+footer_max_lines = 2
+
 [layout]
 log_ratio = [ 1, 3, 2 ]
 commit_ratio = [ 1, 2 ]
@@ -123,11 +127,10 @@ border_focused = "#FF6600"
 "##,
     )?;
 
+    fs::create_dir_all(dir.join("keymaps"))?;
     fs::write(
-        dir.join("keymap.toml"),
+        dir.join("keymaps/default.toml"),
         r#"
-footer_max_lines = 2
-
 [global]
 prepend_keymap = [
     { on = [ "r" ], run = "noop" },

@@ -606,9 +606,9 @@ fn clamped_file_jump_preserves_diff_viewport_and_search_in_log_and_stash() {
 
 #[test]
 fn log_changes_tree_braces_switch_commits_with_clamp_and_scope_isolation() {
-    use crossterm::event::KeyEvent;
     use crate::config::{KeymapConfig, KeymapPreset};
     use crate::keymap::{MatchResult, actions::check_scopes};
+    use crossterm::event::KeyEvent;
 
     let mut ts = TestSession::with_snapshot(snapshot());
     ts.dispatch(Action::SwitchTab(WorkspaceTab::Log));
@@ -734,7 +734,10 @@ fn log_changes_tree_braces_switch_commits_with_clamp_and_scope_isolation() {
     assert_eq!(more_ts.state().log.graph.selected_idx, last_idx);
     assert!(!more_ts.state().log.graph.is_cursor_on_load_more());
     assert_eq!(more_ts.state().log.details.changes.selected, 1);
-    assert_eq!(more_ts.state().log.details.diff.scroll.offset(), tail_scroll);
+    assert_eq!(
+        more_ts.state().log.details.diff.scroll.offset(),
+        tail_scroll
+    );
 
     // When cursor is already on `[Load More]`, `}` is a no-op (does not step upward),
     // while `{` steps back up onto the last real commit.
@@ -904,12 +907,20 @@ fn reflog_and_push_dialog_braces_switch_commits_in_changes_pane() {
     }
     pts.send_key(KeyCode::Char('{'), KeyModifiers::SHIFT);
     assert_eq!(
-        pts.state().modal_stack.push_dialog().unwrap().selected_commit,
+        pts.state()
+            .modal_stack
+            .push_dialog()
+            .unwrap()
+            .selected_commit,
         0
     );
     pts.send_key(KeyCode::Char('{'), KeyModifiers::NONE);
     assert_eq!(
-        pts.state().modal_stack.push_dialog().unwrap().selected_commit,
+        pts.state()
+            .modal_stack
+            .push_dialog()
+            .unwrap()
+            .selected_commit,
         0
     );
 
@@ -942,13 +953,21 @@ fn reflog_and_push_dialog_braces_switch_commits_in_changes_pane() {
     pts.dispatch(Action::PushSetFocus(PushDialogFocus::Commits));
     pts.send_key(KeyCode::Char('}'), KeyModifiers::NONE);
     assert_eq!(
-        pts.state().modal_stack.push_dialog().unwrap().selected_commit,
+        pts.state()
+            .modal_stack
+            .push_dialog()
+            .unwrap()
+            .selected_commit,
         0
     );
     pts.dispatch(Action::PushSetFocus(PushDialogFocus::Target));
     pts.send_key(KeyCode::Char('}'), KeyModifiers::NONE);
     assert_eq!(
-        pts.state().modal_stack.push_dialog().unwrap().selected_commit,
+        pts.state()
+            .modal_stack
+            .push_dialog()
+            .unwrap()
+            .selected_commit,
         0
     );
 }

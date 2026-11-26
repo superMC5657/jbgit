@@ -720,15 +720,7 @@ fn speed_search_filter_history_columns_body_hash_links_and_maximize_modal() {
 
 #[test]
 fn new_issue_11_keybindings_have_zero_conflicts_across_all_three_presets() {
-    let scopes = [
-        KeymapScope::Global,
-        KeymapScope::Log,
-        KeymapScope::Branch,
-        KeymapScope::Commit,
-        KeymapScope::Diff,
-        KeymapScope::Stash,
-        KeymapScope::Console,
-    ];
+    let scopes = KeymapScope::ALL;
     for preset in [
         KeymapPreset::Default,
         KeymapPreset::Jetbrains,

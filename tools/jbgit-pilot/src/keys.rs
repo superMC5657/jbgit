@@ -6,7 +6,7 @@ use crate::protocol::{MouseBtn, MouseModifiers};
 /// Encodes a symbolic key token (e.g. `Enter`, `Ctrl+S`, `<C-s>`, `F8`, `Alt+r`,
 /// `<Space>`, `j`) into ANSI / VT bytes suitable for writing into a PTY.
 ///
-/// Parsing delegates directly to [`jbgit_core::parse_key_token`] so `keymap.toml`
+/// Parsing delegates directly to [`jbgit_core::parse_key_token`] so `keymaps/*.toml`
 /// syntax and `jbgit-pilot` key specs share a single canonical parser.
 pub fn encode_key(spec: &str) -> Result<Vec<u8>> {
     let token = parse_key_token(spec)?;
@@ -74,6 +74,7 @@ fn encode_unmodified_named(kind: KeyTokenKind) -> Result<Vec<u8>> {
         KeyTokenKind::Delete => b"\x1b[3~".to_vec(),
         KeyTokenKind::PageUp => b"\x1b[5~".to_vec(),
         KeyTokenKind::PageDown => b"\x1b[6~".to_vec(),
+        KeyTokenKind::Menu => bail!("unsupported key Menu in PTY encoding"),
         KeyTokenKind::F(1) => b"\x1bOP".to_vec(),
         KeyTokenKind::F(2) => b"\x1bOQ".to_vec(),
         KeyTokenKind::F(3) => b"\x1bOR".to_vec(),

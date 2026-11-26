@@ -77,7 +77,7 @@ Multi-branch DAG (`main` ahead of `origin/main` by 3, `feature/login`, `feature/
 - **Hover & Resize Stress**: `hover` toolbar buttons/header pills; `resize` `80x24`, `50x16`, `35x8` (too-small guard), and back to `140x40` for panics, clipped modals, or CJK misalignment.
 
 ### `full --custom-config`
-Auto-generates `<session-dir>/custom-config/` (`jbgit.toml`, `theme.toml`, `keymap.toml`): `en-US`, `log` default tab, custom `[layout]` ratios (`log_ratio`, `commit_ratio`, `file_history_ratio`, `file_history_vertical_ratio`), `catppuccin-mocha`, `unicode` glyphs, `#112233`/`#223344`/`#FF6600`, `footer_max_lines = 2`, unbinds `r`/`b`/`n`/`<C-s>` via `noop`, rebinds `refresh->F8`, `toggle_branches_popup->F6`, `new_branch->F7`, `commit->F9`, chord `g x -> refresh`.
+Auto-generates `<session-dir>/custom-config/` (`jbgit.toml`, `theme.toml`, `keymaps/default.toml`): `en-US`, `log` default tab, custom `[layout]` ratios (`log_ratio`, `commit_ratio`, `file_history_ratio`, `file_history_vertical_ratio`), `catppuccin-mocha`, `unicode` glyphs, `#112233`/`#223344`/`#FF6600`, `footer_max_lines = 2`, unbinds `r`/`b`/`n`/`<C-s>` via `noop`, rebinds `refresh->F8`, `toggle_branches_popup->F6`, `new_branch->F7`, `commit->F9`, chord `g x -> refresh`.
 - **Verify**: `colors` / `inspect-row` show custom hex + `Unicode` glyphs + `[layout]` splits; old bindings are no-ops; `F8`/`F6`/`F7`/`F9`/`g x` work; shortcut hints update dynamically in footer, `?` Help, `.` Context Menu, Branches Popup, and Which-Key popup.
 
 ### `conflict` (`--scenario conflict`)

@@ -347,15 +347,7 @@ fn keymap_presets_have_no_conflicts_with_clone_repository() {
         KeymapPreset::Vim,
     ] {
         let km = KeymapConfig::for_preset(preset.clone());
-        for scope in [
-            KeymapScope::Global,
-            KeymapScope::Log,
-            KeymapScope::Branch,
-            KeymapScope::Commit,
-            KeymapScope::Diff,
-            KeymapScope::Stash,
-            KeymapScope::Console,
-        ] {
+        for scope in KeymapScope::ALL {
             let bindings = km.bindings_for(scope);
             let mut seen = std::collections::HashSet::new();
             for b in bindings {

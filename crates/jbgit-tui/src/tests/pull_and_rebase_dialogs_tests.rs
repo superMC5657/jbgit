@@ -547,15 +547,7 @@ fn pull_and_rebase_dialog_shortcuts_have_zero_conflicts_across_all_presets() {
         assert_eq!(rebase_key.as_deref(), Some("Alt+E"), "preset {preset:?}");
 
         // Verify neither <A-l> nor <A-e> is shadowed in any scope.
-        for scope in [
-            KeymapScope::Global,
-            KeymapScope::Log,
-            KeymapScope::Commit,
-            KeymapScope::Branch,
-            KeymapScope::Diff,
-            KeymapScope::Stash,
-            KeymapScope::Console,
-        ] {
+        for scope in KeymapScope::ALL {
             for b in cfg.bindings_for(scope) {
                 if !b.run.is_active() {
                     continue;

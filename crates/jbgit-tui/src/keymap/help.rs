@@ -85,6 +85,7 @@ fn scope_label_key(scope: KeymapScope) -> &'static str {
     match scope {
         KeymapScope::Global => "help.scope.global",
         KeymapScope::Log => "help.scope.log",
+        KeymapScope::LogChanges => "help.scope.log_changes",
         KeymapScope::Commit => "help.scope.commit",
         KeymapScope::Branch => "help.scope.branch",
         KeymapScope::Diff => "help.scope.diff",
@@ -156,7 +157,7 @@ fn current_context_rows(state: &AppState) -> Vec<HelpRow> {
                 });
             }
         }
-        let (esc_hint, _) = catalog::commit_editor_structural_hints(state, editing_author);
+        let esc_hint = catalog::commit_editor_structural_hints(state, editing_author);
         out.push(HelpRow::Entry {
             keys: esc_hint.key,
             desc: esc_hint.label,
@@ -167,22 +168,6 @@ fn current_context_rows(state: &AppState) -> Vec<HelpRow> {
     }
 
     let structural = catalog::normal_structural_hints(state);
-    if let Some(probe) = structural.console_probe_fallback {
-        out.push(HelpRow::Entry {
-            keys: probe.key,
-            desc: localized_action_desc(state, &KeyAction::GitStatusProbe, None),
-            scope_tag: pane_title.to_string(),
-            run: probe.action,
-        });
-    }
-    if let Some(copy_path) = structural.log_changes_copy_path_fallback {
-        out.push(HelpRow::Entry {
-            keys: copy_path.key,
-            desc: localized_action_desc(state, &KeyAction::CopyFilePath, None),
-            scope_tag: pane_title.to_string(),
-            run: copy_path.action,
-        });
-    }
 
     for scope in scopes_for_context(state) {
         if scope == KeymapScope::Global {
@@ -223,20 +208,11 @@ fn current_context_rows(state: &AppState) -> Vec<HelpRow> {
 
 fn advanced_tool_rows(state: &AppState) -> Vec<HelpRow> {
     let scope = state.i18n.t("help.scope.advanced").to_string();
-    let all_scopes = &[
-        KeymapScope::Global,
-        KeymapScope::Log,
-        KeymapScope::Commit,
-        KeymapScope::Branch,
-        KeymapScope::Diff,
-        KeymapScope::Stash,
-        KeymapScope::Console,
-    ];
     catalog::advanced_tool_actions()
         .iter()
-        .map(|&(run, default_key)| {
-            let keys = catalog::shortcut_for_action(state, all_scopes, run)
-                .unwrap_or_else(|| default_key.to_string());
+        .map(|run| {
+            let keys = catalog::shortcut_for_action(state, &KeymapScope::ALL, run)
+                .unwrap_or_else(|| "—".to_string());
             HelpRow::Entry {
                 keys,
                 desc: localized_action_desc(state, run, None),
@@ -265,16 +241,14 @@ pub fn build_help_rows(state: &AppState, query: &str) -> Vec<HelpRow> {
         i18n.t("help.scope.commit"),
         false,
     );
-    let mut log_rows =
+    let log_rows =
         collect_merged_entries(state, &km.log.key_bindings, i18n.t("help.scope.log"), false);
-    if super::actions::is_plain_c_copy_file_path_fallback_active(state) {
-        log_rows.push(HelpRow::Entry {
-            keys: "c".to_string(),
-            desc: localized_action_desc(state, &KeyAction::CopyFilePath, None),
-            scope_tag: i18n.t("help.scope.log").to_string(),
-            run: Some(KeyAction::CopyFilePath),
-        });
-    }
+    let log_changes_rows = collect_merged_entries(
+        state,
+        &km.log_changes.key_bindings,
+        i18n.t("help.scope.log_changes"),
+        false,
+    );
     let branch_rows = collect_merged_entries(
         state,
         &km.branch.key_bindings,
@@ -328,6 +302,7 @@ pub fn build_help_rows(state: &AppState, query: &str) -> Vec<HelpRow> {
             (i18n.t("help.section_global"), global_rows),
             (i18n.t("help.section_commit"), commit_rows),
             (i18n.t("help.section_log"), log_rows),
+            (i18n.t("help.section_log_changes"), log_changes_rows),
             (i18n.t("help.section_branch"), branch_rows),
             (i18n.t("help.section_diff"), diff_rows),
             (i18n.t("help.section_stash"), stash_rows),
@@ -350,6 +325,7 @@ pub fn build_help_rows(state: &AppState, query: &str) -> Vec<HelpRow> {
         .chain(global_rows)
         .chain(commit_rows)
         .chain(log_rows)
+        .chain(log_changes_rows)
         .chain(branch_rows)
         .chain(diff_rows)
         .chain(stash_rows)

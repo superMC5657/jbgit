@@ -4,7 +4,6 @@ use std::time::Duration;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use jbgit_core::PaneId;
-use jbgit_engine::StageDiffSide;
 
 use crate::app::{Action, AppState, ContextMenuItem, DiffScope, EditorMoveKind, PopupKind};
 use crate::hit_test::{CommitOptionKind, HitTarget, StageDiffToolbarButton, StageToolbarButton};
@@ -31,9 +30,6 @@ pub(crate) fn route_commit_priority_key(key: &KeyEvent, state: &AppState) -> Opt
         }
         if let Some(actions) = crate::keymap::route_editor_dynamic_key(key, state) {
             return Some(actions);
-        }
-        if key.code == KeyCode::Char('e') && ctrl && !alt {
-            return Some(vec![Action::OpenExternalEditorMessage]);
         }
         return Some(match key.code {
             KeyCode::Esc => vec![Action::FocusPane(PaneId::CommitChangesTree)],
@@ -83,27 +79,13 @@ pub(crate) fn route_commit_priority_key(key: &KeyEvent, state: &AppState) -> Opt
 }
 
 pub(crate) fn route_commit_diff_fallback_key(key: &KeyEvent, state: &AppState) -> Vec<Action> {
-    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
-    let alt = key.modifiers.contains(KeyModifiers::ALT);
     let shift = key.modifiers.contains(KeyModifiers::SHIFT);
-    let side = state.stage_workbench.current_diff_key().map(|k| k.side);
-    let is_amend_ref = side == Some(StageDiffSide::AmendCommit);
 
     match key.code {
         KeyCode::PageDown => vec![Action::StageDiffMoveCursor(10)],
         KeyCode::PageUp => vec![Action::StageDiffMoveCursor(-10)],
         KeyCode::Left if shift => vec![Action::DiffScrollHoriz(DiffScope::Stage, -16)],
         KeyCode::Right if shift => vec![Action::DiffScrollHoriz(DiffScope::Stage, 16)],
-        KeyCode::Char('s' | '+') if !ctrl && !alt && !is_amend_ref => {
-            vec![if side == Some(StageDiffSide::Staged) {
-                Action::StageDiffUnstageSelection
-            } else {
-                Action::StageDiffStageSelection
-            }]
-        }
-        KeyCode::Char('u' | '-') if !ctrl && !alt && !is_amend_ref => {
-            vec![Action::StageDiffUnstageSelection]
-        }
         KeyCode::Esc => {
             if state.stage_workbench.diff_search().active {
                 vec![Action::DiffSearchClose(DiffScope::Stage)]
@@ -118,8 +100,6 @@ pub(crate) fn route_commit_diff_fallback_key(key: &KeyEvent, state: &AppState) -
 }
 
 pub(crate) fn route_commit_changes_tree_key(key: &KeyEvent, state: &AppState) -> Vec<Action> {
-    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
-    let alt = key.modifiers.contains(KeyModifiers::ALT);
     match key.code {
         KeyCode::PageDown => vec![Action::ScrollCommitStage(10)],
         KeyCode::PageUp => vec![Action::ScrollCommitStage(-10)],
@@ -136,11 +116,6 @@ pub(crate) fn route_commit_changes_tree_key(key: &KeyEvent, state: &AppState) ->
                 None => Vec::new(),
             }
         }
-        KeyCode::Char('s' | '+') if !ctrl && !alt => vec![Action::StageActionSelected],
-        KeyCode::Char('u' | '-') if !ctrl && !alt => vec![Action::UnstageActionSelected],
-        KeyCode::Char('z') if ctrl && alt => vec![Action::DiscardPromptSelected],
-        KeyCode::Char('m') if alt => vec![Action::CommitToggleAmend],
-        KeyCode::Char('s') if alt => vec![Action::CommitToggleSignoff],
         _ => Vec::new(),
     }
 }
@@ -303,6 +278,16 @@ pub(crate) fn stage_options_menu_items(state: &AppState) -> Vec<ContextMenuItem>
         &[crate::config::KeymapScope::Commit],
         &KeyAction::ToggleGroup,
     );
+    let expand_all_sc = catalog::shortcut_for_action(
+        state,
+        &[crate::config::KeymapScope::Commit],
+        &KeyAction::ChangesExpandAll,
+    );
+    let collapse_all_sc = catalog::shortcut_for_action(
+        state,
+        &[crate::config::KeymapScope::Commit],
+        &KeyAction::ChangesCollapseAll,
+    );
     vec![
         ContextMenuItem::run(
             format!(
@@ -327,13 +312,13 @@ pub(crate) fn stage_options_menu_items(state: &AppState) -> Vec<ContextMenuItem>
         ContextMenuItem::run(
             i18n.t("menu.stage.expand_all"),
             Some('e'),
-            None,
+            expand_all_sc.as_deref(),
             vec![Action::StageExpandAll(true)],
         ),
         ContextMenuItem::run(
             i18n.t("menu.stage.collapse_all"),
             Some('c'),
-            None,
+            collapse_all_sc.as_deref(),
             vec![Action::StageExpandAll(false)],
         ),
         ContextMenuItem::run(
