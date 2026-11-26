@@ -3406,6 +3406,8 @@ async fn sequential_stage_and_unstage_never_clobber_other_files_across_workers()
     let tmp = TempDir::new().unwrap();
     let dir = tmp.path();
     git(dir, &["init", "-b", "main"]);
+    git(dir, &["config", "user.name", "Tester"]);
+    git(dir, &["config", "user.email", "tester@example.com"]);
     fs::write(dir.join("README.md"), "init\n").unwrap();
     git(dir, &["add", "README.md"]);
     git(dir, &["commit", "-m", "init"]);
@@ -5354,7 +5356,7 @@ async fn bisect_five_commits_locates_culprit_and_resets() {
         assert!(step.success, "bisect mark failed: {step:?}");
         let log_out =
             String::from_utf8_lossy(&git_output(dir, &["bisect", "log"]).stdout).to_string();
-        if log_out.contains("first bad commit") {
+        if log_out.contains("first bad commit") || log_out.contains("first 'bad' commit") {
             assert!(
                 log_out.contains(&c3_culprit.to_string()),
                 "expected culprit {c3_culprit} in bisect log:\n{log_out}"
@@ -5365,7 +5367,8 @@ async fn bisect_five_commits_locates_culprit_and_resets() {
     let final_log =
         String::from_utf8_lossy(&git_output(dir, &["bisect", "log"]).stdout).to_string();
     assert!(
-        final_log.contains(&format!("first bad commit: [{c3_culprit}]")),
+        final_log.contains(&format!("first bad commit: [{c3_culprit}]"))
+            || final_log.contains(&format!("first 'bad' commit: [{c3_culprit}]")),
         "bisect must identify commit 3 ({c3_culprit}) as first bad commit:\n{final_log}"
     );
 
