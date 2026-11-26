@@ -801,7 +801,7 @@ fn handle_task_request(ctx: &SupervisorContext, task: ScheduledTask) {
             let page = ctx.scan_config.effective_commit_page_size();
             let limit = ctx
                 .commit_limit
-                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |cur| {
+                .try_update(Ordering::Relaxed, Ordering::Relaxed, |cur| {
                     Some(cur.saturating_add(page))
                 })
                 .map_or(page, |prev| prev.saturating_add(page));

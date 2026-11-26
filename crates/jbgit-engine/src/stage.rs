@@ -1703,9 +1703,6 @@ pub(crate) fn unstage_targets_sync(
 }
 
 fn is_link_or_reparse_point(meta: &fs::Metadata) -> bool {
-    if meta.file_type().is_symlink() {
-        return true;
-    }
     #[cfg(windows)]
     {
         use std::os::windows::fs::MetadataExt;
@@ -1714,7 +1711,7 @@ fn is_link_or_reparse_point(meta: &fs::Metadata) -> bool {
             return true;
         }
     }
-    false
+    meta.file_type().is_symlink()
 }
 
 fn remove_symlink_entry(path: &Path) -> std::io::Result<()> {
@@ -2006,19 +2003,17 @@ pub fn probe_commit_precheck_sync(location: &RepoLocation) -> CommitPrecheckInfo
 
         let has_hook = |name: &str| -> bool {
             let p = hooks_dir.join(name);
-            if !p.is_file() {
-                return false;
-            }
             #[cfg(unix)]
             {
                 use std::os::unix::fs::PermissionsExt;
-                fs::metadata(&p)
-                    .map(|m| m.permissions().mode() & 0o111 != 0)
-                    .unwrap_or(false)
+                p.is_file()
+                    && fs::metadata(&p)
+                        .map(|m| m.permissions().mode() & 0o111 != 0)
+                        .unwrap_or(false)
             }
             #[cfg(not(unix))]
             {
-                true
+                p.is_file()
             }
         };
 
