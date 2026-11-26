@@ -615,7 +615,7 @@ async fn multi_commit_file_diff_resolves_modes_from_matching_commits() {
     let s1: Oid = git(d, &["rev-parse", "HEAD"]).trim().parse().unwrap();
 
     // Branch `main`: `sym.txt` is a regular 100644 file, and `m1` only touches `other.txt`.
-    git(d, &["checkout", "main"]);
+    git(d, &["checkout", "-f", "main"]);
     write_file(d, "sym.txt", "regular file on main\n");
     commit_all(d, "main adds regular sym.txt");
     write_file(d, "other.txt", "main edit\n");
