@@ -408,6 +408,16 @@ fn render_shortcuts_help_popup(
     );
 }
 
+/// Pads `line` with trailing spaces to `total_width` and applies `bg` so
+/// `Paragraph` paints the background across the full row instead of stopping at the text end.
+fn pad_line_bg<'a>(mut line: Line<'a>, total_width: u16, bg: ratatui::style::Color) -> Line<'a> {
+    let pad = (total_width as usize).saturating_sub(line.width());
+    if pad > 0 {
+        line.spans.push(Span::raw(" ".repeat(pad)));
+    }
+    line.style(Style::default().bg(bg))
+}
+
 #[allow(clippy::too_many_arguments)]
 fn render_filter_editor_popup(
     frame: &mut Frame<'_>,
@@ -479,16 +489,17 @@ fn render_filter_editor_popup(
         } else {
             ctx.theme.bg_elevated
         };
-        lines.push(
+        lines.push(pad_line_bg(
             Line::from(Span::styled(
                 format!(
                     "   {}",
                     truncate_to_width(s, inner.width.saturating_sub(4) as usize)
                 ),
                 Style::default().fg(ctx.theme.fg_primary),
-            ))
-            .style(Style::default().bg(bg)),
-        );
+            )),
+            inner.width,
+            bg,
+        ));
     }
     frame.render_widget(Paragraph::new(lines), inner);
 }
@@ -597,27 +608,29 @@ fn render_choose_adjacent_popup(
                 let subj_budget =
                     (inner.width as usize).saturating_sub(prefix.width() + meta.width() + 2);
                 let quoted_subj = format!("\"{}\"", truncate_to_width(&c.subject, subj_budget));
-                lines.push(
+                lines.push(pad_line_bg(
                     Line::from(vec![
                         Span::styled(prefix, Style::default().fg(ctx.theme.fg_accent_link)),
                         Span::styled(quoted_subj, Style::default().fg(ctx.theme.fg_bright)),
                         Span::styled(meta, Style::default().fg(ctx.theme.fg_muted)),
-                    ])
-                    .style(Style::default().bg(bg)),
-                );
+                    ]),
+                    inner.width,
+                    bg,
+                ));
             } else {
                 let fallback = ctx.t("popup.choose_parent_outside");
                 let max_subj = (inner.width as usize).saturating_sub(prefix.width());
-                lines.push(
+                lines.push(pad_line_bg(
                     Line::from(vec![
                         Span::styled(prefix, Style::default().fg(ctx.theme.fg_accent_link)),
                         Span::styled(
                             truncate_to_width(fallback, max_subj),
                             Style::default().fg(ctx.theme.fg_muted),
                         ),
-                    ])
-                    .style(Style::default().bg(bg)),
-                );
+                    ]),
+                    inner.width,
+                    bg,
+                ));
             }
         }
     }
@@ -778,7 +791,7 @@ fn render_commit_history_popup(
                 ctx.theme.bg_elevated
             };
             let first_line = msg.lines().next().unwrap_or("");
-            lines.push(
+            lines.push(pad_line_bg(
                 Line::from(Span::styled(
                     format!(
                         " {}",
@@ -789,9 +802,10 @@ fn render_commit_history_popup(
                     } else {
                         ctx.theme.fg_primary
                     }),
-                ))
-                .style(Style::default().bg(bg)),
-            );
+                )),
+                inner.width,
+                bg,
+            ));
         }
     }
     frame.render_widget(Paragraph::new(lines), inner);
