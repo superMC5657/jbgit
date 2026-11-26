@@ -414,6 +414,12 @@ fn merge_paired_pills(mut raw: Vec<RawPill>, state: &AppState) -> Vec<FooterPill
         KeyAction::NextFile,
         state.i18n.t("view.footer.pill.file").to_string(),
     );
+    fuse_pair(
+        &mut raw,
+        KeyAction::PrevCommit,
+        KeyAction::NextCommit,
+        state.i18n.t("view.footer.pill.commit").to_string(),
+    );
     raw.into_iter()
         .map(|p| FooterPill::with_emphasized(p.key, p.label, p.emphasized))
         .collect()

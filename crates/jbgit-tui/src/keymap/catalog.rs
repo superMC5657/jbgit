@@ -476,7 +476,9 @@ pub fn is_action_applicable(run: &KeyAction, state: &AppState) -> bool {
             is_diff_focused(state) && is_diff_search_active(state)
         }
 
-        KeyAction::CopyFilePath
+        KeyAction::PrevCommit
+        | KeyAction::NextCommit
+        | KeyAction::CopyFilePath
         | KeyAction::CopyFilePatch
         | KeyAction::CompareFileWithLocal => {
             state.active_tab == WorkspaceTab::Log
@@ -902,6 +904,8 @@ pub fn execute_action(run: &KeyAction, state: &AppState) -> Option<Vec<Action>> 
         }
         KeyAction::CopyCommitMessage => Some(notice_on_err(commit_copy_message(state))),
         KeyAction::CopyRowSummary => Some(notice_on_err(commit_copy_row_summary(state))),
+        KeyAction::PrevCommit => Some(vec![Action::LogStepCommit(-1)]),
+        KeyAction::NextCommit => Some(vec![Action::LogStepCommit(1)]),
         KeyAction::CopyFilePath => {
             let Some((row_path, _, _)) = selected_log_change(state) else {
                 return Some(Vec::new());

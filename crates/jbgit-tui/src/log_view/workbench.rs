@@ -1348,6 +1348,11 @@ impl LogWorkbench {
             Action::ScrollLog(delta) => {
                 self.graph.scroll_by(*delta, false);
             }
+            Action::LogStepCommit(delta) => {
+                if !self.graph.step_commit(*delta) {
+                    return true;
+                }
+            }
             Action::ExtendLogSelection(delta) => {
                 self.graph.scroll_by(*delta, true);
             }

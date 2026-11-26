@@ -124,6 +124,8 @@ pub enum KeyAction {
     NextHunk,
     PrevFile,
     NextFile,
+    PrevCommit,
+    NextCommit,
     ToggleSideBySide,
     CycleDiffContext,
     CycleDiffWhitespace,
@@ -257,6 +259,8 @@ impl KeyAction {
             "next_hunk" => Self::NextHunk,
             "prev_file" => Self::PrevFile,
             "next_file" => Self::NextFile,
+            "prev_commit" => Self::PrevCommit,
+            "next_commit" => Self::NextCommit,
             "toggle_side_by_side" => Self::ToggleSideBySide,
             "cycle_diff_context" => Self::CycleDiffContext,
             "cycle_diff_whitespace" => Self::CycleDiffWhitespace,
@@ -383,6 +387,8 @@ impl KeyAction {
             Self::NextHunk => "next_hunk",
             Self::PrevFile => "prev_file",
             Self::NextFile => "next_file",
+            Self::PrevCommit => "prev_commit",
+            Self::NextCommit => "next_commit",
             Self::ToggleSideBySide => "toggle_side_by_side",
             Self::CycleDiffContext => "cycle_diff_context",
             Self::CycleDiffWhitespace => "cycle_diff_whitespace",
@@ -506,6 +512,8 @@ impl KeyAction {
             Self::NextHunk,
             Self::PrevFile,
             Self::NextFile,
+            Self::PrevCommit,
+            Self::NextCommit,
             Self::ToggleSideBySide,
             Self::CycleDiffContext,
             Self::CycleDiffWhitespace,
@@ -631,6 +639,8 @@ impl KeyAction {
                 | Self::NextHunk
                 | Self::PrevFile
                 | Self::NextFile
+                | Self::PrevCommit
+                | Self::NextCommit
                 | Self::ToggleSideBySide
                 | Self::CycleDiffContext
                 | Self::CycleDiffWhitespace
@@ -757,6 +767,8 @@ impl KeyAction {
             Self::NextHunk => "view.footer.pill.next_hunk",
             Self::PrevFile => "view.footer.pill.prev_file",
             Self::NextFile => "view.footer.pill.next_file",
+            Self::PrevCommit => "view.footer.pill.prev_commit",
+            Self::NextCommit => "view.footer.pill.next_commit",
             Self::ToggleSideBySide => "view.footer.pill.side_by_side",
             Self::CycleDiffContext => "view.footer.pill.context",
             Self::CycleDiffWhitespace => "view.footer.pill.whitespace",

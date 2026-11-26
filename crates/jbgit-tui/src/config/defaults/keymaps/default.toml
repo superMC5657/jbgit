@@ -56,6 +56,8 @@ key_bindings = [
     { on = [ "<Home>" ], run = "goto_top", desc = "跳转至列表顶部" },
     { on = [ "G" ], run = "goto_bottom", desc = "跳转至列表底部" },
     { on = [ "<End>" ], run = "goto_bottom", desc = "跳转至列表底部" },
+    { on = [ "{" ], run = "prev_commit", desc = "切换至上一个提交", show_hint = true },
+    { on = [ "}" ], run = "next_commit", desc = "切换至下一个提交", show_hint = true },
     { on = [ "/" ], run = "focus_filter", desc = "聚焦分支 / 提交筛选框", show_hint = true },
     { on = [ "c" ], run = "checkout", desc = "检出选中的分支或提交", show_hint = true },
     { on = [ "p" ], run = "copy_file_patch", desc = "复制选中文件的变更补丁 (Patch)" },

@@ -1243,6 +1243,22 @@ impl LogGraphState {
         }
     }
 
+    /// Steps single-commit selection by `delta`, clamped to real visible commits
+    /// (never landing on the virtual `[Load More]` tail row).
+    /// Returns `true` when the active commit selection changed.
+    pub fn step_commit(&mut self, delta: isize) -> bool {
+        let len = self.visible_count();
+        if len == 0 || (delta >= 0 && self.is_cursor_on_load_more()) {
+            return false;
+        }
+        let next = (self.selected_idx as isize + delta).clamp(0, (len - 1) as isize) as usize;
+        if next == self.selected_idx && !self.has_multi_selection() {
+            return false;
+        }
+        self.select_row(next);
+        true
+    }
+
     fn push_history(&mut self, repo_snapshot: Option<&Arc<RepoSnapshot>>) {
         if let Some(oid) = self.selected_oid(repo_snapshot) {
             if self.back_history.last() != Some(&oid) {

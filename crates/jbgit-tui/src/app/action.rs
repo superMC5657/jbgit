@@ -180,6 +180,7 @@ pub enum Action {
     MoveLogCursorOnly(isize),
     ClearLogMultiSelection,
     ScrollLog(isize),
+    LogStepCommit(isize),
     ExtendLogSelection(isize),
     LogPage {
         half: bool,

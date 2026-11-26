@@ -1367,6 +1367,12 @@ fn route_push_dialog_key(key: &KeyEvent, state: &AppState) -> Vec<Action> {
         KeyCode::Char('c') if pd.show_diff => vec![Action::DiffCycleContext(DiffScope::Push)],
         KeyCode::Char('[') if pd.show_diff => vec![Action::DiffJumpHunk(DiffScope::Push, -1)],
         KeyCode::Char(']') if pd.show_diff => vec![Action::DiffJumpHunk(DiffScope::Push, 1)],
+        KeyCode::Char('{') if pd.focus == PushDialogFocus::Files && !pd.show_diff => {
+            vec![Action::PushMoveCommit(-1)]
+        }
+        KeyCode::Char('}') if pd.focus == PushDialogFocus::Files && !pd.show_diff => {
+            vec![Action::PushMoveCommit(1)]
+        }
         KeyCode::Enter => match pd.focus {
             PushDialogFocus::Target => vec![Action::PushStartEditTarget],
             PushDialogFocus::Files => vec![Action::PushToggleDiff],
@@ -1512,6 +1518,12 @@ fn route_reflog_key(key: &KeyEvent, state: &AppState) -> Vec<Action> {
         }
         KeyCode::Char(']') if !ctrl && !alt && rf.focus == ReflogFocus::Diff => {
             vec![Action::DiffJumpHunk(DiffScope::Reflog, 1)]
+        }
+        KeyCode::Char('{') if !ctrl && !alt && rf.focus == ReflogFocus::Changes => {
+            vec![Action::ReflogMove(-1)]
+        }
+        KeyCode::Char('}') if !ctrl && !alt && rf.focus == ReflogFocus::Changes => {
+            vec![Action::ReflogMove(1)]
         }
         KeyCode::Char('B') if !ctrl && !alt => {
             vec![Action::DiffCycleWhitespace(DiffScope::Reflog)]
