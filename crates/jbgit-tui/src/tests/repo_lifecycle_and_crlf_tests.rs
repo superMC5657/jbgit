@@ -376,6 +376,7 @@ fn keymap_presets_have_no_conflicts_with_clone_repository() {
     assert_eq!(KeyAction::CloneRepository.as_str(), "clone_repository");
 }
 
+#[cfg(windows)]
 #[test]
 fn clone_dialog_and_welcome_strip_windows_verbatim_path_prefixes() {
     use std::path::Path;
