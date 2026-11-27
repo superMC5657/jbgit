@@ -7,6 +7,20 @@ pub const DEFAULT_COMMIT_PAGE_SIZE: usize = 50_000;
 /// dominant cost on large (especially Windows) worktrees; staged renames
 /// (`HEAD -> index`) are still detected.
 pub const LARGE_INDEX_ENTRIES: usize = 20_000;
+/// Index size above which `copies_from_unmodified` copy detection (pairing every
+/// newly added file with every unmodified `HEAD` file, `O(added x index)`) is
+/// skipped. Copies from modified/deleted sources are still detected.
+pub const COPY_SCAN_MAX_INDEX_ENTRIES: usize = 2_000;
+/// Number of newly added staged files above which `copies_from_unmodified`
+/// copy detection is skipped (bulk `git add` of many files).
+pub const COPY_SCAN_MAX_ADDED: usize = 32;
+
+/// Whether the expensive `copies_from_unmodified` similarity scan may run for an
+/// index of `index_entries` entries with `added` newly staged files.
+pub fn copies_from_unmodified_allowed(index_entries: usize, added: usize) -> bool {
+    index_entries <= COPY_SCAN_MAX_INDEX_ENTRIES && added <= COPY_SCAN_MAX_ADDED
+}
+
 /// Local branches (besides `HEAD`, always computed) that get an ahead/behind
 /// count per snapshot, most recently committed first.
 pub const AHEAD_BEHIND_BRANCH_LIMIT: usize = 32;
@@ -57,6 +71,13 @@ impl Default for StatusScanConfig {
 }
 
 impl StatusScanConfig {
+    /// [`copies_from_unmodified_allowed`], additionally capped by a lower
+    /// configured [`Self::large_index_entries`].
+    pub fn copies_from_unmodified(&self, index_entries: usize, added: usize) -> bool {
+        index_entries <= self.large_index_entries
+            && copies_from_unmodified_allowed(index_entries, added)
+    }
+
     /// Returns a positive commit page size (falling back to [`DEFAULT_COMMIT_PAGE_SIZE`]
     /// if configured as `0`).
     pub fn effective_commit_page_size(&self) -> usize {

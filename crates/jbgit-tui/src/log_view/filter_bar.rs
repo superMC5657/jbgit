@@ -453,7 +453,7 @@ pub fn filter_suggestions_with_context(
             }
             if let Some(s) = snap {
                 let mut counts: rustc_hash::FxHashMap<&str, usize> = Default::default();
-                for c in &s.commits {
+                for c in s.commits.iter() {
                     *counts.entry(c.author_name.as_str()).or_default() += 1;
                 }
                 let mut authors: Vec<_> = counts.into_iter().collect();

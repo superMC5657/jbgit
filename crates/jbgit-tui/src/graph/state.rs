@@ -414,7 +414,7 @@ impl CachedLogGraph {
 
 fn compute_has_multiple_authors(snap: &RepoSnapshot) -> bool {
     let mut first: Option<(&str, &str)> = None;
-    for c in &snap.commits {
+    for c in snap.commits.iter() {
         let key = (c.author_name.as_str(), c.author_email.as_str());
         match first {
             None => first = Some(key),

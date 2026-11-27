@@ -39,7 +39,7 @@ fn tag_menus_handle_no_remote_single_remote_multiple_remotes_and_log_submenus() 
         head_branch: Some("main".into()),
         head_oid: Some(oid(1)),
         refs: vec![main_head.clone(), tag_ref("v1.0", 1)],
-        commits: vec![make_commit(1, vec![], "init")],
+        commits: vec![make_commit(1, vec![], "init")].into(),
         remotes: vec![],
         ..Default::default()
     };
@@ -638,7 +638,7 @@ fn prompt_push_empty_remotes_slash_remote_and_push_rejected_up_to() {
         head_branch: Some("main".into()),
         head_oid: Some(oid(12)),
         refs: vec![main_head.clone()],
-        commits: vec![make_commit(12, vec![], "init")],
+        commits: vec![make_commit(12, vec![], "init")].into(),
         remotes: vec![],
         ..Default::default()
     };
@@ -677,7 +677,8 @@ fn prompt_push_empty_remotes_slash_remote_and_push_rejected_up_to() {
         commits: vec![
             make_commit(12, vec![oid(10)], "tip"),
             make_commit(10, vec![], "base"),
-        ],
+        ]
+        .into(),
         remotes: super::remote_infos(&["origin", "team/upstream"]),
         ..Default::default()
     };
@@ -946,7 +947,8 @@ fn push_rejected_warns_when_rebase_range_contains_merge_commits() {
             commit_with_oid(3, vec![oid(1)], "topic"),
             commit_with_oid(2, vec![oid(1)], "local"),
             commit_with_oid(1, vec![], "base"),
-        ],
+        ]
+        .into(),
         remotes: super::remote_infos(&["origin"]),
         ..Default::default()
     };

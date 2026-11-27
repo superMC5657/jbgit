@@ -1,4 +1,5 @@
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 use std::path::PathBuf;
 
 use crate::{Oid, RewritePlan, TodoEntry, is_protected_branch, natural_cmp};
@@ -299,7 +300,9 @@ pub struct RepoSnapshot {
     pub head_branch: Option<String>,
     pub head_oid: Option<Oid>,
     pub refs: Vec<RefInfo>,
-    pub commits: Vec<CommitSummary>,
+    /// Commit table shared (`Arc`) with the engine's snapshot commit cache so
+    /// refreshes hand the same immutable storage to the UI without deep copies.
+    pub commits: Arc<Vec<CommitSummary>>,
     /// `git config user.name` (drives the `@me` user filter).
     pub user_name: Option<String>,
     /// `git config user.email`.
@@ -853,7 +856,7 @@ mod tests {
                 ahead_behind: None,
                 is_head: true,
             }],
-            commits: vec![c(4, &[3, 2]), c(3, &[1]), c(2, &[1]), c(1, &[])],
+            commits: vec![c(4, &[3, 2]), c(3, &[1]), c(2, &[1]), c(1, &[])].into(),
             ..Default::default()
         };
         assert_eq!(snap.resolve_revision("HEAD"), Some(oid(4)));
@@ -890,7 +893,7 @@ mod tests {
             head_oid: Some(oid(3)),
             head_branch: Some("feat".into()),
             remotes: vec![remote("my/fork")],
-            commits: vec![c(3, &[2]), c(2, &[1]), c(1, &[])],
+            commits: vec![c(3, &[2]), c(2, &[1]), c(1, &[])].into(),
             refs: vec![
                 local("feat", Some("release/1.0"), true),
                 local("release/1.0", None, false),
@@ -1048,7 +1051,7 @@ mod tests {
         };
         // Graph: 1 <- 2 <- 4 (merge of 2 and 3), 1 <- 3, 1 <- 5 (remote)
         let snap = RepoSnapshot {
-            commits: vec![c(5, &[1]), c(4, &[2, 3]), c(3, &[1]), c(2, &[1]), c(1, &[])],
+            commits: vec![c(5, &[1]), c(4, &[2, 3]), c(3, &[1]), c(2, &[1]), c(1, &[])].into(),
             ..Default::default()
         };
         assert!(snap.has_merge_commits_in_range(oid(5), oid(4)));
@@ -1082,7 +1085,7 @@ mod tests {
         let snap = RepoSnapshot {
             head_branch: Some("main".into()),
             head_oid: Some(oid(3)),
-            commits: vec![c(5, &[1]), c(4, &[1]), c(3, &[2]), c(2, &[1]), c(1, &[])],
+            commits: vec![c(5, &[1]), c(4, &[1]), c(3, &[2]), c(2, &[1]), c(1, &[])].into(),
             refs: vec![
                 local("main", 3, true, Some("origin/main")),
                 local("merged_gone", 2, false, Some("origin/merged_gone")),

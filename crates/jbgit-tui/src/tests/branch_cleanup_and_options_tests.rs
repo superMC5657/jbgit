@@ -42,9 +42,10 @@ fn issue_06_snapshot() -> RepoSnapshot {
     let c20_oid = c20.oid;
     let c21_oid = c21.oid;
     let c30_oid = c30.oid;
-    snap.commits.insert(0, c20);
-    snap.commits.insert(0, c21);
-    snap.commits.insert(0, c30);
+    let commits = std::sync::Arc::make_mut(&mut snap.commits);
+    commits.insert(0, c20);
+    commits.insert(0, c21);
+    commits.insert(0, c30);
 
     snap.refs.push(RefInfo {
         name: "feat/wip".into(),

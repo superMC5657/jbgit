@@ -151,7 +151,8 @@ fn mouse_wheel_routes_to_hovered_pane_and_right_click_preselects() {
                 author_timestamp: 0,
                 body: String::new(),
             },
-        ],
+        ]
+        .into(),
     };
     let mut ts = TestSession::with_snapshot(snap);
     ts.state_mut().console.push_started(GitConsoleEntry {
@@ -232,7 +233,7 @@ fn stale_epoch_events_are_silently_dropped_on_ui_arrival() {
         head_branch: Some("old".into()),
         head_oid: None,
         refs: vec![],
-        commits: vec![],
+        commits: Default::default(),
     });
     ts.deliver_engine_event(EngineEvent::RepoSnapshotLoaded {
         snapshot: stale_snap,
@@ -263,7 +264,7 @@ fn stale_epoch_events_are_silently_dropped_on_ui_arrival() {
         head_branch: Some("main".into()),
         head_oid: Some(Oid::ZERO),
         refs: vec![],
-        commits: vec![],
+        commits: Default::default(),
     });
     ts.deliver_engine_event(EngineEvent::RepoSnapshotLoaded {
         snapshot: fresh_snap,
@@ -493,7 +494,8 @@ fn detached_head_and_overflow_hover_tooltips_and_overflow_clicks() {
             subject: "detached commit with many refs".into(),
             author_timestamp: 0,
             body: String::new(),
-        }],
+        }]
+        .into(),
     };
     let mut ts = TestSession::with_snapshot(snap);
     let buf = ts.render(100, 24);
@@ -583,7 +585,7 @@ fn long_edge_arrow_hover_click_jump_center_and_alt_left_return() {
             ahead_behind: None,
             is_head: true,
         }],
-        commits,
+        commits: commits.into(),
     };
     let mut ts = TestSession::with_snapshot(snap);
 
@@ -1130,7 +1132,7 @@ stash_preview_ratio = [1, 1]
             head_branch: Some("main".into()),
             head_oid: Some(Oid::from_bytes([1u8; 20])),
             refs: vec![],
-            commits: vec![],
+            commits: Default::default(),
         }),
         epoch: 1,
     });
@@ -2340,7 +2342,7 @@ fn conflict_resolver_scroll_clamps_without_dead_zone_and_commit_editor_follows_c
             head_branch: Some("main".into()),
             head_oid: Some(stash_oid),
             refs: vec![],
-            commits: vec![],
+            commits: Default::default(),
         }),
         epoch: 1,
     });
@@ -2439,7 +2441,8 @@ fn set_focus_blurs_inline_modes_and_log_navigation_clears_compare_override() {
                 subject: "first".into(),
                 body: String::new(),
             },
-        ],
+        ]
+        .into(),
     });
 
     // Leaving pane/tab automatically blurs inline edit states and zoomed diff.
@@ -3127,8 +3130,7 @@ fn commit_polish_template_merge_msg_reformat_author_identity_allow_empty_and_und
     let mut pushed_merge_snap = super::snapshot();
     let head_oid = pushed_merge_snap.head_oid.unwrap();
     // Make HEAD a merge commit AND make origin/main point to HEAD (already pushed).
-    if let Some(c) = pushed_merge_snap
-        .commits
+    if let Some(c) = std::sync::Arc::make_mut(&mut pushed_merge_snap.commits)
         .iter_mut()
         .find(|c| c.oid == head_oid)
     {

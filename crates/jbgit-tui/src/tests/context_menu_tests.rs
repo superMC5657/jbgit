@@ -478,7 +478,7 @@ fn non_contiguous_squash_disabled_and_hunk_menu_respects_diff_side() {
 fn non_contiguous_squash_rejected_compare_views_stash_reuse_and_conflict_modal() {
     // 1. Non-contiguous selection on a forked visible log: c12 (HEAD), side commit, c11.
     let mut snap = snapshot();
-    snap.commits.insert(
+    std::sync::Arc::make_mut(&mut snap.commits).insert(
         1,
         CommitSummary {
             oid: oid(99),

@@ -1,5 +1,6 @@
 use std::collections::HashSet;
 use std::path::Path;
+use std::sync::Arc;
 
 use git2::{BranchType, Repository, Sort};
 use jbgit_core::{
@@ -28,10 +29,14 @@ pub const MAX_INCREMENTAL_NEW_COMMITS: usize = 2_000;
 
 /// Cached commit table + `oid -> index` lookup retained across snapshot refreshes
 /// for `VcsLogJoiner`-style incremental head joins and OID reuse during pagination.
+///
+/// `commits` is the same `Arc` storage handed to [`RepoSnapshot::commits`], and both
+/// `commits` and `oid_to_index` are reused verbatim (pointer-equal) on
+/// [`SnapshotLoadKind::IncrementalNoOp`], so refreshes never deep-copy the table.
 #[derive(Debug, Clone)]
 pub struct SnapshotCommitCache {
-    pub commits: Vec<CommitSummary>,
-    pub oid_to_index: FxHashMap<Oid, usize>,
+    pub commits: Arc<Vec<CommitSummary>>,
+    pub oid_to_index: Arc<FxHashMap<Oid, usize>>,
     pub tip_oids: HashSet<Oid>,
     /// Requested pagination limit (`max_commits`) for this cached snapshot.
     pub target_limit: usize,
@@ -44,8 +49,8 @@ pub struct SnapshotCommitCache {
 impl SnapshotCommitCache {
     #[allow(clippy::too_many_arguments)]
     fn build(
-        commits: Vec<CommitSummary>,
-        reuse_index: Option<FxHashMap<Oid, usize>>,
+        commits: Arc<Vec<CommitSummary>>,
+        reuse_index: Option<Arc<FxHashMap<Oid, usize>>>,
         tip_oids: HashSet<Oid>,
         target_limit: usize,
         has_more_commits: bool,
@@ -58,7 +63,7 @@ impl SnapshotCommitCache {
             for (idx, c) in commits.iter().enumerate() {
                 map.entry(c.oid).or_insert(idx);
             }
-            map
+            Arc::new(map)
         });
         Self {
             commits,
@@ -175,11 +180,18 @@ fn side_info_from_entry(repo: &Repository, entry: &git2::IndexEntry) -> Conflict
 pub(crate) fn load_conflict_document_sync(
     location: &RepoLocation,
     path: &str,
+    token: &EpochToken,
 ) -> Result<LoadedConflict, EngineError> {
+    if token.is_stale() {
+        return Err(EngineError::Cancelled);
+    }
     let norm_path = path.replace('\\', "/");
     let full_path = location.workdir.join(path);
 
     with_thread_repo(&location.git_dir, |repo| {
+        if token.is_stale() {
+            return Err(EngineError::Cancelled);
+        }
         let probe = probe_repo_state(repo);
         let is_reversed = is_reverse_conflict_state(&probe.state);
         let replayed_label = if is_reversed {
@@ -201,7 +213,10 @@ pub(crate) fn load_conflict_document_sync(
         if let Ok(index) = repo.index()
             && let Ok(conflicts) = index.conflicts()
         {
-            for item in conflicts.flatten() {
+            for (idx, item) in conflicts.flatten().enumerate() {
+                if idx % 256 == 255 && token.is_stale() {
+                    return Err(EngineError::Cancelled);
+                }
                 let entry_path = item
                     .our
                     .as_ref()
@@ -267,6 +282,10 @@ pub(crate) fn load_conflict_document_sync(
             }));
         }
 
+        // Up to four (each <= `MAX_DIFF_FILE_BYTES`) blob/worktree reads follow.
+        if token.is_stale() {
+            return Err(EngineError::Cancelled);
+        }
         let read_stage_checked = |entry: &Option<git2::IndexEntry>| -> Result<Option<Vec<u8>>, ()> {
             let Some(e) = entry.as_ref() else {
                 return Ok(None);
@@ -338,6 +357,10 @@ pub(crate) fn load_conflict_document_sync(
             ConflictSidePresence::BothPresent
         };
 
+        // Three-way parse/merge of the loaded sides is the remaining heavy step.
+        if token.is_stale() {
+            return Err(EngineError::Cancelled);
+        }
         let worktree_text = String::from_utf8_lossy(&worktree_bytes);
         let base_text = base_bytes
             .as_deref()
@@ -443,10 +466,10 @@ pub fn load_repo_snapshot_incremental_sync(
         let tip_oids = collect_tip_oids(probe.head_oid, &refs);
 
         let (commits, has_more_commits, load_kind, reuse_index) = if tip_oids.is_empty() {
-            (Vec::new(), false, SnapshotLoadKind::Full, None)
+            (Arc::default(), false, SnapshotLoadKind::Full, None)
         } else if mode == SnapshotLoadMode::Incremental
             && let Some(prev) = previous
-            && let Some((commits, has_more, kind)) = try_incremental_commits_refresh(
+            && let Some((commits, has_more, kind, idx)) = try_incremental_commits_refresh(
                 repo,
                 token,
                 max_commits,
@@ -457,8 +480,6 @@ pub fn load_repo_snapshot_incremental_sync(
                 prev,
             )?
         {
-            let idx =
-                (kind == SnapshotLoadKind::IncrementalNoOp).then(|| prev.oid_to_index.clone());
             (commits, has_more, kind, idx)
         } else {
             let reuse = match mode {
@@ -477,7 +498,7 @@ pub fn load_repo_snapshot_incremental_sync(
                 scan_config.load_commit_bodies,
                 reuse,
             )?;
-            (commits, has_more, SnapshotLoadKind::Full, None)
+            (Arc::new(commits), has_more, SnapshotLoadKind::Full, None)
         };
 
         let (user_name, user_email) = match repo.config() {
@@ -530,8 +551,9 @@ pub fn load_repo_snapshot_incremental_sync(
             None
         };
 
+        // `RepoSnapshot` and the cache share one immutable commit table (`O(1)` clone).
         let cache = SnapshotCommitCache::build(
-            commits.clone(),
+            Arc::clone(&commits),
             reuse_index,
             tip_oids,
             max_commits,
@@ -941,6 +963,15 @@ fn collect_refs(
     Ok((out, deferred))
 }
 
+/// Commit table, `has_more_commits`, load kind and (when the table is unchanged)
+/// the reusable `oid -> index` map produced by an incremental head refresh.
+type IncrementalCommits = (
+    Arc<Vec<CommitSummary>>,
+    bool,
+    SnapshotLoadKind,
+    Option<Arc<FxHashMap<Oid, usize>>>,
+);
+
 #[allow(clippy::too_many_arguments)]
 fn try_incremental_commits_refresh(
     repo: &Repository,
@@ -951,7 +982,7 @@ fn try_incremental_commits_refresh(
     shallow_fingerprint: &Option<Vec<u8>>,
     new_tip_oids: &HashSet<Oid>,
     prev: &SnapshotCommitCache,
-) -> Result<Option<(Vec<CommitSummary>, bool, SnapshotLoadKind)>, EngineError> {
+) -> Result<Option<IncrementalCommits>, EngineError> {
     if prev.commits.is_empty()
         || max_commits != prev.target_limit
         || load_commit_bodies != prev.load_commit_bodies
@@ -962,10 +993,12 @@ fn try_incremental_commits_refresh(
     }
 
     if *new_tip_oids == prev.tip_oids {
+        // Zero-copy: share the previous commit table and index verbatim.
         return Ok(Some((
-            prev.commits.clone(),
+            Arc::clone(&prev.commits),
             prev.has_more_commits,
             SnapshotLoadKind::IncrementalNoOp,
+            Some(Arc::clone(&prev.oid_to_index)),
         )));
     }
 
@@ -1026,14 +1059,27 @@ fn try_incremental_commits_refresh(
         block
     };
 
-    let joined = match jbgit_core::graph::join_commits_indexed(
+    let joined = match jbgit_core::graph::join_commits_indexed_if_changed(
         &prev.commits,
         &prev.oid_to_index,
         &prev.tip_oids,
         &first_block,
         new_tip_oids,
     ) {
-        Ok(res) => res,
+        Ok(Some(res)) => res,
+        // Refs moved without changing the commit table (e.g. new tag/branch on an
+        // already-loaded commit): reuse the shared table and index without copying.
+        Ok(None) => {
+            return Ok(Some((
+                Arc::clone(&prev.commits),
+                prev.has_more_commits,
+                SnapshotLoadKind::IncrementalJoined {
+                    added: 0,
+                    removed: 0,
+                },
+                Some(Arc::clone(&prev.oid_to_index)),
+            )));
+        }
         Err(_) => return Ok(None),
     };
 
@@ -1044,12 +1090,13 @@ fn try_incremental_commits_refresh(
     }
 
     Ok(Some((
-        joined.commits,
+        Arc::new(joined.commits),
         prev.has_more_commits,
         SnapshotLoadKind::IncrementalJoined {
             added: joined.added,
             removed: joined.removed,
         },
+        None,
     )))
 }
 

@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashSet};
+use std::collections::HashSet;
 
 use rustc_hash::{FxHashMap, FxHashSet};
 
@@ -86,6 +86,7 @@ pub fn join_commits<C: JoinCommit>(
     new_refs: &HashSet<Oid>,
 ) -> Result<JoinResult<C>, JoinError> {
     join_commits_impl(saved_log, None, previous_refs, first_block, new_refs)
+        .map(|res| res.unwrap_or_else(|| unchanged_result(saved_log)))
 }
 
 /// Variant of [`join_commits`] that uses a pre-built `oid -> index` map for
@@ -97,6 +98,27 @@ pub fn join_commits_indexed<C: JoinCommit>(
     first_block: &[C],
     new_refs: &HashSet<Oid>,
 ) -> Result<JoinResult<C>, JoinError> {
+    join_commits_indexed_if_changed(
+        saved_log,
+        oid_to_index,
+        previous_refs,
+        first_block,
+        new_refs,
+    )
+    .map(|res| res.unwrap_or_else(|| unchanged_result(saved_log)))
+}
+
+/// Variant of [`join_commits_indexed`] that returns `Ok(None)` instead of a full
+/// copy of `saved_log` when the join leaves the commit table unchanged (refs moved
+/// onto already-loaded commits), so callers holding shared (`Arc`) storage can
+/// reuse it and its `oid -> index` map without cloning.
+pub fn join_commits_indexed_if_changed<C: JoinCommit>(
+    saved_log: &[C],
+    oid_to_index: &FxHashMap<Oid, usize>,
+    previous_refs: &HashSet<Oid>,
+    first_block: &[C],
+    new_refs: &HashSet<Oid>,
+) -> Result<Option<JoinResult<C>>, JoinError> {
     join_commits_impl(
         saved_log,
         Some(oid_to_index),
@@ -106,13 +128,22 @@ pub fn join_commits_indexed<C: JoinCommit>(
     )
 }
 
+fn unchanged_result<C: JoinCommit>(saved_log: &[C]) -> JoinResult<C> {
+    JoinResult {
+        commits: saved_log.to_vec(),
+        added: 0,
+        removed: 0,
+        unsafe_prefix: 0,
+    }
+}
+
 fn join_commits_impl<C: JoinCommit>(
     saved_log: &[C],
     oid_to_index: Option<&FxHashMap<Oid, usize>>,
     previous_refs: &HashSet<Oid>,
     first_block: &[C],
     new_refs: &HashSet<Oid>,
-) -> Result<JoinResult<C>, JoinError> {
+) -> Result<Option<JoinResult<C>>, JoinError> {
     if saved_log.is_empty() {
         return Err(JoinError::NotEnoughData);
     }
@@ -137,13 +168,15 @@ fn join_commits_impl<C: JoinCommit>(
     let added = new_commits.len();
     let removed = remove_commits.len();
 
-    if unsafe_block_size == 0 && added == 0 && removed == 0 {
-        return Ok(JoinResult {
-            commits: saved_log.to_vec(),
-            added: 0,
-            removed: 0,
-            unsafe_prefix: 0,
-        });
+    // Nothing added or pruned and no re-read commit changed (e.g. a new tag/branch
+    // or fast-forward onto an already-loaded commit): the rebuilt log would be an
+    // exact copy of `saved_log`, so report it as unchanged instead of copying.
+    if added == 0
+        && removed == 0
+        && (unsafe_block_size == 0
+            || prefix_unchanged_by_first_block(saved_log, unsafe_block_size, first_block))
+    {
+        return Ok(None);
     }
 
     let unsafe_part =
@@ -155,12 +188,12 @@ fn join_commits_impl<C: JoinCommit>(
     result.extend(integrated_prefix);
     result.extend_from_slice(&saved_log[unsafe_block_size..]);
 
-    Ok(JoinResult {
+    Ok(Some(JoinResult {
         commits: result,
         added,
         removed,
         unsafe_prefix: unsafe_block_size,
-    })
+    }))
 }
 
 fn get_new_commits_and_saved_green_index<C: JoinCommit>(
@@ -190,17 +223,22 @@ fn get_new_commits_and_saved_green_index<C: JoinCommit>(
 
     let save_green_index = get_first_untracked_index(saved_log, oid_to_index, unresolved)?;
 
-    let existing_in_prefix: FxHashSet<Oid> = saved_log[..save_green_index]
-        .iter()
-        .map(JoinCommit::oid)
-        .collect();
+    // Only the linear (unindexed) mode needs a prefix membership set; the indexed
+    // mode answers membership from `oid_to_index` directly.
+    let existing_in_prefix: Option<FxHashSet<Oid>> = oid_to_index.is_none().then(|| {
+        saved_log[..save_green_index]
+            .iter()
+            .map(JoinCommit::oid)
+            .collect()
+    });
     let mut seen_new: FxHashSet<Oid> = FxHashSet::default();
     let mut all_new_commits = Vec::new();
     for commit in first_block {
         let id = commit.oid();
-        let already_in_saved = match oid_to_index {
-            Some(map) => map.contains_key(&id),
-            None => existing_in_prefix.contains(&id),
+        let already_in_saved = match (oid_to_index, existing_in_prefix.as_ref()) {
+            (Some(map), _) => map.contains_key(&id),
+            (None, Some(prefix)) => prefix.contains(&id),
+            (None, None) => false,
         };
         if !already_in_saved && seen_new.insert(id) {
             all_new_commits.push(commit.clone());
@@ -337,6 +375,24 @@ fn get_red_commits_and_saved_red_index<C: JoinCommit>(
     Err(JoinError::IllegalState)
 }
 
+/// Whether replacing `saved_log[..unsafe_block_size]` commits with their re-read
+/// `first_block` versions keeps parents and timestamps identical.
+fn prefix_unchanged_by_first_block<C: JoinCommit>(
+    saved_log: &[C],
+    unsafe_block_size: usize,
+    first_block: &[C],
+) -> bool {
+    if first_block.is_empty() {
+        return true;
+    }
+    let recent_by_id: FxHashMap<Oid, &C> = first_block.iter().map(|c| (c.oid(), c)).collect();
+    saved_log[..unsafe_block_size].iter().all(|saved| {
+        recent_by_id.get(&saved.oid()).is_none_or(|fresh| {
+            fresh.parents() == saved.parents() && fresh.timestamp() == saved.timestamp()
+        })
+    })
+}
+
 fn build_unsafe_part_saved_log<C: JoinCommit>(
     saved_log: &[C],
     unsafe_block_size: usize,
@@ -392,7 +448,7 @@ fn integrate_new_commits<C: JoinCommit>(list: Vec<C>, new_commits: Vec<C>) -> Ve
         }
     }
 
-    let mut inserted_by_index: BTreeMap<usize, Vec<C>> = BTreeMap::new();
+    let mut inserted = InsertedSequence::default();
     let mut stack: Vec<C> = Vec::new();
 
     for root_oid in order {
@@ -413,28 +469,21 @@ fn integrate_new_commits<C: JoinCommit>(list: Vec<C>, new_commits: Vec<C>) -> Ve
                 continue;
             }
             let commit = stack.pop().expect("stack non-empty");
-            insert_indexed(
-                commit,
-                &prefix_min_ts,
-                &parent_indexes,
-                &mut inserted_by_index,
-            );
+            insert_indexed(commit, &prefix_min_ts, &parent_indexes, &mut inserted);
         }
     }
 
-    let inserted_count: usize = inserted_by_index.values().map(Vec::len).sum();
-    let mut result = Vec::with_capacity(list.len() + inserted_count);
+    let mut result = Vec::with_capacity(list.len() + inserted.len());
     let mut from = 0usize;
     let mut list_iter = list.into_iter();
-    for (idx, bucket) in inserted_by_index {
-        let take_n = idx - from;
-        for _ in 0..take_n {
-            if let Some(item) = list_iter.next() {
-                result.push(item);
+    for item in inserted.into_items() {
+        while from < item.bucket {
+            if let Some(saved) = list_iter.next() {
+                result.push(saved);
             }
+            from += 1;
         }
-        result.extend(bucket);
-        from = idx;
+        result.push(item.commit);
     }
     result.extend(list_iter);
     result
@@ -454,11 +503,15 @@ fn first_older_index(prefix_min_ts: &[i64], timestamp: i64) -> usize {
     low
 }
 
+/// Computes the target `list` index (bucket) for `commit` and inserts it into
+/// `inserted` before the first already-inserted commit (in final order, within
+/// buckets `<= index`) that is strictly older or one of its parents; otherwise
+/// at the end of bucket `index`.
 fn insert_indexed<C: JoinCommit>(
     commit: C,
     prefix_min_ts: &[i64],
     parent_indexes: &FxHashMap<Oid, usize>,
-    inserted_by_index: &mut BTreeMap<usize, Vec<C>>,
+    inserted: &mut InsertedSequence<C>,
 ) {
     let ts = commit.timestamp();
     let mut index = first_older_index(prefix_min_ts, ts);
@@ -469,18 +522,135 @@ fn insert_indexed<C: JoinCommit>(
             index = parent_idx;
         }
     }
+    inserted.insert(commit, index);
+}
 
-    for (_, bucket) in inserted_by_index.range_mut(..=index) {
-        if let Some(pos) = bucket
+/// Maximum number of commits held by one [`InsertBlock`] before it is split.
+const INSERT_BLOCK_MAX: usize = 64;
+
+/// A commit placed by [`integrate_new_commits`] right before `list[bucket]`.
+struct InsertedItem<C> {
+    bucket: usize,
+    commit: C,
+}
+
+/// A contiguous run of [`InsertedItem`]s with summaries used to skip the whole
+/// block when it cannot contain the insertion point.
+struct InsertBlock<C> {
+    items: Vec<InsertedItem<C>>,
+    min_ts: i64,
+    max_bucket: usize,
+    oids: FxHashSet<Oid>,
+}
+
+impl<C: JoinCommit> InsertBlock<C> {
+    fn new(items: Vec<InsertedItem<C>>) -> Self {
+        let mut block = Self {
+            items,
+            min_ts: i64::MAX,
+            max_bucket: 0,
+            oids: FxHashSet::default(),
+        };
+        for idx in 0..block.items.len() {
+            block.note(idx);
+        }
+        block
+    }
+
+    fn note(&mut self, idx: usize) {
+        let item = &self.items[idx];
+        self.min_ts = self.min_ts.min(item.commit.timestamp());
+        self.max_bucket = self.max_bucket.max(item.bucket);
+        self.oids.insert(item.commit.oid());
+    }
+
+    /// Whether the insertion point for a commit (`ts`, already-inserted
+    /// `parents`, target `index`) can lie inside this block.
+    fn may_contain_insertion_point(&self, ts: i64, parents: &[Oid], index: usize) -> bool {
+        self.min_ts < ts || self.max_bucket > index || parents.iter().any(|p| self.oids.contains(p))
+    }
+}
+
+/// Ordered sequence of commits inserted by [`integrate_new_commits`], kept sorted
+/// by bucket and split into small blocks (square-root decomposition) so each
+/// insertion costs `O(K / B + B)` instead of the `O(K)` bucket scan plus `O(K)`
+/// mid-vector shift of a flat per-bucket `Vec` (`O(K^2)` overall).
+struct InsertedSequence<C> {
+    blocks: Vec<InsertBlock<C>>,
+    /// OIDs of every inserted commit, so per-block parent probes only run for
+    /// commits whose parents were actually inserted.
+    oids: FxHashSet<Oid>,
+}
+
+impl<C> Default for InsertedSequence<C> {
+    fn default() -> Self {
+        Self {
+            blocks: Vec::new(),
+            oids: FxHashSet::default(),
+        }
+    }
+}
+
+impl<C: JoinCommit> InsertedSequence<C> {
+    fn len(&self) -> usize {
+        self.oids.len()
+    }
+
+    fn insert(&mut self, commit: C, index: usize) {
+        let ts = commit.timestamp();
+        let inserted_parents: Vec<Oid> = commit
+            .parents()
             .iter()
-            .position(|other| other.timestamp() < ts || commit.parents().contains(&other.oid()))
-        {
-            bucket.insert(pos, commit);
-            return;
+            .copied()
+            .filter(|p| self.oids.contains(p))
+            .collect();
+        let mut target: Option<(usize, usize, usize)> = None;
+        for (block_idx, block) in self.blocks.iter().enumerate() {
+            if !block.may_contain_insertion_point(ts, &inserted_parents, index) {
+                continue;
+            }
+            let found = block.items.iter().enumerate().find_map(|(pos, item)| {
+                if item.bucket > index {
+                    Some((pos, index))
+                } else if item.commit.timestamp() < ts
+                    || commit.parents().contains(&item.commit.oid())
+                {
+                    Some((pos, item.bucket))
+                } else {
+                    None
+                }
+            });
+            if let Some((pos, bucket)) = found {
+                target = Some((block_idx, pos, bucket));
+                break;
+            }
+        }
+
+        let (block_idx, pos, bucket) = match target {
+            Some(found) => found,
+            None => {
+                if self.blocks.is_empty() {
+                    self.blocks.push(InsertBlock::new(Vec::new()));
+                }
+                let last = self.blocks.len() - 1;
+                (last, self.blocks[last].items.len(), index)
+            }
+        };
+        self.oids.insert(commit.oid());
+        let block = &mut self.blocks[block_idx];
+        block.items.insert(pos, InsertedItem { bucket, commit });
+        block.note(pos);
+        if block.items.len() > INSERT_BLOCK_MAX {
+            let tail = block.items.split_off(block.items.len() / 2);
+            let head = std::mem::take(&mut block.items);
+            self.blocks[block_idx] = InsertBlock::new(head);
+            self.blocks.insert(block_idx + 1, InsertBlock::new(tail));
         }
     }
 
-    inserted_by_index.entry(index).or_default().push(commit);
+    fn into_items(self) -> impl Iterator<Item = InsertedItem<C>> {
+        self.blocks.into_iter().flat_map(|block| block.items)
+    }
 }
 
 #[cfg(test)]
@@ -543,6 +713,263 @@ mod tests {
             map
         };
         assert_eq!(edges_of(a), edges_of(b));
+    }
+
+    /// Pre-optimization `integrate_new_commits` (per-bucket `Vec` scan + mid
+    /// insert, `O(K^2)`), kept verbatim as the equivalence oracle.
+    fn reference_integrate_new_commits(
+        list: Vec<RawCommitNode>,
+        new_commits: Vec<RawCommitNode>,
+    ) -> Vec<RawCommitNode> {
+        if new_commits.is_empty() {
+            return list;
+        }
+        let order: Vec<Oid> = new_commits.iter().map(|c| c.oid).collect();
+        let mut new_commits_map: FxHashMap<Oid, RawCommitNode> = FxHashMap::default();
+        let mut parent_oid_set: FxHashSet<Oid> = FxHashSet::default();
+        for commit in new_commits {
+            for &p in &commit.parents {
+                parent_oid_set.insert(p);
+            }
+            new_commits_map.insert(commit.oid, commit);
+        }
+        let mut prefix_min_ts = Vec::with_capacity(list.len());
+        let mut parent_indexes: FxHashMap<Oid, usize> = FxHashMap::default();
+        let mut min_ts = i64::MAX;
+        for (idx, commit) in list.iter().enumerate() {
+            min_ts = min_ts.min(commit.timestamp);
+            prefix_min_ts.push(min_ts);
+            if parent_oid_set.contains(&commit.oid) {
+                parent_indexes.insert(commit.oid, idx);
+            }
+        }
+        let mut inserted_by_index: BTreeMap<usize, Vec<RawCommitNode>> = BTreeMap::new();
+        let mut stack: Vec<RawCommitNode> = Vec::new();
+        for root_oid in order {
+            let Some(root) = new_commits_map.remove(&root_oid) else {
+                continue;
+            };
+            stack.push(root);
+            while let Some(current) = stack.last() {
+                let next_parent = current
+                    .parents
+                    .iter()
+                    .copied()
+                    .find(|p| new_commits_map.contains_key(p));
+                if let Some(parent_oid) = next_parent {
+                    if let Some(parent_commit) = new_commits_map.remove(&parent_oid) {
+                        stack.push(parent_commit);
+                    }
+                    continue;
+                }
+                let commit = stack.pop().expect("stack non-empty");
+                let ts = commit.timestamp;
+                let mut index = first_older_index(&prefix_min_ts, ts);
+                for p in &commit.parents {
+                    if let Some(&parent_idx) = parent_indexes.get(p)
+                        && parent_idx < index
+                    {
+                        index = parent_idx;
+                    }
+                }
+                let mut placed = Some(commit);
+                for (_, bucket) in inserted_by_index.range_mut(..=index) {
+                    let c = placed.as_ref().unwrap();
+                    if let Some(pos) = bucket
+                        .iter()
+                        .position(|other| other.timestamp < ts || c.parents.contains(&other.oid))
+                    {
+                        bucket.insert(pos, placed.take().unwrap());
+                        break;
+                    }
+                }
+                if let Some(commit) = placed {
+                    inserted_by_index.entry(index).or_default().push(commit);
+                }
+            }
+        }
+        let mut result = Vec::new();
+        let mut from = 0usize;
+        let mut list_iter = list.into_iter();
+        for (idx, bucket) in inserted_by_index {
+            for _ in 0..idx - from {
+                if let Some(item) = list_iter.next() {
+                    result.push(item);
+                }
+            }
+            result.extend(bucket);
+            from = idx;
+        }
+        result.extend(list_iter);
+        result
+    }
+
+    /// Deterministic xorshift64 PRNG for reproducible randomized tests.
+    struct XorShift(u64);
+
+    impl XorShift {
+        fn next(&mut self) -> u64 {
+            self.0 ^= self.0 << 13;
+            self.0 ^= self.0 >> 7;
+            self.0 ^= self.0 << 17;
+            self.0
+        }
+
+        fn below(&mut self, n: u64) -> u64 {
+            self.next() % n.max(1)
+        }
+    }
+
+    fn oids_of(commits: &[RawCommitNode]) -> Vec<Oid> {
+        commits.iter().map(|c| c.oid).collect()
+    }
+
+    #[test]
+    fn block_insertion_matches_reference_integrator_on_random_dags() {
+        let mut rng = XorShift(0x9E37_79B9_7F4A_7C15);
+        for case in 0..400u64 {
+            let list_len = rng.below(60);
+            let new_len = 1 + rng.below(if case % 4 == 0 { 400 } else { 40 });
+            let ts_span = 1 + rng.below(if case % 3 == 0 { 4 } else { 1_000 });
+            let list: Vec<RawCommitNode> = (0..list_len)
+                .map(|i| {
+                    let parents: Vec<u64> = if i + 1 < list_len {
+                        vec![i + 1]
+                    } else {
+                        vec![]
+                    };
+                    node(i, &parents, rng.below(ts_span) as i64)
+                })
+                .collect();
+            let new: Vec<RawCommitNode> = (0..new_len)
+                .map(|i| {
+                    let id = 10_000 + i;
+                    let mut parents = Vec::new();
+                    for _ in 0..1 + rng.below(2) {
+                        let p = if list_len > 0 && rng.below(3) == 0 {
+                            rng.below(list_len)
+                        } else {
+                            10_000 + rng.below(new_len)
+                        };
+                        if p != id && !parents.contains(&p) {
+                            parents.push(p);
+                        }
+                    }
+                    node(id, &parents, rng.below(ts_span) as i64)
+                })
+                .collect();
+            assert_eq!(
+                oids_of(&integrate_new_commits(list.clone(), new.clone())),
+                oids_of(&reference_integrate_new_commits(list, new)),
+                "case {case}: block insertion diverged from reference integrator"
+            );
+        }
+    }
+
+    /// `saved` = linear chain `0 <- 1 <- ... <- saved_len-1` (0 newest) and
+    /// `first_block` = `k` new commits on top of `0`, newest first. With `skewed`,
+    /// timestamps collide/invert and every 8th commit merges a saved commit.
+    fn k_commit_join_fixture(
+        saved_len: u64,
+        k: u64,
+        skewed: bool,
+    ) -> (Vec<RawCommitNode>, Vec<RawCommitNode>) {
+        let saved: Vec<RawCommitNode> = (0..saved_len)
+            .map(|i| {
+                let parents: Vec<u64> = if i + 1 < saved_len {
+                    vec![i + 1]
+                } else {
+                    vec![]
+                };
+                node(i, &parents, (saved_len - i) as i64 * 10)
+            })
+            .collect();
+        let base_ts = saved_len as i64 * 10;
+        let first_block: Vec<RawCommitNode> = (0..k)
+            .map(|i| {
+                let id = 1_000_000 + i;
+                let mut parents = vec![if i + 1 < k { id + 1 } else { 0 }];
+                let ts = if skewed {
+                    if i % 8 == 3 {
+                        parents.push((i * 7) % saved_len);
+                    }
+                    base_ts + ((i * 31) % 17) as i64
+                } else {
+                    base_ts + (k - i) as i64
+                };
+                node(id, &parents, ts)
+            })
+            .collect();
+        (saved, first_block)
+    }
+
+    #[test]
+    fn indexed_join_matches_linear_join_and_reference_for_2000_new_commits() {
+        for skewed in [false, true] {
+            let (saved, first_block) = k_commit_join_fixture(5_000, 2_000, skewed);
+            let prev = refs(&[0]);
+            let new_refs = refs(&[1_000_000]);
+            let indexed =
+                join_commits_indexed(&saved, &index_map(&saved), &prev, &first_block, &new_refs)
+                    .unwrap();
+            let linear = join_commits(&saved, &prev, &first_block, &new_refs).unwrap();
+            assert_eq!(indexed, linear, "skewed={skewed}");
+            assert_eq!(indexed.added, 2_000);
+            assert_eq!(indexed.removed, 0);
+            assert_eq!(indexed.commits.len(), 7_000);
+
+            let unsafe_prefix = indexed.unsafe_prefix;
+            let mut expected =
+                reference_integrate_new_commits(saved[..unsafe_prefix].to_vec(), first_block);
+            expected.extend_from_slice(&saved[unsafe_prefix..]);
+            assert_eq!(oids_of(&indexed.commits), oids_of(&expected));
+            let full = PermanentLinearGraphBuilder::build(&indexed.commits);
+            assert_eq!(full.nodes_count(), 7_000);
+        }
+    }
+
+    /// `k` unrelated new commits sharing one timestamp, all parented on the
+    /// oldest `saved` commit: every insertion lands in the same bucket and the old
+    /// integrator rescanned the whole bucket each time (`O(K^2)` comparisons).
+    fn flat_new_commits(saved_len: u64, k: u64) -> Vec<RawCommitNode> {
+        (0..k)
+            .map(|i| node(1_000_000 + i, &[saved_len - 1], saved_len as i64 * 10))
+            .collect()
+    }
+
+    #[test]
+    fn new_commit_integration_scales_near_linearly() {
+        let best_of_3 = |k: u64, flat: bool| {
+            let (saved, chain) = k_commit_join_fixture(1_000, k, false);
+            let first_block = if flat {
+                flat_new_commits(1_000, k)
+            } else {
+                chain
+            };
+            (0..3)
+                .map(|_| {
+                    let list = saved.clone();
+                    let new = first_block.clone();
+                    let started = std::time::Instant::now();
+                    let out = integrate_new_commits(list, new);
+                    let elapsed = started.elapsed();
+                    assert_eq!(out.len() as u64, 1_000 + k);
+                    elapsed
+                })
+                .min()
+                .unwrap()
+        };
+        for flat in [false, true] {
+            let small = best_of_3(1_000, flat);
+            let large = best_of_3(8_000, flat);
+            // 8x more commits: ~8x for near-linear, ~64x for the old O(K^2) integrator.
+            let ratio = large.as_secs_f64() / small.as_secs_f64().max(1e-6);
+            eprintln!("flat={flat}: K=1000 {small:?}, K=8000 {large:?}, ratio {ratio:.1}");
+            assert!(
+                ratio < 30.0,
+                "integration of K new commits is super-linear (flat={flat}, ratio {ratio:.1})"
+            );
+        }
     }
 
     #[test]

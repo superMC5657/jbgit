@@ -84,7 +84,7 @@ fn log_graph_state_non_contiguous_selection_state_machine_and_oid_reload() {
 
     // 4. Snapshot reload with a new commit prepended at row 0 shifts {0, 6} -> {1, 7} by OID.
     let mut shifted = (*base_snap).clone();
-    shifted.commits.insert(
+    std::sync::Arc::make_mut(&mut shifted.commits).insert(
         0,
         CommitSummary {
             oid: oid(99),

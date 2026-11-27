@@ -171,7 +171,7 @@ fn delete_branch_guard_and_restore_notification() {
     let mut ts = TestSession::with_snapshot(snapshot());
     // Use a branch with commits outside HEAD to exercise the unmerged delete guard.
     let mut snap = snapshot();
-    snap.commits.insert(
+    std::sync::Arc::make_mut(&mut snap.commits).insert(
         0,
         CommitSummary {
             oid: oid(40),

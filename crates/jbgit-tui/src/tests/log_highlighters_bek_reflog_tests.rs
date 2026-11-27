@@ -133,7 +133,8 @@ fn merge_and_fork_snapshot() -> RepoSnapshot {
                 "initial commit",
                 "",
             ),
-        ],
+        ]
+        .into(),
         ..Default::default()
     }
 }
@@ -399,7 +400,7 @@ fn highlighters_auto_suppress_and_cherry_picked_loads_on_own_slot() {
 
     // Single-author repo -> My Commits auto-suppresses even with empty UserFilter!
     let mut single_author_snap = merge_and_fork_snapshot();
-    for c in &mut single_author_snap.commits {
+    for c in std::sync::Arc::make_mut(&mut single_author_snap.commits) {
         c.author_name = "Alice".into();
         c.author_email = "alice@example.com".into();
     }

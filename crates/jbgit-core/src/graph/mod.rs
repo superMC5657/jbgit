@@ -12,7 +12,10 @@ pub use collapse::{
 };
 pub use edges_in_row::{BLOCK_SIZE, CACHE_SIZE, EdgesInRowCache, EdgesInRowGenerator, WALK_SIZE};
 pub use fixedbitset::FixedBitSet;
-pub use joiner::{JoinCommit, JoinError, JoinResult, join_commits, join_commits_indexed};
+pub use joiner::{
+    JoinCommit, JoinError, JoinResult, join_commits, join_commits_indexed,
+    join_commits_indexed_if_changed,
+};
 pub use linear_bek::{
     FoldedBekMerge, LINEAR_BEK_MAGIC_SET_SIZE, LINEAR_BEK_MAX_BLOCK_SIZE, LinearBekState,
     apply_linear_bek,

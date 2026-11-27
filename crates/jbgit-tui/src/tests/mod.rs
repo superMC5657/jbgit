@@ -107,7 +107,7 @@ pub(super) fn snapshot() -> RepoSnapshot {
     let mut dag = local("feature/dag-layout", 5);
     dag.upstream = Some("origin/feature/dag-layout".into());
     dag.ahead_behind = Some((1, 0));
-    let commits = (1..=12u8)
+    let commits: Vec<CommitSummary> = (1..=12u8)
         .rev()
         .map(|n| CommitSummary {
             oid: oid(n),
@@ -133,7 +133,7 @@ pub(super) fn snapshot() -> RepoSnapshot {
             remote("origin/feature/dag-layout", 4),
             remote("origin/feature-new", 9),
         ],
-        commits,
+        commits: commits.into(),
         recent_branches: vec!["feature/stage-tracker".into()],
         ..Default::default()
     }
@@ -197,7 +197,7 @@ pub(super) fn make_snapshot(workdir: PathBuf, commits: Vec<CommitSummary>) -> Ar
         head_branch: head_oid.map(|_| "main".into()),
         head_oid,
         refs,
-        commits,
+        commits: commits.into(),
         user_name: Some("Alice".into()),
         user_email: Some("alice@example.com".into()),
         recent_branches: vec!["main".into()],

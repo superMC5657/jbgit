@@ -75,7 +75,7 @@ fn diamond(extra_head: bool) -> RepoSnapshot {
         head_branch: Some("main".into()),
         head_oid: Some(oid(head)),
         refs: vec![main, tag("v1", 10)],
-        commits,
+        commits: commits.into(),
         ..Default::default()
     }
 }

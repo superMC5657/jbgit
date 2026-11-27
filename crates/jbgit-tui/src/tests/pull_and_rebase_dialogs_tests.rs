@@ -28,7 +28,7 @@ fn pull_rebase_snapshot(common_dir: &std::path::Path) -> RepoSnapshot {
     let mut snap = snapshot();
     snap.common_dir = common_dir.to_path_buf();
     snap.remotes = remote_infos(&["origin", "upstream"]);
-    snap.commits
+    std::sync::Arc::make_mut(&mut snap.commits)
         .insert(0, make_commit(20, vec![oid(5)], "topic work"));
     snap.refs.push(local("topic", 20));
     snap.refs.push(RefInfo {

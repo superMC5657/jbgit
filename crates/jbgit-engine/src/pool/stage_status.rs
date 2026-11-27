@@ -219,9 +219,21 @@ pub fn load_stage_status_with_config_sync(
         }
 
         // Upgrade newly-added staged entries that match an existing HEAD file to `Copied`.
-        if snap.staged.iter().any(|e| e.kind == FileStatusKind::Added) {
-            let copies =
-                detect_staged_copies(repo, index_entries <= scan_config.large_index_entries);
+        // Copies from unmodified sources are only searched on small indexes with few
+        // added files (`O(added x index_entries)` similarity comparisons otherwise).
+        let added = snap
+            .staged
+            .iter()
+            .filter(|e| e.kind == FileStatusKind::Added)
+            .count();
+        if added > 0 {
+            if token.is_stale() {
+                return Err(EngineError::Cancelled);
+            }
+            let copies = detect_staged_copies(
+                repo,
+                scan_config.copies_from_unmodified(index_entries, added),
+            );
             if !copies.is_empty() {
                 for entry in &mut snap.staged {
                     if entry.kind == FileStatusKind::Added
@@ -316,5 +328,115 @@ pub(crate) fn delta_to_kind(delta: Delta) -> Option<FileStatusKind> {
         Delta::Ignored => Some(FileStatusKind::Ignored),
         Delta::Conflicted => Some(FileStatusKind::Conflicted),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    use git2::{IndexEntry, IndexTime, Repository};
+    use jbgit_core::RequestEpoch;
+
+    use super::*;
+    use crate::pool::{COPY_SCAN_MAX_ADDED, COPY_SCAN_MAX_INDEX_ENTRIES};
+
+    fn body(i: usize) -> String {
+        (0..10).map(|l| format!("file {i} payload {l}\n")).collect()
+    }
+
+    /// Commits `count` files; when `materialize` is unset they only exist as
+    /// index/`HEAD` entries sharing one blob (fast large fixtures).
+    fn repo_with_files(count: usize, materialize: bool) -> (tempfile::TempDir, RepoLocation) {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let repo = Repository::init(root).unwrap();
+        repo.config()
+            .unwrap()
+            .set_bool("core.autocrlf", false)
+            .unwrap();
+        let mut index = repo.index().unwrap();
+        for i in 0..count {
+            let name = format!("f{i:05}.txt");
+            if materialize {
+                std::fs::write(root.join(&name), body(i)).unwrap();
+                index.add_path(Path::new(&name)).unwrap();
+            } else {
+                let entry = IndexEntry {
+                    ctime: IndexTime::new(0, 0),
+                    mtime: IndexTime::new(0, 0),
+                    dev: 0,
+                    ino: 0,
+                    mode: 0o100_644,
+                    uid: 0,
+                    gid: 0,
+                    file_size: 0,
+                    id: git2::Oid::ZERO_SHA1,
+                    flags: 0,
+                    flags_extended: 0,
+                    path: name.into_bytes(),
+                };
+                index.add_frombuffer(&entry, b"shared body\n").unwrap();
+            }
+        }
+        index.write().unwrap();
+        let tree = repo.find_tree(index.write_tree().unwrap()).unwrap();
+        let sig = git2::Signature::now("Test", "test@example.com").unwrap();
+        repo.commit(Some("HEAD"), &sig, &sig, "init", &tree, &[])
+            .unwrap();
+        let loc = RepoLocation::discover(root).unwrap();
+        (tmp, loc)
+    }
+
+    fn stage_new_file(loc: &RepoLocation, name: &str, content: &[u8]) {
+        std::fs::write(loc.workdir.join(name), content).unwrap();
+        let repo = Repository::open(&loc.git_dir).unwrap();
+        let mut index = repo.index().unwrap();
+        index.add_path(Path::new(name)).unwrap();
+        index.write().unwrap();
+    }
+
+    fn staged_kind(snap: &StageStatusSnapshot, path: &str) -> FileStatusKind {
+        snap.staged
+            .iter()
+            .find(|e| e.path == path)
+            .unwrap_or_else(|| panic!("{path} staged"))
+            .kind
+    }
+
+    fn status(loc: &RepoLocation) -> StageStatusSnapshot {
+        let token = RequestEpoch::new().issue();
+        load_stage_status_with_config_sync(loc, false, StatusScanConfig::default(), &token).unwrap()
+    }
+
+    #[test]
+    fn bulk_added_files_skip_copies_from_unmodified_scan() {
+        let (_tmp, loc) = repo_with_files(6, true);
+        stage_new_file(&loc, "copy.txt", body(3).as_bytes());
+        for i in 0..COPY_SCAN_MAX_ADDED {
+            stage_new_file(
+                &loc,
+                &format!("bulk{i:03}.txt"),
+                format!("bulk {i}\n").as_bytes(),
+            );
+        }
+        let snap = status(&loc);
+        assert_eq!(staged_kind(&snap, "copy.txt"), FileStatusKind::Added);
+    }
+
+    #[test]
+    fn added_file_on_index_above_copy_scan_threshold_does_not_scan_unmodified_sources() {
+        let (_tmp, loc) = repo_with_files(COPY_SCAN_MAX_INDEX_ENTRIES + 500, false);
+        // Identical to every (unmodified) `HEAD` blob: only a `copies_from_unmodified`
+        // scan could classify it as `Copied`.
+        stage_new_file(&loc, "copy.txt", b"shared body\n");
+        let started = std::time::Instant::now();
+        let snap = status(&loc);
+        eprintln!(
+            "stage status with {} index entries: {:?}",
+            COPY_SCAN_MAX_INDEX_ENTRIES + 501,
+            started.elapsed()
+        );
+        assert_eq!(staged_kind(&snap, "copy.txt"), FileStatusKind::Added);
     }
 }

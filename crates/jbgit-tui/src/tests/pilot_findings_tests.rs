@@ -2119,7 +2119,8 @@ fn round3_p2_5_log_zoomed_diff_stays_zoomed_when_switching_merge_parent_to_empty
         super::make_commit(3, vec![p1, p2], "merge feature/ui-cards"),
         super::make_commit(1, vec![], "parent 1"),
         super::make_commit(2, vec![], "parent 2"),
-    ];
+    ]
+    .into();
     snap.head_oid = Some(merge_oid);
     snap.refs = vec![local("main", 3)];
 
@@ -2601,13 +2602,14 @@ and the repository exists.
 fn round5_qa5_01_author_filter_preserves_spaced_names_across_pick_reopen_and_tab() {
     let mut snap = snapshot();
     assert!(snap.commits.len() >= 3);
-    snap.commits[0].author_name = "QA Tester".into();
-    snap.commits[0].author_email = "qa@example.com".into();
-    snap.commits[1].author_name = "Other Tester".into();
-    snap.commits[1].author_email = "other@example.com".into();
-    snap.commits[2].author_name = "Alice Dev".into();
-    snap.commits[2].author_email = "alice@example.com".into();
-    for c in snap.commits.iter_mut().skip(3) {
+    let commits = std::sync::Arc::make_mut(&mut snap.commits);
+    commits[0].author_name = "QA Tester".into();
+    commits[0].author_email = "qa@example.com".into();
+    commits[1].author_name = "Other Tester".into();
+    commits[1].author_email = "other@example.com".into();
+    commits[2].author_name = "Alice Dev".into();
+    commits[2].author_email = "alice@example.com".into();
+    for c in commits.iter_mut().skip(3) {
         c.author_name = "QA Tester".into();
         c.author_email = "qa@example.com".into();
     }
@@ -2685,9 +2687,10 @@ fn round5_qa5_01_author_filter_preserves_spaced_names_across_pick_reopen_and_tab
 #[test]
 fn round5_qa5_02_filter_editor_candidates_support_mouse_hover_click_and_scroll() {
     let mut snap = snapshot();
-    snap.commits[0].author_name = "QA Tester".into();
-    snap.commits[1].author_name = "Other Tester".into();
-    for c in snap.commits.iter_mut().skip(2) {
+    let commits = std::sync::Arc::make_mut(&mut snap.commits);
+    commits[0].author_name = "QA Tester".into();
+    commits[1].author_name = "Other Tester".into();
+    for c in commits.iter_mut().skip(2) {
         c.author_name = "QA Tester".into();
     }
 

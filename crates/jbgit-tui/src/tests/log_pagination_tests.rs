@@ -21,7 +21,7 @@ fn paginated_snapshot(count: u8, loaded_limit: usize, has_more_commits: bool) ->
         head_branch: Some("main".into()),
         head_oid: Some(oid(count)),
         refs: vec![main],
-        commits,
+        commits: commits.into(),
         loaded_limit,
         has_more_commits,
         ..Default::default()
@@ -199,7 +199,7 @@ fn load_more_preserves_scroll_offset_and_selected_oid_losslessly() {
         head_branch: Some("main".into()),
         head_oid: Some(oid(10)),
         refs: vec![main],
-        commits,
+        commits: commits.into(),
         loaded_limit: 20,
         has_more_commits: false,
         ..Default::default()

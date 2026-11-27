@@ -651,7 +651,9 @@ struct SupervisorContext {
     event_tx: UnboundedSender<EngineEvent>,
     op_ids: Arc<AtomicU64>,
     sig_cache: Arc<Mutex<LruCache<Oid, CommitSignature>>>,
-    snapshot_cache: Arc<Mutex<Option<SnapshotCommitCache>>>,
+    /// Last snapshot commit cache, `Arc`-shared so taking it under the lock on a
+    /// Tokio async thread is an `O(1)` pointer clone, never a commit-table copy.
+    snapshot_cache: Arc<Mutex<Option<Arc<SnapshotCommitCache>>>>,
     commit_limit: Arc<AtomicUsize>,
     /// Credential bridge for network [`GitOp`]s (`None` = prompts fail fast).
     askpass: Option<Arc<AskpassEnv>>,
@@ -1124,8 +1126,8 @@ fn handle_task_request(ctx: &SupervisorContext, task: ScheduledTask) {
             spawn_epoch_task(
                 &ctx.event_tx,
                 async move {
-                    pool.run_epoch(TaskPriority::Background, token, move |_| {
-                        load_amend_preview_sync(&loc)
+                    pool.run_epoch(TaskPriority::Background, token, move |tok| {
+                        load_amend_preview_sync(&loc, tok)
                     })
                     .await
                 },
@@ -1247,8 +1249,8 @@ fn handle_task_request(ctx: &SupervisorContext, task: ScheduledTask) {
             spawn_epoch_task(
                 &ctx.event_tx,
                 async move {
-                    pool.run_epoch(TaskPriority::Interactive, token, move |_| {
-                        load_conflict_document_sync(&loc, &path)
+                    pool.run_epoch(TaskPriority::Interactive, token, move |tok| {
+                        load_conflict_document_sync(&loc, &path, tok)
                     })
                     .await
                 },
@@ -1351,6 +1353,7 @@ fn spawn_load_repo_snapshot(
     let epoch = token.epoch();
     let tx = ctx.event_tx.clone();
     tokio::spawn(async move {
+        // `O(1)`: clones the `Arc` pointer only, never the commit table.
         let prev_cache = if mode == SnapshotLoadMode::FullNoReuse {
             None
         } else {
@@ -1367,10 +1370,10 @@ fn spawn_load_repo_snapshot(
                     tok,
                     max_commits,
                     scan_config,
-                    prev_cache.as_ref(),
+                    prev_cache.as_deref(),
                     mode,
                 )?;
-                Ok((Arc::new(snap), pending, new_cache))
+                Ok((Arc::new(snap), pending, Arc::new(new_cache)))
             })
             .await;
 

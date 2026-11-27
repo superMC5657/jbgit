@@ -18,7 +18,7 @@ use super::{
 /// Default fixture + `topic` (one commit off `c5`) and a real `common_dir`.
 fn merge_snapshot(common_dir: &std::path::Path) -> RepoSnapshot {
     let mut snap = snapshot();
-    snap.commits
+    std::sync::Arc::make_mut(&mut snap.commits)
         .insert(0, make_commit(20, vec![oid(5)], "topic work"));
     snap.refs.push(local("topic", 20));
     snap.common_dir = common_dir.to_path_buf();

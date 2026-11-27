@@ -93,9 +93,52 @@ fn bench_incremental_head_join_100k(c: &mut Criterion) {
     });
 }
 
+/// `MAX_INCREMENTAL_NEW_COMMITS`-sized join (e.g. a large `git pull`): 2,000 new
+/// commits with colliding timestamps and periodic merges into a 100k log, which
+/// exercised the former `O(K^2)` bucket scan / mid-`Vec` insert in the joiner.
+fn bench_incremental_head_join_100k_2000_new(c: &mut Criterion) {
+    let (commits, _, _) = build_100k_dag();
+    let oid_to_index: FxHashMap<Oid, usize> = commits
+        .iter()
+        .enumerate()
+        .map(|(i, c)| (c.oid, i))
+        .collect();
+    let prev_refs: HashSet<Oid> = [oid(0)].into_iter().collect();
+    let k = 2_000u64;
+    let first_block: Vec<RawCommitNode> = (0..k)
+        .map(|i| {
+            let id = 1_000_000 + i;
+            let mut parents = vec![if i + 1 < k { oid(id + 1) } else { oid(0) }];
+            if i % 8 == 3 {
+                parents.push(oid((i * 7) % 512));
+            }
+            RawCommitNode {
+                oid: oid(id),
+                parents,
+                timestamp: 200_000 + ((i * 31) % 17) as i64,
+            }
+        })
+        .collect();
+    let new_refs: HashSet<Oid> = [oid(1_000_000)].into_iter().collect();
+    c.bench_function("incremental_head_join_100k_2000_new_commits", |b| {
+        b.iter(|| {
+            let res = join_commits_indexed(
+                black_box(&commits),
+                black_box(&oid_to_index),
+                black_box(&prev_refs),
+                black_box(&first_block),
+                black_box(&new_refs),
+            )
+            .expect("join succeeds");
+            black_box(res.commits.len())
+        });
+    });
+}
+
 criterion_group!(
     benches,
     bench_permanent_graph_100k,
-    bench_incremental_head_join_100k
+    bench_incremental_head_join_100k,
+    bench_incremental_head_join_100k_2000_new
 );
 criterion_main!(benches);

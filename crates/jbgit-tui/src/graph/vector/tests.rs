@@ -1231,7 +1231,7 @@ mod app_level {
             head_branch: Some("main".into()),
             head_oid: Some(oid(0)),
             refs: vec![branch_ref("main", 0, true), branch_ref("feat/ui", 2, false)],
-            commits,
+            commits: commits.into(),
             ..Default::default()
         };
         let mut state = AppState::new(".".into(), None);

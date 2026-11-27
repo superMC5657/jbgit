@@ -96,7 +96,8 @@ fn fixture_session() -> TestSession {
             commit(O1, &[A1], 30, "oauth flow"),
             commit(A2, &[A1], 20, "main work"),
             commit(A1, &[], 10, "initial"),
-        ],
+        ]
+        .into(),
         user_name: Some("Alice".into()),
         user_email: Some("alice@x.io".into()),
         ..Default::default()
@@ -806,7 +807,7 @@ fn render_50k_commits_viewport_virtualized() {
             ahead_behind: None,
             is_head: true,
         }],
-        commits,
+        commits: commits.into(),
         ..Default::default()
     };
     let mut ts = TestSession::with_snapshot(snap);
@@ -1179,7 +1180,7 @@ fn large_graph_rebuild_offloads_off_thread_and_drops_stale_epochs() {
             ahead_behind: None,
             is_head: true,
         }],
-        commits,
+        commits: commits.into(),
         ..Default::default()
     });
 

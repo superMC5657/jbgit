@@ -6,8 +6,9 @@ mod worker_pool;
 #[cfg(test)]
 pub(crate) use scan_config::AHEAD_BEHIND_BRANCH_LIMIT;
 pub use scan_config::{
-    AheadBehindUpdate, DEFAULT_COMMIT_PAGE_SIZE, LARGE_INDEX_ENTRIES, StatusScanConfig,
-    StatusScanMode, StatusScanPolicy,
+    AheadBehindUpdate, COPY_SCAN_MAX_ADDED, COPY_SCAN_MAX_INDEX_ENTRIES, DEFAULT_COMMIT_PAGE_SIZE,
+    LARGE_INDEX_ENTRIES, StatusScanConfig, StatusScanMode, StatusScanPolicy,
+    copies_from_unmodified_allowed,
 };
 pub use snapshot::{
     MAX_INCREMENTAL_NEW_COMMITS, SnapshotCommitCache, SnapshotLoadKind, SnapshotLoadMode,

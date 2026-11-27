@@ -1019,7 +1019,7 @@ mod tests {
                 branch("dependabot/x", 6),
             ],
             head_oid: Some(oid(3)),
-            commits: commits.clone(),
+            commits: commits.clone().into(),
             user_name: Some("Alice".into()),
             user_email: Some("alice@x.io".into()),
             ..Default::default()
@@ -1264,7 +1264,7 @@ mod tests {
     fn branch_range_and_favorites_and_no_merges_filter() {
         let (mut snap, _) = fixture();
         // Add a merge commit 7 merging main (3) and feature/a (5) for --no-merges testing.
-        snap.commits
+        std::sync::Arc::make_mut(&mut snap.commits)
             .insert(0, commit(7, &[3, 5], "Alice", 70, "merge feature/a"));
         snap.refs.push(branch("merged", 7));
         let raw: Vec<RawCommitNode> = snap.commits.iter().map(RawCommitNode::from).collect();

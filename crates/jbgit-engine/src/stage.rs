@@ -23,7 +23,9 @@ use crate::blob_reader::{
     read_worktree_path,
 };
 use crate::error::EngineError;
-use crate::pool::{LARGE_INDEX_ENTRIES, delta_to_kind, with_thread_repo};
+use crate::pool::{
+    LARGE_INDEX_ENTRIES, copies_from_unmodified_allowed, delta_to_kind, with_thread_repo,
+};
 use crate::probe::{RepoLocation, canonical_or_self, to_core_oid};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -483,10 +485,25 @@ fn empty_submodule_diff(key: StageDiffKey, info: SubmoduleDiffInfo) -> ThreeDocS
     }
 }
 
+/// Whether `path` has any (stage 0 or conflict stage) entry in the index.
+fn index_has_path(repo: &Repository, path: &str) -> bool {
+    let Ok(index) = repo.index() else {
+        return false;
+    };
+    let rel = Path::new(path);
+    (0..=3).any(|stage| index.get_path(rel, stage).is_some())
+}
+
 struct ThreeDocPaths {
     head_path: String,
     staged_path: String,
     local_path: String,
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Number of `HEAD -> index` source scans run on this thread (test probe).
+    static HEAD_TO_INDEX_SOURCE_SCANS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 fn find_head_to_index_source(
@@ -497,20 +514,29 @@ fn find_head_to_index_source(
     if token.is_stale() {
         return None;
     }
+    #[cfg(test)]
+    HEAD_TO_INDEX_SOURCE_SCANS.with(|n| n.set(n.get() + 1));
     let head_tree = repo.head().ok()?.peel_to_commit().ok()?.tree().ok()?;
     let index_entries = repo.index().map(|idx| idx.len()).unwrap_or(0);
-    let mut diff_opts = DiffOptions::new();
-    let mut find_opts = DiffFindOptions::new();
-    find_opts.renames(true).copies(true);
-    if index_entries <= LARGE_INDEX_ENTRIES {
-        diff_opts.include_unmodified(true);
-        find_opts.copies_from_unmodified(true);
-    }
-    let mut diff = repo
-        .diff_tree_to_index(Some(&head_tree), None, Some(&mut diff_opts))
-        .ok()?;
+    // Changed-only `HEAD -> index` diff first: cheap (unmodified subtrees are skipped
+    // by OID) and tells how many added files a copy scan would have to pair.
+    let mut diff = repo.diff_tree_to_index(Some(&head_tree), None, None).ok()?;
     if token.is_stale() {
         return None;
+    }
+    let added = diff.deltas().filter(|d| d.status() == Delta::Added).count();
+    let mut find_opts = DiffFindOptions::new();
+    find_opts.renames(true).copies(true);
+    if copies_from_unmodified_allowed(index_entries, added) {
+        let mut diff_opts = DiffOptions::new();
+        diff_opts.include_unmodified(true);
+        find_opts.copies_from_unmodified(true);
+        diff = repo
+            .diff_tree_to_index(Some(&head_tree), None, Some(&mut diff_opts))
+            .ok()?;
+        if token.is_stale() {
+            return None;
+        }
     }
     diff.find_similar(Some(&mut find_opts)).ok()?;
     if token.is_stale() {
@@ -615,7 +641,10 @@ fn resolve_three_doc_paths(
                 .and_then(|h| h.peel_to_commit().ok())
                 .and_then(|c| c.tree().ok())
                 .is_some_and(|t| t.get_path(Path::new(&staged_path)).is_ok());
-            let head_path = if in_head {
+            // Only a path that is staged in the index but absent from `HEAD` (a staged
+            // add/rename/copy target) can have a different `HEAD` source. Untracked
+            // files are not in the index, so the repo-wide similarity scan is skipped.
+            let head_path = if in_head || !index_has_path(repo, &staged_path) {
                 staged_path.clone()
             } else {
                 find_head_to_index_source(repo, &staged_path, token)
@@ -1862,8 +1891,12 @@ pub(crate) fn discard_targets_sync(
 
 pub(crate) fn load_amend_preview_sync(
     location: &RepoLocation,
+    token: &EpochToken,
 ) -> Result<Option<AmendCommitPreview>, EngineError> {
     with_thread_repo(&location.git_dir, |repo| {
+        if token.is_stale() {
+            return Err(EngineError::Cancelled);
+        }
         let Ok(head) = repo.head() else {
             return Ok(None);
         };
@@ -1879,11 +1912,21 @@ pub(crate) fn load_amend_preview_sync(
         let base = commit.parent(0).ok().and_then(|p| p.tree().ok());
         let target = commit.tree()?;
         let mut diff = repo.diff_tree_to_tree(base.as_ref(), Some(&target), None)?;
+        if token.is_stale() {
+            return Err(EngineError::Cancelled);
+        }
         diff.find_similar(Some(DiffFindOptions::new().renames(true)))?;
+        if token.is_stale() {
+            return Err(EngineError::Cancelled);
+        }
 
         let workdir = repo.workdir();
         let mut files = Vec::new();
-        for delta in diff.deltas() {
+        for (idx, delta) in diff.deltas().enumerate() {
+            // Each delta stats the working tree; bail out early when superseded.
+            if idx % 64 == 63 && token.is_stale() {
+                return Err(EngineError::Cancelled);
+            }
             let Some(kind) = delta_to_kind(delta.status()) else {
                 continue;
             };
@@ -2906,5 +2949,86 @@ mod tests {
             find_index_to_workdir_rename_target(&repo, "orig.txt", &fresh).is_none(),
             "stale EpochToken must short-circuit untracked rename scan"
         );
+    }
+
+    /// Commits `count` index/`HEAD` entries through `git2` (all sharing one blob,
+    /// no worktree files), which keeps 3,000+ entry fixtures fast on Windows.
+    fn commit_many_files(loc: &RepoLocation, count: usize) {
+        let repo = Repository::open(&loc.git_dir).unwrap();
+        let mut index = repo.index().unwrap();
+        for i in 0..count {
+            let entry = IndexEntry {
+                ctime: IndexTime::new(0, 0),
+                mtime: IndexTime::new(0, 0),
+                dev: 0,
+                ino: 0,
+                mode: GIT_MODE_REGULAR,
+                uid: 0,
+                gid: 0,
+                file_size: 0,
+                id: git2::Oid::ZERO_SHA1,
+                flags: 0,
+                flags_extended: 0,
+                path: format!("f{i:05}.txt").into_bytes(),
+            };
+            index.add_frombuffer(&entry, b"shared body\n").unwrap();
+        }
+        index.write().unwrap();
+        let tree = repo.find_tree(index.write_tree().unwrap()).unwrap();
+        let sig = git2::Signature::now("Test", "test@example.com").unwrap();
+        repo.commit(Some("HEAD"), &sig, &sig, "many files", &tree, &[])
+            .unwrap();
+    }
+
+    fn unstaged_key(path: &str) -> StageDiffKey {
+        StageDiffKey {
+            path: path.into(),
+            old_path: None,
+            side: StageDiffSide::Unstaged,
+            context: DiffContext::Three,
+            whitespace: WhitespaceMode::Default,
+        }
+    }
+
+    fn head_to_index_scans() -> usize {
+        HEAD_TO_INDEX_SOURCE_SCANS.with(std::cell::Cell::get)
+    }
+
+    #[test]
+    fn untracked_file_diff_skips_repo_wide_head_to_index_copy_scan() {
+        let (dir, loc) = init_temp_repo();
+        commit_many_files(&loc, 3_000);
+        fs::write(dir.path().join("untracked.txt"), "brand new\n").unwrap();
+        let tracker = jbgit_core::RequestEpoch::new();
+        let token = tracker.issue();
+
+        let before = head_to_index_scans();
+        let started = std::time::Instant::now();
+        let diff = load_stage_file_diff_sync(&loc, &unstaged_key("untracked.txt"), &token)
+            .expect("untracked diff loads");
+        let elapsed = started.elapsed();
+        assert_eq!(
+            head_to_index_scans(),
+            before,
+            "untracked file must not trigger the HEAD -> index similarity scan"
+        );
+        assert!(!diff.vcs_exists && !diff.staged_exists && diff.local_exists);
+        assert_eq!(diff.local_bytes, b"brand new\n");
+        eprintln!("untracked stage diff on 3000-file repo: {elapsed:?}");
+
+        // A staged add that is edited again in the worktree still probes for its
+        // `HEAD` source (it may be a staged copy/rename target).
+        fs::write(dir.path().join("added.txt"), "file 7 line 0\n").unwrap();
+        assert!(
+            run_git_in(dir.path(), &["add", "added.txt"])
+                .status
+                .success()
+        );
+        fs::write(dir.path().join("added.txt"), "file 7 line 0\nedited\n").unwrap();
+        let before = head_to_index_scans();
+        let diff = load_stage_file_diff_sync(&loc, &unstaged_key("added.txt"), &token)
+            .expect("staged-added diff loads");
+        assert_eq!(head_to_index_scans(), before + 1);
+        assert!(diff.staged_exists && diff.local_exists);
     }
 }

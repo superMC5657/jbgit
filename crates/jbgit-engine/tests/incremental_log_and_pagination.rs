@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::path::Path;
+use std::sync::Arc;
 use std::time::Duration;
 
 use git2::{Repository, Signature, Time};
@@ -155,6 +156,10 @@ fn incremental_refresh_matches_full_scan_across_git_mutations() {
     assert_eq!(kind0, SnapshotLoadKind::Full);
     assert_eq!(snap0.commits.len(), 3);
     assert!(!snap0.has_more_commits);
+    assert!(
+        Arc::ptr_eq(&snap0.commits, &cache.commits),
+        "RepoSnapshot and SnapshotCommitCache must share one commit table"
+    );
 
     // 2. No-op refresh -> IncrementalNoOp (zero revwalk)
     let (snap_noop, _, next_cache, kind_noop) = load_repo_snapshot_incremental_sync(
@@ -168,6 +173,11 @@ fn incremental_refresh_matches_full_scan_across_git_mutations() {
     .expect("noop");
     assert_eq!(kind_noop, SnapshotLoadKind::IncrementalNoOp);
     assert_eq!(snap_noop.commits, snap0.commits);
+    // Zero-copy no-op: the very same `Arc` storage is reused (no `CommitSummary`
+    // clones, no `oid -> index` rebuild).
+    assert!(Arc::ptr_eq(&snap_noop.commits, &cache.commits));
+    assert!(Arc::ptr_eq(&next_cache.commits, &cache.commits));
+    assert!(Arc::ptr_eq(&next_cache.oid_to_index, &cache.oid_to_index));
     cache = next_cache;
 
     // 3. Normal commit -> IncrementalJoined (+1, -0)
@@ -259,6 +269,9 @@ fn incremental_refresh_matches_full_scan_across_git_mutations() {
         }
     );
     assert_equivalent_to_full(&loc, &snap_ff.commits, 1_000);
+    // Refs moved onto already-loaded commits: the commit table is reused as-is.
+    assert!(Arc::ptr_eq(&snap_ff.commits, &cache.commits));
+    assert!(Arc::ptr_eq(&next_cache.oid_to_index, &cache.oid_to_index));
     cache = next_cache;
 
     // 6. Side branch with 2 unique commits, then delete branch (prunes both commits)

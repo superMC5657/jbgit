@@ -638,7 +638,8 @@ fn log_copy_commit_message_and_row_summary_single_and_multi() {
                 timestamp: 1_699_900_000,
                 author_timestamp: 1_699_900_000,
             },
-        ],
+        ]
+        .into(),
         user_name: Some("Alice".into()),
         user_email: Some("alice@example.com".into()),
         ..Default::default()
