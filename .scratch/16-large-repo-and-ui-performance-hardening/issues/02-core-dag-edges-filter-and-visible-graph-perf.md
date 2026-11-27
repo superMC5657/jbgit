@@ -81,3 +81,9 @@ Priority: P0
 ## Comments
 
 - **2026-11-28**：基于 `jbgit-core` 性能审计创建本 P0 工单，彻底消除 DAG 边计算 2× 冗余、40k 提交缓存击穿、`VisibleGraph` 40万+ 小 `Vec` 分配与筛选/哈希前缀热路径堆分配。
+- **2026-11-28**：**范围收窄**（用户实测后决定）：10 万提交 DAG 上 `recommended_track_width` 约 190 ms，而构图约 35 ms、60 行 `print_elements` 视口约 0.36 ms，故本工单只做 track-width 一项。
+  - 改动：`print_elements.rs` 中 `recommended_track_width` 改为 `&self`，由新私有 `passing_edge_counts` 对每条（去重后）边按 `edge_is_visible_in_gap` 语义算出其占位行区间（短边整段；长边为两端 `part` 行的可见残段），用差分数组单趟 `O(V + E)` 求出每行穿行边数，再按原 `step` 采样与 `avg + K * std_dev` 公式求值；不再调用 `edges_in_row`，**完全不读写 `EdgesInRowCache`**。原 `count_row_slots` 移入测试作参考实现。`edges_in_row.rs` 仅新增 `#[cfg(test)]` 的 `cached_block_count` 观测接口。
+  - 语义：与旧版逐行精确一致（同一采样行、同一 f64 累加顺序），无偏差。
+  - 测试：`recommended_track_width_matches_reference_and_leaves_cache_untouched`——随机多分支 DAG（含重复父、`> LONG_EDGE_SIZE`、`> VERY_LONG_EDGE_SIZE`/`> WALK_SIZE` 边），2,500 与 41,000 提交 × `show_long_edges` 开/关 × 过滤/不过滤；小图逐行比对槽位数，全部配置比对旧版宽度，并断言调用后缓存块数与命中数均为 0。
+  - 基准 `recommended_track_width_100k`：**189.64 ms → 348.27 µs**（约 545×，后者仍含基准循环内的 `EdgesInRowCache::new`）。
+  - 其余条目（移除 `edges_from_below`、`ultra_long_edges` 索引、`O(W²)` 槽位查找、`print_elements` 批量、`VisibleGraph`/`PermanentGraph`/`LinearBek` 分配瘦身、`Oid`/filter/glob/fuzzy/`natural_cmp`/`repo.rs`）实测收益低，暂缓。

@@ -415,37 +415,32 @@ impl<'a> PrintElementGenerator<'a> {
     }
 
     /// Computes recommended track slot count (in graph tracks, not terminal columns)
-    /// using IDEA's `avg + K * std_dev` formula over up to `RECOMMENDED_WIDTH_SAMPLE_SIZE` rows.
-    pub fn recommended_track_width(&mut self) -> usize {
+    /// using IDEA's `avg + K * std_dev` formula over up to `RECOMMENDED_WIDTH_SAMPLE_SIZE` rows
+    /// (every `step`-th row from row 0).
+    ///
+    /// A row's slot count is `1` (its node) plus the distinct edges passing through it
+    /// (`up < row < down`) that are visible in the gap above or below the row. That set is a
+    /// fixed row range (or two, for a long edge's visible stubs) per edge, so all rows are
+    /// counted in one `O(V + E)` difference-array pass without touching the shared
+    /// [`EdgesInRowCache`].
+    pub fn recommended_track_width(&self) -> usize {
         let n = self.visible.linear.visible_count() as usize;
         if n == 0 {
             return 1;
         }
         let sample = n.min(RECOMMENDED_WIDTH_SAMPLE_SIZE);
         let step = (n / sample).max(1);
+        let passing = self.passing_edge_counts();
 
         let mut count = 0usize;
         let mut sum = 0.0f64;
         let mut sum_sq = 0.0f64;
-        let mut prev_vis: Vec<GraphEdge> = Vec::new();
         let mut r = 0usize;
-
         while r < n && count < sample {
-            let row = r as VisibleRowIdx;
-            let upper = if step == 1 && r > 0 {
-                prev_vis.clone()
-            } else if r > 0 {
-                self.visible_edges_in_gap(row - 1)
-            } else {
-                Vec::new()
-            };
-            let lower = self.visible_edges_in_gap(row);
-
-            let slots = self.count_row_slots(row, &upper, &lower) as f64;
+            let slots = (1 + passing[r]) as f64;
             sum += slots;
             sum_sq += slots * slots;
             count += 1;
-            prev_vis = lower;
             r += step;
         }
 
@@ -458,6 +453,55 @@ impl<'a> PrintElementGenerator<'a> {
         (avg + RECOMMENDED_WIDTH_K * std_dev).round().max(1.0) as usize
     }
 
+    /// Per-row count of distinct edges passing through the row (`up < row < down`) that are
+    /// visible in the gap above or below it. Has `visible_count + 1` entries (last is `0`).
+    fn passing_edge_counts(&self) -> Vec<i32> {
+        let linear = &self.visible.linear;
+        let n = linear.visible_count() as usize;
+        let (limit, part) = if self.visible.options.show_long_edges {
+            (VERY_LONG_EDGE_SIZE, VERY_LONG_EDGE_PART_SIZE)
+        } else {
+            (LONG_EDGE_SIZE, VISIBLE_PART_SIZE)
+        };
+
+        // `passing[r]` = +1/-1 range boundaries, prefix-summed into per-row pass-through counts.
+        let mut passing = vec![0i32; n + 1];
+        let mut add_range = |lo: u32, hi: u32| {
+            passing[lo as usize] += 1;
+            passing[hi as usize + 1] -= 1;
+        };
+        for row in 0..n {
+            let edges = linear.down_edges(row as VisibleRowIdx);
+            for (i, e) in edges.iter().enumerate() {
+                // Identical edges share `up`, so a per-row check dedups like the old edge sets.
+                if edges[..i].contains(e) || e.down - e.up < 2 {
+                    continue;
+                }
+                let (first, last) = (e.up + 1, e.down - 1);
+                if e.down - e.up < limit {
+                    add_range(first, last);
+                    continue;
+                }
+                // Visible in gaps `[up, up + part)` and `[down - part, down)`, so the edge
+                // occupies rows `up + 1 ..= up + part` and `down - part ..= down - 1`.
+                let head_end = (e.up + part).min(last);
+                let tail_start = (e.down - part).max(first);
+                if head_end + 1 >= tail_start {
+                    add_range(first, last);
+                } else {
+                    add_range(first, head_end);
+                    add_range(tail_start, last);
+                }
+            }
+        }
+        let mut running = 0i32;
+        for p in &mut passing {
+            running += *p;
+            *p = running;
+        }
+        passing
+    }
+
     /// Convenience helper returning the sorted [`GraphElement`]s at `row` for testing
     /// comparator strict weak ordering.
     pub fn sorted_row_elements(&mut self, row: VisibleRowIdx) -> Vec<GraphElement> {
@@ -468,21 +512,6 @@ impl<'a> PrintElementGenerator<'a> {
         };
         let lower = self.visible_edges_in_gap(row);
         self.build_row_slots(row, &upper, &lower).elements
-    }
-
-    fn count_row_slots(
-        &self,
-        row: VisibleRowIdx,
-        upper: &[GraphEdge],
-        lower: &[GraphEdge],
-    ) -> usize {
-        let mut passing: Vec<GraphEdge> = Vec::with_capacity(upper.len() + lower.len());
-        for &e in upper.iter().chain(lower.iter()) {
-            if e.up < row && row < e.down && !passing.contains(&e) {
-                passing.push(e);
-            }
-        }
-        1 + passing.len()
     }
 
     fn build_row_slots(
@@ -538,6 +567,7 @@ fn edge_style(t: GraphEdgeType) -> LineStyle {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::graph::edges_in_row::WALK_SIZE;
     use crate::graph::permanent::{PermanentGraph, RawCommitNode};
     use crate::graph::visible::{GraphViewOptions, SortType, VisibleGraph};
     use crate::refs::{MAIN_BRANCH_COLOR_ID, branch_color_id};
@@ -790,6 +820,164 @@ mod tests {
             )),
             "busy row missing ShallowParent: {r_busy:?}"
         );
+    }
+
+    /// Pre-rewrite `recommended_track_width` (sampled `edges_in_row` scans through the
+    /// generator's cache), kept verbatim as the equivalence oracle.
+    fn reference_track_width(elem_gen: &mut PrintElementGenerator<'_>) -> usize {
+        let n = elem_gen.visible.linear.visible_count() as usize;
+        if n == 0 {
+            return 1;
+        }
+        let sample = n.min(RECOMMENDED_WIDTH_SAMPLE_SIZE);
+        let step = (n / sample).max(1);
+
+        let mut count = 0usize;
+        let mut sum = 0.0f64;
+        let mut sum_sq = 0.0f64;
+        let mut prev_vis: Vec<GraphEdge> = Vec::new();
+        let mut r = 0usize;
+
+        while r < n && count < sample {
+            let row = r as VisibleRowIdx;
+            let upper = if step == 1 && r > 0 {
+                prev_vis.clone()
+            } else if r > 0 {
+                elem_gen.visible_edges_in_gap(row - 1)
+            } else {
+                Vec::new()
+            };
+            let lower = elem_gen.visible_edges_in_gap(row);
+
+            let slots = count_row_slots(row, &upper, &lower) as f64;
+            sum += slots;
+            sum_sq += slots * slots;
+            count += 1;
+            prev_vis = lower;
+            r += step;
+        }
+
+        if count == 0 {
+            return 1;
+        }
+        let avg = sum / count as f64;
+        let var = (sum_sq / count as f64 - avg * avg).max(0.0);
+        let std_dev = var.sqrt();
+        (avg + RECOMMENDED_WIDTH_K * std_dev).round().max(1.0) as usize
+    }
+
+    /// Pre-rewrite per-row slot count used by [`reference_track_width`].
+    fn count_row_slots(row: VisibleRowIdx, upper: &[GraphEdge], lower: &[GraphEdge]) -> usize {
+        let mut passing: Vec<GraphEdge> = Vec::with_capacity(upper.len() + lower.len());
+        for &e in upper.iter().chain(lower.iter()) {
+            if e.up < row && row < e.down && !passing.contains(&e) {
+                passing.push(e);
+            }
+        }
+        1 + passing.len()
+    }
+
+    /// Random multi-branch DAG: first-parent chains broken into several roots, extra parents
+    /// spanning short, long (`> LONG_EDGE_SIZE`), very long (`> VERY_LONG_EDGE_SIZE`) and
+    /// ultra-long (`> WALK_SIZE`) distances, plus occasional duplicate parents.
+    fn random_dag(n: usize, seed: u64) -> (Vec<RawCommitNode>, Vec<RefInfo>) {
+        let mut state = seed;
+        let mut next = move || {
+            state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            state >> 33
+        };
+        let mut commits = Vec::with_capacity(n);
+        for i in 0..n {
+            let mut parents = Vec::new();
+            if i + 1 < n && next() % 500 != 0 {
+                parents.push(oid((i + 1) as u64));
+            }
+            let extra = match next() % 100 {
+                0..=11 => Some(2 + next() % 28),
+                12..=15 => Some(31 + next() % 900),
+                16..=17 => Some(1001 + next() % 2500),
+                _ => None,
+            };
+            if let Some(span) = extra
+                && i + (span as usize) < n
+            {
+                parents.push(oid((i + span as usize) as u64));
+                if next() % 20 == 0 {
+                    parents.push(oid((i + span as usize) as u64));
+                }
+            }
+            commits.push(RawCommitNode {
+                oid: oid(i as u64),
+                parents,
+                timestamp: (n - i) as i64,
+            });
+        }
+        let mut refs = vec![branch_ref("main", 0, true)];
+        for k in 1..6u64 {
+            let target = next() % n as u64;
+            refs.push(branch_ref(&format!("feat/{k}"), target, false));
+        }
+        (commits, refs)
+    }
+
+    #[test]
+    fn recommended_track_width_matches_reference_and_leaves_cache_untouched() {
+        for (n, seed) in [(2_500usize, 7u64), (41_000, 11)] {
+            let (commits, refs) = random_dag(n, seed);
+            let pg = PermanentGraph::build(&commits, &refs, Some(oid(0)));
+            let mut filter = FixedBitSet::with_capacity(n);
+            for i in (0..n).filter(|i| i % 3 != 1) {
+                filter.insert(i);
+            }
+            for show_long_edges in [false, true] {
+                for flt in [None, Some(&filter)] {
+                    let vis = VisibleGraph::build(
+                        &pg,
+                        GraphViewOptions {
+                            show_long_edges,
+                            ..Default::default()
+                        },
+                        flt,
+                    );
+                    let spans = || vis.linear.down_edges_data.iter().map(|e| e.down - e.up);
+                    assert!(spans().any(|s| s > VERY_LONG_EDGE_SIZE.max(WALK_SIZE as u32)));
+                    assert!(spans().any(|s| s > LONG_EDGE_SIZE && s < VERY_LONG_EDGE_SIZE));
+
+                    let mut cache = EdgesInRowCache::new(&vis.linear);
+                    let actual = PrintElementGenerator::with_cache(&pg, &vis, None, &mut cache)
+                        .recommended_track_width();
+                    assert_eq!(cache.cached_block_count(), 0, "cache polluted");
+                    assert_eq!(cache.cache_hits(), 0, "cache consulted");
+
+                    let mut ref_gen = PrintElementGenerator::new(&pg, &vis, None);
+                    // Every row's slot count on the small DAG (debug-build runtime).
+                    if n <= 5_000 {
+                        let passing = ref_gen.passing_edge_counts();
+                        let mut prev_gap = Vec::new();
+                        for r in 0..vis.linear.visible_count() {
+                            let gap = ref_gen.visible_edges_in_gap(r);
+                            assert_eq!(
+                                1 + passing[r as usize] as usize,
+                                count_row_slots(r, &prev_gap, &gap),
+                                "row {r} slot count (show_long={show_long_edges})"
+                            );
+                            prev_gap = gap;
+                        }
+                    }
+
+                    let expected = reference_track_width(&mut ref_gen);
+                    assert_eq!(
+                        actual,
+                        expected,
+                        "n={n} rows={} show_long={show_long_edges} filtered={}",
+                        vis.linear.visible_count(),
+                        flt.is_some()
+                    );
+                }
+            }
+        }
     }
 
     proptest::proptest! {

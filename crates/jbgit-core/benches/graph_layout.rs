@@ -2,7 +2,10 @@ use std::collections::HashSet;
 use std::hint::black_box;
 
 use criterion::{Criterion, criterion_group, criterion_main};
-use jbgit_core::graph::{PermanentGraph, RawCommitNode, join_commits_indexed};
+use jbgit_core::graph::{
+    EdgesInRowCache, FixedBitSet, GraphViewOptions, PermanentGraph, PrintElementGenerator,
+    RawCommitNode, VisibleGraph, VisibleRowIdx, join_commits_indexed,
+};
 use jbgit_core::{Oid, RefInfo, RefKind};
 use rustc_hash::FxHashMap;
 
@@ -135,10 +138,71 @@ fn bench_incremental_head_join_100k_2000_new(c: &mut Criterion) {
     });
 }
 
+/// 100k DAG with short merges plus medium (`> LONG_EDGE_SIZE`) and ultra-long
+/// (`> WALK_SIZE`) cross edges: `VisibleGraph` projection (unfiltered and a
+/// ~50% filter), `recommended_track_width`, and a 60-row viewport of
+/// `print_elements` on a persistent `EdgesInRowCache`.
+fn bench_visible_graph_track_width_and_viewport_100k(c: &mut Criterion) {
+    let (mut commits, refs, head) = build_100k_dag();
+    let count = commits.len();
+    for (i, commit) in commits.iter_mut().enumerate() {
+        if i % 257 == 5 && i + 120 < count {
+            commit.parents.push(oid((i + 120) as u64));
+        }
+        if i % 4099 == 7 && i + 1800 < count {
+            commit.parents.push(oid((i + 1800) as u64));
+        }
+    }
+    let pg = PermanentGraph::build(&commits, &refs, head);
+    let mut filter = FixedBitSet::with_capacity(count);
+    for i in (0..count).filter(|i| i % 3 != 1) {
+        filter.insert(i);
+    }
+    c.bench_function("visible_graph_build_unfiltered_100k", |b| {
+        b.iter(|| {
+            let vis = VisibleGraph::build(black_box(&pg), GraphViewOptions::default(), None);
+            black_box(vis.linear.visible_count())
+        });
+    });
+    c.bench_function("visible_graph_build_filtered_100k", |b| {
+        b.iter(|| {
+            let vis = VisibleGraph::build(
+                black_box(&pg),
+                GraphViewOptions::default(),
+                Some(black_box(&filter)),
+            );
+            black_box(vis.linear.visible_count())
+        });
+    });
+    let vis = VisibleGraph::build(&pg, GraphViewOptions::default(), None);
+    c.bench_function("recommended_track_width_100k", |b| {
+        b.iter(|| {
+            let mut cache = EdgesInRowCache::new(&vis.linear);
+            let w = PrintElementGenerator::with_cache(&pg, &vis, head, &mut cache)
+                .recommended_track_width();
+            black_box(w)
+        });
+    });
+    let mut cache = EdgesInRowCache::new(&vis.linear);
+    c.bench_function("print_elements_viewport_60_rows_100k", |b| {
+        let mut start = 0u32;
+        b.iter(|| {
+            let mut elem_gen = PrintElementGenerator::with_cache(&pg, &vis, head, &mut cache);
+            let mut total = 0usize;
+            for row in start..start + 60 {
+                total += elem_gen.print_elements(row as VisibleRowIdx).len();
+            }
+            start = (start + 7) % 90_000;
+            black_box(total)
+        });
+    });
+}
+
 criterion_group!(
     benches,
     bench_permanent_graph_100k,
     bench_incremental_head_join_100k,
-    bench_incremental_head_join_100k_2000_new
+    bench_incremental_head_join_100k_2000_new,
+    bench_visible_graph_track_width_and_viewport_100k
 );
 criterion_main!(benches);

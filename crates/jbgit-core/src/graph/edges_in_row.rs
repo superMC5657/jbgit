@@ -38,6 +38,12 @@ impl EdgesInRowCache {
     pub fn cache_hits(&self) -> usize {
         self.hits
     }
+
+    /// Number of anchor blocks currently held (both directions).
+    #[cfg(test)]
+    pub(crate) fn cached_block_count(&self) -> usize {
+        self.above_anchor_cache.entries.len() + self.below_anchor_cache.entries.len()
+    }
 }
 
 enum CacheStorage<'a> {
