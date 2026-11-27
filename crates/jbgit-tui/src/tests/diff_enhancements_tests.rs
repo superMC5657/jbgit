@@ -1003,6 +1003,24 @@ fn file_history_diff_supports_search_whitespace_and_wrap_without_breaking_commit
         1
     );
 
+    // A paste into the search box lands on the same query/matches as typing it
+    // char by char (it appends the text and recomputes once).
+    let typed = ts
+        .state()
+        .modal_stack
+        .file_history()
+        .unwrap()
+        .diff
+        .search
+        .clone();
+    ts.dispatch(Action::DiffSearchOpen(crate::app::DiffScope::FileHistory));
+    ts.dispatch(Action::ModalPaste("need\nle".into()));
+    let pasted = &ts.state().modal_stack.file_history().unwrap().diff.search;
+    assert_eq!(pasted.query, typed.query);
+    assert_eq!(pasted.matches, typed.matches);
+    assert_eq!(pasted.current, typed.current);
+    ts.send_key(KeyCode::Enter, KeyModifiers::NONE);
+
     // Esc closes search first without closing File History modal.
     ts.send_key(KeyCode::Esc, KeyModifiers::NONE);
     assert!(ts.state().modal_stack.file_history().is_some());

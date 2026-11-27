@@ -332,8 +332,11 @@ impl LogWorkbench {
     pub fn scroll_pane(&mut self, pane: ScrollPane, delta: isize, diff_caches: &DiffCacheStore) {
         match pane {
             ScrollPane::LogDiff => {
-                let fallback = self.details.fallback_diff_max_scroll(diff_caches);
-                self.details.diff.scroll.scroll_by(delta, fallback);
+                // Lazy: the soft-wrap-aware total is only measured before the
+                // first rendered frame binds `max_scroll`.
+                let mut scroll = self.details.diff.scroll;
+                scroll.scroll_by_with(delta, || self.details.fallback_diff_max_scroll(diff_caches));
+                self.details.diff.scroll = scroll;
             }
             ScrollPane::LogDetails => {
                 self.details.details_scroll.scroll_by(delta, usize::MAX);

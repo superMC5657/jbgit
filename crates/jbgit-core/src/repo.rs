@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
-use std::sync::Arc;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use crate::{Oid, RewritePlan, TodoEntry, is_protected_branch, natural_cmp};
 

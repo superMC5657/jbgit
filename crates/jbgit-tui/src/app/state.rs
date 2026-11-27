@@ -407,18 +407,22 @@ impl AppState {
             ScrollPane::StageDiff => {
                 self.stage_workbench.scroll_diff(delta);
             }
+            // Fallbacks below are lazy: once a frame has bound `max_scroll`, the
+            // whole-content measurement is skipped. `ScrollViewport` is `Copy`, so
+            // it is copied out where the fallback borrows its owner.
             ScrollPane::FileHistoryDiff => {
-                let fallback = self.modal_stack.file_history().map_or(usize::MAX, |fh| {
-                    fh.fallback_diff_max_scroll(&self.diff_caches)
-                });
+                let caches = &self.diff_caches;
                 if let Some(fh) = self.modal_stack.file_history_mut() {
-                    fh.diff.scroll.scroll_by(delta, fallback);
+                    let mut scroll = fh.diff.scroll;
+                    scroll.scroll_by_with(delta, || fh.fallback_diff_max_scroll(caches));
+                    fh.diff.scroll = scroll;
                 }
             }
             ScrollPane::FileHistoryBlob => {
                 if let Some(fh) = self.modal_stack.file_history_mut() {
-                    let fallback = fh.repo_version_line_count().saturating_sub(1);
-                    fh.repo_version_scroll.scroll_by(delta, fallback);
+                    let mut scroll = fh.repo_version_scroll;
+                    scroll.scroll_by_with(delta, || fh.repo_version_line_count().saturating_sub(1));
+                    fh.repo_version_scroll = scroll;
                 }
             }
             ScrollPane::Annotate => {
@@ -429,11 +433,11 @@ impl AppState {
             }
             ScrollPane::AnnotateDiff => {
                 let head_oid = self.repo_snapshot.as_ref().and_then(|s| s.head_oid);
-                let fallback = self.modal_stack.annotate().map_or(usize::MAX, |ann| {
-                    ann.fallback_diff_max_scroll(head_oid, &self.diff_caches)
-                });
+                let caches = &self.diff_caches;
                 if let Some(ann) = self.modal_stack.annotate_mut() {
-                    ann.diff.scroll.scroll_by(delta, fallback);
+                    let mut scroll = ann.diff.scroll;
+                    scroll.scroll_by_with(delta, || ann.fallback_diff_max_scroll(head_oid, caches));
+                    ann.diff.scroll = scroll;
                 }
             }
             ScrollPane::PushDiff => {
@@ -455,11 +459,11 @@ impl AppState {
             }
             ScrollPane::ConflictMerge => {
                 if let Some(cm) = self.modal_stack.conflict_merge_mut() {
-                    let fallback = cm
-                        .doc
-                        .as_ref()
-                        .map_or(0, |d| d.three_pane_rows().len().saturating_sub(1));
-                    cm.scroll.scroll_by(delta, fallback);
+                    cm.scroll.scroll_by_with(delta, || {
+                        cm.doc
+                            .as_ref()
+                            .map_or(0, |d| d.total_pane_rows().saturating_sub(1))
+                    });
                 }
             }
             ScrollPane::ConflictQueue => {
@@ -470,8 +474,9 @@ impl AppState {
             }
             ScrollPane::TreeBrowserPreview => {
                 if let Some(tb) = self.modal_stack.tree_browser_mut() {
-                    let fallback = tb.preview_line_count().saturating_sub(1);
-                    tb.preview_scroll.scroll_by(delta, fallback);
+                    let mut scroll = tb.preview_scroll;
+                    scroll.scroll_by_with(delta, || tb.preview_line_count().saturating_sub(1));
+                    tb.preview_scroll = scroll;
                 }
             }
             ScrollPane::ApplyPatch => {
@@ -512,8 +517,9 @@ impl AppState {
             }
             ScrollPane::ApplyPatchPreview => {
                 if let Some(ap) = self.modal_stack.apply_patch_mut() {
-                    let fallback = ap.preview_line_count().saturating_sub(1);
-                    ap.preview_scroll.scroll_by(delta, fallback);
+                    let mut scroll = ap.preview_scroll;
+                    scroll.scroll_by_with(delta, || ap.preview_line_count().saturating_sub(1));
+                    ap.preview_scroll = scroll;
                 }
             }
             ScrollPane::BranchCleanup => {

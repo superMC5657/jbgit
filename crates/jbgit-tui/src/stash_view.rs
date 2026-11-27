@@ -69,9 +69,12 @@ impl StashWorkbench {
     }
 
     pub fn scroll_diff(&mut self, delta: isize, store: &DiffCacheStore) {
-        let diff = self.diff_key(store).and_then(|k| store.peek_diff(&k));
-        let fallback = self.diff.fallback_max_scroll(diff);
-        self.diff.scroll.scroll_by(delta, fallback);
+        let mut scroll = self.diff.scroll;
+        scroll.scroll_by_with(delta, || {
+            let diff = self.diff_key(store).and_then(|k| store.peek_diff(&k));
+            self.diff.fallback_max_scroll(diff)
+        });
+        self.diff.scroll = scroll;
     }
 
     pub fn bind_diff_viewport(&mut self, viewport_h: usize, max_scroll: usize) {

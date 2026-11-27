@@ -54,7 +54,14 @@ impl ScrollViewport {
     /// Applies `delta` clamped against known `max_scroll` (or `fallback_max`
     /// before the first rendered frame), returning the new offset.
     pub fn scroll_by(&mut self, delta: isize, fallback_max: usize) -> usize {
-        let limit = self.max_scroll.unwrap_or(fallback_max);
+        self.scroll_by_with(delta, || fallback_max)
+    }
+
+    /// Like [`Self::scroll_by`], but only evaluates `fallback_max` when no
+    /// `max_scroll` has been bound yet, so callers can pass expensive
+    /// whole-content measurements that are skipped after the first frame.
+    pub fn scroll_by_with(&mut self, delta: isize, fallback_max: impl FnOnce() -> usize) -> usize {
+        let limit = self.max_scroll.unwrap_or_else(fallback_max);
         self.offset = apply_scroll_delta(self.offset, delta, limit);
         self.offset
     }
@@ -127,6 +134,24 @@ mod tests {
         assert_eq!(vp.scroll_by(SCROLL_GOTO_TOP, 999), 0);
         assert_eq!(vp.page_step(10), 9);
         assert_eq!(vp.half_page_step(5), 5);
+    }
+
+    #[test]
+    fn scroll_by_with_skips_fallback_once_max_scroll_is_bound() {
+        let mut vp = ScrollViewport::new();
+        let mut calls = 0;
+        assert_eq!(
+            vp.scroll_by_with(5, || {
+                calls += 1;
+                3
+            }),
+            3
+        );
+        assert_eq!(calls, 1);
+
+        vp.bind_geometry(50, 10);
+        let offset = vp.scroll_by_with(100, || panic!("fallback must stay lazy"));
+        assert_eq!(offset, 40);
     }
 
     #[test]

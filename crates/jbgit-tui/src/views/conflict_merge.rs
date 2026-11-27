@@ -2,7 +2,7 @@
 //! with optional syntax highlighting, intra-block word-diff, horizontal scrolling,
 //! expandable `:1` Base ancestor panel, and lightweight inline multi-line Result editing.
 
-use jbgit_core::{ConflictChoice, ConflictRowPlaceholder, ThreeWayBlockKind, word_diff};
+use jbgit_core::{ConflictChoiceKind, ConflictRowPlaceholder, ThreeWayBlockKind, word_diff};
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
@@ -421,15 +421,15 @@ pub fn render_conflict_merge_modal(
     let body_h = inner
         .height
         .saturating_sub(1 + stale_rows + footer_reserved + dock_h) as usize;
-    let rows = doc.three_pane_rows();
-    let max_scroll = rows.len().saturating_sub(body_h.max(1));
+    let max_scroll = doc.total_pane_rows().saturating_sub(body_h.max(1));
     ctx.record_scroll_bound(
         crate::app::ScrollPane::ConflictMerge,
         body_h.max(1),
         max_scroll,
     );
     let scroll = cm.scroll.offset().min(max_scroll);
-    for (vis, row) in rows.iter().skip(scroll).take(body_h).enumerate() {
+    let rows = doc.three_pane_rows_window(scroll, body_h);
+    for (vis, row) in rows.iter().enumerate() {
         let y = body_start_y + vis as u16;
         let line_rect = Rect::new(inner.x, y, inner.width, 1);
         let is_active = row.block_idx == Some(cm.selected_block);
@@ -442,7 +442,7 @@ pub fn render_conflict_merge_modal(
                 ctx.theme.bg_canvas,
                 ctx.theme.bg_canvas,
             ),
-            Some(ConflictChoice::Unresolved) => {
+            Some(ConflictChoiceKind::Unresolved) => {
                 let hi = if is_active {
                     ctx.theme.bg_selection_focused
                 } else if is_non_conflict {
@@ -462,14 +462,14 @@ pub fn render_conflict_merge_modal(
             }
         };
         let mid_fg = match &row.choice {
-            Some(ConflictChoice::Unresolved) => {
+            Some(ConflictChoiceKind::Unresolved) => {
                 if is_non_conflict {
                     ctx.theme.fg_accent_link
                 } else {
                     ctx.theme.status_conflicted
                 }
             }
-            Some(ConflictChoice::Neither) => ctx.theme.fg_muted,
+            Some(ConflictChoiceKind::Neither) => ctx.theme.fg_muted,
             Some(_) => ctx.theme.fg_bright,
             None => ctx.theme.fg_primary,
         };

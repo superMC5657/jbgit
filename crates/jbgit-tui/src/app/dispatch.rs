@@ -400,14 +400,10 @@ impl AppState {
                     }
                     ModalLayer::Annotate(ann) => {
                         if ann.diff.search.editing {
-                            let chars: Vec<char> = text
-                                .chars()
-                                .filter(|c| *c != '\n' && *c != '\r' && !c.is_control())
-                                .collect();
-                            for ch in chars {
-                                effects.extend(
-                                    self.dispatch(Action::DiffSearchChar(DiffScope::Annotate, ch)),
-                                );
+                            if let Some((prefix, last)) = split_diff_search_paste(&text) {
+                                ann.diff.search.push_str(&prefix);
+                                let action = Action::DiffSearchChar(DiffScope::Annotate, last);
+                                effects.extend(self.dispatch(action));
                             }
                         } else if let Some(buf) = ann.goto_line_input.as_mut() {
                             for ch in text.chars().filter(|c| c.is_ascii_digit()) {
@@ -427,35 +423,24 @@ impl AppState {
                         }
                     }
                     ModalLayer::FileHistory(fh) if fh.diff.search.editing => {
-                        let chars: Vec<char> = text
-                            .chars()
-                            .filter(|c| *c != '\n' && *c != '\r' && !c.is_control())
-                            .collect();
-                        for ch in chars {
-                            effects.extend(
-                                self.dispatch(Action::DiffSearchChar(DiffScope::FileHistory, ch)),
-                            );
+                        if let Some((prefix, last)) = split_diff_search_paste(&text) {
+                            fh.diff.search.push_str(&prefix);
+                            let action = Action::DiffSearchChar(DiffScope::FileHistory, last);
+                            effects.extend(self.dispatch(action));
                         }
                     }
                     ModalLayer::Reflog(rf) if rf.diff.search.editing => {
-                        let chars: Vec<char> = text
-                            .chars()
-                            .filter(|c| *c != '\n' && *c != '\r' && !c.is_control())
-                            .collect();
-                        for ch in chars {
-                            effects.extend(
-                                self.dispatch(Action::DiffSearchChar(DiffScope::Reflog, ch)),
-                            );
+                        if let Some((prefix, last)) = split_diff_search_paste(&text) {
+                            rf.diff.search.push_str(&prefix);
+                            let action = Action::DiffSearchChar(DiffScope::Reflog, last);
+                            effects.extend(self.dispatch(action));
                         }
                     }
                     ModalLayer::PushDialog(pd) if pd.diff.search.editing => {
-                        let chars: Vec<char> = text
-                            .chars()
-                            .filter(|c| *c != '\n' && *c != '\r' && !c.is_control())
-                            .collect();
-                        for ch in chars {
-                            effects
-                                .extend(self.dispatch(Action::DiffSearchChar(DiffScope::Push, ch)));
+                        if let Some((prefix, last)) = split_diff_search_paste(&text) {
+                            pd.diff.search.push_str(&prefix);
+                            let action = Action::DiffSearchChar(DiffScope::Push, last);
+                            effects.extend(self.dispatch(action));
                         }
                     }
                     ModalLayer::PushDialog(pd) if pd.editing_target => {
@@ -3021,4 +3006,17 @@ impl AppState {
             self.schedule_file_syntax(diff, effects);
         }
     }
+}
+
+/// Filters a paste for a single-line diff-search box and splits off its last
+/// char. Callers append the prefix to the query silently and dispatch only the
+/// last char as a `DiffSearchChar`, so a paste recomputes the search once
+/// instead of once per pasted char.
+fn split_diff_search_paste(text: &str) -> Option<(String, char)> {
+    let mut clean: String = text
+        .chars()
+        .filter(|c| *c != '\n' && *c != '\r' && !c.is_control())
+        .collect();
+    let last = clean.pop()?;
+    Some((clean, last))
 }

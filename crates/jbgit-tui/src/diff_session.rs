@@ -651,6 +651,11 @@ impl DiffSearchState {
         self.query.push(c);
     }
 
+    /// Appends `text` to the query without recomputing matches.
+    pub fn push_str(&mut self, text: &str) {
+        self.query.push_str(text);
+    }
+
     pub fn backspace(&mut self) {
         self.query.pop();
     }
@@ -745,20 +750,24 @@ impl DiffSearchState {
     }
 
     /// Returns `(all_ranges, active_range)` for a projected row and side (`0` or `1`).
+    ///
+    /// [`Self::recompute`] emits `matches` sorted by `(row_idx, side)`, so the
+    /// row's hits are located by binary search instead of a full scan per row.
     pub fn ranges_for(&self, row_idx: usize, side: u8) -> RowSearchRanges {
         if !self.active || self.matches.is_empty() {
             return (Vec::new(), None);
         }
-        let mut ranges = Vec::new();
-        let mut active = None;
-        for (idx, m) in self.matches.iter().enumerate() {
-            if m.row_idx == row_idx && m.side == side {
-                ranges.push(m.byte_range);
-                if idx == self.current {
-                    active = Some(m.byte_range);
-                }
-            }
-        }
+        let key = (row_idx, side);
+        let start = self.matches.partition_point(|m| (m.row_idx, m.side) < key);
+        let len = self.matches[start..].partition_point(|m| (m.row_idx, m.side) == key);
+        let end = start + len;
+        let ranges = self.matches[start..end]
+            .iter()
+            .map(|m| m.byte_range)
+            .collect();
+        let active = (start..end)
+            .contains(&self.current)
+            .then(|| self.matches[self.current].byte_range);
         (ranges, active)
     }
 
@@ -1262,6 +1271,67 @@ mod tests {
         assert_eq!(session.search.matches.len(), 4);
         assert!(session.search.matches.iter().any(|m| m.side == 0));
         assert!(session.search.matches.iter().any(|m| m.side == 1));
+    }
+
+    #[test]
+    fn ranges_for_binary_search_matches_linear_scan_reference() {
+        fn linear(s: &DiffSearchState, row_idx: usize, side: u8) -> RowSearchRanges {
+            let mut ranges = Vec::new();
+            let mut active = None;
+            for (idx, m) in s.matches.iter().enumerate() {
+                if m.row_idx == row_idx && m.side == side {
+                    ranges.push(m.byte_range);
+                    if idx == s.current {
+                        active = Some(m.byte_range);
+                    }
+                }
+            }
+            (ranges, active)
+        }
+        let hit = |row_idx: usize, side: u8, start: usize| DiffSearchMatch {
+            row_idx,
+            side,
+            byte_range: (start, start + 1),
+        };
+        // Many hits: 0..=2 per (row, side), sorted by `(row_idx, side)` like `recompute`.
+        let mut many = Vec::new();
+        for row in 0..400 {
+            for side in 0..2u8 {
+                for k in 0..(row + side as usize) % 3 {
+                    many.push(hit(row, side, k * 2));
+                }
+            }
+        }
+        let split = vec![
+            hit(0, 0, 0),
+            hit(0, 0, 4),
+            hit(0, 1, 1),
+            hit(5, 1, 0),
+            hit(9, 0, 2),
+            hit(9, 0, 7),
+        ];
+        for matches in [Vec::new(), split, many] {
+            let n = matches.len();
+            let last_row = matches.last().map_or(0, |m| m.row_idx);
+            for current in [0, n / 2, n.saturating_sub(1)] {
+                let s = DiffSearchState {
+                    active: true,
+                    editing: false,
+                    query: "x".into(),
+                    matches: matches.clone(),
+                    current,
+                };
+                for row in 0..=last_row + 1 {
+                    for side in 0..2u8 {
+                        assert_eq!(
+                            s.ranges_for(row, side),
+                            linear(&s, row, side),
+                            "n={n} current={current} row={row} side={side}"
+                        );
+                    }
+                }
+            }
+        }
     }
 
     #[test]

@@ -487,8 +487,9 @@ impl TreeBrowserState {
     }
 
     fn scroll_preview(&mut self, delta: isize) {
-        let fallback = self.preview_line_count().saturating_sub(1);
-        self.preview_scroll.scroll_by(delta, fallback);
+        let mut scroll = self.preview_scroll;
+        scroll.scroll_by_with(delta, || self.preview_line_count().saturating_sub(1));
+        self.preview_scroll = scroll;
     }
 }
 

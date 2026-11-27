@@ -1269,6 +1269,47 @@ async fn binary_conflict_loads_special_conflict_descriptor_with_side_metadata() 
 }
 
 #[tokio::test]
+async fn oversized_text_conflict_degrades_to_special_descriptor() {
+    use jbgit_core::{MAX_DIFF_FILE_BYTES, SpecialConflictKind};
+
+    let tmp = init_repo();
+    let d = tmp.path();
+    commit_file(d, "big.txt", "base\n", "base");
+    git(d, &["checkout", "-b", "side"]);
+    let huge = "side line\n".repeat(MAX_DIFF_FILE_BYTES / 10 + 1024);
+    commit_file(d, "big.txt", &huge, "side huge");
+    git(d, &["checkout", "main"]);
+    commit_file(d, "big.txt", "main\n", "main");
+
+    let merge = run(
+        d,
+        GitOp::Merge {
+            rev: "side".into(),
+            options: Default::default(),
+        },
+    )
+    .await;
+    assert_eq!(merge.failure, Some(GitFailure::Conflicts), "{merge:?}");
+
+    let loc = RepoLocation::discover(d).unwrap();
+    let (handle, mut rx) = EngineSupervisor::start(loc, false).unwrap();
+    let e1 = handle.request_conflict_document("big.txt".into());
+    let info = recv_matching(&mut rx, |ev| match ev {
+        EngineEvent::SpecialConflictLoaded { info, epoch } if epoch == e1 => Some(info),
+        EngineEvent::ConflictDocumentLoaded { epoch, .. } if epoch == e1 => {
+            panic!("a > MAX_DIFF_FILE_BYTES conflict must not build a ConflictDocument");
+        }
+        _ => None,
+    })
+    .await;
+    assert_eq!(info.kind, SpecialConflictKind::Binary);
+    assert_eq!(
+        info.theirs.as_ref().and_then(|s| s.size),
+        Some(huge.len() as u64)
+    );
+}
+
+#[tokio::test]
 async fn submodule_gitlink_and_directory_conflicts_load_special_descriptors() {
     use jbgit_core::SpecialConflictKind;
 

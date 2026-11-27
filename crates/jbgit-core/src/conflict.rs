@@ -120,6 +120,33 @@ impl ConflictChoice {
     pub const fn is_resolved(&self) -> bool {
         !matches!(self, Self::Unresolved)
     }
+
+    /// Payload-free discriminant of this choice (cheap to copy into every pane row).
+    pub const fn kind(&self) -> ConflictChoiceKind {
+        match self {
+            Self::Unresolved => ConflictChoiceKind::Unresolved,
+            Self::Ours => ConflictChoiceKind::Ours,
+            Self::Theirs => ConflictChoiceKind::Theirs,
+            Self::BothOursFirst => ConflictChoiceKind::BothOursFirst,
+            Self::BothTheirsFirst => ConflictChoiceKind::BothTheirsFirst,
+            Self::Neither => ConflictChoiceKind::Neither,
+            Self::Custom(_) => ConflictChoiceKind::Custom,
+        }
+    }
+}
+
+/// Payload-free summary of a [`ConflictChoice`], carried by every
+/// [`ConflictPaneRow`] so building rows for a large `Custom` block does not
+/// clone the block's edited lines once per row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConflictChoiceKind {
+    Unresolved,
+    Ours,
+    Theirs,
+    BothOursFirst,
+    BothTheirsFirst,
+    Neither,
+    Custom,
 }
 
 /// Presence of each logical side (after applying [`is_reverse_conflict_state`])
@@ -247,12 +274,42 @@ impl ConflictBlock {
         } else {
             self.theirs_lines.len()
         };
-        let merged_len = match self.resolved_lines() {
-            Some(lines) if !lines.is_empty() => lines.len(),
-            _ => 1,
-        };
+        let merged_len = self.resolved_len().filter(|&n| n > 0).unwrap_or(1);
         ours_len.max(merged_len).max(theirs_len).max(1)
     }
+
+    /// Length of [`Self::resolved_lines`] without cloning any line.
+    fn resolved_len(&self) -> Option<usize> {
+        match &self.choice {
+            ConflictChoice::Unresolved => None,
+            ConflictChoice::Ours => Some(self.ours_lines.len()),
+            ConflictChoice::Theirs => Some(self.theirs_lines.len()),
+            ConflictChoice::BothOursFirst | ConflictChoice::BothTheirsFirst => {
+                Some(self.ours_lines.len() + self.theirs_lines.len())
+            }
+            ConflictChoice::Neither => Some(0),
+            ConflictChoice::Custom(lines) => Some(lines.len()),
+        }
+    }
+
+    /// Line `i` of [`Self::resolved_lines`] without materializing the vector.
+    fn resolved_line(&self, i: usize) -> Option<&String> {
+        match &self.choice {
+            ConflictChoice::Unresolved | ConflictChoice::Neither => None,
+            ConflictChoice::Ours => self.ours_lines.get(i),
+            ConflictChoice::Theirs => self.theirs_lines.get(i),
+            ConflictChoice::BothOursFirst => concat_line(&self.ours_lines, &self.theirs_lines, i),
+            ConflictChoice::BothTheirsFirst => concat_line(&self.theirs_lines, &self.ours_lines, i),
+            ConflictChoice::Custom(lines) => lines.get(i),
+        }
+    }
+}
+
+/// Line `i` of `first` followed by `second`.
+fn concat_line<'a>(first: &'a [String], second: &'a [String], i: usize) -> Option<&'a String> {
+    first
+        .get(i)
+        .or_else(|| second.get(i.checked_sub(first.len())?))
 }
 
 /// Semantic placeholder kind for synthetic status/prompt rows in the merged result pane
@@ -278,7 +335,7 @@ pub struct ConflictPaneRow {
     pub ours: String,
     pub merged: String,
     pub theirs: String,
-    pub choice: Option<ConflictChoice>,
+    pub choice: Option<ConflictChoiceKind>,
     pub merged_placeholder: Option<ConflictRowPlaceholder>,
     pub ours_deleted_placeholder: bool,
     pub theirs_deleted_placeholder: bool,
@@ -1049,137 +1106,170 @@ impl ConflictDocument {
         found.map(|first| (first, row))
     }
 
+    /// Total number of rows [`Self::three_pane_rows`] produces, computed from
+    /// segment lengths without building (or cloning) any row.
+    pub fn total_pane_rows(&self) -> usize {
+        self.segments
+            .iter()
+            .map(|seg| match seg {
+                ConflictSegment::Common(ls) => ls.len(),
+                ConflictSegment::Conflict(b) => b.pane_row_count(self.side_presence),
+            })
+            .sum()
+    }
+
     /// Builds aligned rows for the three-pane `(Ours | Result | Theirs)` view.
     pub fn three_pane_rows(&self) -> Vec<ConflictPaneRow> {
+        self.three_pane_rows_window(0, usize::MAX)
+    }
+
+    /// Rows `[start, start + len)` of [`Self::three_pane_rows`]. Segments outside
+    /// the window are skipped without cloning any of their lines.
+    pub fn three_pane_rows_window(&self, start: usize, len: usize) -> Vec<ConflictPaneRow> {
+        let end = start.saturating_add(len);
         let mut rows = Vec::new();
+        let mut seg_start = 0usize;
         for seg in &self.segments {
-            match seg {
-                ConflictSegment::Common(ls) => {
-                    for l in ls {
-                        rows.push(ConflictPaneRow {
-                            block_idx: None,
-                            block_kind: None,
-                            ours: l.clone(),
-                            merged: l.clone(),
-                            theirs: l.clone(),
-                            choice: None,
-                            merged_placeholder: None,
-                            ours_deleted_placeholder: false,
-                            theirs_deleted_placeholder: false,
-                        });
-                    }
-                }
-                ConflictSegment::Conflict(b) => {
-                    let choice_deletes = match self.side_presence {
-                        ConflictSidePresence::BothPresent => false,
-                        ConflictSidePresence::DeletedByTheirs => b.choice == ConflictChoice::Theirs,
-                        ConflictSidePresence::DeletedByOurs => b.choice == ConflictChoice::Ours,
-                        ConflictSidePresence::BothDeleted => !matches!(
-                            b.choice,
-                            ConflictChoice::Unresolved | ConflictChoice::Custom(_)
-                        ),
-                    };
-                    let (merged_lines, placeholder) = if choice_deletes {
-                        (
-                            vec!["<File will be deleted>".to_string()],
-                            Some(ConflictRowPlaceholder::FileWillBeDeleted),
-                        )
-                    } else if b.choice == ConflictChoice::Neither {
-                        (
-                            vec!["<Discarded (Neither)>".to_string()],
-                            Some(ConflictRowPlaceholder::DiscardedNeither),
-                        )
-                    } else {
-                        match b.resolved_lines() {
-                            Some(lines) if lines.is_empty() => (
-                                vec!["<Empty>".to_string()],
-                                Some(ConflictRowPlaceholder::Empty),
-                            ),
-                            Some(lines) => (lines, None),
-                            None => {
-                                let block_num = b.id + 1;
-                                let (hint, kind) = match self.side_presence {
-                                    ConflictSidePresence::BothPresent => match b.kind {
-                                        ThreeWayBlockKind::LeftOnly => (
-                                            "Non-conflicting (Left): [a] Auto / [y] Ours",
-                                            ConflictRowPlaceholder::UnresolvedLeftOnly {
-                                                block_num,
-                                            },
-                                        ),
-                                        ThreeWayBlockKind::RightOnly => (
-                                            "Non-conflicting (Right): [a] Auto / [t] Theirs",
-                                            ConflictRowPlaceholder::UnresolvedRightOnly {
-                                                block_num,
-                                            },
-                                        ),
-                                        ThreeWayBlockKind::BothSame => (
-                                            "Non-conflicting (Same): [a] Auto / [y] Keep",
-                                            ConflictRowPlaceholder::UnresolvedBothSame {
-                                                block_num,
-                                            },
-                                        ),
-                                        ThreeWayBlockKind::Unchanged
-                                        | ThreeWayBlockKind::Conflict => (
-                                            "choose [y] Ours / [t] Theirs / [d] Neither / [e] Edit",
-                                            ConflictRowPlaceholder::UnresolvedConflict {
-                                                block_num,
-                                            },
-                                        ),
-                                    },
-                                    ConflictSidePresence::DeletedByTheirs => (
-                                        "choose [y] Keep file / [t] Delete file",
-                                        ConflictRowPlaceholder::UnresolvedDeletedByTheirs {
-                                            block_num,
-                                        },
-                                    ),
-                                    ConflictSidePresence::DeletedByOurs => (
-                                        "choose [y] Delete file / [t] Keep file",
-                                        ConflictRowPlaceholder::UnresolvedDeletedByOurs {
-                                            block_num,
-                                        },
-                                    ),
-                                    ConflictSidePresence::BothDeleted => (
-                                        "choose [y]/[t] Delete file",
-                                        ConflictRowPlaceholder::UnresolvedBothDeleted { block_num },
-                                    ),
-                                };
-                                (vec![format!("⚠ Block #{block_num}: {hint}")], Some(kind))
-                            }
+            if seg_start >= end {
+                break;
+            }
+            let seg_len = match seg {
+                ConflictSegment::Common(ls) => ls.len(),
+                ConflictSegment::Conflict(b) => b.pane_row_count(self.side_presence),
+            };
+            let seg_end = seg_start + seg_len;
+            if seg_end > start {
+                let lo = start.saturating_sub(seg_start);
+                let hi = (end - seg_start).min(seg_len);
+                match seg {
+                    ConflictSegment::Common(ls) => {
+                        for l in &ls[lo..hi] {
+                            rows.push(ConflictPaneRow {
+                                block_idx: None,
+                                block_kind: None,
+                                ours: l.clone(),
+                                merged: l.clone(),
+                                theirs: l.clone(),
+                                choice: None,
+                                merged_placeholder: None,
+                                ours_deleted_placeholder: false,
+                                theirs_deleted_placeholder: false,
+                            });
                         }
-                    };
-                    let max_len = b.pane_row_count(self.side_presence);
-                    for i in 0..max_len {
-                        let ours_deleted_placeholder =
-                            i == 0 && b.ours_lines.is_empty() && self.side_presence.ours_deleted();
-                        let ours = if ours_deleted_placeholder {
-                            "<Deleted>".to_string()
-                        } else {
-                            b.ours_lines.get(i).cloned().unwrap_or_default()
-                        };
-                        let theirs_deleted_placeholder = i == 0
-                            && b.theirs_lines.is_empty()
-                            && self.side_presence.theirs_deleted();
-                        let theirs = if theirs_deleted_placeholder {
-                            "<Deleted>".to_string()
-                        } else {
-                            b.theirs_lines.get(i).cloned().unwrap_or_default()
-                        };
-                        rows.push(ConflictPaneRow {
-                            block_idx: Some(b.id),
-                            block_kind: Some(b.kind),
-                            ours,
-                            merged: merged_lines.get(i).cloned().unwrap_or_default(),
-                            theirs,
-                            choice: Some(b.choice.clone()),
-                            merged_placeholder: if i == 0 { placeholder } else { None },
-                            ours_deleted_placeholder,
-                            theirs_deleted_placeholder,
-                        });
                     }
+                    ConflictSegment::Conflict(b) => self.push_block_rows(b, lo..hi, &mut rows),
                 }
             }
+            seg_start = seg_end;
         }
         rows
+    }
+
+    /// Appends block-relative rows `range` of conflict block `b`.
+    fn push_block_rows(
+        &self,
+        b: &ConflictBlock,
+        range: std::ops::Range<usize>,
+        rows: &mut Vec<ConflictPaneRow>,
+    ) {
+        let choice_deletes = match self.side_presence {
+            ConflictSidePresence::BothPresent => false,
+            ConflictSidePresence::DeletedByTheirs => b.choice == ConflictChoice::Theirs,
+            ConflictSidePresence::DeletedByOurs => b.choice == ConflictChoice::Ours,
+            ConflictSidePresence::BothDeleted => !matches!(
+                b.choice,
+                ConflictChoice::Unresolved | ConflictChoice::Custom(_)
+            ),
+        };
+        // `None` text means the merged column shows the block's resolved lines.
+        let (placeholder_text, placeholder) = if choice_deletes {
+            (
+                Some("<File will be deleted>".to_string()),
+                Some(ConflictRowPlaceholder::FileWillBeDeleted),
+            )
+        } else if b.choice == ConflictChoice::Neither {
+            (
+                Some("<Discarded (Neither)>".to_string()),
+                Some(ConflictRowPlaceholder::DiscardedNeither),
+            )
+        } else {
+            match b.resolved_len() {
+                Some(0) => (
+                    Some("<Empty>".to_string()),
+                    Some(ConflictRowPlaceholder::Empty),
+                ),
+                Some(_) => (None, None),
+                None => {
+                    let block_num = b.id + 1;
+                    let (hint, kind) = match self.side_presence {
+                        ConflictSidePresence::BothPresent => match b.kind {
+                            ThreeWayBlockKind::LeftOnly => (
+                                "Non-conflicting (Left): [a] Auto / [y] Ours",
+                                ConflictRowPlaceholder::UnresolvedLeftOnly { block_num },
+                            ),
+                            ThreeWayBlockKind::RightOnly => (
+                                "Non-conflicting (Right): [a] Auto / [t] Theirs",
+                                ConflictRowPlaceholder::UnresolvedRightOnly { block_num },
+                            ),
+                            ThreeWayBlockKind::BothSame => (
+                                "Non-conflicting (Same): [a] Auto / [y] Keep",
+                                ConflictRowPlaceholder::UnresolvedBothSame { block_num },
+                            ),
+                            ThreeWayBlockKind::Unchanged | ThreeWayBlockKind::Conflict => (
+                                "choose [y] Ours / [t] Theirs / [d] Neither / [e] Edit",
+                                ConflictRowPlaceholder::UnresolvedConflict { block_num },
+                            ),
+                        },
+                        ConflictSidePresence::DeletedByTheirs => (
+                            "choose [y] Keep file / [t] Delete file",
+                            ConflictRowPlaceholder::UnresolvedDeletedByTheirs { block_num },
+                        ),
+                        ConflictSidePresence::DeletedByOurs => (
+                            "choose [y] Delete file / [t] Keep file",
+                            ConflictRowPlaceholder::UnresolvedDeletedByOurs { block_num },
+                        ),
+                        ConflictSidePresence::BothDeleted => (
+                            "choose [y]/[t] Delete file",
+                            ConflictRowPlaceholder::UnresolvedBothDeleted { block_num },
+                        ),
+                    };
+                    (Some(format!("⚠ Block #{block_num}: {hint}")), Some(kind))
+                }
+            }
+        };
+        let choice = b.choice.kind();
+        for i in range {
+            let ours_deleted_placeholder =
+                i == 0 && b.ours_lines.is_empty() && self.side_presence.ours_deleted();
+            let ours = if ours_deleted_placeholder {
+                "<Deleted>".to_string()
+            } else {
+                b.ours_lines.get(i).cloned().unwrap_or_default()
+            };
+            let theirs_deleted_placeholder =
+                i == 0 && b.theirs_lines.is_empty() && self.side_presence.theirs_deleted();
+            let theirs = if theirs_deleted_placeholder {
+                "<Deleted>".to_string()
+            } else {
+                b.theirs_lines.get(i).cloned().unwrap_or_default()
+            };
+            let merged = match &placeholder_text {
+                Some(text) if i == 0 => text.clone(),
+                Some(_) => String::new(),
+                None => b.resolved_line(i).cloned().unwrap_or_default(),
+            };
+            rows.push(ConflictPaneRow {
+                block_idx: Some(b.id),
+                block_kind: Some(b.kind),
+                ours,
+                merged,
+                theirs,
+                choice: Some(choice),
+                merged_placeholder: if i == 0 { placeholder } else { None },
+                ours_deleted_placeholder,
+                theirs_deleted_placeholder,
+            });
+        }
     }
 }
 
@@ -1470,6 +1560,62 @@ my replayed change
                 rows.iter().position(|r| r.block_idx == Some(bid)),
                 Some(first)
             );
+        }
+    }
+
+    #[test]
+    fn pane_row_total_and_window_match_full_projection_with_large_custom_block() {
+        let mut raw = String::new();
+        for i in 0..5_000 {
+            raw.push_str(&format!("line {i}\n"));
+        }
+        raw.push_str("<<<<<<< HEAD\na1\na2\n=======\nb1\n>>>>>>> feat\n");
+        for i in 0..10 {
+            raw.push_str(&format!("mid {i}\n"));
+        }
+        raw.push_str("<<<<<<< HEAD\nc1\n=======\nd1\nd2\nd3\n>>>>>>> feat\n");
+        let mut doc = ConflictDocument::parse("big.rs", &raw, None, None);
+        let custom: Vec<String> = (0..1_000).map(|i| format!("custom {i}")).collect();
+        doc.set_choice(0, ConflictChoice::Custom(custom));
+        doc.set_choice(1, ConflictChoice::BothTheirsFirst);
+
+        let rows = doc.three_pane_rows();
+        assert_eq!(rows.len(), 5_000 + 1_000 + 10 + 4);
+        assert_eq!(doc.total_pane_rows(), rows.len());
+        let total = rows.len();
+        for (start, len) in [
+            (0, 40),
+            (100, 40),
+            (4_990, 40),
+            (5_990, 40),
+            (total - 3, 40),
+        ] {
+            let end = (start + len).min(total);
+            assert_eq!(
+                doc.three_pane_rows_window(start, len),
+                rows[start..end],
+                "window {start}+{len}"
+            );
+        }
+        assert!(doc.three_pane_rows_window(total, 5).is_empty());
+
+        // Block rows carry the payload-free choice kind and the padded resolved text.
+        for bid in 0..doc.conflict_count {
+            let block = doc.block(bid).unwrap();
+            let (first, _) = doc.block_first_row(bid).unwrap();
+            let n = block.pane_row_count(doc.side_presence);
+            let resolved = block.resolved_lines().unwrap();
+            let block_rows = &rows[first..first + n];
+            assert!(
+                block_rows
+                    .iter()
+                    .all(|r| r.choice == Some(block.choice.kind()))
+            );
+            let merged: Vec<&str> = block_rows.iter().map(|r| r.merged.as_str()).collect();
+            let expected: Vec<&str> = (0..n)
+                .map(|i| resolved.get(i).map_or("", String::as_str))
+                .collect();
+            assert_eq!(merged, expected, "block {bid}");
         }
     }
 

@@ -52,7 +52,7 @@ Priority: P0
 - [ ] **缓存 Diff 软换行行高前缀和并将滚动 `fallback` 改为惰性求值**：
   - 在 `DiffSession`（`diff_session.rs`）与 `CommitWorkbench`（`stage_view/workbench.rs`）中增加软换行行高前缀和缓存（键为 `(Arc/diff ptr, side_by_side, unified_w, split_left_w, split_right_w, tab_size)`，值存储 `prefix_heights: Vec<usize>`），使 `total_rows`、`visual_row_offset_of` 与渲染循环跳过视口前区间均达到 `O(1)` / `O(log N)`；
   - 修改 `ScrollViewport::scroll_by`（`app/scroll.rs:56-60`）增加或改为接收 `FnOnce() -> usize` 惰性 `fallback` 的方法（`scroll_by_with_fallback`），同步改造 `LogWorkbench::scroll_pane` 与 `AppState::scroll_pane` 中的 `LogDiff`、`FileHistoryDiff`、`FileHistoryBlob`、`AnnotateDiff`、`StashDiff`、`ConflictMerge` 分支，确保 `max_scroll` 已绑定时零全文件扫描。
-- [ ] **将 `DiffSearchState::ranges_for` 改为二分查找并合并粘贴搜索**：
+- [x] **将 `DiffSearchState::ranges_for` 改为二分查找并合并粘贴搜索**：
   - `crates/jbgit-tui/src/diff_session.rs:748-763`：利用 `self.matches` 按 `(row_idx, side)` 有序的不变量，改用 `partition_point` 定位起止切片，复杂度由 `O(M)` 降至 `O(log M + k)`；
   - `crates/jbgit-tui/src/app/dispatch.rs:402-460`：处理 `Action::ModalPaste` 针对 Diff 搜索框一次性追加字符串后仅触发单次 `recompute()`。
 - [ ] **消除 `-b`/`-w`、大区块行配对与 Blame/FileHistory 视图的重复全量处理**：
@@ -77,3 +77,17 @@ Priority: P0
 ## Comments
 
 - **2026-11-28**：基于 `jbgit-core` 与 `jbgit-tui` 性能审计创建本 P0 工单，重点解决三方冲突与大 Diff 软换行/搜索下高概率掉帧和 `O(L²)` 分配缺陷。
+- **2026-11-28**：经用户收窄，本轮只做 6 项低成本、确有收益的改动，其余延后（收益低）：
+  1. **`Custom` 的 `O(L²)` 克隆**：新增无载荷的 `ConflictChoiceKind`（`ConflictChoice::kind()`，从 `jbgit_core` 导出）。`ConflictPaneRow::choice` 改为 `Option<ConflictChoiceKind>`，每行不再克隆整份 `Custom(Vec<String>)`。merged 列经 `ConflictBlock::resolved_line(i)` 按行借用，不再为每个块构建 `resolved_lines()`。渲染器 `views/conflict_merge.rs` 改为匹配 kind。
+  2. **廉价总行数与视口投影**：`pane_row_count` 改走 `resolved_len()`，不再深拷贝。新增 `ConflictDocument::total_pane_rows()`（`O(segments)`）与 `three_pane_rows_window(start, len)`，后者只为视口区间构建行，跳过区间外的段；`three_pane_rows()` 改为 `window(0, usize::MAX)`。渲染器用 `total_pane_rows()` 求 `max_scroll`、用 window 只取 `body_h` 行。`AppState::scroll_pane(ConflictMerge)` 改用 `total_pane_rows()`。
+  3. **4 MiB 护栏**：核查后确认已存在。`load_conflict_document_sync` 读取各 stage blob 与工作区文件时走 `blob_reader`，结果为 `CheckedBlob::TooLarge` 即降级为 `LoadedConflict::Special(Binary)`（整文件选 Ours/Theirs 对话框，显示各侧大小），由 Spec 13 的 637e13a 引入，审计行号已过时。本轮未改行为，只补回归测试。
+  4. **惰性滚动 fallback**：新增 `ScrollViewport::scroll_by_with(delta, impl FnOnce() -> usize)`，`scroll_by` 委托给它。以下调用点改为惰性，`max_scroll` 已绑定后零全量扫描：`LogWorkbench::scroll_pane(LogDiff)`，`AppState::scroll_pane` 的 `FileHistoryDiff`、`FileHistoryBlob`、`AnnotateDiff`、`ConflictMerge`、`TreeBrowserPreview`、`ApplyPatchPreview`，以及 `StashWorkbench::scroll_diff`、`TreeBrowser::scroll_preview`。fallback 需借用所属结构体时，利用 `ScrollViewport: Copy` 先拷出再写回。
+  5. **`ranges_for` 二分查找**：利用 `matches` 按 `(row_idx, side)` 有序，用两次 `partition_point` 定位切片，复杂度为 `O(log M + k)`。
+  6. **粘贴只重算一次**：`Action::ModalPaste` 的 Annotate、FileHistory、Reflog、Push 四个 diff 搜索框，经 `split_diff_search_paste` 过滤后，前缀直接 `DiffSearchState::push_str` 追加，只把最后一个字符作为 `DiffSearchChar` 派发，因此每次粘贴只重算一次搜索。非模态的 Log、Stage、Stash 粘贴路径（`input/mod.rs`）仍逐字符派发，未在本轮范围内。
+  - **测试**：
+    - `conflict.rs`：5,000 行普通文本 + 1,000 行 `Custom` 块 + `BothTheirsFirst` 块，验证 `total_pane_rows() == three_pane_rows().len()`，多个窗口（含跨块和尾部越界）与全量切片逐字段相等，块行的 kind 与 merged 列等价于填充后的 `resolved_lines()`。
+    - `git_ops_integration.rs`：大于 4 MiB 的文本冲突降级为 `SpecialConflictLoaded(Binary)`，且不构建 `ConflictDocument`。
+    - `scroll.rs`：`max_scroll` 已绑定时不调用闭包。
+    - `diff_session.rs`：`ranges_for` 与线性扫描参考实现一致，覆盖 0 命中、首尾行、上千命中和左右分侧。
+    - `diff_enhancements_tests.rs`：FileHistory 粘贴（含换行）与逐字符键入得到相同的 query、matches 和 current。
+  - **延后**：软换行行高前缀和缓存、`-b`/`-w` 的 `StageLineTracker` 拷贝、`paired_line_in_hunk` 缓存、annotate/file_history 行缓存，以及 `three_way_merge_blocks` 中 `Unchanged` 切片的三倍克隆。因此任务 1、2、4 只部分完成或未做，未勾选；任务 3 已完成并勾选。
