@@ -42,7 +42,7 @@ Priority: P1
   - 对同一行同一边的连续水平命中列合并为单个跨多列的 `Rect`（而非逐列注册 `1×1` 矩形），大幅减少 `HitTestRegistry` 区域数量。
 - [ ] **加速 Sixel 抗锯齿颜色量化（`encode.rs`）**：
   - 在 `crates/jbgit-tui/src/graph/vector/encode.rs` 中优化超出 256 色时的色映射（例如使用 RGB555/RGB444 查找表或缓存颜色映射到调色板索引，替代每次遍历 256 个调色板项的 `nearest` 暴力扫描），并保持复用 `SixelScratch` 缓冲零逐帧新分配。
-- [ ] **合并 `Event::Resize` 并修复 `GraphRenderer::set_capabilities` 无条件 `invalidate()`**：
+- [x] **合并 `Event::Resize` 并修复 `GraphRenderer::set_capabilities` 无条件 `invalidate()`**：
   - `crates/jbgit-tui/src/graph/renderer.rs:337-341`：仅当 `self.caps != caps` 时才更新并执行 `self.invalidate()`；
   - `crates/jbgit-tui/src/session.rs:520-531`：在单轮事件合并循环（`MAX_COALESCE_EVENTS = 64`）中若连续遇到多个 `Event::Resize`，覆盖合并仅保留并应用最后一次终态尺寸（同时保持不跨模态切换/退出事件安全边界），减少拖拽窗口时的无效探测与终端图像帧洪水。
 
@@ -63,3 +63,4 @@ Priority: P1
 ## Comments
 
 - **2026-11-28**：基于 `jbgit-tui` 矢量图后端与事件循环性能审计创建本 P1 工单，治理 HiDPI 终端下矢量图滚动重绘、Sixel 量化、命中区膨胀及缩放卡顿。
+- **2026-11-28**：用户将本工单范围收窄为两项：`GraphRenderer::set_capabilities` 去掉无条件 `invalidate()`，以及合并 `Event::Resize`。改动：(1) `renderer.rs` 中 `set_capabilities` 在新旧 `caps` 相等时直接返回（`GraphicsCapabilities` 已含 `cell_px`，字体缩放导致的单元格像素变化仍会作废缓存；纯终端尺寸变化由光栅/发送 key 中的视口几何自行处理，Kitty 使用 `U=1` 虚拟放置、Sixel/iTerm2 的 `emitted_key` 含 `terminal_area`）；(2) `session.rs` 新增 `collapse_ready_resizes`：一个 `Resize` 到达后继续非阻塞地拉取已就绪的连续 `Resize` 只保留最后一个，仅调用一次 `on_resize`；连续段之后遇到的第一个非 `Resize` 事件（或流结束）由 `main.rs` 暂存到 `carried_terminal`，在按新尺寸重绘后的下一轮最先处理，语义与原先 `Resize` 打断批次一致（退出/终端交接/模态边界不变）；`TuiSession::step_turn` 同样把相邻的 `Resize` 输入折叠为最后一个。测试：`set_capabilities_only_invalidates_when_caps_change`、`tui_session_collapses_consecutive_resizes_into_one_on_resize`、`collapse_ready_resizes_keeps_last_size_and_carries_the_next_event`；`cargo test -p jbgit-tui --locked` 与 `cargo clippy -p jbgit-tui --all-targets -- -D warnings` 通过。其余三项（`copy_within` 滚动搬移、命中区缓存/合并、Sixel 量化加速）延后：它们只对 Kitty/Sixel 矢量模式有收益。

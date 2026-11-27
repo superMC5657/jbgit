@@ -119,6 +119,38 @@ where
     .await
 }
 
+/// Collapses a run of consecutive, already-ready `Event::Resize` events
+/// following `first` (itself a resize) into the last one, so a window drag
+/// costs a single [`SessionHost::on_resize`] + redraw instead of one per
+/// intermediate size. Returns the event to ingest and, when the run ended on a
+/// ready non-resize item (or the end of `stream`), that item: the caller must
+/// deliver it in the next turn, after the redraw at the new size, exactly as
+/// an uncollapsed resize would have. A non-resize `first` is returned as is.
+pub async fn collapse_ready_resizes<S, E>(
+    first: Event,
+    stream: &mut S,
+) -> (Event, Option<Option<Result<Event, E>>>)
+where
+    S: futures::Stream<Item = Result<Event, E>> + Unpin,
+{
+    if !matches!(first, Event::Resize(..)) {
+        return (first, None);
+    }
+    let mut last = first;
+    for _ in 1..MAX_COALESCE_EVENTS {
+        match poll_stream_ready(stream).await {
+            Some(Some(Ok(ev @ Event::Resize(..)))) => last = ev,
+            Some(next) => return (last, Some(next)),
+            None => break,
+        }
+    }
+    (last, None)
+}
+
+fn is_resize_input(input: &SessionInput) -> bool {
+    matches!(input, SessionInput::Terminal(Event::Resize(..)))
+}
+
 /// One discrete input delivered to [`TuiSession::step_turn`].
 #[derive(Debug)]
 pub enum SessionInput {
@@ -436,8 +468,13 @@ impl TuiSession {
         let mut report = TurnReport::default();
         let mut batch_effects: Vec<Effect> = Vec::new();
 
-        for input in inputs.into_iter().take(MAX_COALESCE_EVENTS) {
+        let mut inputs = inputs.into_iter().take(MAX_COALESCE_EVENTS).peekable();
+        while let Some(input) = inputs.next() {
             report.processed_inputs += 1;
+            // Consecutive resizes collapse to the last one (single `on_resize`).
+            if is_resize_input(&input) && inputs.peek().is_some_and(is_resize_input) {
+                continue;
+            }
             let stop = self.ingest_single(input, &mut batch_effects, host, &mut report);
             if stop {
                 break;

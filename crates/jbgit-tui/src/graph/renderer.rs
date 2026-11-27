@@ -333,8 +333,13 @@ impl GraphRenderer {
 
     /// Re-calibrates after startup / `Event::Resize` (font zoom changes the cell
     /// pixel size): every cached strip, image and placement is invalidated so the
-    /// next frame rebuilds at the new `(cell_px_w, cell_px_h)`.
+    /// next frame rebuilds at the new `(cell_px_w, cell_px_h)`. Unchanged caps
+    /// are a no-op: a plain terminal resize keeps every cache, since viewport
+    /// geometry is already part of the raster / emission keys.
     pub fn set_capabilities(&mut self, caps: GraphicsCapabilities) {
+        if caps == self.caps {
+            return;
+        }
         self.caps = caps;
         self.invalidate();
         self.deactivate_vector_if_grid();

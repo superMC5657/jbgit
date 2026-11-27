@@ -1096,6 +1096,34 @@ fn sixel_frame_is_positioned_and_cached_until_something_changes() {
 }
 
 #[test]
+fn set_capabilities_only_invalidates_when_caps_change() {
+    let fx = Fixture::fork_and_merge();
+    let sixel = caps(Some(GraphicsProtocol::Sixel), Some(CELL));
+    let mut renderer = GraphRenderer::new(GraphRendererMode::Vector, sixel);
+    assert!(!frame(&mut renderer, &fx, None, None).1.is_empty());
+    assert!(frame(&mut renderer, &fx, None, None).1.is_empty(), "cached");
+
+    // A resize that re-probes identical caps keeps every cache.
+    renderer.set_capabilities(sixel);
+    assert!(
+        frame(&mut renderer, &fx, None, None).1.is_empty(),
+        "unchanged caps must not invalidate"
+    );
+
+    // Different caps (font zoom) invalidate and re-send.
+    let zoomed = caps(
+        Some(GraphicsProtocol::Sixel),
+        Some(CellPixelSize {
+            width: 12,
+            height: 24,
+        }),
+    );
+    renderer.set_capabilities(zoomed);
+    assert_eq!(renderer.capabilities(), zoomed);
+    assert!(!frame(&mut renderer, &fx, None, None).1.is_empty());
+}
+
+#[test]
 fn sixel_and_iterm2_never_paint_over_overlays() {
     let fx = Fixture::fork_and_merge();
     for protocol in [GraphicsProtocol::Sixel, GraphicsProtocol::Iterm2] {

@@ -38,6 +38,6 @@ mod worktrees_view;
 pub use app::{Action, AppState, Effect, UiAsyncEvent};
 pub use session::{
     MAX_COALESCE_EVENTS, ProdHost, RepoSession, SessionHost, SessionInput, TestHost, TuiSession,
-    TurnReport, UNBIND_WRITE_TIMEOUT, coalesce_effects, init_engine_and_session, poll_stream_ready,
-    recv_engine, spawn_wezterm_cell_probe,
+    TurnReport, UNBIND_WRITE_TIMEOUT, coalesce_effects, collapse_ready_resizes,
+    init_engine_and_session, poll_stream_ready, recv_engine, spawn_wezterm_cell_probe,
 };

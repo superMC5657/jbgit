@@ -14,7 +14,7 @@ use jbgit_tui::graph::GraphicsCapabilities;
 use jbgit_tui::terminal::TerminalGuard;
 use jbgit_tui::{
     Action, MAX_COALESCE_EVENTS, ProdHost, RepoSession, SessionInput, TuiSession, TurnReport,
-    UiAsyncEvent, init_engine_and_session, poll_stream_ready, recv_engine,
+    UiAsyncEvent, collapse_ready_resizes, init_engine_and_session, poll_stream_ready, recv_engine,
     spawn_wezterm_cell_probe,
 };
 
@@ -229,6 +229,9 @@ async fn main() -> Result<()> {
     let (mut gfx_probe_in_flight, mut gfx_probe_pending) = (false, false);
 
     let mut active_clone_task: Option<tokio::task::JoinHandle<()>> = None;
+    // First terminal item after a collapsed resize run; delivered next turn,
+    // after the redraw at the new size.
+    let mut carried_terminal = None;
     while !session.should_quit() {
         let engine_ref = repo.handle.as_ref().map(|h| h as &dyn EngineBackend);
         let generation = repo.generation;
@@ -269,57 +272,78 @@ async fn main() -> Result<()> {
         let mut report = TurnReport::default();
         let mut allow_coalesce = false;
 
-        tokio::select! {
-            maybe_term = event_stream.next() => match maybe_term {
-                Some(Ok(ev)) => allow_coalesce = !session.ingest_into_batch(SessionInput::Terminal(ev), Instant::now(), &mut batch_effects, &mut host, &mut report),
+        if let Some(item) = carried_terminal.take() {
+            // Release the timers' borrows of `session` / `host`.
+            drop((debounce_sleep, spinner_sleep, probe_sleep, gfx_probe_sleep));
+            match item {
+                Some(Ok(ev)) => {
+                    allow_coalesce = !session.ingest_into_batch(
+                        SessionInput::Terminal(ev),
+                        Instant::now(),
+                        &mut batch_effects,
+                        &mut host,
+                        &mut report,
+                    )
+                }
                 Some(Err(_)) | None => session.set_should_quit(true),
-            },
-            maybe_engine = recv_engine(&mut repo.events) => match maybe_engine {
-                Some(ev) => allow_coalesce = !session.ingest_into_batch(SessionInput::EngineFrom(generation, ev), Instant::now(), &mut batch_effects, &mut host, &mut report),
-                None => repo.events = None,
-            },
-            Some(ui_input) = ui_async_rx.recv() => {
-                allow_coalesce = !session.ingest_into_batch(ui_input, Instant::now(), &mut batch_effects, &mut host, &mut report);
             }
-            _ = debounce_sleep => {
-                session.ingest_into_batch(SessionInput::FlushPendingDetails, Instant::now(), &mut batch_effects, &mut host, &mut report);
-            }
-            _ = spinner_sleep => {
-                session.ingest_into_batch(SessionInput::TickSpinner, Instant::now(), &mut batch_effects, &mut host, &mut report);
-            }
-            _ = probe_sleep => {
-                host.cell_px_probe_deadline = None;
-                if probe_in_flight { probe_pending = true; } else { probe_in_flight = true; spawn_wezterm_cell_probe(cell_px_tx.clone()); }
-            }
-            Some(maybe_cell_px) = cell_px_rx.recv() => {
-                probe_in_flight = false;
-                if let Some(cell_px) = maybe_cell_px { session.apply_wezterm_cell_px(cell_px); }
-                if std::mem::take(&mut probe_pending) && host.cell_px_probe_deadline.is_none() {
-                    probe_in_flight = true;
-                    spawn_wezterm_cell_probe(cell_px_tx.clone());
+        } else {
+            tokio::select! {
+                maybe_term = event_stream.next() => match maybe_term {
+                    Some(Ok(ev)) => {
+                        let (ev, next) = collapse_ready_resizes(ev, &mut event_stream).await;
+                        carried_terminal = next;
+                        allow_coalesce = !session.ingest_into_batch(SessionInput::Terminal(ev), Instant::now(), &mut batch_effects, &mut host, &mut report);
+                    }
+                    Some(Err(_)) | None => session.set_should_quit(true),
+                },
+                maybe_engine = recv_engine(&mut repo.events) => match maybe_engine {
+                    Some(ev) => allow_coalesce = !session.ingest_into_batch(SessionInput::EngineFrom(generation, ev), Instant::now(), &mut batch_effects, &mut host, &mut report),
+                    None => repo.events = None,
+                },
+                Some(ui_input) = ui_async_rx.recv() => {
+                    allow_coalesce = !session.ingest_into_batch(ui_input, Instant::now(), &mut batch_effects, &mut host, &mut report);
                 }
-            }
-            _ = gfx_probe_sleep => {
-                host.graphics_probe_deadline = None;
-                if gfx_probe_in_flight {
-                    gfx_probe_pending = true;
-                } else {
-                    gfx_probe_in_flight = true;
-                    spawn_graphics_caps_probe(gfx_probe_tx.clone());
+                _ = debounce_sleep => {
+                    session.ingest_into_batch(SessionInput::FlushPendingDetails, Instant::now(), &mut batch_effects, &mut host, &mut report);
                 }
-            }
-            Some(mut caps) = gfx_probe_rx.recv() => {
-                gfx_probe_in_flight = false;
-                let prev_cell_px = session.state().log.graph_renderer().capabilities().cell_px;
-                if caps.needs_async_wezterm_probe() {
-                    caps.cell_px = prev_cell_px;
-                    host.cell_px_probe_deadline =
-                        Some(tokio::time::Instant::now() + Duration::from_millis(100));
+                _ = spinner_sleep => {
+                    session.ingest_into_batch(SessionInput::TickSpinner, Instant::now(), &mut batch_effects, &mut host, &mut report);
                 }
-                session.set_graphics_capabilities(caps);
-                if std::mem::take(&mut gfx_probe_pending) && host.graphics_probe_deadline.is_none() {
-                    gfx_probe_in_flight = true;
-                    spawn_graphics_caps_probe(gfx_probe_tx.clone());
+                _ = probe_sleep => {
+                    host.cell_px_probe_deadline = None;
+                    if probe_in_flight { probe_pending = true; } else { probe_in_flight = true; spawn_wezterm_cell_probe(cell_px_tx.clone()); }
+                }
+                Some(maybe_cell_px) = cell_px_rx.recv() => {
+                    probe_in_flight = false;
+                    if let Some(cell_px) = maybe_cell_px { session.apply_wezterm_cell_px(cell_px); }
+                    if std::mem::take(&mut probe_pending) && host.cell_px_probe_deadline.is_none() {
+                        probe_in_flight = true;
+                        spawn_wezterm_cell_probe(cell_px_tx.clone());
+                    }
+                }
+                _ = gfx_probe_sleep => {
+                    host.graphics_probe_deadline = None;
+                    if gfx_probe_in_flight {
+                        gfx_probe_pending = true;
+                    } else {
+                        gfx_probe_in_flight = true;
+                        spawn_graphics_caps_probe(gfx_probe_tx.clone());
+                    }
+                }
+                Some(mut caps) = gfx_probe_rx.recv() => {
+                    gfx_probe_in_flight = false;
+                    let prev_cell_px = session.state().log.graph_renderer().capabilities().cell_px;
+                    if caps.needs_async_wezterm_probe() {
+                        caps.cell_px = prev_cell_px;
+                        host.cell_px_probe_deadline =
+                            Some(tokio::time::Instant::now() + Duration::from_millis(100));
+                    }
+                    session.set_graphics_capabilities(caps);
+                    if std::mem::take(&mut gfx_probe_pending) && host.graphics_probe_deadline.is_none() {
+                        gfx_probe_in_flight = true;
+                        spawn_graphics_caps_probe(gfx_probe_tx.clone());
+                    }
                 }
             }
         }
@@ -330,6 +354,8 @@ async fn main() -> Result<()> {
                 if let Some(maybe_term) = poll_stream_ready(&mut event_stream).await {
                     match maybe_term {
                         Some(Ok(ev)) => {
+                            let (ev, next) = collapse_ready_resizes(ev, &mut event_stream).await;
+                            carried_terminal = next;
                             if session.ingest_into_batch(
                                 SessionInput::Terminal(ev),
                                 now,

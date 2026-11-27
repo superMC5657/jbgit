@@ -70,6 +70,56 @@ fn tui_session_caps_batch_at_64_events_and_coalesces_requests() {
 }
 
 #[test]
+fn tui_session_collapses_consecutive_resizes_into_one_on_resize() {
+    let mut ts = TestSession::with_snapshot(snapshot());
+    let _ = ts.take_requests();
+    let report = ts.send_events([
+        Event::Resize(80, 24),
+        Event::Resize(100, 30),
+        Event::Resize(120, 40),
+        Event::Key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)),
+    ]);
+    assert_eq!(ts.host.resize_count, 1, "one on_resize per resize run");
+    assert!(report.stopped_for_resize);
+    assert_eq!(
+        report.processed_inputs, 3,
+        "the key after the run waits for the next turn"
+    );
+    assert_eq!(ts.state().log.graph.selected_idx, 0);
+}
+
+#[test]
+fn collapse_ready_resizes_keeps_last_size_and_carries_the_next_event() {
+    use crate::session::collapse_ready_resizes;
+    use futures::executor::block_on;
+    use futures::stream::{self, StreamExt};
+
+    let key = Event::Key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    let mut ready = stream::iter([
+        Ok::<_, ()>(Event::Resize(100, 30)),
+        Ok(Event::Resize(120, 40)),
+        Ok(key.clone()),
+        Ok(Event::Resize(1, 1)),
+    ])
+    .chain(stream::pending());
+    let (ev, next) = block_on(collapse_ready_resizes(Event::Resize(80, 24), &mut ready));
+    assert_eq!(ev, Event::Resize(120, 40));
+    assert_eq!(next, Some(Some(Ok(key.clone()))));
+
+    // Run ends because nothing else is ready yet: nothing to carry.
+    let mut idle = stream::iter([Ok::<_, ()>(Event::Resize(90, 28))]).chain(stream::pending());
+    let (ev, next) = block_on(collapse_ready_resizes(Event::Resize(80, 24), &mut idle));
+    assert_eq!(ev, Event::Resize(90, 28));
+    assert_eq!(next, None);
+
+    // Non-resize events pass through without touching the stream.
+    let mut untouched = stream::iter([Ok::<_, ()>(Event::Resize(90, 28))]);
+    let (ev, next) = block_on(collapse_ready_resizes(key.clone(), &mut untouched));
+    assert_eq!((ev, next), (key, None));
+    assert_eq!(block_on(untouched.next()), Some(Ok(Event::Resize(90, 28))));
+}
+
+#[test]
 fn tui_session_virtual_clock_drives_30ms_120ms_and_300ms_debounces() {
     let mut ts = TestSession::with_snapshot(snapshot());
     let _ = ts.take_requests();
