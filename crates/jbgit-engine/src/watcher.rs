@@ -1,5 +1,6 @@
-use std::collections::{HashMap, HashSet};
-use std::path::{Path, PathBuf};
+use std::borrow::Cow;
+use std::collections::HashMap;
+use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -15,7 +16,8 @@ use crate::probe::RepoLocation;
 /// How long a cached "is this directory ignored?" answer stays valid. Short enough
 /// that an edited `.gitignore` in a parent we never saw an event for heals quickly.
 const IGNORE_DIR_CACHE_TTL: Duration = Duration::from_secs(2);
-/// Upper bound on cached directories before the cache is simply reset.
+/// Upper bound on cached directories. When reached, expired entries are evicted
+/// first and the cache is only reset if every entry is still fresh.
 const IGNORE_DIR_CACHE_MAX: usize = 4096;
 
 /// Suppresses intermediate FS refresh notifications while `jbgit-engine` itself is
@@ -165,6 +167,11 @@ impl RepoWatcher {
         )
         .map_err(|e| EngineError::Watcher(e.to_string()))?;
 
+        // Kept recursive on purpose: Windows `ReadDirectoryChangesW` watches a whole
+        // tree (it cannot exclude `objects/`), entries such as `MERGE_HEAD` or
+        // `rebase-merge/` cannot be watched before they exist, and in a non-bare
+        // repo the recursive worktree watch reports `.git/**` anyway. Irrelevant
+        // subtrees are instead dropped allocation-free in `classify_git_meta_path`.
         git_debouncer
             .watcher()
             .watch(&git_dir, RecursiveMode::Recursive)
@@ -228,11 +235,11 @@ fn normalize_watcher_path(path: &Path) -> String {
     stripped.as_deref().unwrap_or(&raw).replace('\\', "/")
 }
 
-fn strip_prefix_normalized(path: &Path, base: &Path) -> Option<String> {
-    if let Ok(rel) = path.strip_prefix(base) {
-        let s = rel.to_string_lossy().replace('\\', "/");
-        return Some(s.trim_start_matches('/').to_string());
-    }
+/// Slow-path `path` relative to `base` (`/`-separated) for spellings the plain
+/// component-wise [`Path::strip_prefix`] rejects: Windows `\\?\` verbatim
+/// prefixes and drive-letter / directory case differences. Only reached when
+/// the allocation-free `strip_prefix` fails.
+fn strip_prefix_normalized_fallback(path: &Path, base: &Path) -> Option<String> {
     let norm_path = normalize_watcher_path(path);
     let norm_base = normalize_watcher_path(base);
     let base_trimmed = norm_base.trim_end_matches('/');
@@ -241,9 +248,11 @@ fn strip_prefix_normalized(path: &Path, base: &Path) -> Option<String> {
     }
     #[cfg(windows)]
     let matched_rest = {
-        let path_low = norm_path.to_ascii_lowercase();
-        let base_low = base_trimmed.to_ascii_lowercase();
-        if path_low.starts_with(&base_low) {
+        let matches_base = norm_path
+            .as_bytes()
+            .get(..base_trimmed.len())
+            .is_some_and(|head| head.eq_ignore_ascii_case(base_trimmed.as_bytes()));
+        if matches_base {
             let rest = &norm_path[base_trimmed.len()..];
             if rest.is_empty() || rest.starts_with('/') {
                 Some(rest.trim_start_matches('/'))
@@ -262,60 +271,90 @@ fn strip_prefix_normalized(path: &Path, base: &Path) -> Option<String> {
     matched_rest.map(ToString::to_string)
 }
 
+/// `path` relative to `base`: borrowed when the spelling matches (the common
+/// case, since notify reports paths under the watched root as given), owned
+/// via [`strip_prefix_normalized_fallback`] otherwise.
+fn rel_path_under<'a>(path: &'a Path, base: &Path) -> Option<Cow<'a, Path>> {
+    if let Ok(rel) = path.strip_prefix(base) {
+        return Some(Cow::Borrowed(rel));
+    }
+    strip_prefix_normalized_fallback(path, base).map(|rel| Cow::Owned(PathBuf::from(rel)))
+}
+
+/// Classifies one `.git` event path. Allocation-free whenever the event path
+/// shares the watched directory's spelling, so an `objects/` / `logs/` write
+/// storm (fetch, gc, commit) is dropped by a first-component check before any
+/// string work.
 pub fn classify_git_meta_path(path: &Path, git_dir: &Path, common_dir: &Path) -> RefreshScope {
     // Strip `git_dir` first because in linked worktrees `git_dir` lives inside `common_dir`
     // (`<common_dir>/worktrees/<name>`). Matching relative segments avoids false hits on
     // ancestor directories named `logs`, `objects`, or `refs`.
-    let Some(rel) = strip_prefix_normalized(path, git_dir)
-        .or_else(|| strip_prefix_normalized(path, common_dir))
+    if let Ok(rel) = path.strip_prefix(git_dir) {
+        return classify_git_rel_path(rel);
+    }
+    if let Ok(rel) = path.strip_prefix(common_dir) {
+        return classify_git_rel_path(rel);
+    }
+    let Some(rel) = strip_prefix_normalized_fallback(path, git_dir)
+        .or_else(|| strip_prefix_normalized_fallback(path, common_dir))
     else {
         return RefreshScope::None;
     };
+    classify_git_rel_path(Path::new(&rel))
+}
 
-    // Ignore lock files, object database writes, reflogs, and commit edit messages
-    if rel.is_empty()
-        || rel.ends_with(".lock")
-        || rel == "objects"
-        || rel.starts_with("objects/")
-        || rel == "logs"
-        || rel.starts_with("logs/")
-        || rel == "COMMIT_EDITMSG"
-    {
+/// Refresh scope for a path relative to a git directory. Only an allow-list of
+/// metadata entries refreshes; everything else (`objects/`, `logs/`, `hooks/`,
+/// `info/`, `lfs/`, `modules/`, other `worktrees/`, `config`, `FETCH_HEAD`,
+/// `ORIG_HEAD`, `*.lock`, `COMMIT_EDITMSG`, ...) is ignored.
+fn classify_git_rel_path(rel: &Path) -> RefreshScope {
+    let mut names = rel.components().filter_map(|c| match c {
+        Component::Normal(name) => Some(name),
+        _ => None,
+    });
+    let Some(first) = names.next() else {
+        return RefreshScope::None;
+    };
+    // Object database writes and reflogs: the bulk of `.git` event volume.
+    if first == "objects" || first == "logs" {
         return RefreshScope::None;
     }
-
-    if rel == "index" {
-        return RefreshScope::StageStatus;
+    let leaf = names.next_back();
+    let is_nested = leaf.is_some();
+    if leaf.unwrap_or(first).as_encoded_bytes().ends_with(b".lock") {
+        return RefreshScope::None;
     }
+    let Some(first) = first.to_str() else {
+        return RefreshScope::None;
+    };
 
-    if rel == "HEAD"
-        || rel == "refs"
-        || rel.starts_with("refs/")
-        || rel == "packed-refs"
-        || rel == "shallow"
-        || rel == "MERGE_HEAD"
-        || rel == "REBASE_HEAD"
-        || rel == "CHERRY_PICK_HEAD"
-        || rel == "REVERT_HEAD"
-        || rel == "BISECT_LOG"
-        || rel == "rebase-merge"
-        || rel.starts_with("rebase-merge/")
-        || rel == "rebase-apply"
-        || rel.starts_with("rebase-apply/")
-    {
-        return RefreshScope::RefsAndGraph;
+    if is_nested {
+        return if matches!(first, "refs" | "rebase-merge" | "rebase-apply") {
+            RefreshScope::RefsAndGraph
+        } else {
+            RefreshScope::None
+        };
     }
-
-    RefreshScope::None
+    match first {
+        "index" => RefreshScope::StageStatus,
+        "HEAD" | "refs" | "packed-refs" | "shallow" | "MERGE_HEAD" | "REBASE_HEAD"
+        | "CHERRY_PICK_HEAD" | "REVERT_HEAD" | "BISECT_LOG" | "rebase-merge" | "rebase-apply" => {
+            RefreshScope::RefsAndGraph
+        }
+        _ => RefreshScope::None,
+    }
 }
 
 /// Decides whether a batch of worktree FS events warrants a status refresh.
 ///
 /// Runs entirely on the watcher's debouncer thread with its own lazily opened
-/// `git2::Repository`. A batch is first reduced by the static directory
-/// blacklist and de-duplicated; parent directories are checked against
-/// `.gitignore` once (cached for [`IGNORE_DIR_CACHE_TTL`]) so thousands of
-/// events under one ignored output directory cost a single libgit2 query.
+/// `git2::Repository`. Events are first reduced by the static directory
+/// blacklist (allocation-free for paths spelled like the watched root). Each
+/// remaining path's ancestor directories are then checked against a bounded
+/// cache of `.gitignore` verdicts (valid for [`IGNORE_DIR_CACHE_TTL`]): one
+/// cached ignored ancestor rejects the path by prefix, so a storm anywhere
+/// below one ignored output directory (`dist/a/b/c.js`, `out/x/y/z.o`) costs a
+/// single libgit2 query instead of one per distinct parent directory.
 pub struct WorktreeEventFilter {
     workdir: PathBuf,
     git_dir: PathBuf,
@@ -347,55 +386,97 @@ impl WorktreeEventFilter {
 
     /// `true` as soon as one event path is a non-ignored worktree file. Edits to
     /// a `.gitignore` are always relevant and reset the directory cache.
+    ///
+    /// The debouncer already de-duplicates event paths, so the batch is walked
+    /// twice without collecting it: a cheap `.gitignore` scan first (so a
+    /// stale cache is never consulted for a batch that edits ignore rules),
+    /// then ignore checks that stop at the first relevant path.
     pub fn batch_is_relevant<'a, I>(&mut self, paths: I) -> bool
     where
         I: IntoIterator<Item = &'a Path>,
+        I::IntoIter: Clone,
     {
-        let mut seen = HashSet::new();
-        let mut candidates = Vec::new();
-        for path in paths {
-            if let Some(rel) = statically_relevant_rel_path(path, &self.workdir)
-                && seen.insert(rel.clone())
-            {
-                candidates.push(rel);
-            }
-        }
-        if candidates.is_empty() {
-            return false;
-        }
-        if candidates
-            .iter()
-            .any(|rel| rel.file_name().is_some_and(|n| n == ".gitignore"))
-        {
+        let paths = paths.into_iter();
+        let edits_gitignore = paths.clone().any(|path| {
+            path.file_name().is_some_and(|n| n == ".gitignore")
+                && statically_relevant_rel_path(path, &self.workdir).is_some()
+        });
+        if edits_gitignore {
             self.dir_cache.clear();
             return true;
         }
         let now = Instant::now();
-        candidates.iter().any(|rel| !self.is_ignored(rel, now))
+        for path in paths {
+            if let Some(rel) = statically_relevant_rel_path(path, &self.workdir)
+                && !self.is_ignored(&rel, now)
+            {
+                return true;
+            }
+        }
+        false
     }
 
     fn is_ignored(&mut self, rel: &Path, now: Instant) -> bool {
-        if let Some(parent) = rel.parent().filter(|p| !p.as_os_str().is_empty())
-            && self.dir_is_ignored(parent, now)
-        {
+        // An event on an already-known ignored directory itself.
+        if self.cached_dir_verdict(rel, now) == Some(true) {
+            return true;
+        }
+        if self.ancestor_dir_ignored(rel, now) {
             // Git cannot re-include a file below an excluded directory.
             return true;
         }
         self.query_ignored(rel)
     }
 
-    fn dir_is_ignored(&mut self, dir: &Path, now: Instant) -> bool {
-        if let Some(&(ignored, at)) = self.dir_cache.get(dir)
-            && now.saturating_duration_since(at) < IGNORE_DIR_CACHE_TTL
-        {
-            return ignored;
+    /// Whether any proper ancestor directory of `rel` is ignored. Cached
+    /// verdicts are consulted deepest-first without allocating; only when some
+    /// ancestor is unknown are the ancestors resolved top-down, stopping at the
+    /// first ignored one (everything below it is ignored as well).
+    fn ancestor_dir_ignored(&mut self, rel: &Path, now: Instant) -> bool {
+        let mut any_unknown = false;
+        for dir in proper_ancestors(rel) {
+            match self.cached_dir_verdict(dir, now) {
+                Some(true) => return true,
+                Some(false) => {}
+                None => any_unknown = true,
+            }
         }
-        let ignored = self.query_ignored(dir);
+        if !any_unknown {
+            return false;
+        }
+        let dirs: Vec<&Path> = proper_ancestors(rel).collect();
+        for dir in dirs.into_iter().rev() {
+            let ignored = match self.cached_dir_verdict(dir, now) {
+                Some(ignored) => ignored,
+                None => {
+                    let ignored = self.query_ignored(dir);
+                    self.cache_dir_verdict(dir, ignored, now);
+                    ignored
+                }
+            };
+            if ignored {
+                return true;
+            }
+        }
+        false
+    }
+
+    fn cached_dir_verdict(&self, dir: &Path, now: Instant) -> Option<bool> {
+        self.dir_cache
+            .get(dir)
+            .filter(|(_, at)| now.saturating_duration_since(*at) < IGNORE_DIR_CACHE_TTL)
+            .map(|&(ignored, _)| ignored)
+    }
+
+    fn cache_dir_verdict(&mut self, dir: &Path, ignored: bool, now: Instant) {
         if self.dir_cache.len() >= IGNORE_DIR_CACHE_MAX {
-            self.dir_cache.clear();
+            self.dir_cache
+                .retain(|_, (_, at)| now.saturating_duration_since(*at) < IGNORE_DIR_CACHE_TTL);
+            if self.dir_cache.len() >= IGNORE_DIR_CACHE_MAX {
+                self.dir_cache.clear();
+            }
         }
         self.dir_cache.insert(dir.to_path_buf(), (ignored, now));
-        ignored
     }
 
     fn query_ignored(&mut self, rel: &Path) -> bool {
@@ -414,24 +495,30 @@ impl WorktreeEventFilter {
     }
 }
 
+/// Non-empty proper ancestors of a relative path, deepest first.
+fn proper_ancestors(rel: &Path) -> impl Iterator<Item = &Path> {
+    rel.ancestors()
+        .skip(1)
+        .filter(|dir| !dir.as_os_str().is_empty())
+}
+
 /// Workdir-relative path of `path` unless it is outside the worktree, the
-/// worktree root itself, or under a hard-coded noise directory.
-fn statically_relevant_rel_path(path: &Path, workdir: &Path) -> Option<PathBuf> {
-    let rel = path.strip_prefix(workdir).ok()?;
+/// worktree root itself, or under a hard-coded noise directory. Borrowed (no
+/// allocation) when `path` is spelled like `workdir`; Windows `\\?\` verbatim
+/// and drive-letter / case variants fall back to a normalized comparison.
+fn statically_relevant_rel_path<'a>(path: &'a Path, workdir: &Path) -> Option<Cow<'a, Path>> {
+    let rel = rel_path_under(path, workdir)?;
     if rel.as_os_str().is_empty() {
         return None;
     }
     for comp in rel.components() {
-        if let std::path::Component::Normal(name) = comp
-            && matches!(
-                name.to_string_lossy().as_ref(),
-                ".git" | "target" | "node_modules" | ".idea"
-            )
+        if let Component::Normal(name) = comp
+            && (name == ".git" || name == "target" || name == "node_modules" || name == ".idea")
         {
             return None;
         }
     }
-    Some(rel.to_path_buf())
+    Some(rel)
 }
 
 #[cfg(test)]
@@ -492,6 +579,88 @@ mod tests {
     }
 
     #[test]
+    fn worktree_filter_ancestor_cache_rejects_deep_paths_under_ignored_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().to_path_buf();
+        let git_dir = init_repo(&root);
+        std::fs::write(root.join(".gitignore"), "out/\n").unwrap();
+        std::fs::create_dir_all(root.join("out").join("debug")).unwrap();
+        std::fs::create_dir_all(root.join("src").join("deep")).unwrap();
+
+        // 500 distinct leaf directories: a parent-only cache would need one
+        // lookup per directory; the ancestor cache needs one for `out/`.
+        let paths: Vec<PathBuf> = (0..500)
+            .map(|i| {
+                root.join("out")
+                    .join("debug")
+                    .join("build")
+                    .join(format!("crate-{i}"))
+                    .join("out")
+                    .join("gen.rs")
+            })
+            .collect();
+        let mut filter = WorktreeEventFilter::new(root.clone(), git_dir);
+        assert!(!filter.batch_is_relevant(paths.iter().map(PathBuf::as_path)));
+        assert_eq!(filter.ignore_queries(), 1);
+        assert!(!filter.batch_is_relevant([root.join("out").as_path()]));
+        assert_eq!(filter.ignore_queries(), 1);
+
+        // Non-ignored deep paths still reach the per-file check.
+        let source = root.join("src").join("deep").join("lib.rs");
+        assert!(filter.batch_is_relevant([source.as_path()]));
+    }
+
+    #[test]
+    fn worktree_filter_dir_cache_stays_bounded() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().to_path_buf();
+        let git_dir = init_repo(&root);
+        let mut filter = WorktreeEventFilter::new(root.clone(), git_dir);
+        let paths: Vec<PathBuf> = (0..IGNORE_DIR_CACHE_MAX + 10)
+            .map(|i| root.join(format!("d{i}")).join("f.txt"))
+            .collect();
+        let now = Instant::now();
+        for path in &paths {
+            let rel = statically_relevant_rel_path(path, &root).unwrap();
+            assert!(!filter.is_ignored(&rel, now));
+        }
+        assert!(filter.dir_cache.len() <= IGNORE_DIR_CACHE_MAX);
+    }
+
+    #[test]
+    fn statically_relevant_rel_path_borrows_and_rejects_noise_dirs() {
+        let root = Path::new("/repo");
+        let src = root.join("src").join("main.rs");
+        let rel = statically_relevant_rel_path(&src, root).unwrap();
+        assert!(matches!(rel, Cow::Borrowed(_)));
+        assert_eq!(rel.as_ref(), Path::new("src").join("main.rs"));
+        for noise in [".git", "target", "node_modules", ".idea"] {
+            let p = root.join("a").join(noise).join("x");
+            assert!(statically_relevant_rel_path(&p, root).is_none(), "{noise}");
+        }
+        assert!(statically_relevant_rel_path(root, root).is_none());
+        assert!(statically_relevant_rel_path(Path::new("/other/a.rs"), root).is_none());
+        assert!(statically_relevant_rel_path(Path::new("/repository/a.rs"), root).is_none());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn statically_relevant_rel_path_normalizes_verbatim_and_drive_case() {
+        let rel_of = |path: &str, root: &str| {
+            statically_relevant_rel_path(Path::new(path), Path::new(root)).map(Cow::into_owned)
+        };
+        let expected = Some(Path::new("src").join("a.rs"));
+        let workdir = r"C:\Work\Repo";
+        assert_eq!(rel_of(r"\\?\C:\Work\Repo\src\a.rs", workdir), expected);
+        assert_eq!(rel_of(r"c:\work\repo\src\a.rs", workdir), expected);
+        let verbatim_root = r"\\?\c:\work\repo";
+        assert_eq!(rel_of(r"C:\Work\Repo\src\a.rs", verbatim_root), expected);
+        assert_eq!(rel_of(r"\\?\C:\Work\Repo\.git\index", workdir), None);
+        assert_eq!(rel_of(r"\\?\C:\Work\Repo2\a.rs", workdir), None);
+        assert_eq!(rel_of(r"\\?\C:\Work\Repo", workdir), None);
+    }
+
+    #[test]
     fn worktree_filter_without_repo_treats_paths_as_relevant() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path().to_path_buf();
@@ -537,6 +706,79 @@ mod tests {
         assert!(second_acquired.load(Ordering::Acquire));
         assert_eq!(second_deferred, RefreshScope::None);
         assert!(!guard.is_mutating());
+    }
+
+    #[test]
+    fn classify_git_meta_path_drops_object_storms_and_keeps_metadata() {
+        let git = Path::new("/repo/.git");
+        let classify = |rel: &str| classify_git_meta_path(&git.join(rel), git, git);
+        for rel in [
+            "objects/ab/cdef0123",
+            "objects/pack/pack-1.pack",
+            "objects/pack/pack-1.idx",
+            "objects/info/commit-graph",
+            "objects",
+            "logs/HEAD",
+            "logs/refs/heads/main",
+            "hooks/pre-commit",
+            "info/exclude",
+            "lfs/objects/aa/bb",
+            "modules/sub/HEAD",
+            "worktrees/other/HEAD",
+            "config",
+            "FETCH_HEAD",
+            "ORIG_HEAD",
+            "COMMIT_EDITMSG",
+            "index.lock",
+            "refs/heads/main.lock",
+            "HEAD.lock",
+            "",
+        ] {
+            assert_eq!(classify(rel), RefreshScope::None, "{rel}");
+        }
+        assert_eq!(classify("index"), RefreshScope::StageStatus);
+        for rel in [
+            "HEAD",
+            "refs",
+            "refs/heads/x",
+            "refs/remotes/origin/feature/a",
+            "refs/tags/v1",
+            "packed-refs",
+            "shallow",
+            "MERGE_HEAD",
+            "REBASE_HEAD",
+            "CHERRY_PICK_HEAD",
+            "REVERT_HEAD",
+            "BISECT_LOG",
+            "rebase-merge",
+            "rebase-merge/done",
+            "rebase-apply",
+            "rebase-apply/next",
+        ] {
+            assert_eq!(classify(rel), RefreshScope::RefsAndGraph, "{rel}");
+        }
+        assert_eq!(
+            classify_git_meta_path(Path::new("/elsewhere/HEAD"), git, git),
+            RefreshScope::None
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn classify_git_meta_path_normalizes_verbatim_and_drive_case() {
+        use RefreshScope::{None as Skip, RefsAndGraph as Refs, StageStatus as Stage};
+        let classify = |path: &str, git: &str| {
+            classify_git_meta_path(Path::new(path), Path::new(git), Path::new(git))
+        };
+        let git = r"C:\Work\Repo\.git";
+        assert_eq!(classify(r"\\?\C:\Work\Repo\.git\HEAD", git), Refs);
+        assert_eq!(classify(r"c:\work\repo\.git\index", git), Stage);
+        assert_eq!(classify(r"\\?\c:\WORK\Repo\.git\refs\heads\x", git), Refs);
+        assert_eq!(classify(r"\\?\C:\Work\Repo\.git\MERGE_HEAD", git), Refs);
+        assert_eq!(classify(r"\\?\C:\Work\Repo\.git\objects\ab\cd", git), Skip);
+        assert_eq!(classify(r"\\?\C:\Work\Repo\.gitx\HEAD", git), Skip);
+        let verbatim_git = r"\\?\C:\Work\Repo\.git";
+        assert_eq!(classify(r"c:\work\repo\.git\HEAD", verbatim_git), Refs);
     }
 
     #[test]

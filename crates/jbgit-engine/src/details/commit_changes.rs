@@ -11,7 +11,7 @@ use jbgit_core::{
 
 use crate::blob_reader::read_blob;
 use crate::error::EngineError;
-use crate::pool::{delta_to_kind, with_thread_repo};
+use crate::pool::{LARGE_INDEX_ENTRIES, delta_to_kind, with_thread_repo};
 use crate::probe::{RepoLocation, to_core_oid};
 
 use super::file_diff::{imara_line_stats, read_new_bytes_checked};
@@ -142,7 +142,17 @@ fn diff_deltas_to_changes(
     diff: &mut git2::Diff<'_>,
     token: &EpochToken,
 ) -> Result<Vec<ResolvedChange>, EngineError> {
-    diff.find_similar(Some(DiffFindOptions::new().renames(true)))?;
+    diff_deltas_to_changes_with(diff, true, token)
+}
+
+fn diff_deltas_to_changes_with(
+    diff: &mut git2::Diff<'_>,
+    detect_renames: bool,
+    token: &EpochToken,
+) -> Result<Vec<ResolvedChange>, EngineError> {
+    if detect_renames {
+        diff.find_similar(Some(DiffFindOptions::new().renames(true)))?;
+    }
     let mut out = Vec::with_capacity(diff.deltas().len());
     for (idx, delta) in diff.deltas().enumerate() {
         if idx % 64 == 0 && token.is_stale() {
@@ -226,7 +236,11 @@ fn resolve_compare_with_local(
         opts.pathspec(p);
     }
     let mut diff = repo.diff_tree_to_workdir_with_index(Some(&base_tree), Some(&mut opts))?;
-    let mut changes = diff_deltas_to_changes(&mut diff, token)?;
+    // Same large-repository policy as the status scan: rename pairing is skipped
+    // above `LARGE_INDEX_ENTRIES` (changes then show as delete + add).
+    let index_entries = repo.index().map(|idx| idx.len()).unwrap_or(0);
+    let mut changes =
+        diff_deltas_to_changes_with(&mut diff, index_entries <= LARGE_INDEX_ENTRIES, token)?;
     if let Some(p) = prefix {
         changes.retain(|c| {
             path_matches_dir_prefix(&c.path, p)
@@ -473,6 +487,29 @@ pub(super) fn resolve_changes<'r>(
     Ok((changes, commits))
 }
 
+/// Number of lines `imara_line_stats` tokenizes `bytes` into: every `\n`
+/// terminates a line, and a non-empty unterminated tail is one more line.
+/// Invalid UTF-8 never hides a `\n` (lossy decoding keeps ASCII bytes), so
+/// counting raw bytes matches the decoded text.
+fn count_diff_lines(bytes: &[u8]) -> usize {
+    let newlines = bytes.iter().filter(|&&b| b == b'\n').count();
+    newlines + usize::from(bytes.last().is_some_and(|&b| b != b'\n'))
+}
+
+/// `(additions, deletions)` between two text blobs. When one side is empty
+/// (pure `Added` / `Deleted`, or a file emptied / filled) every line of the
+/// other side is a change, so the result is counted directly instead of
+/// interning both sides and running the full histogram diff.
+fn line_stats(old: &[u8], new: &[u8], token: &EpochToken) -> Result<(usize, usize), EngineError> {
+    if old.is_empty() || new.is_empty() {
+        if token.is_stale() {
+            return Err(EngineError::Cancelled);
+        }
+        return Ok((count_diff_lines(new), count_diff_lines(old)));
+    }
+    imara_line_stats(old, new, token)
+}
+
 pub fn load_commit_details_sync(
     location: &RepoLocation,
     key: &DetailsKey,
@@ -525,7 +562,7 @@ pub fn load_commit_details_sync(
             {
                 is_binary |= old_bin || new_bin;
                 if !is_binary {
-                    (additions, deletions) = imara_line_stats(&old_bytes, &new_bytes, token)?;
+                    (additions, deletions) = line_stats(&old_bytes, &new_bytes, token)?;
                 }
             }
             let exists_in_workdir = workdir.is_some_and(|w| w.join(&item.path).is_file());
@@ -548,4 +585,102 @@ pub fn load_commit_details_sync(
             changes,
         })
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use jbgit_core::RequestEpoch;
+
+    use super::*;
+
+    #[test]
+    fn added_and_deleted_line_counts_match_full_diff() {
+        let token = RequestEpoch::new().issue();
+        let samples: [&[u8]; 9] = [
+            b"",
+            b"\n",
+            b"\n\n\n",
+            b"one",
+            b"one\n",
+            b"one\ntwo",
+            b"one\ntwo\n",
+            b"crlf\r\nlines\r\nno-eol",
+            b"invalid \xff\xfe utf8\nline\n\xc3",
+        ];
+        for content in samples {
+            let full_added = imara_line_stats(b"", content, &token).unwrap();
+            let full_deleted = imara_line_stats(content, b"", &token).unwrap();
+            assert_eq!(line_stats(b"", content, &token).unwrap(), full_added);
+            assert_eq!(line_stats(content, b"", &token).unwrap(), full_deleted);
+            assert_eq!(full_added.1, 0);
+            assert_eq!(full_deleted.0, 0);
+        }
+        assert_eq!(line_stats(b"", b"a\nb", &token).unwrap(), (2, 0));
+        assert_eq!(line_stats(b"a\nb\n", b"", &token).unwrap(), (0, 2));
+        // Both sides non-empty still go through the full diff.
+        assert_eq!(
+            line_stats(b"a\nb\n", b"a\nc\n", &token).unwrap(),
+            imara_line_stats(b"a\nb\n", b"a\nc\n", &token).unwrap()
+        );
+    }
+
+    #[test]
+    fn line_stats_fast_path_honours_cancellation() {
+        let epoch = RequestEpoch::new();
+        let token = epoch.issue();
+        epoch.next_epoch();
+        assert!(matches!(
+            line_stats(b"", b"a\n", &token),
+            Err(EngineError::Cancelled)
+        ));
+    }
+
+    fn git(dir: &Path, args: &[&str]) {
+        let status = std::process::Command::new("git")
+            .current_dir(dir)
+            .args(args)
+            .status()
+            .unwrap();
+        assert!(status.success(), "git {args:?}");
+    }
+
+    #[test]
+    fn commit_details_count_added_deleted_and_binary_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        let d = tmp.path();
+        git(d, &["init", "-q"]);
+        git(d, &["config", "user.name", "Test"]);
+        git(d, &["config", "user.email", "test@example.com"]);
+        git(d, &["config", "core.autocrlf", "false"]);
+        git(d, &["config", "commit.gpgsign", "false"]);
+        std::fs::write(d.join("gone.txt"), "x\ny\nz").unwrap();
+        git(d, &["add", "."]);
+        git(d, &["commit", "-q", "-m", "base"]);
+        std::fs::remove_file(d.join("gone.txt")).unwrap();
+        std::fs::write(d.join("added.txt"), "1\n2\n3\n").unwrap();
+        std::fs::write(d.join("empty.txt"), "").unwrap();
+        std::fs::write(d.join("blob.bin"), b"\x00\x01\x02\n\x03").unwrap();
+        git(d, &["add", "-A"]);
+        git(d, &["commit", "-q", "-m", "change"]);
+
+        let repo = Repository::open(d).unwrap();
+        let head = repo.head().unwrap().peel_to_commit().unwrap();
+        let location = RepoLocation::discover(d).unwrap();
+        let key = DetailsKey::single(to_core_oid(head.id()));
+        let token = RequestEpoch::new().issue();
+        let bundle = load_commit_details_sync(&location, &key, &token).unwrap();
+        let stats = |path: &str| {
+            let change = bundle.changes.iter().find(|c| c.path == path).unwrap();
+            (
+                change.kind,
+                change.additions,
+                change.deletions,
+                change.is_binary,
+            )
+        };
+        assert_eq!(stats("added.txt"), (FileStatusKind::Added, 3, 0, false));
+        assert_eq!(stats("gone.txt"), (FileStatusKind::Deleted, 0, 3, false));
+        assert_eq!(stats("empty.txt"), (FileStatusKind::Added, 0, 0, false));
+        assert_eq!(stats("blob.bin"), (FileStatusKind::Added, 0, 0, true));
+    }
 }

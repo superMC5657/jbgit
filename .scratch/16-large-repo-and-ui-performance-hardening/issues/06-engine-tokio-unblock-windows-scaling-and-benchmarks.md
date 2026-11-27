@@ -75,3 +75,11 @@ Priority: P1
 ## Comments
 
 - **2026-11-28**：基于 `jbgit-engine` 与 `jbgit-core` 性能审计创建本 P1 工单，治理 Tokio 阻塞、Windows 进程/状态风暴、Watcher 过滤效率与 Criterion 基准覆盖缺口。
+- **2026-11-28**：用户将本工单本轮范围收窄为两项（Watcher 治理 + 提交详情快速路径），其余条目延后，本工单保持 `ready-for-agent`。
+  - **Watcher（`watcher.rs`）**：
+    - `.git/`：保留递归监听（Windows `ReadDirectoryChangesW` 无法排除 `objects/` 子树；`MERGE_HEAD`、`rebase-merge/` 等不存在的路径无法预先注册；非裸仓库的工作区递归监听本就会收到 `.git/**` 事件），改为在 `classify_git_meta_path` 顶部做零分配的首段路径判定：`objects/`、`logs/` 首段即丢弃，`*.lock`、`COMMIT_EDITMSG`、`hooks/`、`info/`、`lfs/`、`modules/`、其他 `worktrees/`、`config`、`FETCH_HEAD`、`ORIG_HEAD` 等不在白名单内者照旧返回 `None`。白名单（`index` → StageStatus；`HEAD`、`refs/**`、`packed-refs`、`shallow`、`MERGE_HEAD`、`REBASE_HEAD`、`CHERRY_PICK_HEAD`、`REVERT_HEAD`、`BISECT_LOG`、`rebase-merge/**`、`rebase-apply/**` → RefsAndGraph）与改动前逐项一致，不会漏掉现有刷新；仅当原始 `strip_prefix` 失败时才走字符串归一化慢路径。
+    - 工作区：`WorktreeEventFilter` 改为**祖先目录缓存**——先零分配地自深向浅查已缓存的祖先结论，命中被忽略祖先即按前缀拒绝；有未知祖先时自浅向深查询并缓存，遇到第一个被忽略目录即停止。`dist/a/b/c.js`、`out/x/y/z.o` 之类深层风暴只需 1 次 libgit2 查询。缓存满时先淘汰过期项再整体清空（仍以 `IGNORE_DIR_CACHE_MAX` 为上限）。去掉了批内 `HashSet`/`Vec` 分配（debouncer 已按路径去重），先单独扫描 `.gitignore` 变更再逐条判定、首个相关路径即返回。
+    - `statically_relevant_rel_path` 与 `classify_git_meta_path` 统一使用 `rel_path_under`：常规拼写走 `Path::strip_prefix` 借用结果，失败时回退到对 Windows `\\?\` 前缀与盘符/目录大小写不敏感的归一化比较（同时去掉了旧实现中的 `to_ascii_lowercase` 双分配）。
+  - **提交详情（`details/commit_changes.rs`）**：`load_commit_details_sync` 改用 `line_stats`，任一侧为空（纯 `Added`/`Deleted`，以及清空/填充文件）时直接按 `\n` 计数（非空且无尾换行的末段计 1 行，与 imara `&str` 行切分一致），跳过 `InternedInput` + `Diff::compute` + `postprocess_lines`；二进制判定不变。`resolve_compare_with_local` 在索引条目数超过 `LARGE_INDEX_ENTRIES` 时跳过 `find_similar` 重命名配对（与状态扫描策略一致，此时显示为删除 + 新增）。
+  - **测试**：`watcher.rs` 新增 `.git/objects` 等风暴路径忽略且 `HEAD`/`index`/`refs/heads/x`/`MERGE_HEAD`/`rebase-merge/*` 仍触发、Windows `\\?\` 与盘符大小写归一化（`cfg(windows)`）、祖先缓存（500 个不同深层目录仅 1 次查询）与缓存有界测试；`commit_changes.rs` 新增空文件/有无尾换行/CRLF/非法 UTF-8 下快速路径与完整 diff 结果相等、取消检查，以及真实仓库中新增/删除/空文件/二进制文件统计的端到端测试。`cargo test -p jbgit-engine --locked` 与 `cargo clippy -p jbgit-engine -p jbgit-tui --all-targets -- -D warnings` 通过。
+  - **延后**：Tokio 线程解阻、`git --version` 双探测、多选批量验签、`WindowsJobGuard`、`unstage_path_in_index`、`UpdateProject`/CRLF 子进程合并、CLI 静默缓冲、blame `--porcelain`、Criterion 基准补齐等仍未处理，对应任务框保持未勾选。`recurse_untracked_dirs` 默认值（`StatusScanMode::Always`）属于产品决策而非性能修复，本轮不改动。
