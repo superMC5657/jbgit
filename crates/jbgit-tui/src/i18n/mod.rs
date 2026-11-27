@@ -1013,11 +1013,19 @@ custom_extra = "自定义内容"
         ] {
             let en_s = en.t(key);
             let zh_s = zh.t(key);
-            assert!(en_s.contains("press I"), "{key} en-US: {en_s}");
+            assert!(en_s.contains("press i"), "{key} en-US: {en_s}");
+            assert!(!en_s.contains("press I"), "{key} en-US: {en_s}");
             assert!(!en_s.contains("press b"), "{key} en-US: {en_s}");
-            assert!(zh_s.contains("按 I"), "{key} zh-CN: {zh_s}");
+            assert!(zh_s.contains("按 i"), "{key} zh-CN: {zh_s}");
+            assert!(!zh_s.contains("按 I"), "{key} zh-CN: {zh_s}");
             assert!(!zh_s.contains("按 b"), "{key} zh-CN: {zh_s}");
         }
+        let en_affected = en.t("view.log_details.no_affected_changes");
+        let zh_affected = zh.t("view.log_details.no_affected_changes");
+        assert!(en_affected.contains("z a"), "en-US: {en_affected}");
+        assert!(!en_affected.contains("press 'a'"), "en-US: {en_affected}");
+        assert!(zh_affected.contains("z a"), "zh-CN: {zh_affected}");
+        assert!(!zh_affected.contains("按 a"), "zh-CN: {zh_affected}");
     }
 
     #[test]

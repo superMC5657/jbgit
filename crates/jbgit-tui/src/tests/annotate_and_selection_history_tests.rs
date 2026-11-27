@@ -153,7 +153,7 @@ fn annotate_entry_points_menus_and_alt_g_open_blame_modal() {
         .find(|i| i.label.contains("Annotate"))
         .expect("log_change_menu_items includes Annotate");
     assert!(ann_item.is_enabled());
-    assert_eq!(ann_item.shortcut.as_deref(), Some("Alt+G"));
+    assert_eq!(ann_item.shortcut.as_deref(), Some("b"));
 
     ts.send_key(KeyCode::Char('g'), KeyModifiers::ALT);
     assert!(matches!(

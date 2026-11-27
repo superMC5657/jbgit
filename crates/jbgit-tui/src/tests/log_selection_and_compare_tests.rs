@@ -320,7 +320,7 @@ fn non_contiguous_two_commit_compare_versions_and_swap_direction() {
         .collect();
     assert_eq!(added, vec!["line2", "line3", "line4"]);
 
-    // Deliver bundle to TUI and verify Swap Comparison Direction via `X` reverses base <-> target.
+    // Deliver bundle to TUI and verify Swap Comparison Direction via `x` reverses base <-> target.
     ts.deliver_engine_event(EngineEvent::CommitDetailsLoaded {
         slot: RequestSlotId::LogCommitDetails,
         bundle,
@@ -345,7 +345,7 @@ fn non_contiguous_two_commit_compare_versions_and_swap_direction() {
     );
 
     let _ = ts.take_requests();
-    ts.send_key(KeyCode::Char('X'), KeyModifiers::SHIFT);
+    ts.send_key(KeyCode::Char('x'), KeyModifiers::NONE);
     let swap_reqs = ts.take_requests();
     assert!(
         swap_reqs.iter().any(|(r, _)| matches!(
@@ -571,8 +571,9 @@ fn show_only_affected_changes_filters_tree_and_toggles_with_badge_key_and_config
         "{txt_off}"
     );
 
-    // Pressing `a` toggles Show Only Affected Changes back ON.
+    // Pressing `z a` toggles Show Only Affected Changes back ON.
     ts.dispatch(Action::FocusPane(PaneId::LogChangesTree));
+    ts.send_key(KeyCode::Char('z'), KeyModifiers::NONE);
     ts.send_key(KeyCode::Char('a'), KeyModifiers::NONE);
     assert!(ts.state().log.presentation.show_only_affected_changes);
     assert_eq!(
@@ -646,7 +647,8 @@ fn issue03_new_log_shortcuts_resolve_without_shadowing_across_all_presets() {
             "Space in LogBranchesTree must remain ToggleFavorite on {preset:?}"
         );
 
-        // 2. `a` in LogCommitTable / LogChangesTree / LogDetailsDiff -> ToggleOnlyAffectedChanges.
+        // 2. `z a` in LogCommitTable / LogChangesTree / LogDetailsDiff -> ToggleOnlyAffectedChanges.
+        let key_z = KeyEvent::new(KeyCode::Char('z'), KeyModifiers::NONE);
         let key_a = KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE);
         for pane in [
             PaneId::LogCommitTable,
@@ -654,10 +656,10 @@ fn issue03_new_log_shortcuts_resolve_without_shadowing_across_all_presets() {
             PaneId::LogDetailsDiff,
         ] {
             ts.dispatch(Action::FocusPane(pane));
-            let m = check_scopes(&[key_a], ts.state());
+            let m = check_scopes(&[key_z, key_a], ts.state());
             assert!(
                 matches!(m, crate::keymap::MatchResult::Exact(b) if b.run == KeyAction::ToggleOnlyAffectedChanges),
-                "`a` must resolve to ToggleOnlyAffectedChanges on {preset:?} / {pane:?}"
+                "`z a` must resolve to ToggleOnlyAffectedChanges on {preset:?} / {pane:?}"
             );
             assert_eq!(
                 catalog::shortcut_for_action(
@@ -666,17 +668,17 @@ fn issue03_new_log_shortcuts_resolve_without_shadowing_across_all_presets() {
                     &KeyAction::ToggleOnlyAffectedChanges,
                 )
                 .as_deref(),
-                Some("a"),
+                Some("z a"),
                 "ToggleOnlyAffectedChanges must not be shadowed on {preset:?} / {pane:?}"
             );
         }
 
-        // 3. `X` when CompareVersions is active -> SwapCompareDirection across panes.
+        // 3. `x` when CompareVersions is active -> SwapCompareDirection across panes.
         ts.dispatch(Action::CompareVersions {
             base: oid(1),
             target: oid(5),
         });
-        let key_x = KeyEvent::new(KeyCode::Char('X'), KeyModifiers::SHIFT);
+        let key_x = KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE);
         for pane in [
             PaneId::LogCommitTable,
             PaneId::LogChangesTree,
@@ -686,7 +688,7 @@ fn issue03_new_log_shortcuts_resolve_without_shadowing_across_all_presets() {
             let m = check_scopes(&[key_x], ts.state());
             assert!(
                 matches!(m, crate::keymap::MatchResult::Exact(b) if b.run == KeyAction::SwapCompareDirection),
-                "`X` must resolve to SwapCompareDirection on {preset:?} / {pane:?}"
+                "`x` must resolve to SwapCompareDirection on {preset:?} / {pane:?}"
             );
             assert_eq!(
                 catalog::shortcut_for_action(
@@ -695,9 +697,25 @@ fn issue03_new_log_shortcuts_resolve_without_shadowing_across_all_presets() {
                     &KeyAction::SwapCompareDirection,
                 )
                 .as_deref(),
-                Some("X"),
+                Some("x"),
                 "SwapCompareDirection must not be shadowed on {preset:?} / {pane:?}"
             );
         }
+
+        // Also ensure ZoomedDiff surfaces SwapCompareDirection (`x`) in `?` Help.
+        ts.state_mut().log.details.diff.zoomed = true;
+        let help = crate::keymap::build_help_rows(ts.state(), "");
+        assert!(
+            help.iter().any(|row| matches!(
+                row,
+                crate::keymap::HelpRow::Entry {
+                    run: Some(KeyAction::SwapCompareDirection),
+                    keys,
+                    ..
+                } if keys.contains('x')
+            )),
+            "ZoomedDiff `?` help must include SwapCompareDirection (`x`) on {preset:?}"
+        );
+        ts.state_mut().log.details.diff.zoomed = false;
     }
 }

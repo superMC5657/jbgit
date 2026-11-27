@@ -78,7 +78,7 @@ fn footer_hints_match_active_mode_dock_stash_and_console_probe() {
     assert!(diff_footer.contains("File"), "{diff_footer}");
     assert!(diff_footer.contains("Zoom"), "{diff_footer}");
     assert!(!diff_footer.contains("Dock"), "{diff_footer}");
-    assert!(!diff_footer.contains("Split"), "{diff_footer}");
+    assert!(diff_footer.contains("Split"), "{diff_footer}");
     assert!(!diff_footer.contains("Context"), "{diff_footer}");
 
     let dock_ov: KeymapConfigOverlay = toml::from_str(
@@ -131,7 +131,7 @@ prepend_keymap = [
     assert!(stash_footer.contains("Hunk"), "{stash_footer}");
     assert!(stash_footer.contains("File"), "{stash_footer}");
     assert!(!stash_footer.contains("Group"), "{stash_footer}");
-    ts.send_key(KeyCode::Char('z'), KeyModifiers::NONE);
+    ts.send_key(KeyCode::Char('f'), KeyModifiers::NONE);
     assert!(!ts.state().log.details.diff.zoomed);
 
     // 6. ConsoleCommandList `p` actually triggers status probe instead of global git_pull
@@ -360,10 +360,10 @@ fn footer_and_help_respect_amend_readonly_author_edit_speed_search_and_console_d
     let jb_footer = row_text(&buf, 39);
     assert!(jb_footer.contains("Type"), "{jb_footer}");
     assert!(jb_footer.contains("Ctrl+F"), "{jb_footer}");
-    assert!(jb_footer.contains("Ctrl+T"), "{jb_footer}");
     assert!(jb_footer.contains("Del"), "{jb_footer}");
     assert!(!jb_footer.contains("Checkout"), "{jb_footer}");
     assert!(!jb_footer.contains("Fetch"), "{jb_footer}");
+    assert!(!jb_footer.contains("Pull"), "{jb_footer}");
 
     // 4. ConsoleOutputDetail help does not advertise GitStatusProbe and `p` does not trigger probe
     let mut console_ts = TestSession::with_snapshot(snapshot());
@@ -404,16 +404,16 @@ fn footer_selective_show_hint_and_declaration_order() {
     let filter_pos = default_footer.find("Filter").expect(&default_footer);
     let menu_pos = default_footer.find("Menu").expect(&default_footer);
     assert!(filter_pos < menu_pos, "{default_footer}");
-    assert!(default_footer.contains("Copy hash"), "{default_footer}");
+    assert!(default_footer.contains("Checkout"), "{default_footer}");
     assert!(default_footer.contains("Help"), "{default_footer}");
 
-    // Hide copy_hash, promote uncommit via prepend_keymap, and hide help
+    // Hide checkout, promote uncommit via prepend_keymap, and hide help
     let ov: KeymapConfigOverlay = toml::from_str(
         r#"
 [log]
 prepend_keymap = [
     { on = "u", run = "uncommit", show_hint = true },
-    { on = "y", run = "copy_hash", show_hint = false },
+    { on = "c", run = "checkout", show_hint = false },
 ]
 
 [global]
@@ -428,7 +428,7 @@ prepend_keymap = [
     let buf = ts.render(200, 30);
     let updated_footer = row_text(&buf, 29);
     assert!(updated_footer.contains("Uncommit"), "{updated_footer}");
-    assert!(!updated_footer.contains("Copy hash"), "{updated_footer}");
+    assert!(!updated_footer.contains("Checkout"), "{updated_footer}");
     assert!(!updated_footer.contains("Help"), "{updated_footer}");
     let uncommit_pos = updated_footer.find("Uncommit").expect(&updated_footer);
     let filter_pos2 = updated_footer.find("Filter").expect(&updated_footer);
@@ -478,22 +478,22 @@ fn footer_overflow_single_line_multiline_and_hidden() {
         row_last.contains(" +"),
         "expected +N overflow badge: {row_last}"
     );
-    assert!(!row_last.contains("Parent"), "{row_last}");
-    assert!(!row_last.contains("Refresh"), "{row_last}");
+    assert!(!row_last.contains("Pull"), "{row_last}");
+    assert!(!row_last.contains("Push"), "{row_last}");
 
     // 2. Multi-line footer (footer_max_lines = 2) at 60 cols
     ts.state_mut().config.keymap.footer_max_lines = 2;
     let buf = ts.render(60, 24);
     let row_22 = row_text(&buf, 22);
     let row_23 = row_text(&buf, 23);
+    assert!(row_22.contains("Changes"), "{row_22}");
     assert!(row_22.contains("Filter"), "{row_22}");
-    assert!(row_22.contains("Diff"), "{row_22}");
     assert!(
         !row_22.contains("Help"),
         "Help must sit on bottom row: {row_22}"
     );
     assert!(row_23.contains("Help"), "{row_23}");
-    assert!(row_23.contains("Copy hash"), "{row_23}");
+    assert!(row_22.contains("Checkout"), "{row_22}");
     assert!(row_23.contains("Go to"), "{row_23}");
     assert!(row_23.contains(" +"), "expected +N on 2nd line: {row_23}");
 
@@ -506,7 +506,7 @@ fn footer_overflow_single_line_multiline_and_hidden() {
         row_text(&buf, 22),
         row_text(&buf, 23)
     );
-    assert!(combined_footer.contains("Refresh"), "{combined_footer}");
+    assert!(combined_footer.contains("Push"), "{combined_footer}");
     assert!(combined_footer.contains("Help"), "{combined_footer}");
     assert!(
         !combined_footer.contains(" +"),
@@ -566,7 +566,7 @@ prepend_keymap = [
 #[test]
 fn footer_console_probe_vim_diff_noop_append_and_which_key_non_overlap() {
     // 1. Default ConsoleCommandList shows `p Status` without `Pull`;
-    //    rebinding git_status_probe in [console] shows `g s Status` and unshadows `p Pull`.
+    //    rebinding git_status_probe in [console] shows `g s Status` while Pull stays scoped to Log.
     let mut console_ts = TestSession::with_snapshot(snapshot());
     console_ts.state_mut().config.keymap = KeymapConfig::for_preset(KeymapPreset::Default);
     console_ts.dispatch(Action::SwitchTab(WorkspaceTab::Console));
@@ -603,7 +603,7 @@ key_bindings = [
         "{custom_console_footer}"
     );
     assert!(
-        custom_console_footer.contains(" p  Pull"),
+        !custom_console_footer.contains("Pull"),
         "{custom_console_footer}"
     );
 
@@ -632,14 +632,14 @@ key_bindings = [
         "Space in Vim CommitDiffPreview should still stage: {space_actions:?}"
     );
 
-    // 3. Unbinding `r` via noop in [global] shows surviving `F5 Refresh` in footer.
+    // 3. Unbinding `B` via noop in [global] shows surviving `Ctrl+`  Branches` in footer.
     let mut noop_ts = TestSession::with_snapshot(snapshot());
     noop_ts.state_mut().config.keymap = KeymapConfig::for_preset(KeymapPreset::Default);
     let noop_ov: KeymapConfigOverlay = toml::from_str(
         r#"
 [global]
 prepend_keymap = [
-    { on = "r", run = "noop" },
+    { on = "B", run = "noop" },
 ]
 "#,
     )
@@ -649,9 +649,9 @@ prepend_keymap = [
     noop_ts.dispatch(Action::FocusPane(PaneId::LogCommitTable));
     let buf = noop_ts.render(220, 30);
     let noop_footer = row_text(&buf, 29);
-    assert!(noop_footer.contains(" F5  Refresh"), "{noop_footer}");
+    assert!(noop_footer.contains(" Ctrl+`  Branches"), "{noop_footer}");
 
-    // 4. [log] append_keymap alias preserves `y Copy hash` in its original declaration position.
+    // 4. [log] append_keymap alias preserves `c Checkout` in its original declaration position.
     let mut append_ts = TestSession::with_snapshot(snapshot());
     append_ts.state_mut().config.keymap = KeymapConfig::for_preset(KeymapPreset::Default);
     append_ts.dispatch(Action::SwitchTab(WorkspaceTab::Log));
@@ -660,7 +660,7 @@ prepend_keymap = [
         r#"
 [log]
 append_keymap = [
-    { on = "Y", run = "copy_hash" },
+    { on = "C", run = "checkout" },
 ]
 "#,
     )
@@ -672,11 +672,11 @@ append_keymap = [
         .merge_overlay(&append_ov);
     let buf = append_ts.render(200, 30);
     let append_footer = row_text(&buf, 29);
-    let new_branch_pos = append_footer.find("Branch").expect(&append_footer);
-    let copy_pos = append_footer.find(" y  Copy hash").expect(&append_footer);
+    let diff_pos = append_footer.find("Diff").expect(&append_footer);
+    let checkout_pos = append_footer.find(" c  Checkout").expect(&append_footer);
     let goto_pos = append_footer.find("Go to").expect(&append_footer);
     assert!(
-        new_branch_pos < copy_pos && copy_pos < goto_pos,
+        diff_pos < checkout_pos && checkout_pos < goto_pos,
         "{append_footer}"
     );
 
@@ -691,11 +691,11 @@ append_keymap = [
     let row_22 = row_text(&buf, 22);
     let row_23 = row_text(&buf, 23);
     assert!(
-        row_22.contains("Filter") && row_22.contains("Copy hash"),
+        row_22.contains("Changes") && row_22.contains("Filter") && row_22.contains("Checkout"),
         "{row_22}"
     );
     assert!(
-        row_23.contains("Go to") && row_23.contains("Help"),
+        row_23.contains("Branches") && row_23.contains("Help"),
         "{row_23}"
     );
     let above_footer = (0..22)
@@ -777,7 +777,7 @@ prepend_keymap = [
     )
     .unwrap();
     bp_ts.state_mut().config.keymap.merge_overlay(&ov);
-    bp_ts.send_key(KeyCode::Char('b'), KeyModifiers::NONE);
+    bp_ts.send_key(KeyCode::Char('B'), KeyModifiers::SHIFT);
     let buf = bp_ts.render(140, 40);
     let screen = screen_text(&buf);
     assert!(
@@ -791,7 +791,7 @@ prepend_keymap = [
         "clicking backdrop outside BranchesQuickView should close it"
     );
 
-    bp_ts.send_key(KeyCode::Char('b'), KeyModifiers::NONE);
+    bp_ts.send_key(KeyCode::Char('B'), KeyModifiers::SHIFT);
     bp_ts.send_key(KeyCode::F(7), KeyModifiers::NONE);
     assert!(
         matches!(
@@ -823,7 +823,7 @@ prepend_keymap = [
         .config
         .keymap
         .merge_overlay(&shadow_ov);
-    shadow_ts.send_key(KeyCode::Char('b'), KeyModifiers::NONE);
+    shadow_ts.send_key(KeyCode::Char('B'), KeyModifiers::SHIFT);
     let buf = shadow_ts.render(140, 40);
     let shadow_screen = screen_text(&buf);
     let shadow_new_branch_line = shadow_screen
@@ -865,7 +865,7 @@ prepend_keymap = [
         .config
         .keymap
         .merge_overlay(&unbind_ov);
-    unbind_ts.send_key(KeyCode::Char('b'), KeyModifiers::NONE);
+    unbind_ts.send_key(KeyCode::Char('B'), KeyModifiers::SHIFT);
     let buf = unbind_ts.render(140, 40);
     let unbind_screen = screen_text(&buf);
     assert!(
@@ -1191,8 +1191,8 @@ fn annotate_alt_g_resolves_without_shadowing_across_all_presets() {
             );
             assert_eq!(
                 sc.as_deref(),
-                Some("Alt+G"),
-                "expected non-shadowed Alt+G shortcut display on {preset:?} / {tab:?} / {pane:?}"
+                Some("b"),
+                "expected non-shadowed b shortcut display on {preset:?} / {tab:?} / {pane:?}"
             );
         }
     }
@@ -1236,8 +1236,8 @@ fn resolve_conflicts_alt_c_resolves_without_shadowing_across_all_presets() {
             );
             assert_eq!(
                 sc.as_deref(),
-                Some("Alt+C"),
-                "expected non-shadowed Alt+C shortcut display on {preset:?} / {tab:?} / {pane:?}"
+                Some("C"),
+                "expected non-shadowed C shortcut display on {preset:?} / {tab:?} / {pane:?}"
             );
         }
     }
@@ -1428,12 +1428,7 @@ prepend_keymap = [
         );
     }
     def_ts.dispatch(Action::FocusPane(PaneId::CommitDiffPreview));
-    for code in [
-        KeyCode::Char('s'),
-        KeyCode::Char('u'),
-        KeyCode::Char('+'),
-        KeyCode::Char('-'),
-    ] {
+    for code in [KeyCode::Char('+'), KeyCode::Char('-')] {
         assert!(
             route_terminal_event(
                 &Event::Key(KeyEvent::new(code, KeyModifiers::NONE)),
@@ -1443,6 +1438,22 @@ prepend_keymap = [
             "{code:?} should not fire in Default CommitDiffPreview"
         );
     }
+    assert!(matches!(
+        route_terminal_event(
+            &Event::Key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::NONE)),
+            def_ts.state()
+        )
+        .as_slice(),
+        [Action::DiffToggleSideBySide(crate::app::DiffScope::Stage)]
+    ));
+    assert!(matches!(
+        route_terminal_event(
+            &Event::Key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::NONE)),
+            def_ts.state()
+        )
+        .as_slice(),
+        [Action::StageDiffUndoRollback]
+    ));
 
     let mut vim_ts = TestSession::with_snapshot(snapshot());
     vim_ts.state_mut().config.keymap = KeymapConfig::for_preset(KeymapPreset::Vim);
@@ -1612,6 +1623,7 @@ prepend_keymap = [
         r#"
 [diff]
 prepend_keymap = [
+    { on = [ "u" ], run = "noop" },
     { on = [ "<C-z>" ], run = "noop" },
 ]
 [commit]
@@ -1684,4 +1696,332 @@ append_keymap = [
         fallback_notice.contains('U'),
         "rollback toast must advertise unshadowed alias `U`: {fallback_notice:?}"
     );
+}
+
+#[test]
+fn streamlined_footer_bar_covers_all_13_panes_without_leaks_or_ghost_menus() {
+    let mut ts = TestSession::with_snapshot(snapshot());
+    ts.state_mut().config.keymap = KeymapConfig::for_preset(KeymapPreset::Default);
+
+    // 1. LogCommitTable: Enter Changes, /, Ctrl+D, c, g r, ., B, L, P, ?
+    ts.dispatch(Action::SwitchTab(WorkspaceTab::Log));
+    ts.dispatch(Action::FocusPane(PaneId::LogCommitTable));
+    let log_footer = row_text(&ts.render(180, 40), 39);
+    for expected in [
+        "Enter  Changes",
+        "/  Filter",
+        "Ctrl+D  Diff",
+        "c  Checkout",
+        "g r  Go to",
+        ".  Menu",
+        "B  Branches",
+        "L  Pull",
+        "P  Push",
+        "?  Help",
+    ] {
+        assert!(
+            log_footer.contains(expected),
+            "LogCommitTable missing {expected}: {log_footer}"
+        );
+    }
+    assert!(!log_footer.contains("Refresh"), "{log_footer}");
+
+    // 2. LogBranchesTree: Enter Filter, /, c, n, Space, d, ., ? (no Branches/Pull/Push/Go to)
+    ts.dispatch(Action::FocusPane(PaneId::LogBranchesTree));
+    let branch_footer = row_text(&ts.render(180, 40), 39);
+    for expected in [
+        "Enter  Filter",
+        "/  Search",
+        "c  Checkout",
+        "n  Branch",
+        "Space  Star",
+        "d  Delete",
+        ".  Menu",
+        "?  Help",
+    ] {
+        assert!(
+            branch_footer.contains(expected),
+            "LogBranchesTree missing {expected}: {branch_footer}"
+        );
+    }
+    for forbidden in ["Branches", "Pull", "Push", "Go to"] {
+        assert!(
+            !branch_footer.contains(forbidden),
+            "LogBranchesTree leaked {forbidden}: {branch_footer}"
+        );
+    }
+
+    // 3. LogChangesTree: Enter Diff, {/} Commit, h History, b Annotate, y Copy path, Esc Back, . Menu
+    ts.dispatch(Action::FocusPane(PaneId::LogChangesTree));
+    let changes_footer = row_text(&ts.render(180, 40), 39);
+    for expected in [
+        "Enter  Diff",
+        "{/}  Commit",
+        "h  History",
+        "b  Annotate",
+        "y  Copy path",
+        "Esc  Back",
+        ".  Menu",
+        "?  Help",
+    ] {
+        assert!(
+            changes_footer.contains(expected),
+            "LogChangesTree missing {expected}: {changes_footer}"
+        );
+    }
+    for forbidden in ["Checkout", "Go to", "Branches", "Pull", "Push"] {
+        assert!(
+            !changes_footer.contains(forbidden),
+            "LogChangesTree leaked {forbidden}: {changes_footer}"
+        );
+    }
+
+    // 4. LogDetailsDiff (Details mode): e Full Msg, Ctrl+D Diff, y Copy hash, Esc Back, ? Help (no . Menu)
+    ts.dispatch(Action::FocusPane(PaneId::LogDetailsDiff));
+    ts.state_mut().log.details.diff_preview = false;
+    let details_footer = row_text(&ts.render(180, 40), 39);
+    for expected in [
+        "e  Full Msg",
+        "Ctrl+D  Diff",
+        "y  Copy hash",
+        "Esc  Back",
+        "?  Help",
+    ] {
+        assert!(
+            details_footer.contains(expected),
+            "LogDetailsDiff(Details) missing {expected}: {details_footer}"
+        );
+    }
+    for forbidden in [
+        "Menu", "Filter", "Checkout", "Go to", "Branches", "Pull", "Push",
+    ] {
+        assert!(
+            !details_footer.contains(forbidden),
+            "LogDetailsDiff(Details) leaked {forbidden}: {details_footer}"
+        );
+    }
+
+    // 5. LogDetailsDiff (Diff preview mode): [/], {/}, /, s, f, Esc Back, . Menu
+    ts.state_mut().log.details.diff_preview = true;
+    let log_diff_footer = row_text(&ts.render(180, 40), 39);
+    for expected in [
+        "[/]  Hunk",
+        "{/}  File",
+        "/  Search",
+        "s  Split",
+        "f  Zoom",
+        "Esc  Back",
+        ".  Menu",
+        "?  Help",
+    ] {
+        assert!(
+            log_diff_footer.contains(expected),
+            "LogDetailsDiff(Diff) missing {expected}: {log_diff_footer}"
+        );
+    }
+    for forbidden in ["Filter", "Checkout", "Go to", "Branches", "Pull", "Push"] {
+        assert!(
+            !log_diff_footer.contains(forbidden),
+            "LogDetailsDiff(Diff) leaked {forbidden}: {log_diff_footer}"
+        );
+    }
+
+    // 6. ZoomedDiff: [/], {/}, /, s, w Wrap, f/Esc Exit zoom, ? Help
+    ts.state_mut().log.details.diff.zoomed = true;
+    let zoomed_footer = row_text(&ts.render(180, 40), 39);
+    for expected in [
+        "[/]  Hunk",
+        "{/}  File",
+        "/  Search",
+        "s  Split",
+        "w  Wrap",
+        "f/Esc  Exit zoom",
+        "?  Help",
+    ] {
+        assert!(
+            zoomed_footer.contains(expected),
+            "ZoomedDiff missing {expected}: {zoomed_footer}"
+        );
+    }
+    ts.state_mut().log.details.diff.zoomed = false;
+
+    // 7. CommitChangesTree: Space, c, Ctrl+S, a, d, ., P Push, ? Help
+    ts.dispatch(Action::SwitchTab(WorkspaceTab::Commit));
+    ts.dispatch(Action::FocusPane(PaneId::CommitChangesTree));
+    let commit_footer = row_text(&ts.render(180, 40), 39);
+    for expected in [
+        "Space  Stage",
+        "c  Message",
+        "Ctrl+S  Commit",
+        "a  Amend",
+        "d  Discard",
+        ".  Menu",
+        "P  Push",
+        "?  Help",
+    ] {
+        assert!(
+            commit_footer.contains(expected),
+            "CommitChangesTree missing {expected}: {commit_footer}"
+        );
+    }
+    assert!(!commit_footer.contains("Branches"), "{commit_footer}");
+    assert!(!commit_footer.contains("Pull"), "{commit_footer}");
+
+    // 8. CommitMessageEditor: Esc Exit edit, Ctrl+S, Alt+A, Ctrl+E
+    ts.dispatch(Action::FocusPane(PaneId::CommitMessageEditor));
+    let editor_footer = row_text(&ts.render(180, 40), 39);
+    for expected in [
+        "Esc  Exit edit",
+        "Ctrl+S  Commit",
+        "Alt+A  Amend",
+        "Ctrl+E  Edit",
+    ] {
+        assert!(
+            editor_footer.contains(expected),
+            "CommitMessageEditor missing {expected}: {editor_footer}"
+        );
+    }
+    assert!(!editor_footer.contains("Menu"), "{editor_footer}");
+
+    // 9. CommitDiffPreview (writable): Space, v, d, [/], {/}, c, Esc Back, . Menu (no / Search or s Split)
+    ts.dispatch(Action::FocusPane(PaneId::CommitDiffPreview));
+    let commit_diff_footer = row_text(&ts.render(180, 40), 39);
+    for expected in [
+        "Space  Stage",
+        "v  Visual",
+        "d  Rollback",
+        "[/]  Hunk",
+        "{/}  File",
+        "c  Message",
+        "Esc  Back",
+        ".  Menu",
+    ] {
+        assert!(
+            commit_diff_footer.contains(expected),
+            "CommitDiffPreview missing {expected}: {commit_diff_footer}"
+        );
+    }
+    for forbidden in ["Search", "Split", "Amend", "Discard", "Push"] {
+        assert!(
+            !commit_diff_footer.contains(forbidden),
+            "CommitDiffPreview leaked {forbidden}: {commit_diff_footer}"
+        );
+    }
+
+    // 10. StashList: Enter Inspect, a Apply, o Pop, n New, d Drop, . Menu
+    ts.dispatch(Action::SwitchTab(WorkspaceTab::Stash));
+    ts.dispatch(Action::FocusPane(PaneId::StashList));
+    let stash_footer = row_text(&ts.render(180, 40), 39);
+    for expected in [
+        "Enter  Inspect",
+        "a  Apply",
+        "o  Pop",
+        "n  New",
+        "d  Drop",
+        ".  Menu",
+    ] {
+        assert!(
+            stash_footer.contains(expected),
+            "StashList missing {expected}: {stash_footer}"
+        );
+    }
+
+    // 11. StashDiffPreview: [/], {/}, /, s, Esc Back, . Menu (no Apply/Pop/Drop)
+    ts.dispatch(Action::FocusPane(PaneId::StashDiffPreview));
+    let stash_diff_footer = row_text(&ts.render(180, 40), 39);
+    for expected in [
+        "[/]  Hunk",
+        "{/}  File",
+        "/  Search",
+        "s  Split",
+        "Esc  Back",
+        ".  Menu",
+    ] {
+        assert!(
+            stash_diff_footer.contains(expected),
+            "StashDiffPreview missing {expected}: {stash_diff_footer}"
+        );
+    }
+    for forbidden in ["Apply", "Pop", "Drop", "Branches", "Pull", "Push"] {
+        assert!(
+            !stash_diff_footer.contains(forbidden),
+            "StashDiffPreview leaked {forbidden}: {stash_diff_footer}"
+        );
+    }
+
+    // 12. ConsoleCommandList: Enter Output, p Status, . Menu, ? Help
+    ts.dispatch(Action::SwitchTab(WorkspaceTab::Console));
+    ts.dispatch(Action::FocusPane(PaneId::ConsoleCommandList));
+    let console_list_footer = row_text(&ts.render(180, 40), 39);
+    for expected in ["Enter  Output", "p  Status", ".  Menu", "?  Help"] {
+        assert!(
+            console_list_footer.contains(expected),
+            "ConsoleCommandList missing {expected}: {console_list_footer}"
+        );
+    }
+
+    // 13. ConsoleOutputDetail: Ctrl+D/Ctrl+U Page, g g/G Top/End, Esc Back, ? Help (no . Menu)
+    ts.dispatch(Action::FocusPane(PaneId::ConsoleOutputDetail));
+    let console_detail_footer = row_text(&ts.render(180, 40), 39);
+    for expected in [
+        "Ctrl+D/Ctrl+U  Page",
+        "g g/G  Top/End",
+        "Esc  Back",
+        "?  Help",
+    ] {
+        assert!(
+            console_detail_footer.contains(expected),
+            "ConsoleOutputDetail missing {expected}: {console_detail_footer}"
+        );
+    }
+    assert!(
+        !console_detail_footer.contains("Menu"),
+        "{console_detail_footer}"
+    );
+}
+
+#[test]
+fn uppercase_global_shortcuts_work_unshadowed_across_all_non_editor_panes() {
+    use crate::keymap::actions::check_scopes;
+
+    let mut ts = TestSession::with_snapshot(snapshot());
+    ts.state_mut().config.keymap = KeymapConfig::for_preset(KeymapPreset::Default);
+    let uppercase_globals = [
+        ('B', KeyAction::ToggleBranchesPopup),
+        ('F', KeyAction::GitFetch),
+        ('L', KeyAction::GitPull),
+        ('P', KeyAction::GitPush),
+        ('U', KeyAction::UpdateProject),
+        ('R', KeyAction::Refresh),
+        ('O', KeyAction::SwitchRepository),
+        ('W', KeyAction::Worktrees),
+        ('C', KeyAction::ResolveConflicts),
+    ];
+    let panes = [
+        (WorkspaceTab::Log, PaneId::LogBranchesTree, false),
+        (WorkspaceTab::Log, PaneId::LogCommitTable, false),
+        (WorkspaceTab::Log, PaneId::LogChangesTree, false),
+        (WorkspaceTab::Log, PaneId::LogDetailsDiff, false),
+        (WorkspaceTab::Log, PaneId::LogDetailsDiff, true),
+        (WorkspaceTab::Commit, PaneId::CommitChangesTree, false),
+        (WorkspaceTab::Commit, PaneId::CommitDiffPreview, false),
+        (WorkspaceTab::Stash, PaneId::StashList, false),
+        (WorkspaceTab::Stash, PaneId::StashDiffPreview, false),
+        (WorkspaceTab::Console, PaneId::ConsoleCommandList, false),
+        (WorkspaceTab::Console, PaneId::ConsoleOutputDetail, false),
+    ];
+
+    for (tab, pane, diff_preview) in panes {
+        ts.dispatch(Action::SwitchTab(tab));
+        ts.dispatch(Action::FocusPane(pane));
+        ts.state_mut().log.details.diff_preview = diff_preview;
+        for (ch, expected) in &uppercase_globals {
+            let key = KeyEvent::new(KeyCode::Char(*ch), KeyModifiers::SHIFT);
+            let matched = check_scopes(&[key], ts.state());
+            assert!(
+                matches!(matched, crate::keymap::MatchResult::Exact(b) if b.run == *expected),
+                "uppercase '{ch}' must resolve to {expected:?} in {tab:?}/{pane:?} (diff_preview={diff_preview})"
+            );
+        }
+    }
 }

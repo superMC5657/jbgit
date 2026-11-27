@@ -181,6 +181,23 @@ fn current_context_rows(state: &AppState) -> Vec<HelpRow> {
         ));
     }
 
+    if super::actions::is_log_diff_zoomed(state) {
+        let zoomed_log_bindings: Vec<KeyBindingConfig> = km
+            .bindings_for(KeymapScope::Log)
+            .iter()
+            .filter(|b| b.run == KeyAction::SwapCompareDirection)
+            .cloned()
+            .collect();
+        if !zoomed_log_bindings.is_empty() {
+            out.extend(collect_merged_entries(
+                state,
+                &zoomed_log_bindings,
+                i18n.t(scope_label_key(KeymapScope::Diff)),
+                true,
+            ));
+        }
+    }
+
     if let Some(trailing) = structural.help_trailing {
         out.push(HelpRow::Entry {
             keys: trailing.key,

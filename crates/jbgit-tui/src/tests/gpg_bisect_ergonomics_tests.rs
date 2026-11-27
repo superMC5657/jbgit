@@ -589,13 +589,13 @@ fn issue_14_keymaps_and_i18n_have_no_conflicts_across_all_presets() {
                 }
             }
         }
-        // Verify [diff] does not shadow [global] `b` (toggle_branches_popup).
+        // Verify [diff] does not shadow [global] `B` (toggle_branches_popup).
         assert!(
             !km.diff
                 .key_bindings
                 .iter()
-                .any(|b| b.on.as_slice() == ["b"] && b.run != KeyAction::ToggleBranchesPopup),
-            "preset {preset:?}: [diff] must not bind `b` and shadow [global] toggle_branches_popup"
+                .any(|b| b.on.as_slice() == ["B"] && b.run != KeyAction::ToggleBranchesPopup),
+            "preset {preset:?}: [diff] must not bind `B` and shadow [global] toggle_branches_popup"
         );
         // Verify Bisect global shortcuts are bound in every preset.
         for ka in [

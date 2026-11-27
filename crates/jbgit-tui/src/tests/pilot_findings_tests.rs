@@ -962,8 +962,8 @@ fn stage_diff_rollback_toast_distinguishes_hunk_from_visual_line_selection() {
         "visual selection rollback must use line wording `选中行`, got: {lines_notice:?}"
     );
     assert!(
-        lines_notice.contains("Ctrl+Z"),
-        "default rollback toast must mention Ctrl+Z, got: {lines_notice:?}"
+        lines_notice.contains("(u "),
+        "default rollback toast must mention `u`, got: {lines_notice:?}"
     );
 
     // 3. Rebinding undo_rollback updates the rollback toast key dynamically; unbinding omits it.
@@ -971,6 +971,7 @@ fn stage_diff_rollback_toast_distinguishes_hunk_from_visual_line_selection() {
         r#"
 [diff]
 prepend_keymap = [
+    { on = "u", run = "noop" },
     { on = "<C-z>", run = "noop" },
     { on = "<A-z>", run = "undo_rollback" },
 ]
@@ -1119,8 +1120,8 @@ fn unshallow_snapshot_evicts_cached_commit_details_and_rerequests() {
     );
 }
 
-/// Code-review regression (P2-03 & CS-6.6): `c -> CopyFilePath` must not leak when
-/// Log diff is zoomed, must appear in `?` Help, and must respect explicit `c -> noop`.
+/// Code-review regression (P2-03 & CS-6.6): `y -> CopyFilePath` must not leak when
+/// Log diff is zoomed, must appear in `?` Help, and must respect explicit `y -> noop`.
 #[test]
 fn copy_file_path_respects_zoomed_diff_noop_and_appears_in_help() {
     use crate::keymap::help::{HelpRow, build_help_rows};
@@ -1145,23 +1146,23 @@ fn copy_file_path_respects_zoomed_diff_noop_and_appears_in_help() {
 
     // Must not fire when Log diff is zoomed fullscreen.
     ts.state_mut().log.details.diff.zoomed = true;
-    let key_c = crossterm::event::KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE);
+    let key_y = crossterm::event::KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE);
     assert!(
-        route_dynamic_key(&key_c, ts.state()).is_none(),
-        "plain `c` must not trigger CopyFilePath while Log diff is zoomed"
+        route_dynamic_key(&key_y, ts.state()).is_none(),
+        "plain `y` must not trigger CopyFilePath while Log diff is zoomed"
     );
     assert!(
         !crate::keymap::catalog::is_action_applicable(&KeyAction::CopyFilePath, ts.state()),
         "CopyFilePath must not be applicable while Log diff is zoomed"
     );
 
-    // Explicit `c -> noop` in `[log_changes]` must disable both routing and context menu hint.
+    // Explicit `y -> noop` in `[log_changes]` must disable both routing and context menu hint.
     ts.state_mut().log.details.diff.zoomed = false;
     let noop_ov: crate::config::KeymapConfigOverlay = toml::from_str(
         r#"
 [log_changes]
 prepend_keymap = [
-    { on = ["c"], run = "noop" },
+    { on = ["y"], run = "noop" },
 ]
 "#,
     )
@@ -1178,9 +1179,9 @@ prepend_keymap = [
             &KeyAction::CopyFilePath
         )
         .is_none(),
-        "explicit `c -> noop` in [log_changes] must suppress CopyFilePath shortcut hint"
+        "explicit `y -> noop` in [log_changes] must suppress CopyFilePath shortcut hint"
     );
-    assert!(route_dynamic_key(&key_c, ts.state()).is_none());
+    assert!(route_dynamic_key(&key_y, ts.state()).is_none());
 }
 
 /// Code-review regression (P2-05): FileHistory scope dropdown must not show `✓` on

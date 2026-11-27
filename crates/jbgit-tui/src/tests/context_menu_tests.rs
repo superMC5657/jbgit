@@ -342,8 +342,8 @@ fn stash_tab_lists_stashes_and_keys_run_operations() {
     ts.send_key(KeyCode::Enter, KeyModifiers::NONE);
     assert_eq!(ts.take_git_ops(), vec![GitOp::StashDrop { index: 1 }]);
 
-    // Shift+B opens unstash-as-branch dialog and validates the name.
-    ts.send_key(KeyCode::Char('B'), KeyModifiers::SHIFT);
+    // `b` opens unstash-as-branch dialog and validates the name.
+    ts.send_key(KeyCode::Char('b'), KeyModifiers::NONE);
     ts.type_str("from-stash");
     ts.send_key(KeyCode::Enter, KeyModifiers::NONE);
     assert_eq!(
@@ -354,8 +354,8 @@ fn stash_tab_lists_stashes_and_keys_run_operations() {
         }]
     );
 
-    // Plain `b` triggers the global Branches popup even from the Stash tab.
-    ts.send_key(KeyCode::Char('b'), KeyModifiers::NONE);
+    // `B` triggers the global Branches popup even from the Stash tab.
+    ts.send_key(KeyCode::Char('B'), KeyModifiers::SHIFT);
     assert!(matches!(
         ts.state().modal_stack.last(),
         Some(ModalLayer::BranchesPopup { .. })

@@ -34,10 +34,10 @@
 
 ## 一、交互设计概览
 
-jbgit 默认采用**零冲突统一键位（`preset = "default"`）**，并通过以下机制降低记忆门槛：
+jbgit 默认采用**四层金字塔零冲突键位（`preset = "default"`）**：**宇宙通用键**（`q`/`?`/`/`/`.`/`1`–`4`/`Tab`/`Enter`/`Esc`/`j`/`k`/`g g`/`G`）全界面恒定；**大写字母**保留给**全局仓库级动作**（`B/F/L/P/U/R/O/W/C`），不与任何面板冲突；**小写字母**专注当前面板局部操作；**`g` / `z` 前缀**配合 Which-Key 自动提示收口高级操作，并通过以下机制降低记忆门槛：
 
-- **动态快捷键胶囊栏**：屏幕底部根据当前聚焦面板实时展示最常用快捷键。
-- **Which-Key 前缀提示卡**：按下多键序列前缀（如 `g`）后，自动弹出可用后续按键提示。
+- **动态快捷键胶囊栏**：屏幕底部根据当前聚焦面板实时展示最常用快捷键（默认单行 4–8 项精简罗盘）。
+- **Which-Key 前缀提示卡**：按下多键序列前缀（如 `g`、`z`）后，自动弹出可用后续按键提示。
 - **可搜索命令与快捷键面板 (`?`)**：在任意界面按 `?` 打开，支持模糊检索，按 `Enter` 可直接执行高亮命令。
 - **上下文操作菜单 (`.`)**：按 `.`、`<Shift-F10>` 或点击**鼠标右键**，随时打开当前选中提交、分支、文件或贮藏的完整操作菜单。
 - **鼠标支持**：支持点击切换标签页与面板焦点、滚动列表、拖拽面板分割线、点击筛选芯片（Branch / User / Date / Paths）以及右键菜单。
@@ -55,17 +55,18 @@ jbgit 默认采用**零冲突统一键位（`preset = "default"`）**，并通�
 | `q` / `<Ctrl-c>` | 退出 jbgit |
 | `?` | 打开可搜索快捷键帮助 / 命令面板（按 `Enter` 可直接执行当前命令） |
 | `.` / `<Shift-F10>` / `<Menu>` / `鼠标右键` | 打开当前选中项的操作菜单 |
-| `r` / `<F5>` | 强制刷新 Git 仓库状态 |
+| `R` / `<F5>` | 强制刷新 Git 仓库状态 |
 | `1` / `2` / `3` / `4`（或 `<Alt-1>` – `<Alt-4>`） | 按标签栏顺序切换视图：**Commit (`1`)** / **Log (`2`)** / **Stash (`3`)** / **Console (`4`)** |
 | `<Tab>` / `<Shift-Tab>` | 在当前视图各面板之间循环切换焦点 |
-| `b` / `g b` / `` <Ctrl-`> `` / `<Ctrl-~>` / `<Alt-b>`*(非 Log 页)* | 呼出全局分支速查浮窗（`<Esc>` 关闭） |
-| `f` / `p` / `P` | 远程同步：**Fetch (`f`)** / **快捷 Pull (`p`)** / **Push… (`P`)** |
-| `<Alt-l>` / `<Alt-e>` | 打开 **Pull… 选项对话框 (`<Alt-l>`)** / **标准 Rebase… 选项对话框 (`<Alt-e>`)** |
+| `B` / `g b` / `` <Ctrl-`> `` / `<Ctrl-~>` / `<Alt-b>` *(非 Log 页)* | 呼出全局分支速查浮窗（`<Esc>` 关闭） |
+| `F` / `L` / `P` | 远程同步：**Fetch (`F`)** / **快捷 Pull (`L`)** / **Push… (`P`)** |
+| `g p` / `g e`（兼容 `<Alt-l>` / `<Alt-e>`） | 打开 **Pull… 选项对话框 (`g p`)** / **标准 Rebase… 选项对话框 (`g e`)** |
 | `<Alt-Shift-g>` / `<Alt-Shift-b>` / `<Alt-Shift-s>` / `<Alt-Shift-r>` | *(Bisect 进行中)* 标记当前提交为 **Good** / **Bad** / **Skip** / **Reset** 结束二分查找 |
-| `<Alt-u>` | **Update Project**（三套预设一致）：贮藏本地改动 → `fetch --all --prune` → 当前分支按 `[update].mode` 合并或变基 upstream → 其他跟踪分支仅快进 → 可选同步更新已初始化子模块 → 恢复改动；若当前分支无上游或上游已删除 (`[gone]`) 会自动弹出跟踪分支选择器；完成通知 `<Alt-z>`「查看」打开只读 Range 筛选的 Log。头部分支胶囊中的 `↓N` 计数可点击打开模式选择（含子模块时提供 `Update Submodules` 复选框） |
-| `<Alt-r>` | **Configure Remotes…**：远端列表（添加 / 重命名 / 编辑 URL / 删除 / 获取），详见[四、远端与凭据](#四远端与凭据-remotes--credentials) |
-| `<Alt-o>` / 点击头部仓库名 | **切换仓库**：最近仓库 / 当前仓库的 linked worktree / 已初始化子模块，模糊过滤，`<Ctrl-o>` 输入任意路径；详见[五、切换仓库与 Worktree](#五切换仓库与-worktree-repositories--working-trees) |
-| `<Alt-w>` | **Working Trees…**：Worktree 列表（打开 / 新建 / 锁定 / 删除 / 清理；需 git ≥ 2.17） |
+| `U` / `<Alt-u>` | **Update Project**（三套预设一致）：贮藏本地改动 → `fetch --all --prune` → 当前分支按 `[update].mode` 合并或变基 upstream → 其他跟踪分支仅快进 → 可选同步更新已初始化子模块 → 恢复改动；若当前分支无上游或上游已删除 (`[gone]`) 会自动弹出跟踪分支选择器；完成通知 `<Alt-z>`「查看」打开只读 Range 筛选的 Log。头部分支胶囊中的 `↓N` 计数可点击打开模式选择（含子模块时提供 `Update Submodules` 复选框） |
+| `g m` / `<Alt-r>` | **Configure Remotes…**：远端列表（添加 / 重命名 / 编辑 URL / 删除 / 获取），详见[四、远端与凭据](#四远端与凭据-remotes--credentials) |
+| `O` / `<Alt-o>` / 点击头部仓库名 | **切换仓库**：最近仓库 / 当前仓库的 linked worktree / 已初始化子模块，模糊过滤，`<Ctrl-o>` 输入任意路径；详见[五、切换仓库与 Worktree](#五切换仓库与-worktree-repositories--working-trees) |
+| `W` / `<Alt-w>` | **Working Trees…**：Worktree 列表（打开 / 新建 / 锁定 / 删除 / 清理；需 git ≥ 2.17） |
+| `C` / `<Alt-c>` | **解决合并冲突 (`Resolve Conflicts…`)** |
 | `<Ctrl-Alt-n>` | 从当前 HEAD 新建分支 |
 | `<Alt-z>` / `<Alt-x>` | 触发当前底部通知栏的快捷动作 / 关闭通知 |
 | `<F8>` / `<F12>` | 循环切换图谱渲染引擎（Auto / Vector / Cell） / 切换图标模式（Nerd Font / Unicode） |
@@ -86,20 +87,22 @@ jbgit 默认采用**零冲突统一键位（`preset = "default"`）**，并通�
 | `<Ctrl-b>` / `<Alt-b>` | 折叠 / 展开左侧分支树栏位 |
 | `c` | 检出 (Checkout) 选中的提交或分支 |
 | `n` | 在当前提交创建新分支 |
-| `y` | 复制选中提交哈希（提交右键菜单 / 命令面板亦支持 **Copy Commit Message** 复制完整提交说明与 **Copy Row Summary** 复制 `hash subject — author (date)` 行摘要，支持多选逐行复制） |
+| `y` / `e` | 复制选中提交哈希 (`y`，提交右键菜单 / 命令面板亦支持 **Copy Commit Message** 与 **Copy Row Summary**) / 最大化查看完整提交说明 (`e`) |
 | `<Ctrl-d>` | 版本差异对比（任意选中两个提交（含非连续）时自动按较旧 → 较新对比两者；单选时开关差异预览） |
-| `X` | *(双提交对比模式)* 交换对比方向（Base ↔ Target），亦可在变更树 / Diff 工具栏点击 `⇄ 交换` |
-| `a` | 切换「仅显示受影响变更」（启用 Paths 路径筛选时仅列出命中路径的变更文件，标题栏显示可点击的 `[已筛选: M/N]` 徽标） |
-| `<F4>` / `<Ctrl-Enter>` | *(变更树 / Diff)* 切换全屏差异预览 |
-| `{` / `}` | *(变更树)* 在变更文件栏向上 / 向下切换当前查看的提交（焦点保持在变更文件栏；亦支持 Reflog 与 Push 对话框的变更文件栏） |
-| `v` / `e` / `E` | *(变更树)* 切换按目录树分组 (`v`) / 全部展开 (`e`) / 全部折叠 (`E`) |
-| `H` | *(变更树)* 查看选中文件的完整提交历史（File History） |
-| `<Alt-g>` | *(变更树 / Diff)* 打开 Git Blame 逐行追溯（Annotate）浮窗 |
+| `x` | *(双提交对比模式)* 交换对比方向（Base ↔ Target），亦可在变更树 / Diff 工具栏点击 `⇄ 交换` |
+| `z a` / `z t` | 切换「仅显示受影响变更」(`z a`) / 分支对比完整目录树差异 (`z t`) |
+| `f` / `<F4>` / `<Ctrl-Enter>` | *(变更树 / Diff)* 切换全屏差异预览 |
+| `{` / `}` | *(变更文件栏)* 在变更文件栏向上 / 向下切换当前查看的提交（焦点保持在变更文件栏；亦支持 Reflog 与 Push 对话框的变更文件栏） |
+| `y` / `p` / `l` / `v` / `e` / `E` | *(变更文件栏)* 复制相对路径 (`y`) / 复制补丁 (`p`) / 与本地对比 (`l`) / 按目录树分组 (`v`) / 全展开 (`e`) / 全折叠 (`E`) |
+| `h` / `b`（兼容 `<Alt-g>`） | *(变更树)* 查看选中文件或目录的完整历史 (`h`) / Git Blame 逐行追溯 (`b`/`<Alt-g>`) |
 | `g r` / `<Ctrl-g>` | 按提交哈希、分支名或 Tag 快速定位跳转 |
-| `m` | 为合并提交选择 / 切换父提交 |
-| `u` / `<F2>` / `<Del>` | 撤回最近提交 (Uncommit) / 修改说明 (Reword) / 丢弃提交 (Drop) |
-| `<Alt-t>` | *(提交表)* 按版本浏览仓库文件树（Browse Repository at Revision，见[第七章](#七应用-patch-与按版本浏览-apply-patch--browse-at-revision)）；`g r` 跳转弹窗中 `<Alt-Enter>` 同样打开 |
-| `<Ctrl-Shift-->` / `<Ctrl-Shift-=>` | 折叠 / 展开全部线性分支（vim 预设另有 `z c` / `z o` 折叠 / 展开选中处、`z M` / `z R` 全部折叠 / 展开），详见[第六章](#六提交图谱折叠线性分支-collapse-linear-branches) |
+| `g l` | 打开 Git Reflog 历史恢复视图 |
+| `m` / `<Alt-m>` | 为合并提交选择 / 切换父提交 |
+| `u` / `r`（或 `<F2>`） / `<Del>` | 撤回最近提交 (Uncommit) / 修改说明 (Reword) / 丢弃提交 (Drop) |
+| `g t` / `<Alt-t>` | *(提交表)* 按版本浏览仓库文件树（Browse Repository at Revision，见[第七章](#七应用创建-patch-与按版本浏览-applycreate-patch--browse-at-revision)）；`g r` 跳转弹窗中 `<Alt-Enter>` 同样打开 |
+| `s` | 表内速查定位提交（不隐藏不匹配行，`n`/`N` 步进） |
+| `z c` / `z o` / `z M` / `z R`（兼容 `<Ctrl-Shift-->` / `<Ctrl-Shift-=>`） | 折叠/展开选中线性分支 (`z c`/`z o`) / 全部折叠/全部展开 (`z M`/`z R`)，详见[第六章](#六提交图谱折叠线性分支-collapse-linear-branches) |
+| `z b` / `z m` | 切换 LinearBek 线性合并折叠视图 (`z b`) / 切换 No-Merges (`z m`) |
 
 ### 分支树面板 (Log Branches Pane)
 
@@ -110,7 +113,7 @@ jbgit 默认采用**零冲突统一键位（`preset = "default"`）**，并通�
 | `<Space>` | 添加 / 取消收藏当前分支（置顶显示） |
 | `<Enter>` | 按选中分支过滤提交日志 |
 | `J` | 跳转至选中分支对应的提交记录 |
-| `c` / `n` / `<Ctrl-Alt-n>` / `<F2>` / `d` / `<Del>` | 检出 (`c`) / 新建分支 (`n`/`Ctrl+Alt+N`，支持实时空格→`_` 自动清洗、覆盖已有分支 `-B` 与 `--track` 追踪) / 重命名 (`F2`，可勾选同时取消上游追踪) / 删除分支或 Tag (`d`/`Del`，未合并分支确认框会列出未合并提交列表) |
+| `c` / `n` / `<Ctrl-Alt-n>` / `r`（或 `<F2>`） / `d`（或 `<Del>`） / `g l` | 检出 (`c`) / 新建分支 (`n`/`Ctrl+Alt+N`，支持实时空格→`_` 自动清洗、覆盖已有分支 `-B` 与 `--track` 追踪) / 重命名 (`r`/`F2`，可勾选同时取消上游追踪) / 删除分支或 Tag (`d`/`Del`，未合并分支确认框会列出未合并提交列表) / 查看 Reflog (`g l`) |
 | **本地/远程分支右键菜单** | `Set Upstream…` / `Unset Upstream`（本地分支显式管理上游追踪）、`Compare with…`（任意双分支对称对比：顶部对比条支持一键切换 `A..B` / `B..A` / `A...B` 方向与查看 `git diff A..B` 树差异）、`Checkout and Rebase onto Current`（远程分支检出/重置本地分支并变基到当前分支）、`Cleanup Branches…`（扫描已合并及 `[gone]` 分支并支持批量删除与一键恢复） |
 | **Tag 节点右键菜单** | 检出（游离 HEAD）、从 Tag 新建分支、对比/合并、推送单个 Tag、删除本地 Tag（若远端存在同名 Tag 可勾选同时删除；删除后支持通知栏 `<Alt-z>` 一键恢复）、删除远端 Tag |
 | **Remote 分组 / `<remote>` 节点右键菜单** | `Fetch '<remote>'`（仅获取该远端，`git fetch --prune <remote>`） / `Configure Remotes…` |
@@ -125,24 +128,24 @@ jbgit 默认采用**零冲突统一键位（`preset = "default"`）**，并通�
 | `<Alt-f>` / `<Esc>` | 执行远程 Fetch / 关闭浮窗 |
 | 顶部 `↓ Update Project…` | 选择 `Follow Git config` / `Merge` / `Rebase` 后执行 Update Project（仅在非游离 HEAD 时显示） |
 | 顶部 `🧹 Cleanup Branches…` | 打开已合并分支批量清理窗口（支持切换基准分支 `HEAD`/`main`、识别 `[gone]` 上游、多选勾选批量删除并在删除后一键恢复） |
-| 顶部 `⚙ Configure Remotes…` | 打开远端管理窗口（同 `<Alt-r>`） |
-| 顶部 `⎇ Working Trees…` | 打开 Worktree 管理窗口（同 `<Alt-w>`；git < 2.17 时不显示） |
+| 顶部 `⚙ Configure Remotes…` | 打开远端管理窗口（同 `g m` / `<Alt-r>`） |
+| 顶部 `⎇ Working Trees…` | 打开 Worktree 管理窗口（同 `W` / `<Alt-w>`；git < 2.17 时不显示） |
 | 分支行右侧 `⎇ <worktree>` | 该分支已在其他 Worktree 检出：子菜单中 Checkout 置灰并说明原因，改为提供 `Open in Worktree '<name>'` |
 
 ### 提交工作台 (Commit View)
 
 | 快捷键 | 功能描述 |
 | :--- | :--- |
-| `<Alt-p>` / `<Alt-Shift-p>` | 应用 Patch 文件（路径相对仓库根，`Tab` 补全） / 从剪贴板应用 Patch，见[第七章](#七应用-patch-与按版本浏览-apply-patch--browse-at-revision) |
+| `g a` / `<Alt-p>` / `<Alt-Shift-p>` | 应用 Patch 文件（路径相对仓库根，`Tab` 补全） / 从剪贴板应用 Patch，见[第七章](#七应用创建-patch-与按版本浏览-applycreate-patch--browse-at-revision) |
 | `<Space>` | **暂存 / 取消暂存** 当前选中的文件或代码块 |
 | `<Enter>` / `<Left>` / `<Right>` | 折叠/展开目录容器，或在文件上聚焦右侧 Diff 预览 |
 | `c` | 聚焦提交说明编辑器（变更树与 Commit Diff 预览窗格均可直接按 `c`；编辑区内按 `<Esc>` 返回变更树） |
 | `<Ctrl-s>` / `<Ctrl-Enter>` / `<Alt-Enter>` | 执行提交（编辑区内 `<Ctrl-Alt-k>` 提交并推送） |
-| `A`（或编辑区内 `<Alt-a>` / `<Alt-m>`） | 切换追加至上一提交 (`Amend`) 模式 |
+| `a`（编辑区内 `<Alt-a>` / `<Alt-m>`） | 切换追加至上一提交 (`Amend`) 模式 |
 | `<Alt-s>` / `<Ctrl-m>` | 切换 Signed-off-by 签名 / 打开历史提交说明选择器 |
 | `<Ctrl-a>` | 全选变更文件 |
 | `d` / `<Del>` / `<Ctrl-Alt-z>` | 放弃选中文件或代码块的本地修改 (Discard Changes) |
-| `v` / `e` / `H` / `<Alt-g>` | 按目录树分组 (`v`) / 外部编辑器 (`e`) / 文件历史 (`H`) / Git Blame 逐行追溯 (`<Alt-g>`) |
+| `v` / `e` / `h` / `b`（兼容 `<Alt-g>`） | 按目录树分组 (`v`) / 外部编辑器 (`e`) / 文件历史 (`h`) / Git Blame 逐行追溯 (`b`/`<Alt-g>`) |
 | `<Ctrl-e>` / `<Alt-q>` / `<Ctrl-z>` / `<Ctrl-y>` / `<Ctrl-w>` | *(提交说明编辑器内)* 外部编辑器编辑说明 / 72 列正文自动重排 (`Reformat`，保留标题行、列表、代码块、Trailers 与注释行) / 撤销 / 重做（亦支持 `<Ctrl-Shift-z>`）/ 删词（亦支持 `<Alt-Backspace>`） |
 
 > 提示：
@@ -159,15 +162,15 @@ jbgit 默认采用**零冲突统一键位（`preset = "default"`）**，并通�
 | `j` / `k` / `<PageUp>` / `<PageDown>` / `g g` / `G`（或 `<Home>` / `<End>`） | 上下移动、翻页及跳转顶部 / 底部（含全屏 Diff 模式） |
 | `[` / `]` | 跳转至上一个 / 下一个 Hunk 代码块 |
 | `{` / `}` | 跳转至上一个 / 下一个变更文件 |
-| `S` | 切换单列统一对比 (Unified) / 双列并排对比 (Side-by-Side) |
-| `w` | 循环切换上下文保留行数 (3 行 / 10 行 / 全量) |
-| `I` | 循环切换忽略空白模式（`Exact` → `-b` 忽略空白数量变化 → `-w` 忽略全部空白；Commit Diff 开启忽略空白时自动禁用局部行/块暂存，避免丢失空白） |
-| `W` | 切换软换行（Soft Wrap，按显示宽度与 CJK 字符边界自动折行并同步滚屏高度） |
+| `s` | 切换单列统一对比 (Unified) / 双列并排对比 (Side-by-Side) |
+| `w` | 切换软换行（Soft Wrap，按显示宽度与 CJK 字符边界自动折行并同步滚屏高度） |
+| `i` | 循环切换忽略空白模式（`Exact` → `-b` 忽略空白数量变化 → `-w` 忽略全部空白；Commit Diff 开启忽略空白时自动禁用局部行/块暂存，避免丢失空白） |
+| `o` | 循环切换上下文保留行数 (3 行 / 10 行 / 全量) |
 | `h` / `l` 或 `<Left>` / `<Right>` | 未开启软换行时按列水平滚动（`<Shift-Left>` / `<Shift-Right>` 大步进），标题栏显示 `Col +N` 指示；Tab 字符按真实 `tab_size` 列对齐展开 |
 | `/` · `n` / `N` · `<Esc>` | Diff 内联搜索：`/` 打开底部搜索栏（忽略大小写、实时统计 `[cur/total]` 并高亮命中片段），`Enter` 确认后用 `n` / `N` 跳转下一/上一命中并自动居中滚屏，`<Esc>` 优先关闭搜索 |
-| `m` / `<Alt-m>` / `z`（或 `<F4>` / `<Ctrl-Enter>`） | *(Log Diff)* 切换停靠位置 (`m`) / 切换合并父提交 (`<Alt-m>`) / 全屏差异预览 (`z`/`F4`/`Esc`)；二进制文件自动展示 Old/New 字节体积变化与短 Blob OID 元数据卡片 |
-| `<Space>` / `v` / `d` | *(Commit Diff)* 暂存/取消 (`Space`，`vim` 预设另提供 `s`/`u`) · 行级可视选择 (`v`) · 回滚选区 (`d`/`Del`，`<Ctrl-z>` 撤销) |
-| `x` / `i` / `c` / `<Esc>` | *(Commit Diff)* 切换未暂存与已暂存侧 (`x`) · 三方检视 (`i`) · 聚焦提交说明 (`c`) · 退出可视选择或返回变更树 (`Esc`) |
+| `p` / `m`（兼容 `<Alt-m>`） / `f`（或 `<F4>` / `<Ctrl-Enter>`） / `x` | *(Log Diff)* 切换停靠位置 (`p`) / 切换合并父提交 (`m`/`<Alt-m>`) / 全屏差异预览 (`f`/`F4`/`Esc`) / 交换对比方向 (`x`)；二进制文件自动展示 Old/New 字节体积变化与短 Blob OID 元数据卡片 |
+| `<Space>` / `v` / `d` / `u`（或 `<Ctrl-z>`） | *(Commit Diff)* 暂存/取消 (`Space`，`vim` 预设另提供 `s`/`u` 并用 `S` 切并排) · 行级可视选择 (`v`) · 回滚选区 (`d`/`Del`) · 撤销回滚 (`u`/`<Ctrl-z>`) |
+| `x` / `t` / `c` / `b` / `<Esc>` | *(Commit Diff)* 切换未暂存与已暂存侧 (`x`) · 三方检视 (`t`) · 聚焦提交说明 (`c`) · Blame 追溯 (`b`/`<Alt-g>`) · 退出可视选择或返回变更树 (`Esc`) |
 
 > 差异视图顶部会在发生文件权限/类型变更或符号链接变更时展示元数据头（如 `mode 100644 → 100755`、`symlink target (120000)`），并在文件末尾无换行符时显式展示 `\ No newline at end of file`。
 
@@ -177,7 +180,7 @@ jbgit 默认采用**零冲突统一键位（`preset = "default"`）**，并通�
 | :--- | :--- |
 | `<Enter>` / `<Right>` / `<Esc>` | 安全切换焦点至右侧差异预览（不会误操作应用贮藏），`<Esc>` 返回贮藏列表 |
 | `a` / `o` | 应用选中贮藏 (`a`) / 应用并弹出 (`o`)；右键菜单另提供 `--index` 还原暂存态（`Apply/Pop (Reinstate Index)`） |
-| `n` / `B` / `d` / `C` | 新建贮藏 (`n`，支持消息、`--include-untracked`、`--keep-index` 与仅选中文件；Stage 变更树右键 `Stash Changes…` 同理) / 从贮藏创建分支 (`B`) / 删除 (`d`/`Del`) / 清空 (`C`) |
+| `n` / `b` / `d` | 新建贮藏 (`n`，支持消息、`--include-untracked`、`--keep-index` 与仅选中文件；Stage 变更树右键 `Stash Changes…` 同理) / 从贮藏创建分支 (`b`) / 删除 (`d`/`Del`)；`清空全部 (Clear All)` 可经 `.` 菜单或 `?` 命令面板执行 |
 | `v` / `e` / `E` / `<Left>` / `<Right>` | *(右侧变更树)* 按目录分组 (`v`) / 全展开 (`e`) / 全折叠 (`E`) / 单项折叠展开；右键单文件支持 **Diff with Local** 与 **Apply Single File** (`git checkout stash@{n} -- <path>`) |
 
 > 提交日志右键菜单中，Cherry-Pick 与 Revert 均提供普通提交与 **Without Committing (`-n`)** 两个选项；选中合并提交时自动弹出主线父提交选择（`-m 1` / `-m 2`）；遇到空 Cherry-Pick 时自动弹出 **Skip / Allow Empty / Abort** 恢复弹窗。
@@ -194,7 +197,7 @@ jbgit 默认采用**零冲突统一键位（`preset = "default"`）**，并通�
 
 ### 文件历史与冲突合并 (File History & Conflict Merge)
 
-**文件历史浮窗**（在 Log 或 Commit 变更树按 `H` 打开；对目录按 `H` 或右键「显示选中目录的历史」会保存当前 Log 筛选条件快照，在 Log 按 `<Esc>` 或点击 `[← 恢复筛选]` 即可无损还原）：
+**文件历史浮窗**（在 Log 或 Commit 变更树按 `h` 打开；对目录按 `h` 或右键「显示选中目录的历史」会保存当前 Log 筛选条件快照，在 Log 按 `<Esc>` 或点击 `[← 恢复筛选]` 即可无损还原）：
 
 | 快捷键 | 功能描述 |
 | :--- | :--- |
@@ -210,7 +213,7 @@ jbgit 默认采用**零冲突统一键位（`preset = "default"`）**，并通�
 | `S` / `w` / `W` / `z`（或 `<F4>`） | 切换并排对比 (`S`) / 循环上下文行数 (`w`) / 自动换行 (`W`) / 全屏差异预览 (`z`/`F4`) |
 | `<Esc>` | 依次关闭仓库版本预览、搜索栏、影响文件/详情面板、标记锚点、全屏 Diff 或文件历史浮窗 |
 
-**Git Blame 逐行追溯浮窗 (Annotate)**（在 Log / Commit 变更树或 Diff 预览按 `<Alt-g>`，或由上下文菜单 / File History 按 `b` 进入；内建 16 槽位 LRU 缓存，往返修订零重复执行 `git blame`，仓库刷新时自动失效）：
+**Git Blame 逐行追溯浮窗 (Annotate)**（在 Log / Commit 变更树或 Diff 预览按 `b` / `<Alt-g>`，或由上下文菜单 / File History 按 `b` 进入；内建 16 槽位 LRU 缓存，往返修订零重复执行 `git blame`，仓库刷新时自动失效）：
 
 | 快捷键 | 功能描述 |
 | :--- | :--- |
@@ -224,7 +227,7 @@ jbgit 默认采用**零冲突统一键位（`preset = "default"`）**，并通�
 | `<Enter>` / `y` / `.` | 跳转到主 Log 对应提交 / 复制该行提交哈希 / 打开 Annotate 上下文菜单（含独立列显隐开关：哈希/作者/日期） |
 | `<Esc>` | 依次关闭 Diff 搜索、行跳转输入、提交详情面板、可视选区或 Annotate 浮窗 |
 
-**多文件冲突队列与三栏 3-Way 合并浮窗**（按 `<Alt-c>` 或点击 Ongoing 横幅 `[Resolve Conflicts]` 进入；存在 ≥ 2 个冲突文件时自动打开冲突队列，单文件时直接进入三栏合并器，也可从右键菜单随时打开队列）：
+**多文件冲突队列与三栏 3-Way 合并浮窗**（按 `C` / `<Alt-c>` 或点击 Ongoing 横幅 `[Resolve Conflicts]` 进入；存在 ≥ 2 个冲突文件时自动打开冲突队列，单文件时直接进入三栏合并器，也可从右键菜单随时打开队列）：
 
 *多文件冲突队列 (`ConflictQueue`)*：
 
@@ -281,12 +284,12 @@ jbgit 默认采用**零冲突统一键位（`preset = "default"`）**，并通�
 - `--squash` / `--no-commit` 完成后自动切到 `[1 Commit]` 并以 `.git/SQUASH_MSG` / `MERGE_MSG` 预填提交说明。
 - `--ff-only` 因分叉失败时弹出「普通合并 / 变基到 '<rev>' / 取消」。
 
-**Pull… 选项对话框**（全局 `<Alt-l>`、分支速查浮窗或当前分支菜单中的 `Pull…`；快捷 `p` 仍保持默认 `git pull --no-edit`）：
+**Pull… 选项对话框**（全局 `g p` / `<Alt-l>`、分支速查浮窗或当前分支菜单中的 `Pull…`；快捷 `L` 仍保持默认 `git pull --no-edit`）：
 
 - 支持切换远端 (`Remote`)、编辑与 `←`/`→` 补全远端分支 (`Remote branch`)，按 `<Ctrl-r>` / `<F5>` 或点击 `[Fetch]` 在弹窗内即时拉取并刷新远端分支列表；
 - 支持 `--rebase`、`Fast-forward`（`default` / `--no-ff` / `--ff-only`）、`--squash`、`--no-commit`、`--no-verify`，自动校验互斥组合（`--rebase` ⟂ `--squash`/`--no-ff`/`--ff-only`/`--no-commit`，`--squash` ⟂ `--no-ff`/`--ff-only`）并实时预览命令；选项按仓库记忆至 `<common_dir>/jbgit-pull-options`。
 
-**标准 Rebase… 选项对话框**（全局 `<Alt-e>`、分支速查浮窗或分支 / 远端分支 / Tag 菜单中的 `Rebase…`）：
+**标准 Rebase… 选项对话框**（全局 `g e` / `<Alt-e>`、分支速查浮窗或分支 / 远端分支 / Tag 菜单中的 `Rebase…`）：
 
 - 支持配置 `Target / --onto`、可选 `Old base (upstream)`（填写后自动转为 `--onto <new> <old>`）、可选切换分支 (`Branch`)，以及 `--interactive`、`--rebase-merges`、`--update-refs`（自动校验 Git ≥ 2.38）、`--keep-empty`、`--autosquash`、`--root`（启用 `--root` 时禁用显式 `upstream`）；选项按仓库记忆至 `<common_dir>/jbgit-rebase-options`。
 
@@ -548,9 +551,9 @@ mode = "nerd_font"
 通过 `jbgit.toml` 中的 `[keymap]` 与 `keymaps/<preset>.toml` 支持全局按键预设切换及分作用域（`[global]`、`[log]`、`[log_changes]`、`[branch]`、`[commit]`、`[diff]`、`[stash]`、`[console]`）增量定制：
 
 - **预设风格 (`preset`)**：
-  - `"default"`：极简零冲突推荐预设（完整底表位于 `keymaps/default.toml`）。
-  - `"jetbrains"`：贴近 IntelliJ IDEA 习惯（完整定义位于 `keymaps/jetbrains.toml`，自动开启 `tree_speed_search = true`，并补充 `<C-k>` 打开 Commit、`<C-S-k>` Push、`<C-t>` Pull、`<A-m>` Amend 等映射）。注意 `<C-t>` 保持绑定 Pull 以不改变已有习惯；Update Project 在三套预设中统一为 `<A-u>`，如需 IDEA 的 `Ctrl+T = Update Project`，可在 `[global]` 中 `prepend_keymap = [{ on = "<C-t>", run = "update_project" }]`。
-  - `"vim"`：Vim / Lazygit 风格（完整定义位于 `keymaps/vim.toml`，Log 中 `<C-d>`/`<C-u>` 半页翻滚、`d` 对比提交/开关差异、`z c`/`z o`/`z M`/`z R` 折叠 / 展开线性分支，Diff 中 `s`/`u` 暂存/取消暂存）。
+  - `"default"`：四层金字塔零冲突推荐预设（完整底表位于 `keymaps/default.toml`）：大写字母专注全局仓库操作（`B/F/L/P/U/R/O/W/C`），小写字母专注局部面板操作，`g` / `z` 前缀配合 Which-Key 收口高级功能。
+  - `"jetbrains"`：贴近 IntelliJ IDEA 习惯（完整定义位于 `keymaps/jetbrains.toml`，自动开启 `tree_speed_search = true`，并补充 `<C-k>` 打开 Commit、`<C-S-k>` Push、`<C-t>` Pull、`<A-m>` Amend 等映射）。注意 `<C-t>` 保持绑定 Pull 以不改变已有习惯；Update Project 在三套预设中统一为 `U` / `<A-u>`，如需 IDEA 的 `Ctrl+T = Update Project`，可在 `[global]` 中 `prepend_keymap = [{ on = "<C-t>", run = "update_project" }]`。
+  - `"vim"`：Vim / Lazygit 风格（完整定义位于 `keymaps/vim.toml`，Log 中 `<C-d>`/`<C-u>` 半页翻滚、`d` 对比提交/开关差异，Diff 中 `s`/`u` 暂存/取消暂存、`S` 切换并排对比）。
   - **直接修改或自定义预设**：可编辑配置目录下的 `keymaps/default.toml`、`keymaps/jetbrains.toml`、`keymaps/vim.toml` 覆写内置预设（非 default 预设在磁盘存在对应 TOML 时以磁盘文件为准），也可新建 `keymaps/<自定义名称>.toml` 并在 `jbgit.toml` 的 `[keymap]` 中设置 `preset = "<自定义名称>"`（会在 `keymaps/default.toml` 之上叠加）。
 - **分支树直接打字搜索 (`tree_speed_search`)**：
   - `false`（默认）：在分支树面板按 `/` 或 `<Ctrl-f>` 进入搜索，单键 `j`/`k`/`c`/`q`/`r` 等保留导航与快捷操作。
@@ -578,21 +581,20 @@ footer_max_lines = 1
 
 [global]
 prepend_keymap = [
-    { on = "r", run = "noop" },                                  # 解绑默认 r
+    { on = "R", run = "noop" },                                  # 解绑默认 R
     { on = ["g", "s"], run = "git_status_probe", desc = "状态探测" },
     { on = "<C-t>", run = "update_project" },                    # IDEA 风格 Ctrl+T 改为 Update Project
 ]
 
 [log]
 prepend_keymap = [
-    { on = "y", run = "copy_hash", show_hint = false },          # 隐藏底栏 y 复制哈希提示
+    { on = "c", run = "checkout", show_hint = false },           # 隐藏底栏 c 检出提示
     { on = "u", run = "uncommit", show_hint = true },            # 在底栏前置展示 u 撤回提交
 ]
 
 [diff]
 prepend_keymap = [
-    { on = "s", run = "stage_selection", desc = "暂存选中块/行" },
-    { on = "u", run = "unstage_selection", desc = "取消暂存选中块/行" },
+    { on = "S", run = "toggle_side_by_side", show_hint = true }, # 改回大写 S 切换并排
 ]
 ```
 
@@ -615,7 +617,7 @@ prepend_keymap = [
 
 ### 1. 远端管理 (`Configure Remotes…`)
 
-入口：全局 `<Alt-r>`、分支浮窗顶部 `⚙ Configure Remotes…`、分支树 `Remote` 分组或 `<remote>` 节点的右键菜单。窗口列出每个远端的获取 URL 与推送 URL（未单独设置时显示「与获取 URL 相同」）；URL 中的密码部分始终脱敏显示（`https://user:***@host/x.git`），控制台回放的命令行与错误信息同样脱敏。
+入口：全局 `g m` / `<Alt-r>`、分支浮窗顶部 `⚙ Configure Remotes…`、分支树 `Remote` 分组或 `<remote>` 节点的右键菜单。窗口列出每个远端的获取 URL 与推送 URL（未单独设置时显示「与获取 URL 相同」）；URL 中的密码部分始终脱敏显示（`https://user:***@host/x.git`），控制台回放的命令行与错误信息同样脱敏。
 
 | 快捷键 | 功能描述 |
 | :--- | :--- |
@@ -625,7 +627,7 @@ prepend_keymap = [
 | `e` / `<Enter>` / 双击 | 编辑获取 URL（`git remote set-url`） |
 | `p` | 编辑推送 URL（`git remote set-url --push`） |
 | `d` / `<Del>` | 删除远端（二次确认，提示将删除的 `refs/remotes/<name>/*` 数量及失去 upstream 的本地分支数） |
-| `f` | 仅获取该远端（`git fetch --prune <name>`；全局 `f` 仍为 `fetch --all --prune`） |
+| `f` | 仅获取该远端（`git fetch --prune <name>`；全局 `F` 仍为 `fetch --all --prune`） |
 | `<Esc>` / `q` | 关闭 |
 
 未显式指定远端时（Push 默认目标、删除 Tag 时的远端探测等），jbgit 依次选择：当前分支 upstream 所在远端 → `origin` → 第一个已配置远端。
@@ -652,7 +654,7 @@ jbgit 运行的所有 git 子进程都设置 `GIT_TERMINAL_PROMPT=0`，不会在
 
 jbgit 同一时间只绑定**一个活动仓库**（多根同步模型不做，见 Spec 12 Issue 11），但可以在运行中快速切换，不必退出重开。
 
-### 1. 切换仓库 (`<Alt-o>` / 点击头部仓库名)
+### 1. 切换仓库 (`O` / `<Alt-o>` / 点击头部仓库名)
 
 切换器按「当前项目优先，全局最近在后（中间以分隔线区分）」列出四类目标（当前仓库本身不列出），输入即模糊过滤（同时匹配名称与路径）：
 
@@ -692,9 +694,9 @@ jbgit 同一时间只绑定**一个活动仓库**（多根同步模型不做，�
 - **`[git] executable` 探测与展示**：`jbgit` 按 `[git] executable` → `PATH` → 平台常见安装目录（Windows `Program Files\Git\{cmd,bin}\git.exe` / `%LOCALAPPDATA%\Programs\Git\cmd\git.exe`，Unix/macOS `/usr/local/bin/git` / `/opt/homebrew/bin/git` / `/usr/bin/git`）顺序解析 `git`，并在 `?` 帮助面板与 Console 启动摘要中显示实际解析到的版本与路径。
 - **Windows CRLF 提交前提醒**：当 `[commit] warn_crlf = true` 且 `core.autocrlf` 未设为 `true`/`input` 时，提交前若检测到已暂存文本文件包含 `\r\n`（自动跳过二进制、LFS 指针以及 `.gitattributes` 已显式声明 `text`/`crlf`/`eol` 策略的文件），将弹出三选一确认框：**修复并提交**（设置 `core.autocrlf=true` 后提交）、**按原样提交**、或**不再提醒**（持久化写入本仓 `.jbgit/jbgit.toml` 的 `[commit] warn_crlf = false`）。
 
-### 2. Working Trees (`<Alt-w>`)
+### 2. Working Trees (`W` / `<Alt-w>`)
 
-入口：全局 `<Alt-w>`、分支浮窗顶部 `⎇ Working Trees…`。列表每项显示目录名、分支（或 `(detached)`）、HEAD 短哈希与路径，`●` 标记当前工作区，并附 `[主]` / `[已锁定：原因]` / `[可清理]` 标签。
+入口：全局 `W` / `<Alt-w>`、分支浮窗顶部 `⎇ Working Trees…`。列表每项显示目录名、分支（或 `(detached)`）、HEAD 短哈希与路径，`●` 标记当前工作区，并附 `[主]` / `[已锁定：原因]` / `[可清理]` 标签。
 
 | 快捷键 | 功能描述 |
 | :--- | :--- |
@@ -718,7 +720,7 @@ jbgit 同一时间只绑定**一个活动仓库**（多根同步模型不做，�
 - Log 提交右键菜单：`New Worktree from Here…`（从该提交新建分支或游离 HEAD）。
 - git 拒绝检出（`is already checked out at` / `is already used by worktree at`）时弹出「分支已在其他工作区检出」对话框，可一键打开该 Worktree。
 
-需要 git ≥ 2.17（`worktree remove` / `lock --reason`）；更低版本时菜单项与浮窗入口隐藏，`<Alt-w>` 仅提示所需版本（`?` 帮助中同样注明）。
+需要 git ≥ 2.17（`worktree remove` / `lock --reason`）；更低版本时菜单项与浮窗入口隐藏，`W` / `<Alt-w>` 仅提示所需版本（`?` 帮助中同样注明）。
 
 ---
 
@@ -728,15 +730,15 @@ jbgit 同一时间只绑定**一个活动仓库**（多根同步模型不做，�
 
 | 操作 | 入口 |
 | :--- | :--- |
-| 全部折叠 / 全部展开 | `<Ctrl-Shift-->` / `<Ctrl-Shift-=>`（vim 预设 `z M` / `z R`）；`[⚙ Presentation]` 菜单 `Collapse Linear Branches` / `Expand Linear Branches` |
-| 折叠选中处 | vim 预设 `z c`；提交右键菜单 `Collapse Linear Branch`。选中提交位于某片段中时折叠该片段并把光标移到片段上端；否则折叠其下方的片段 |
-| 展开选中处 | vim 预设 `z o`；提交右键菜单 `Expand Linear Branch`（选中提交下方有折叠时替换折叠项） |
+| 全部折叠 / 全部展开 | `z M` / `z R`（兼容 `<Ctrl-Shift-->` / `<Ctrl-Shift-=>`）；`[⚙ Presentation]` 菜单 `Collapse Linear Branches` / `Expand Linear Branches` |
+| 折叠选中处 | `z c`；提交右键菜单 `Collapse Linear Branch`。选中提交位于某片段中时折叠该片段并把光标移到片段上端；否则折叠其下方的片段 |
+| 展开选中处 | `z o`；提交右键菜单 `Expand Linear Branch`（选中提交下方有折叠时替换折叠项） |
 | 鼠标 | 单击折叠标记（空心节点 `○`；矢量渲染为空心圆环）或折叠虚线边，展开其下方被折叠的片段 |
 
 - 折叠标记：片段上端的节点绘制为空心（`HEAD` 节点保留 HEAD 颜色）；字符网格与矢量两种渲染引擎一致。多条平行片段（菱形 / 章鱼合并的多个分支臂）共用一条虚线边，点击后一并展开。
 - 「全部折叠」会保留选中提交所在的片段；之后刷新出的新片段也会自动折叠。跳转到被折叠的提交（`g r` 跳转、点击父提交哈希、导航后退 / 前进）时自动展开其所在片段；刷新后选中提交落入新片段时同样自动展开。
 - 仅启用 `Branch` 筛选时仍允许折叠线性分支；同时启用文本/作者/日期/路径/`--no-merges` 筛选或开启 `First Parent Only` 时折叠不可用（菜单置灰并说明原因），关闭后恢复原折叠状态。鼠标悬停在展开的可折叠片段节点或边上时，将高亮整段可折叠线性分支。
-- **LinearBek 视图模式 (`L` / `[⚙ Presentation]` → `LinearBek`)**：将双父合并提交的跨分支边折叠为从合入分支尾端指向主线父提交的虚线边，以单列线性展示历史；点击该虚线边或在对应行按 `Enter` 可展开单次合并，全部折叠/展开同步支持 LinearBek。
+- **LinearBek 视图模式 (`z b` / `[⚙ Presentation]` → `LinearBek`)**：将双父合并提交的跨分支边折叠为从合入分支尾端指向主线父提交的虚线边，以单列线性展示历史；点击该虚线边或在对应行按 `Enter` 可展开单次合并，全部折叠/展开同步支持 LinearBek。
 
 ---
 
@@ -744,7 +746,7 @@ jbgit 同一时间只绑定**一个活动仓库**（多根同步模型不做，�
 
 ### 1. 应用 Patch (`Apply Patch…`)
 
-入口：Stage 变更树右键菜单 `Apply Patch…` / `Apply Patch from Clipboard`，或 `[1 Commit]` 中 `<Alt-p>` / `<Alt-Shift-p>`。`Apply Patch…` 先询问 Patch 文件路径（相对仓库根目录或绝对路径，`Tab` 补全目录与文件名，文件不存在时红字提示）。
+入口：Stage 变更树右键菜单 `Apply Patch…` / `Apply Patch from Clipboard`，或 `[1 Commit]` 中 `g a` / `<Alt-p>` / `<Alt-Shift-p>`。`Apply Patch…` 先询问 Patch 文件路径（相对仓库根目录或绝对路径，`Tab` 补全目录与文件名，文件不存在时红字提示）。
 
 对话框打开时先以只读方式运行 `git apply --check --numstat [选项] --whitespace=nowarn` 预检（不修改工作区与暂存区），列出可勾选的受影响文件与增删行数；预检失败时显示 git 的首条错误，并在缺少 Git `index` 头的普通 unified patch 执行 `--3way` 失败时明确建议切回工作区模式或调整 `-p` 剥离层级。
 
@@ -772,7 +774,7 @@ jbgit 同一时间只绑定**一个活动仓库**（多根同步模型不做，�
 
 ### 3. 按版本浏览仓库 (`Browse Repository at Revision`)
 
-入口：Log 提交右键菜单 `Browse Repository at Revision`、提交表 `<Alt-t>`、`g r` / `<Ctrl-g>` 跳转弹窗中输入修订后按 `<Alt-Enter>`。
+入口：Log 提交右键菜单 `Browse Repository at Revision`、提交表 `g t` / `<Alt-t>`、`g r` / `<Ctrl-g>` 跳转弹窗中输入修订后按 `<Alt-Enter>`。
 
 浮窗左侧为该提交的目录树（目录按层懒加载，目录在前），右侧为文件内容预览（语法高亮；符号链接明确标注 `symlink → <target>`；二进制、超过 4 MiB 的文件显示占位；子模块条目显示其指向的提交且只读）。
 
@@ -831,12 +833,12 @@ jbgit 同一时间只绑定**一个活动仓库**（多根同步模型不做，�
 
 2. **父/子提交候选选择器、增强筛选与表内速查**
    - **Go to Parent (`→`) / Go to Child (`←`)**：当目标父提交或可见子提交数量 ≥ 2 时，弹出编号候选列表（展示 `hash "subject" author date`），按 `1–9` 或 `Enter` 精准跳转。
-   - **No-Merges 筛选 (`M` / 筛选栏 `[No Merges]`)**：等价于 `--no-merges`，快速过滤合并提交。
+   - **No-Merges 筛选 (`z m` / 筛选栏 `[No Merges]`)**：等价于 `--no-merges`，快速过滤合并提交。
    - **增强 Branch 与 Hash 筛选**：`Branch` 筛选框原生支持 `a..b` 范围语法（如 `main..feat`）、内置 `Favorites` 快捷组（自动展开收藏分支），以及各筛选字段最近 10 条历史建议；文本搜索框支持空格分隔多个哈希前缀同时匹配。
    - **表内速查 (`s`)**：在 Log 提交表内高亮匹配提交（主题/作者/哈希/引用名）且**不隐藏**不匹配行，确认后用 `n` / `N` 步进定位，`Esc` 清除。
-   - **列与详情增强**：`[⚙ Presentation]` 独立开关 `Author` 列（`[log].show_author_column`）、`Date` 列（`[log].show_date_column`）及 `Align Labels to Right`（引用胶囊右对齐，`[log].align_labels_right`）；Commit Details 支持点击正文中的 7–40 位提交哈希跳转，以及点击 `[⤢ Full]` 或按 `E` 打开可滚动的完整提交说明浮窗。
+   - **列与详情增强**：`[⚙ Presentation]` 独立开关 `Author` 列（`[log].show_author_column`）、`Date` 列（`[log].show_date_column`）及 `Align Labels to Right`（引用胶囊右对齐，`[log].align_labels_right`）；Commit Details 支持点击正文中的 7–40 位提交哈希跳转，以及点击 `[⤢ Full]` 或按 `e` 打开可滚动的完整提交说明浮窗。
 
-3. **Git Reflog 历史恢复视图 (`R`)**
-   - 入口：Log 提交表/分支树按 `R`、Log 右键菜单 `Show Reflog (HEAD)…`、分支右键菜单 `Show Reflog for '<branch>'…` 或 `?` 命令面板 `open_reflog`。
+3. **Git Reflog 历史恢复视图 (`g l`)**
+   - 入口：Log 提交表/分支树按 `g l`、Log 右键菜单 `Show Reflog (HEAD)…`、分支右键菜单 `Show Reflog for '<branch>'…` 或 `?` 命令面板 `open_reflog`。
    - 左侧展示分页 `git reflog show` 记录（`HEAD@{n}`、操作类型徽标 `reset`/`rebase`/`commit`/`checkout` 等、短哈希、相对时间与说明，按 `m` 加载更多），右侧同步展示对应提交的变更文件树与语法高亮差异预览（独立 `RequestSlot` 单飞取消）。
    - 支持对任意历史条目一键恢复：`c` 检出（游离 HEAD）、`n` 在此新建分支（恢复误 `reset --hard` 丢失的提交）、`p` 拣选（Cherry-Pick）、`r` 将当前分支重置至此、`y` 复制哈希、`Enter`/`l` 在 Log 中定位。

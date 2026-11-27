@@ -77,8 +77,8 @@ fn pull_dialog_blocks_conflicts_fetches_completes_and_remembers_choices() {
     let dir = tempfile::tempdir().unwrap();
     let mut ts = TestSession::with_snapshot(pull_rebase_snapshot(dir.path()));
 
-    // Quick Pull (`p`) still runs default `GitOp::Pull { options: PullOptions::default() }`.
-    ts.send_key(KeyCode::Char('p'), KeyModifiers::NONE);
+    // Quick Pull (`L`) still runs default `GitOp::Pull { options: PullOptions::default() }`.
+    ts.send_key(KeyCode::Char('L'), KeyModifiers::SHIFT);
     assert_eq!(
         ts.take_git_ops(),
         vec![GitOp::Pull {
@@ -543,8 +543,8 @@ fn pull_and_rebase_dialog_shortcuts_have_zero_conflicts_across_all_presets() {
         let cfg = KeymapConfig::for_preset(preset.clone());
         let pull_key = cfg.primary_key_for(&[KeymapScope::Global], &KeyAction::GitPullDialog);
         let rebase_key = cfg.primary_key_for(&[KeymapScope::Global], &KeyAction::GitRebaseDialog);
-        assert_eq!(pull_key.as_deref(), Some("Alt+L"), "preset {preset:?}");
-        assert_eq!(rebase_key.as_deref(), Some("Alt+E"), "preset {preset:?}");
+        assert_eq!(pull_key.as_deref(), Some("g p"), "preset {preset:?}");
+        assert_eq!(rebase_key.as_deref(), Some("g e"), "preset {preset:?}");
 
         // Verify neither <A-l> nor <A-e> is shadowed in any scope.
         for scope in KeymapScope::ALL {

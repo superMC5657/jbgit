@@ -115,8 +115,8 @@ fn split_diff_horizontal_scroll_and_soft_wrap_cjk_safe() {
     seed_log_diff(&mut ts, head, "src/wide.rs", diff);
 
     // Switch to zoomed side-by-side split mode so each column is ~60 cols wide.
-    ts.send_key(KeyCode::Char('z'), KeyModifiers::NONE);
-    ts.send_key(KeyCode::Char('S'), KeyModifiers::SHIFT);
+    ts.send_key(KeyCode::Char('f'), KeyModifiers::NONE);
+    ts.send_key(KeyCode::Char('s'), KeyModifiers::NONE);
     assert!(ts.state().log.details.diff.side_by_side);
     assert!(!ts.state().log.details.diff.soft_wrap);
 
@@ -152,8 +152,8 @@ fn split_diff_horizontal_scroll_and_soft_wrap_cjk_safe() {
     ts.send_key(KeyCode::Char('h'), KeyModifiers::NONE);
     assert!(ts.state().log.details.diff.horiz_scroll < before_left);
 
-    // Toggle Soft Wrap (`W`) -> resets horiz_scroll, shows both prefix and tail without truncation.
-    ts.send_key(KeyCode::Char('W'), KeyModifiers::SHIFT);
+    // Toggle Soft Wrap (`w`) -> resets horiz_scroll, shows both prefix and tail without truncation.
+    ts.send_key(KeyCode::Char('w'), KeyModifiers::NONE);
     assert!(ts.state().log.details.diff.soft_wrap);
     assert_eq!(ts.state().log.details.diff.horiz_scroll, 0);
     let wrapped = screen_text(&ts.render(140, 34));
@@ -332,8 +332,8 @@ fn diff_whitespace_mode_cycling_and_stage_partial_staging_guard() {
     seed_log_diff(&mut ts, head, "src/indent.rs", diff);
     let _ = ts.take_requests();
 
-    // Press `I` -> cycles Default -> IgnoreChange (-b) and requests new diff key.
-    ts.send_key(KeyCode::Char('I'), KeyModifiers::SHIFT);
+    // Press `i` -> cycles Default -> IgnoreChange (-b) and requests new diff key.
+    ts.send_key(KeyCode::Char('i'), KeyModifiers::NONE);
     assert_eq!(
         ts.state().log.details.diff.whitespace,
         WhitespaceMode::IgnoreChange
@@ -376,12 +376,12 @@ fn diff_whitespace_mode_cycling_and_stage_partial_staging_guard() {
     );
 
     // Cycle again -> IgnoreAll (-w) -> Default.
-    ts.send_key(KeyCode::Char('I'), KeyModifiers::SHIFT);
+    ts.send_key(KeyCode::Char('i'), KeyModifiers::NONE);
     assert_eq!(
         ts.state().log.details.diff.whitespace,
         WhitespaceMode::IgnoreAll
     );
-    ts.send_key(KeyCode::Char('I'), KeyModifiers::SHIFT);
+    ts.send_key(KeyCode::Char('i'), KeyModifiers::NONE);
     assert_eq!(
         ts.state().log.details.diff.whitespace,
         WhitespaceMode::Default
@@ -411,8 +411,8 @@ fn diff_whitespace_mode_cycling_and_stage_partial_staging_guard() {
     let _ = ts.take_requests();
     ts.dispatch(Action::FocusPane(PaneId::CommitDiffPreview));
 
-    // Press `I` in Stage Diff -> cycles to IgnoreChange and requests StageDiffKey with IgnoreChange.
-    ts.send_key(KeyCode::Char('I'), KeyModifiers::SHIFT);
+    // Press `i` in Stage Diff -> cycles to IgnoreChange and requests StageDiffKey with IgnoreChange.
+    ts.send_key(KeyCode::Char('i'), KeyModifiers::NONE);
     assert_eq!(
         ts.state().stage_workbench.diff_whitespace(),
         WhitespaceMode::IgnoreChange
@@ -759,11 +759,11 @@ soft_wrap = true
 fn diff_new_keybindings_resolve_without_shadowing_across_all_presets() {
     let expected: &[(KeyEvent, KeyAction)] = &[
         (
-            KeyEvent::new(KeyCode::Char('I'), KeyModifiers::SHIFT),
+            KeyEvent::new(KeyCode::Char('i'), KeyModifiers::NONE),
             KeyAction::CycleDiffWhitespace,
         ),
         (
-            KeyEvent::new(KeyCode::Char('W'), KeyModifiers::SHIFT),
+            KeyEvent::new(KeyCode::Char('w'), KeyModifiers::NONE),
             KeyAction::ToggleDiffSoftWrap,
         ),
         (
@@ -840,26 +840,43 @@ fn diff_new_keybindings_resolve_without_shadowing_across_all_presets() {
             }
             ts.dispatch(Action::FocusPane(pane));
 
-            // Global `b` (Branches popup) must NOT be shadowed by Diff whitespace toggle!
+            // Global `B` (Branches popup) must NOT be shadowed by Diff keys.
             if !zoomed {
                 let m_b = check_scopes(
-                    &[KeyEvent::new(KeyCode::Char('b'), KeyModifiers::NONE)],
+                    &[KeyEvent::new(KeyCode::Char('B'), KeyModifiers::SHIFT)],
                     ts.state(),
                 );
                 assert!(
                     matches!(m_b, MatchResult::Exact(b) if b.run == KeyAction::ToggleBranchesPopup),
-                    "preset={preset:?} tab={tab:?} pane={pane:?}: `b` must remain ToggleBranchesPopup"
+                    "preset={preset:?} tab={tab:?} pane={pane:?}: `B` must remain ToggleBranchesPopup"
                 );
             }
-            // Without an active diff search, `n` must NOT shadow Log `new_branch` or Stash `stash_new`!
+            // Anti-bleed: without an active diff search, `n` in Diff is absorbed as a no-op
+            // (never bleeding into Log `new_branch` or Stash `stash_new`).
+            let n_actions = crate::keymap::route_dynamic_key(
+                &KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE),
+                ts.state(),
+            );
+            assert!(
+                matches!(n_actions.as_deref(), Some(&[])),
+                "preset={preset:?} tab={tab:?} pane={pane:?}: inactive diff `n` must not bleed"
+            );
             if !zoomed && tab == WorkspaceTab::Stash {
-                let m_n = check_scopes(
-                    &[KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE)],
+                // Anti-bleed: `d`/`a`/`o` in StashDiffPreview never trigger StashList ops (`o` cycles context).
+                let m_o = check_scopes(
+                    &[KeyEvent::new(KeyCode::Char('o'), KeyModifiers::NONE)],
                     ts.state(),
                 );
                 assert!(
-                    matches!(m_n, MatchResult::Exact(b) if b.run == KeyAction::StashNew),
-                    "preset={preset:?}: `n` in Stash diff without active search must remain StashNew"
+                    matches!(m_o, MatchResult::Exact(b) if b.run == KeyAction::CycleDiffContext),
+                    "preset={preset:?}: `o` in StashDiffPreview must cycle diff context"
+                );
+                assert!(
+                    !crate::keymap::catalog::is_action_applicable(
+                        &KeyAction::StashDrop,
+                        ts.state()
+                    ),
+                    "StashDrop must not be applicable in StashDiffPreview"
                 );
             }
 

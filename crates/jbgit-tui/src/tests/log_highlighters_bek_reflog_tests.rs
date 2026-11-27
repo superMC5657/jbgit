@@ -150,8 +150,9 @@ fn reflog_modal_opens_previews_diff_and_creates_recovery_branch_on_historical_en
     let mut ts = ready_session(merge_and_fork_snapshot());
     ts.take_requests();
 
-    // Press `R` in Log commit table -> opens Reflog modal & requests Reflog on its own slot.
-    ts.send_key(KeyCode::Char('R'), KeyModifiers::NONE);
+    // Press `g l` in Log commit table -> opens Reflog modal & requests Reflog on its own slot.
+    ts.send_key(KeyCode::Char('g'), KeyModifiers::NONE);
+    ts.send_key(KeyCode::Char('l'), KeyModifiers::NONE);
     assert!(matches!(
         ts.state().modal_stack.last(),
         Some(ModalLayer::Reflog(_))
@@ -413,8 +414,9 @@ fn highlighters_auto_suppress_and_cherry_picked_loads_on_own_slot() {
 fn linear_bek_and_branch_only_collapse_and_no_merges_work_in_session() {
     let mut ts = ready_session(merge_and_fork_snapshot());
 
-    // Press `L` -> toggles LinearBek on and folds merge commit `oid(10)`.
-    ts.send_key(KeyCode::Char('L'), KeyModifiers::NONE);
+    // Press `z b` -> toggles LinearBek on and folds merge commit `oid(10)`.
+    ts.send_key(KeyCode::Char('z'), KeyModifiers::NONE);
+    ts.send_key(KeyCode::Char('b'), KeyModifiers::NONE);
     assert!(ts.state().log.graph.options.linear_bek);
     assert_eq!(
         ts.state()
@@ -445,7 +447,8 @@ fn linear_bek_and_branch_only_collapse_and_no_merges_work_in_session() {
     );
 
     // Disable LinearBek and apply pure BranchFilter("main") -> linear collapsing MUST stay enabled!
-    ts.send_key(KeyCode::Char('L'), KeyModifiers::NONE);
+    ts.send_key(KeyCode::Char('z'), KeyModifiers::NONE);
+    ts.send_key(KeyCode::Char('b'), KeyModifiers::NONE);
     ts.dispatch(Action::ApplyFilterField {
         field: FilterField::Branch,
         expr: "main".into(),
@@ -468,8 +471,9 @@ fn linear_bek_and_branch_only_collapse_and_no_merges_work_in_session() {
         "CollapseAll must fold linear segments under pure BranchFilter"
     );
 
-    // Press `M` -> enables `--no-merges`, hides merge commit 10, and disables collapsing.
-    ts.send_key(KeyCode::Char('M'), KeyModifiers::NONE);
+    // Press `z m` -> enables `--no-merges`, hides merge commit 10, and disables collapsing.
+    ts.send_key(KeyCode::Char('z'), KeyModifiers::NONE);
+    ts.send_key(KeyCode::Char('m'), KeyModifiers::NONE);
     assert!(ts.state().log.filter.spec.no_merges);
     assert!(
         !ts.state()
@@ -516,9 +520,10 @@ fn speed_search_filter_history_columns_body_hash_links_and_maximize_modal() {
     ts.send_key(KeyCode::Char('N'), KeyModifiers::NONE); // prev match
     assert_eq!(ts.state().log.graph.selected_idx, first_match);
 
-    // Toggling No-Merges (`M`) shifts visible rows (merge row 0 disappears); speed-search
+    // Toggling No-Merges (`z m`) shifts visible rows (merge row 0 disappears); speed-search
     // matches must be recomputed immediately so highlights and `n`/`N` never reference stale rows.
-    ts.send_key(KeyCode::Char('M'), KeyModifiers::NONE);
+    ts.send_key(KeyCode::Char('z'), KeyModifiers::NONE);
+    ts.send_key(KeyCode::Char('m'), KeyModifiers::NONE);
     let matches_after_no_merges = ts.state().log.speed_search().matches.clone();
     assert_eq!(matches_after_no_merges.len(), 3);
     assert_ne!(
@@ -546,7 +551,8 @@ fn speed_search_filter_history_columns_body_hash_links_and_maximize_modal() {
             .contains("main: step")
     );
     // Restore No-Merges off and also check Collapse All refreshes matches cleanly.
-    ts.send_key(KeyCode::Char('M'), KeyModifiers::NONE);
+    ts.send_key(KeyCode::Char('z'), KeyModifiers::NONE);
+    ts.send_key(KeyCode::Char('m'), KeyModifiers::NONE);
     ts.dispatch(Action::GraphCollapseAll);
     for &row in &ts.state().log.speed_search().matches {
         let c = ts
@@ -677,10 +683,10 @@ fn speed_search_filter_history_columns_body_hash_links_and_maximize_modal() {
         "clicking embedded commit hash in details body must jump to that commit"
     );
 
-    // Press `E` on oid(10) -> opens maximized Commit Message modal; clicking the embedded
+    // Press `e` on oid(10) -> opens maximized Commit Message modal; clicking the embedded
     // commit hash inside the modal must BOTH close the modal AND jump to `oid(1)`.
     ts.dispatch(Action::JumpToCommit(oid(10)));
-    ts.send_key(KeyCode::Char('E'), KeyModifiers::NONE);
+    ts.send_key(KeyCode::Char('e'), KeyModifiers::NONE);
     assert!(matches!(
         ts.state().modal_stack.last(),
         Some(ModalLayer::CommitMessage { .. })
@@ -707,8 +713,8 @@ fn speed_search_filter_history_columns_body_hash_links_and_maximize_modal() {
         "clicking embedded commit hash inside CommitMessage modal must jump to target commit"
     );
 
-    // Press `E` again and verify Esc also closes the modal cleanly.
-    ts.send_key(KeyCode::Char('E'), KeyModifiers::NONE);
+    // Press `e` again and verify Esc also closes the modal cleanly.
+    ts.send_key(KeyCode::Char('e'), KeyModifiers::NONE);
     assert!(matches!(
         ts.state().modal_stack.last(),
         Some(ModalLayer::CommitMessage { .. })
@@ -767,17 +773,18 @@ fn new_issue_11_keybindings_have_zero_conflicts_across_all_three_presets() {
             .iter()
             .map(|b| (b.on.clone(), b.run.clone()))
             .collect();
-        for (key, expected) in [
-            ("s", "log_speed_search"),
-            ("R", "open_reflog"),
-            ("M", "toggle_no_merges"),
-            ("L", "toggle_linear_bek"),
-            ("E", "maximize_commit_message"),
+        for (keys, expected) in [
+            (vec!["s"], "log_speed_search"),
+            (vec!["g", "l"], "open_reflog"),
+            (vec!["z", "m"], "toggle_no_merges"),
+            (vec!["z", "b"], "toggle_linear_bek"),
+            (vec!["e"], "maximize_commit_message"),
         ] {
+            let key_vec: Vec<String> = keys.into_iter().map(str::to_string).collect();
             assert_eq!(
-                log_map.get(&vec![key.to_string()]).map(|a| a.as_str()),
+                log_map.get(&key_vec).map(|a| a.as_str()),
                 Some(expected),
-                "Log key {key} must resolve to {expected} in {preset:?}"
+                "Log key {key_vec:?} must resolve to {expected} in {preset:?}"
             );
         }
         let branch_map: HashMap<Vec<String>, crate::keymap::KeyAction> = km
@@ -786,9 +793,11 @@ fn new_issue_11_keybindings_have_zero_conflicts_across_all_three_presets() {
             .map(|b| (b.on.clone(), b.run.clone()))
             .collect();
         assert_eq!(
-            branch_map.get(&vec!["R".to_string()]).map(|a| a.as_str()),
+            branch_map
+                .get(&vec!["g".to_string(), "l".to_string()])
+                .map(|a| a.as_str()),
             Some("open_reflog"),
-            "Branch key R must resolve to open_reflog in {preset:?}"
+            "Branch key g l must resolve to open_reflog in {preset:?}"
         );
     }
 }

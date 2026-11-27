@@ -37,7 +37,8 @@ pub fn log_commit_menu_items(state: &AppState) -> Vec<ContextMenuItem> {
         catalog::shortcut_for_action(state, &[KeymapScope::Log], &KeyAction::CompareOrDiff);
     let uncommit_sc =
         catalog::shortcut_for_action(state, &[KeymapScope::Log], &KeyAction::Uncommit);
-    let reword_sc = catalog::shortcut_for_action(state, &[KeymapScope::Log], &KeyAction::Reword);
+    let reword_sc =
+        catalog::all_shortcuts_for_action(state, &[KeymapScope::Log], &KeyAction::Reword);
     let new_branch_sc =
         catalog::shortcut_for_action(state, &[KeymapScope::Log], &KeyAction::NewBranch);
     let copy_sc = catalog::shortcut_for_action(state, &[KeymapScope::Log], &KeyAction::CopyHash);

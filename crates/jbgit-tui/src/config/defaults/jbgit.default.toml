@@ -21,7 +21,7 @@ executable = ""
 warn_crlf = true
 
 [keymap]
-# 快捷键预设风格: "default" (极简零冲突), "jetbrains" (IDEA 习惯), "vim" (Vim / Lazygit 风格)
+# 快捷键预设风格: "default" (四层金字塔零冲突), "jetbrains" (IDEA 习惯), "vim" (Vim / Lazygit 风格)
 # 完整与增量键位表位于同目录 keymaps/<preset>.toml，可直接编辑覆盖，也可新建 keymaps/<自定义名称>.toml
 preset = "default"
 

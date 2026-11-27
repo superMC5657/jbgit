@@ -62,7 +62,7 @@ const COMMIT_EDITOR_ACTIONS: [KeyAction; 6] = [
     KeyAction::EditCommitMessageExternal,
 ];
 
-const ADVANCED_TOOL_ACTIONS: [KeyAction; 9] = [
+const ADVANCED_TOOL_ACTIONS: [KeyAction; 10] = [
     KeyAction::CloneRepository,
     KeyAction::CycleGpgSign,
     KeyAction::Palette,
@@ -72,6 +72,7 @@ const ADVANCED_TOOL_ACTIONS: [KeyAction; 9] = [
     KeyAction::Unshallow,
     KeyAction::LogLoadMore,
     KeyAction::GitStatusProbe,
+    KeyAction::StashClear,
 ];
 
 pub const fn commit_editor_actions() -> &'static [KeyAction] {
@@ -180,6 +181,26 @@ pub fn normal_structural_hints(state: &AppState) -> NormalStructuralHints {
         Some(StructuralHint {
             key: t("view.footer.pill.type_key"),
             label: t("view.footer.pill.search"),
+            action: None,
+        })
+    } else if state.active_tab == WorkspaceTab::Log && state.focused_pane == PaneId::LogCommitTable
+    {
+        Some(StructuralHint {
+            key: "Enter".into(),
+            label: t("view.footer.pill.changes"),
+            action: None,
+        })
+    } else if in_branch_tree {
+        Some(StructuralHint {
+            key: "Enter".into(),
+            label: t("view.footer.pill.filter"),
+            action: None,
+        })
+    } else if state.active_tab == WorkspaceTab::Log && state.focused_pane == PaneId::LogChangesTree
+    {
+        Some(StructuralHint {
+            key: "Enter".into(),
+            label: t("view.footer.pill.diff"),
             action: None,
         })
     } else if state.active_tab == WorkspaceTab::Stash && state.focused_pane == PaneId::StashList {
@@ -343,16 +364,18 @@ pub fn is_action_applicable(run: &KeyAction, state: &AppState) -> bool {
                 | KeyAction::SwapCompareDirection
         ) && (!matches!(run, KeyAction::SwapCompareDirection)
             || state.log.details.is_comparing_versions()
-            || state.log.branch_compare.is_some())
-            && (!matches!(run, KeyAction::DiffSearchNext | KeyAction::DiffSearchPrev)
-                || is_diff_search_active(state));
+            || state.log.branch_compare.is_some());
     }
 
     match run {
         KeyAction::Noop | KeyAction::Unknown(_) => false,
+        KeyAction::ContextMenu => match state.focused_pane {
+            PaneId::CommitMessageEditor | PaneId::ConsoleOutputDetail => false,
+            PaneId::LogDetailsDiff => state.log.details.diff_preview,
+            _ => true,
+        },
         KeyAction::Quit
         | KeyAction::Help
-        | KeyAction::ContextMenu
         | KeyAction::Refresh
         | KeyAction::TabCommit
         | KeyAction::TabLog
@@ -418,7 +441,12 @@ pub fn is_action_applicable(run: &KeyAction, state: &AppState) -> bool {
                 && (state.focused_pane == PaneId::CommitChangesTree
                     || (state.focused_pane == PaneId::CommitDiffPreview && !is_amend_diff(state)))
         }
-        KeyAction::CycleDiffDock | KeyAction::ZoomDiff => state.active_tab == WorkspaceTab::Log,
+        KeyAction::CycleDiffDock => {
+            state.active_tab == WorkspaceTab::Log
+                && is_diff_focused(state)
+                && !is_log_diff_zoomed(state)
+        }
+        KeyAction::ZoomDiff => state.active_tab == WorkspaceTab::Log,
         KeyAction::PrevHunk
         | KeyAction::NextHunk
         | KeyAction::PrevFile
@@ -431,9 +459,7 @@ pub fn is_action_applicable(run: &KeyAction, state: &AppState) -> bool {
         KeyAction::DiffScrollLeft | KeyAction::DiffScrollRight => {
             is_diff_focused(state) && !is_stash_changes_dir_selected(state)
         }
-        KeyAction::DiffSearchNext | KeyAction::DiffSearchPrev => {
-            is_diff_focused(state) && is_diff_search_active(state)
-        }
+        KeyAction::DiffSearchNext | KeyAction::DiffSearchPrev => is_diff_focused(state),
 
         KeyAction::PrevCommit
         | KeyAction::NextCommit
@@ -451,8 +477,13 @@ pub fn is_action_applicable(run: &KeyAction, state: &AppState) -> bool {
                     PaneId::LogBranchesTree | PaneId::LogCommitTable
                 )
         }
-        KeyAction::CopyHash
-        | KeyAction::ToggleLogRowSelection
+        KeyAction::CopyHash => {
+            state.active_tab == WorkspaceTab::Log
+                && (state.focused_pane == PaneId::LogCommitTable
+                    || (state.focused_pane == PaneId::LogDetailsDiff
+                        && !state.log.details.diff_preview))
+        }
+        KeyAction::ToggleLogRowSelection
         | KeyAction::CopyCommitMessage
         | KeyAction::CopyRowSummary
         | KeyAction::Uncommit
@@ -461,7 +492,8 @@ pub fn is_action_applicable(run: &KeyAction, state: &AppState) -> bool {
         | KeyAction::CollapseLinearBranch
         | KeyAction::ExpandLinearBranch
         | KeyAction::NavLogBack
-        | KeyAction::NavLogForward => {
+        | KeyAction::NavLogForward
+        | KeyAction::LogSpeedSearch => {
             state.active_tab == WorkspaceTab::Log && state.focused_pane == PaneId::LogCommitTable
         }
         KeyAction::ToggleBranchCompareTreeDiff => {
@@ -503,15 +535,13 @@ pub fn is_action_applicable(run: &KeyAction, state: &AppState) -> bool {
         | KeyAction::FocusFilter
         | KeyAction::ToggleNoMerges
         | KeyAction::ToggleLinearBek
-        | KeyAction::LogSpeedSearch
         | KeyAction::OpenReflog
         | KeyAction::ToggleBranchesPane => state.active_tab == WorkspaceTab::Log,
         KeyAction::MaximizeCommitMessage => {
             state.active_tab == WorkspaceTab::Log
-                && matches!(
-                    state.focused_pane,
-                    PaneId::LogCommitTable | PaneId::LogDetailsDiff
-                )
+                && (state.focused_pane == PaneId::LogCommitTable
+                    || (state.focused_pane == PaneId::LogDetailsDiff
+                        && !state.log.details.diff_preview))
         }
         KeyAction::FileHistory => {
             (state.active_tab == WorkspaceTab::Log && state.focused_pane == PaneId::LogChangesTree)
@@ -584,7 +614,9 @@ pub fn is_action_applicable(run: &KeyAction, state: &AppState) -> bool {
         | KeyAction::StashPop
         | KeyAction::StashDrop
         | KeyAction::StashBranch
-        | KeyAction::StashClear => state.active_tab == WorkspaceTab::Stash,
+        | KeyAction::StashClear => {
+            state.active_tab == WorkspaceTab::Stash && state.focused_pane == PaneId::StashList
+        }
 
         KeyAction::CursorDown | KeyAction::CursorUp => {
             state.focused_pane != PaneId::CommitMessageEditor
@@ -1198,16 +1230,26 @@ pub fn execute_action(run: &KeyAction, state: &AppState) -> Option<Vec<Action>> 
             crate::diff_session::DIFF_HORIZ_SCROLL_STEP,
         )]),
         KeyAction::DiffSearch => Some(vec![Action::DiffSearchOpen(diff_scope(state))]),
-        KeyAction::DiffSearchNext => Some(vec![Action::DiffSearchJump {
-            scope: diff_scope(state),
-            delta: 1,
-            wrap: true,
-        }]),
-        KeyAction::DiffSearchPrev => Some(vec![Action::DiffSearchJump {
-            scope: diff_scope(state),
-            delta: -1,
-            wrap: true,
-        }]),
+        KeyAction::DiffSearchNext => {
+            if !is_diff_search_active(state) {
+                return Some(Vec::new());
+            }
+            Some(vec![Action::DiffSearchJump {
+                scope: diff_scope(state),
+                delta: 1,
+                wrap: true,
+            }])
+        }
+        KeyAction::DiffSearchPrev => {
+            if !is_diff_search_active(state) {
+                return Some(Vec::new());
+            }
+            Some(vec![Action::DiffSearchJump {
+                scope: diff_scope(state),
+                delta: -1,
+                wrap: true,
+            }])
+        }
         KeyAction::CycleDiffDock => Some(vec![Action::DiffCycleDock]),
         KeyAction::ZoomDiff => Some(vec![Action::ZoomDiff(!state.log.details.diff.zoomed)]),
 
@@ -1322,6 +1364,18 @@ fn local_names(state: &AppState) -> Vec<String> {
         .unwrap_or_default()
 }
 
+fn menu_active_scopes(state: &AppState) -> Vec<KeymapScope> {
+    if state
+        .modal_stack
+        .iter()
+        .any(|m| matches!(m, crate::app::ModalLayer::BranchesPopup { .. }))
+    {
+        vec![KeymapScope::Branch, KeymapScope::Global]
+    } else {
+        super::actions::scopes_for_context(state)
+    }
+}
+
 /// Shadowing-aware shortcut lookup for menus and toolbars.
 ///
 /// Checks active scopes (with `preferred_scopes` appended so menu items opened
@@ -1332,7 +1386,7 @@ pub fn shortcut_for_action(
     preferred_scopes: &[KeymapScope],
     action: &KeyAction,
 ) -> Option<String> {
-    let mut scopes = super::actions::scopes_for_context(state);
+    let mut scopes = menu_active_scopes(state);
     for &s in preferred_scopes {
         if !scopes.contains(&s) {
             if let Some(global_idx) = scopes.iter().position(|&x| x == KeymapScope::Global) {
@@ -1352,7 +1406,7 @@ pub fn all_shortcuts_for_action(
     preferred_scopes: &[KeymapScope],
     action: &KeyAction,
 ) -> Option<String> {
-    let active = super::actions::scopes_for_context(state);
+    let active = menu_active_scopes(state);
     let all =
         super::resolve::resolve_all_action_shortcuts(state, &active, preferred_scopes, action);
     if all.is_empty() {

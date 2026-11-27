@@ -26,7 +26,7 @@ pub fn branch_menu_items(state: &AppState, name: &str, kind: RefKind) -> Vec<Con
         catalog::shortcut_for_action(state, &[KeymapScope::Global], &KeyAction::GitRebaseDialog);
     let push_sc = catalog::shortcut_for_action(state, &[KeymapScope::Global], &KeyAction::GitPush);
     let rename_sc =
-        catalog::shortcut_for_action(state, &[KeymapScope::Branch], &KeyAction::RenameBranch);
+        catalog::all_shortcuts_for_action(state, &[KeymapScope::Branch], &KeyAction::RenameBranch);
     let delete_sc =
         catalog::all_shortcuts_for_action(state, &[KeymapScope::Branch], &KeyAction::DeleteBranch);
     let fav_sc =
@@ -156,7 +156,7 @@ pub fn branch_menu_items(state: &AppState, name: &str, kind: RefKind) -> Vec<Con
             items.push(run(
                 i18n.t_fmt(
                     "menu.branch.show_reflog",
-                    &[("name", &ellipsize(&name, 24))],
+                    &[("name", &ellipsize(&name, 16))],
                 ),
                 None,
                 catalog::shortcut_for_action(state, &[KeymapScope::Branch], &KeyAction::OpenReflog)

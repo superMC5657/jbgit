@@ -133,8 +133,8 @@ border_focused = "#FF6600"
         r#"
 [global]
 prepend_keymap = [
-    { on = [ "r" ], run = "noop" },
-    { on = [ "b" ], run = "noop" },
+    { on = [ "R" ], run = "noop" },
+    { on = [ "B" ], run = "noop" },
     { on = [ "<F8>" ], run = "refresh", show_hint = true },
     { on = [ "<F6>" ], run = "toggle_branches_popup", show_hint = true },
     { on = [ "g", "x" ], run = "refresh" },

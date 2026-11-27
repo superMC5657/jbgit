@@ -20,8 +20,8 @@ use super::{TestSession, find_item, local, oid, row_text, screen_text, snapshot,
 fn branches_popup_fuzzy_search_highlights_and_opens_branch_actions() {
     let mut ts = TestSession::with_snapshot(snapshot());
     ts.dispatch(Action::SwitchTab(WorkspaceTab::Commit));
-    // `b` opens the global Branches popup everywhere; `Ctrl+`` also works everywhere.
-    ts.send_key(KeyCode::Char('b'), KeyModifiers::NONE);
+    // `B` opens the global Branches popup everywhere; `Ctrl+`` also works everywhere.
+    ts.send_key(KeyCode::Char('B'), KeyModifiers::SHIFT);
     assert!(matches!(
         ts.state().modal_stack.last(),
         Some(ModalLayer::BranchesPopup { .. })

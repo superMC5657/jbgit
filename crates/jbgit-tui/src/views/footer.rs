@@ -11,7 +11,7 @@ use unicode_width::UnicodeWidthStr;
 use crate::app::{AppState, ModalLayer, Notification, RenderContext};
 use crate::config::KeymapScope;
 use crate::hit_test::{GraphHitKind, HitTarget};
-use crate::keymap::actions::is_action_applicable;
+use crate::keymap::actions::{is_action_applicable, is_amend_diff};
 use crate::keymap::catalog::{self, ContextMode};
 use crate::keymap::resolve::{KeyResolveCtx, collect_claimed_keys, resolve_key_in_scopes};
 use crate::keymap::{KeyAction, KeySequence, scopes_for_context};
@@ -431,9 +431,89 @@ fn merge_paired_pills(mut raw: Vec<RawPill>, state: &AppState) -> Vec<FooterPill
         KeyAction::NextCommit,
         state.i18n.t("view.footer.pill.commit").to_string(),
     );
+    fuse_pair(
+        &mut raw,
+        KeyAction::PageDownHalf,
+        KeyAction::PageUpHalf,
+        state.i18n.t("view.footer.pill.page").to_string(),
+    );
+    fuse_pair(
+        &mut raw,
+        KeyAction::GotoTop,
+        KeyAction::GotoBottom,
+        state.i18n.t("view.footer.pill.top_bottom").to_string(),
+    );
     raw.into_iter()
         .map(|p| FooterPill::with_emphasized(p.key, p.label, p.emphasized))
         .collect()
+}
+
+fn should_display_scope_pill(state: &AppState, scope: KeymapScope, run: &KeyAction) -> bool {
+    match scope {
+        KeymapScope::Global => match run {
+            KeyAction::ToggleBranchesPopup | KeyAction::GitPull => {
+                state.active_tab == WorkspaceTab::Log
+                    && state.focused_pane == PaneId::LogCommitTable
+            }
+            KeyAction::GitPush => {
+                (state.active_tab == WorkspaceTab::Log
+                    && state.focused_pane == PaneId::LogCommitTable)
+                    || (state.active_tab == WorkspaceTab::Commit
+                        && state.focused_pane == PaneId::CommitChangesTree)
+            }
+            _ => true,
+        },
+        KeymapScope::Diff
+            if state.active_tab == WorkspaceTab::Commit
+                && state.focused_pane == PaneId::CommitDiffPreview
+                && !is_amend_diff(state) =>
+        {
+            !matches!(run, KeyAction::DiffSearch | KeyAction::ToggleSideBySide)
+        }
+        _ => true,
+    }
+}
+
+fn resolve_raw_pill(
+    ctx: &KeyResolveCtx<'_>,
+    scopes: &[KeymapScope],
+    scope_idx: usize,
+    binding_idx: usize,
+    binding: &crate::config::KeyBindingConfig,
+) -> Option<RawPill> {
+    resolve_key_in_scopes(ctx, scopes, scope_idx, binding_idx, binding).map(|key_disp| RawPill {
+        action: Some(binding.run.clone()),
+        key: key_disp,
+        label: catalog::footer_pill_label(ctx.state, &binding.run, binding.desc.as_deref()),
+        emphasized: false,
+    })
+}
+
+fn collect_explicit_action_pill(
+    ctx: &KeyResolveCtx<'_>,
+    scopes: &[KeymapScope],
+    scope_idx: usize,
+    target_run: &KeyAction,
+    seen_actions: &mut Vec<KeyAction>,
+) -> Option<RawPill> {
+    if seen_actions.contains(target_run) || !is_action_applicable(target_run, ctx.state) {
+        return None;
+    }
+    let bindings = ctx.state.config.keymap.bindings_for(scopes[scope_idx]);
+    for (idx, b) in bindings.iter().enumerate() {
+        if &b.run != target_run {
+            continue;
+        }
+        if b.show_hint == Some(false) {
+            seen_actions.push(target_run.clone());
+            return None;
+        }
+        if let Some(pill) = resolve_raw_pill(ctx, scopes, scope_idx, idx, b) {
+            seen_actions.push(target_run.clone());
+            return Some(pill);
+        }
+    }
+    None
 }
 
 fn collect_scope_pills(
@@ -444,22 +524,19 @@ fn collect_scope_pills(
     seen_actions: &mut Vec<KeyAction>,
     raw_pills: &mut Vec<RawPill>,
 ) {
-    let bindings = ctx.state.config.keymap.bindings_for(scopes[scope_idx]);
+    let scope = scopes[scope_idx];
+    let bindings = ctx.state.config.keymap.bindings_for(scope);
     for (idx, b) in bindings.iter().enumerate() {
         if b.show_hint != Some(true)
             || (skip_help && b.run == KeyAction::Help)
             || seen_actions.contains(&b.run)
             || !is_action_applicable(&b.run, ctx.state)
+            || !should_display_scope_pill(ctx.state, scope, &b.run)
         {
             continue;
         }
-        if let Some(key_disp) = resolve_key_in_scopes(ctx, scopes, scope_idx, idx, b) {
-            raw_pills.push(RawPill {
-                action: Some(b.run.clone()),
-                key: key_disp,
-                label: catalog::footer_pill_label(ctx.state, &b.run, b.desc.as_deref()),
-                emphasized: false,
-            });
+        if let Some(pill) = resolve_raw_pill(ctx, scopes, scope_idx, idx, b) {
+            raw_pills.push(pill);
             seen_actions.push(b.run.clone());
         }
     }
@@ -507,6 +584,22 @@ fn collect_footer_hints(state: &AppState) -> FooterHints {
                 &mut seen_actions,
                 &mut raw_pills,
             );
+            if let Some(wrap_pill) = collect_explicit_action_pill(
+                &ctx,
+                &diff_scopes,
+                0,
+                &KeyAction::ToggleDiffSoftWrap,
+                &mut seen_actions,
+            ) {
+                if let Some(zoom_pos) = raw_pills
+                    .iter()
+                    .position(|p| p.action.as_ref() == Some(&KeyAction::ZoomDiff))
+                {
+                    raw_pills.insert(zoom_pos, wrap_pill);
+                } else {
+                    raw_pills.push(wrap_pill);
+                }
+            }
             for pill in &mut raw_pills {
                 if pill.action.as_ref() == Some(&KeyAction::ZoomDiff) && pill.key != "Esc" {
                     pill.key = format!("{}/Esc", pill.key);
@@ -567,6 +660,20 @@ fn collect_footer_hints(state: &AppState) -> FooterHints {
     let shadow_scopes = scopes_for_context(state);
     let in_branch_tree =
         state.active_tab == WorkspaceTab::Log && state.focused_pane == PaneId::LogBranchesTree;
+    let in_log_changes =
+        state.active_tab == WorkspaceTab::Log && state.focused_pane == PaneId::LogChangesTree;
+    let in_log_diff = state.active_tab == WorkspaceTab::Log
+        && state.focused_pane == PaneId::LogDetailsDiff
+        && state.log.details.diff_preview;
+    let in_log_details_only = state.active_tab == WorkspaceTab::Log
+        && state.focused_pane == PaneId::LogDetailsDiff
+        && !state.log.details.diff_preview;
+    let in_commit_diff =
+        state.active_tab == WorkspaceTab::Commit && state.focused_pane == PaneId::CommitDiffPreview;
+    let in_stash_diff =
+        state.active_tab == WorkspaceTab::Stash && state.focused_pane == PaneId::StashDiffPreview;
+    let in_console_output = state.active_tab == WorkspaceTab::Console
+        && state.focused_pane == PaneId::ConsoleOutputDetail;
     let filter_speed_search = in_branch_tree && km.tree_speed_search;
     let structural = catalog::normal_structural_hints(state);
     let mut after_primary_lit = structural.after_primary;
@@ -587,23 +694,57 @@ fn collect_footer_hints(state: &AppState) -> FooterHints {
 
     for (scope_idx, &scope) in shadow_scopes.iter().enumerate() {
         let bindings = km.bindings_for(scope);
-        let display_scope = !(in_branch_tree && scope == KeymapScope::Log);
+        let suppress_parent_scope = (scope == KeymapScope::Log
+            && (in_branch_tree || in_log_changes || in_log_diff))
+            || (scope == KeymapScope::Commit && in_commit_diff)
+            || (scope == KeymapScope::Stash && in_stash_diff);
 
-        if display_scope {
+        if !suppress_parent_scope {
             let ctx = KeyResolveCtx {
                 state,
                 filter_speed_search,
                 editor_only: false,
                 claimed_keys: &claimed_keys,
             };
-            collect_scope_pills(
-                &ctx,
-                &shadow_scopes,
-                scope_idx,
-                true,
-                &mut seen_actions,
-                &mut raw_pills,
-            );
+            if in_log_details_only && scope == KeymapScope::Log {
+                for action in [
+                    KeyAction::MaximizeCommitMessage,
+                    KeyAction::CompareOrDiff,
+                    KeyAction::CopyHash,
+                ] {
+                    if let Some(pill) = collect_explicit_action_pill(
+                        &ctx,
+                        &shadow_scopes,
+                        scope_idx,
+                        &action,
+                        &mut seen_actions,
+                    ) {
+                        raw_pills.push(pill);
+                    }
+                }
+            } else {
+                collect_scope_pills(
+                    &ctx,
+                    &shadow_scopes,
+                    scope_idx,
+                    true,
+                    &mut seen_actions,
+                    &mut raw_pills,
+                );
+                if in_console_output && scope == KeymapScope::Console {
+                    for action in [KeyAction::GotoTop, KeyAction::GotoBottom] {
+                        if let Some(pill) = collect_explicit_action_pill(
+                            &ctx,
+                            &shadow_scopes,
+                            scope_idx,
+                            &action,
+                            &mut seen_actions,
+                        ) {
+                            raw_pills.push(pill);
+                        }
+                    }
+                }
+            }
 
             // Prevent lower-priority scopes from re-advertising an action explicitly hidden here.
             for b in bindings {

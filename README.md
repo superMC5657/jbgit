@@ -52,7 +52,7 @@
   - 具备提交前检查（Unborn 初始状态、空提交防护、Hook 失败保留草稿等）。
 
 ### 3. 🌿 分支管理与全局速查浮窗 (Branches Popup)
-- **类似 IDEA 的全局浮窗**：按 `<Ctrl-~>` 或 `` <Ctrl-`> ``（非 Log 标签页下亦支持 `<Alt-b>`）随处唤出分支速查弹窗，按 `<Esc>` 关闭。
+- **类似 IDEA 的全局浮窗**：按 `B`、`<Ctrl-~>`、`` <Ctrl-`> `` 或 `<Alt-b>` *(非 Log 页)* 随处唤出分支速查弹窗，按 `<Esc>` 关闭。
 - **Speed Search 模糊速查**：键盘直接打字即可秒级过滤目标分支。
 - **丰富的分支操作**：
   - 检出 (Checkout)、新建分支、重命名 (`<F2>`)、删除分支 (`<Del>`)、星标收藏置顶（在分支树按 `<Space>` 切换或通过分支菜单）。
@@ -68,9 +68,9 @@
 
 ### 5. ⚙️ Yazi 风格配置体系与多语言国际化 (i18n)
 - **多文件配置规范**：
-  - `jbgit.toml`：通用设置、布局栏位比例、图谱渲染模式。
-  - `theme.toml`：主题预设 (Flavors) 与 16 进制颜色微调。
-  - `keymap.toml`：自定义快捷键映射与连续按键序列。
+  - `jbgit.toml`：通用设置、布局栏位比例、图谱渲染模式、主题与键位预设选择。
+  - `themes/<flavor>.toml`：主题预设 (Flavors) 与 16 进制颜色微调。
+  - `keymaps/<preset>.toml`：自定义快捷键映射、底部提示控制与连续按键序列。
 - **4 级层级覆盖机制**：
   `JBGIT_CONFIG_DIR` 环境变量 > 仓库级 `.jbgit/` > 全局用户配置 > 内置默认值。
 - **全量多语言支持**：原生内置简体中文 (`zh-CN`) 与英文 (`en-US`)，支持根据系统环境自动切换。
@@ -133,11 +133,11 @@ jbgit
 # 打开指定目录的 Git 仓库
 jbgit /path/to/repo
 
-# 在用户配置目录下生成默认配置文件（jbgit.toml / theme.toml / keymap.toml）
+# 在用户配置目录下生成默认配置文件（jbgit.toml / themes/*.toml / keymaps/*.toml）
 jbgit --init-config
 
 # 查看内置默认配置或命令行帮助
-jbgit --print-default-config jbgit     # 可选: jbgit | theme | keymap
+jbgit --print-default-config jbgit     # 可选: jbgit | theme | keymap | jetbrains | vim
 jbgit --help
 ```
 

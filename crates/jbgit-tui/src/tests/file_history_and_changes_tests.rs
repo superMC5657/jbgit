@@ -119,7 +119,7 @@ fn log_changes_context_menu_right_click_keyboard_dot_and_enablement() {
     assert!(menu_item_by_label(&items, "Toggle Diff Preview").is_enabled());
     let fs_diff = menu_item_by_label(&items, "Full-Screen Diff");
     assert!(fs_diff.is_enabled());
-    assert_eq!(fs_diff.shortcut.as_deref(), Some("F4"));
+    assert_eq!(fs_diff.shortcut.as_deref(), Some("f"));
     assert!(menu_item_by_label(&items, "Compare with Local").is_enabled());
     assert!(menu_item_by_label(&items, "Show History for Selected File").is_enabled());
     assert!(menu_item_by_label(&items, "Filter Log by Path").is_enabled());
@@ -204,18 +204,18 @@ fn log_changes_context_menu_right_click_keyboard_dot_and_enablement() {
     );
     ts.dispatch(Action::PopModal);
 
-    // 4b. Direct keyboard shortcuts in LogChangesTree (`c`/`p`/`l`) for file & directory rows.
-    // On directory row: `c` copies directory path, `p`/`l` are safely ignored without GitOp::Pull.
+    // 4b. Direct keyboard shortcuts in LogChangesTree (`y`/`p`/`l`) for file & directory rows.
+    // On directory row: `y` copies directory path, `p`/`l` are safely ignored without GitOp::Pull.
     let _ = ts.take_requests();
     ts.dispatch(Action::FocusPane(PaneId::LogChangesTree));
     ts.dispatch(Action::ChangesSelect(ChangesHost::Log, dir_idx));
-    ts.send_key(KeyCode::Char('c'), KeyModifiers::NONE);
+    ts.send_key(KeyCode::Char('y'), KeyModifiers::NONE);
     assert!(
         ts.state()
             .status_notice
             .as_deref()
             .is_some_and(|n| n.contains("dir with space")),
-        "pressing 'c' on directory row should copy directory relative path: {:?}",
+        "pressing 'y' on directory row should copy directory relative path: {:?}",
         ts.state().status_notice
     );
     ts.send_key(KeyCode::Char('p'), KeyModifiers::NONE);
@@ -225,7 +225,7 @@ fn log_changes_context_menu_right_click_keyboard_dot_and_enablement() {
         "pressing 'p'/'l' on directory row must not trigger Pull or any GitOp"
     );
 
-    // On file row: `c` copies file path, `p` copies file patch (NOT Pull), `l` compares with local.
+    // On file row: `y` copies file path, `p` copies file patch (NOT Pull), `l` compares with local.
     let file_idx = rows
         .iter()
         .position(|r| {
@@ -233,13 +233,13 @@ fn log_changes_context_menu_right_click_keyboard_dot_and_enablement() {
         })
         .expect("file row for dir with space/a.rs");
     ts.dispatch(Action::ChangesSelect(ChangesHost::Log, file_idx));
-    ts.send_key(KeyCode::Char('c'), KeyModifiers::NONE);
+    ts.send_key(KeyCode::Char('y'), KeyModifiers::NONE);
     assert!(
         ts.state()
             .status_notice
             .as_deref()
             .is_some_and(|n| n.contains("dir with space/a.rs")),
-        "pressing 'c' on file row should copy file relative path: {:?}",
+        "pressing 'y' on file row should copy file relative path: {:?}",
         ts.state().status_notice
     );
     ts.send_key(KeyCode::Char('p'), KeyModifiers::NONE);
@@ -610,7 +610,7 @@ fn commit_stage_tree_history_menu_and_h_shortcut() {
     }
 
     ts.dispatch(Action::SelectCommitStageRow(untracked_idx));
-    ts.send_key(KeyCode::Char('H'), KeyModifiers::NONE);
+    ts.send_key(KeyCode::Char('h'), KeyModifiers::NONE);
     assert!(ts.state().modal_stack.file_history().is_none());
     assert_eq!(
         ts.state().status_notice.as_deref(),
@@ -619,7 +619,7 @@ fn commit_stage_tree_history_menu_and_h_shortcut() {
 
     ts.dispatch(Action::SelectCommitStageRow(tracked_idx));
     let _ = ts.take_requests();
-    ts.send_key(KeyCode::Char('H'), KeyModifiers::NONE);
+    ts.send_key(KeyCode::Char('h'), KeyModifiers::NONE);
     assert!(matches!(
         ts.state().modal_stack.last(),
         Some(ModalLayer::FileHistory(_))
@@ -658,7 +658,7 @@ fn commit_stage_tree_history_menu_and_h_shortcut() {
 
     ts.dispatch(Action::ChangesSelect(ChangesHost::Log, 1));
     let _ = ts.take_requests();
-    ts.send_key(KeyCode::Char('H'), KeyModifiers::NONE);
+    ts.send_key(KeyCode::Char('h'), KeyModifiers::NONE);
     let reqs = ts.take_requests();
     assert!(reqs.iter().any(|(r, _)| matches!(
         r,
@@ -669,7 +669,7 @@ fn commit_stage_tree_history_menu_and_h_shortcut() {
 
     ts.dispatch(Action::ChangesSelect(ChangesHost::Log, 0));
     let _ = ts.take_requests();
-    ts.send_key(KeyCode::Char('H'), KeyModifiers::NONE);
+    ts.send_key(KeyCode::Char('h'), KeyModifiers::NONE);
     assert_eq!(
         ts.state().log.filter.spec.paths.paths,
         vec!["sub".to_string()]

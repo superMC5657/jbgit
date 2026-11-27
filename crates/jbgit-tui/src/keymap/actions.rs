@@ -87,8 +87,16 @@ where
     }
 
     if is_log_diff_zoomed(state) {
-        return match_bindings_filtered(&keymap.global.key_bindings, events, |b| {
+        let global_match = match_bindings_filtered(&keymap.global.key_bindings, events, |b| {
             matches!(b.run, KeyAction::Quit | KeyAction::Help) && extra_allow(b)
+        });
+        if !matches!(global_match, MatchResult::None) {
+            return global_match;
+        }
+        return match_bindings_filtered(&keymap.log.key_bindings, events, |b| {
+            b.run == KeyAction::SwapCompareDirection
+                && is_action_applicable(&b.run, state)
+                && extra_allow(b)
         });
     }
 

@@ -1189,8 +1189,8 @@ mod tests {
         let config = AppConfig::default();
         let mut state = AppState::new_with_config(PathBuf::from("."), None, config);
 
-        // 1. Default routing: "r" refreshes
-        let ev_r = KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE);
+        // 1. Default routing: "R" refreshes
+        let ev_r = KeyEvent::new(KeyCode::Char('R'), KeyModifiers::SHIFT);
         let actions = route_dynamic_key(&ev_r, &state);
         assert!(matches!(actions.as_deref(), Some([Action::RefreshAll])));
 
@@ -1241,31 +1241,31 @@ mod tests {
         }
         assert!(state.pending_keys.is_empty());
 
-        // 3. Diff scope routing: 'S' toggles side-by-side
+        // 3. Diff scope routing: 's' toggles side-by-side
         state.active_tab = WorkspaceTab::Log;
         state.focused_pane = PaneId::LogDetailsDiff;
         state.log.details.diff_preview = true;
-        let ev_s_upper = KeyEvent::new(KeyCode::Char('S'), KeyModifiers::SHIFT);
-        let actions_s = route_dynamic_key(&ev_s_upper, &state);
+        let ev_s_lower = KeyEvent::new(KeyCode::Char('s'), KeyModifiers::NONE);
+        let actions_s = route_dynamic_key(&ev_s_lower, &state);
         assert!(matches!(
             actions_s.as_deref(),
             Some([Action::DiffToggleSideBySide(crate::app::DiffScope::Log)])
         ));
 
-        // 3b. Global remote keys: b (branches popup), f (fetch), P (push)
+        // 3b. Global remote keys: B (branches popup), F (fetch), P (push)
         state.focused_pane = PaneId::LogCommitTable;
-        let ev_b = KeyEvent::new(KeyCode::Char('b'), KeyModifiers::NONE);
+        let ev_b = KeyEvent::new(KeyCode::Char('B'), KeyModifiers::SHIFT);
         assert!(matches!(
             route_dynamic_key(&ev_b, &state).as_deref(),
             Some([Action::OpenBranchesPopup { .. }])
         ));
-        let ev_f = KeyEvent::new(KeyCode::Char('f'), KeyModifiers::NONE);
+        let ev_f = KeyEvent::new(KeyCode::Char('F'), KeyModifiers::SHIFT);
         assert!(matches!(
             route_dynamic_key(&ev_f, &state).as_deref(),
             Some([Action::RunGitOp(GitOp::Fetch)])
         ));
 
-        // 4. Commit Diff: 'r' refreshes (does NOT rollback), while 'd' rolls back!
+        // 4. Commit Diff: 'R' refreshes (does NOT rollback), while 'd' rolls back!
         state.active_tab = WorkspaceTab::Commit;
         state.focused_pane = PaneId::CommitDiffPreview;
         let actions_r_diff = route_dynamic_key(&ev_r, &state);
@@ -1303,7 +1303,7 @@ key_bindings = [{ on = ["<F5>"], run = "refresh" }]
         let actions_f5 = route_dynamic_key(&ev_f5, &state_custom);
         assert!(matches!(actions_f5.as_deref(), Some([Action::RefreshAll])));
 
-        // Pressing r does NOT refresh when replaced via key_bindings
+        // Pressing R does NOT refresh when replaced via key_bindings
         let actions_r = route_dynamic_key(&ev_r, &state_custom);
         assert!(actions_r.is_none());
 
@@ -1633,14 +1633,6 @@ prepend_keymap = [
                     {
                         continue;
                     }
-                    // Explicit intentional shadowing: in `LogChangesTree` and `ConsoleCommandList`,
-                    // `p` is bound to `copy_file_patch` / `git_status_probe` instead of falling
-                    // through to global `p -> git_pull`.
-                    if matches!(pane, PaneId::LogChangesTree | PaneId::ConsoleCommandList)
-                        && *action == KeyAction::GitPull
-                    {
-                        continue;
-                    }
                     let mut reachable = false;
                     for &scope in &scopes {
                         for b in state.config.keymap.bindings_for(scope) {
@@ -1713,24 +1705,24 @@ prepend_keymap = [
                 "Zoomed diff Alt+M must resolve to ChooseParent in {preset:?}"
             );
 
-            // P2-03: LogChangesTree `c`/`p`/`l` resolve directly via [log_changes] without falling through to GitPull.
+            // P2-03: LogChangesTree `y`/`p`/`l` resolve directly via [log_changes] without falling through to Global.
             state.active_tab = WorkspaceTab::Log;
             state.focused_pane = PaneId::LogChangesTree;
             state.log.details.diff_preview = false;
             state.log.details.diff.zoomed = false;
             assert!(
                 matches!(
-                    check_scopes(&[KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE)], &state),
+                    check_scopes(&[KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE)], &state),
                     MatchResult::Exact(b) if b.run == KeyAction::CopyFilePath
                 ),
-                "LogChangesTree 'c' must resolve to CopyFilePath in {preset:?}"
+                "LogChangesTree 'y' must resolve to CopyFilePath in {preset:?}"
             );
             assert!(
                 matches!(
                     check_scopes(&[KeyEvent::new(KeyCode::Char('p'), KeyModifiers::NONE)], &state),
                     MatchResult::Exact(b) if b.run == KeyAction::CopyFilePatch
                 ),
-                "LogChangesTree 'p' must resolve to CopyFilePatch (not GitPull) in {preset:?}"
+                "LogChangesTree 'p' must resolve to CopyFilePatch in {preset:?}"
             );
             assert!(
                 matches!(

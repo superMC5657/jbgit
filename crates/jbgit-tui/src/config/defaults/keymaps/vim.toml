@@ -8,15 +8,12 @@ prepend_keymap = [
     { on = [ "<C-d>" ], run = "page_down_half" },
     { on = [ "<C-u>" ], run = "page_up_half" },
     { on = [ "d" ], run = "compare_or_diff" },
-    { on = [ "z", "c" ], run = "collapse_linear_branch" },
-    { on = [ "z", "o" ], run = "expand_linear_branch" },
-    { on = [ "z", "M" ], run = "collapse_all_linear_branches" },
-    { on = [ "z", "R" ], run = "expand_all_linear_branches" },
 ]
 
 [diff]
 prepend_keymap = [
     { on = [ "s" ], run = "stage_selection", show_hint = true },
     { on = [ "u" ], run = "unstage_selection", show_hint = true },
+    { on = [ "S" ], run = "toggle_side_by_side", show_hint = true },
     { on = [ "<Space>" ], run = "toggle_stage", show_hint = false },
 ]
