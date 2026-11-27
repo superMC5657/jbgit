@@ -16,6 +16,11 @@ Priority: P0
 
 ---
 
+## 范围修订（2026-11-28）
+
+- **本轮完成**（Commit `0d94bee`）：全部三项任务，详见文末 Comments。
+- **遗留**：`IncrementalJoined` 确有新增/删除提交时仍复制未变化的尾部并重建 `oid_to_index`，彻底消除需改为 `Vec<Arc<CommitSummary>>`，改动面过大，不做。
+
 ## 1. 根因定位
 
 ### 1.1 `with_thread_repo` 每次调用无条件强制重读整个 `.git/index`

@@ -1,6 +1,6 @@
 # 02: DAG 边查询去重、`recommended_track_width` 线性化、`VisibleGraph` 分配瘦身与零分配 Filter/OID 匹配
 
-Status: ready-for-agent
+Status: resolved
 Spec: [../spec.md](../spec.md)
 Milestone: M13 — 大仓库、渲染热路径与引擎并发性能二期治理
 Priority: P0
@@ -19,6 +19,14 @@ Priority: P0
   - `crates/jbgit-tui/src/log_view/filter_bar.rs`（`:499`）、`crates/jbgit-tui/src/log_view/file_history.rs`（`:226-228`）
 
 ---
+
+## 范围修订（2026-11-28）
+
+> 当前需求以本节为准；下文原始根因与任务清单保留作审计记录，未勾选项以本节结论为准。
+
+- **实测依据**（10 万提交 DAG，`graph_layout` 基准）：`recommended_track_width` ≈ 190 ms（每次构图 / 筛选 / 折叠都会执行）；构图（Permanent + Visible）≈ 35 ms；60 行 `print_elements` 视口 ≈ 0.36 ms/帧。
+- **本轮完成**（Commit `a4b0cc6`）：`recommended_track_width` 改为单趟 `O(V + E)` 差分扫描，不再读写 `EdgesInRowCache`，结果与旧版逐行一致；189.6 ms → 0.35 ms。新增 `visible_graph_build_*`、`recommended_track_width_100k`、`print_elements_viewport_60_rows_100k` 基准。
+- **不做**（实测收益低，用户无感）：移除 `edges_from_below` 与 `ultra_long_edges` 索引、`O(W²)` 槽位查找、`print_elements` 批量复用、`VisibleGraph` / `PermanentGraph` / `LinearBek` 分配瘦身、`Oid` 前缀 / `glob` / Filter 谓词重排、`FuzzyMatcher` / `natural_cmp`、`repo.rs` 索引复用。
 
 ## 1. 根因定位
 
@@ -87,3 +95,4 @@ Priority: P0
   - 测试：`recommended_track_width_matches_reference_and_leaves_cache_untouched`——随机多分支 DAG（含重复父、`> LONG_EDGE_SIZE`、`> VERY_LONG_EDGE_SIZE`/`> WALK_SIZE` 边），2,500 与 41,000 提交 × `show_long_edges` 开/关 × 过滤/不过滤；小图逐行比对槽位数，全部配置比对旧版宽度，并断言调用后缓存块数与命中数均为 0。
   - 基准 `recommended_track_width_100k`：**189.64 ms → 348.27 µs**（约 545×，后者仍含基准循环内的 `EdgesInRowCache::new`）。
   - 其余条目（移除 `edges_from_below`、`ultra_long_edges` 索引、`O(W²)` 槽位查找、`print_elements` 批量、`VisibleGraph`/`PermanentGraph`/`LinearBek` 分配瘦身、`Oid`/filter/glob/fuzzy/`natural_cmp`/`repo.rs`）实测收益低，暂缓。
+- **2026-11-28（范围修订）**：按文首「范围修订」节更新 `Status: resolved`；暂缓项汇总至 [`07`](./07-deferred-perf-candidates.md)，不做项不再跟踪。

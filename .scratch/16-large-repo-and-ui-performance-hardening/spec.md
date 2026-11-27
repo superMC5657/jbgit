@@ -1,13 +1,17 @@
 # Spec 16: 大仓库、渲染热路径与引擎并发性能二期治理（Phase 11）
 
+> **2026-11-28 范围修订**：评估后只实施实测或明确有收益的子集，见 [§5 范围修订](#5-范围修订2026-11-28)。§1–§4 为原始审计记录，各 Issue 文首「范围修订」节为当前需求。
+
 - **目录**：`.scratch/16-large-repo-and-ui-performance-hardening/`
-- **下属 Issues**（按 P0 严重阻塞 → P1 高频交互掉帧 / 异步阻塞 / 内存与基准补齐，拆分为 6 个正交原子工单）：
+- **状态**：`01`、`02`、`03`、`05`、`06` resolved（后四项为收窄范围）；`04` wontfix；`07` needs-triage（暂缓候选项）。分支 `spec16-perf`，Commits `1f8c349`..`9e76d21`。
+- **下属 Issues**（按 P0 严重阻塞 → P1 高频交互掉帧 / 异步阻塞 / 内存与基准补齐，拆分为 6 个正交原子工单，另加范围修订后的 1 个暂缓汇总工单）：
   - [`01-engine-index-reload-snapshot-arc-and-copy-scan.md`](./issues/01-engine-index-reload-snapshot-arc-and-copy-scan.md)（**P0** · 消除 `with_thread_repo` 强刷 `.git/index`、`SnapshotCommitCache` 三份深拷贝与点击 Untracked 文件全仓拷贝扫描）
   - [`02-core-dag-edges-filter-and-visible-graph-perf.md`](./issues/02-core-dag-edges-filter-and-visible-graph-perf.md)（**P0** · 删除冗余 `edges_from_below`、重写 `recommended_track_width` 线性扫、优化 `VisibleGraph` 小 Vec 分配与零分配 OID / Filter 匹配）
   - [`03-conflict-merge-and-diff-soft-wrap-search-perf.md`](./issues/03-conflict-merge-and-diff-soft-wrap-search-perf.md)（**P0** · 修复三方冲突每帧三倍克隆与 `Custom` `O(L²)` 爆炸、缓存 Diff 软换行前缀和、`ranges_for` 二分与滚动惰性 fallback）
   - [`04-tui-frame-caching-ui-thread-offload-and-memory-bounds.md`](./issues/04-tui-frame-caching-ui-thread-offload-and-memory-bounds.md)（**P1** · Commit Details/Footer/Filter 弹窗缓存与 UI 线程零 I/O、异步折叠构图、`ConsoleWorkbench` 与 `rollback_undo_stack` 内存有界化）
   - [`05-vector-graph-scroll-blit-and-resize-coalescing.md`](./issues/05-vector-graph-scroll-blit-and-resize-coalescing.md)（**P1** · 矢量图垂直滚动 `copy_within` 行级搬移、命中区按 `content_key` 缓存、Sixel 量化加速与 `Resize` 事件合并）
   - [`06-engine-tokio-unblock-windows-scaling-and-benchmarks.md`](./issues/06-engine-tokio-unblock-windows-scaling-and-benchmarks.md)（**P1** · 移除 Tokio 异步线程阻塞、Windows 大工作区/串行子进程与 Watcher 治理、补齐 Criterion 回归基准）
+  - [`07-deferred-perf-candidates.md`](./issues/07-deferred-perf-candidates.md)（**P2** · 范围修订后暂缓的特定场景候选项与 `recurse_untracked_dirs` 产品决策，待评估）
 - **关联源码**：
   - `crates/jbgit-core/src/`：`oid.rs`、`filter.rs`、`repo.rs`、`conflict.rs`、`details.rs`、`stage.rs`、`stage_tracker.rs`、`branch_tree.rs`、`refs.rs`、`graph/{edges_in_row.rs, print_elements.rs, visible.rs, permanent.rs, linear_bek.rs, joiner.rs}`
   - `crates/jbgit-core/benches/graph_layout.rs`
@@ -98,3 +102,47 @@ flowchart LR
    - `cargo clippy --workspace --all-targets -- -D warnings`
    - `cargo test --workspace --locked`
 3. 基准编译验证：`cargo bench -p jbgit-core --no-run`（并在改动核心算法后实跑相关基准对比前后耗时）。
+
+---
+
+## 5. 范围修订（2026-11-28）
+
+### 5.1 修订原因
+
+§1 中多数耗时为审计估算而非实测。完成 `01` 后实跑 10 万提交基准（`graph_layout`）得到：
+
+| 基准 | 耗时 |
+| :--- | ---: |
+| `recommended_track_width_100k`（每次构图 / 筛选 / 折叠） | ≈ 190 ms |
+| 构图（`permanent_graph_and_dfs_layout_100k` + `visible_graph_build_*`） | ≈ 21 ms + 15 ms |
+| `print_elements_viewport_60_rows_100k`（每帧） | ≈ 0.36 ms |
+| `incremental_head_join_100k_2000_new_commits` | 8.2 ms → 7.3 ms（`01` 后） |
+
+即「每帧渲染很慢」类结论大多不成立，真正的大头是少数算法热点与特定场景 bug。因此只保留**真实卡顿或 bug、且改动小**的条目，其余按「暂缓（移入 `07`）」或「不做」处理。
+
+### 5.2 本轮实施（分支 `spec16-perf`）
+
+| Issue | 状态 | 实施内容 | Commit |
+| :---: | :---: | :--- | :---: |
+| `01` | resolved | `index.read(false)` 替代强刷；`RepoSnapshot::commits` 改 `Arc` 共享；`insert_indexed` 去 `O(K²)`；未跟踪文件跳过全仓 copy 扫描 | `0d94bee` |
+| `02` | resolved（收窄） | `recommended_track_width` 单趟差分扫描：189.6 ms → 0.35 ms | `a4b0cc6` |
+| `03` | resolved（收窄） | 冲突 `Custom` `O(L²)` 克隆、视口窗口投影与廉价总行数；惰性滚动 fallback；`ranges_for` 二分；模态粘贴单次重算；4 MiB 护栏回归测试 | `013495f` |
+| `04` | wontfix | 本轮不做（候选项移入 `07`） | — |
+| `05` | resolved（收窄） | `set_capabilities` 能力未变不作废；连续 `Resize` 合并 | `042aa3b` |
+| `06` | resolved（收窄） | Watcher 早期路径过滤 + 祖先目录忽略缓存 + `\\?\` / 盘符归一化；Added/Deleted 文件直接计行；`CompareWithLocal` 大索引护栏 | `9e76d21` |
+| `07` | needs-triage | 暂缓候选项汇总 | — |
+
+公共 API 变化：`RepoSnapshot::commits: Arc<Vec<CommitSummary>>`；`ConflictPaneRow::choice: Option<ConflictChoiceKind>`。
+
+### 5.3 不做的条目（不再跟踪）
+
+- `02`：`edges_from_below` 去重、`VisibleGraph` / `PermanentGraph` / `LinearBek` 分配瘦身、`Oid` / Filter / `glob` / `FuzzyMatcher` / `natural_cmp` / `repo.rs` 微优化——每帧 0.36 ms、构图约 35 ms，用户无感。
+- `03`：`-b` / `-w` 拷贝、`paired_line_in_hunk` 缓存、Annotate / FileHistory 行偏移缓存、`Unchanged` 三倍克隆。
+- `04`：Footer、`has_multi_selection` 等常数级开销；异步折叠构图（主要耗时已由 `02` 消除）；`rollback_undo_stack` 上限与零散同步 I/O / 空转重绘。
+- `05`：`copy_within` 滚动搬移、命中区缓存、Sixel 量化——仅矢量图模式受益，若后续默认启用矢量后端再评估。
+- `06`：Tokio 去阻塞、`git --version` 双探测、批量验签、取消链路与 `WindowsJobGuard`、CLI 静默缓冲、blame porcelain、Criterion 基准补齐。
+
+### 5.4 验收门禁调整
+
+- 每个 Issue 只跑受影响 crate 的 `cargo test -p` / `cargo clippy -p`；全量 `cargo clippy --workspace --all-targets -- -D warnings` 与 `cargo test --workspace --locked` 在全部完成后统一跑一次（2026-11-28 通过）。
+- 仓库未做 rustfmt 全量清理，不执行 `cargo fmt --all -- --check`；只对改动行按 rustfmt 风格手工格式化。

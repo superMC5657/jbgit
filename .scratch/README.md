@@ -1,6 +1,6 @@
 # jbgit Feature Specs & Issue Tracker 目录索引
 
-> 本目录为 `jbgit` 项目的本地需求工单与技术规格索引（遵循 [`docs/agents/issue-tracker.md`](../docs/agents/issue-tracker.md) 与 [`AGENTS.md`](../AGENTS.md)），按执行时序汇总 **17 个特性与治理专题（共 82 个原子工单）** 及其架构演进取舍。
+> 本目录为 `jbgit` 项目的本地需求工单与技术规格索引（遵循 [`docs/agents/issue-tracker.md`](../docs/agents/issue-tracker.md) 与 [`AGENTS.md`](../AGENTS.md)），按执行时序汇总 **17 个特性与治理专题（共 83 个原子工单）** 及其架构演进取舍。
 
 ---
 
@@ -34,7 +34,7 @@
 | **#13** | Phase 8: 对齐 reference 基线的深度补齐与正确性加固 | [`13-reference-parity-depth-and-correctness`](./13-reference-parity-depth-and-correctness/spec.md) | Commit/Stage/冲突/选区 P0 正确性修复、Diff 空白/横滚/搜索、Pull/Rebase 选项弹窗、Upstream/分支清理/选项补齐、Commit 模板与 Push 加固、FileHistory/Annotate 深化、真正 3-Way 合并队列、Patch/Tree 增强、高亮器/LinearBek/Reflog、增量刷新分页、Clone/Init/CRLF、GPG/Bisect/细节三件套 | 规划中（2026-11-24） | — | M10 (`core` / `engine` / `tui` / `pilot`) | 0 / 14 Open（全部 `ready-for-agent`） |
 | **#14** | Phase 9: 探索性 TUI QA（Round 1）缺陷修复 | [`14-pilot-qa-bugfix-and-ergonomics`](./14-pilot-qa-bugfix-and-ergonomics/spec.md) | Windows `\\?\` Clone 路径、`--unshallow` 图谱刷新、暂存 spinner / `UD` 冲突重置 / FileHistory 范围、变更树与分支快捷键、ConPTY 按键编码、筛选栏与弹窗打磨（19 项） | 2026-11-25 | `15d8358`..`2760aea` | M11 (`core` / `engine` / `tui` / `pilot`) | 6 / 6 Resolved |
 | **#15** | Phase 10: 工作流正确性与 UI 交互加固 | [`15-ui-and-workflow-hardening`](./15-ui-and-workflow-hardening/spec.md) | Smart Merge 2 空格文件名解析与 Stash 恢复失败分类、Commit 初始文件选中与弹窗 `Ctrl+a` 全选统一、窄屏弹窗/对比栏/边框对齐与菜单宽度、Hover 反馈一致性 | 规划中（2026-11-25） | — | M12 (`core` / `engine` / `tui`) | 0 / 4 Open（全部 `ready-for-agent`） |
-| **#16** | Phase 11: 大仓库与渲染/并发性能二期治理 | [`16-large-repo-and-ui-performance-hardening`](./16-large-repo-and-ui-performance-hardening/spec.md) | 消除 `with_thread_repo` 强刷索引、`SnapshotCommitCache` `Arc` 共享与全仓 Copy 扫描；DAG 边去重/线性宽度扫描/零分配 Filter；三方冲突 `O(L²)` 与软换行/搜索缓存；Details/Footer/Console 与矢量图滚动优化；Tokio 解阻与 Windows/Watcher/基准补齐 | 规划中（2026-11-28） | — | M13 (`core` / `engine` / `tui`) | 0 / 6 Open（全部 `ready-for-agent`） |
+| **#16** | Phase 11: 大仓库与渲染/并发性能二期治理 | [`16-large-repo-and-ui-performance-hardening`](./16-large-repo-and-ui-performance-hardening/spec.md) | 消除 `with_thread_repo` 强刷索引、`SnapshotCommitCache` `Arc` 共享与全仓 Copy 扫描；DAG 边去重/线性宽度扫描/零分配 Filter；三方冲突 `O(L²)` 与软换行/搜索缓存；Details/Footer/Console 与矢量图滚动优化；Tokio 解阻与 Windows/Watcher/基准补齐 | 2026-11-28 | `1f8c349`..`9e76d21` | M13 (`core` / `engine` / `tui`) | 5 / 7 Resolved（4 项收窄范围；1 wontfix；1 needs-triage） |
 
 ---
 
@@ -238,19 +238,21 @@
 
 ---
 
-### Phase 11: 大仓库与渲染/并发性能二期治理（规划中，2026-11-28）
+### Phase 11: 大仓库与渲染/并发性能二期治理（2026-11-28，范围修订后完成）
 
 在 Spec 10 落地及 Spec 12–15 补齐增量刷新、真正 3-Way 合并、Diff 软换行/搜索、Annotate、LinearBek 与 Update Project 后，开展全仓库三层 Crate 二期源码性能审计，系统消除大仓库（5 万–20 万 commits / 1 万–5 万文件，含 Windows）、高帧率渲染、矢量图滚动与长会话内存保留中的 P0/P1 瓶颈。
 
 #### #16 · `16-large-repo-and-ui-performance-hardening`
-- **定位**：大仓库、渲染热路径与引擎并发性能二期治理（0 / 6 Open，全部 `ready-for-agent`）。
+- **定位**：大仓库、渲染热路径与引擎并发性能二期治理（5 / 7 Resolved，分支 `spec16-perf`）。
+- **范围修订**：实测 10 万提交基准后（`recommended_track_width` ≈ 190 ms，构图 ≈ 35 ms，每帧视口 ≈ 0.36 ms），只实施真实卡顿 / bug 且改动小的子集，其余暂缓（汇总到 `07`）或不做，详见 [`spec.md` §5](./16-large-repo-and-ui-performance-hardening/spec.md#5-范围修订2026-11-28)。
 - **原子工单**：
-  - [`01-engine-index-reload-snapshot-arc-and-copy-scan.md`](./16-large-repo-and-ui-performance-hardening/issues/01-engine-index-reload-snapshot-arc-and-copy-scan.md) — P0：消除 `with_thread_repo` 强制 `index.read(true)`、`SnapshotCommitCache`/`joiner.rs` 多副本深拷贝阻塞 Tokio 与点击 Untracked 文件触发全仓 `copies_from_unmodified` 扫描。
-  - [`02-core-dag-edges-filter-and-visible-graph-perf.md`](./16-large-repo-and-ui-performance-hardening/issues/02-core-dag-edges-filter-and-visible-graph-perf.md) — P0：移除冗余 `edges_from_below`、重写 `recommended_track_width` 为单趟 `O(V+E)` 扫描、削减 `VisibleGraph`/`LinearBek` 小 `Vec` 分配与实现零分配 `Oid`/Filter/`natural_cmp` 匹配。
-  - [`03-conflict-merge-and-diff-soft-wrap-search-perf.md`](./16-large-repo-and-ui-performance-hardening/issues/03-conflict-merge-and-diff-soft-wrap-search-perf.md) — P0：修复三方冲突 `Custom` `O(L²)` 克隆并改为视口窗口投影、缓存软换行高度前缀和与惰性滚动 fallback、`DiffSearchState::ranges_for` 二分查找及减少 `-b`/`-w` 重复拷贝。
-  - [`04-tui-frame-caching-ui-thread-offload-and-memory-bounds.md`](./16-large-repo-and-ui-performance-hardening/issues/04-tui-frame-caching-ui-thread-offload-and-memory-bounds.md) — P1：Commit Details / Footer / Filter 弹窗建议缓存、异步大图折叠、Console 虚拟化渲染（保持单命令审计行不硬截断）与 `ConsoleWorkbench::entries`/`rollback_undo_stack` 内存有界化。
-  - [`05-vector-graph-scroll-blit-and-resize-coalescing.md`](./16-large-repo-and-ui-performance-hardening/issues/05-vector-graph-scroll-blit-and-resize-coalescing.md) — P1：矢量图垂直滚动 `copy_within` 行级搬移、命中区按 `content_key` 缓存与水平合并、Sixel 量化加速及 `Resize` 事件合并。
-  - [`06-engine-tokio-unblock-windows-scaling-and-benchmarks.md`](./16-large-repo-and-ui-performance-hardening/issues/06-engine-tokio-unblock-windows-scaling-and-benchmarks.md) — P1：移除 Tokio 异步线程同步阻塞、优化 `load_commit_details_sync`/批验签/取消链路、治理 Windows 大工作区 `unstage`/串行子进程与 Watcher，并补齐 `graph_layout.rs` Criterion 回归基准。
+  - [`01-engine-index-reload-snapshot-arc-and-copy-scan.md`](./16-large-repo-and-ui-performance-hardening/issues/01-engine-index-reload-snapshot-arc-and-copy-scan.md) — P0（resolved，`0d94bee`）：消除 `with_thread_repo` 强制 `index.read(true)`、`SnapshotCommitCache`/`joiner.rs` 多副本深拷贝阻塞 Tokio 与点击 Untracked 文件触发全仓 `copies_from_unmodified` 扫描。
+  - [`02-core-dag-edges-filter-and-visible-graph-perf.md`](./16-large-repo-and-ui-performance-hardening/issues/02-core-dag-edges-filter-and-visible-graph-perf.md) — P0（resolved，收窄为 `recommended_track_width` 单趟扫描 190 ms → 0.35 ms，`a4b0cc6`）：移除冗余 `edges_from_below`、重写 `recommended_track_width` 为单趟 `O(V+E)` 扫描、削减 `VisibleGraph`/`LinearBek` 小 `Vec` 分配与实现零分配 `Oid`/Filter/`natural_cmp` 匹配。
+  - [`03-conflict-merge-and-diff-soft-wrap-search-perf.md`](./16-large-repo-and-ui-performance-hardening/issues/03-conflict-merge-and-diff-soft-wrap-search-perf.md) — P0（resolved，收窄为冲突 `O(L²)` / 视口投影、惰性滚动、二分搜索与单次粘贴重算，`013495f`）：修复三方冲突 `Custom` `O(L²)` 克隆并改为视口窗口投影、缓存软换行高度前缀和与惰性滚动 fallback、`DiffSearchState::ranges_for` 二分查找及减少 `-b`/`-w` 重复拷贝。
+  - [`04-tui-frame-caching-ui-thread-offload-and-memory-bounds.md`](./16-large-repo-and-ui-performance-hardening/issues/04-tui-frame-caching-ui-thread-offload-and-memory-bounds.md) — P1（wontfix，候选项移入 `07`）：Commit Details / Footer / Filter 弹窗建议缓存、异步大图折叠、Console 虚拟化渲染（保持单命令审计行不硬截断）与 `ConsoleWorkbench::entries`/`rollback_undo_stack` 内存有界化。
+  - [`05-vector-graph-scroll-blit-and-resize-coalescing.md`](./16-large-repo-and-ui-performance-hardening/issues/05-vector-graph-scroll-blit-and-resize-coalescing.md) — P1（resolved，收窄为 `set_capabilities` 去无条件作废 + `Resize` 合并，`042aa3b`）：矢量图垂直滚动 `copy_within` 行级搬移、命中区按 `content_key` 缓存与水平合并、Sixel 量化加速及 `Resize` 事件合并。
+  - [`06-engine-tokio-unblock-windows-scaling-and-benchmarks.md`](./16-large-repo-and-ui-performance-hardening/issues/06-engine-tokio-unblock-windows-scaling-and-benchmarks.md) — P1（resolved，收窄为 Watcher 过滤 + Added/Deleted 计行快速路径，`9e76d21`）：移除 Tokio 异步线程同步阻塞、优化 `load_commit_details_sync`/批验签/取消链路、治理 Windows 大工作区 `unstage`/串行子进程与 Watcher，并补齐 `graph_layout.rs` Criterion 回归基准。
+  - [`07-deferred-perf-candidates.md`](./16-large-repo-and-ui-performance-hardening/issues/07-deferred-perf-candidates.md) — P2（needs-triage）：范围修订后暂缓的特定场景候选项（软换行行高缓存、Commit Details hash 解析、Filter 弹窗缓存、Console 虚拟化、批量 unstage、UpdateProject 串行 spawn）与 `recurse_untracked_dirs` 默认值产品决策。
 
 ---
 

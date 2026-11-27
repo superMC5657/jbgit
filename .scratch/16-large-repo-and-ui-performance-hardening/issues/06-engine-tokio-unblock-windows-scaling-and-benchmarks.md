@@ -1,6 +1,6 @@
 # 06: Tokio 异步线程解阻、Windows 大工作区/并发与 Watcher 治理及 Criterion 基准补齐
 
-Status: ready-for-agent
+Status: resolved
 Spec: [../spec.md](../spec.md)
 Milestone: M13 — 大仓库、渲染热路径与引擎并发性能二期治理
 Priority: P1
@@ -17,6 +17,16 @@ Priority: P1
   - `crates/jbgit-core/benches/graph_layout.rs`（基准测试覆盖扩展）
 
 ---
+
+## 范围修订（2026-11-28）
+
+> 当前需求以本节为准；下文原始根因与任务清单保留作审计记录，未勾选项以本节结论为准。
+
+- **本轮完成**（Commit `9e76d21`）：
+  - Watcher：`.git/objects`、`logs` 等无关路径在分类入口按首段零分配丢弃（刷新触发集合不变）；工作区过滤改为有界祖先目录缓存，`target/`、`node_modules/` 深层事件按前缀拒绝；`\\?\` 前缀与盘符大小写归一化。
+  - 提交详情：纯 `Added` / `Deleted`（任一侧为空）文件直接计行，跳过完整 Histogram diff；`CompareWithLocal` 在超大索引上跳过重命名检测。
+- **移入 [`07`](./07-deferred-perf-candidates.md) 待评估**：`unstage_path_in_index` 的 `O(targets × index_entries)`；`UpdateProject` / `collect_update_info` 按分支串行 spawn `git.exe`；`recurse_untracked_dirs` 默认值（产品决策，非性能修复）。
+- **不做**：Tokio 线程同步阻塞迁移、启动 `git --version` 双探测、多选批量验签、`CheckRemoteTag` / `collect_refs` 取消检查、`run_git_output_cancellable` 挂 `WindowsJobGuard`（非性能项，如出现残留进程再单独立项）、CRLF 批处理、CLI 静默缓冲 / tree 流式写盘 / blame `--porcelain`、Criterion 基准补齐（仅 [`02`](./02-core-dag-edges-filter-and-visible-graph-perf.md) 补了图谱基准）。
 
 ## 1. 根因定位
 
@@ -83,3 +93,4 @@ Priority: P1
   - **提交详情（`details/commit_changes.rs`）**：`load_commit_details_sync` 改用 `line_stats`，任一侧为空（纯 `Added`/`Deleted`，以及清空/填充文件）时直接按 `\n` 计数（非空且无尾换行的末段计 1 行，与 imara `&str` 行切分一致），跳过 `InternedInput` + `Diff::compute` + `postprocess_lines`；二进制判定不变。`resolve_compare_with_local` 在索引条目数超过 `LARGE_INDEX_ENTRIES` 时跳过 `find_similar` 重命名配对（与状态扫描策略一致，此时显示为删除 + 新增）。
   - **测试**：`watcher.rs` 新增 `.git/objects` 等风暴路径忽略且 `HEAD`/`index`/`refs/heads/x`/`MERGE_HEAD`/`rebase-merge/*` 仍触发、Windows `\\?\` 与盘符大小写归一化（`cfg(windows)`）、祖先缓存（500 个不同深层目录仅 1 次查询）与缓存有界测试；`commit_changes.rs` 新增空文件/有无尾换行/CRLF/非法 UTF-8 下快速路径与完整 diff 结果相等、取消检查，以及真实仓库中新增/删除/空文件/二进制文件统计的端到端测试。`cargo test -p jbgit-engine --locked` 与 `cargo clippy -p jbgit-engine -p jbgit-tui --all-targets -- -D warnings` 通过。
   - **延后**：Tokio 线程解阻、`git --version` 双探测、多选批量验签、`WindowsJobGuard`、`unstage_path_in_index`、`UpdateProject`/CRLF 子进程合并、CLI 静默缓冲、blame `--porcelain`、Criterion 基准补齐等仍未处理，对应任务框保持未勾选。`recurse_untracked_dirs` 默认值（`StatusScanMode::Always`）属于产品决策而非性能修复，本轮不改动。
+- **2026-11-28（范围修订）**：按文首「范围修订」节更新 `Status: resolved`；暂缓项汇总至 [`07`](./07-deferred-perf-candidates.md)，不做项不再跟踪。

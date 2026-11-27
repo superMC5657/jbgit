@@ -1,6 +1,6 @@
 # 05: 矢量图垂直滚动 `copy_within` 行搬移、命中区缓存、Sixel 量化加速与 `Resize` 合并
 
-Status: ready-for-agent
+Status: resolved
 Spec: [../spec.md](../spec.md)
 Milestone: M13 — 大仓库、渲染热路径与引擎并发性能二期治理
 Priority: P1
@@ -13,6 +13,13 @@ Priority: P1
   - `crates/jbgit-tui/src/hit_test.rs`（`HitTestRegistry::hit_test` `:555-573`）
 
 ---
+
+## 范围修订（2026-11-28）
+
+> 当前需求以本节为准；下文原始根因与任务清单保留作审计记录，未勾选项以本节结论为准。
+
+- **本轮完成**（Commit `042aa3b`）：`GraphRenderer::set_capabilities` 在能力未变时不再 `invalidate()`；`collapse_ready_resizes` 合并同批连续 `Resize`，只按最终尺寸处理一次，后续事件顺延到新尺寸重绘之后。
+- **不做**：矢量条带 `copy_within` 滚动搬移、`HitRegion` 按 `content_key` 缓存与水平合并、Sixel 量化加速——仅 Kitty / Sixel / iTerm2 矢量模式受益且实现复杂；若后续默认启用矢量图后端再重新评估。
 
 ## 1. 根因定位
 
@@ -64,3 +71,4 @@ Priority: P1
 
 - **2026-11-28**：基于 `jbgit-tui` 矢量图后端与事件循环性能审计创建本 P1 工单，治理 HiDPI 终端下矢量图滚动重绘、Sixel 量化、命中区膨胀及缩放卡顿。
 - **2026-11-28**：用户将本工单范围收窄为两项：`GraphRenderer::set_capabilities` 去掉无条件 `invalidate()`，以及合并 `Event::Resize`。改动：(1) `renderer.rs` 中 `set_capabilities` 在新旧 `caps` 相等时直接返回（`GraphicsCapabilities` 已含 `cell_px`，字体缩放导致的单元格像素变化仍会作废缓存；纯终端尺寸变化由光栅/发送 key 中的视口几何自行处理，Kitty 使用 `U=1` 虚拟放置、Sixel/iTerm2 的 `emitted_key` 含 `terminal_area`）；(2) `session.rs` 新增 `collapse_ready_resizes`：一个 `Resize` 到达后继续非阻塞地拉取已就绪的连续 `Resize` 只保留最后一个，仅调用一次 `on_resize`；连续段之后遇到的第一个非 `Resize` 事件（或流结束）由 `main.rs` 暂存到 `carried_terminal`，在按新尺寸重绘后的下一轮最先处理，语义与原先 `Resize` 打断批次一致（退出/终端交接/模态边界不变）；`TuiSession::step_turn` 同样把相邻的 `Resize` 输入折叠为最后一个。测试：`set_capabilities_only_invalidates_when_caps_change`、`tui_session_collapses_consecutive_resizes_into_one_on_resize`、`collapse_ready_resizes_keeps_last_size_and_carries_the_next_event`；`cargo test -p jbgit-tui --locked` 与 `cargo clippy -p jbgit-tui --all-targets -- -D warnings` 通过。其余三项（`copy_within` 滚动搬移、命中区缓存/合并、Sixel 量化加速）延后：它们只对 Kitty/Sixel 矢量模式有收益。
+- **2026-11-28（范围修订）**：按文首「范围修订」节更新 `Status: resolved`；暂缓项汇总至 [`07`](./07-deferred-perf-candidates.md)，不做项不再跟踪。

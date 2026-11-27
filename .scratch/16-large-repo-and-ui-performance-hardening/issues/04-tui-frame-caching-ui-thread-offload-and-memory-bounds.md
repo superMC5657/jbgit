@@ -1,6 +1,6 @@
 # 04: Details / Footer / Filter 弹窗缓存、UI 线程零同步 I/O、异步折叠构图与内存有界化
 
-Status: ready-for-agent
+Status: wontfix
 Spec: [../spec.md](../spec.md)
 Milestone: M13 — 大仓库、渲染热路径与引擎并发性能二期治理
 Priority: P1
@@ -23,6 +23,18 @@ Priority: P1
   - `crates/jbgit-core/src/stage.rs`（`StageDir::count` `:232-234`，`build_stage_tree_rows` `:240-490`）
 
 ---
+
+## 范围修订（2026-11-28）
+
+> 当前需求以本节为准；下文原始根因与任务清单保留作审计记录，未勾选项以本节结论为准。
+
+- **本轮整体不做**：本工单各项均为常数级或特定场景开销，评估后未纳入本轮精简清单。
+- **移入 [`07`](./07-deferred-perf-candidates.md) 待评估**：Commit Details 正文 hash 链接每帧线性 `resolve_revision`；Filter 弹窗 `Paths` 每帧 `read_dir` 与 `User` 每帧统计作者；Console 视口虚拟化与 `ConsoleWorkbench::entries` 条数上限。
+- **不做**：
+  - Footer 计划缓存与 `display_width` / `O(P²)` 溢出枚举（P 仅十余项）。
+  - `has_multi_selection` 判定顺序、`align_labels_right` 双重布局、`favorite_branch_names` 预判（常数级）。
+  - 折叠 / 展开异步构图：主要耗时来自 `recommended_track_width`，已在 [`02`](./02-core-dag-edges-filter-and-visible-graph-perf.md) 降至 0.35 ms，剩余构图约 35 ms。
+  - `rollback_undo_stack` 上限、`spawn_draft_write` / `save_settings` 同步 I/O、`needs_redraw` 与凭据等待 spinner 空转、`collapsed_rev`、`highlight_single_line` 键分配、`ChangeDir::count` / `StageDir::count`。
 
 ## 1. 根因定位
 
@@ -77,3 +89,4 @@ Priority: P1
 ## Comments
 
 - **2026-11-28**：基于 `jbgit-tui` 与 `jbgit-core` 性能审计创建本 P1 工单，解决每帧高频率热点、弹窗同步磁盘读写与会话长周期内存增长问题。
+- **2026-11-28（范围修订）**：按文首「范围修订」节更新 `Status: wontfix`；暂缓项汇总至 [`07`](./07-deferred-perf-candidates.md)，不做项不再跟踪。

@@ -1,6 +1,6 @@
 # 03: 三方冲突视图、Diff 软换行高度缓存、滚动惰性 Fallback 与二分搜索优化
 
-Status: ready-for-agent
+Status: resolved
 Spec: [../spec.md](../spec.md)
 Milestone: M13 — 大仓库、渲染热路径与引擎并发性能二期治理
 Priority: P0
@@ -22,6 +22,19 @@ Priority: P0
   - `crates/jbgit-tui/src/syntax.rs`（`:847`）、`crates/jbgit-tui/src/views/annotate.rs`（`:301`）、`crates/jbgit-tui/src/views/file_history.rs`（`:775`）
 
 ---
+
+## 范围修订（2026-11-28）
+
+> 当前需求以本节为准；下文原始根因与任务清单保留作审计记录，未勾选项以本节结论为准。
+
+- **本轮完成**（Commit `013495f`）：
+  - `ConflictPaneRow::choice` 改为 `Option<ConflictChoiceKind>`，消除 `Custom` 块逐行克隆的 `O(L²)`；Result 列按行借用。
+  - `ConflictDocument::total_pane_rows()` 与 `three_pane_rows_window()`：渲染只构建视口行，滚动取总行数不再整份构建。
+  - `ScrollViewport::scroll_by_with` 惰性 fallback，`max_scroll` 已绑定后滚动零全量扫描。
+  - `DiffSearchState::ranges_for` 改为 `partition_point` 二分；模态 diff 搜索框粘贴只重算一次。
+  - 4 MiB 冲突文件护栏核查已存在（`637e13a`），补回归测试。
+- **移入 [`07`](./07-deferred-perf-candidates.md) 待评估**：软换行行高前缀和缓存；非模态 Log / Stage / Stash diff 搜索粘贴仍逐字符重算；超过 4 MiB 的文本冲突以 "Binary" 标题降级。
+- **不做**：`-b` / `-w` 的 `StageLineTracker` 文档拷贝、`paired_line_in_hunk` 区块级缓存、Annotate / FileHistory 行偏移缓存、`three_way_merge_blocks` 中 `Unchanged` 切片三倍克隆。
 
 ## 1. 根因定位
 
@@ -91,3 +104,4 @@ Priority: P0
     - `diff_session.rs`：`ranges_for` 与线性扫描参考实现一致，覆盖 0 命中、首尾行、上千命中和左右分侧。
     - `diff_enhancements_tests.rs`：FileHistory 粘贴（含换行）与逐字符键入得到相同的 query、matches 和 current。
   - **延后**：软换行行高前缀和缓存、`-b`/`-w` 的 `StageLineTracker` 拷贝、`paired_line_in_hunk` 缓存、annotate/file_history 行缓存，以及 `three_way_merge_blocks` 中 `Unchanged` 切片的三倍克隆。因此任务 1、2、4 只部分完成或未做，未勾选；任务 3 已完成并勾选。
+- **2026-11-28（范围修订）**：按文首「范围修订」节更新 `Status: resolved`；暂缓项汇总至 [`07`](./07-deferred-perf-candidates.md)，不做项不再跟踪。
