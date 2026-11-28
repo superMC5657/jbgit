@@ -292,12 +292,33 @@ pub fn classify_git_meta_path(path: &Path, git_dir: &Path, common_dir: &Path) ->
     if let Ok(rel) = path.strip_prefix(git_dir) {
         return classify_git_rel_path(rel);
     }
-    if let Ok(rel) = path.strip_prefix(common_dir) {
-        return classify_git_rel_path(rel);
+    if git_dir != common_dir {
+        let mut matched_common_worktrees = false;
+        if let Ok(rel) = path.strip_prefix(common_dir) {
+            let first_normal = rel.components().find_map(|c| match c {
+                Component::Normal(name) => Some(name),
+                _ => None,
+            });
+            if first_normal.is_some_and(|name| name == "worktrees") {
+                // `path` shares `common_dir` casing up to `worktrees/`, but may still
+                // match `git_dir` under a different spelling/casing on `<name>`.
+                matched_common_worktrees = true;
+            } else {
+                return classify_git_rel_path(rel);
+            }
+        }
+        if let Some(rel) = strip_prefix_normalized_fallback(path, git_dir) {
+            return classify_git_rel_path(Path::new(&rel));
+        }
+        if matched_common_worktrees {
+            return RefreshScope::None;
+        }
+        if let Some(rel) = strip_prefix_normalized_fallback(path, common_dir) {
+            return classify_git_rel_path(Path::new(&rel));
+        }
+        return RefreshScope::None;
     }
-    let Some(rel) = strip_prefix_normalized_fallback(path, git_dir)
-        .or_else(|| strip_prefix_normalized_fallback(path, common_dir))
-    else {
+    let Some(rel) = strip_prefix_normalized_fallback(path, git_dir) else {
         return RefreshScope::None;
     };
     classify_git_rel_path(Path::new(&rel))
@@ -779,6 +800,59 @@ mod tests {
         assert_eq!(classify(r"\\?\C:\Work\Repo\.gitx\HEAD", git), Skip);
         let verbatim_git = r"\\?\C:\Work\Repo\.git";
         assert_eq!(classify(r"c:\work\repo\.git\HEAD", verbatim_git), Refs);
+
+        // Linked worktree with mixed Windows casing/verbatim spelling: `git_dir`
+        // must take precedence over `common_dir/worktrees/<name>`.
+        let common = Path::new(r"C:\Work\Repo\.git");
+        let wt_git = Path::new(r"C:\Work\Repo\.git\worktrees\wt1");
+        assert_eq!(
+            classify_git_meta_path(
+                Path::new(r"C:\Work\Repo\.git\worktrees\WT1\HEAD"),
+                wt_git,
+                common
+            ),
+            Refs
+        );
+        assert_eq!(
+            classify_git_meta_path(
+                Path::new(r"C:\Work\Repo\.git\worktrees\WT1\index"),
+                wt_git,
+                common
+            ),
+            Stage
+        );
+        assert_eq!(
+            classify_git_meta_path(
+                Path::new(r"\\?\c:\Work\Repo\.git\worktrees\WT1\index"),
+                wt_git,
+                common
+            ),
+            Stage
+        );
+        assert_eq!(
+            classify_git_meta_path(
+                Path::new(r"C:\Work\Repo\.git\worktrees\other\HEAD"),
+                wt_git,
+                common
+            ),
+            Skip
+        );
+        assert_eq!(
+            classify_git_meta_path(
+                Path::new(r"C:\Work\Repo\.git\objects\ab\cd"),
+                wt_git,
+                common
+            ),
+            Skip
+        );
+        assert_eq!(
+            classify_git_meta_path(
+                Path::new(r"C:\Work\Repo\.git\refs\heads\main"),
+                wt_git,
+                common
+            ),
+            Refs
+        );
     }
 
     #[test]

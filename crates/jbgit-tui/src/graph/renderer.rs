@@ -391,6 +391,20 @@ impl GraphRenderer {
         }
     }
 
+    /// Marks Sixel/iTerm2 emission stale after a terminal resize without
+    /// discarding cached raster strips or Kitty virtual placements.
+    pub fn invalidate_emission(&mut self) {
+        #[cfg(feature = "graphics-protocol")]
+        if let Some(v) = self.vector.as_mut() {
+            v.invalidate_emission();
+        }
+    }
+
+    #[cfg(all(test, feature = "graphics-protocol"))]
+    pub(crate) fn last_rasterized_rows(&self) -> Option<usize> {
+        self.vector.as_ref().map(|v| v.last_rasterized_rows())
+    }
+
     pub fn begin_frame(&mut self) {
         #[cfg(feature = "graphics-protocol")]
         if let Some(v) = self.vector.as_mut() {

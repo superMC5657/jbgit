@@ -441,20 +441,21 @@ impl AppState {
                 }
             }
             ScrollPane::PushDiff => {
-                let fallback = self
-                    .modal_stack
-                    .push_dialog()
-                    .and_then(|pd| pd.desired_diff_key(&self.diff_caches))
-                    .and_then(|key| self.diff_caches.peek_diff(&key))
-                    .map_or(usize::MAX, |d| {
-                        d.hunks
-                            .iter()
-                            .map(|h| h.lines.len() + 1)
-                            .sum::<usize>()
-                            .saturating_sub(1)
-                    });
+                let caches = &self.diff_caches;
                 if let Some(pd) = self.modal_stack.push_dialog_mut() {
-                    pd.diff.scroll.scroll_by(delta, fallback);
+                    let mut scroll = pd.diff.scroll;
+                    scroll.scroll_by_with(delta, || {
+                        pd.desired_diff_key(caches)
+                            .and_then(|key| caches.peek_diff(&key))
+                            .map_or(usize::MAX, |d| {
+                                d.hunks
+                                    .iter()
+                                    .map(|h| h.lines.len() + 1)
+                                    .sum::<usize>()
+                                    .saturating_sub(1)
+                            })
+                    });
+                    pd.diff.scroll = scroll;
                 }
             }
             ScrollPane::ConflictMerge => {
@@ -499,20 +500,21 @@ impl AppState {
                 }
             }
             ScrollPane::ReflogDiff => {
-                let fallback = self
-                    .modal_stack
-                    .reflog()
-                    .and_then(|r| r.desired_diff_key(&self.diff_caches))
-                    .and_then(|k| self.diff_caches.peek_diff(&k))
-                    .map_or(usize::MAX, |d| {
-                        d.hunks
-                            .iter()
-                            .map(|h| h.lines.len() + 1)
-                            .sum::<usize>()
-                            .saturating_sub(1)
-                    });
+                let caches = &self.diff_caches;
                 if let Some(rf) = self.modal_stack.reflog_mut() {
-                    rf.diff.scroll.scroll_by(delta, fallback);
+                    let mut scroll = rf.diff.scroll;
+                    scroll.scroll_by_with(delta, || {
+                        rf.desired_diff_key(caches)
+                            .and_then(|k| caches.peek_diff(&k))
+                            .map_or(usize::MAX, |d| {
+                                d.hunks
+                                    .iter()
+                                    .map(|h| h.lines.len() + 1)
+                                    .sum::<usize>()
+                                    .saturating_sub(1)
+                            })
+                    });
+                    rf.diff.scroll = scroll;
                 }
             }
             ScrollPane::ApplyPatchPreview => {

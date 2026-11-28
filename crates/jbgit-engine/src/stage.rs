@@ -1151,6 +1151,7 @@ pub(crate) fn apply_stage_buffer_sync(
 
     with_thread_repo(&location.git_dir, |repo| {
         let mut index = repo.index()?;
+        index.read(true)?;
         let existing = index.get_path(Path::new(path), 0);
         let head_is_special = repo
             .head()
@@ -1259,6 +1260,7 @@ pub(crate) fn remove_conflict_path_sync(
     if stage {
         with_thread_repo(&location.git_dir, |repo| {
             let mut index = repo.index()?;
+            index.read(true)?;
             let rel = Path::new(path);
             let _ = index.conflict_remove(rel);
             let _ = index.remove_path(rel);
@@ -1532,6 +1534,7 @@ pub(crate) fn stage_targets_sync(
 ) -> Result<(), EngineError> {
     with_thread_repo(&location.git_dir, |repo| {
         let mut index = repo.index()?;
+        index.read(true)?;
         let mut index_dirty = false;
         let mut cli_add_paths: Vec<String> = Vec::new();
         let mut submodule_paths: Vec<String> = Vec::new();
@@ -1601,7 +1604,7 @@ pub(crate) fn stage_targets_sync(
             stage_submodule_gitlink(location, repo, &sub)?;
         }
         if ran_external_git {
-            let _ = repo.index().and_then(|mut idx| idx.read(true));
+            repo.index()?.read(true)?;
         }
         Ok(())
     })
@@ -1615,6 +1618,7 @@ pub(crate) fn stage_all_tracked_sync(location: &RepoLocation) -> Result<(), Engi
             return Ok(());
         }
         let mut index = repo.index()?;
+        index.read(true)?;
         index.update_all(["*"], None)?;
         index.write()?;
         Ok(())
@@ -1723,6 +1727,7 @@ pub(crate) fn unstage_targets_sync(
             .and_then(|h| h.peel_to_commit().ok())
             .and_then(|c| c.tree().ok());
         let mut index = repo.index()?;
+        index.read(true)?;
         for p in &pathspecs {
             unstage_path_in_index(&mut index, head_tree.as_ref(), p)?;
         }
@@ -2220,12 +2225,16 @@ pub(crate) fn execute_commit_git2_sync(
                 repo.index()?.read(true)?;
             } else {
                 let mut index = repo.index()?;
+                index.read(true)?;
                 index.update_all(["*"], None)?;
                 index.write()?;
             }
         }
 
         let mut index = repo.index()?;
+        if !req.stage_all_tracked {
+            index.read(true)?;
+        }
         let tree_oid = index.write_tree()?;
         let tree = repo.find_tree(tree_oid)?;
 

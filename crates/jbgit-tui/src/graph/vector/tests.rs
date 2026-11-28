@@ -1124,6 +1124,44 @@ fn set_capabilities_only_invalidates_when_caps_change() {
 }
 
 #[test]
+fn invalidate_emission_resends_sixel_and_iterm2_without_rerasterizing_and_keeps_kitty_cached() {
+    let fx = Fixture::fork_and_merge();
+    for protocol in [GraphicsProtocol::Sixel, GraphicsProtocol::Iterm2] {
+        let mut renderer =
+            GraphRenderer::new(GraphRendererMode::Vector, caps(Some(protocol), Some(CELL)));
+        assert!(!frame(&mut renderer, &fx, None, None).1.is_empty());
+        // Incremental single-row hover updates only 1 row (`last_rasterized_rows == 1`).
+        assert!(!frame(&mut renderer, &fx, Some(1), None).1.is_empty());
+        assert_eq!(renderer.last_rasterized_rows(), Some(1));
+        assert!(frame(&mut renderer, &fx, Some(1), None).1.is_empty(), "cached");
+
+        // Round-trip resize burst back to the same size clears emission state
+        // so Sixel/iTerm2 re-sends without discarding the rasterized strip.
+        renderer.invalidate_emission();
+        assert!(
+            !frame(&mut renderer, &fx, Some(1), None).1.is_empty(),
+            "{protocol:?} must re-emit after resize even at the same area"
+        );
+        assert_eq!(
+            renderer.last_rasterized_rows(),
+            Some(1),
+            "{protocol:?} must reuse the cached raster strip"
+        );
+    }
+
+    let mut kitty = GraphRenderer::new(
+        GraphRendererMode::Vector,
+        caps(Some(GraphicsProtocol::Kitty), Some(CELL)),
+    );
+    assert!(!frame(&mut kitty, &fx, None, None).1.is_empty());
+    kitty.invalidate_emission();
+    assert!(
+        frame(&mut kitty, &fx, None, None).1.is_empty(),
+        "Kitty U=1 virtual placement stays cached across resize emission invalidation"
+    );
+}
+
+#[test]
 fn sixel_and_iterm2_never_paint_over_overlays() {
     let fx = Fixture::fork_and_merge();
     for protocol in [GraphicsProtocol::Sixel, GraphicsProtocol::Iterm2] {

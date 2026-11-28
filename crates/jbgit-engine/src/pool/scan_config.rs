@@ -16,9 +16,10 @@ pub const COPY_SCAN_MAX_INDEX_ENTRIES: usize = 2_000;
 pub const COPY_SCAN_MAX_ADDED: usize = 32;
 
 /// Whether the expensive `copies_from_unmodified` similarity scan may run for an
-/// index of `index_entries` entries with `added` newly staged files.
+/// index of `index_entries` entries with `added` newly staged files. Always
+/// `false` when `added == 0` because there are no added files to pair.
 pub fn copies_from_unmodified_allowed(index_entries: usize, added: usize) -> bool {
-    index_entries <= COPY_SCAN_MAX_INDEX_ENTRIES && added <= COPY_SCAN_MAX_ADDED
+    added > 0 && index_entries <= COPY_SCAN_MAX_INDEX_ENTRIES && added <= COPY_SCAN_MAX_ADDED
 }
 
 /// Local branches (besides `HEAD`, always computed) that get an ahead/behind
@@ -123,4 +124,27 @@ pub struct PendingAheadBehind {
     pub full_name: String,
     pub local: Oid,
     pub upstream: Oid,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn copies_from_unmodified_requires_non_zero_added_and_bounds() {
+        assert!(!copies_from_unmodified_allowed(10, 0));
+        assert!(copies_from_unmodified_allowed(10, 1));
+        assert!(copies_from_unmodified_allowed(
+            COPY_SCAN_MAX_INDEX_ENTRIES,
+            COPY_SCAN_MAX_ADDED
+        ));
+        assert!(!copies_from_unmodified_allowed(
+            COPY_SCAN_MAX_INDEX_ENTRIES + 1,
+            1
+        ));
+        assert!(!copies_from_unmodified_allowed(
+            10,
+            COPY_SCAN_MAX_ADDED + 1
+        ));
+    }
 }

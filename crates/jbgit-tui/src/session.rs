@@ -556,6 +556,7 @@ impl TuiSession {
             SessionInput::Terminal(ev) => {
                 let is_resize = matches!(ev, Event::Resize(..));
                 if is_resize {
+                    state.log.graph_renderer.invalidate_emission();
                     host.on_resize(state);
                     report.stopped_for_resize = true;
                 }

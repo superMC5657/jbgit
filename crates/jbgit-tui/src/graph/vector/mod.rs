@@ -177,6 +177,14 @@ impl PixelVectorGraphBackend {
         }
     }
 
+    /// Forces Sixel/iTerm2 to re-emit the already-rasterized strip on the next
+    /// frame (e.g. after a terminal resize burst whose final size matches the
+    /// previous size, where the terminal may have cleared pixels in between),
+    /// without discarding the rasterized pixel strip or Kitty's uploaded image.
+    pub fn invalidate_emission(&mut self) {
+        self.emitted_key = None;
+    }
+
     /// Releases any active terminal-side Kitty image and clears emitted state
     /// when switching to the character grid or falling back.
     pub fn deactivate(&mut self) {

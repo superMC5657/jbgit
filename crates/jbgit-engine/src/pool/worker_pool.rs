@@ -18,9 +18,10 @@ struct CachedThreadRepo {
     repo: Repository,
     common_dir: PathBuf,
     shallow_fingerprint: Option<Vec<u8>>,
-    /// Set when the last job on this handle returned an error: that job may have
-    /// left unwritten in-memory index edits behind, so the next job forces a full
-    /// `.git/index` re-read instead of the cheap stat/checksum freshness check.
+    /// Set when the last job on this handle returned a non-cancellation error:
+    /// that job may have left unwritten in-memory index edits behind, so the
+    /// next job forces a full `.git/index` re-read instead of the cheap
+    /// stat/checksum freshness check.
     force_index_reload: bool,
 }
 
@@ -93,7 +94,8 @@ fn refresh_cached_index(cached: &CachedThreadRepo) -> bool {
 /// --unshallow` / `--depth`), a stale cached `Repository` would otherwise read
 /// outdated index state or keep truncating revwalks/parent lists at old shallow
 /// boundaries. The index refresh is a stat/checksum check
-/// ([`refresh_cached_index`]), forced to a full re-read only after a failed job.
+/// ([`refresh_cached_index`]), forced to a full re-read only after a failed
+/// (non-cancelled) job.
 ///
 /// At most [`THREAD_REPO_CACHE_CAPACITY`] handles are kept per thread (LRU).
 /// The thread-local cache is not borrowed while `f` runs.
@@ -127,7 +129,7 @@ where
     };
 
     let result = f(&entry.repo);
-    entry.force_index_reload = result.is_err();
+    entry.force_index_reload = matches!(&result, Err(err) if !matches!(err, EngineError::Cancelled));
 
     THREAD_REPOS.with(|cell| {
         let mut cache = cell.borrow_mut();
@@ -423,6 +425,23 @@ mod tests {
         assert!(
             !cached_index_has(&git_dir, "half-applied.txt"),
             "unwritten edits of a failed job must not leak into later jobs"
+        );
+    }
+
+    #[test]
+    fn cancelled_job_does_not_force_index_reload_on_next_call() {
+        let tmp = tempfile::tempdir().unwrap();
+        init_repo_with_commit(tmp.path());
+        let git_dir = tmp.path().join(".git");
+
+        let res: Result<(), EngineError> = with_thread_repo(&git_dir, |repo| {
+            add_in_memory_marker(repo, "cancelled-read-only.txt");
+            Err(EngineError::Cancelled)
+        });
+        assert!(matches!(res, Err(EngineError::Cancelled)));
+        assert!(
+            cached_index_has(&git_dir, "cancelled-read-only.txt"),
+            "cancelled read-only jobs must not trigger a forced index.read(true)"
         );
     }
 
