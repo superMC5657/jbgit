@@ -360,7 +360,7 @@ fn repo_switcher_lists_recent_worktrees_and_submodules_and_switches() {
     );
 
     // Type to filter, Enter switches.
-    ts.type_str("feat");
+    ts.type_str("jbgit-feature");
     let text = screen_text(&ts.render(120, 30));
     assert!(!text.contains("other-repo"), "{text}");
     ts.send_key(KeyCode::Enter, KeyModifiers::NONE);

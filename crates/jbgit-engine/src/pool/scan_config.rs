@@ -142,9 +142,6 @@ mod tests {
             COPY_SCAN_MAX_INDEX_ENTRIES + 1,
             1
         ));
-        assert!(!copies_from_unmodified_allowed(
-            10,
-            COPY_SCAN_MAX_ADDED + 1
-        ));
+        assert!(!copies_from_unmodified_allowed(10, COPY_SCAN_MAX_ADDED + 1));
     }
 }

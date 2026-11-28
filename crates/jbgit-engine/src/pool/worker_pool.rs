@@ -129,7 +129,8 @@ where
     };
 
     let result = f(&entry.repo);
-    entry.force_index_reload = matches!(&result, Err(err) if !matches!(err, EngineError::Cancelled));
+    entry.force_index_reload =
+        matches!(&result, Err(err) if !matches!(err, EngineError::Cancelled));
 
     THREAD_REPOS.with(|cell| {
         let mut cache = cell.borrow_mut();

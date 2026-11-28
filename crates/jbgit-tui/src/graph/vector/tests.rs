@@ -1133,7 +1133,10 @@ fn invalidate_emission_resends_sixel_and_iterm2_without_rerasterizing_and_keeps_
         // Incremental single-row hover updates only 1 row (`last_rasterized_rows == 1`).
         assert!(!frame(&mut renderer, &fx, Some(1), None).1.is_empty());
         assert_eq!(renderer.last_rasterized_rows(), Some(1));
-        assert!(frame(&mut renderer, &fx, Some(1), None).1.is_empty(), "cached");
+        assert!(
+            frame(&mut renderer, &fx, Some(1), None).1.is_empty(),
+            "cached"
+        );
 
         // Round-trip resize burst back to the same size clears emission state
         // so Sixel/iTerm2 re-sends without discarding the rasterized strip.
