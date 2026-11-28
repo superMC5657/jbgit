@@ -16,9 +16,9 @@ Priority: P2
 | 1 | Diff 软换行行高前缀和缓存（`total_rows` / `visual_row_offset_of` / 渲染跳过视口前区间） | [`03`](./03-conflict-merge-and-diff-soft-wrap-search-perf.md) | 开启 soft wrap 且常看上万行 diff |
 | 2 | 非模态 Log / Stage / Stash diff 搜索粘贴逐字符重算（`input/mod.rs`） | [`03`](./03-conflict-merge-and-diff-soft-wrap-search-perf.md) | 常在这些搜索框粘贴长串 |
 | 3 | 超过 4 MiB 的文本冲突以 "Binary" 标题降级，需新增 TooLarge 变体与 i18n 文案 | [`03`](./03-conflict-merge-and-diff-soft-wrap-search-perf.md) | 体验问题，非性能项 |
-| 4 | Commit Details 正文 hash 链接每帧线性 `resolve_revision`（改缓存或 OID 索引查找） | [`04`](./04-tui-frame-caching-ui-thread-offload-and-memory-bounds.md) | 大仓库且提交信息常含 hash |
-| 5 | Filter 弹窗 `Paths` 每帧 `read_dir`、`User` 每帧统计作者（改一次性缓存） | [`04`](./04-tui-frame-caching-ui-thread-offload-and-memory-bounds.md) | 大仓库下筛选弹窗输入卡顿 |
-| 6 | Console 视口虚拟化（`O(H)` 渲染）与 `ConsoleWorkbench::entries` 条数上限（不截断单条命令输出） | [`04`](./04-tui-frame-caching-ui-thread-offload-and-memory-bounds.md) | 长会话、大量命令输出 |
+| 4 | Commit Details 正文 hash 链接每帧线性 `resolve_revision`（改缓存或 OID 索引查找） | 原 04（已删除） | 大仓库且提交信息常含 hash |
+| 5 | Filter 弹窗 `Paths` 每帧 `read_dir`、`User` 每帧统计作者（改一次性缓存） | 原 04（已删除） | 大仓库下筛选弹窗输入卡顿 |
+| 6 | Console 视口虚拟化（`O(H)` 渲染）与 `ConsoleWorkbench::entries` 条数上限（不截断单条命令输出） | 原 04（已删除） | 长会话、大量命令输出 |
 | 7 | `unstage_path_in_index` 的 `O(targets × index_entries)` 查找 | [`06`](./06-engine-tokio-unblock-windows-scaling-and-benchmarks.md) | 大仓库一次 unstage 数百文件 |
 | 8 | `UpdateProject` / `collect_update_info` 按分支串行 spawn `git.exe`（改 libgit2 `graph_ahead_behind`） | [`06`](./06-engine-tokio-unblock-windows-scaling-and-benchmarks.md) | 跟踪分支多且常用 Update Project |
 
